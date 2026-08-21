@@ -1,0 +1,35 @@
+{
+  "name": "@remnic/plugin-codex",
+  "version": "9.69.15",
+  "description": "Remnic memory plugin for Codex CLI — hooks, skills, MCP integration",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/plugin-codex"
+  },
+  "keywords": [
+    "remnic",
+    "memory",
+    "codex",
+    "openai",
+    "plugin",
+    "ai-agent"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "files": [
+    ".codex-plugin",
+    "bin",
+    "hooks",
+    "skills",
+    "memories_extensions",
+    ".mcp.json"
+  ],
+  "dependencies": {
+    "@remnic/core": "workspace:^"
+  }
+}

@@ -1,0 +1,100 @@
+"""Remnic MemoryProvider plugin for Hermes Agent."""
+
+from remnic_hermes.client import RemnicClient
+from remnic_hermes.config import RemnicHermesConfig
+from remnic_hermes.provider import RemnicMemoryProvider
+
+# Legacy aliases — preserved for the Engram → Remnic compat window.
+# These will be removed in a future major release.
+EngramMemoryProvider = RemnicMemoryProvider
+EngramClient = RemnicClient
+EngramHermesConfig = RemnicHermesConfig
+
+__all__ = [
+    "RemnicMemoryProvider",
+    "RemnicClient",
+    "RemnicHermesConfig",
+    "EngramMemoryProvider",
+    "EngramClient",
+    "EngramHermesConfig",
+    "register",
+]
+
+def _register_tools_from_schemas(ctx, provider: RemnicMemoryProvider):  # type: ignore[no-untyped-def]
+    """Register every tool the provider exposes, under both name families.
+
+    Loops ``provider.get_tool_schemas()`` (issue #2483): the schemas carry
+    their own registered name — the primary ``remnic_*`` names and the legacy
+    ``engram_*`` aliases kept for the compat window — and
+    ``_handler_name_for_tool`` maps each name back onto the provider method
+    that implements it.
+    """
+    for schema in provider.get_tool_schemas():
+        tool_name = schema["name"]
+        handler_name = provider._handler_name_for_tool(tool_name)
+        if not handler_name:
+            continue
+        ctx.register_tool(tool_name, schema, getattr(provider, handler_name))
+
+
+def _register_issue_815_hooks(ctx, provider: RemnicMemoryProvider):  # type: ignore[no-untyped-def]
+    register_hook = getattr(ctx, "register_hook", None)
+    if not callable(register_hook):
+        return
+
+    def _on_session_reset(session_id: str = "", **kwargs):  # type: ignore[no-untyped-def]
+        provider.on_session_switch(
+            session_id,
+            reset=True,
+            reason="hermes_session_reset",
+            **kwargs,
+        )
+
+    register_hook("on_session_reset", _on_session_reset)
+
+
+def _load_hermes_host_config() -> dict:  # type: ignore[type-arg]
+    """Load Hermes config.yaml when the registration context carries no config.
+
+    Hermes' memory-provider discovery (`plugins/memory/__init__.py`) invokes
+    ``register()`` with a bare collector that exposes
+    ``register_memory_provider()`` but has NO ``.config`` attribute. Reading
+    the host config here lets a `$HERMES_HOME/plugins/<name>/` directory shim
+    simply re-export this ``register`` instead of duplicating config loading
+    (issue #1929).
+
+    Prefers ``load_config_readonly()`` (fast, no deepcopy) and falls back to
+    ``load_config()`` on older Hermes releases (v0.7.0+ supported floor) that
+    predate the readonly helper.
+    """
+    try:
+        from hermes_cli import config as hermes_config
+    except Exception:
+        return {}
+    loader = getattr(hermes_config, "load_config_readonly", None)
+    if not callable(loader):
+        loader = getattr(hermes_config, "load_config", None)
+    if not callable(loader):
+        return {}
+    try:
+        loaded = loader()
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
+def register(ctx):  # type: ignore[no-untyped-def]
+    """Hermes plugin entry point. Registers the MemoryProvider and explicit tools."""
+    raw_config = getattr(ctx, "config", None)
+    if not isinstance(raw_config, dict):
+        raw_config = _load_hermes_host_config()
+    config = raw_config.get("remnic")
+    if not isinstance(config, dict):
+        config = raw_config.get("engram", {})
+
+    provider = RemnicMemoryProvider(config)
+    ctx.register_memory_provider(provider)
+    _register_issue_815_hooks(ctx, provider)
+
+    # Every tool the provider exposes, under its remnic_* and engram_* names.
+    _register_tools_from_schemas(ctx, provider)

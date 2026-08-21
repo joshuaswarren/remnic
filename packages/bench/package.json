@@ -1,0 +1,64 @@
+{
+  "name": "@remnic/bench",
+  "version": "9.69.15",
+  "description": "Retrieval latency ladder benchmarks + CI regression gates for @remnic/core",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "remnic-source": "./src/index.ts",
+      "import": "./dist/index.js"
+    },
+    "./baselines/*": "./baselines/*",
+    "./baselines/*.json": "./baselines/*.json",
+    "./profiles/*": "./profiles/*",
+    "./profiles/*.json": "./profiles/*.json",
+    "./fixtures/h6-failure-gate/*": "./fixtures/h6-failure-gate/*",
+    "./package.json": "./package.json",
+    "./mcp-demo-server": "./dist/demo/mcp-memory-server.js"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/bench"
+  },
+  "keywords": [
+    "remnic",
+    "benchmark",
+    "retrieval",
+    "evaluation",
+    "ai-memory"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "prebuild": "node ../../scripts/ensure-bench-build-deps.mjs",
+    "build": "tsup --config tsup.config.ts",
+    "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
+    "check-types": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@remnic/coding-graph": "workspace:^",
+    "@remnic/core": "workspace:^",
+    "hyparquet": "^1.25.7",
+    "yaml": "^2.4.2",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  },
+  "files": [
+    "dist",
+    "baselines",
+    "profiles",
+    "fixtures/h6-failure-gate"
+  ]
+}

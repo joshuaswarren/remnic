@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 2,
+  "id": "h6-example-profile-v1",
+  "provider": "ollama-chat",
+  "model": "qwen3.5:35b",
+  "modelDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "endpoint": "http://127.0.0.1:11434",
+  "instructions": {
+    "system": "You are a coding agent working in a synthetic local TypeScript repository. Use only the provided tools and finish the requested repair.",
+    "developer": "Inspect the repository, choose the smallest correct fix, execute it with the provided tools, and verify the registered offline check. Call at most one tool per response. Do not use network access."
+  },
+  "tokenizer": {
+    "identity": "qwen3.5-35b-q4_k_m",
+    "implementation": "nfkc-whitespace-v1"
+  },
+  "contextWindowTokens": 16384,
+  "requestTimeoutMs": 180000,
+  "temperature": 0,
+  "maxOutputTokens": 4096,
+  "think": false,
+  "seedCapability": {
+    "kind": "options_parameter",
+    "requestField": "seed"
+  }
+}

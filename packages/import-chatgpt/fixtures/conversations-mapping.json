@@ -1,0 +1,55 @@
+{
+  "conversations": [
+    {
+      "id": "synthetic-conv-0001",
+      "title": "Fictional: planning a synthetic demo",
+      "create_time": 1737763200,
+      "update_time": 1737763500,
+      "current_node": "msg-3",
+      "mapping": {
+        "msg-1": {
+          "id": "msg-1",
+          "message": {
+            "id": "msg-1",
+            "author": { "role": "user" },
+            "content": {
+              "parts": ["I want to build a synthetic weekend project."],
+              "content_type": "text"
+            },
+            "create_time": 1737763200
+          },
+          "parent": null,
+          "children": ["msg-2"]
+        },
+        "msg-2": {
+          "id": "msg-2",
+          "message": {
+            "id": "msg-2",
+            "author": { "role": "assistant" },
+            "content": {
+              "parts": ["Great, what technology do you have in mind?"],
+              "content_type": "text"
+            },
+            "create_time": 1737763260
+          },
+          "parent": "msg-1",
+          "children": ["msg-3"]
+        },
+        "msg-3": {
+          "id": "msg-3",
+          "message": {
+            "id": "msg-3",
+            "author": { "role": "user" },
+            "content": {
+              "parts": ["Something small, maybe a CLI that parses fake data."],
+              "content_type": "text"
+            },
+            "create_time": 1737763500
+          },
+          "parent": "msg-2",
+          "children": []
+        }
+      }
+    }
+  ]
+}

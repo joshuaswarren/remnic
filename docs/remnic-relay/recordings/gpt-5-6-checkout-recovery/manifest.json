@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "files": [
+    {
+      "path": "approval.json",
+      "bytes": 117,
+      "sha256": "7b28e1ae2c29f2191a86e2da0efb60f20c86b464c2b6178629e6def6669bb4a8"
+    },
+    {
+      "path": "budget-adjustment.json",
+      "bytes": 328,
+      "sha256": "5ec1059736050480b9cee7358120c7cd3f0c36d0099800577326068940557e57"
+    },
+    {
+      "path": "calls/cold-builder.json",
+      "bytes": 1725,
+      "sha256": "cdbc89793f80d8d844b97c2c349ccae6055f7d51a5aa023da15d24f0a354d553"
+    },
+    {
+      "path": "calls/resolver.json",
+      "bytes": 1182,
+      "sha256": "ae420ddd812c3fc860ec020dd97441df487f330293e2897c5b199db074b6d202"
+    },
+    {
+      "path": "calls/scout.json",
+      "bytes": 1290,
+      "sha256": "49642880e1341d2da94468c69a0bdadd89860a0851d16b6bd4b56d8a74b55e19"
+    },
+    {
+      "path": "calls/stale-builder.json",
+      "bytes": 1679,
+      "sha256": "3c10d539e4c74e858c0746b57c28bd98283c6e5936776dea2898fe7e725684b2"
+    },
+    {
+      "path": "correction.json",
+      "bytes": 291,
+      "sha256": "109286d1b22e686a9dafc6d873b0831bdad4b7f62bbf08318267eb48b372e859"
+    },
+    {
+      "path": "credit-receipt.json",
+      "bytes": 856,
+      "sha256": "7876db2990b3fbb40af1e7a25cdbbbefe5a76cc155f2a718b1cc648733b18e2b"
+    },
+    {
+      "path": "events.json",
+      "bytes": 19118,
+      "sha256": "fc535f3013e369cbfe9f53fa5c966d0286ab4981c1586bc43cc54b803bf00c1b"
+    },
+    {
+      "path": "memories/replacement.json",
+      "bytes": 261,
+      "sha256": "7e089fbc8f342e8d742abe3bae31c8d7f8a71a72cb60cdcfd2af7ab398ecd2aa"
+    },
+    {
+      "path": "memories/stale.json",
+      "bytes": 226,
+      "sha256": "8bea5b5b5a67a64751ad80a9a34eeb7f96b74d88d2e2bf7339c6f44f6994261d"
+    },
+    {
+      "path": "mission-receipt.json",
+      "bytes": 370,
+      "sha256": "66188accdde3c731648ad0b7f5d6af5be4eb9ba8991e28c68123dd9aae71b074"
+    },
+    {
+      "path": "preflight.json",
+      "bytes": 1278,
+      "sha256": "ae2833c8d39b0dc4568b32ff8ef4f1326edf61c9f1e3a671962d11f016e86157"
+    },
+    {
+      "path": "recording.json",
+      "bytes": 1343,
+      "sha256": "a66e13ac291694f80c359a1ac20bd1e168fb15de8449cbe0b9e9124b9c852020"
+    },
+    {
+      "path": "tests.json",
+      "bytes": 791,
+      "sha256": "d713c43fb7c6ab40f97983502416a55c0798dde5c6eb465e253278ed9e2ce110"
+    }
+  ],
+  "rootSha256": "69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be"
+}

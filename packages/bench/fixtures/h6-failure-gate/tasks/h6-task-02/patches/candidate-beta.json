@@ -1,0 +1,10 @@
+{
+  "id": "candidate-beta",
+  "description": "Candidate beta.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "function createLedger() {\n  let entries = [];\n  return {\n    defer(value) { queueMicrotask(() => queueMicrotask(() => { entries = entries.concat(value); })); },\n    async settledSize() { await new Promise((resolve) => setImmediate(resolve)); return entries.length; },\n    read() { return entries.slice(); },\n  };\n}\nexport class EventQueue_nexus_billing_engine {\n  constructor() { this.ledger = createLedger(); }\n  async push(item) { this.ledger.defer(item.trim().toUpperCase()); }\n  getItemCount() { return this.ledger.settledSize(); }\n  snapshot() { return this.ledger.read(); }\n}\nexport const repositoryIdentity067afdcb = Object.freeze({\n  vf591e061: true, vc85ab587: true, v2b0ad9c1: true, v76e53913: true, vc9f8ef61: true, v2d5fe5a7: true,\n  v4c4ce515: true, v0663cb27: true, v220fa7ac: true, vaa31450c: true, v5194096a: true, v5b49e95d: true,\n  v407870ad: true, v528ca66b: true, vbf262a4d: true, v79c8fa4a: true, v3e69a39f: true,\n});\n"
+    }
+  ]
+}

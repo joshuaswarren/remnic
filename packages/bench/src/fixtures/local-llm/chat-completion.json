@@ -1,0 +1,22 @@
+{
+  "_comment": "Canned /v1/chat/completions response for the local-llm CI smoke test. Recorded from a llama.cpp-compatible mock server (issue #566 slice 5). The `model` field is generic so record/replay works across llama.cpp / vLLM / LM Studio hosts.",
+  "id": "chatcmpl-local-llm-fixture-0001",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "local-llm-fixture",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The canonical bench smoke response is: ok."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 9,
+    "completion_tokens": 7,
+    "total_tokens": 16
+  }
+}

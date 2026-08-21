@@ -1,0 +1,92 @@
+# Build output
+dist/
+packages/belief-ledger/dist/
+*.map
+__pycache__/
+*.pyc
+
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local state (never commit user memory data)
+state/
+
+# Auto-generated claude-mem context files (contain session-specific data)
+src/CLAUDE.md
+scripts/CLAUDE.md
+.claude/
+
+# Eval datasets (downloaded via script, not committed)
+evals/datasets/
+
+# Published-benchmark datasets (LongMemEval, LoCoMo) — run
+# `scripts/bench/fetch-datasets.sh --help` to set up.
+bench-datasets/
+
+# Published-benchmark artifacts (gitignored during development; promoted
+# per-release by the leaderboard pipeline — see issue #566 slice 6).
+docs/benchmarks/results/
+
+# OpenClaw plugin-inspector run artifacts
+packages/plugin-openclaw/reports/
+
+# Published-benchmark datasets (LongMemEval, LoCoMo). Download via
+# `scripts/bench/fetch-datasets.sh --help`. Never commit raw dataset files.
+bench-datasets/
+
+# Git worktrees
+.worktrees/
+PR_PREFLIGHT.md
+THEORY.MD
+.pr-loop/
+.worktale/
+logs/
+*.tgz
+irc-debug.ts
+.subagents/
+
+# model-lab (issue #1585): git carries recipes + hashes, never blobs.
+# Datasets, training runs, weights, and LLM traces are all local-only.
+model-lab/**/data/
+model-lab/**/runs/
+model-lab/.venv/
+*.safetensors
+*.gguf
+
+graphify-out/
+
+# H6 repeated-failure experiment run artifacts (checkpoints, traces, audits).
+# Raw run output is develop-time scratch, mirroring docs/benchmarks/results/.
+# Only the fixture bundle, preregistration, and final report are committed.
+docs/research/data/
+
+# Operator run handoff notes: deployment-specific paths, hosts, and
+# endpoints. The shareable research artifacts are preregistration.md
+# and report.md.
+docs/research/failure-gate/RESUME-HANDOFF.md
+
+# Operator-specific H6 model profiles. A profile pins a concrete endpoint, so
+# these are per-deployment config, not shareable templates. Copy
+# packages/bench/profiles/h6-example.json and edit it locally.
+packages/bench/profiles/h6-*.json
+!packages/bench/profiles/h6-example.json
+
+# Browser test artifacts
+.playwright-cli/
+output/playwright/

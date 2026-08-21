@@ -1,0 +1,365 @@
+name: Review Thread Guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+  # write scopes are used ONLY when REVIEW_DEDUP_MODE=enforce, to post the
+  # gate-authored canonical-link reply on a merged duplicate and apply the
+  # duplicate-finding label; shadow mode performs no writes.
+  pull-requests: write
+  issues: write
+
+jobs:
+  unresolved-review-threads:
+    # Intentionally NO concurrency group: check-unsticker reruns EVERY failed
+    # review-thread-guard suite in one sweep (the ruleset blocks on each latest
+    # failed/cancelled suite), and GitHub Actions concurrency is single-pending —
+    # a group here would cancel intermediate reruns so some blocking suites never
+    # get a passing attempt (codex P1). The check is cheap; per-event runs are fine.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout review helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+      - name: Bootstrap transient GitHub retry helper
+        run: |
+          if [ ! -f scripts/github-transient-retry.mjs ]; then
+            echo "::notice title=thread-guard bootstrap::scripts/github-transient-retry.mjs absent on base — using PR head copy"
+            git fetch --quiet --depth=1 origin "$HEAD_SHA"
+            git checkout FETCH_HEAD -- scripts/github-transient-retry.mjs
+          fi
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+
+      - name: Fail on unresolved review threads
+        uses: actions/github-script@v7
+        # Cross-reviewer dedup (issue #1994). Default 'shadow' logs the dedup
+        # ledger without changing the unresolved count (byte-identical to
+        # pre-#1994 behavior); flip to 'enforce' after the shadow window to let
+        # a resolved canonical satisfy its duplicates.
+        env:
+          REVIEW_DEDUP_MODE: shadow
+        with:
+          script: |
+            const { pathToFileURL } = require("node:url");
+            const { withTransientGithubRetry } = await import(
+              pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/github-transient-retry.mjs`).href
+            );
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            // pull_request and pull_request_review_comment events include issue.number for the PR.
+            // pull_request_review events include pull_request.number.
+            const candidate =
+              context.payload.pull_request?.number ??
+              context.payload.issue?.number ??
+              null;
+            const pr = Number(candidate);
+            if (!pr || Number.isNaN(pr)) {
+              core.setFailed("Unable to determine pull request number for review-thread guard.");
+              return;
+            }
+            const prMeta = await withTransientGithubRetry(() =>
+              github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: pr,
+              }),
+            );
+            if (prMeta.data.draft === true) {
+              core.notice("Skipping unresolved review-thread gate for draft PR.");
+              return;
+            }
+
+            const query = `
+              query($owner: String!, $repo: String!, $pr: Int!, $after: String) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $pr) {
+                    reviewThreads(first: 100, after: $after) {
+                      pageInfo {
+                        hasNextPage
+                        endCursor
+                      }
+                      nodes {
+                        id
+                        isResolved
+                        isOutdated
+                        diffSide
+                        startDiffSide
+                        line
+                        startLine
+                        originalLine
+                        originalStartLine
+                        comments(first: 100) {
+                          pageInfo {
+                            hasNextPage
+                            endCursor
+                          }
+                          nodes {
+                            path
+                            body
+                            fullDatabaseId
+                            author { login }
+                            url
+                            createdAt
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            let threads = [];
+            let after = null;
+            while (true) {
+              const result = await withTransientGithubRetry(() =>
+                github.graphql(query, { owner, repo, pr, after }),
+              );
+              const conn = result.repository.pullRequest.reviewThreads;
+              threads = threads.concat(conn.nodes || []);
+              if (!conn.pageInfo?.hasNextPage) break;
+              after = conn.pageInfo.endCursor;
+            }
+            // Page each thread's comments so a `not-a-duplicate` detach reply or
+            // the gate's idempotency marker on a long thread (>100 comments) is
+            // never missed — detach detection and hasGateReply scan every reply.
+            const commentPageQuery = `
+              query($id: ID!, $after: String) {
+                node(id: $id) {
+                  ... on PullRequestReviewThread {
+                    comments(first: 100, after: $after) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        path
+                        body
+                        fullDatabaseId
+                        author { login }
+                        url
+                        createdAt
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+            for (const t of threads) {
+              let pageInfo = t.comments?.pageInfo;
+              while (pageInfo?.hasNextPage) {
+                const more = await github.graphql(commentPageQuery, { id: t.id, after: pageInfo.endCursor });
+                const conn = more.node?.comments;
+                if (!conn) break;
+                t.comments.nodes = (t.comments.nodes || []).concat(conn.nodes || []);
+                pageInfo = conn.pageInfo;
+              }
+            }
+            // Keep deduplication logic in the tested repository module. The
+            // workflow imports the base revision so a PR cannot change the
+            // evaluator that judges its own review threads.
+            const {
+              DUPLICATE_LABEL,
+              computeGuardObligations,
+              dedupeThreads,
+              formatDuplicateReply,
+              hasGateReply,
+            } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/review-dedup.mjs`).href);
+            const {
+              records,
+              duplicateCount,
+            } = dedupeThreads(threads);
+            const dupRecords = records.filter((r) => r.canonicalId !== r.id);
+            const canonicalResolved = new Map(
+              records
+                .filter((r) => r.canonicalId === r.id)
+                .map((r) => [r.id, r.thread.isResolved === true]),
+            );
+
+            const loginOf = (thread) =>
+              thread.comments?.nodes?.[0]?.author?.login ?? thread.author?.login ?? null;
+            const mode = (process.env.REVIEW_DEDUP_MODE || "shadow").toLowerCase();
+            const applyInheritance = mode === "enforce";
+            const wouldBeLost = dupRecords.filter(
+              (r) => r.thread.isResolved !== true && canonicalResolved.get(r.canonicalId) !== true,
+            );
+            const auditedDuplicateIds = new Set();
+            const uniqueByReviewer = new Map();
+            for (const record of records) {
+              if (record.canonicalId !== record.id) continue;
+              const login = loginOf(record.thread) ?? "unknown";
+              uniqueByReviewer.set(login, (uniqueByReviewer.get(login) ?? 0) + 1);
+            }
+            const ledger = [
+              `Review-thread dedup [${mode}]: ${records.length} filed, ${duplicateCount} deduplicated; unique-by-reviewer — ${
+                [...uniqueByReviewer.entries()]
+                  .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+                  .map(([login, count]) => `${login}: ${count}`)
+                  .join(", ") || "none"
+              }.`,
+              ...dupRecords.map(
+                (record) =>
+                  `- ${loginOf(record.thread) ?? "unknown"} duplicate of ${
+                    records.find((candidate) => candidate.id === record.canonicalId)?.thread.comments?.nodes?.[0]?.url ??
+                    record.canonicalId
+                  } (similarity ${record.similarity.toFixed(2)})`,
+              ),
+            ].join("\n");
+            core.notice(ledger);
+            if (wouldBeLost.length > 0) {
+              core.warning(
+                `${wouldBeLost.length} deduplicated finding(s) still surface via an unresolved canonical (none hidden). Reply 'not-a-duplicate' on any thread to detach it back into the round set.`,
+              );
+            }
+
+            if (applyInheritance && dupRecords.length > 0) {
+              let posted = false;
+              for (const record of dupRecords) {
+                if (hasGateReply(record.thread)) {
+                  auditedDuplicateIds.add(record.id);
+                  continue;
+                }
+                const commentId = record.thread.comments?.nodes?.[0]?.fullDatabaseId;
+                if (!commentId) continue;
+                const canonicalUrl =
+                  records.find((candidate) => candidate.id === record.canonicalId)?.thread.comments?.nodes?.[0]?.url ??
+                  record.canonicalId;
+                try {
+                  await github.rest.pulls.createReplyForReviewComment({
+                    owner,
+                    repo,
+                    pull_number: pr,
+                    comment_id: commentId,
+                    body: formatDuplicateReply(canonicalUrl),
+                  });
+                  posted = true;
+                  auditedDuplicateIds.add(record.id);
+                } catch (error) {
+                  core.warning(`Could not post dedup reply on thread ${record.id}: ${error?.message ?? error}`);
+                }
+              }
+              if (posted) {
+                try {
+                  await github.rest.issues.addLabels({
+                    owner,
+                    repo,
+                    issue_number: pr,
+                    labels: [DUPLICATE_LABEL],
+                  });
+                } catch (error) {
+                  core.info(`duplicate-finding label not applied: ${error?.message ?? error}`);
+                }
+              }
+            }
+
+            const guardObligations = computeGuardObligations(threads, undefined, {
+              applyInheritance,
+              auditedDuplicateIds,
+            });
+            const unresolvedThreads = guardObligations.effectiveUnresolved;
+
+            if (unresolvedThreads.length === 0) {
+              core.notice("No unresolved review threads.");
+              return;
+            }
+
+            const summary = unresolvedThreads
+              .slice(0, 10)
+              .map((t, i) => {
+                const c = t.comments?.nodes?.[0];
+                const author = c?.author?.login ?? "unknown";
+                const path = c?.path ?? "unknown-file";
+                const state = t.isOutdated === true ? "outdated" : "active";
+                const url = c?.url ?? "";
+                return `${i + 1}. ${author} on ${path} (${state})${url ? ` ${url}` : ""}`;
+              })
+              .join("\n");
+
+            core.setFailed(
+              `Found ${unresolvedThreads.length} unresolved review thread(s). Resolve them before merge.\n${summary}`,
+            );
+
+  closed-issue-base:
+    # Parallel-run defect (2026-08): PRs claiming `Fixes #N` on issues that
+    # were ALREADY closed, with a base >=15 commits behind main, show a
+    # three-dot diff that looks like the fix — merging it deletes every commit
+    # that landed after the issue closed. Advisory (not in the required
+    # ruleset): fails loudly so a human rebases before review. API hiccups
+    # (404/429/503) skip with a notice rather than blocking.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Checkout evaluator at base (trusted code)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Bootstrap evaluator when absent on base
+        run: |
+          if [ ! -f scripts/check-closed-issue-base.mjs ]; then
+            echo "::notice title=closed-issue-base bootstrap::evaluator absent on base — using PR head copy"
+            git fetch --quiet --depth=1 origin "$HEAD_SHA"
+            git checkout FETCH_HEAD -- scripts/check-closed-issue-base.mjs
+          fi
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - name: Check closed-issue claims against base staleness
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { pathToFileURL } = require("node:url");
+            const { evaluateClosedIssueBase, parseFixNumbers } = await import(
+              pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/check-closed-issue-base.mjs`).href
+            );
+            const defaultBranch = context.payload.repository?.default_branch;
+            if (
+              defaultBranch &&
+              context.payload.pull_request?.base?.ref !== defaultBranch
+            ) {
+              core.info(
+                `closed-issue-base: base ${context.payload.pull_request.base.ref} is not the default branch ${defaultBranch} — GitHub does not interpret closing keywords there`,
+              );
+              return;
+            }
+            const body = context.payload.pull_request?.body ?? "";
+            const fixNumbers = parseFixNumbers(body);
+            if (fixNumbers.length === 0) {
+              core.info("closed-issue-base: no closing-keyword claims in the PR body");
+              return;
+            }
+            const { owner, repo } = context.repo;
+            let behind = 0;
+            try {
+              const baseRef = context.payload.pull_request.base.ref;
+              const headSha = context.payload.pull_request.head.sha;
+              const compare = await github.rest.repos.compareCommits({
+                owner,
+                repo,
+                basehead: `${baseRef}...${headSha}`,
+              });
+              behind = compare.data.behind_by ?? 0;
+            } catch (error) {
+              core.notice(`closed-issue-base: compare API unavailable (${error?.status ?? error?.message}) — skipping staleness check`);
+              return;
+            }
+            const closedFixNumbers = [];
+            for (const n of fixNumbers) {
+              try {
+                const issue = await github.rest.issues.get({ owner, repo, issue_number: n });
+                if (issue.data.state === "closed") closedFixNumbers.push(n);
+              } catch (error) {
+                core.notice(`closed-issue-base: issue #${n} unreadable (${error?.status ?? error?.message}) — treating as open`);
+              }
+            }
+            const verdict = evaluateClosedIssueBase({ body, commitsBehindMain: behind, closedFixNumbers });
+            core.info(`closed-issue-base: ${verdict.reason}`);
+            if (!verdict.ok) core.setFailed(`stale-closed-issue-base: ${verdict.reason}`);

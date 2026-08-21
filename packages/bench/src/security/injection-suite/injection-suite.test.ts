@@ -1,0 +1,306 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { InjectionSuiteClaimLock } from "./claims.js";
+import { generateSuiteVariants } from "./generator.js";
+import { buildRecallPrompt } from "./llm-executor.js";
+import {
+  planInjectionSuiteRows,
+  runInjectionSuiteCliCommand,
+} from "./runner.js";
+import { InjectionSuiteRowStore, buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
+import { HOST_FAULT_RETRY_LIMIT } from "./types.js";
+
+test("generator emits four families with CANARY-e2e tokens", () => {
+  const variants = generateSuiteVariants(2, 1);
+  assert.equal(variants.length, 8);
+  assert.deepEqual([...new Set(variants.map((variant) => variant.family))].sort(), [
+    "cross-session",
+    "minja",
+    "sleeper",
+    "tool-hijack",
+  ]);
+  for (const variant of variants) {
+    assert.match(variant.canary, /^CANARY-e2e-[0-9a-f]{12}$/);
+    assert.match(variant.payload, new RegExp(variant.canary));
+  }
+});
+
+test("plan respects --limit", () => {
+  const rows = planInjectionSuiteRows({
+    seeds: 1,
+    variantsPerFamily: 2,
+    modelProfileId: "local-dry",
+    limit: 3,
+  });
+  assert.equal(rows.length, 3);
+});
+
+test("resume skips terminal rows and refuses a drifted contract", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-suite-"));
+  try {
+    const first = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 2,
+    });
+    assert.equal(first.exitCode, 0);
+    assert.equal(first.completed, 2);
+
+    await assert.rejects(
+      () =>
+        runInjectionSuiteCliCommand({
+          seeds: 1,
+          variantsPerFamily: 1,
+          modelProfileId: "local-dry",
+          outputDir,
+          limit: 2,
+        }),
+      /pass --resume/,
+    );
+
+    const resumed = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 3,
+      resume: true,
+    });
+    assert.equal(resumed.exitCode, 0);
+    assert.equal(resumed.resumed, 2);
+    assert.equal(resumed.completed, 1);
+
+    const episodes = (await readFile(path.join(outputDir, "episodes.jsonl"), "utf8"))
+      .trim()
+      .split("\n");
+    assert.equal(episodes.length, 3);
+
+    const metadata = JSON.parse(await readFile(path.join(outputDir, "run.json"), "utf8")) as {
+      resumeContractHash: string;
+    };
+    metadata.resumeContractHash = "0".repeat(64);
+    await writeFile(path.join(outputDir, "run.json"), `${JSON.stringify(metadata, null, 2)}\n`);
+    await assert.rejects(
+      () =>
+        runInjectionSuiteCliCommand({
+          seeds: 1,
+          variantsPerFamily: 1,
+          modelProfileId: "local-dry",
+          outputDir,
+          limit: 3,
+          resume: true,
+        }),
+      /resume contract hash drifted/,
+    );
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("host-fault exhaustion pauses instead of cutting the row", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-pause-"));
+  try {
+    const paused = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+      faultFirstAttempts: HOST_FAULT_RETRY_LIMIT,
+    });
+    assert.equal(paused.exitCode, 2);
+    assert.equal(paused.paused, true);
+    assert.match(paused.output, /PAUSED/);
+    assert.equal(paused.completed, 0);
+
+    const recovered = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+      resume: true,
+    });
+    assert.equal(recovered.exitCode, 0);
+    assert.equal(recovered.completed, 1);
+
+    const store = new InjectionSuiteRowStore(outputDir);
+    const identity = planInjectionSuiteRows({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      limit: 1,
+    })[0]!;
+    const loaded = await store.load(identity);
+    assert.equal(loaded.kind, "VALID");
+    if (loaded.kind === "VALID") {
+      assert.equal(loaded.checkpoint.tries.length, HOST_FAULT_RETRY_LIMIT + 1);
+      assert.ok(loaded.checkpoint.terminal);
+    }
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("terminal rows are immutable", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-term-"));
+  try {
+    await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+    });
+    const identity = planInjectionSuiteRows({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      limit: 1,
+    })[0]!;
+    const store = new InjectionSuiteRowStore(outputDir);
+    await assert.rejects(
+      () =>
+        store.commitTry(identity, {
+          attempt: 99,
+          durationMs: 1,
+          outcome: { kind: "HOST_API_FAULT", message: "nope" },
+        }),
+      /terminal and immutable/,
+    );
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("claim lock skips a live foreign owner and reclaims an expired one", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-claim-"));
+  try {
+    const identity = defaultSuiteIdentity({
+      family: "minja",
+      variantId: "minja-01",
+      seed: 1,
+      arm: "none",
+      modelProfileId: "local-dry",
+    });
+    const checkpointsDir = path.join(outputDir, "checkpoints");
+    const live = new InjectionSuiteClaimLock(checkpointsDir);
+    const first = await live.tryClaim(identity);
+    assert.notEqual(first, "busy");
+    if (first === "busy") return;
+    const peer = new InjectionSuiteClaimLock(checkpointsDir);
+    assert.equal(await peer.tryClaim(identity), "busy");
+    await live.release(first);
+
+    const rowKey = buildInjectionSuiteRowKey(identity);
+    const lockPath = path.join(checkpointsDir, `${rowKey}.lock`);
+    await mkdir(lockPath, { recursive: true });
+    await writeFile(
+      path.join(lockPath, "owner.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        rowKey,
+        ownerToken: "stale",
+        host: "other",
+        pid: 1,
+        leaseMs: 1,
+        claimedAt: "1970-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+    await utimes(path.join(lockPath, "owner.json"), new Date(0), new Date(0));
+    const taken = await peer.tryClaim(identity);
+    assert.notEqual(taken, "busy");
+    if (taken === "busy") return;
+    await peer.release(taken);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("quarantine arm drops a screened payload before the model is called", () => {
+  const identity = defaultSuiteIdentity({
+    family: "minja",
+    variantId: "minja-01",
+    seed: 1,
+    arm: "quarantine",
+    modelProfileId: "local-dry",
+  });
+  const variant = generateSuiteVariants(1, 1)[0];
+  assert.ok(variant);
+  assert.equal(buildRecallPrompt(identity, variant), "dropped");
+});
+
+test("resume contract includes executor and model", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-exec-"));
+  try {
+    const first = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+      executor: "local",
+    });
+    assert.equal(first.exitCode, 0);
+    await assert.rejects(
+      () =>
+        runInjectionSuiteCliCommand({
+          seeds: 1,
+          variantsPerFamily: 1,
+          modelProfileId: "local-dry",
+          outputDir,
+          limit: 1,
+          resume: true,
+          executor: "ollama",
+          model: "qwen2.5:7b-instruct",
+        }),
+      /resume contract hash drifted/,
+    );
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("plan and execute accept variants-per-family above 64", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-hi-"));
+  try {
+    const result = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 65,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.completed, 1);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+
+test("dead ollama endpoint pauses instead of cutting the row", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-dead-"));
+  try {
+    const result = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+      executor: "ollama",
+      baseUrl: "http://127.0.0.1:1",
+      requestTimeoutMs: 250,
+    });
+    assert.equal(result.exitCode, 2);
+    assert.equal(result.paused, true);
+    assert.match(result.output, /PAUSED/);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});

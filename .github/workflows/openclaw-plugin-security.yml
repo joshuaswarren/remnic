@@ -1,0 +1,156 @@
+name: OpenClaw Plugin Security
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ".github/workflows/openclaw-plugin-security.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "packages/plugin-openclaw/**"
+      - "packages/remnic-core/src/**"
+      - "src/**"
+      - "scripts/openclaw-plugin-security-scan.mjs"
+      - "tests/openclaw-plugin-dangerous-scan.test.ts"
+      - "tests/openclaw-plugin-security-workflow-policy.test.ts"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/openclaw-plugin-security.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "packages/plugin-openclaw/**"
+      - "packages/remnic-core/src/**"
+      - "src/**"
+      - "scripts/openclaw-plugin-security-scan.mjs"
+      - "tests/openclaw-plugin-dangerous-scan.test.ts"
+      - "tests/openclaw-plugin-security-workflow-policy.test.ts"
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-openclaw-scanner:
+    name: pinned-openclaw-scanner
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OPENCLAW_VERSION: "2026.4.22"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout trusted scanner source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          path: trusted-scanner-source
+          sparse-checkout: |
+            scripts/openclaw-plugin-security-scan.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules
+        run: pnpm rebuild better-sqlite3
+
+      - name: Build and pack OpenClaw plugin
+        run: |
+          set -euo pipefail
+          pack_dir="$RUNNER_TEMP/remnic-openclaw-package"
+          rm -rf "$pack_dir"
+          mkdir -p "$pack_dir/extract"
+          pnpm --filter @remnic/plugin-openclaw build
+          pnpm --filter @remnic/plugin-openclaw pack --pack-destination "$pack_dir"
+          tarball="$(find "$pack_dir" -maxdepth 1 -name '*.tgz' -print -quit)"
+          if [ -z "$tarball" ]; then
+            echo "No @remnic/plugin-openclaw tarball produced" >&2
+            exit 1
+          fi
+          tar -xzf "$tarball" -C "$pack_dir/extract" --strip-components=1
+          echo "SCANNED_PACKAGE_DIR=$pack_dir/extract" >> "$GITHUB_ENV"
+
+      - name: Install OpenClaw scanner
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/openclaw-scanner"
+          npm install --prefix "$install_dir" --ignore-scripts --no-audit --no-fund "openclaw@$OPENCLAW_VERSION"
+          echo "OPENCLAW_PACKAGE_DIR=$install_dir/node_modules/openclaw" >> "$GITHUB_ENV"
+
+      - name: Run real OpenClaw dangerous-plugin scanner
+        run: node "$GITHUB_WORKSPACE/trusted-scanner-source/scripts/openclaw-plugin-security-scan.mjs" "$SCANNED_PACKAGE_DIR"
+
+  latest-openclaw-scanner:
+    name: latest-openclaw-scanner
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OPENCLAW_VERSION: "latest"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout trusted scanner source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          path: trusted-scanner-source
+          sparse-checkout: |
+            scripts/openclaw-plugin-security-scan.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules
+        run: pnpm rebuild better-sqlite3
+
+      - name: Build and pack OpenClaw plugin
+        run: |
+          set -euo pipefail
+          pack_dir="$RUNNER_TEMP/remnic-openclaw-package"
+          rm -rf "$pack_dir"
+          mkdir -p "$pack_dir/extract"
+          pnpm --filter @remnic/plugin-openclaw build
+          pnpm --filter @remnic/plugin-openclaw pack --pack-destination "$pack_dir"
+          tarball="$(find "$pack_dir" -maxdepth 1 -name '*.tgz' -print -quit)"
+          if [ -z "$tarball" ]; then
+            echo "No @remnic/plugin-openclaw tarball produced" >&2
+            exit 1
+          fi
+          tar -xzf "$tarball" -C "$pack_dir/extract" --strip-components=1
+          echo "SCANNED_PACKAGE_DIR=$pack_dir/extract" >> "$GITHUB_ENV"
+
+      - name: Install OpenClaw scanner
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/openclaw-scanner"
+          npm install --prefix "$install_dir" --ignore-scripts --no-audit --no-fund "openclaw@$OPENCLAW_VERSION"
+          echo "OPENCLAW_PACKAGE_DIR=$install_dir/node_modules/openclaw" >> "$GITHUB_ENV"
+
+      - name: Run real OpenClaw dangerous-plugin scanner
+        run: node "$GITHUB_WORKSPACE/trusted-scanner-source/scripts/openclaw-plugin-security-scan.mjs" "$SCANNED_PACKAGE_DIR"

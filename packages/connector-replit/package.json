@@ -1,0 +1,44 @@
+{
+  "name": "@remnic/replit",
+  "version": "9.69.15",
+  "description": "Remnic MCP connector for Replit Agent — setup instructions for an existing token",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/connector-replit"
+  },
+  "keywords": [
+    "remnic",
+    "memory",
+    "replit",
+    "mcp",
+    "ai-agent"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "files": [
+    "dist",
+    "setup-snippet.json"
+  ],
+  "scripts": {
+    "build": "tsup --config tsup.config.ts",
+    "check-types": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  }
+}

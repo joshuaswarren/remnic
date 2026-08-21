@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/audit-logger-stream",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for audit-logger-stream",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

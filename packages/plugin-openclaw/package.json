@@ -1,0 +1,119 @@
+{
+  "name": "@remnic/plugin-openclaw",
+  "version": "9.69.15",
+  "description": "OpenClaw adapter for Remnic memory with bundled @remnic/core runtime",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js"
+    },
+    "./managed-upgrade": {
+      "types": "./dist/managed-upgrade.d.ts",
+      "remnic-source": "./src/managed-upgrade.ts",
+      "import": "./dist/managed-upgrade.js"
+    },
+    "./support-passport-model-route": {
+      "types": "./dist/support-passport-model-route.d.ts",
+      "remnic-source": "./src/support-passport-model-route.ts",
+      "import": "./dist/support-passport-model-route.js"
+    }
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "scripts/faiss_index.py",
+    "scripts/faiss_requirements.txt"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "openclaw": {
+    "plugin": "./openclaw.plugin.json",
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.4.1"
+    },
+    "build": {
+      "openclawVersion": "2026.6.11-beta.1",
+      "pluginSdkVersion": "2026.6.11-beta.1"
+    },
+    "install": {
+      "clawhubSpec": "clawhub:@remnic/plugin-openclaw",
+      "npmSpec": "@remnic/plugin-openclaw",
+      "defaultChoice": "clawhub",
+      "minHostVersion": ">=2026.4.1"
+    },
+    "environment": {
+      "externalServices": [
+        "openclaw-gateway-models",
+        "configured-llm-providers"
+      ],
+      "optionalEnv": [
+        "OPENAI_API_KEY",
+        "<PROVIDER>_API_KEY",
+        "<PROVIDER>_TOKEN"
+      ],
+      "configPaths": [
+        "~/.openclaw/agents/main/agent/models.json"
+      ],
+      "credentialSources": [
+        "OpenClaw runtime auth resolver",
+        "OpenClaw materialized provider model config",
+        "provider-specific environment variables"
+      ],
+      "dataSentToProviders": [
+        "conversation excerpts",
+        "memory excerpts",
+        "summaries",
+        "embedding inputs",
+        "active-recall query inputs",
+        "benchmark and evaluation inputs"
+      ],
+      "recommendedMode": "modelSource=gateway"
+    }
+  },
+  "scripts": {
+    "build": "tsup --config tsup.config.ts",
+    "dev:watch": "tsup --config tsup.config.ts --watch",
+    "check-types": "tsc -p tsconfig.check.json",
+    "plugin:inspect": "plugin-inspector check --config plugin-inspector.config.json --no-openclaw",
+    "plugin:inspect:runtime": "pnpm run build && PLUGIN_INSPECTOR_EXECUTE_ISOLATED=1 plugin-inspector check --config plugin-inspector.config.json --no-openclaw --runtime --mock-sdk",
+    "prepublishOnly": "npm run build",
+    "prepack": "node ../../scripts/openclaw-manifest-pack.mjs minify",
+    "postpack": "node ../../scripts/openclaw-manifest-pack.mjs restore"
+  },
+  "dependencies": {
+    "@remnic/core": "workspace:^",
+    "@sinclair/typebox": "^0.34.0",
+    "openai": "^6.0.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.4.1 || 2026.4.7-1 || 2026.4.9-beta.1 || 2026.4.11-beta.1 || 2026.4.12-beta.1 || 2026.4.14-beta.1 || 2026.4.15-beta.1 || 2026.4.15-beta.2 || 2026.4.19-beta.1 || 2026.4.19-beta.2 || 2026.4.20-beta.1 || 2026.4.20-beta.2 || 2026.4.22-beta.1 || 2026.4.23-beta.1 || 2026.4.23-beta.2 || 2026.4.23-beta.3 || 2026.4.23-beta.4 || 2026.4.23-beta.5 || 2026.4.23-beta.6 || 2026.4.24-beta.1 || 2026.4.24-beta.2 || 2026.4.24-beta.3 || 2026.4.24-beta.4 || 2026.4.24-beta.5 || 2026.4.24-beta.6 || 2026.4.25-beta.1 || 2026.4.25-beta.2 || 2026.4.25-beta.3 || 2026.4.25-beta.4 || 2026.4.25-beta.5 || 2026.4.25-beta.6 || 2026.4.25-beta.7 || 2026.4.25-beta.8 || 2026.4.25-beta.9 || 2026.4.25-beta.10 || 2026.4.25-beta.11 || 2026.4.26-beta.1 || 2026.4.27-beta.1 || 2026.4.29-beta.1 || 2026.4.29-beta.2 || 2026.4.29-beta.3 || 2026.4.29-beta.4 || 2026.4.30-beta.1 || 2026.5.2-beta.1 || 2026.5.2-beta.2 || 2026.5.2-beta.3 || 2026.5.3-beta.1 || 2026.5.3-beta.2 || 2026.5.3-beta.3 || 2026.5.3-beta.4 || 2026.5.3-1 || 2026.5.4-beta.1 || 2026.5.4-beta.2 || 2026.5.4-beta.3 || 2026.5.5-beta.1 || 2026.5.5-beta.2 || 2026.5.6-beta.1 || 2026.5.7-beta.1 || 2026.5.9-beta.1 || 2026.5.10-beta.1 || 2026.5.10-beta.2 || 2026.5.10-beta.3 || 2026.5.10-beta.4 || 2026.5.10-beta.5 || 2026.5.10-beta.6 || 2026.5.12-beta.1 || 2026.5.12-beta.2 || 2026.5.12-beta.3 || 2026.5.12-beta.4 || 2026.5.12-beta.5 || 2026.5.12-beta.6 || 2026.5.12-beta.7 || 2026.5.12-beta.8 || 2026.5.14-beta.1 || 2026.5.14-beta.2 || 2026.5.16-beta.1 || 2026.5.16-beta.2 || 2026.5.16-beta.3 || 2026.5.16-beta.4 || 2026.5.16-beta.5 || 2026.5.16-beta.6 || 2026.5.16-beta.7 || 2026.5.18-beta.1 || 2026.5.19-alpha.1 || 2026.5.19-beta.1 || 2026.5.19-beta.2 || 2026.5.20-beta.1 || 2026.5.20-beta.2 || 2026.5.21-alpha.1 || 2026.5.21-beta.1 || 2026.5.22-beta.1 || 2026.5.23-alpha.1 || 2026.5.24-alpha.1 || 2026.5.24-beta.1 || 2026.5.24-beta.2 || 2026.5.25-alpha.1 || 2026.5.25-alpha.2 || 2026.5.25-beta.1 || 2026.5.26-beta.1 || 2026.5.26-beta.2 || 2026.5.27-alpha.1 || 2026.5.27-beta.1 || 2026.5.28-alpha.1 || 2026.5.28-beta.1 || 2026.5.28-beta.2 || 2026.5.28-beta.3 || 2026.5.28-beta.4 || 2026.5.29-alpha.1 || 2026.5.30-beta.1 || 2026.5.30-beta.2 || 2026.5.31-alpha.1 || 2026.5.31-beta.1 || 2026.5.31-beta.2 || 2026.5.31-beta.3 || 2026.5.31-beta.4 || 2026.6.1-alpha.1 || 2026.6.1-alpha.2 || 2026.6.1-alpha.3 || 2026.6.1-beta.1 || 2026.6.1-beta.2 || 2026.6.1-beta.3 || 2026.6.2-alpha.1 || 2026.6.2-alpha.2 || 2026.6.2-beta.1 || 2026.6.3-alpha.1 || 2026.6.4-alpha.1 || 2026.6.5-alpha.1 || 2026.6.5-alpha.2 || 2026.6.5-beta.1 || 2026.6.5-beta.2 || 2026.6.5-beta.3 || 2026.6.5-beta.5 || 2026.6.5-beta.6 || 2026.6.6-alpha.1 || 2026.6.6-beta.2 || 2026.6.6 || 2026.6.7-beta.1 || 2026.6.8-beta.1 || 2026.6.8-beta.2 || 2026.6.9-beta.1 || 2026.6.10-beta.1 || 2026.6.10-beta.2 || 2026.6.11-beta.1"
+  },
+  "devDependencies": {
+    "@remnic/core": "workspace:^",
+    "@openclaw/plugin-inspector": "0.3.10",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/plugin-openclaw"
+  },
+  "keywords": [
+    "remnic",
+    "memory",
+    "openclaw",
+    "adapter",
+    "plugin"
+  ]
+}

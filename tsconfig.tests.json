@@ -1,0 +1,28 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false,
+    "emitDeclarationOnly": false,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "jsx": "react-jsx",
+    "lib": [
+      "ES2022",
+      "ES2024.Promise",
+      "DOM",
+      "DOM.Iterable"
+    ]
+  },
+  "include": [
+    "tests/**/*.ts",
+    "dashboard/**/*.ts",
+    "packages/*/src/**/*.test.ts",
+    "src/openclaw-plugin-sdk.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    ".worktrees"
+  ]
+}

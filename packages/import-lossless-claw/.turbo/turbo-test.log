@@ -1,0 +1,101 @@
+
+> @remnic/import-lossless-claw@0.1.1 test /Users/joshuawarren/src/remnic/.worktrees/clawpatch-fresh-main-audit/packages/import-lossless-claw
+> tsx --test src/transform.test.ts src/source.test.ts src/importer.test.ts
+
+(node:59884) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ importLosslessClaw — basic copy
+  ✔ copies messages and summary across two conversations, falling back to conversation_id when session_id is null (11.698167ms)
+  ✔ imports message_parts into the Remnic LCM sidecar table (1.297333ms)
+✔ importLosslessClaw — basic copy (13.649ms)
+▶ importLosslessClaw — idempotency
+  ✔ re-running imports zero new rows (1.774709ms)
+  ✔ dry-run skips message_parts that already exist on destination messages (1.411709ms)
+  ✔ dry-run treats missing destination message_parts table as zero existing parts (1.020375ms)
+✔ importLosslessClaw — idempotency (4.342208ms)
+▶ importLosslessClaw — FTS sync
+  ✔ messages_fts and summaries_fts are queryable post-import (1.866ms)
+✔ importLosslessClaw — FTS sync (1.963458ms)
+▶ importLosslessClaw — compaction-event boundary
+  ✔ inserts one marker per session with tokens_before == tokens_after (0.996667ms)
+  ✔ dry-run COUNTS markers (matches other counters) but does not write them (0.733125ms)
+✔ importLosslessClaw — compaction-event boundary (1.827083ms)
+▶ importLosslessClaw — dry run
+  ✔ counts what would be inserted without writing (0.744125ms)
+✔ importLosslessClaw — dry run (0.780292ms)
+▶ importLosslessClaw — session filter
+  ✔ treats an empty Set as 'import all' (Cursor low-sev: empty Set is truthy) (0.883042ms)
+  ✔ limits import to specified resolved sessions (0.806375ms)
+✔ importLosslessClaw — session filter (1.742667ms)
+▶ importLosslessClaw — multi-parent DAG collapse
+  ✔ counts and logs collapsed multi-parent rows, picks lowest-ordinal parent (0.937583ms)
+✔ importLosslessClaw — multi-parent DAG collapse (0.964417ms)
+▶ importLosslessClaw — schema rejection
+  ✔ throws when source DB lacks lossless-claw tables (0.591667ms)
+✔ importLosslessClaw — schema rejection (0.643709ms)
+▶ importLosslessClaw — compaction-event token aggregation
+  ✔ uses the destination's actual SUM(token_count), not just newly-inserted (1.051625ms)
+  ✔ recreates a missing import boundary when messages and summaries already exist (1.0615ms)
+✔ importLosslessClaw — compaction-event token aggregation (2.155584ms)
+▶ importLosslessClaw — multiple conversations per session (Codex P1)
+  ✔ preserves all messages when two conversations share a session_id, despite seq overlap (0.842292ms)
+  ✔ interleaves messages across conversations by created_at (Codex P1 follow-up #2) (1.241958ms)
+  ✔ orders conversations by earliest message timestamp, not by conversation_id (Codex P1 follow-up) (1.175375ms)
+  ✔ idempotent re-run still inserts zero new rows when conversations share a session (1.13975ms)
+✔ importLosslessClaw — multiple conversations per session (Codex P1) (4.499416ms)
+▶ importLosslessClaw — orphan summaries
+  ✔ skips summaries with no message references and increments the counter (0.887625ms)
+✔ importLosslessClaw — orphan summaries (0.929333ms)
+(node:59885) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ assertLosslessClawSchema
+  ✔ passes when every required table is present (16.498333ms)
+  ✔ throws listing every missing table (0.253958ms)
+✔ assertLosslessClawSchema (17.270125ms)
+(node:59886) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ resolveSessionId
+  ✔ returns explicit session_id when present (0.565667ms)
+  ✔ falls back to conversation_id when session_id is null (0.060625ms)
+  ✔ falls back to conversation_id when session_id is empty/whitespace (0.049167ms)
+✔ resolveSessionId (1.227458ms)
+▶ buildMessageMetadata
+  ✔ emits sorted JSON keys including source_seq (Codex P1) (0.854875ms)
+  ✔ nulls out missing identity_hash + title without dropping keys (0.06325ms)
+✔ buildMessageMetadata (1.013334ms)
+▶ mapMessage
+  ✔ preserves role, content, token_count, created_at; turn_index from caller (0.156042ms)
+✔ mapMessage (0.214709ms)
+▶ pickCanonicalParent
+  ✔ returns null for orphan summaries (0.083792ms)
+  ✔ picks the lowest-ordinal parent (0.094208ms)
+  ✔ breaks ties by lexicographic parent id (deterministic) (8.401041ms)
+✔ pickCanonicalParent (8.688083ms)
+▶ isMultiParent
+  ✔ flags summaries with >1 parent edge (0.1075ms)
+✔ isMultiParent (0.1545ms)
+▶ resolveSummarySession
+  ✔ returns the session when all messages share one (0.116667ms)
+  ✔ returns null on multi-session summaries (caller should skip) (0.045167ms)
+  ✔ returns null when no message ids resolve (0.046458ms)
+  ✔ returns null when ANY referenced message id is dangling (Codex P2) (0.030208ms)
+  ✔ returns null on empty messageIds (defensive) (0.033625ms)
+✔ resolveSummarySession (0.33525ms)
+▶ mapSummary
+  ✔ maps msg_start/msg_end from min/max of provided seqs (0.125416ms)
+  ✔ uses earliest_at when latest_at is null (0.035625ms)
+  ✔ falls back to current time when both at-fields are null (0.985458ms)
+  ✔ throws when no message seqs are provided (caller must skip) (0.224833ms)
+✔ mapSummary (1.460416ms)
+▶ indexSummaryDerivations
+  ✔ groups parents and message ids by summary_id (0.14725ms)
+  ✔ returns empty map when both inputs are empty (0.038125ms)
+✔ indexSummaryDerivations (0.232583ms)
+ℹ tests 43
+ℹ suites 20
+ℹ pass 43
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 261.52625

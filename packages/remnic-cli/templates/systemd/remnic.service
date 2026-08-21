@@ -1,0 +1,17 @@
+[Unit]
+Description=Remnic Memory Orchestrator (RMO)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={{NODE_PATH}} {{REMNIC_SERVER_BIN}}
+Restart=on-failure
+RestartSec=5
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=REMNIC_CONFIG_PATH=%h/.config/remnic/config.json
+WorkingDirectory=%h
+StandardOutput=append:%h/.remnic/logs/daemon.log
+StandardError=append:%h/.remnic/logs/daemon.log
+
+[Install]
+WantedBy=default.target

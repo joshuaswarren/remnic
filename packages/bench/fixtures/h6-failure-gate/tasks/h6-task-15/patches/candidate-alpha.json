@@ -1,0 +1,10 @@
+{
+  "id": "candidate-alpha",
+  "description": "Candidate alpha.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    records.push({ ...input });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias?.trim().toUpperCase() || \"UNKNOWN\";\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
+    }
+  ]
+}

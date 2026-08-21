@@ -1,0 +1,51 @@
+{
+  "summary": {
+    "role": "stale-builder",
+    "model": "gpt-5.6-terra",
+    "reasoningEffort": "medium",
+    "threadId": "019f7385-1810-72e0-a249-2ecb26e9e2b2",
+    "promptSha256": "9b2942bd053b66641c497f5b2f4c00fc1a4305955c43f8168614539d0fcc647b",
+    "outputSha256": "0a52d8e28a8beb3ecbe73f24ba079f99a84a1ef515d0a984e6aa504add529f31",
+    "exitCode": 0,
+    "durationMs": 26597,
+    "usage": {
+      "inputTokens": 75215,
+      "cachedInputTokens": 61440,
+      "outputTokens": 912,
+      "reasoningOutputTokens": 219
+    },
+    "recallToolCalls": 1,
+    "recallReceipt": {
+      "query": "checkout token retry policy decision",
+      "namespace": "relay-build-week",
+      "sessionKey": "relay:builder-a:transcript-free",
+      "mode": "full",
+      "topK": 5,
+      "disclosure": "section",
+      "tags": [
+        "remnic-relay",
+        "checkout",
+        "token-policy"
+      ],
+      "tagMatch": "all",
+      "count": 1,
+      "plannerMode": "full",
+      "memoryIds": [
+        "decision-1784349520714-jlsc"
+      ]
+    },
+    "status": "completed"
+  },
+  "output": {
+    "summary": "Implemented checkout token selection to mint a fresh token for every request and retry.",
+    "decision_applied": "Checkout token retry policy must mint a new checkout token for every request and every retry.",
+    "files_changed": [
+      "src/token-policy.mjs"
+    ],
+    "tests_run": [
+      "npm test (failed: `unshare: unshare failed: Operation not permitted`)"
+    ],
+    "recall_memory_id": "decision-1784349520714-jlsc",
+    "recall_provenance": "Relay captured completed Codex MCP recall for query checkout token retry policy decision in namespace relay-build-week"
+  }
+}

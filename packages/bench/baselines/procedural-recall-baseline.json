@@ -1,0 +1,198 @@
+{
+  "schemaVersion": 1,
+  "fixture": {
+    "path": null,
+    "scenarioCount": 20
+  },
+  "onScore": 0.75,
+  "offScore": 0.25,
+  "lift": 0.5,
+  "confidenceInterval": {
+    "lower": 0.3,
+    "upper": 0.75,
+    "level": 0.95
+  },
+  "perCase": [
+    {
+      "id": "rerun-deploy-gateway",
+      "prompt": "Let's deploy the gateway service to production now.",
+      "expectMatch": true,
+      "onMatched": true,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 0
+    },
+    {
+      "id": "rerun-open-pr",
+      "prompt": "Open a pull request for the regression fix against main.",
+      "expectMatch": true,
+      "onMatched": true,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 0
+    },
+    {
+      "id": "rerun-run-tests",
+      "prompt": "Run the test suite before we merge the release branch.",
+      "expectMatch": true,
+      "onMatched": true,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 0
+    },
+    {
+      "id": "rerun-rotate-credentials",
+      "prompt": "Rotate the staging database credentials right now.",
+      "expectMatch": true,
+      "onMatched": false,
+      "offMatched": false,
+      "onScore": 0,
+      "offScore": 0
+    },
+    {
+      "id": "rerun-ship-release",
+      "prompt": "We need to ship the v9 release tonight.",
+      "expectMatch": true,
+      "onMatched": true,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 0
+    },
+    {
+      "id": "paramvar-deploy-api",
+      "prompt": "Let's deploy the API service to production today.",
+      "expectMatch": true,
+      "onMatched": true,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 0
+    },
+    {
+      "id": "paramvar-rollback-ticket",
+      "prompt": "Roll back ticket PROJ-912 before the standup tomorrow.",
+      "expectMatch": true,
+      "onMatched": false,
+      "offMatched": false,
+      "onScore": 0,
+      "offScore": 0
+    },
+    {
+      "id": "paramvar-rotate-prod",
+      "prompt": "Rotate the production database credentials this morning.",
+      "expectMatch": true,
+      "onMatched": false,
+      "offMatched": false,
+      "onScore": 0,
+      "offScore": 0
+    },
+    {
+      "id": "paramvar-start-branch",
+      "prompt": "Starting work on the billing branch feature.",
+      "expectMatch": true,
+      "onMatched": true,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 0
+    },
+    {
+      "id": "paramvar-merge-pr-after-ci",
+      "prompt": "Merge the pull request after CI turns green.",
+      "expectMatch": true,
+      "onMatched": true,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 0
+    },
+    {
+      "id": "decomp-incident-response",
+      "prompt": "Run the incident response playbook for the gateway outage.",
+      "expectMatch": true,
+      "onMatched": false,
+      "offMatched": false,
+      "onScore": 0,
+      "offScore": 0
+    },
+    {
+      "id": "decomp-release-cut",
+      "prompt": "Cut the weekly release branch and start the release checklist.",
+      "expectMatch": true,
+      "onMatched": true,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 0
+    },
+    {
+      "id": "decomp-onboarding",
+      "prompt": "Start the onboarding workflow for a new engineer joining the team.",
+      "expectMatch": true,
+      "onMatched": true,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 0
+    },
+    {
+      "id": "decomp-data-migration",
+      "prompt": "Begin the schema migration plan for the billing table.",
+      "expectMatch": true,
+      "onMatched": false,
+      "offMatched": false,
+      "onScore": 0,
+      "offScore": 0
+    },
+    {
+      "id": "decomp-runbook-certificate",
+      "prompt": "Start the certificate renewal runbook for the public edge.",
+      "expectMatch": true,
+      "onMatched": true,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 0
+    },
+    {
+      "id": "distract-explain-question",
+      "prompt": "How does hybrid retrieval combine BM25 and vector search?",
+      "expectMatch": false,
+      "onMatched": false,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 1
+    },
+    {
+      "id": "distract-past-tense-recap",
+      "prompt": "What did we decide about the database rotation last week?",
+      "expectMatch": false,
+      "onMatched": false,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 1
+    },
+    {
+      "id": "distract-summary-request",
+      "prompt": "Summarize the timeline of the gateway outage for the report.",
+      "expectMatch": false,
+      "onMatched": false,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 1
+    },
+    {
+      "id": "distract-thanks",
+      "prompt": "Thanks, that summary helps a lot.",
+      "expectMatch": false,
+      "onMatched": false,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 1
+    },
+    {
+      "id": "distract-off-topic-task",
+      "prompt": "Let's grab coffee before the standup tomorrow.",
+      "expectMatch": false,
+      "onMatched": false,
+      "offMatched": false,
+      "onScore": 1,
+      "offScore": 1
+    }
+  ],
+  "generatedAt": "baseline-v1"
+}

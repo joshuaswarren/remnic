@@ -1,0 +1,55 @@
+{
+  "name": "@remnic/import-lossless-claw",
+  "version": "9.69.15",
+  "description": "Import lossless-claw (LCM) SQLite databases into Remnic's LCM mode",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
+    "check-types": "tsc --noEmit",
+    "test": "tsx --test src/transform.test.ts src/source.test.ts src/importer.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.6.2"
+  },
+  "peerDependencies": {
+    "@remnic/core": "^9.69.15"
+  },
+  "devDependencies": {
+    "@remnic/core": "workspace:*",
+    "@types/better-sqlite3": "^7.6.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/import-lossless-claw"
+  },
+  "keywords": [
+    "remnic",
+    "memory",
+    "lcm",
+    "lossless-claw",
+    "import",
+    "openclaw"
+  ]
+}

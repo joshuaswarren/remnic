@@ -1,0 +1,47 @@
+{
+  "name": "@remnic/hermes-provider",
+  "version": "9.69.15",
+  "description": "Typed HTTP client for the Remnic memory API",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "check-types": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "peerDependencies": {},
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0"
+  },
+  "overrides": {
+    "esbuild@>=0.27.3 <0.28.1": "0.28.1"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/hermes-provider"
+  },
+  "keywords": [
+    "remnic",
+    "memory",
+    "ai",
+    "agent",
+    "openclaw"
+  ]
+}

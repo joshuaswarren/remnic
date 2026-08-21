@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "mcp": {
+      "remnic": {
+        "allow": ["remnic_*", "engram_*"]
+      }
+    }
+  }
+}

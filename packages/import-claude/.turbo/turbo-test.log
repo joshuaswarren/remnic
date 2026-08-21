@@ -1,0 +1,53 @@
+
+> @remnic/import-claude@0.1.0 test /Users/joshuawarren/src/remnic/.worktrees/clawpatch-fresh-main-audit/packages/import-claude
+> tsx --test src/adapter.test.ts src/parser.test.ts src/transform.test.ts
+
+(node:32514) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ claude adapter shape
+  ✔ exports a canonical adapter + name-prefixed alias (0.579125ms)
+  ✔ drives runImporter end-to-end with a synthetic projects fixture (0.765ms)
+  ✔ dry-run does not hit the target (0.155333ms)
+  ✔ skips conversations by default but imports them with includeConversations (0.324166ms)
+✔ claude adapter shape (2.409958ms)
+(node:32517) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ parseClaudeExport
+  ✔ parses a projects-array fixture (1.096041ms)
+  ✔ parses a conversations-array fixture (0.408542ms)
+  ✔ parses a combined bundle object (0.3405ms)
+  ✔ returns empty arrays on an empty input array (non-strict) (0.06775ms)
+  ✔ throws on invalid JSON (0.291041ms)
+  ✔ strict mode rejects unknown array shapes (0.084125ms)
+  ✔ preserves filePath in parsed output when provided (0.14425ms)
+  ✔ collects only human turns from structured and plain content (0.261584ms)
+  ✔ accepts the `role` alias used by older exports (0.133791ms)
+  ✔ strict mode rejects unknown object shapes (0.108291ms)
+  ✔ non-strict mode returns an empty result for unknown object shapes (0.066417ms)
+  ✔ strict mode rejects malformed known object sections even when another section is valid (0.091125ms)
+  ✔ throws when called without any input (undefined / null) (0.059542ms)
+  ✔ rejects primitive (non-object, non-array) input in every mode (0.101834ms)
+  ✔ strict mode rejects name-only project fallback (0.156666ms)
+  ✔ non-strict mode still accepts the name-only project fallback (0.053959ms)
+  ✔ falls back to `messages` when `chat_messages` is an empty array (0.048042ms)
+✔ parseClaudeExport (4.336ms)
+(node:32519) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+▶ transformClaudeExport
+  ✔ emits project docs + prompt_template by default (skips conversations) (1.694667ms)
+  ✔ skips empty docs and empty prompt_template (0.085667ms)
+  ✔ does not emit conversations unless includeConversations is true (0.279917ms)
+  ✔ truncates long conversation summaries at maxConversationSummaryChars (0.184833ms)
+  ✔ honors maxMemories as a hard cap (0.130792ms)
+  ✔ preserves project + doc metadata on emitted memories (0.147ms)
+  ✔ truncation never exceeds maxConversationSummaryChars with a long title (0.100292ms)
+  ✔ honors maxChars below the suffix length (0.099833ms)
+✔ transformClaudeExport (3.352458ms)
+ℹ tests 29
+ℹ suites 3
+ℹ pass 29
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2168.526542

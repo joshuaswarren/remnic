@@ -1,0 +1,25 @@
+{
+  "name": "@remnic/bench-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal local UI shell for browsing Remnic benchmark result summaries.",
+  "scripts": {
+    "dev": "vite",
+    "test": "find src \\( -name '*.test.ts' -o -name '*.test.tsx' \\) -print | sort | xargs tsx --test",
+    "check-types": "tsc --noEmit",
+    "build": "pnpm run check-types && vite build"
+  },
+  "dependencies": {
+    "react-router-dom": "^7.18.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.5"
+  }
+}

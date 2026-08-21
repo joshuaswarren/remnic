@@ -1,0 +1,29 @@
+{
+  "description": "Synthetic offline replay dump — flat results array as if all pages were concatenated.",
+  "results": [
+    {
+      "id": "mem-syn-0001",
+      "memory": "Fictional: prefers async tests to use node:test runner.",
+      "user_id": "synthetic-user-1",
+      "created_at": "2026-02-14T09:00:00.000Z",
+      "updated_at": "2026-02-14T09:05:00.000Z",
+      "categories": ["preferences", "tooling"]
+    },
+    {
+      "id": "mem-syn-0002",
+      "memory": "Fictional: keeps a weekly retro template in a Git-tracked file.",
+      "user_id": "synthetic-user-1",
+      "created_at": "2026-02-14T10:00:00.000Z"
+    },
+    {
+      "id": "mem-syn-0003",
+      "content": "Fictional (content-field variant): uses TypeScript strict mode on all personal projects.",
+      "user_id": "synthetic-user-1",
+      "created_at": "2026-02-15T08:00:00.000Z"
+    },
+    {
+      "id": "mem-syn-0004-empty",
+      "memory": "   "
+    }
+  ]
+}

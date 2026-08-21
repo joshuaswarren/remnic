@@ -1,0 +1,578 @@
+import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import { parseConfig } from "./config.js";
+import {
+  buildDefaultStructuredSearches,
+  getQmdCommandName,
+  getQmdPostInstallProbeTargets,
+  parseQmdVersionOutput,
+  parseQmdVersion,
+  parseQmdExplain,
+  resolveQmdCapabilities,
+  QmdClient,
+  shouldAutoUpgradeQmd,
+} from "./qmd.js";
+
+test("parseQmdVersion extracts semantic version from qmd output", () => {
+  assert.deepEqual(parseQmdVersion("qmd 2.5.3 (abcdef)"), [2, 5, 3]);
+  assert.deepEqual(parseQmdVersion("v2.1.0"), [2, 1, 0]);
+  assert.equal(parseQmdVersion("Unknown command: doctor"), null);
+});
+
+test("parseQmdVersionOutput prefers qmd-labelled semantic version lines", () => {
+  assert.equal(
+    parseQmdVersionOutput("bun 1.2.0\nqmd 2.5.3 (abcdef)", ""),
+    "qmd 2.5.3 (abcdef)",
+  );
+  assert.equal(parseQmdVersionOutput("wrapper ready", "v2.1.0"), "v2.1.0");
+  assert.equal(parseQmdVersionOutput("", ""), null);
+});
+
+test("resolveQmdCapabilities gates qmd 2.5 features by installed version", () => {
+  const current = resolveQmdCapabilities("qmd 2.5.3 (abcdef)");
+  assert.equal(current.v2McpQueryTool, true);
+  assert.equal(current.structuredSearches, true);
+  assert.equal(current.chunkStrategy, true);
+  assert.equal(current.doctor, true);
+  assert.equal(current.versionedSkills, true);
+  assert.equal(current.absoluteSnippetLines, true);
+  assert.equal(current.fullQueryOutput, true);
+  assert.equal(current.forceCpu, true);
+  assert.equal(current.gpuBackendOverride, true);
+  assert.equal(current.embedParallelism, true);
+  assert.equal(current.modelEnvConsistency, true);
+  assert.equal(current.scopedEmbed, true);
+  assert.equal(current.outputFormatFlag, true);
+
+  const older = resolveQmdCapabilities("qmd 2.1.0 (abcdef)");
+  assert.equal(older.v2McpQueryTool, true);
+  assert.equal(older.structuredSearches, true);
+  assert.equal(older.chunkStrategy, true);
+  assert.equal(older.doctor, false);
+  assert.equal(older.versionedSkills, false);
+  assert.equal(older.absoluteSnippetLines, false);
+  assert.equal(older.forceCpu, false);
+  assert.equal(older.scopedEmbed, false);
+  assert.equal(older.outputFormatFlag, false);
+
+  const v251 = resolveQmdCapabilities("qmd 2.5.1");
+  assert.equal(v251.doctor, true);
+  assert.equal(v251.outputFormatFlag, false);
+
+  const v20 = resolveQmdCapabilities("qmd 2.0.0");
+  assert.equal(v20.stableSdk, true);
+  assert.equal(v20.unifiedSearch, true);
+  assert.equal(v20.legacySkillInstall, false);
+
+  const v201 = resolveQmdCapabilities("qmd 2.0.1");
+  assert.equal(v201.legacySkillInstall, true);
+});
+
+test("buildDefaultStructuredSearches defaults to the full hybrid lex+vec+hyde plan", () => {
+  // Default (no strategy argument) must preserve historical behavior so an
+  // upgrade never silently drops vector/HyDE recall. Issue #1335.
+  const searches = buildDefaultStructuredSearches("hermes deployment");
+  assert.deepEqual(
+    searches.map((s) => s.type),
+    ["lex", "vec", "hyde"],
+  );
+});
+
+test("buildDefaultStructuredSearches honors the hybrid strategy explicitly", () => {
+  const searches = buildDefaultStructuredSearches("hermes deployment", undefined, "hybrid");
+  assert.deepEqual(
+    searches.map((s) => s.type),
+    ["lex", "vec", "hyde"],
+  );
+});
+
+test("buildDefaultStructuredSearches lex-vec strategy drops the expensive HyDE leg", () => {
+  const searches = buildDefaultStructuredSearches("hermes deployment", undefined, "lex-vec");
+  assert.deepEqual(
+    searches.map((s) => s.type),
+    ["lex", "vec"],
+  );
+});
+
+test("buildDefaultStructuredSearches lex strategy is BM25-only", () => {
+  const searches = buildDefaultStructuredSearches("hermes deployment", undefined, "lex");
+  assert.deepEqual(
+    searches.map((s) => s.type),
+    ["lex"],
+  );
+});
+
+test("buildDefaultStructuredSearches lets an explicit per-call override win over the strategy", () => {
+  // Per-call structuredSearches override must still take precedence regardless
+  // of the configured default strategy.
+  const searches = buildDefaultStructuredSearches(
+    "hermes deployment",
+    { structuredSearches: [{ type: "vec", query: "hermes deployment" }] },
+    "lex",
+  );
+  assert.deepEqual(
+    searches.map((s) => s.type),
+    ["vec"],
+  );
+});
+
+test("buildDefaultStructuredSearches returns empty for blank queries under any strategy", () => {
+  assert.deepEqual(buildDefaultStructuredSearches("   ", undefined, "hybrid"), []);
+  assert.deepEqual(buildDefaultStructuredSearches("   ", undefined, "lex"), []);
+});
+
+test("shouldAutoUpgradeQmd only upgrades below Remnic supported version", () => {
+  assert.equal(shouldAutoUpgradeQmd("qmd 2.1.0", "2.5.3"), true);
+  assert.equal(shouldAutoUpgradeQmd("qmd 2.5.3", "2.5.3"), false);
+  assert.equal(shouldAutoUpgradeQmd("qmd 2.6.0", "2.5.3"), false);
+  assert.equal(shouldAutoUpgradeQmd("not installed", "2.5.3"), false);
+});
+
+test("getQmdCommandName preserves write command detection behind qmd 2.5 index prefix", () => {
+  assert.equal(getQmdCommandName(["embed", "-c", "memory"]), "embed");
+  assert.equal(getQmdCommandName(["--index", "remnic-prod", "embed", "-c", "memory"]), "embed");
+  assert.equal(getQmdCommandName(["--index=remnic-prod", "update", "-c", "memory"]), "update");
+  assert.equal(getQmdCommandName(["--version"]), "");
+});
+
+test("post-install auto-upgrade probes PATH qmd before stale fallback paths", () => {
+  assert.deepEqual(getQmdPostInstallProbeTargets("qmd", "auto-path"), [
+    { qmdPath: "qmd", source: "auto-path" },
+  ]);
+  assert.deepEqual(getQmdPostInstallProbeTargets("/Users/test/.bun/bin/qmd", "auto-fallback"), [
+    { qmdPath: "qmd", source: "auto-path" },
+    { qmdPath: "/Users/test/.bun/bin/qmd", source: "auto-fallback" },
+  ]);
+  assert.deepEqual(getQmdPostInstallProbeTargets("/custom/qmd", "configured"), [
+    { qmdPath: "qmd", source: "auto-path" },
+  ]);
+});
+
+test("QmdClient preserves configured qmdPath diagnostics when all probes fail", async () => {
+  const { QmdClient } = await import("./qmd.js");
+  const originalPath = process.env.PATH;
+  const originalWindowsPath = process.env.Path;
+  const missingQmdPath = path.join(
+    os.tmpdir(),
+    `remnic-missing-qmd-${process.pid}-${Date.now()}`,
+    "qmd.cmd",
+  );
+
+  process.env.PATH = "";
+  process.env.Path = "";
+  try {
+    const client = new QmdClient("test-collection", 10, {
+      qmdPath: missingQmdPath,
+      qmdFallbackPaths: [],
+    });
+
+    assert.equal(await client.probe(), false);
+    const status = client.debugStatus();
+
+    assert.ok(status.includes(`cliPath=${missingQmdPath}`), status);
+    assert.ok(status.includes("cliPathSource=configured"), status);
+    assert.ok(status.includes("cliProbeError="), status);
+    assert.ok(!status.includes("/opt/homebrew/bin/qmd"), status);
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (originalWindowsPath === undefined) delete process.env.Path;
+    else process.env.Path = originalWindowsPath;
+  }
+});
+
+test("QmdClient strict configured path never probes PATH or fallback binaries", async () => {
+  const configuredPath = "/explicit/benchmark/qmd";
+  const probedPaths: string[] = [];
+  const client = new QmdClient("test-collection", 10, {
+    qmdPath: configuredPath,
+    qmdFallbackPaths: ["/implicit/fallback/qmd"],
+    qmdStrictPath: true,
+  });
+  const internals = client as unknown as {
+    runVersionProbe: (qmdPath: string) => Promise<{ stdout: string; stderr: string }>;
+  };
+  internals.runVersionProbe = async (qmdPath: string) => {
+    probedPaths.push(qmdPath);
+    if (qmdPath === configuredPath) {
+      throw Object.assign(new Error("configured binary missing"), { code: "ENOENT" });
+    }
+    return { stdout: "qmd 2.5.3", stderr: "" };
+  };
+
+  assert.equal(await client.probe(), false);
+  assert.deepEqual(probedPaths, [configuredPath]);
+});
+
+test("QmdClient read-only availability failures preserve operational state", async () => {
+  const { QmdClient } = await import("./qmd.js");
+  const originalPath = process.env.PATH;
+  const originalWindowsPath = process.env.Path;
+  const missingQmdPath = path.join(
+    os.tmpdir(),
+    `remnic-missing-readonly-qmd-${process.pid}-${Date.now()}`,
+    "qmd.cmd",
+  );
+
+  process.env.PATH = "";
+  process.env.Path = "";
+  try {
+    const client = new QmdClient("test-collection", 10, {
+      qmdPath: missingQmdPath,
+      qmdFallbackPaths: [],
+    });
+    (client as any).available = true;
+    (client as any).qmdPath = "qmd";
+    (client as any).qmdPathSource = "auto-path";
+    (client as any).cliVersion = "qmd 2.5.3";
+    (client as any).qmdCapabilities = resolveQmdCapabilities("qmd 2.5.3");
+    (client as any).lastCliProbeError = null;
+
+    assert.equal(await client.checkAvailability(), false);
+
+    assert.equal(client.isAvailable(), true);
+    assert.equal((client as any).qmdPath, "qmd");
+    assert.equal((client as any).qmdPathSource, "auto-path");
+    assert.equal((client as any).cliVersion, "qmd 2.5.3");
+    assert.equal((client as any).lastCliProbeError, null);
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (originalWindowsPath === undefined) delete process.env.Path;
+    else process.env.Path = originalWindowsPath;
+  }
+});
+
+test("QmdClient read-only availability preserves live daemon availability", async () => {
+  const { QmdClient } = await import("./qmd.js");
+  const originalPath = process.env.PATH;
+  const originalWindowsPath = process.env.Path;
+  const missingQmdPath = path.join(
+    os.tmpdir(),
+    `remnic-missing-daemon-qmd-${process.pid}-${Date.now()}`,
+    "qmd.cmd",
+  );
+
+  process.env.PATH = "";
+  process.env.Path = "";
+  try {
+    const client = new QmdClient("test-collection", 10, {
+      qmdPath: missingQmdPath,
+      qmdFallbackPaths: [],
+    });
+    (client as any).daemonAvailable = true;
+    (client as any).daemonSession = { isActive: () => true };
+
+    assert.equal(await client.checkAvailability(), true);
+    assert.equal(client.isAvailable(), true);
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (originalWindowsPath === undefined) delete process.env.Path;
+    else process.env.Path = originalWindowsPath;
+  }
+});
+
+test("QmdClient read-only availability clears stale daemon availability", async () => {
+  const { QmdClient } = await import("./qmd.js");
+  const originalPath = process.env.PATH;
+  const originalWindowsPath = process.env.Path;
+  const missingQmdPath = path.join(
+    os.tmpdir(),
+    `remnic-missing-stale-daemon-qmd-${process.pid}-${Date.now()}`,
+    "qmd.cmd",
+  );
+
+  process.env.PATH = "";
+  process.env.Path = "";
+  try {
+    const client = new QmdClient("test-collection", 10, {
+      qmdPath: missingQmdPath,
+      qmdFallbackPaths: [],
+    });
+    (client as any).daemonAvailable = true;
+    (client as any).daemonSession = { isActive: () => false };
+    (client as any).lastDaemonCheckAtMs = Date.now();
+
+    assert.equal(await client.checkAvailability(), false);
+    assert.equal(client.isAvailable(), false);
+    assert.equal((client as any).daemonAvailable, false);
+    assert.equal((client as any).lastDaemonCheckAtMs, 0);
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (originalWindowsPath === undefined) delete process.env.Path;
+    else process.env.Path = originalWindowsPath;
+  }
+});
+
+test("QmdClient applies chunk strategy to normal and forced embed args", async () => {
+  const { QmdClient } = await import("./qmd.js");
+  const client = new QmdClient("test", 5, {
+    qmdChunkStrategy: "regex",
+  });
+  (client as any).qmdCapabilities = resolveQmdCapabilities("qmd 2.5.3");
+  assert.deepEqual((client as any).buildEmbedArgs("memory"), [
+    "embed",
+    "-c",
+    "memory",
+    "--chunk-strategy",
+    "regex",
+  ]);
+  assert.deepEqual((client as any).buildEmbedArgs("memory", true), [
+    "embed",
+    "-f",
+    "-c",
+    "memory",
+    "--chunk-strategy",
+    "regex",
+  ]);
+});
+
+test("QmdClient uses QMD 2.5.3 --format json for query subprocess output", async () => {
+  const { QmdClient } = await import("./qmd.js");
+  const client = new QmdClient("test", 5) as any;
+  client.available = true;
+  client.qmdCapabilities = resolveQmdCapabilities("qmd 2.5.3");
+  let observedArgs: string[] = [];
+  client.runQmdCommand = async (args: string[]) => {
+    observedArgs = args;
+    return { stdout: "[]", stderr: "" };
+  };
+
+  await client.searchViaSubprocess("memory query", "memory", 3);
+
+  assert.deepEqual(observedArgs, [
+    "query",
+    "memory query",
+    "-c",
+    "memory",
+    "--format",
+    "json",
+    "-n",
+    "3",
+  ]);
+});
+
+test("QmdClient keeps legacy --json for older QMD query subprocess output", async () => {
+  const { QmdClient } = await import("./qmd.js");
+  const client = new QmdClient("test", 5) as any;
+  client.available = true;
+  client.qmdCapabilities = resolveQmdCapabilities("qmd 2.5.1");
+  let observedArgs: string[] = [];
+  client.runQmdCommand = async (args: string[]) => {
+    observedArgs = args;
+    return { stdout: "[]", stderr: "" };
+  };
+
+  await client.searchViaSubprocess("memory query", "memory", 3);
+
+  assert.deepEqual(observedArgs, [
+    "query",
+    "memory query",
+    "-c",
+    "memory",
+    "--json",
+    "-n",
+    "3",
+  ]);
+});
+
+test("QmdClient clears the global QMD result caches on a successful refresh (#1904)", async () => {
+  // The centralized invalidation lives in QmdClient.runUpdateForCollection /
+  // runEmbedForCollection so every refresh path (direct update, namespace
+  // router, wearable/OpenClaw sync) invalidates the cached pre-refresh bundles
+  // without each caller having to remember. Defend that contract.
+  const { QmdClient } = await import("./qmd.js");
+  const { setCachedQmdSearch, getCachedQmdSearch } = await import("./memory-cache.js");
+  const client = new QmdClient("test", 5) as any;
+  client.available = true;
+  client.runQmdCommand = async () => ({ stdout: "", stderr: "" });
+  setCachedQmdSearch("stale-bundle", [{ path: "facts/old.md" }]);
+  assert.notEqual(getCachedQmdSearch("stale-bundle"), null, "cache populated before refresh");
+  // updateCollectionStrict uses force=true, bypassing throttle/backoff gates so
+  // the refresh deterministically reaches the success point that clears caches.
+  await client.updateCollectionStrict("test");
+  assert.equal(
+    getCachedQmdSearch("stale-bundle"),
+    null,
+    "a successful refresh must clear the cached pre-refresh QMD bundle",
+  );
+});
+
+test("parseQmdExplain preserves qmd 2.5 nested RRF trace fields", () => {
+  assert.deepEqual(
+    parseQmdExplain({
+      ftsScores: [0.4],
+      vectorScores: [0.2],
+      rrf: {
+        rank: 2,
+        positionScore: 0.7,
+        baseScore: 0.6,
+        topRankBonus: 0.1,
+        totalScore: 0.7,
+      },
+      rerankScore: 0.9,
+      blendedScore: 0.82,
+    }),
+    {
+      ftsScores: [0.4],
+      vectorScores: [0.2],
+      rrf: 0.7,
+      rrfRank: 2,
+      rrfPositionScore: 0.7,
+      rrfBaseScore: 0.6,
+      rrfTopRankBonus: 0.1,
+      rerankScore: 0.9,
+      blendedScore: 0.82,
+    },
+  );
+});
+
+test("QmdClient runtime env maps qmd 2.5 model and GPU controls", async () => {
+  const { QmdClient } = await import("./qmd.js");
+  const client = new QmdClient("test", 5, {
+    qmdForceCpu: true,
+    qmdGpuBackend: "metal",
+    qmdEmbedParallelism: 12,
+    qmdEmbedModel: "hf:embed",
+    qmdRerankModel: "hf:rerank",
+    qmdGenerateModel: "hf:generate",
+  });
+  assert.deepEqual((client as any).qmdRuntimeEnv, {
+    QMD_FORCE_CPU: "1",
+    QMD_LLAMA_GPU: "metal",
+    QMD_EMBED_PARALLELISM: "8",
+    QMD_EMBED_MODEL: "hf:embed",
+    QMD_RERANK_MODEL: "hf:rerank",
+    QMD_GENERATE_MODEL: "hf:generate",
+  });
+});
+
+test("QmdClient auto-upgrade throttle key is scoped by qmd target", async () => {
+  const { QmdClient } = await import("./qmd.js");
+  const base = new QmdClient("test", 5, {
+    qmdAutoUpgradeEnabled: true,
+    qmdIndexName: "default",
+    qmdEmbedModel: "hf:embed-a",
+  });
+  const otherIndex = new QmdClient("test", 5, {
+    qmdAutoUpgradeEnabled: true,
+    qmdIndexName: "other",
+    qmdEmbedModel: "hf:embed-a",
+  });
+  const otherRuntime = new QmdClient("test", 5, {
+    qmdAutoUpgradeEnabled: true,
+    qmdIndexName: "default",
+    qmdEmbedModel: "hf:embed-b",
+  });
+
+  assert.notEqual((base as any).autoUpgradeTargetKey(), (otherIndex as any).autoUpgradeTargetKey());
+  assert.notEqual((base as any).autoUpgradeTargetKey(), (otherRuntime as any).autoUpgradeTargetKey());
+});
+
+test("parseConfig exposes qmd 2.5 integration defaults and opt-in auto upgrade", () => {
+  const defaults = parseConfig({});
+  assert.equal(defaults.qmdSupportedVersion, "2.5.3");
+  assert.equal(defaults.qmdAutoUpgradeEnabled, false);
+  assert.equal(defaults.qmdChunkStrategy, "auto");
+  assert.equal(defaults.qmdQueryRerankEnabled, true);
+  assert.equal(defaults.qmdCandidateLimit, undefined);
+  assert.equal(defaults.qmdIndexName, undefined);
+
+  const configured = parseConfig({
+    qmdAutoUpgradeEnabled: "true",
+    qmdAutoUpgradeCheckIntervalMs: "60000",
+    qmdChunkStrategy: "regex",
+    qmdCandidateLimit: "25",
+    qmdQueryRerankEnabled: "false",
+    qmdIndexName: "remnic-prod",
+    qmdForceCpu: "true",
+    qmdGpuBackend: "metal",
+    qmdEmbedParallelism: "4",
+    qmdEmbedModel: "hf:custom/embed.gguf",
+    qmdRerankModel: "hf:custom/rerank.gguf",
+    qmdGenerateModel: "hf:custom/generate.gguf",
+  });
+  assert.equal(configured.qmdAutoUpgradeEnabled, true);
+  assert.equal(configured.qmdAutoUpgradeCheckIntervalMs, 60_000);
+  assert.equal(configured.qmdChunkStrategy, "regex");
+  assert.equal(configured.qmdCandidateLimit, 25);
+  assert.equal(configured.qmdQueryRerankEnabled, false);
+  assert.equal(configured.qmdIndexName, "remnic-prod");
+  assert.equal(configured.qmdForceCpu, true);
+  assert.equal(configured.qmdGpuBackend, "metal");
+  assert.equal(configured.qmdEmbedParallelism, 4);
+  assert.equal(configured.qmdEmbedModel, "hf:custom/embed.gguf");
+  assert.equal(configured.qmdRerankModel, "hf:custom/rerank.gguf");
+  assert.equal(configured.qmdGenerateModel, "hf:custom/generate.gguf");
+
+  const falseGpuBackend = parseConfig({ qmdGpuBackend: false });
+  assert.equal(falseGpuBackend.qmdGpuBackend, "false");
+});
+
+test("parseConfig exposes gated OpenClaw host feature defaults", () => {
+  const defaults = parseConfig({});
+  assert.equal(defaults.hostEmbeddingProviderEnabled, true);
+  assert.equal(defaults.hostEmbeddingProviderId, undefined);
+  assert.equal(defaults.hostEmbeddingProviderModel, undefined);
+  assert.equal(defaults.openclawMessageReceivedCaptureEnabled, true);
+  assert.equal(defaults.openclawReplyMetadataCaptureEnabled, true);
+  assert.equal(defaults.openclawReplyMetadataExtractionHintsEnabled, false);
+  assert.equal(defaults.openclawChannelEnvelopeCleaningEnabled, true);
+
+  const configured = parseConfig({
+    openclawHostEmbeddingProviderEnabled: "false",
+    openclawHostEmbeddingProviderId: "openai-compatible",
+    openclawHostEmbeddingProviderModel: "text-embedding-3-large",
+    openclawMessageReceivedCaptureEnabled: "0",
+    openclawReplyMetadataCaptureEnabled: "off",
+    openclawReplyMetadataExtractionHintsEnabled: "yes",
+    openclawChannelEnvelopeCleaningEnabled: "no",
+  });
+  assert.equal(configured.hostEmbeddingProviderEnabled, false);
+  assert.equal(configured.hostEmbeddingProviderId, "openai-compatible");
+  assert.equal(configured.hostEmbeddingProviderModel, "text-embedding-3-large");
+  assert.equal(configured.openclawMessageReceivedCaptureEnabled, false);
+  assert.equal(configured.openclawReplyMetadataCaptureEnabled, false);
+  assert.equal(configured.openclawReplyMetadataExtractionHintsEnabled, true);
+  assert.equal(configured.openclawChannelEnvelopeCleaningEnabled, false);
+});
+
+test("parseConfig rejects invalid qmd version and integer config values", () => {
+  assert.throws(
+    () => parseConfig({ qmdSupportedVersion: "latest" }),
+    /qmdSupportedVersion must be a semantic version string/,
+  );
+  assert.throws(
+    () => parseConfig({ qmdSupportedVersion: "2.6" }),
+    /qmdSupportedVersion must be a semantic version string/,
+  );
+  assert.throws(
+    () => parseConfig({ qmdCandidateLimit: "1.9" }),
+    /qmdCandidateLimit must be a positive integer/,
+  );
+  assert.throws(
+    () => parseConfig({ qmdEmbedParallelism: 0.5 }),
+    /qmdEmbedParallelism must be a positive integer/,
+  );
+  assert.throws(
+    () => parseConfig({ qmdChunkStrategy: "regx" }),
+    /qmdChunkStrategy must be "auto" or "regex"/,
+  );
+  assert.throws(
+    () => parseConfig({ qmdChunkStrategy: false }),
+    /qmdChunkStrategy must be "auto" or "regex"/,
+  );
+  assert.throws(
+    () => parseConfig({ qmdGpuBackend: "opengl" }),
+    /qmdGpuBackend must be one of/,
+  );
+  assert.throws(
+    () => parseConfig({ qmdGpuBackend: true }),
+    /qmdGpuBackend must be one of/,
+  );
+});

@@ -1,0 +1,379 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# A superseded push should not keep burning runners: cancel in-flight runs for
+# the same PR. Pushes to main are never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  detect-risky-paths:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    outputs:
+      entity_hardening: ${{ steps.filter.outputs.entity_hardening }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect high-risk review surfaces
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            entity_hardening:
+              - 'src/orchestrator.ts'
+              - 'src/storage.ts'
+              - 'src/storage/**'
+              - 'src/orchestration/**'
+              - 'src/intent.ts'
+              - 'src/memory-cache.ts'
+              - 'src/entity-retrieval.ts'
+              - 'src/config.ts'
+              - 'packages/remnic-core/src/orchestrator.ts'
+              - 'packages/remnic-core/src/storage.ts'
+              - 'packages/remnic-core/src/storage/**'
+              - 'packages/remnic-core/src/orchestration/**'
+              - 'packages/remnic-core/src/intent.ts'
+              - 'packages/remnic-core/src/memory-cache.ts'
+              - 'packages/remnic-core/src/entity-retrieval.ts'
+              - 'packages/remnic-core/src/config.ts'
+
+  entity-hardening:
+    needs: detect-risky-paths
+    if: needs.detect-risky-paths.outputs.entity_hardening == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules
+        run: pnpm rebuild better-sqlite3
+
+      - name: Entity hardening suite
+        run: pnpm run test:entity-hardening
+
+  # Static analysis: no native binding, no build artifacts needed beyond the
+  # core build that check-types performs itself.
+  checks:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so the v2 config-contract shrink-only grandfather ban
+          # resolves `git merge-base HEAD origin/main` (issue #1990). A default
+          # checkout fetches only the triggering commit, which would leave the
+          # ban to fail closed.
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Package typecheck scripts
+        run: node scripts/check-package-typecheck-scripts.mjs
+
+
+      - name: Typecheck
+        run: pnpm run check-types
+
+      - name: Review pattern check
+        run: bash scripts/check-review-patterns.sh
+
+      - name: Config contract (v1 + v2, issue #1990)
+        run: npm run check-config-contract
+        env:
+          # Resolve the shrink-only grandfather baseline against the PR's actual
+          # base branch, not a hardcoded origin/main — so a fork whose default
+          # branch predates grandfathered.json cannot skip the ban (issue #1990).
+          REMNIC_CONFIG_CONTRACT_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || 'origin/main' }}
+
+      - name: Envelope belt (issue #1989)
+        run: node scripts/check-envelope-belt.mjs
+      # Merge-skew scoping (issue #1995): on PRs, per-file ceiling failures
+      # only fire for files THIS PR changed — a PR must not fail because an
+      # unrelated merge grew a grandfathered file on main after this PR's
+      # baseline was committed. Pushes to main evaluate everything.
+      - name: Compute PR changed files for ratchet scoping
+        if: github.event_name == 'pull_request'
+        run: |
+          # Merge base (three-dot), not two-tree: a queued run's merge commit can
+          # predate BASE_REF advancing, and a two-tree diff would then pull
+          # base-branch-only changes into this PR's scope (round-9 finding).
+          # A depth-1 fetch of an ADVANCED base has no common ancestor with the
+          # depth-1 merge-commit checkout, and the three-dot diff dies with
+          # "no merge base" (round-10 finding) - unshallow both sides first.
+          # --unshallow fails on an already-complete repo; fall back to a plain
+          # fetch in that case.
+          git fetch --quiet --unshallow origin "$BASE_REF" 2>/dev/null \
+            || git fetch --quiet origin "$BASE_REF"
+          if ! git merge-base FETCH_HEAD HEAD >/dev/null 2>&1; then
+            echo "::error::no merge base between $BASE_REF and HEAD after full fetch - cannot scope the ratchet safely"
+            exit 1
+          fi
+          git -c core.quotePath=off diff --name-only -z FETCH_HEAD...HEAD > /tmp/ratchet-changed-files.txt
+          echo "changed files: $(tr -cd "\0" < /tmp/ratchet-changed-files.txt | wc -c)"
+          echo "REMNIC_RATCHET_CHANGED_FILES_PATH=/tmp/ratchet-changed-files.txt" >> "$GITHUB_ENV"
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+
+      - name: Structural ratchets
+        run: node scripts/check-ratchets.mjs
+      - name: Package test script files exist
+        run: node scripts/check-package-test-files.mjs
+      - name: Shared hook runner sync (issue #2483)
+        run: node scripts/check-hook-runner-sync.mjs
+      - name: Hook contract tests target remnic-hook-core.cjs
+        run: node scripts/check-hook-grep-targets.mjs
+      - name: Hook contract source-grep tests
+        run: node --import tsx --test tests/codex-materialize-consolidation-wiring.test.ts tests/integration/plugin-structure.test.ts
+      - name: last_recall.json load hardening
+        run: node scripts/check-last-recall-json-load.mjs
+
+
+      - name: Docs-code parity
+        run: node scripts/check-docs-parity.mjs
+      # ReDoS-shape pre-check (issue #2439): scans changed .ts/.mts lines for
+      # the regex shapes CodeQL redos flagged across PR rounds. Relies on the
+      # base-ref fetch performed by the ratchet scoping step above; on non-PR
+      # events (shallow checkout, no base) the script self-skips.
+      - name: Regex safety pre-check (issue #2439)
+        run: node scripts/check-regex-safety.mjs
+        env:
+          REMNIC_REGEX_SAFETY_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || 'origin/main' }}
+
+      # Navigation link-type vocabulary agreement (#1956 review fallout): the
+      # shared parser must know every link type the stepper accepts and every
+      # type that is actually persisted. Three lists drifted apart silently and
+      # cost two review rounds to find.
+      - name: Navigation link vocabularies agree
+        run: node scripts/check-nav-link-vocabularies.mjs
+
+  # The root/misc suite runs on a hosted runner. Package tests use two
+  # deterministic file shards on the self-hosted pool when it is safe.
+  # selectTestShard is an exact partition (enforced by test), so the package
+  # pair's union is exactly its unsharded suite.
+  #
+  # Runner selection (public repo, self-hosted safety): the `remnic` pool only
+  # serves package tests on pushes to main and manual runs from main. Every pull
+  # request runs on GitHub-hosted runners. Pool down? Temporarily replace the
+  # expression with 'ubuntu-latest'.
+  tests:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # Root and pull request jobs stay hosted. Trusted main runs may use the
+    # self-hosted pool for package tests.
+    runs-on: ${{ (matrix.shard != 'root' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') && 'remnic' || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: root
+            groups: '--group root --group misc'
+          - shard: packages-1
+            groups: '--group packages --shard 1/2'
+          - shard: packages-2
+            groups: '--group packages --shard 2/2'
+    name: tests (${{ matrix.shard }})
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules
+        run: pnpm rebuild better-sqlite3
+
+      # Tests need @remnic/core dist (the test runner links against it).
+      # @remnic/bench dist is NOT pre-built here on purpose: the root test
+      # runner (scripts/run-root-tests.mjs) now self-serves it via
+      # ensurePackageBuild, so a missing bench/dist no longer breaks the
+      # suite (issue #1609). Leaving it unbuilt here exercises the exact
+      # fresh-clone path on every CI run — if the runner's ensure regresses,
+      # CI fails loudly instead of passing via a side-effect.
+      - name: Build core
+        run: pnpm --filter @remnic/core build
+
+      # CI hard-requires capability tests (#1541), which in turn hard-require
+      # `uv` for the AMB runner scripts. Install it on the runner so the gate
+      # has the capability it demands.
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+
+      - name: Tests
+        run: node scripts/run-root-tests.mjs ${{ matrix.groups }}
+        env:
+          # CI rebuilds the native binding above; skipping native-dependent
+          # suites here would silently drop coverage (#1538).
+          REMNIC_REQUIRE_NATIVE_TESTS: "1"
+          # CI treats environment-dependent capability tests as required
+          # (uv for AMB runner scripts, clean working tree for SOTA
+          # provenance — #1541). A missing tool or dirty tree fails the run
+          # locally instead of counting a silent skip.
+          REMNIC_REQUIRE_CAPABILITY_TESTS: "1"
+
+  build-artifacts:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules
+        run: pnpm rebuild better-sqlite3
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Release artifact smoke test
+        run: node scripts/check-release-artifacts.mjs
+
+  # Lifecycle scenario-matrix coverage gate (issue #1993, umbrella #1988 phase 5).
+  # Path-triggered: when the PR's effective diff touches a lifecycle-critical
+  # path (scripts/lifecycle-matrix/coverage.json), that path must be covered by
+  # a registered LifecycleSubject. Grandfathered paths warn; a new manifest path
+  # without coverage fails. Node-only (the gate uses builtins + effective-diff).
+  lifecycle-matrix:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so PR merge-base and push parent/before SHAs resolve;
+          # a shallow checkout leaves HEAD~1 unavailable and would make the
+          # push-event gate vacuously pass (review findings on #2042).
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+
+      - name: Compute changed files
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --quiet origin "$BASE_REF"
+            if ! git merge-base FETCH_HEAD HEAD >/dev/null 2>&1; then
+              echo "::error::no merge base between $BASE_REF and HEAD - cannot scope the lifecycle gate safely"
+              exit 1
+            fi
+            MB="$(git merge-base FETCH_HEAD HEAD)"
+          else
+            # Push / workflow_dispatch: scope the WHOLE push via the event's
+            # `before` SHA when it is a real, reachable commit; otherwise fall
+            # back to the tip's parent. Never silently degrade to an empty diff.
+            BEFORE="${{ github.event.before }}"
+            ZERO="0000000000000000000000000000000000000000"
+            if [ -n "$BEFORE" ] && [ "$BEFORE" != "$ZERO" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+              MB="$BEFORE"
+            else
+              MB="$(git rev-parse --verify --quiet HEAD~1 || true)"
+            fi
+            if [ -z "$MB" ]; then
+              echo "::error::cannot determine a base commit to scope the lifecycle gate (no before SHA and no parent commit)"
+              exit 1
+            fi
+          fi
+          git -c core.quotePath=off diff --name-status -z -M "$MB"...HEAD > /tmp/lifecycle-changed-files.txt
+          git show "$MB:scripts/lifecycle-matrix/coverage.json" > /tmp/lifecycle-base-coverage.json 2>/dev/null \
+            || : > /tmp/lifecycle-base-coverage.json
+          git show "$MB:.github/ai-review-ignore" > /tmp/lifecycle-base-ignore.txt 2>/dev/null \
+            || : > /tmp/lifecycle-base-ignore.txt
+          echo "REMNIC_LIFECYCLE_CHANGED_FILES_PATH=/tmp/lifecycle-changed-files.txt" >> "$GITHUB_ENV"
+          echo "LIFECYCLE_BASE_MANIFEST_PATH=/tmp/lifecycle-base-coverage.json" >> "$GITHUB_ENV"
+          echo "LIFECYCLE_BASE_IGNORE_PATH=/tmp/lifecycle-base-ignore.txt" >> "$GITHUB_ENV"
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+
+      - name: Lifecycle-matrix coverage gate
+        run: node scripts/lifecycle-matrix/check-coverage.mjs
+
+      - name: Lifecycle-matrix coverage self-test
+        run: node --test tests/lifecycle-matrix-coverage.test.mjs
+
+  # Aggregator that preserves the required status-check context `quality`
+  # (branch ruleset) while the real work runs in parallel jobs above. Fails
+  # unless every dependency succeeded — skipped/cancelled deps are failures,
+  # never silently accepted.
+  quality:
+    needs: [checks, tests, build-artifacts, lifecycle-matrix]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify all CI jobs succeeded
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS_JSON"
+          failed=$(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key')
+          if [ -n "$failed" ]; then
+            echo "::error::CI gate failed — non-success jobs: $failed"
+            exit 1
+          fi
+          echo "All CI jobs succeeded."

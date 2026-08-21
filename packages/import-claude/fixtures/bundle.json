@@ -1,0 +1,33 @@
+{
+  "projects": [
+    {
+      "uuid": "44444444-dddd-4000-8000-000000000001",
+      "name": "Bundle-format synthetic project",
+      "prompt_template": "Fictional: treat every question as coming from a TypeScript developer.",
+      "docs": [
+        {
+          "uuid": "doc-b-01",
+          "filename": "notes.md",
+          "content": "Fictional note: the importer must split docs and conversations correctly.",
+          "created_at": "2026-03-01T00:00:00.000Z"
+        }
+      ],
+      "created_at": "2026-03-01T00:00:00.000Z"
+    }
+  ],
+  "conversations": [
+    {
+      "uuid": "55555555-eeee-4000-8000-000000000001",
+      "name": "Bundle-format synthetic conversation",
+      "created_at": "2026-03-01T01:00:00.000Z",
+      "messages": [
+        {
+          "uuid": "m1",
+          "role": "human",
+          "text": "Hello bundle-world. This is a synthetic turn.",
+          "created_at": "2026-03-01T01:00:00.000Z"
+        }
+      ]
+    }
+  ]
+}

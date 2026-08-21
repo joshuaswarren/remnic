@@ -1,0 +1,22 @@
+/**
+ * Location context subsystem — public surface (issues #2044, #2045).
+ *
+ * Consumed by host adapters and optional provider packages via the
+ * `@remnic/core/location` subpath export; the root index stays frozen at its
+ * ratchet ceiling, and core never statically imports a provider package
+ * (register implementations through `registerLocationProvider` instead).
+ */
+
+export * from "./types.js";
+export * from "./matching.js";
+export * from "./tagging.js";
+export * from "./backfill.js";
+export * from "./registry.js";
+export * from "./config.js";
+export * from "./intervals.js";
+export * from "./store.js";
+export * from "./pipeline.js";
+export * from "./surfaces.js";
+export * from "./provider-setup.js";
+export * from "./scheduler.js";
+export * from "./cli.js";

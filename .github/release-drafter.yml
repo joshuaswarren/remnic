@@ -1,0 +1,64 @@
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+categories:
+  - title: '🚀 Features'
+    labels:
+      - 'enhancement'
+      - 'feature'
+  - title: '🐛 Fixes'
+    labels:
+      - 'bug'
+      - 'fix'
+  - title: '🔒 Security'
+    labels:
+      - 'security'
+  - title: '🧪 Maintenance'
+    labels:
+      - 'chore'
+      - 'dependencies'
+      - 'ci'
+
+change-template: '- $TITLE (#$NUMBER) @$AUTHOR'
+no-changes-template: '- No user-facing changes in this cycle.'
+
+version-resolver:
+  major:
+    labels:
+      - 'major'
+      - 'breaking-change'
+  minor:
+    labels:
+      - 'enhancement'
+      - 'feature'
+  patch:
+    labels:
+      - 'bug'
+      - 'fix'
+      - 'chore'
+      - 'security'
+  default: patch
+
+autolabeler:
+  - label: 'ci'
+    files:
+      - '.github/workflows/*'
+  - label: 'documentation'
+    files:
+      - '*.md'
+      - 'docs/**'
+  - label: 'source-change'
+    files:
+      - 'src/**'
+
+exclude-labels:
+  - 'skip-changelog'
+
+template: |
+  ## What Changed
+
+  $CHANGES
+
+  ## Contributors
+
+  $CONTRIBUTORS

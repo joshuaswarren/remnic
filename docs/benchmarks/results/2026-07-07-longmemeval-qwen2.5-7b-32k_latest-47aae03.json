@@ -1,0 +1,5036 @@
+{
+  "benchmarkId": "longmemeval",
+  "datasetVersion": "longmemeval-oracle",
+  "durationMs": 985840,
+  "env": {
+    "arch": "x64",
+    "node": "v22.22.0",
+    "os": "linux"
+  },
+  "finishedAt": "2026-07-07T00:47:57.695Z",
+  "hardware": {
+    "gpu": "NVIDIA RTX 3090",
+    "quantization": "Q4_K_M",
+    "vramGb": 24
+  },
+  "metrics": {
+    "contains_answer": 0.098,
+    "f1": 0.07083479064876459,
+    "judge_accuracy": 0.186,
+    "llm_judge": 0.186,
+    "search_hits": 8.52
+  },
+  "model": "qwen2.5-7b-32k:latest",
+  "note": "Tier L full run; 500/500 LongMemEval-oracle questions; responder+judge = qwen2.5:7b-instruct Q4_K_M (non-thinking); no frontier judge so judgeCalibration omitted",
+  "perTaskScores": [
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_2655b836"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.24390243902439027,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_2487a7cb"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_76048e76"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_2312f94c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q0bb5a684"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q08f4fc43"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q2c63a862"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_385a5000"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q2a1811e2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qbbf86515"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_5dcc0aab"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_0b2f1d21"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qf0853d11"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_6ed717ea"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "qgpt4_70e84552"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qa3838d2b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_93159ced"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_2d58bcd6"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_65aabe59"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q982b5123"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qb9cfe692"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_4edbafa2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qc8090214"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_483dd43c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qe4e14d04"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qc9f37c46"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.14285714285714288,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_2c50253f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qdcfa8644"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_b4a80587"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_9a159967"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.07692307692307693,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qcc6d1ec1"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_8c8961ae"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_d9af6064"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_7de946e7"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qd01c6aa8"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q993da5e2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qa3045048"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_d31cdae3"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_cd90e484"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_88806d6e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_4cd9eba1"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_93f6379c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qb29f3365"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_2f56ae70"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q6613b389"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_78cf46a3"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_0a05b494"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "qgpt4_1a1dc16d"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_2f584639"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.047058823529411764,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_213fd887"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_5438fa52"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_c27434e8"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_fe651585"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q8c18457d"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 5
+      },
+      "taskId": "qgpt4_70e84552_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 9
+      },
+      "taskId": "qgpt4_93159ced_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 6
+      },
+      "taskId": "q982b5123_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 9
+      },
+      "taskId": "qc8090214_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_c27434e8_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.44,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_fe651585_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q0a995998"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "q6d550036"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_59c863d7"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qb5ef892d"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qe831120c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q3a704032"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_d84a3211"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qaae3761f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 1
+      },
+      "taskId": "qgpt4_f2262a51"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qdd2973ad"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qc4a1ceb8"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "qgpt4_a56e767c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q6cb6f249"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q46a3abf7"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q36b9f61e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q28dc39ac"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "qgpt4_2f8be40d"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q2e6d26dc"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_15e38248"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "q88432d0a"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q80ec1f4f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qd23cf73b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_7fce9456"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qd682f1a2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q7024f17c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_5501fe77"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_2ba83207"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q2318644b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q2ce6a0f2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "qgpt4_d12ceb0e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q00ca467f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qb3c15d39"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_31ff4165"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qeeda8a6d"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q2788b940"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q60bf93ed"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q9d25d4e0"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q129d1232"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q60472f9c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "qgpt4_194be4b3"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qa9f6b44c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qd851d5ba"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q5a7937c8"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_ab202e7f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_e05b82a6"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_731e37d7"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qedced276"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 7
+      },
+      "taskId": "q10d9b85a"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qe3038f8c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q2b8f3739"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q1a8a66a6"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qc2ac3c61"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qbf659f65"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_372c3eed"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_2f91af09"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.010309278350515464,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q81507db6"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 9
+      },
+      "taskId": "q88432d0a_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q80ec1f4f_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qeeda8a6d_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 6
+      },
+      "taskId": "q60bf93ed_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qedced276_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_372c3eed_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q6a1eabeb"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q6aeb4375"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q830ce83f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "q852ce960"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.15384615384615385,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q945e3d21"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qd7c942c3"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q71315a70"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q89941a93"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 1,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qce6d2d27"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q9ea5eabc"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q07741c44"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qa1eacc2a"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.02777777777777778,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "q184da446"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.4745762711864407,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q031748ae"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q4d6b87c8"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.020408163265306124,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q0f05491a"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.2857142857142857,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q08e075c7"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.19999999999999998,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qf9e8c073"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q41698283"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.3636363636363636,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q2698e78f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "qb6019101"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q45dc21b6"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q5a4f22c0"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.30985915492957744,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q6071bd76"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qe493bb7c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q618f13b2"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.15384615384615385,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q72e3ee87"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "qc4ea545c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q01493427"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q6a27ffc2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 7
+      },
+      "taskId": "q2133c1b5"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.3157894736842105,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q18bc8abd"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qdb467c8c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q7a87bd0c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.15384615384615385,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qe61a7584"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q1cea1afa"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qed4ddc30"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q8fb83627"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qb01defab"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q22d2cb42"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "q0e4e4c46"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "q4b24c848"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q7e974930"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q603deb26"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.10810810810810811,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q59524333"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q5831f84d"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.012422360248447204,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qeace081b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qaffe2881"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q50635ada"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qe66b632c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q0ddfec37"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qf685340e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qcc5ded98"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qdfde3500"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q69fee5aa"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q7401057b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qcf22b7bf"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qa2f3aa27"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qc7dc5443"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q06db6396"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.22222222222222224,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q3ba21379"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q9bbe84a2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q10e09553"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qdad224aa"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qba61f0b9"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q42ec0761"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q5c40ec5b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.6,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qc6853660"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q26bdc477"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "q0977f2af"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 8
+      },
+      "taskId": "q6aeb4375_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.38888888888888884,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q031748ae_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q2698e78f_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 5
+      },
+      "taskId": "q2133c1b5_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q0ddfec37_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qf685340e_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q89941a94"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q07741c45"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "q8a2466db"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 4
+      },
+      "taskId": "q06878be2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "q75832dbd"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q0edc2aef"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q35a27287"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 4
+      },
+      "taskId": "q32260d93"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.19999999999999998,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 3
+      },
+      "taskId": "q195a1a1b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.15730337078651688,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qafdc33df"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.09195402298850573,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qcaf03d32"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.22085889570552147,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 6
+      },
+      "taskId": "q54026fce"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 1
+      },
+      "taskId": "q06f04340"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.07368421052631578,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q6b7dfb22"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q1a1907b4"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "q09d032c9"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.1411764705882353,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q38146c39"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qd24813b1"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.19999999999999998,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "q57f827a0"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "q95228167"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "q505af2f5"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "q75f70248"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "qd6233ab6"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q1da05512"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.33333333333333337,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "qfca70973"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.12037037037037038,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "qb6025781"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.176,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qa89d7624"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.171875,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "qb0479f84"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q1d4e3b97"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "q07b6f563"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.19999999999999998,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 3
+      },
+      "taskId": "q1c0ddc50"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.06796116504854369,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q0a34ad58"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.5833333333333334,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q7161e7e2"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.35294117647058826,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qc4f10528"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 2
+      },
+      "taskId": "q89527b6b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qe9327a54"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.14285714285714288,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 6
+      },
+      "taskId": "q4c36ccef"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.3461538461538462,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 6
+      },
+      "taskId": "q6ae235be"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "q7e00a6cb"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.6666666666666666,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 2
+      },
+      "taskId": "q1903aded"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 2
+      },
+      "taskId": "qceb54acb"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qf523d9fe"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.6666666666666666,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 6
+      },
+      "taskId": "q0e5e2d1a"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 1,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qfea54f57"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qcc539528"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.3333333333333333,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "qdc439ea3"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.19999999999999998,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 2
+      },
+      "taskId": "q18dcd5a5"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.3076923076923077,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q488d3006"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 2
+      },
+      "taskId": "q58470ed2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 2
+      },
+      "taskId": "q8cf51dda"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "q1d4da289"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.15384615384615385,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 8
+      },
+      "taskId": "q8464fc84"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "q8aef76bc"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "q71a3fd6b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.47619047619047616,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q2bf43736"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.35294117647058826,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q70b3e69b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 3
+      },
+      "taskId": "q8752c811"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.125,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 4
+      },
+      "taskId": "q3249768e"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.14285714285714288,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 8
+      },
+      "taskId": "q1b9b7252"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q1568498a"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.47058823529411764,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 7
+      },
+      "taskId": "q6222b6eb"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 1,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 7
+      },
+      "taskId": "qe8a79c70"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 1,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 7
+      },
+      "taskId": "qd596882b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 2
+      },
+      "taskId": "qe3fc4d6e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q51b23612"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 7
+      },
+      "taskId": "q3e321797"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "qe982271f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.18888888888888886,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 7
+      },
+      "taskId": "q352ab8bd"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 1,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 6
+      },
+      "taskId": "qfca762bc"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "q7a8d0b71"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "qa40e080f"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 1,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 6
+      },
+      "taskId": "q8b9d4367"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q5809eb10"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.8085106382978724,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 2
+      },
+      "taskId": "q41275add"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.5161290322580645,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 6
+      },
+      "taskId": "q4388e9dd"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.5128205128205129,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q4baee567"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 1,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q561fabcd"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 1,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 2
+      },
+      "taskId": "qb759caee"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.25,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qac031881"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 1,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 6
+      },
+      "taskId": "q28bcfaac"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.2962962962962963,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q16c90bf4"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.1,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 6
+      },
+      "taskId": "qc8f1aeed"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 3
+      },
+      "taskId": "qeaca4986"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.09523809523809523,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qc7cf7dfd"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 1,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 6
+      },
+      "taskId": "qe48988bc"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q1de5cff2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.7555555555555554,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q65240037"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q778164c6"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.4,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 2
+      },
+      "taskId": "qe47becba"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 7
+      },
+      "taskId": "q118b2229"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 3
+      },
+      "taskId": "q51a45a95"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "q58bf7951"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 2
+      },
+      "taskId": "q1e043500"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qc5e8278d"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q6ade9755"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "q6f9b354f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "q58ef2f1c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qf8c5f88b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 2
+      },
+      "taskId": "q5d3d2817"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 4
+      },
+      "taskId": "q7527f7e2"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.25,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qc960da58"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 4
+      },
+      "taskId": "q3b6f954b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 4
+      },
+      "taskId": "q726462e0"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "q94f70d80"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.2857142857142857,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 8
+      },
+      "taskId": "q66f24dbb"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 4
+      },
+      "taskId": "qad7109d1"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "qaf8d2e46"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 3
+      },
+      "taskId": "qdccbc061"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.0689655172413793,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 9
+      },
+      "taskId": "qc8c3f81d"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "q8ebdbe50"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.13333333333333333,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 8
+      },
+      "taskId": "q6b168ec8"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q75499fd8"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q21436231"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "q95bcc1c8"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 1,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q0862e8bf"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q853b0a1d"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "qa06e4cfe"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "q37d43f65"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 2
+      },
+      "taskId": "qb86304ba"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 4
+      },
+      "taskId": "qd52b4f67"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "q25e5aa4f"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 1,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qcaf9ead2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.1739130434782609,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q8550ddae"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "q60d45044"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 1,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 6
+      },
+      "taskId": "q3f1e9474"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.25,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 7
+      },
+      "taskId": "q86b68151"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "q577d4d32"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 4
+      },
+      "taskId": "qec81a493"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "q15745da0"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qe01b8e2f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 3
+      },
+      "taskId": "qbc8a6e93"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 7
+      },
+      "taskId": "qccb36322"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "q001be529"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "qb320f3f8"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 7
+      },
+      "taskId": "q19b5f2b3"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.2666666666666667,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 5
+      },
+      "taskId": "q4fd1909e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 7
+      },
+      "taskId": "q545bd2b5"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q8a137a7f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "q76d63226"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.7499999999999999,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q86f00804"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.16666666666666669,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q8e9d538c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 7
+      },
+      "taskId": "q311778f1"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "qc19f7a0b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 2
+      },
+      "taskId": "q4100d0a0"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.3636363636363636,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 8
+      },
+      "taskId": "q29f2956b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "q1faac195"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qfaba32e5"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.125,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 7
+      },
+      "taskId": "qf4f1d8a4"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "qc14c00dd"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "q36580ce8"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.7499999999999999,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 6
+      },
+      "taskId": "q3d86fd0a"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.8571428571428571,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "qa82c026e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 2
+      },
+      "taskId": "q0862e8bf_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 5
+      },
+      "taskId": "q15745da0_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 3
+      },
+      "taskId": "qbc8a6e93_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 4
+      },
+      "taskId": "q19b5f2b3_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 5
+      },
+      "taskId": "q29f2956b_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 2
+      },
+      "taskId": "qf4f1d8a4_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.012658227848101267,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_59149c77"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.7142857142857143,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_f49edff3"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "q71017276"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qb46e15ed"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_fa19884c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q0bc8ad92"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "qaf082822"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.014492753623188404,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_4929293a"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "qgpt4_b5700ca9"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q9a707b81"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_1d4ab0c9"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_e072b769"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q0db4c65d"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_1d80365e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 7
+      },
+      "taskId": "qgpt4_7f6b06db"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_6dc9b45b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "qgpt4_8279ba02"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.5413533834586467,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_18c2b244"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_a1b77f9c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_1916e0ea"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_7a0daae1"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 4
+      },
+      "taskId": "qgpt4_468eb063"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_7abb270c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_1e4a8aeb"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_4fc4f797"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.07017543859649122,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q4dfccbf7"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_61e13b3c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_45189cb4"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.020942408376963352,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q2ebe6c90"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 4
+      },
+      "taskId": "qgpt4_e061b84f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q370a8ff4"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_d6585ce8"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_4ef30696"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_ec93e27f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "q6e984301"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "q8077ef71"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_f420262c"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_8e165409"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_74aed68e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qbcbe585f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 7
+      },
+      "taskId": "qgpt4_21adecb5"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "q5e1b23de"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_98f46fc6"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 3
+      },
+      "taskId": "qgpt4_af6db32f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qeac54adc"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_7ddcf75f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "qgpt4_a2d1d1f6"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "qgpt4_85da3956"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "qgpt4_b0863698"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_68e94287"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_e414231e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_7ca326fa"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_7bc6cf22"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.019999999999999997,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q2ebe6c92"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "qgpt4_e061b84g"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 2
+      },
+      "taskId": "q71017277"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.02962962962962963,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qb46e15ee"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_d6585ce9"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_1e4a8aec"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_f420262d"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_59149c78"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.07692307692307693,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_e414231f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 7
+      },
+      "taskId": "qgpt4_4929293b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 1
+      },
+      "taskId": "qgpt4_468eb064"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qgpt4_fa19884d"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "q9a707b82"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 3
+      },
+      "taskId": "qeac54add"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 4
+      },
+      "taskId": "q4dfccbf8"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.1951219512195122,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q0bc8ad93"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 7
+      },
+      "taskId": "q6e984302"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 1
+      },
+      "taskId": "qgpt4_8279ba03"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 4
+      },
+      "taskId": "qgpt4_b5700ca0"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.012048192771084338,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 2
+      },
+      "taskId": "qgpt4_68e94288"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 2
+      },
+      "taskId": "qd3ab962e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q2311e44b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qcc06de0d"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qa11281a2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q4f54b7c9"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q85fa3a3f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q9aaed6a3"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q1f2b8d4f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qe6041065"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q51c32626"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qd905b33f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q7405e8b1"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qf35224e0"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q6456829e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qa4996e51"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "q3c1045c8"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0.09523809523809525,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q60036106"
+    },
+    {
+      "scores": {
+        "contains_answer": 1,
+        "f1": 0.02247191011235955,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q681a1674"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qe25c3b8d"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q4adc0475"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q4bc144e2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qef66a6e5"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q5025383b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 4
+      },
+      "taskId": "qa1cc6108"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q9ee3ecd6"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q3fdac837"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q91b15a6e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q27016adc"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q720133ac"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q77eafa52"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q8979f9ec"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q0100672e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qa96c20ee"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q92a0aa75"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q3fe836c9"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q1c549ce4"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q6c49646a"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q1192316e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q0ea62687"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q67e0d0f2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qbb7c3b45"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 8
+      },
+      "taskId": "qba358f49"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q61f8c8f8"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q60159905"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qef9cf60a"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q73d42213"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qbc149d6b"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q099778bb"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q09ba9854"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qd6062bb9"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 7
+      },
+      "taskId": "q157a136e"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 5
+      },
+      "taskId": "qc18a7dc8"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qa3332713"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "q55241a1f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qa08a253f"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qf0e564bc"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "q078150f1"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 6
+      },
+      "taskId": "q8cf4d046"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qa346bb18"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "q37f165cf"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 1
+      },
+      "taskId": "q8e91e7d9"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "q87f22b4a"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qe56a43b9"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 10
+      },
+      "taskId": "qefc3f7c2"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 0,
+        "llm_judge": 0,
+        "search_hits": 9
+      },
+      "taskId": "q21d02d0d"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q2311e44b_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q6456829e_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qe5ba910e_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "qa96c20ee_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 8
+      },
+      "taskId": "qba358f49_abs"
+    },
+    {
+      "scores": {
+        "contains_answer": 0,
+        "f1": 0,
+        "judge_accuracy": 1,
+        "llm_judge": 1,
+        "search_hits": 10
+      },
+      "taskId": "q09ba9854_abs"
+    }
+  ],
+  "schemaVersion": 1,
+  "seed": 1,
+  "startedAt": "2026-07-07T00:31:31.855Z",
+  "system": {
+    "gitSha": "47aae034",
+    "name": "remnic",
+    "version": "9.3.723"
+  },
+  "tier": "local"
+}

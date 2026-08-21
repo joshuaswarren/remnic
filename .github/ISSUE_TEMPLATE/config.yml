@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability disclosure
+    url: https://github.com/joshuaswarren/remnic/security/advisories/new
+    about: Please report vulnerabilities privately via GitHub Security Advisories.

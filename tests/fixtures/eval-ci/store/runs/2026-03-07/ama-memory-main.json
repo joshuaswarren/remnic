@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "runId": "ama-memory-main",
+  "benchmarkId": "ama-memory",
+  "status": "completed",
+  "startedAt": "2026-03-07T08:00:00.000Z",
+  "completedAt": "2026-03-07T08:05:00.000Z",
+  "totalCases": 10,
+  "passedCases": 8,
+  "failedCases": 2,
+  "metrics": {
+    "actionOutcomeScore": 0.81,
+    "trustViolationRate": 0.03
+  },
+  "gitRef": "main"
+}

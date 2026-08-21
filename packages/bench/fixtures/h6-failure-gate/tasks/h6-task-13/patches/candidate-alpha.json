@@ -1,0 +1,10 @@
+{
+  "id": "candidate-alpha",
+  "description": "Candidate alpha.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        records.push({ ...input });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label?.trim().toUpperCase() || \"UNKNOWN\"; }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
+    }
+  ]
+}

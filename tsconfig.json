@@ -1,0 +1,70 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": [
+      "ES2022",
+      "ES2024.Promise"
+    ],
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@remnic/core": [
+        "./packages/remnic-core/src/index.ts"
+      ],
+      "@remnic/core/*": [
+        "./packages/remnic-core/src/*"
+      ],
+      "@remnic/core/access-cli": [
+        "./packages/remnic-core/src/access-cli.ts"
+      ],
+      "@remnic/core/cli": [
+        "./packages/remnic-core/src/cli.ts"
+      ],
+      "@remnic/core/memory-projection-format": [
+        "./packages/remnic-core/src/memory-projection-format.ts"
+      ],
+      "@remnic/core/model-registry": [
+        "./packages/remnic-core/src/model-registry.ts"
+      ],
+      "@remnic/core/orchestrator": [
+        "./packages/remnic-core/src/orchestrator.ts"
+      ],
+      "@remnic/core/connectors": [
+        "./packages/remnic-core/src/connectors/index.ts"
+      ],
+      "@remnic/core/connectors/codex-materialize": [
+        "./packages/remnic-core/src/connectors/codex-materialize.ts"
+      ],
+      "@remnic/core/connectors/codex-materialize-runner": [
+        "./packages/remnic-core/src/connectors/codex-materialize-runner.ts"
+      ],
+      "@remnic/plugin-openclaw/support-passport-model-route": [
+        "./packages/plugin-openclaw/src/support-passport-model-route.ts"
+      ],
+      "@remnic/server": [
+        "./packages/remnic-server/src/index.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.d.ts",
+    "packages/remnic-core/src/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "scripts",
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    ".worktrees"
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": [
+      "ES2022",
+      "ES2024.Promise"
+    ],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": [
+      "node"
+    ],
+    "declaration": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": [
+    "src/index.ts",
+    "src/types.ts",
+    "src/ingestion-types.ts",
+    "src/schema.ts",
+    "src/benchmark.ts",
+    "src/registry.ts",
+    "src/reporter.ts",
+    "src/run-seeds.ts",
+    "src/scorer.ts",
+    "src/ingestion-scorer.ts",
+    "src/adapters/**/*.ts",
+    "src/fixtures/**/*.ts",
+    "src/integrity/**/*.ts",
+    "src/judges/**/*.ts",
+    "src/providers/**/*.ts",
+    "src/stats/**/*.ts",
+    "src/benchmarks/published/**/*.ts",
+    "src/benchmarks/custom/**/*.ts",
+    "src/benchmarks/remnic/**/*.ts",
+    "src/security/**/*.ts",
+    "src/coding-graph/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts"
+  ]
+}

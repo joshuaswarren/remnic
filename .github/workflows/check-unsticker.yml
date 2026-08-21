@@ -1,0 +1,332 @@
+name: Check Unsticker
+
+# Self-heals two documented stuck states that block merges (#1608 postmortem):
+#
+# 1. `unresolved-review-threads` is a required check, but GitHub Actions has
+#    no workflow trigger for thread resolution (`pull_request_review_thread`
+#    is webhook-only). Resolving the last open thread therefore leaves the
+#    guard stuck on its previous failing run until an unrelated event or a
+#    manual rerun. This sweeper reruns failed guard suites when at least one
+#    failed suite remains and the PR has zero unresolved (non-CodeQL) threads.
+#
+# 2. A branch ruleset treats a required `ai-reviewers` context as non-passing
+#    when ANY check suite on the head carries a terminally `cancelled` (or a
+#    stale `failure`) run, and those dead suites never re-evaluate on their
+#    own. The AI gate's supersession path now concludes `neutral` rather than
+#    letting concurrency mint `cancelled`, so NEW cancelled suites stop being
+#    produced at the source; the sweeper only drains the pre-existing backlog.
+#    It reruns ONE such stale gate suite per sweep - a bulk enqueue would evict
+#    its own pending attempts on the gate's per-PR concurrency group and clear
+#    fewer suites, not more (#2154). Re-evaluation is idempotent (passes iff
+#    reviewers are positive on the current head).
+#
+# Loop safety: the guard is only rerun when threads are verifiably resolved
+# (a rerun then passes), and the gate is only rerun from `cancelled` (a rerun
+# concludes success or failure, both terminal for this sweeper).
+
+# The five-minute sweep replaces manual dispatch after thread resolution.
+# Manual dispatch remains available for immediate recovery.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: check-unsticker
+  cancel-in-progress: false
+
+jobs:
+  unstick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        # Read-only: only reads scripts/review-dedup.mjs for the dynamic import,
+        # never pushes — do not persist GITHUB_TOKEN on disk.
+        with:
+          persist-credentials: false
+      - name: Rerun stuck required checks
+        uses: actions/github-script@v7
+        # Reuse the tested dedup module (scripts/review-dedup.mjs) so the guard's
+        # rerun decision honors the SAME effective unresolved-thread semantics the
+        # guard itself uses. REVIEW_DEDUP_MODE MUST match review-thread-guard.yml.
+        env:
+          REVIEW_DEDUP_MODE: shadow
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Reuse tested decision helpers so stale-red detection cannot drift
+            // from the unit-tested scheduler behavior.
+            const { pathToFileURL } = require('node:url');
+            const { latestFailedGuardRuns, planGuardReruns } = await import(
+              pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/check-unsticker.mjs`).href
+            );
+
+            // Reuse the tested dedup module rather than a third inline mirror, so
+            // the unsticker's rerun decision cannot drift from the guard's own
+            // effective unresolved-thread math (issue #1994).
+            const { dedupeThreads, hasGateReply, REVIEW_DEDUP_CONFIG, NON_DEDUP_AUTHOR_LOGINS } = await import(
+              pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/review-dedup.mjs`).href
+            );
+            const DEDUP_MODE = (process.env.REVIEW_DEDUP_MODE || 'shadow').toLowerCase();
+            const applyInheritance = DEDUP_MODE === 'enforce';
+
+            // Effective unresolved (non-CodeQL) thread count AFTER dedup — the same
+            // condition the guard gates on. In shadow this equals the raw count;
+            // in enforce a duplicate folds into its canonical only once its
+            // auditable gate reply is present (mirrors the guard's audit-gated
+            // fold), so resolving a canonical unsticks the guard even while a
+            // duplicate stays raw-unresolved.
+            async function effectiveUnresolvedCount(pr) {
+              const query = `
+                query($owner: String!, $repo: String!, $pr: Int!, $after: String) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $pr) {
+                      reviewThreads(first: 100, after: $after) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes {
+                          id
+                          isResolved
+                          isOutdated
+                          diffSide
+                          startDiffSide
+                          line
+                          startLine
+                          originalLine
+                          originalStartLine
+                          comments(first: 100) {
+                            pageInfo { hasNextPage endCursor }
+                            nodes { path body author { login } createdAt }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+              const commentPageQuery = `
+                query($id: ID!, $after: String) {
+                  node(id: $id) {
+                    ... on PullRequestReviewThread {
+                      comments(first: 100, after: $after) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes { path body author { login } createdAt }
+                      }
+                    }
+                  }
+                }
+              `;
+              let threads = [];
+              let after = null;
+              for (;;) {
+                const result = await github.graphql(query, { owner, repo, pr, after });
+                const conn = result.repository.pullRequest.reviewThreads;
+                threads = threads.concat(conn.nodes ?? []);
+                if (!conn.pageInfo?.hasNextPage) break;
+                after = conn.pageInfo.endCursor;
+              }
+              for (const t of threads) {
+                let pageInfo = t.comments?.pageInfo;
+                while (pageInfo?.hasNextPage) {
+                  const more = await github.graphql(commentPageQuery, { id: t.id, after: pageInfo.endCursor });
+                  const conn = more.node?.comments;
+                  if (!conn) break;
+                  t.comments.nodes = (t.comments.nodes || []).concat(conn.nodes || []);
+                  pageInfo = conn.pageInfo;
+                }
+              }
+              const { records } = dedupeThreads(threads, REVIEW_DEDUP_CONFIG);
+              const byId = new Map(records.map((r) => [r.id, r]));
+              // Canonical resolution by thread id. A duplicate whose canonical is
+              // resolved will fold as soon as the guard posts its audit reply, so
+              // it must NOT count as a blocker here — otherwise the sweeper refuses
+              // the very rerun that would post that reply and let the required
+              // check pass (enforce-mode deadlock, codex P2). If the canonical is
+              // still unresolved the duplicate keeps counting (a rerun can't help).
+              const resolvedById = new Map(threads.map((t) => [t.id, t.isResolved === true]));
+              let count = 0;
+              for (const t of threads) {
+                if (t.isResolved !== false) continue;
+                const author = t.comments?.nodes?.[0]?.author?.login;
+                if (author && NON_DEDUP_AUTHOR_LOGINS.has(author)) continue;
+                const rec = byId.get(t.id);
+                if (
+                  applyInheritance &&
+                  rec &&
+                  rec.canonicalId !== rec.id &&
+                  (hasGateReply(t) || resolvedById.get(rec.canonicalId) === true)
+                ) {
+                  continue;
+                }
+                count += 1;
+              }
+              return count;
+            }
+
+            // All runs of `workflowFile` on `headSha` attributable to
+            // `prNumber`. Scoped to the workflow (not the whole repo) so busy
+            // SHAs cannot push target runs past the first page (cursor review
+            // on #1610), and filtered by the run's pull_requests association
+            // so sibling PRs sharing a head SHA are not cross-rerun (codex
+            // review on #1610). Runs with an empty pull_requests array cannot
+            // be attributed and are kept.
+            async function runsFor(workflowFile, headSha, prNumber) {
+              const workflowRuns = await github.paginate(github.rest.actions.listWorkflowRuns, {
+                owner,
+                repo,
+                workflow_id: workflowFile,
+                head_sha: headSha,
+                per_page: 100,
+              });
+              return workflowRuns
+                .filter((run) => {
+                  const prs = run.pull_requests ?? [];
+                  return prs.length === 0 || prs.some((pr) => pr.number === prNumber);
+                })
+                .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+            }
+
+            const CURSOR_APP_SLUGS = new Set(['cursor-bugbot', 'cursor']);
+
+            // Positive Cursor CHECK on the head, judged by the LATEST run of
+            // each cursor check name (an older success never outranks a newer
+            // failure). This deliberately does NOT interpret reviews or
+            // comments: review/comment verdicts fire the gate workflow
+            // themselves (pull_request_review / pull_request_review_comment
+            // triggers), so they surface to the sweeper as a green gate suite
+            // on the head — the gate's own evaluation stays the single
+            // authority on verdict semantics. Only the check_run signal path
+            // needs separate detection here, because check_run-triggered gate
+            // runs execute in default-branch context and never create a green
+            // suite on the PR head.
+            async function hasPositiveCursorCheck(headSha) {
+              const checkRuns = await github.paginate(github.rest.checks.listForRef, {
+                owner,
+                repo,
+                ref: headSha,
+                per_page: 100,
+              });
+              const latestByName = new Map();
+              for (const checkRun of checkRuns) {
+                if (!CURSOR_APP_SLUGS.has(checkRun.app?.slug ?? '')) continue;
+                if (checkRun.status !== 'completed') continue;
+                const key = checkRun.name ?? 'unnamed';
+                const previous = latestByName.get(key);
+                const time = Date.parse(checkRun.completed_at ?? checkRun.started_at ?? '') || 0;
+                if (!previous || time >= previous.time) {
+                  latestByName.set(key, { time, conclusion: checkRun.conclusion ?? '' });
+                }
+              }
+              return [...latestByName.values()].some((entry) =>
+                ['success', 'neutral'].includes(entry.conclusion),
+              );
+            }
+
+            async function rerun(run, label) {
+              try {
+                await github.rest.actions.reRunWorkflow({ owner, repo, run_id: run.id });
+                core.notice(`${label}: reran run ${run.id} (${run.html_url})`);
+              } catch (error) {
+                // A run can become non-rerunnable (e.g. superseded or too old);
+                // surface it without failing the sweep for other PRs.
+                core.warning(`${label}: rerun of ${run.id} failed: ${error.message}`);
+              }
+            }
+
+            const pulls = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100,
+            });
+
+            for (const pull of pulls) {
+              if (pull.draft) continue;
+              const headSha = pull.head.sha;
+              const label = `PR #${pull.number}`;
+
+              // Case 1: rerun guard suites only for the exact stale-red state:
+              // at least one guard suite failed and effective unresolved threads are zero.
+              // The ruleset requires every failed suite on the head to pass.
+              // Rerun all failed suites once that state is confirmed.
+              // Guard runs have no concurrency group, so parallel reruns are safe.
+              const guardRuns = await runsFor('review-thread-guard.yml', headSha, pull.number);
+              const latestFailed = latestFailedGuardRuns(guardRuns);
+              if (latestFailed.length > 0) {
+                const unresolved = await effectiveUnresolvedCount(pull.number);
+                const reruns = planGuardReruns(guardRuns, unresolved);
+                if (reruns.length > 0) {
+                  for (const run of reruns) {
+                    await rerun(run, `${label} review-thread guard`);
+                  }
+                } else {
+                  core.info(`${label}: guard failing with ${unresolved} effective unresolved thread(s) after dedup — legitimate, skipping.`);
+                }
+              }
+
+              // Case 2: stuck AI Review Gate suites. Gate reruns share a
+              // per-PR concurrency group with cancel-in-progress and a rerun
+              // can legitimately poll for minutes, so the sweeper NEVER
+              // waits in-sweep and NEVER reruns while any gate evaluation is
+              // live — one rerun per PR per sweep, converging on the cron
+              // cadence without ever cancelling an in-flight evaluation
+              // (cursor High / codex P2 on #1615).
+              const gateRuns = await runsFor('ai-review-gate.yml', headSha, pull.number);
+              const gateActive = gateRuns.some((run) => run.status !== 'completed');
+              if (gateActive) {
+                core.info(`${label}: a gate evaluation is already active — no gate reruns this sweep.`);
+                continue;
+              }
+              // Cancelled suites are always retryable (cancellation is not a
+              // verdict). The ruleset evaluates the required context against the
+              // LATEST run of EVERY suite on the head, so ONE cancelled suite
+              // keeps the context red until it re-evaluates. The gate's
+              // supersession path now concludes `neutral` instead of leaving
+              // `cancelled` (ai-review-gate.yml), so NEW cancelled suites stop
+              // being produced at the source — the sweeper only drains the
+              // pre-existing backlog. Rerun ONE cancelled suite per sweep, NOT
+              // all of them: the gate's per-PR concurrency group
+              // (cancel-in-progress: false) admits only one queued rerun at a
+              // time, so a bulk enqueue would evict its own pending attempts and
+              // clear FEWER suites, not more (#2154). Draining one per cron tick
+              // converges correctly and never starves.
+              //
+              // Failed suites are retried while run_attempt <= 2 — up to two
+              // verdict-gated retries, because a premature retry of a CANCELLED
+              // suite can itself mint an attempt-2 failure before the reviewer
+              // speaks (codex review on #1615) — and only once the head
+              // demonstrably satisfies the gate: either a sibling gate suite
+              // already re-evaluated to green (covers review/comment-delivered
+              // verdicts, which trigger the gate), or the latest cursor check
+              // run on the head is positive (covers check-only verdicts, whose
+              // gate runs land on the default branch, not the PR head). The
+              // attempt bound prevents rerun loops on legitimately failing gates.
+              const cancelledGate = gateRuns.filter(
+                (run) => run.status === 'completed' && run.conclusion === 'cancelled',
+              );
+              const staleFailedGate = gateRuns.filter(
+                (run) => run.status === 'completed' && run.conclusion === 'failure' && run.run_attempt <= 2,
+              );
+              let target = cancelledGate[0] ?? null;
+              if (!target && staleFailedGate.length > 0) {
+                const greenSuiteExists = gateRuns.some(
+                  (run) => run.status === 'completed' && run.conclusion === 'success',
+                );
+                if (greenSuiteExists || (await hasPositiveCursorCheck(headSha))) {
+                  target = staleFailedGate[0];
+                }
+              }
+              if (target) {
+                await rerun(target, `${label} ai-review gate`);
+              }
+            }

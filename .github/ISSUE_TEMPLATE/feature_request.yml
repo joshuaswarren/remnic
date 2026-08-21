@@ -1,0 +1,28 @@
+name: Feature Request
+description: Propose an enhancement for Remnic
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What user problem or limitation are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the change and expected outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional alternatives and trade-offs.
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Who benefits, and how should success be measured?

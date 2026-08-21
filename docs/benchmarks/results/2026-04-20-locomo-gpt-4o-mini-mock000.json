@@ -1,0 +1,28 @@
+{
+  "benchmarkId": "locomo",
+  "datasetVersion": "mock-fixture",
+  "durationMs": 0,
+  "env": {
+    "arch": "x64",
+    "node": "v22.12.0",
+    "os": "linux"
+  },
+  "finishedAt": "2026-04-20T12:00:00.000Z",
+  "metrics": {
+    "contains_answer": 0,
+    "f1": 0,
+    "llm_judge": 0,
+    "rouge_l": 0
+  },
+  "model": "gpt-4o-mini",
+  "note": "Placeholder artifact — run scripts documented in docs/benchmarks/runbook.md to produce real numbers. Do NOT cite publicly.",
+  "perTaskScores": [],
+  "schemaVersion": 1,
+  "seed": 42,
+  "startedAt": "2026-04-20T12:00:00.000Z",
+  "system": {
+    "gitSha": "mock000",
+    "name": "remnic",
+    "version": "0.0.0-placeholder"
+  }
+}

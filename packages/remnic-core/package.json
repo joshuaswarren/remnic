@@ -1,0 +1,3244 @@
+{
+  "name": "@remnic/core",
+  "version": "9.69.15",
+  "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "remnic-source": "./src/index.ts",
+      "import": "./dist/index.js"
+    },
+    "./maintenance/atomic-file": {
+      "types": "./dist/maintenance/atomic-file.d.ts",
+      "remnic-source": "./src/maintenance/atomic-file.ts",
+      "import": "./dist/maintenance/atomic-file.js"
+    },
+    "./maintenance/atomic-file.js": {
+      "types": "./dist/maintenance/atomic-file.d.ts",
+      "remnic-source": "./src/maintenance/atomic-file.ts",
+      "import": "./dist/maintenance/atomic-file.js"
+    },
+    "./abort-error": {
+      "types": "./dist/abort-error.d.ts",
+      "remnic-source": "./src/abort-error.ts",
+      "import": "./dist/abort-error.js"
+    },
+    "./salvage-envelope": {
+      "types": "./dist/salvage-envelope.d.ts",
+      "remnic-source": "./src/salvage-envelope.ts",
+      "import": "./dist/salvage-envelope.js"
+    },
+    "./abort-error.js": {
+      "types": "./dist/abort-error.d.ts",
+      "remnic-source": "./src/abort-error.ts",
+      "import": "./dist/abort-error.js"
+    },
+    "./runtime/http-transport": {
+      "types": "./dist/runtime/http-transport.d.ts",
+      "remnic-source": "./src/runtime/http-transport.ts",
+      "import": "./dist/runtime/http-transport.js"
+    },
+    "./runtime/http-transport.js": {
+      "types": "./dist/runtime/http-transport.d.ts",
+      "remnic-source": "./src/runtime/http-transport.ts",
+      "import": "./dist/runtime/http-transport.js"
+    },
+    "./abstraction-nodes": {
+      "types": "./dist/abstraction-nodes.d.ts",
+      "remnic-source": "./src/abstraction-nodes.ts",
+      "import": "./dist/abstraction-nodes.js"
+    },
+    "./abstraction-nodes.js": {
+      "types": "./dist/abstraction-nodes.d.ts",
+      "remnic-source": "./src/abstraction-nodes.ts",
+      "import": "./dist/abstraction-nodes.js"
+    },
+    "./harmonic-construction": {
+      "types": "./dist/harmonic-construction.d.ts",
+      "remnic-source": "./src/harmonic-construction.ts",
+      "import": "./dist/harmonic-construction.js"
+    },
+    "./harmonic-construction.js": {
+      "types": "./dist/harmonic-construction.d.ts",
+      "remnic-source": "./src/harmonic-construction.ts",
+      "import": "./dist/harmonic-construction.js"
+    },
+    "./access-audit": {
+      "types": "./dist/access-audit.d.ts",
+      "remnic-source": "./src/access-audit.ts",
+      "import": "./dist/access-audit.js"
+    },
+    "./access-audit.js": {
+      "types": "./dist/access-audit.d.ts",
+      "remnic-source": "./src/access-audit.ts",
+      "import": "./dist/access-audit.js"
+    },
+    "./access-cli": {
+      "types": "./dist/access-cli.d.ts",
+      "remnic-source": "./src/access-cli.ts",
+      "import": "./dist/access-cli.js"
+    },
+    "./access-cli.js": {
+      "types": "./dist/access-cli.d.ts",
+      "remnic-source": "./src/access-cli.ts",
+      "import": "./dist/access-cli.js"
+    },
+    "./access-http": {
+      "types": "./dist/access-http.d.ts",
+      "remnic-source": "./src/access-http.ts",
+      "import": "./dist/access-http.js"
+    },
+    "./access-http.js": {
+      "types": "./dist/access-http.d.ts",
+      "remnic-source": "./src/access-http.ts",
+      "import": "./dist/access-http.js"
+    },
+    "./access-idempotency": {
+      "types": "./dist/access-idempotency.d.ts",
+      "remnic-source": "./src/access-idempotency.ts",
+      "import": "./dist/access-idempotency.js"
+    },
+    "./access-idempotency.js": {
+      "types": "./dist/access-idempotency.d.ts",
+      "remnic-source": "./src/access-idempotency.ts",
+      "import": "./dist/access-idempotency.js"
+    },
+    "./access-mcp": {
+      "types": "./dist/access-mcp.d.ts",
+      "remnic-source": "./src/access-mcp.ts",
+      "import": "./dist/access-mcp.js"
+    },
+    "./access-mcp.js": {
+      "types": "./dist/access-mcp.d.ts",
+      "remnic-source": "./src/access-mcp.ts",
+      "import": "./dist/access-mcp.js"
+    },
+    "./access-schema": {
+      "types": "./dist/access-schema.d.ts",
+      "remnic-source": "./src/access-schema.ts",
+      "import": "./dist/access-schema.js"
+    },
+    "./access-schema.js": {
+      "types": "./dist/access-schema.d.ts",
+      "remnic-source": "./src/access-schema.ts",
+      "import": "./dist/access-schema.js"
+    },
+    "./access-service": {
+      "types": "./dist/access-service.d.ts",
+      "remnic-source": "./src/access-service.ts",
+      "import": "./dist/access-service.js"
+    },
+    "./access-service.js": {
+      "types": "./dist/access-service.d.ts",
+      "remnic-source": "./src/access-service.ts",
+      "import": "./dist/access-service.js"
+    },
+    "./action-confidence": {
+      "types": "./dist/action-confidence.d.ts",
+      "remnic-source": "./src/action-confidence.ts",
+      "import": "./dist/action-confidence.js"
+    },
+    "./action-confidence.js": {
+      "types": "./dist/action-confidence.d.ts",
+      "remnic-source": "./src/action-confidence.ts",
+      "import": "./dist/action-confidence.js"
+    },
+    "./active-memory-bridge": {
+      "types": "./dist/active-memory-bridge.d.ts",
+      "remnic-source": "./src/active-memory-bridge.ts",
+      "import": "./dist/active-memory-bridge.js"
+    },
+    "./active-memory-bridge.js": {
+      "types": "./dist/active-memory-bridge.d.ts",
+      "remnic-source": "./src/active-memory-bridge.ts",
+      "import": "./dist/active-memory-bridge.js"
+    },
+    "./active-recall": {
+      "types": "./dist/active-recall.d.ts",
+      "remnic-source": "./src/active-recall.ts",
+      "import": "./dist/active-recall.js"
+    },
+    "./active-recall.js": {
+      "types": "./dist/active-recall.d.ts",
+      "remnic-source": "./src/active-recall.ts",
+      "import": "./dist/active-recall.js"
+    },
+    "./adapters": {
+      "types": "./dist/adapters/index.d.ts",
+      "remnic-source": "./src/adapters/index.ts",
+      "import": "./dist/adapters/index.js"
+    },
+    "./adapters.js": {
+      "types": "./dist/adapters/index.d.ts",
+      "remnic-source": "./src/adapters/index.ts",
+      "import": "./dist/adapters/index.js"
+    },
+    "./adapters/claude-code": {
+      "types": "./dist/adapters/claude-code.d.ts",
+      "remnic-source": "./src/adapters/claude-code.ts",
+      "import": "./dist/adapters/claude-code.js"
+    },
+    "./adapters/claude-code.js": {
+      "types": "./dist/adapters/claude-code.d.ts",
+      "remnic-source": "./src/adapters/claude-code.ts",
+      "import": "./dist/adapters/claude-code.js"
+    },
+    "./reconcile/plan": {
+      "types": "./dist/reconcile/plan.d.ts",
+      "remnic-source": "./src/reconcile/plan.ts",
+      "import": "./dist/reconcile/plan.js"
+    },
+    "./reconcile/plan.js": {
+      "types": "./dist/reconcile/plan.d.ts",
+      "remnic-source": "./src/reconcile/plan.ts",
+      "import": "./dist/reconcile/plan.js"
+    },
+    "./reconcile/manifest": {
+      "types": "./dist/reconcile/manifest.d.ts",
+      "remnic-source": "./src/reconcile/manifest.ts",
+      "import": "./dist/reconcile/manifest.js"
+    },
+    "./reconcile/manifest.js": {
+      "types": "./dist/reconcile/manifest.d.ts",
+      "remnic-source": "./src/reconcile/manifest.ts",
+      "import": "./dist/reconcile/manifest.js"
+    },
+    "./reconcile/cursor": {
+      "types": "./dist/reconcile/cursor.d.ts",
+      "remnic-source": "./src/reconcile/cursor.ts",
+      "import": "./dist/reconcile/cursor.js"
+    },
+    "./reconcile/cursor.js": {
+      "types": "./dist/reconcile/cursor.d.ts",
+      "remnic-source": "./src/reconcile/cursor.ts",
+      "import": "./dist/reconcile/cursor.js"
+    },
+    "./adapters/codex": {
+      "types": "./dist/adapters/codex.d.ts",
+      "remnic-source": "./src/adapters/codex.ts",
+      "import": "./dist/adapters/codex.js"
+    },
+    "./adapters/codex.js": {
+      "types": "./dist/adapters/codex.d.ts",
+      "remnic-source": "./src/adapters/codex.ts",
+      "import": "./dist/adapters/codex.js"
+    },
+    "./adapters/hermes": {
+      "types": "./dist/adapters/hermes.d.ts",
+      "remnic-source": "./src/adapters/hermes.ts",
+      "import": "./dist/adapters/hermes.js"
+    },
+    "./adapters/hermes.js": {
+      "types": "./dist/adapters/hermes.d.ts",
+      "remnic-source": "./src/adapters/hermes.ts",
+      "import": "./dist/adapters/hermes.js"
+    },
+    "./adapters/index": {
+      "types": "./dist/adapters/index.d.ts",
+      "remnic-source": "./src/adapters/index.ts",
+      "import": "./dist/adapters/index.js"
+    },
+    "./adapters/index.js": {
+      "types": "./dist/adapters/index.d.ts",
+      "remnic-source": "./src/adapters/index.ts",
+      "import": "./dist/adapters/index.js"
+    },
+    "./adapters/registry": {
+      "types": "./dist/adapters/registry.d.ts",
+      "remnic-source": "./src/adapters/registry.ts",
+      "import": "./dist/adapters/registry.js"
+    },
+    "./adapters/registry.js": {
+      "types": "./dist/adapters/registry.d.ts",
+      "remnic-source": "./src/adapters/registry.ts",
+      "import": "./dist/adapters/registry.js"
+    },
+    "./adapters/replit": {
+      "types": "./dist/adapters/replit.d.ts",
+      "remnic-source": "./src/adapters/replit.ts",
+      "import": "./dist/adapters/replit.js"
+    },
+    "./adapters/replit.js": {
+      "types": "./dist/adapters/replit.d.ts",
+      "remnic-source": "./src/adapters/replit.ts",
+      "import": "./dist/adapters/replit.js"
+    },
+    "./adapters/types": {
+      "types": "./dist/adapters/types.d.ts",
+      "remnic-source": "./src/adapters/types.ts",
+      "import": "./dist/adapters/types.js"
+    },
+    "./adapters/types.js": {
+      "types": "./dist/adapters/types.d.ts",
+      "remnic-source": "./src/adapters/types.ts",
+      "import": "./dist/adapters/types.js"
+    },
+    "./behavior-learner": {
+      "types": "./dist/behavior-learner.d.ts",
+      "remnic-source": "./src/behavior-learner.ts",
+      "import": "./dist/behavior-learner.js"
+    },
+    "./behavior-learner.js": {
+      "types": "./dist/behavior-learner.d.ts",
+      "remnic-source": "./src/behavior-learner.ts",
+      "import": "./dist/behavior-learner.js"
+    },
+    "./behavior-signals": {
+      "types": "./dist/behavior-signals.d.ts",
+      "remnic-source": "./src/behavior-signals.ts",
+      "import": "./dist/behavior-signals.js"
+    },
+    "./behavior-signals.js": {
+      "types": "./dist/behavior-signals.d.ts",
+      "remnic-source": "./src/behavior-signals.ts",
+      "import": "./dist/behavior-signals.js"
+    },
+    "./bootstrap": {
+      "types": "./dist/bootstrap.d.ts",
+      "remnic-source": "./src/bootstrap.ts",
+      "import": "./dist/bootstrap.js"
+    },
+    "./bootstrap.js": {
+      "types": "./dist/bootstrap.d.ts",
+      "remnic-source": "./src/bootstrap.ts",
+      "import": "./dist/bootstrap.js"
+    },
+    "./boxes": {
+      "types": "./dist/boxes.d.ts",
+      "remnic-source": "./src/boxes.ts",
+      "import": "./dist/boxes.js"
+    },
+    "./boxes.js": {
+      "types": "./dist/boxes.d.ts",
+      "remnic-source": "./src/boxes.ts",
+      "import": "./dist/boxes.js"
+    },
+    "./briefing": {
+      "types": "./dist/briefing.d.ts",
+      "remnic-source": "./src/briefing.ts",
+      "import": "./dist/briefing.js"
+    },
+    "./briefing.js": {
+      "types": "./dist/briefing.d.ts",
+      "remnic-source": "./src/briefing.ts",
+      "import": "./dist/briefing.js"
+    },
+    "./bulk-import": {
+      "types": "./dist/bulk-import/index.d.ts",
+      "remnic-source": "./src/bulk-import/index.ts",
+      "import": "./dist/bulk-import/index.js"
+    },
+    "./bulk-import.js": {
+      "types": "./dist/bulk-import/index.d.ts",
+      "remnic-source": "./src/bulk-import/index.ts",
+      "import": "./dist/bulk-import/index.js"
+    },
+    "./bulk-import/index": {
+      "types": "./dist/bulk-import/index.d.ts",
+      "remnic-source": "./src/bulk-import/index.ts",
+      "import": "./dist/bulk-import/index.js"
+    },
+    "./bulk-import/index.js": {
+      "types": "./dist/bulk-import/index.d.ts",
+      "remnic-source": "./src/bulk-import/index.ts",
+      "import": "./dist/bulk-import/index.js"
+    },
+    "./buffer": {
+      "types": "./dist/buffer.d.ts",
+      "remnic-source": "./src/buffer.ts",
+      "import": "./dist/buffer.js"
+    },
+    "./buffer-surprise": {
+      "types": "./dist/buffer-surprise.d.ts",
+      "remnic-source": "./src/buffer-surprise.ts",
+      "import": "./dist/buffer-surprise.js"
+    },
+    "./buffer-surprise-report": {
+      "types": "./dist/buffer-surprise-report.d.ts",
+      "remnic-source": "./src/buffer-surprise-report.ts",
+      "import": "./dist/buffer-surprise-report.js"
+    },
+    "./buffer-surprise-report.js": {
+      "types": "./dist/buffer-surprise-report.d.ts",
+      "remnic-source": "./src/buffer-surprise-report.ts",
+      "import": "./dist/buffer-surprise-report.js"
+    },
+    "./buffer-surprise.js": {
+      "types": "./dist/buffer-surprise.d.ts",
+      "remnic-source": "./src/buffer-surprise.ts",
+      "import": "./dist/buffer-surprise.js"
+    },
+    "./buffer.js": {
+      "types": "./dist/buffer.d.ts",
+      "remnic-source": "./src/buffer.ts",
+      "import": "./dist/buffer.js"
+    },
+    "./calibration": {
+      "types": "./dist/calibration.d.ts",
+      "remnic-source": "./src/calibration.ts",
+      "import": "./dist/calibration.js"
+    },
+    "./calibration.js": {
+      "types": "./dist/calibration.d.ts",
+      "remnic-source": "./src/calibration.ts",
+      "import": "./dist/calibration.js"
+    },
+    "./capsule-cli": {
+      "types": "./dist/capsule-cli.d.ts",
+      "remnic-source": "./src/capsule-cli.ts",
+      "import": "./dist/capsule-cli.js"
+    },
+    "./capsule-cli.js": {
+      "types": "./dist/capsule-cli.d.ts",
+      "remnic-source": "./src/capsule-cli.ts",
+      "import": "./dist/capsule-cli.js"
+    },
+    "./causal-behavior": {
+      "types": "./dist/causal-behavior.d.ts",
+      "remnic-source": "./src/causal-behavior.ts",
+      "import": "./dist/causal-behavior.js"
+    },
+    "./causal-behavior.js": {
+      "types": "./dist/causal-behavior.d.ts",
+      "remnic-source": "./src/causal-behavior.ts",
+      "import": "./dist/causal-behavior.js"
+    },
+    "./causal-chain": {
+      "types": "./dist/causal-chain.d.ts",
+      "remnic-source": "./src/causal-chain.ts",
+      "import": "./dist/causal-chain.js"
+    },
+    "./causal-chain.js": {
+      "types": "./dist/causal-chain.d.ts",
+      "remnic-source": "./src/causal-chain.ts",
+      "import": "./dist/causal-chain.js"
+    },
+    "./causal-consolidation": {
+      "types": "./dist/causal-consolidation.d.ts",
+      "remnic-source": "./src/causal-consolidation.ts",
+      "import": "./dist/causal-consolidation.js"
+    },
+    "./causal-consolidation.js": {
+      "types": "./dist/causal-consolidation.d.ts",
+      "remnic-source": "./src/causal-consolidation.ts",
+      "import": "./dist/causal-consolidation.js"
+    },
+    "./causal-retrieval": {
+      "types": "./dist/causal-retrieval.d.ts",
+      "remnic-source": "./src/causal-retrieval.ts",
+      "import": "./dist/causal-retrieval.js"
+    },
+    "./causal-retrieval.js": {
+      "types": "./dist/causal-retrieval.d.ts",
+      "remnic-source": "./src/causal-retrieval.ts",
+      "import": "./dist/causal-retrieval.js"
+    },
+    "./causal-trajectory": {
+      "types": "./dist/causal-trajectory.d.ts",
+      "remnic-source": "./src/causal-trajectory.ts",
+      "import": "./dist/causal-trajectory.js"
+    },
+    "./causal-trajectory-graph": {
+      "types": "./dist/causal-trajectory-graph.d.ts",
+      "remnic-source": "./src/causal-trajectory-graph.ts",
+      "import": "./dist/causal-trajectory-graph.js"
+    },
+    "./causal-trajectory-graph.js": {
+      "types": "./dist/causal-trajectory-graph.d.ts",
+      "remnic-source": "./src/causal-trajectory-graph.ts",
+      "import": "./dist/causal-trajectory-graph.js"
+    },
+    "./causal-trajectory.js": {
+      "types": "./dist/causal-trajectory.d.ts",
+      "remnic-source": "./src/causal-trajectory.ts",
+      "import": "./dist/causal-trajectory.js"
+    },
+    "./chunking": {
+      "types": "./dist/chunking.d.ts",
+      "remnic-source": "./src/chunking.ts",
+      "import": "./dist/chunking.js"
+    },
+    "./chunking.js": {
+      "types": "./dist/chunking.d.ts",
+      "remnic-source": "./src/chunking.ts",
+      "import": "./dist/chunking.js"
+    },
+    "./citations": {
+      "types": "./dist/citations.d.ts",
+      "remnic-source": "./src/citations.ts",
+      "import": "./dist/citations.js"
+    },
+    "./citations.js": {
+      "types": "./dist/citations.d.ts",
+      "remnic-source": "./src/citations.ts",
+      "import": "./dist/citations.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "remnic-source": "./src/cli.ts",
+      "import": "./dist/cli.js"
+    },
+    "./cli.js": {
+      "types": "./dist/cli.d.ts",
+      "remnic-source": "./src/cli.ts",
+      "import": "./dist/cli.js"
+    },
+    "./cli-fallback": {
+      "types": "./dist/cli-fallback.d.ts",
+      "remnic-source": "./src/cli-fallback.ts",
+      "import": "./dist/cli-fallback.js"
+    },
+    "./cli-fallback.js": {
+      "types": "./dist/cli-fallback.d.ts",
+      "remnic-source": "./src/cli-fallback.ts",
+      "import": "./dist/cli-fallback.js"
+    },
+    "./thread-key": {
+      "types": "./dist/thread-key.d.ts",
+      "remnic-source": "./src/thread-key.ts",
+      "import": "./dist/thread-key.js"
+    },
+    "./thread-key.js": {
+      "types": "./dist/thread-key.d.ts",
+      "remnic-source": "./src/thread-key.ts",
+      "import": "./dist/thread-key.js"
+    },
+    "./codex-cli-fallback": {
+      "types": "./dist/compat/codex-cli-fallback.d.ts",
+      "remnic-source": "./src/compat/codex-cli-fallback.ts",
+      "import": "./dist/compat/codex-cli-fallback.js",
+      "deprecated": "Deprecated alias of @remnic/core/cli-fallback (PR #1638 renamed codex-cli-fallback.ts to cli-fallback.ts). Import from @remnic/core/cli-fallback instead. Removed in v10.0.0. See issue #1643."
+    },
+    "./codex-cli-fallback.js": {
+      "types": "./dist/compat/codex-cli-fallback.d.ts",
+      "remnic-source": "./src/compat/codex-cli-fallback.ts",
+      "import": "./dist/compat/codex-cli-fallback.js",
+      "deprecated": "Deprecated alias of @remnic/core/cli-fallback (PR #1638 renamed codex-cli-fallback.ts to cli-fallback.ts). Import from @remnic/core/cli-fallback instead. Removed in v10.0.0. See issue #1643."
+    },
+    "./codex-thread-key": {
+      "types": "./dist/compat/codex-thread-key.d.ts",
+      "remnic-source": "./src/compat/codex-thread-key.ts",
+      "import": "./dist/compat/codex-thread-key.js",
+      "deprecated": "Deprecated alias of @remnic/core/thread-key (PR #1638 renamed codex-thread-key.ts to thread-key.ts). Import from @remnic/core/thread-key instead. Removed in v10.0.0. See issue #1643."
+    },
+    "./codex-thread-key.js": {
+      "types": "./dist/compat/codex-thread-key.d.ts",
+      "remnic-source": "./src/compat/codex-thread-key.ts",
+      "import": "./dist/compat/codex-thread-key.js",
+      "deprecated": "Deprecated alias of @remnic/core/thread-key (PR #1638 renamed codex-thread-key.ts to thread-key.ts). Import from @remnic/core/thread-key instead. Removed in v10.0.0. See issue #1643."
+    },
+    "./coding/optional-coding-graph": {
+      "types": "./dist/coding/optional-coding-graph.d.ts",
+      "remnic-source": "./src/coding/optional-coding-graph.ts",
+      "import": "./dist/coding/optional-coding-graph.js"
+    },
+    "./coding/optional-coding-graph.js": {
+      "types": "./dist/coding/optional-coding-graph.d.ts",
+      "remnic-source": "./src/coding/optional-coding-graph.ts",
+      "import": "./dist/coding/optional-coding-graph.js"
+    },
+    "./coding/coding-graph-types": {
+      "types": "./dist/coding/coding-graph-types.d.ts",
+      "remnic-source": "./src/coding/coding-graph-types.ts",
+      "import": "./dist/coding/coding-graph-types.js"
+    },
+    "./coding/pre-action-gate": {
+      "types": "./dist/coding/pre-action-gate.d.ts",
+      "remnic-source": "./src/coding/pre-action-gate.ts",
+      "import": "./dist/coding/pre-action-gate.js"
+    },
+    "./coding/pre-action-gate.js": {
+      "types": "./dist/coding/pre-action-gate.d.ts",
+      "remnic-source": "./src/coding/pre-action-gate.ts",
+      "import": "./dist/coding/pre-action-gate.js"
+    },
+    "./commitment-ledger": {
+      "types": "./dist/commitment-ledger.d.ts",
+      "remnic-source": "./src/commitment-ledger.ts",
+      "import": "./dist/commitment-ledger.js"
+    },
+    "./commitment-ledger.js": {
+      "types": "./dist/commitment-ledger.d.ts",
+      "remnic-source": "./src/commitment-ledger.ts",
+      "import": "./dist/commitment-ledger.js"
+    },
+    "./corpus-watermark": {
+      "types": "./dist/corpus-watermark.d.ts",
+      "remnic-source": "./src/corpus-watermark.ts",
+      "import": "./dist/corpus-watermark.js"
+    },
+    "./corpus-watermark.js": {
+      "types": "./dist/corpus-watermark.d.ts",
+      "remnic-source": "./src/corpus-watermark.ts",
+      "import": "./dist/corpus-watermark.js"
+    },
+    "./compat/checks": {
+      "types": "./dist/compat/checks.d.ts",
+      "remnic-source": "./src/compat/checks.ts",
+      "import": "./dist/compat/checks.js"
+    },
+    "./compat/checks.js": {
+      "types": "./dist/compat/checks.d.ts",
+      "remnic-source": "./src/compat/checks.ts",
+      "import": "./dist/compat/checks.js"
+    },
+    "./compat/types": {
+      "types": "./dist/compat/types.d.ts",
+      "remnic-source": "./src/compat/types.ts",
+      "import": "./dist/compat/types.js"
+    },
+    "./compat/types.js": {
+      "types": "./dist/compat/types.d.ts",
+      "remnic-source": "./src/compat/types.ts",
+      "import": "./dist/compat/types.js"
+    },
+    "./compounding/engine": {
+      "types": "./dist/compounding/engine.d.ts",
+      "remnic-source": "./src/compounding/engine.ts",
+      "import": "./dist/compounding/engine.js"
+    },
+    "./compounding/engine.js": {
+      "types": "./dist/compounding/engine.d.ts",
+      "remnic-source": "./src/compounding/engine.ts",
+      "import": "./dist/compounding/engine.js"
+    },
+    "./compounding/preference-consolidator": {
+      "types": "./dist/compounding/preference-consolidator.d.ts",
+      "remnic-source": "./src/compounding/preference-consolidator.ts",
+      "import": "./dist/compounding/preference-consolidator.js"
+    },
+    "./compounding/preference-consolidator.js": {
+      "types": "./dist/compounding/preference-consolidator.d.ts",
+      "remnic-source": "./src/compounding/preference-consolidator.ts",
+      "import": "./dist/compounding/preference-consolidator.js"
+    },
+    "./compression-optimizer": {
+      "types": "./dist/compression-optimizer.d.ts",
+      "remnic-source": "./src/compression-optimizer.ts",
+      "import": "./dist/compression-optimizer.js"
+    },
+    "./compression-optimizer.js": {
+      "types": "./dist/compression-optimizer.d.ts",
+      "remnic-source": "./src/compression-optimizer.ts",
+      "import": "./dist/compression-optimizer.js"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "remnic-source": "./src/config.ts",
+      "import": "./dist/config.js"
+    },
+    "./config.js": {
+      "types": "./dist/config.d.ts",
+      "remnic-source": "./src/config.ts",
+      "import": "./dist/config.js"
+    },
+    "./connectors": {
+      "types": "./dist/connectors/index.d.ts",
+      "remnic-source": "./src/connectors/index.ts",
+      "import": "./dist/connectors/index.js"
+    },
+    "./connectors-cli": {
+      "types": "./dist/connectors-cli.d.ts",
+      "remnic-source": "./src/connectors-cli.ts",
+      "import": "./dist/connectors-cli.js"
+    },
+    "./connectors-cli.js": {
+      "types": "./dist/connectors-cli.d.ts",
+      "remnic-source": "./src/connectors-cli.ts",
+      "import": "./dist/connectors-cli.js"
+    },
+    "./connectors.js": {
+      "types": "./dist/connectors/index.d.ts",
+      "remnic-source": "./src/connectors/index.ts",
+      "import": "./dist/connectors/index.js"
+    },
+    "./connectors/codex-materialize": {
+      "types": "./dist/connectors/codex-materialize.d.ts",
+      "remnic-source": "./src/connectors/codex-materialize.ts",
+      "import": "./dist/connectors/codex-materialize.js"
+    },
+    "./connectors/codex-materialize-runner": {
+      "types": "./dist/connectors/codex-materialize-runner.d.ts",
+      "remnic-source": "./src/connectors/codex-materialize-runner.ts",
+      "import": "./dist/connectors/codex-materialize-runner.js"
+    },
+    "./connectors/codex-materialize-runner.js": {
+      "types": "./dist/connectors/codex-materialize-runner.d.ts",
+      "remnic-source": "./src/connectors/codex-materialize-runner.ts",
+      "import": "./dist/connectors/codex-materialize-runner.js"
+    },
+    "./connectors/codex-materialize.js": {
+      "types": "./dist/connectors/codex-materialize.d.ts",
+      "remnic-source": "./src/connectors/codex-materialize.ts",
+      "import": "./dist/connectors/codex-materialize.js"
+    },
+    "./connectors/index": {
+      "types": "./dist/connectors/index.d.ts",
+      "remnic-source": "./src/connectors/index.ts",
+      "import": "./dist/connectors/index.js"
+    },
+    "./connectors/index.js": {
+      "types": "./dist/connectors/index.d.ts",
+      "remnic-source": "./src/connectors/index.ts",
+      "import": "./dist/connectors/index.js"
+    },
+    "./consolidation-operator": {
+      "types": "./dist/consolidation-operator.d.ts",
+      "remnic-source": "./src/consolidation-operator.ts",
+      "import": "./dist/consolidation-operator.js"
+    },
+    "./consolidation-operator.js": {
+      "types": "./dist/consolidation-operator.d.ts",
+      "remnic-source": "./src/consolidation-operator.ts",
+      "import": "./dist/consolidation-operator.js"
+    },
+    "./consolidation-provenance-check": {
+      "types": "./dist/consolidation-provenance-check.d.ts",
+      "remnic-source": "./src/consolidation-provenance-check.ts",
+      "import": "./dist/consolidation-provenance-check.js"
+    },
+    "./consolidation-provenance-check.js": {
+      "types": "./dist/consolidation-provenance-check.d.ts",
+      "remnic-source": "./src/consolidation-provenance-check.ts",
+      "import": "./dist/consolidation-provenance-check.js"
+    },
+    "./consolidation-undo": {
+      "types": "./dist/consolidation-undo.d.ts",
+      "remnic-source": "./src/consolidation-undo.ts",
+      "import": "./dist/consolidation-undo.js"
+    },
+    "./consolidation-undo.js": {
+      "types": "./dist/consolidation-undo.d.ts",
+      "remnic-source": "./src/consolidation-undo.ts",
+      "import": "./dist/consolidation-undo.js"
+    },
+    "./contradiction": {
+      "types": "./dist/contradiction/index.d.ts",
+      "remnic-source": "./src/contradiction/index.ts",
+      "import": "./dist/contradiction/index.js"
+    },
+    "./contradiction.js": {
+      "types": "./dist/contradiction/index.d.ts",
+      "remnic-source": "./src/contradiction/index.ts",
+      "import": "./dist/contradiction/index.js"
+    },
+    "./contradiction/index": {
+      "types": "./dist/contradiction/index.d.ts",
+      "remnic-source": "./src/contradiction/index.ts",
+      "import": "./dist/contradiction/index.js"
+    },
+    "./contradiction/index.js": {
+      "types": "./dist/contradiction/index.d.ts",
+      "remnic-source": "./src/contradiction/index.ts",
+      "import": "./dist/contradiction/index.js"
+    },
+    "./conversation-index/backend": {
+      "types": "./dist/conversation-index/backend.d.ts",
+      "remnic-source": "./src/conversation-index/backend.ts",
+      "import": "./dist/conversation-index/backend.js"
+    },
+    "./conversation-index/backend.js": {
+      "types": "./dist/conversation-index/backend.d.ts",
+      "remnic-source": "./src/conversation-index/backend.ts",
+      "import": "./dist/conversation-index/backend.js"
+    },
+    "./conversation-index/chunker": {
+      "types": "./dist/conversation-index/chunker.d.ts",
+      "remnic-source": "./src/conversation-index/chunker.ts",
+      "import": "./dist/conversation-index/chunker.js"
+    },
+    "./conversation-index/chunker.js": {
+      "types": "./dist/conversation-index/chunker.d.ts",
+      "remnic-source": "./src/conversation-index/chunker.ts",
+      "import": "./dist/conversation-index/chunker.js"
+    },
+    "./conversation-index/cleanup": {
+      "types": "./dist/conversation-index/cleanup.d.ts",
+      "remnic-source": "./src/conversation-index/cleanup.ts",
+      "import": "./dist/conversation-index/cleanup.js"
+    },
+    "./conversation-index/cleanup.js": {
+      "types": "./dist/conversation-index/cleanup.d.ts",
+      "remnic-source": "./src/conversation-index/cleanup.ts",
+      "import": "./dist/conversation-index/cleanup.js"
+    },
+    "./conversation-index/faiss-adapter": {
+      "types": "./dist/conversation-index/faiss-adapter.d.ts",
+      "remnic-source": "./src/conversation-index/faiss-adapter.ts",
+      "import": "./dist/conversation-index/faiss-adapter.js"
+    },
+    "./conversation-index/faiss-adapter.js": {
+      "types": "./dist/conversation-index/faiss-adapter.d.ts",
+      "remnic-source": "./src/conversation-index/faiss-adapter.ts",
+      "import": "./dist/conversation-index/faiss-adapter.js"
+    },
+    "./conversation-index/indexer": {
+      "types": "./dist/conversation-index/indexer.d.ts",
+      "remnic-source": "./src/conversation-index/indexer.ts",
+      "import": "./dist/conversation-index/indexer.js"
+    },
+    "./conversation-index/indexer.js": {
+      "types": "./dist/conversation-index/indexer.d.ts",
+      "remnic-source": "./src/conversation-index/indexer.ts",
+      "import": "./dist/conversation-index/indexer.js"
+    },
+    "./conversation-index/search": {
+      "types": "./dist/conversation-index/search.d.ts",
+      "remnic-source": "./src/conversation-index/search.ts",
+      "import": "./dist/conversation-index/search.js"
+    },
+    "./conversation-index/search.js": {
+      "types": "./dist/conversation-index/search.d.ts",
+      "remnic-source": "./src/conversation-index/search.ts",
+      "import": "./dist/conversation-index/search.js"
+    },
+    "./cross-namespace-budget": {
+      "types": "./dist/cross-namespace-budget.d.ts",
+      "remnic-source": "./src/cross-namespace-budget.ts",
+      "import": "./dist/cross-namespace-budget.js"
+    },
+    "./cross-namespace-budget.js": {
+      "types": "./dist/cross-namespace-budget.d.ts",
+      "remnic-source": "./src/cross-namespace-budget.ts",
+      "import": "./dist/cross-namespace-budget.js"
+    },
+    "./cue-anchors": {
+      "types": "./dist/cue-anchors.d.ts",
+      "remnic-source": "./src/cue-anchors.ts",
+      "import": "./dist/cue-anchors.js"
+    },
+    "./cue-anchors.js": {
+      "types": "./dist/cue-anchors.d.ts",
+      "remnic-source": "./src/cue-anchors.ts",
+      "import": "./dist/cue-anchors.js"
+    },
+    "./dashboard-runtime": {
+      "types": "./dist/dashboard-runtime.d.ts",
+      "remnic-source": "./src/dashboard-runtime.ts",
+      "import": "./dist/dashboard-runtime.js"
+    },
+    "./dashboard-runtime.js": {
+      "types": "./dist/dashboard-runtime.d.ts",
+      "remnic-source": "./src/dashboard-runtime.ts",
+      "import": "./dist/dashboard-runtime.js"
+    },
+    "./day-summary": {
+      "types": "./dist/day-summary.d.ts",
+      "remnic-source": "./src/day-summary.ts",
+      "import": "./dist/day-summary.js"
+    },
+    "./day-summary.js": {
+      "types": "./dist/day-summary.d.ts",
+      "remnic-source": "./src/day-summary.ts",
+      "import": "./dist/day-summary.js"
+    },
+    "./delinearize": {
+      "types": "./dist/delinearize.d.ts",
+      "remnic-source": "./src/delinearize.ts",
+      "import": "./dist/delinearize.js"
+    },
+    "./delinearize.js": {
+      "types": "./dist/delinearize.d.ts",
+      "remnic-source": "./src/delinearize.ts",
+      "import": "./dist/delinearize.js"
+    },
+    "./direct-answer": {
+      "types": "./dist/direct-answer.d.ts",
+      "remnic-source": "./src/direct-answer.ts",
+      "import": "./dist/direct-answer.js"
+    },
+    "./direct-answer-wiring": {
+      "types": "./dist/direct-answer-wiring.d.ts",
+      "remnic-source": "./src/direct-answer-wiring.ts",
+      "import": "./dist/direct-answer-wiring.js"
+    },
+    "./direct-answer-wiring.js": {
+      "types": "./dist/direct-answer-wiring.d.ts",
+      "remnic-source": "./src/direct-answer-wiring.ts",
+      "import": "./dist/direct-answer-wiring.js"
+    },
+    "./direct-answer.js": {
+      "types": "./dist/direct-answer.d.ts",
+      "remnic-source": "./src/direct-answer.ts",
+      "import": "./dist/direct-answer.js"
+    },
+    "./embedding-fallback": {
+      "types": "./dist/embedding-fallback.d.ts",
+      "remnic-source": "./src/embedding-fallback.ts",
+      "import": "./dist/embedding-fallback.js"
+    },
+    "./embedding-fallback.js": {
+      "types": "./dist/embedding-fallback.d.ts",
+      "remnic-source": "./src/embedding-fallback.ts",
+      "import": "./dist/embedding-fallback.js"
+    },
+    "./host-embedding-provider": {
+      "types": "./dist/host-embedding-provider.d.ts",
+      "remnic-source": "./src/host-embedding-provider.ts",
+      "import": "./dist/host-embedding-provider.js"
+    },
+    "./host-embedding-provider.js": {
+      "types": "./dist/host-embedding-provider.d.ts",
+      "remnic-source": "./src/host-embedding-provider.ts",
+      "import": "./dist/host-embedding-provider.js"
+    },
+    "./enrichment": {
+      "types": "./dist/enrichment/index.d.ts",
+      "remnic-source": "./src/enrichment/index.ts",
+      "import": "./dist/enrichment/index.js"
+    },
+    "./enrichment.js": {
+      "types": "./dist/enrichment/index.d.ts",
+      "remnic-source": "./src/enrichment/index.ts",
+      "import": "./dist/enrichment/index.js"
+    },
+    "./enrichment/index": {
+      "types": "./dist/enrichment/index.d.ts",
+      "remnic-source": "./src/enrichment/index.ts",
+      "import": "./dist/enrichment/index.js"
+    },
+    "./enrichment/index.js": {
+      "types": "./dist/enrichment/index.d.ts",
+      "remnic-source": "./src/enrichment/index.ts",
+      "import": "./dist/enrichment/index.js"
+    },
+    "./entity-retrieval": {
+      "types": "./dist/entity-retrieval.d.ts",
+      "remnic-source": "./src/entity-retrieval.ts",
+      "import": "./dist/entity-retrieval.js"
+    },
+    "./entity-retrieval.js": {
+      "types": "./dist/entity-retrieval.d.ts",
+      "remnic-source": "./src/entity-retrieval.ts",
+      "import": "./dist/entity-retrieval.js"
+    },
+    "./entity-schema": {
+      "types": "./dist/entity-schema.d.ts",
+      "remnic-source": "./src/entity-schema.ts",
+      "import": "./dist/entity-schema.js"
+    },
+    "./entity-schema.js": {
+      "types": "./dist/entity-schema.d.ts",
+      "remnic-source": "./src/entity-schema.ts",
+      "import": "./dist/entity-schema.js"
+    },
+    "./evals": {
+      "types": "./dist/evals.d.ts",
+      "remnic-source": "./src/evals.ts",
+      "import": "./dist/evals.js"
+    },
+    "./evals.js": {
+      "types": "./dist/evals.d.ts",
+      "remnic-source": "./src/evals.ts",
+      "import": "./dist/evals.js"
+    },
+    "./event-order-recall": {
+      "types": "./dist/event-order-recall.d.ts",
+      "remnic-source": "./src/event-order-recall.ts",
+      "import": "./dist/event-order-recall.js"
+    },
+    "./event-order-recall.js": {
+      "types": "./dist/event-order-recall.d.ts",
+      "remnic-source": "./src/event-order-recall.ts",
+      "import": "./dist/event-order-recall.js"
+    },
+    "./evidence-pack": {
+      "types": "./dist/evidence-pack.d.ts",
+      "remnic-source": "./src/evidence-pack.ts",
+      "import": "./dist/evidence-pack.js"
+    },
+    "./evidence-pack.js": {
+      "types": "./dist/evidence-pack.d.ts",
+      "remnic-source": "./src/evidence-pack.ts",
+      "import": "./dist/evidence-pack.js"
+    },
+    "./explicit-capture": {
+      "types": "./dist/explicit-capture.d.ts",
+      "remnic-source": "./src/explicit-capture.ts",
+      "import": "./dist/explicit-capture.js"
+    },
+    "./explicit-capture.js": {
+      "types": "./dist/explicit-capture.d.ts",
+      "remnic-source": "./src/explicit-capture.ts",
+      "import": "./dist/explicit-capture.js"
+    },
+    "./explicit-cue-recall": {
+      "types": "./dist/explicit-cue-recall.d.ts",
+      "remnic-source": "./src/explicit-cue-recall.ts",
+      "import": "./dist/explicit-cue-recall.js"
+    },
+    "./explicit-cue-recall.js": {
+      "types": "./dist/explicit-cue-recall.d.ts",
+      "remnic-source": "./src/explicit-cue-recall.ts",
+      "import": "./dist/explicit-cue-recall.js"
+    },
+    "./extraction": {
+      "types": "./dist/extraction.d.ts",
+      "remnic-source": "./src/extraction.ts",
+      "import": "./dist/extraction.js"
+    },
+    "./extraction-judge": {
+      "types": "./dist/extraction-judge.d.ts",
+      "remnic-source": "./src/extraction-judge.ts",
+      "import": "./dist/extraction-judge.js"
+    },
+    "./extraction-judge-telemetry": {
+      "types": "./dist/extraction-judge-telemetry.d.ts",
+      "remnic-source": "./src/extraction-judge-telemetry.ts",
+      "import": "./dist/extraction-judge-telemetry.js"
+    },
+    "./extraction-judge-telemetry.js": {
+      "types": "./dist/extraction-judge-telemetry.d.ts",
+      "remnic-source": "./src/extraction-judge-telemetry.ts",
+      "import": "./dist/extraction-judge-telemetry.js"
+    },
+    "./extraction-judge-training": {
+      "types": "./dist/extraction-judge-training.d.ts",
+      "remnic-source": "./src/extraction-judge-training.ts",
+      "import": "./dist/extraction-judge-training.js"
+    },
+    "./extraction-judge-training.js": {
+      "types": "./dist/extraction-judge-training.d.ts",
+      "remnic-source": "./src/extraction-judge-training.ts",
+      "import": "./dist/extraction-judge-training.js"
+    },
+    "./extraction-judge.js": {
+      "types": "./dist/extraction-judge.d.ts",
+      "remnic-source": "./src/extraction-judge.ts",
+      "import": "./dist/extraction-judge.js"
+    },
+    "./extraction.js": {
+      "types": "./dist/extraction.d.ts",
+      "remnic-source": "./src/extraction.ts",
+      "import": "./dist/extraction.js"
+    },
+    "./fallback-llm": {
+      "types": "./dist/fallback-llm.d.ts",
+      "remnic-source": "./src/fallback-llm.ts",
+      "import": "./dist/fallback-llm.js"
+    },
+    "./fallback-llm.js": {
+      "types": "./dist/fallback-llm.d.ts",
+      "remnic-source": "./src/fallback-llm.ts",
+      "import": "./dist/fallback-llm.js"
+    },
+    "./focused-list-recall": {
+      "types": "./dist/focused-list-recall.d.ts",
+      "remnic-source": "./src/focused-list-recall.ts",
+      "import": "./dist/focused-list-recall.js"
+    },
+    "./focused-list-recall.js": {
+      "types": "./dist/focused-list-recall.d.ts",
+      "remnic-source": "./src/focused-list-recall.ts",
+      "import": "./dist/focused-list-recall.js"
+    },
+    "./graph": {
+      "types": "./dist/graph.d.ts",
+      "remnic-source": "./src/graph.ts",
+      "import": "./dist/graph.js"
+    },
+    "./graph-dashboard-diff": {
+      "types": "./dist/graph-dashboard-diff.d.ts",
+      "remnic-source": "./src/graph-dashboard-diff.ts",
+      "import": "./dist/graph-dashboard-diff.js"
+    },
+    "./graph-dashboard-diff.js": {
+      "types": "./dist/graph-dashboard-diff.d.ts",
+      "remnic-source": "./src/graph-dashboard-diff.ts",
+      "import": "./dist/graph-dashboard-diff.js"
+    },
+    "./graph-dashboard-key": {
+      "types": "./dist/graph-dashboard-key.d.ts",
+      "remnic-source": "./src/graph-dashboard-key.ts",
+      "import": "./dist/graph-dashboard-key.js"
+    },
+    "./graph-dashboard-key.js": {
+      "types": "./dist/graph-dashboard-key.d.ts",
+      "remnic-source": "./src/graph-dashboard-key.ts",
+      "import": "./dist/graph-dashboard-key.js"
+    },
+    "./graph-dashboard-parser": {
+      "types": "./dist/graph-dashboard-parser.d.ts",
+      "remnic-source": "./src/graph-dashboard-parser.ts",
+      "import": "./dist/graph-dashboard-parser.js"
+    },
+    "./graph-dashboard-parser.js": {
+      "types": "./dist/graph-dashboard-parser.d.ts",
+      "remnic-source": "./src/graph-dashboard-parser.ts",
+      "import": "./dist/graph-dashboard-parser.js"
+    },
+    "./graph-edge-reinforcement": {
+      "types": "./dist/graph-edge-reinforcement.d.ts",
+      "remnic-source": "./src/graph-edge-reinforcement.ts",
+      "import": "./dist/graph-edge-reinforcement.js"
+    },
+    "./graph-edge-reinforcement.js": {
+      "types": "./dist/graph-edge-reinforcement.d.ts",
+      "remnic-source": "./src/graph-edge-reinforcement.ts",
+      "import": "./dist/graph-edge-reinforcement.js"
+    },
+    "./graph-events": {
+      "types": "./dist/graph-events.d.ts",
+      "remnic-source": "./src/graph-events.ts",
+      "import": "./dist/graph-events.js"
+    },
+    "./graph-events.js": {
+      "types": "./dist/graph-events.d.ts",
+      "remnic-source": "./src/graph-events.ts",
+      "import": "./dist/graph-events.js"
+    },
+    "./graph-recall": {
+      "types": "./dist/graph-recall.d.ts",
+      "remnic-source": "./src/graph-recall.ts",
+      "import": "./dist/graph-recall.js"
+    },
+    "./graph-recall.js": {
+      "types": "./dist/graph-recall.d.ts",
+      "remnic-source": "./src/graph-recall.ts",
+      "import": "./dist/graph-recall.js"
+    },
+    "./graph-retrieval": {
+      "types": "./dist/graph-retrieval.d.ts",
+      "remnic-source": "./src/graph-retrieval.ts",
+      "import": "./dist/graph-retrieval.js"
+    },
+    "./graph-retrieval.js": {
+      "types": "./dist/graph-retrieval.d.ts",
+      "remnic-source": "./src/graph-retrieval.ts",
+      "import": "./dist/graph-retrieval.js"
+    },
+    "./graph-snapshot": {
+      "types": "./dist/graph-snapshot.d.ts",
+      "remnic-source": "./src/graph-snapshot.ts",
+      "import": "./dist/graph-snapshot.js"
+    },
+    "./graph-snapshot.js": {
+      "types": "./dist/graph-snapshot.d.ts",
+      "remnic-source": "./src/graph-snapshot.ts",
+      "import": "./dist/graph-snapshot.js"
+    },
+    "./graph.js": {
+      "types": "./dist/graph.d.ts",
+      "remnic-source": "./src/graph.ts",
+      "import": "./dist/graph.js"
+    },
+    "./harmonic-retrieval": {
+      "types": "./dist/harmonic-retrieval.d.ts",
+      "remnic-source": "./src/harmonic-retrieval.ts",
+      "import": "./dist/harmonic-retrieval.js"
+    },
+    "./harmonic-retrieval.js": {
+      "types": "./dist/harmonic-retrieval.d.ts",
+      "remnic-source": "./src/harmonic-retrieval.ts",
+      "import": "./dist/harmonic-retrieval.js"
+    },
+    "./himem": {
+      "types": "./dist/himem.d.ts",
+      "remnic-source": "./src/himem.ts",
+      "import": "./dist/himem.js"
+    },
+    "./himem.js": {
+      "types": "./dist/himem.d.ts",
+      "remnic-source": "./src/himem.ts",
+      "import": "./dist/himem.js"
+    },
+    "./hygiene": {
+      "types": "./dist/hygiene.d.ts",
+      "remnic-source": "./src/hygiene.ts",
+      "import": "./dist/hygiene.js"
+    },
+    "./hygiene.js": {
+      "types": "./dist/hygiene.d.ts",
+      "remnic-source": "./src/hygiene.ts",
+      "import": "./dist/hygiene.js"
+    },
+    "./identity-continuity": {
+      "types": "./dist/identity-continuity.d.ts",
+      "remnic-source": "./src/identity-continuity.ts",
+      "import": "./dist/identity-continuity.js"
+    },
+    "./identity-continuity.js": {
+      "types": "./dist/identity-continuity.d.ts",
+      "remnic-source": "./src/identity-continuity.ts",
+      "import": "./dist/identity-continuity.js"
+    },
+    "./importance": {
+      "types": "./dist/importance.d.ts",
+      "remnic-source": "./src/importance.ts",
+      "import": "./dist/importance.js"
+    },
+    "./importance.js": {
+      "types": "./dist/importance.d.ts",
+      "remnic-source": "./src/importance.ts",
+      "import": "./dist/importance.js"
+    },
+    "./in-flight-reads": {
+      "types": "./dist/in-flight-reads.d.ts",
+      "remnic-source": "./src/in-flight-reads.ts",
+      "import": "./dist/in-flight-reads.js"
+    },
+    "./in-flight-reads.js": {
+      "types": "./dist/in-flight-reads.d.ts",
+      "remnic-source": "./src/in-flight-reads.ts",
+      "import": "./dist/in-flight-reads.js"
+    },
+    "./index": {
+      "types": "./dist/index.d.ts",
+      "remnic-source": "./src/index.ts",
+      "import": "./dist/index.js"
+    },
+    "./index.js": {
+      "types": "./dist/index.d.ts",
+      "remnic-source": "./src/index.ts",
+      "import": "./dist/index.js"
+    },
+    "./importers": {
+      "types": "./dist/importers/index.d.ts",
+      "remnic-source": "./src/importers/index.ts",
+      "import": "./dist/importers/index.js"
+    },
+    "./importers.js": {
+      "types": "./dist/importers/index.d.ts",
+      "remnic-source": "./src/importers/index.ts",
+      "import": "./dist/importers/index.js"
+    },
+    "./importers/index": {
+      "types": "./dist/importers/index.d.ts",
+      "remnic-source": "./src/importers/index.ts",
+      "import": "./dist/importers/index.js"
+    },
+    "./importers/index.js": {
+      "types": "./dist/importers/index.d.ts",
+      "remnic-source": "./src/importers/index.ts",
+      "import": "./dist/importers/index.js"
+    },
+    "./intent": {
+      "types": "./dist/intent.d.ts",
+      "remnic-source": "./src/intent.ts",
+      "import": "./dist/intent.js"
+    },
+    "./intent.js": {
+      "types": "./dist/intent.d.ts",
+      "remnic-source": "./src/intent.ts",
+      "import": "./dist/intent.js"
+    },
+    "./json-extract": {
+      "types": "./dist/json-extract.d.ts",
+      "remnic-source": "./src/json-extract.ts",
+      "import": "./dist/json-extract.js"
+    },
+    "./json-extract.js": {
+      "types": "./dist/json-extract.d.ts",
+      "remnic-source": "./src/json-extract.ts",
+      "import": "./dist/json-extract.js"
+    },
+    "./json-store": {
+      "types": "./dist/json-store.d.ts",
+      "remnic-source": "./src/json-store.ts",
+      "import": "./dist/json-store.js"
+    },
+    "./json-store.js": {
+      "types": "./dist/json-store.d.ts",
+      "remnic-source": "./src/json-store.ts",
+      "import": "./dist/json-store.js"
+    },
+    "./lcm": {
+      "types": "./dist/lcm/index.d.ts",
+      "remnic-source": "./src/lcm/index.ts",
+      "import": "./dist/lcm/index.js"
+    },
+    "./lcm.js": {
+      "types": "./dist/lcm/index.d.ts",
+      "remnic-source": "./src/lcm/index.ts",
+      "import": "./dist/lcm/index.js"
+    },
+    "./lcm/archive": {
+      "types": "./dist/lcm/archive.d.ts",
+      "remnic-source": "./src/lcm/archive.ts",
+      "import": "./dist/lcm/archive.js"
+    },
+    "./lcm/archive.js": {
+      "types": "./dist/lcm/archive.d.ts",
+      "remnic-source": "./src/lcm/archive.ts",
+      "import": "./dist/lcm/archive.js"
+    },
+    "./lcm/dag": {
+      "types": "./dist/lcm/dag.d.ts",
+      "remnic-source": "./src/lcm/dag.ts",
+      "import": "./dist/lcm/dag.js"
+    },
+    "./lcm/dag.js": {
+      "types": "./dist/lcm/dag.d.ts",
+      "remnic-source": "./src/lcm/dag.ts",
+      "import": "./dist/lcm/dag.js"
+    },
+    "./lcm/engine": {
+      "types": "./dist/lcm/engine.d.ts",
+      "remnic-source": "./src/lcm/engine.ts",
+      "import": "./dist/lcm/engine.js"
+    },
+    "./lcm/engine.js": {
+      "types": "./dist/lcm/engine.d.ts",
+      "remnic-source": "./src/lcm/engine.ts",
+      "import": "./dist/lcm/engine.js"
+    },
+    "./lcm/index": {
+      "types": "./dist/lcm/index.d.ts",
+      "remnic-source": "./src/lcm/index.ts",
+      "import": "./dist/lcm/index.js"
+    },
+    "./lcm/index.js": {
+      "types": "./dist/lcm/index.d.ts",
+      "remnic-source": "./src/lcm/index.ts",
+      "import": "./dist/lcm/index.js"
+    },
+    "./lcm/queue": {
+      "types": "./dist/lcm/queue.d.ts",
+      "remnic-source": "./src/lcm/queue.ts",
+      "import": "./dist/lcm/queue.js"
+    },
+    "./lcm/queue.js": {
+      "types": "./dist/lcm/queue.d.ts",
+      "remnic-source": "./src/lcm/queue.ts",
+      "import": "./dist/lcm/queue.js"
+    },
+    "./lcm/recall": {
+      "types": "./dist/lcm/recall.d.ts",
+      "remnic-source": "./src/lcm/recall.ts",
+      "import": "./dist/lcm/recall.js"
+    },
+    "./lcm/recall.js": {
+      "types": "./dist/lcm/recall.d.ts",
+      "remnic-source": "./src/lcm/recall.ts",
+      "import": "./dist/lcm/recall.js"
+    },
+    "./lcm/schema": {
+      "types": "./dist/lcm/schema.d.ts",
+      "remnic-source": "./src/lcm/schema.ts",
+      "import": "./dist/lcm/schema.js"
+    },
+    "./lcm/schema.js": {
+      "types": "./dist/lcm/schema.d.ts",
+      "remnic-source": "./src/lcm/schema.ts",
+      "import": "./dist/lcm/schema.js"
+    },
+    "./lcm/summarizer": {
+      "types": "./dist/lcm/summarizer.d.ts",
+      "remnic-source": "./src/lcm/summarizer.ts",
+      "import": "./dist/lcm/summarizer.js"
+    },
+    "./lcm/summarizer.js": {
+      "types": "./dist/lcm/summarizer.d.ts",
+      "remnic-source": "./src/lcm/summarizer.ts",
+      "import": "./dist/lcm/summarizer.js"
+    },
+    "./lcm/tools": {
+      "types": "./dist/lcm/tools.d.ts",
+      "remnic-source": "./src/lcm/tools.ts",
+      "import": "./dist/lcm/tools.js"
+    },
+    "./lcm/tools.js": {
+      "types": "./dist/lcm/tools.d.ts",
+      "remnic-source": "./src/lcm/tools.ts",
+      "import": "./dist/lcm/tools.js"
+    },
+    "./lifecycle": {
+      "types": "./dist/lifecycle.d.ts",
+      "remnic-source": "./src/lifecycle.ts",
+      "import": "./dist/lifecycle.js"
+    },
+    "./lifecycle.js": {
+      "types": "./dist/lifecycle.d.ts",
+      "remnic-source": "./src/lifecycle.ts",
+      "import": "./dist/lifecycle.js"
+    },
+    "./live-connectors-runner": {
+      "types": "./dist/live-connectors-runner.d.ts",
+      "remnic-source": "./src/live-connectors-runner.ts",
+      "import": "./dist/live-connectors-runner.js"
+    },
+    "./live-connectors-runner.js": {
+      "types": "./dist/live-connectors-runner.d.ts",
+      "remnic-source": "./src/live-connectors-runner.ts",
+      "import": "./dist/live-connectors-runner.js"
+    },
+    "./local-llm": {
+      "types": "./dist/local-llm.d.ts",
+      "remnic-source": "./src/local-llm.ts",
+      "import": "./dist/local-llm.js"
+    },
+    "./local-llm.js": {
+      "types": "./dist/local-llm.d.ts",
+      "remnic-source": "./src/local-llm.ts",
+      "import": "./dist/local-llm.js"
+    },
+    "./location": {
+      "types": "./dist/location/index.d.ts",
+      "remnic-source": "./src/location/index.ts",
+      "import": "./dist/location/index.js"
+    },
+    "./location.js": {
+      "types": "./dist/location/index.d.ts",
+      "remnic-source": "./src/location/index.ts",
+      "import": "./dist/location/index.js"
+    },
+    "./logger": {
+      "types": "./dist/logger.d.ts",
+      "remnic-source": "./src/logger.ts",
+      "import": "./dist/logger.js"
+    },
+    "./logger.js": {
+      "types": "./dist/logger.d.ts",
+      "remnic-source": "./src/logger.ts",
+      "import": "./dist/logger.js"
+    },
+    "./maintenance/archive-observations": {
+      "types": "./dist/maintenance/archive-observations.d.ts",
+      "remnic-source": "./src/maintenance/archive-observations.ts",
+      "import": "./dist/maintenance/archive-observations.js"
+    },
+    "./maintenance/archive-observations.js": {
+      "types": "./dist/maintenance/archive-observations.d.ts",
+      "remnic-source": "./src/maintenance/archive-observations.ts",
+      "import": "./dist/maintenance/archive-observations.js"
+    },
+    "./maintenance/backup-stamp": {
+      "types": "./dist/maintenance/backup-stamp.d.ts",
+      "remnic-source": "./src/maintenance/backup-stamp.ts",
+      "import": "./dist/maintenance/backup-stamp.js"
+    },
+    "./maintenance/backup-stamp.js": {
+      "types": "./dist/maintenance/backup-stamp.d.ts",
+      "remnic-source": "./src/maintenance/backup-stamp.ts",
+      "import": "./dist/maintenance/backup-stamp.js"
+    },
+    "./maintenance/memory-governance": {
+      "types": "./dist/maintenance/memory-governance.d.ts",
+      "remnic-source": "./src/maintenance/memory-governance.ts",
+      "import": "./dist/maintenance/memory-governance.js"
+    },
+    "./maintenance/memory-governance-cron": {
+      "types": "./dist/maintenance/memory-governance-cron.d.ts",
+      "remnic-source": "./src/maintenance/memory-governance-cron.ts",
+      "import": "./dist/maintenance/memory-governance-cron.js"
+    },
+    "./maintenance/memory-governance-cron.js": {
+      "types": "./dist/maintenance/memory-governance-cron.d.ts",
+      "remnic-source": "./src/maintenance/memory-governance-cron.ts",
+      "import": "./dist/maintenance/memory-governance-cron.js"
+    },
+    "./maintenance/memory-governance.js": {
+      "types": "./dist/maintenance/memory-governance.d.ts",
+      "remnic-source": "./src/maintenance/memory-governance.ts",
+      "import": "./dist/maintenance/memory-governance.js"
+    },
+    "./maintenance/migrate-observations": {
+      "types": "./dist/maintenance/migrate-observations.d.ts",
+      "remnic-source": "./src/maintenance/migrate-observations.ts",
+      "import": "./dist/maintenance/migrate-observations.js"
+    },
+    "./maintenance/migrate-observations.js": {
+      "types": "./dist/maintenance/migrate-observations.d.ts",
+      "remnic-source": "./src/maintenance/migrate-observations.ts",
+      "import": "./dist/maintenance/migrate-observations.js"
+    },
+    "./maintenance/observation-ledger-utils": {
+      "types": "./dist/maintenance/observation-ledger-utils.d.ts",
+      "remnic-source": "./src/maintenance/observation-ledger-utils.ts",
+      "import": "./dist/maintenance/observation-ledger-utils.js"
+    },
+    "./maintenance/observation-ledger-utils.js": {
+      "types": "./dist/maintenance/observation-ledger-utils.d.ts",
+      "remnic-source": "./src/maintenance/observation-ledger-utils.ts",
+      "import": "./dist/maintenance/observation-ledger-utils.js"
+    },
+    "./maintenance/rebuild-memory-lifecycle-ledger": {
+      "types": "./dist/maintenance/rebuild-memory-lifecycle-ledger.d.ts",
+      "remnic-source": "./src/maintenance/rebuild-memory-lifecycle-ledger.ts",
+      "import": "./dist/maintenance/rebuild-memory-lifecycle-ledger.js"
+    },
+    "./maintenance/rebuild-memory-lifecycle-ledger.js": {
+      "types": "./dist/maintenance/rebuild-memory-lifecycle-ledger.d.ts",
+      "remnic-source": "./src/maintenance/rebuild-memory-lifecycle-ledger.ts",
+      "import": "./dist/maintenance/rebuild-memory-lifecycle-ledger.js"
+    },
+    "./maintenance/rebuild-memory-projection": {
+      "types": "./dist/maintenance/rebuild-memory-projection.d.ts",
+      "remnic-source": "./src/maintenance/rebuild-memory-projection.ts",
+      "import": "./dist/maintenance/rebuild-memory-projection.js"
+    },
+    "./maintenance/rebuild-memory-projection.js": {
+      "types": "./dist/maintenance/rebuild-memory-projection.d.ts",
+      "remnic-source": "./src/maintenance/rebuild-memory-projection.ts",
+      "import": "./dist/maintenance/rebuild-memory-projection.js"
+    },
+    "./maintenance/rebuild-observations": {
+      "types": "./dist/maintenance/rebuild-observations.d.ts",
+      "remnic-source": "./src/maintenance/rebuild-observations.ts",
+      "import": "./dist/maintenance/rebuild-observations.js"
+    },
+    "./maintenance/rebuild-observations.js": {
+      "types": "./dist/maintenance/rebuild-observations.d.ts",
+      "remnic-source": "./src/maintenance/rebuild-observations.ts",
+      "import": "./dist/maintenance/rebuild-observations.js"
+    },
+    "./mcp-memory-inspector-app": {
+      "types": "./dist/mcp-memory-inspector-app.d.ts",
+      "remnic-source": "./src/mcp-memory-inspector-app.ts",
+      "import": "./dist/mcp-memory-inspector-app.js"
+    },
+    "./mcp-memory-inspector-app.js": {
+      "types": "./dist/mcp-memory-inspector-app.d.ts",
+      "remnic-source": "./src/mcp-memory-inspector-app.ts",
+      "import": "./dist/mcp-memory-inspector-app.js"
+    },
+    "./memory-action-policy": {
+      "types": "./dist/memory-action-policy.d.ts",
+      "remnic-source": "./src/memory-action-policy.ts",
+      "import": "./dist/memory-action-policy.js"
+    },
+    "./memory-action-policy.js": {
+      "types": "./dist/memory-action-policy.d.ts",
+      "remnic-source": "./src/memory-action-policy.ts",
+      "import": "./dist/memory-action-policy.js"
+    },
+    "./memory-cache": {
+      "types": "./dist/memory-cache.d.ts",
+      "remnic-source": "./src/memory-cache.ts",
+      "import": "./dist/memory-cache.js"
+    },
+    "./memory-cache.js": {
+      "types": "./dist/memory-cache.d.ts",
+      "remnic-source": "./src/memory-cache.ts",
+      "import": "./dist/memory-cache.js"
+    },
+    "./memory-lifecycle-ledger-utils": {
+      "types": "./dist/memory-lifecycle-ledger-utils.d.ts",
+      "remnic-source": "./src/memory-lifecycle-ledger-utils.ts",
+      "import": "./dist/memory-lifecycle-ledger-utils.js"
+    },
+    "./memory-lifecycle-ledger-utils.js": {
+      "types": "./dist/memory-lifecycle-ledger-utils.d.ts",
+      "remnic-source": "./src/memory-lifecycle-ledger-utils.ts",
+      "import": "./dist/memory-lifecycle-ledger-utils.js"
+    },
+    "./memory-projection-format": {
+      "types": "./dist/memory-projection-format.d.ts",
+      "remnic-source": "./src/memory-projection-format.ts",
+      "import": "./dist/memory-projection-format.js"
+    },
+    "./memory-projection-format.js": {
+      "types": "./dist/memory-projection-format.d.ts",
+      "remnic-source": "./src/memory-projection-format.ts",
+      "import": "./dist/memory-projection-format.js"
+    },
+    "./memory-projection-store": {
+      "types": "./dist/memory-projection-store.d.ts",
+      "remnic-source": "./src/memory-projection-store.ts",
+      "import": "./dist/memory-projection-store.js"
+    },
+    "./memory-projection-store.js": {
+      "types": "./dist/memory-projection-store.d.ts",
+      "remnic-source": "./src/memory-projection-store.ts",
+      "import": "./dist/memory-projection-store.js"
+    },
+    "./memory-provenance": {
+      "types": "./dist/memory-provenance.d.ts",
+      "remnic-source": "./src/memory-provenance.ts",
+      "import": "./dist/memory-provenance.js"
+    },
+    "./memory-provenance.js": {
+      "types": "./dist/memory-provenance.d.ts",
+      "remnic-source": "./src/memory-provenance.ts",
+      "import": "./dist/memory-provenance.js"
+    },
+    "./memory-worth": {
+      "types": "./dist/memory-worth.d.ts",
+      "remnic-source": "./src/memory-worth.ts",
+      "import": "./dist/memory-worth.js"
+    },
+    "./memory-worth-bench": {
+      "types": "./dist/memory-worth-bench.d.ts",
+      "remnic-source": "./src/memory-worth-bench.ts",
+      "import": "./dist/memory-worth-bench.js"
+    },
+    "./memory-worth-bench.js": {
+      "types": "./dist/memory-worth-bench.d.ts",
+      "remnic-source": "./src/memory-worth-bench.ts",
+      "import": "./dist/memory-worth-bench.js"
+    },
+    "./memory-worth-filter": {
+      "types": "./dist/memory-worth-filter.d.ts",
+      "remnic-source": "./src/memory-worth-filter.ts",
+      "import": "./dist/memory-worth-filter.js"
+    },
+    "./memory-worth-filter.js": {
+      "types": "./dist/memory-worth-filter.d.ts",
+      "remnic-source": "./src/memory-worth-filter.ts",
+      "import": "./dist/memory-worth-filter.js"
+    },
+    "./memory-worth-outcomes": {
+      "types": "./dist/memory-worth-outcomes.d.ts",
+      "remnic-source": "./src/memory-worth-outcomes.ts",
+      "import": "./dist/memory-worth-outcomes.js"
+    },
+    "./memory-worth-outcomes.js": {
+      "types": "./dist/memory-worth-outcomes.d.ts",
+      "remnic-source": "./src/memory-worth-outcomes.ts",
+      "import": "./dist/memory-worth-outcomes.js"
+    },
+    "./memory-worth.js": {
+      "types": "./dist/memory-worth.d.ts",
+      "remnic-source": "./src/memory-worth.ts",
+      "import": "./dist/memory-worth.js"
+    },
+    "./message-parts": {
+      "types": "./dist/message-parts/index.d.ts",
+      "remnic-source": "./src/message-parts/index.ts",
+      "import": "./dist/message-parts/index.js"
+    },
+    "./message-parts/index": {
+      "types": "./dist/message-parts/index.d.ts",
+      "remnic-source": "./src/message-parts/index.ts",
+      "import": "./dist/message-parts/index.js"
+    },
+    "./message-parts/index.js": {
+      "types": "./dist/message-parts/index.d.ts",
+      "remnic-source": "./src/message-parts/index.ts",
+      "import": "./dist/message-parts/index.js"
+    },
+    "./migrate/from-engram": {
+      "types": "./dist/migrate/from-engram.d.ts",
+      "remnic-source": "./src/migrate/from-engram.ts",
+      "import": "./dist/migrate/from-engram.js"
+    },
+    "./migrate/from-engram.js": {
+      "types": "./dist/migrate/from-engram.d.ts",
+      "remnic-source": "./src/migrate/from-engram.ts",
+      "import": "./dist/migrate/from-engram.js"
+    },
+    "./model-registry": {
+      "types": "./dist/model-registry.d.ts",
+      "remnic-source": "./src/model-registry.ts",
+      "import": "./dist/model-registry.js"
+    },
+    "./model-registry.js": {
+      "types": "./dist/model-registry.d.ts",
+      "remnic-source": "./src/model-registry.ts",
+      "import": "./dist/model-registry.js"
+    },
+    "./models-json": {
+      "types": "./dist/models-json.d.ts",
+      "remnic-source": "./src/models-json.ts",
+      "import": "./dist/models-json.js"
+    },
+    "./models-json.js": {
+      "types": "./dist/models-json.d.ts",
+      "remnic-source": "./src/models-json.ts",
+      "import": "./dist/models-json.js"
+    },
+    "./namespaces/migrate": {
+      "types": "./dist/namespaces/migrate.d.ts",
+      "remnic-source": "./src/namespaces/migrate.ts",
+      "import": "./dist/namespaces/migrate.js"
+    },
+    "./namespaces/migrate.js": {
+      "types": "./dist/namespaces/migrate.d.ts",
+      "remnic-source": "./src/namespaces/migrate.ts",
+      "import": "./dist/namespaces/migrate.js"
+    },
+    "./namespaces/principal": {
+      "types": "./dist/namespaces/principal.d.ts",
+      "remnic-source": "./src/namespaces/principal.ts",
+      "import": "./dist/namespaces/principal.js"
+    },
+    "./namespaces/principal.js": {
+      "types": "./dist/namespaces/principal.d.ts",
+      "remnic-source": "./src/namespaces/principal.ts",
+      "import": "./dist/namespaces/principal.js"
+    },
+    "./namespaces/search": {
+      "types": "./dist/namespaces/search.d.ts",
+      "remnic-source": "./src/namespaces/search.ts",
+      "import": "./dist/namespaces/search.js"
+    },
+    "./namespaces/search.js": {
+      "types": "./dist/namespaces/search.d.ts",
+      "remnic-source": "./src/namespaces/search.ts",
+      "import": "./dist/namespaces/search.js"
+    },
+    "./namespaces/storage": {
+      "types": "./dist/namespaces/storage.d.ts",
+      "remnic-source": "./src/namespaces/storage.ts",
+      "import": "./dist/namespaces/storage.js"
+    },
+    "./namespaces/storage.js": {
+      "types": "./dist/namespaces/storage.d.ts",
+      "remnic-source": "./src/namespaces/storage.ts",
+      "import": "./dist/namespaces/storage.js"
+    },
+    "./native-knowledge": {
+      "types": "./dist/native-knowledge.d.ts",
+      "remnic-source": "./src/native-knowledge.ts",
+      "import": "./dist/native-knowledge.js"
+    },
+    "./native-knowledge.js": {
+      "types": "./dist/native-knowledge.d.ts",
+      "remnic-source": "./src/native-knowledge.ts",
+      "import": "./dist/native-knowledge.js"
+    },
+    "./negative": {
+      "types": "./dist/negative.d.ts",
+      "remnic-source": "./src/negative.ts",
+      "import": "./dist/negative.js"
+    },
+    "./negative.js": {
+      "types": "./dist/negative.d.ts",
+      "remnic-source": "./src/negative.ts",
+      "import": "./dist/negative.js"
+    },
+    "./network/tailscale": {
+      "types": "./dist/network/tailscale.d.ts",
+      "remnic-source": "./src/network/tailscale.ts",
+      "import": "./dist/network/tailscale.js"
+    },
+    "./network/tailscale.js": {
+      "types": "./dist/network/tailscale.d.ts",
+      "remnic-source": "./src/network/tailscale.ts",
+      "import": "./dist/network/tailscale.js"
+    },
+    "./network/webdav": {
+      "types": "./dist/network/webdav.d.ts",
+      "remnic-source": "./src/network/webdav.ts",
+      "import": "./dist/network/webdav.js"
+    },
+    "./network/webdav.js": {
+      "types": "./dist/network/webdav.d.ts",
+      "remnic-source": "./src/network/webdav.ts",
+      "import": "./dist/network/webdav.js"
+    },
+    "./objective-state": {
+      "types": "./dist/objective-state.d.ts",
+      "remnic-source": "./src/objective-state.ts",
+      "import": "./dist/objective-state.js"
+    },
+    "./objective-state-writers": {
+      "types": "./dist/objective-state-writers.d.ts",
+      "remnic-source": "./src/objective-state-writers.ts",
+      "import": "./dist/objective-state-writers.js"
+    },
+    "./objective-state-writers.js": {
+      "types": "./dist/objective-state-writers.d.ts",
+      "remnic-source": "./src/objective-state-writers.ts",
+      "import": "./dist/objective-state-writers.js"
+    },
+    "./objective-state.js": {
+      "types": "./dist/objective-state.d.ts",
+      "remnic-source": "./src/objective-state.ts",
+      "import": "./dist/objective-state.js"
+    },
+    "./offline-sync-exclude-globs": {
+      "types": "./dist/offline-sync-exclude-globs.d.ts",
+      "remnic-source": "./src/offline-sync-exclude-globs.ts",
+      "import": "./dist/offline-sync-exclude-globs.js"
+    },
+    "./offline-sync-exclude-globs.js": {
+      "types": "./dist/offline-sync-exclude-globs.d.ts",
+      "remnic-source": "./src/offline-sync-exclude-globs.ts",
+      "import": "./dist/offline-sync-exclude-globs.js"
+    },
+    "./openai-chat-compat": {
+      "types": "./dist/openai-chat-compat.d.ts",
+      "remnic-source": "./src/openai-chat-compat.ts",
+      "import": "./dist/openai-chat-compat.js"
+    },
+    "./openai-chat-compat.js": {
+      "types": "./dist/openai-chat-compat.d.ts",
+      "remnic-source": "./src/openai-chat-compat.ts",
+      "import": "./dist/openai-chat-compat.js"
+    },
+    "./operator-toolkit": {
+      "types": "./dist/operator-toolkit.d.ts",
+      "remnic-source": "./src/operator-toolkit.ts",
+      "import": "./dist/operator-toolkit.js"
+    },
+    "./operator-toolkit.js": {
+      "types": "./dist/operator-toolkit.d.ts",
+      "remnic-source": "./src/operator-toolkit.ts",
+      "import": "./dist/operator-toolkit.js"
+    },
+    "./opik-exporter": {
+      "types": "./dist/opik-exporter.d.ts",
+      "remnic-source": "./src/opik-exporter.ts",
+      "import": "./dist/opik-exporter.js"
+    },
+    "./opik-exporter.js": {
+      "types": "./dist/opik-exporter.d.ts",
+      "remnic-source": "./src/opik-exporter.ts",
+      "import": "./dist/opik-exporter.js"
+    },
+    "./orchestrator": {
+      "types": "./dist/orchestrator.d.ts",
+      "remnic-source": "./src/orchestrator.ts",
+      "import": "./dist/orchestrator.js"
+    },
+    "./orchestrator.js": {
+      "types": "./dist/orchestrator.d.ts",
+      "remnic-source": "./src/orchestrator.ts",
+      "import": "./dist/orchestrator.js"
+    },
+    "./orchestration/maintenance": {
+      "types": "./dist/orchestration/maintenance.d.ts",
+      "remnic-source": "./src/orchestration/maintenance.ts",
+      "import": "./dist/orchestration/maintenance.js"
+    },
+    "./orchestration/maintenance.js": {
+      "types": "./dist/orchestration/maintenance.d.ts",
+      "remnic-source": "./src/orchestration/maintenance.ts",
+      "import": "./dist/orchestration/maintenance.js"
+    },
+    "./orchestration/compression-guideline-coordinator": {
+      "types": "./dist/orchestration/compression-guideline-coordinator.d.ts",
+      "remnic-source": "./src/orchestration/compression-guideline-coordinator.ts",
+      "import": "./dist/orchestration/compression-guideline-coordinator.js"
+    },
+    "./orchestration/compression-guideline-coordinator.js": {
+      "types": "./dist/orchestration/compression-guideline-coordinator.d.ts",
+      "remnic-source": "./src/orchestration/compression-guideline-coordinator.ts",
+      "import": "./dist/orchestration/compression-guideline-coordinator.js"
+    },
+    "./page-versioning": {
+      "types": "./dist/page-versioning.d.ts",
+      "remnic-source": "./src/page-versioning.ts",
+      "import": "./dist/page-versioning.js"
+    },
+    "./page-versioning.js": {
+      "types": "./dist/page-versioning.d.ts",
+      "remnic-source": "./src/page-versioning.ts",
+      "import": "./dist/page-versioning.js"
+    },
+    "./patterns-cli": {
+      "types": "./dist/patterns-cli.d.ts",
+      "remnic-source": "./src/patterns-cli.ts",
+      "import": "./dist/patterns-cli.js"
+    },
+    "./patterns-cli.js": {
+      "types": "./dist/patterns-cli.d.ts",
+      "remnic-source": "./src/patterns-cli.ts",
+      "import": "./dist/patterns-cli.js"
+    },
+    "./peers": {
+      "types": "./dist/peers/index.d.ts",
+      "remnic-source": "./src/peers/index.ts",
+      "import": "./dist/peers/index.js"
+    },
+    "./peers.js": {
+      "types": "./dist/peers/index.d.ts",
+      "remnic-source": "./src/peers/index.ts",
+      "import": "./dist/peers/index.js"
+    },
+    "./peers/index": {
+      "types": "./dist/peers/index.d.ts",
+      "remnic-source": "./src/peers/index.ts",
+      "import": "./dist/peers/index.js"
+    },
+    "./peers/index.js": {
+      "types": "./dist/peers/index.d.ts",
+      "remnic-source": "./src/peers/index.ts",
+      "import": "./dist/peers/index.js"
+    },
+    "./plugin-entry-resolver": {
+      "types": "./dist/plugin-entry-resolver.d.ts",
+      "remnic-source": "./src/plugin-entry-resolver.ts",
+      "import": "./dist/plugin-entry-resolver.js"
+    },
+    "./plugin-entry-resolver.js": {
+      "types": "./dist/plugin-entry-resolver.d.ts",
+      "remnic-source": "./src/plugin-entry-resolver.ts",
+      "import": "./dist/plugin-entry-resolver.js"
+    },
+    "./plugin-id": {
+      "types": "./dist/plugin-id.d.ts",
+      "remnic-source": "./src/plugin-id.ts",
+      "import": "./dist/plugin-id.js"
+    },
+    "./plugin-id.js": {
+      "types": "./dist/plugin-id.d.ts",
+      "remnic-source": "./src/plugin-id.ts",
+      "import": "./dist/plugin-id.js"
+    },
+    "./policy-runtime": {
+      "types": "./dist/policy-runtime.d.ts",
+      "remnic-source": "./src/policy-runtime.ts",
+      "import": "./dist/policy-runtime.js"
+    },
+    "./policy-runtime.js": {
+      "types": "./dist/policy-runtime.d.ts",
+      "remnic-source": "./src/policy-runtime.ts",
+      "import": "./dist/policy-runtime.js"
+    },
+    "./profiling": {
+      "types": "./dist/profiling.d.ts",
+      "remnic-source": "./src/profiling.ts",
+      "import": "./dist/profiling.js"
+    },
+    "./profiling.js": {
+      "types": "./dist/profiling.d.ts",
+      "remnic-source": "./src/profiling.ts",
+      "import": "./dist/profiling.js"
+    },
+    "./qmd": {
+      "types": "./dist/qmd.d.ts",
+      "remnic-source": "./src/qmd.ts",
+      "import": "./dist/qmd.js"
+    },
+    "./qmd-recall-cache": {
+      "types": "./dist/qmd-recall-cache.d.ts",
+      "remnic-source": "./src/qmd-recall-cache.ts",
+      "import": "./dist/qmd-recall-cache.js"
+    },
+    "./qmd-recall-cache.js": {
+      "types": "./dist/qmd-recall-cache.d.ts",
+      "remnic-source": "./src/qmd-recall-cache.ts",
+      "import": "./dist/qmd-recall-cache.js"
+    },
+    "./qmd.js": {
+      "types": "./dist/qmd.d.ts",
+      "remnic-source": "./src/qmd.ts",
+      "import": "./dist/qmd.js"
+    },
+    "./reasoning-trace-recall": {
+      "types": "./dist/reasoning-trace-recall.d.ts",
+      "remnic-source": "./src/reasoning-trace-recall.ts",
+      "import": "./dist/reasoning-trace-recall.js"
+    },
+    "./reasoning-trace-recall.js": {
+      "types": "./dist/reasoning-trace-recall.d.ts",
+      "remnic-source": "./src/reasoning-trace-recall.ts",
+      "import": "./dist/reasoning-trace-recall.js"
+    },
+    "./reasoning-trace-types": {
+      "types": "./dist/reasoning-trace-types.d.ts",
+      "remnic-source": "./src/reasoning-trace-types.ts",
+      "import": "./dist/reasoning-trace-types.js"
+    },
+    "./reasoning-trace-types.js": {
+      "types": "./dist/reasoning-trace-types.d.ts",
+      "remnic-source": "./src/reasoning-trace-types.ts",
+      "import": "./dist/reasoning-trace-types.js"
+    },
+    "./recall-audit": {
+      "types": "./dist/recall-audit.d.ts",
+      "remnic-source": "./src/recall-audit.ts",
+      "import": "./dist/recall-audit.js"
+    },
+    "./recall-audit-anomaly": {
+      "types": "./dist/recall-audit-anomaly.d.ts",
+      "remnic-source": "./src/recall-audit-anomaly.ts",
+      "import": "./dist/recall-audit-anomaly.js"
+    },
+    "./recall-audit-anomaly.js": {
+      "types": "./dist/recall-audit-anomaly.d.ts",
+      "remnic-source": "./src/recall-audit-anomaly.ts",
+      "import": "./dist/recall-audit-anomaly.js"
+    },
+    "./recall-audit.js": {
+      "types": "./dist/recall-audit.d.ts",
+      "remnic-source": "./src/recall-audit.ts",
+      "import": "./dist/recall-audit.js"
+    },
+    "./recall-disclosure-escalation": {
+      "types": "./dist/recall-disclosure-escalation.d.ts",
+      "remnic-source": "./src/recall-disclosure-escalation.ts",
+      "import": "./dist/recall-disclosure-escalation.js"
+    },
+    "./recall-disclosure-escalation.js": {
+      "types": "./dist/recall-disclosure-escalation.d.ts",
+      "remnic-source": "./src/recall-disclosure-escalation.ts",
+      "import": "./dist/recall-disclosure-escalation.js"
+    },
+    "./recall-explain-renderer": {
+      "types": "./dist/recall-explain-renderer.d.ts",
+      "remnic-source": "./src/recall-explain-renderer.ts",
+      "import": "./dist/recall-explain-renderer.js"
+    },
+    "./recall-explain-renderer.js": {
+      "types": "./dist/recall-explain-renderer.d.ts",
+      "remnic-source": "./src/recall-explain-renderer.ts",
+      "import": "./dist/recall-explain-renderer.js"
+    },
+    "./recall-mmr": {
+      "types": "./dist/recall-mmr.d.ts",
+      "remnic-source": "./src/recall-mmr.ts",
+      "import": "./dist/recall-mmr.js"
+    },
+    "./recall-mmr.js": {
+      "types": "./dist/recall-mmr.d.ts",
+      "remnic-source": "./src/recall-mmr.ts",
+      "import": "./dist/recall-mmr.js"
+    },
+    "./recall-qos": {
+      "types": "./dist/recall-qos.d.ts",
+      "remnic-source": "./src/recall-qos.ts",
+      "import": "./dist/recall-qos.js"
+    },
+    "./recall-qos.js": {
+      "types": "./dist/recall-qos.d.ts",
+      "remnic-source": "./src/recall-qos.ts",
+      "import": "./dist/recall-qos.js"
+    },
+    "./recall-query-policy": {
+      "types": "./dist/recall-query-policy.d.ts",
+      "remnic-source": "./src/recall-query-policy.ts",
+      "import": "./dist/recall-query-policy.js"
+    },
+    "./recall-query-policy.js": {
+      "types": "./dist/recall-query-policy.d.ts",
+      "remnic-source": "./src/recall-query-policy.ts",
+      "import": "./dist/recall-query-policy.js"
+    },
+    "./recall-state": {
+      "types": "./dist/recall-state.d.ts",
+      "remnic-source": "./src/recall-state.ts",
+      "import": "./dist/recall-state.js"
+    },
+    "./recall-state.js": {
+      "types": "./dist/recall-state.d.ts",
+      "remnic-source": "./src/recall-state.ts",
+      "import": "./dist/recall-state.js"
+    },
+    "./recall-tag-filter": {
+      "types": "./dist/recall-tag-filter.d.ts",
+      "remnic-source": "./src/recall-tag-filter.ts",
+      "import": "./dist/recall-tag-filter.js"
+    },
+    "./recall-tag-filter.js": {
+      "types": "./dist/recall-tag-filter.d.ts",
+      "remnic-source": "./src/recall-tag-filter.ts",
+      "import": "./dist/recall-tag-filter.js"
+    },
+    "./recall-tokenization": {
+      "types": "./dist/recall-tokenization.d.ts",
+      "remnic-source": "./src/recall-tokenization.ts",
+      "import": "./dist/recall-tokenization.js"
+    },
+    "./recall-tokenization.js": {
+      "types": "./dist/recall-tokenization.d.ts",
+      "remnic-source": "./src/recall-tokenization.ts",
+      "import": "./dist/recall-tokenization.js"
+    },
+    "./token-estimate": {
+      "types": "./dist/token-estimate.d.ts",
+      "remnic-source": "./src/token-estimate.ts",
+      "import": "./dist/token-estimate.js"
+    },
+    "./token-estimate.js": {
+      "types": "./dist/token-estimate.d.ts",
+      "remnic-source": "./src/token-estimate.ts",
+      "import": "./dist/token-estimate.js"
+    },
+    "./export-okf": {
+      "types": "./dist/transfer/export-okf.d.ts",
+      "remnic-source": "./src/transfer/export-okf.ts",
+      "import": "./dist/transfer/export-okf.js"
+    },
+    "./export-okf.js": {
+      "types": "./dist/transfer/export-okf.d.ts",
+      "remnic-source": "./src/transfer/export-okf.ts",
+      "import": "./dist/transfer/export-okf.js"
+    },
+    "./export-okf-codegraph": {
+      "types": "./dist/coding/export-okf-codegraph.d.ts",
+      "remnic-source": "./src/coding/export-okf-codegraph.ts",
+      "import": "./dist/coding/export-okf-codegraph.js"
+    },
+    "./export-okf-codegraph.js": {
+      "types": "./dist/coding/export-okf-codegraph.d.ts",
+      "remnic-source": "./src/coding/export-okf-codegraph.ts",
+      "import": "./dist/coding/export-okf-codegraph.js"
+    },
+    "./standup": {
+      "types": "./dist/standup/build.d.ts",
+      "remnic-source": "./src/standup/build.ts",
+      "import": "./dist/standup/build.js"
+    },
+    "./standup.js": {
+      "types": "./dist/standup/build.d.ts",
+      "remnic-source": "./src/standup/build.ts",
+      "import": "./dist/standup/build.js"
+    },
+    "./active-context-transform": {
+      "types": "./dist/active-context-transform.d.ts",
+      "remnic-source": "./src/active-context-transform.ts",
+      "import": "./dist/active-context-transform.js"
+    },
+    "./active-context-transform.js": {
+      "types": "./dist/active-context-transform.d.ts",
+      "remnic-source": "./src/active-context-transform.ts",
+      "import": "./dist/active-context-transform.js"
+    },
+    "./context-summary": {
+      "types": "./dist/context-summary.d.ts",
+      "remnic-source": "./src/context-summary.ts",
+      "import": "./dist/context-summary.js"
+    },
+    "./context-summary.js": {
+      "types": "./dist/context-summary.d.ts",
+      "remnic-source": "./src/context-summary.ts",
+      "import": "./dist/context-summary.js"
+    },
+    "./recall-xray": {
+      "types": "./dist/recall-xray.d.ts",
+      "remnic-source": "./src/recall-xray.ts",
+      "import": "./dist/recall-xray.js"
+    },
+    "./recall-xray-cli": {
+      "types": "./dist/recall-xray-cli.d.ts",
+      "remnic-source": "./src/recall-xray-cli.ts",
+      "import": "./dist/recall-xray-cli.js"
+    },
+    "./recall-xray-cli.js": {
+      "types": "./dist/recall-xray-cli.d.ts",
+      "remnic-source": "./src/recall-xray-cli.ts",
+      "import": "./dist/recall-xray-cli.js"
+    },
+    "./recall-xray-renderer": {
+      "types": "./dist/recall-xray-renderer.d.ts",
+      "remnic-source": "./src/recall-xray-renderer.ts",
+      "import": "./dist/recall-xray-renderer.js"
+    },
+    "./recall-xray-renderer.js": {
+      "types": "./dist/recall-xray-renderer.d.ts",
+      "remnic-source": "./src/recall-xray-renderer.ts",
+      "import": "./dist/recall-xray-renderer.js"
+    },
+    "./recall-xray.js": {
+      "types": "./dist/recall-xray.d.ts",
+      "remnic-source": "./src/recall-xray.ts",
+      "import": "./dist/recall-xray.js"
+    },
+    "./reconstruct": {
+      "types": "./dist/reconstruct.d.ts",
+      "remnic-source": "./src/reconstruct.ts",
+      "import": "./dist/reconstruct.js"
+    },
+    "./reconstruct.js": {
+      "types": "./dist/reconstruct.d.ts",
+      "remnic-source": "./src/reconstruct.ts",
+      "import": "./dist/reconstruct.js"
+    },
+    "./release-changelog": {
+      "types": "./dist/release-changelog.d.ts",
+      "remnic-source": "./src/release-changelog.ts",
+      "import": "./dist/release-changelog.js"
+    },
+    "./release-changelog.js": {
+      "types": "./dist/release-changelog.d.ts",
+      "remnic-source": "./src/release-changelog.ts",
+      "import": "./dist/release-changelog.js"
+    },
+    "./relevance": {
+      "types": "./dist/relevance.d.ts",
+      "remnic-source": "./src/relevance.ts",
+      "import": "./dist/relevance.js"
+    },
+    "./relevance.js": {
+      "types": "./dist/relevance.d.ts",
+      "remnic-source": "./src/relevance.ts",
+      "import": "./dist/relevance.js"
+    },
+    "./replay/normalizers/chatgpt": {
+      "types": "./dist/replay/normalizers/chatgpt.d.ts",
+      "remnic-source": "./src/replay/normalizers/chatgpt.ts",
+      "import": "./dist/replay/normalizers/chatgpt.js"
+    },
+    "./replay/normalizers/chatgpt.js": {
+      "types": "./dist/replay/normalizers/chatgpt.d.ts",
+      "remnic-source": "./src/replay/normalizers/chatgpt.ts",
+      "import": "./dist/replay/normalizers/chatgpt.js"
+    },
+    "./replay/normalizers/claude": {
+      "types": "./dist/replay/normalizers/claude.d.ts",
+      "remnic-source": "./src/replay/normalizers/claude.ts",
+      "import": "./dist/replay/normalizers/claude.js"
+    },
+    "./replay/normalizers/claude.js": {
+      "types": "./dist/replay/normalizers/claude.d.ts",
+      "remnic-source": "./src/replay/normalizers/claude.ts",
+      "import": "./dist/replay/normalizers/claude.js"
+    },
+    "./replay/normalizers/openclaw": {
+      "types": "./dist/replay/normalizers/openclaw.d.ts",
+      "remnic-source": "./src/replay/normalizers/openclaw.ts",
+      "import": "./dist/replay/normalizers/openclaw.js"
+    },
+    "./replay/normalizers/openclaw.js": {
+      "types": "./dist/replay/normalizers/openclaw.d.ts",
+      "remnic-source": "./src/replay/normalizers/openclaw.ts",
+      "import": "./dist/replay/normalizers/openclaw.js"
+    },
+    "./replay/normalizers/shared": {
+      "types": "./dist/replay/normalizers/shared.d.ts",
+      "remnic-source": "./src/replay/normalizers/shared.ts",
+      "import": "./dist/replay/normalizers/shared.js"
+    },
+    "./replay/normalizers/shared.js": {
+      "types": "./dist/replay/normalizers/shared.d.ts",
+      "remnic-source": "./src/replay/normalizers/shared.ts",
+      "import": "./dist/replay/normalizers/shared.js"
+    },
+    "./replay/runner": {
+      "types": "./dist/replay/runner.d.ts",
+      "remnic-source": "./src/replay/runner.ts",
+      "import": "./dist/replay/runner.js"
+    },
+    "./replay/runner.js": {
+      "types": "./dist/replay/runner.d.ts",
+      "remnic-source": "./src/replay/runner.ts",
+      "import": "./dist/replay/runner.js"
+    },
+    "./replay/types": {
+      "types": "./dist/replay/types.d.ts",
+      "remnic-source": "./src/replay/types.ts",
+      "import": "./dist/replay/types.js"
+    },
+    "./replay/types.js": {
+      "types": "./dist/replay/types.d.ts",
+      "remnic-source": "./src/replay/types.ts",
+      "import": "./dist/replay/types.js"
+    },
+    "./rerank": {
+      "types": "./dist/rerank.d.ts",
+      "remnic-source": "./src/rerank.ts",
+      "import": "./dist/rerank.js"
+    },
+    "./rerank.js": {
+      "types": "./dist/rerank.d.ts",
+      "remnic-source": "./src/rerank.ts",
+      "import": "./dist/rerank.js"
+    },
+    "./resolve-auth-token": {
+      "types": "./dist/resolve-auth-token.d.ts",
+      "remnic-source": "./src/resolve-auth-token.ts",
+      "import": "./dist/resolve-auth-token.js"
+    },
+    "./resolve-auth-token.js": {
+      "types": "./dist/resolve-auth-token.d.ts",
+      "remnic-source": "./src/resolve-auth-token.ts",
+      "import": "./dist/resolve-auth-token.js"
+    },
+    "./resolve-provider-secret": {
+      "types": "./dist/resolve-provider-secret.d.ts",
+      "remnic-source": "./src/resolve-provider-secret.ts",
+      "import": "./dist/resolve-provider-secret.js"
+    },
+    "./resolve-provider-secret.js": {
+      "types": "./dist/resolve-provider-secret.d.ts",
+      "remnic-source": "./src/resolve-provider-secret.ts",
+      "import": "./dist/resolve-provider-secret.js"
+    },
+    "./response-guidance-recall": {
+      "types": "./dist/response-guidance-recall.d.ts",
+      "remnic-source": "./src/response-guidance-recall.ts",
+      "import": "./dist/response-guidance-recall.js"
+    },
+    "./response-guidance-recall.js": {
+      "types": "./dist/response-guidance-recall.d.ts",
+      "remnic-source": "./src/response-guidance-recall.ts",
+      "import": "./dist/response-guidance-recall.js"
+    },
+    "./resume-bundles": {
+      "types": "./dist/resume-bundles.d.ts",
+      "remnic-source": "./src/resume-bundles.ts",
+      "import": "./dist/resume-bundles.js"
+    },
+    "./resume-bundles.js": {
+      "types": "./dist/resume-bundles.d.ts",
+      "remnic-source": "./src/resume-bundles.ts",
+      "import": "./dist/resume-bundles.js"
+    },
+    "./retrieval": {
+      "types": "./dist/retrieval.d.ts",
+      "remnic-source": "./src/retrieval.ts",
+      "import": "./dist/retrieval.js"
+    },
+    "./retrieval-agents": {
+      "types": "./dist/retrieval-agents.d.ts",
+      "remnic-source": "./src/retrieval-agents.ts",
+      "import": "./dist/retrieval-agents.js"
+    },
+    "./retrieval-agents.js": {
+      "types": "./dist/retrieval-agents.d.ts",
+      "remnic-source": "./src/retrieval-agents.ts",
+      "import": "./dist/retrieval-agents.js"
+    },
+    "./retrieval-tiers": {
+      "types": "./dist/retrieval-tiers.d.ts",
+      "remnic-source": "./src/retrieval-tiers.ts",
+      "import": "./dist/retrieval-tiers.js"
+    },
+    "./retrieval-tiers.js": {
+      "types": "./dist/retrieval-tiers.d.ts",
+      "remnic-source": "./src/retrieval-tiers.ts",
+      "import": "./dist/retrieval-tiers.js"
+    },
+    "./retrieval.js": {
+      "types": "./dist/retrieval.d.ts",
+      "remnic-source": "./src/retrieval.ts",
+      "import": "./dist/retrieval.js"
+    },
+    "./routing/engine": {
+      "types": "./dist/routing/engine.d.ts",
+      "remnic-source": "./src/routing/engine.ts",
+      "import": "./dist/routing/engine.js"
+    },
+    "./routing/engine.js": {
+      "types": "./dist/routing/engine.d.ts",
+      "remnic-source": "./src/routing/engine.ts",
+      "import": "./dist/routing/engine.js"
+    },
+    "./routing/store": {
+      "types": "./dist/routing/store.d.ts",
+      "remnic-source": "./src/routing/store.ts",
+      "import": "./dist/routing/store.js"
+    },
+    "./routing/store.js": {
+      "types": "./dist/routing/store.d.ts",
+      "remnic-source": "./src/routing/store.ts",
+      "import": "./dist/routing/store.js"
+    },
+    "./runtime/better-sqlite": {
+      "types": "./dist/runtime/better-sqlite.d.ts",
+      "remnic-source": "./src/runtime/better-sqlite.ts",
+      "import": "./dist/runtime/better-sqlite.js"
+    },
+    "./runtime/better-sqlite.js": {
+      "types": "./dist/runtime/better-sqlite.d.ts",
+      "remnic-source": "./src/runtime/better-sqlite.ts",
+      "import": "./dist/runtime/better-sqlite.js"
+    },
+    "./runtime/child-process": {
+      "types": "./dist/runtime/child-process.d.ts",
+      "remnic-source": "./src/runtime/child-process.ts",
+      "import": "./dist/runtime/child-process.js"
+    },
+    "./runtime/child-process.js": {
+      "types": "./dist/runtime/child-process.d.ts",
+      "remnic-source": "./src/runtime/child-process.ts",
+      "import": "./dist/runtime/child-process.js"
+    },
+    "./runtime/env": {
+      "types": "./dist/runtime/env.d.ts",
+      "remnic-source": "./src/runtime/env.ts",
+      "import": "./dist/runtime/env.js"
+    },
+    "./runtime/env.js": {
+      "types": "./dist/runtime/env.d.ts",
+      "remnic-source": "./src/runtime/env.ts",
+      "import": "./dist/runtime/env.js"
+    },
+    "./sanitize": {
+      "types": "./dist/sanitize.d.ts",
+      "remnic-source": "./src/sanitize.ts",
+      "import": "./dist/sanitize.js"
+    },
+    "./sanitize.js": {
+      "types": "./dist/sanitize.d.ts",
+      "remnic-source": "./src/sanitize.ts",
+      "import": "./dist/sanitize.js"
+    },
+    "./schemas": {
+      "types": "./dist/schemas.d.ts",
+      "remnic-source": "./src/schemas.ts",
+      "import": "./dist/schemas.js"
+    },
+    "./schemas.js": {
+      "types": "./dist/schemas.d.ts",
+      "remnic-source": "./src/schemas.ts",
+      "import": "./dist/schemas.js"
+    },
+    "./sdk-compat": {
+      "types": "./dist/sdk-compat.d.ts",
+      "remnic-source": "./src/sdk-compat.ts",
+      "import": "./dist/sdk-compat.js"
+    },
+    "./sdk-compat.js": {
+      "types": "./dist/sdk-compat.d.ts",
+      "remnic-source": "./src/sdk-compat.ts",
+      "import": "./dist/sdk-compat.js"
+    },
+    "./search": {
+      "types": "./dist/search/index.d.ts",
+      "remnic-source": "./src/search/index.ts",
+      "import": "./dist/search/index.js"
+    },
+    "./search.js": {
+      "types": "./dist/search/index.d.ts",
+      "remnic-source": "./src/search/index.ts",
+      "import": "./dist/search/index.js"
+    },
+    "./search/document-scanner": {
+      "types": "./dist/search/document-scanner.d.ts",
+      "remnic-source": "./src/search/document-scanner.ts",
+      "import": "./dist/search/document-scanner.js"
+    },
+    "./search/document-scanner.js": {
+      "types": "./dist/search/document-scanner.d.ts",
+      "remnic-source": "./src/search/document-scanner.ts",
+      "import": "./dist/search/document-scanner.js"
+    },
+    "./search/embed-helper": {
+      "types": "./dist/search/embed-helper.d.ts",
+      "remnic-source": "./src/search/embed-helper.ts",
+      "import": "./dist/search/embed-helper.js"
+    },
+    "./search/embed-helper.js": {
+      "types": "./dist/search/embed-helper.d.ts",
+      "remnic-source": "./src/search/embed-helper.ts",
+      "import": "./dist/search/embed-helper.js"
+    },
+    "./search/factory": {
+      "types": "./dist/search/factory.d.ts",
+      "remnic-source": "./src/search/factory.ts",
+      "import": "./dist/search/factory.js"
+    },
+    "./search/factory.js": {
+      "types": "./dist/search/factory.d.ts",
+      "remnic-source": "./src/search/factory.ts",
+      "import": "./dist/search/factory.js"
+    },
+    "./search/index": {
+      "types": "./dist/search/index.d.ts",
+      "remnic-source": "./src/search/index.ts",
+      "import": "./dist/search/index.js"
+    },
+    "./search/index.js": {
+      "types": "./dist/search/index.d.ts",
+      "remnic-source": "./src/search/index.ts",
+      "import": "./dist/search/index.js"
+    },
+    "./search/lancedb-backend": {
+      "types": "./dist/search/lancedb-backend.d.ts",
+      "remnic-source": "./src/search/lancedb-backend.ts",
+      "import": "./dist/search/lancedb-backend.js"
+    },
+    "./search/lancedb-backend.js": {
+      "types": "./dist/search/lancedb-backend.d.ts",
+      "remnic-source": "./src/search/lancedb-backend.ts",
+      "import": "./dist/search/lancedb-backend.js"
+    },
+    "./search/meilisearch-backend": {
+      "types": "./dist/search/meilisearch-backend.d.ts",
+      "remnic-source": "./src/search/meilisearch-backend.ts",
+      "import": "./dist/search/meilisearch-backend.js"
+    },
+    "./search/meilisearch-backend.js": {
+      "types": "./dist/search/meilisearch-backend.d.ts",
+      "remnic-source": "./src/search/meilisearch-backend.ts",
+      "import": "./dist/search/meilisearch-backend.js"
+    },
+    "./search/noop-backend": {
+      "types": "./dist/search/noop-backend.d.ts",
+      "remnic-source": "./src/search/noop-backend.ts",
+      "import": "./dist/search/noop-backend.js"
+    },
+    "./search/noop-backend.js": {
+      "types": "./dist/search/noop-backend.d.ts",
+      "remnic-source": "./src/search/noop-backend.ts",
+      "import": "./dist/search/noop-backend.js"
+    },
+    "./search/orama-backend": {
+      "types": "./dist/search/orama-backend.d.ts",
+      "remnic-source": "./src/search/orama-backend.ts",
+      "import": "./dist/search/orama-backend.js"
+    },
+    "./search/orama-backend.js": {
+      "types": "./dist/search/orama-backend.d.ts",
+      "remnic-source": "./src/search/orama-backend.ts",
+      "import": "./dist/search/orama-backend.js"
+    },
+    "./search/port": {
+      "types": "./dist/search/port.d.ts",
+      "remnic-source": "./src/search/port.ts",
+      "import": "./dist/search/port.js"
+    },
+    "./search/port.js": {
+      "types": "./dist/search/port.d.ts",
+      "remnic-source": "./src/search/port.ts",
+      "import": "./dist/search/port.js"
+    },
+    "./search/remote-backend": {
+      "types": "./dist/search/remote-backend.d.ts",
+      "remnic-source": "./src/search/remote-backend.ts",
+      "import": "./dist/search/remote-backend.js"
+    },
+    "./search/remote-backend.js": {
+      "types": "./dist/search/remote-backend.d.ts",
+      "remnic-source": "./src/search/remote-backend.ts",
+      "import": "./dist/search/remote-backend.js"
+    },
+    "./secure-store": {
+      "types": "./dist/secure-store/index.d.ts",
+      "remnic-source": "./src/secure-store/index.ts",
+      "import": "./dist/secure-store/index.js"
+    },
+    "./secure-store.js": {
+      "types": "./dist/secure-store/index.d.ts",
+      "remnic-source": "./src/secure-store/index.ts",
+      "import": "./dist/secure-store/index.js"
+    },
+    "./secure-store/index": {
+      "types": "./dist/secure-store/index.d.ts",
+      "remnic-source": "./src/secure-store/index.ts",
+      "import": "./dist/secure-store/index.js"
+    },
+    "./secure-store/index.js": {
+      "types": "./dist/secure-store/index.d.ts",
+      "remnic-source": "./src/secure-store/index.ts",
+      "import": "./dist/secure-store/index.js"
+    },
+    "./semantic-chunking": {
+      "types": "./dist/semantic-chunking.d.ts",
+      "remnic-source": "./src/semantic-chunking.ts",
+      "import": "./dist/semantic-chunking.js"
+    },
+    "./semantic-chunking.js": {
+      "types": "./dist/semantic-chunking.d.ts",
+      "remnic-source": "./src/semantic-chunking.ts",
+      "import": "./dist/semantic-chunking.js"
+    },
+    "./semantic-consolidation": {
+      "types": "./dist/semantic-consolidation.d.ts",
+      "remnic-source": "./src/semantic-consolidation.ts",
+      "import": "./dist/semantic-consolidation.js"
+    },
+    "./semantic-consolidation.js": {
+      "types": "./dist/semantic-consolidation.d.ts",
+      "remnic-source": "./src/semantic-consolidation.ts",
+      "import": "./dist/semantic-consolidation.js"
+    },
+    "./semantic-rule-promotion": {
+      "types": "./dist/semantic-rule-promotion.d.ts",
+      "remnic-source": "./src/semantic-rule-promotion.ts",
+      "import": "./dist/semantic-rule-promotion.js"
+    },
+    "./semantic-rule-promotion.js": {
+      "types": "./dist/semantic-rule-promotion.d.ts",
+      "remnic-source": "./src/semantic-rule-promotion.ts",
+      "import": "./dist/semantic-rule-promotion.js"
+    },
+    "./semantic-rule-verifier": {
+      "types": "./dist/semantic-rule-verifier.d.ts",
+      "remnic-source": "./src/semantic-rule-verifier.ts",
+      "import": "./dist/semantic-rule-verifier.js"
+    },
+    "./semantic-rule-verifier.js": {
+      "types": "./dist/semantic-rule-verifier.d.ts",
+      "remnic-source": "./src/semantic-rule-verifier.ts",
+      "import": "./dist/semantic-rule-verifier.js"
+    },
+    "./session-integrity": {
+      "types": "./dist/session-integrity.d.ts",
+      "remnic-source": "./src/session-integrity.ts",
+      "import": "./dist/session-integrity.js"
+    },
+    "./session-integrity.js": {
+      "types": "./dist/session-integrity.d.ts",
+      "remnic-source": "./src/session-integrity.ts",
+      "import": "./dist/session-integrity.js"
+    },
+    "./session-namespace-bindings": {
+      "types": "./dist/session-namespace-bindings.d.ts",
+      "remnic-source": "./src/session-namespace-bindings.ts",
+      "import": "./dist/session-namespace-bindings.js"
+    },
+    "./session-namespace-bindings.js": {
+      "types": "./dist/session-namespace-bindings.d.ts",
+      "remnic-source": "./src/session-namespace-bindings.ts",
+      "import": "./dist/session-namespace-bindings.js"
+    },
+    "./testing/lifecycle-matrix": {
+      "types": "./dist/testing/lifecycle-matrix.d.ts",
+      "remnic-source": "./src/testing/lifecycle-matrix.ts",
+      "import": "./dist/testing/lifecycle-matrix.js"
+    },
+    "./testing/lifecycle-matrix.js": {
+      "types": "./dist/testing/lifecycle-matrix.d.ts",
+      "remnic-source": "./src/testing/lifecycle-matrix.ts",
+      "import": "./dist/testing/lifecycle-matrix.js"
+    },
+    "./session-observer-bands": {
+      "types": "./dist/session-observer-bands.d.ts",
+      "remnic-source": "./src/session-observer-bands.ts",
+      "import": "./dist/session-observer-bands.js"
+    },
+    "./session-observer-bands.js": {
+      "types": "./dist/session-observer-bands.d.ts",
+      "remnic-source": "./src/session-observer-bands.ts",
+      "import": "./dist/session-observer-bands.js"
+    },
+    "./session-observer-state": {
+      "types": "./dist/session-observer-state.d.ts",
+      "remnic-source": "./src/session-observer-state.ts",
+      "import": "./dist/session-observer-state.js"
+    },
+    "./session-observer-state.js": {
+      "types": "./dist/session-observer-state.d.ts",
+      "remnic-source": "./src/session-observer-state.ts",
+      "import": "./dist/session-observer-state.js"
+    },
+    "./session-toggles": {
+      "types": "./dist/session-toggles.d.ts",
+      "remnic-source": "./src/session-toggles.ts",
+      "import": "./dist/session-toggles.js"
+    },
+    "./session-toggles.js": {
+      "types": "./dist/session-toggles.d.ts",
+      "remnic-source": "./src/session-toggles.ts",
+      "import": "./dist/session-toggles.js"
+    },
+    "./shared-context/manager": {
+      "types": "./dist/shared-context/manager.d.ts",
+      "remnic-source": "./src/shared-context/manager.ts",
+      "import": "./dist/shared-context/manager.js"
+    },
+    "./shared-context/manager.js": {
+      "types": "./dist/shared-context/manager.d.ts",
+      "remnic-source": "./src/shared-context/manager.ts",
+      "import": "./dist/shared-context/manager.js"
+    },
+    "./signal": {
+      "types": "./dist/signal.d.ts",
+      "remnic-source": "./src/signal.ts",
+      "import": "./dist/signal.js"
+    },
+    "./signal.js": {
+      "types": "./dist/signal.d.ts",
+      "remnic-source": "./src/signal.ts",
+      "import": "./dist/signal.js"
+    },
+    "./skills-registry": {
+      "types": "./dist/skills-registry.d.ts",
+      "remnic-source": "./src/skills-registry.ts",
+      "import": "./dist/skills-registry.js"
+    },
+    "./skills-registry.js": {
+      "types": "./dist/skills-registry.d.ts",
+      "remnic-source": "./src/skills-registry.ts",
+      "import": "./dist/skills-registry.js"
+    },
+    "./source-attribution": {
+      "types": "./dist/source-attribution.d.ts",
+      "remnic-source": "./src/source-attribution.ts",
+      "import": "./dist/source-attribution.js"
+    },
+    "./source-attribution.js": {
+      "types": "./dist/source-attribution.d.ts",
+      "remnic-source": "./src/source-attribution.ts",
+      "import": "./dist/source-attribution.js"
+    },
+    "./storage": {
+      "types": "./dist/storage.d.ts",
+      "remnic-source": "./src/storage.ts",
+      "import": "./dist/storage.js"
+    },
+    "./storage-paths": {
+      "types": "./dist/storage-paths.d.ts",
+      "remnic-source": "./src/storage-paths.ts",
+      "import": "./dist/storage-paths.js"
+    },
+    "./storage-paths.js": {
+      "types": "./dist/storage-paths.d.ts",
+      "remnic-source": "./src/storage-paths.ts",
+      "import": "./dist/storage-paths.js"
+    },
+    "./storage.js": {
+      "types": "./dist/storage.d.ts",
+      "remnic-source": "./src/storage.ts",
+      "import": "./dist/storage.js"
+    },
+    "./store-contract": {
+      "types": "./dist/store-contract.d.ts",
+      "remnic-source": "./src/store-contract.ts",
+      "import": "./dist/store-contract.js"
+    },
+    "./store-contract.js": {
+      "types": "./dist/store-contract.d.ts",
+      "remnic-source": "./src/store-contract.ts",
+      "import": "./dist/store-contract.js"
+    },
+    "./summarizer": {
+      "types": "./dist/summarizer.d.ts",
+      "remnic-source": "./src/summarizer.ts",
+      "import": "./dist/summarizer.js"
+    },
+    "./summarizer.js": {
+      "types": "./dist/summarizer.d.ts",
+      "remnic-source": "./src/summarizer.ts",
+      "import": "./dist/summarizer.js"
+    },
+    "./support-passport": {
+      "types": "./dist/support-passport/index.d.ts",
+      "remnic-source": "./src/support-passport/index.ts",
+      "import": "./dist/support-passport/index.js"
+    },
+    "./support-passport.js": {
+      "types": "./dist/support-passport/index.d.ts",
+      "remnic-source": "./src/support-passport/index.ts",
+      "import": "./dist/support-passport/index.js"
+    },
+    "./summary-snapshot": {
+      "types": "./dist/summary-snapshot.d.ts",
+      "remnic-source": "./src/summary-snapshot.ts",
+      "import": "./dist/summary-snapshot.js"
+    },
+    "./summary-snapshot.js": {
+      "types": "./dist/summary-snapshot.d.ts",
+      "remnic-source": "./src/summary-snapshot.ts",
+      "import": "./dist/summary-snapshot.js"
+    },
+    "./surfaces/dreams": {
+      "types": "./dist/surfaces/dreams.d.ts",
+      "remnic-source": "./src/surfaces/dreams.ts",
+      "import": "./dist/surfaces/dreams.js"
+    },
+    "./surfaces/dreams.js": {
+      "types": "./dist/surfaces/dreams.d.ts",
+      "remnic-source": "./src/surfaces/dreams.ts",
+      "import": "./dist/surfaces/dreams.js"
+    },
+    "./surfaces/heartbeat": {
+      "types": "./dist/surfaces/heartbeat.d.ts",
+      "remnic-source": "./src/surfaces/heartbeat.ts",
+      "import": "./dist/surfaces/heartbeat.js"
+    },
+    "./surfaces/heartbeat.js": {
+      "types": "./dist/surfaces/heartbeat.d.ts",
+      "remnic-source": "./src/surfaces/heartbeat.ts",
+      "import": "./dist/surfaces/heartbeat.js"
+    },
+    "./targeted-fact-recall": {
+      "types": "./dist/targeted-fact-recall.d.ts",
+      "remnic-source": "./src/targeted-fact-recall.ts",
+      "import": "./dist/targeted-fact-recall.js"
+    },
+    "./targeted-fact-recall.js": {
+      "types": "./dist/targeted-fact-recall.d.ts",
+      "remnic-source": "./src/targeted-fact-recall.ts",
+      "import": "./dist/targeted-fact-recall.js"
+    },
+    "./telemetry-transcript": {
+      "types": "./dist/telemetry-transcript.d.ts",
+      "remnic-source": "./src/telemetry-transcript.ts",
+      "import": "./dist/telemetry-transcript.js"
+    },
+    "./telemetry-transcript.js": {
+      "types": "./dist/telemetry-transcript.d.ts",
+      "remnic-source": "./src/telemetry-transcript.ts",
+      "import": "./dist/telemetry-transcript.js"
+    },
+    "./temporal-index": {
+      "types": "./dist/temporal-index.d.ts",
+      "remnic-source": "./src/temporal-index.ts",
+      "import": "./dist/temporal-index.js"
+    },
+    "./temporal-index.js": {
+      "types": "./dist/temporal-index.d.ts",
+      "remnic-source": "./src/temporal-index.ts",
+      "import": "./dist/temporal-index.js"
+    },
+    "./temporal-supersession": {
+      "types": "./dist/temporal-supersession.d.ts",
+      "remnic-source": "./src/temporal-supersession.ts",
+      "import": "./dist/temporal-supersession.js"
+    },
+    "./temporal-supersession.js": {
+      "types": "./dist/temporal-supersession.d.ts",
+      "remnic-source": "./src/temporal-supersession.ts",
+      "import": "./dist/temporal-supersession.js"
+    },
+    "./temporal-validity": {
+      "types": "./dist/temporal-validity.d.ts",
+      "remnic-source": "./src/temporal-validity.ts",
+      "import": "./dist/temporal-validity.js"
+    },
+    "./temporal-validity.js": {
+      "types": "./dist/temporal-validity.d.ts",
+      "remnic-source": "./src/temporal-validity.ts",
+      "import": "./dist/temporal-validity.js"
+    },
+    "./threading": {
+      "types": "./dist/threading.d.ts",
+      "remnic-source": "./src/threading.ts",
+      "import": "./dist/threading.js"
+    },
+    "./threading.js": {
+      "types": "./dist/threading.d.ts",
+      "remnic-source": "./src/threading.ts",
+      "import": "./dist/threading.js"
+    },
+    "./tier-migration": {
+      "types": "./dist/tier-migration.d.ts",
+      "remnic-source": "./src/tier-migration.ts",
+      "import": "./dist/tier-migration.js"
+    },
+    "./tier-migration.js": {
+      "types": "./dist/tier-migration.d.ts",
+      "remnic-source": "./src/tier-migration.ts",
+      "import": "./dist/tier-migration.js"
+    },
+    "./tier-routing": {
+      "types": "./dist/tier-routing.d.ts",
+      "remnic-source": "./src/tier-routing.ts",
+      "import": "./dist/tier-routing.js"
+    },
+    "./tier-routing.js": {
+      "types": "./dist/tier-routing.d.ts",
+      "remnic-source": "./src/tier-routing.ts",
+      "import": "./dist/tier-routing.js"
+    },
+    "./tmt": {
+      "types": "./dist/tmt.d.ts",
+      "remnic-source": "./src/tmt.ts",
+      "import": "./dist/tmt.js"
+    },
+    "./tmt.js": {
+      "types": "./dist/tmt.d.ts",
+      "remnic-source": "./src/tmt.ts",
+      "import": "./dist/tmt.js"
+    },
+    "./tokens": {
+      "types": "./dist/tokens.d.ts",
+      "remnic-source": "./src/tokens.ts",
+      "import": "./dist/tokens.js"
+    },
+    "./tokens.js": {
+      "types": "./dist/tokens.d.ts",
+      "remnic-source": "./src/tokens.ts",
+      "import": "./dist/tokens.js"
+    },
+    "./topics": {
+      "types": "./dist/topics.d.ts",
+      "remnic-source": "./src/topics.ts",
+      "import": "./dist/topics.js"
+    },
+    "./topics.js": {
+      "types": "./dist/topics.d.ts",
+      "remnic-source": "./src/topics.ts",
+      "import": "./dist/topics.js"
+    },
+    "./transcript": {
+      "types": "./dist/transcript.d.ts",
+      "remnic-source": "./src/transcript.ts",
+      "import": "./dist/transcript.js"
+    },
+    "./transcript.js": {
+      "types": "./dist/transcript.d.ts",
+      "remnic-source": "./src/transcript.ts",
+      "import": "./dist/transcript.js"
+    },
+    "./transfer/autodetect": {
+      "types": "./dist/transfer/autodetect.d.ts",
+      "remnic-source": "./src/transfer/autodetect.ts",
+      "import": "./dist/transfer/autodetect.js"
+    },
+    "./transfer/autodetect.js": {
+      "types": "./dist/transfer/autodetect.d.ts",
+      "remnic-source": "./src/transfer/autodetect.ts",
+      "import": "./dist/transfer/autodetect.js"
+    },
+    "./transfer/backup": {
+      "types": "./dist/transfer/backup.d.ts",
+      "remnic-source": "./src/transfer/backup.ts",
+      "import": "./dist/transfer/backup.js"
+    },
+    "./transfer/backup.js": {
+      "types": "./dist/transfer/backup.d.ts",
+      "remnic-source": "./src/transfer/backup.ts",
+      "import": "./dist/transfer/backup.js"
+    },
+    "./transfer/capsule-export": {
+      "types": "./dist/transfer/capsule-export.d.ts",
+      "remnic-source": "./src/transfer/capsule-export.ts",
+      "import": "./dist/transfer/capsule-export.js"
+    },
+    "./transfer/capsule-export.js": {
+      "types": "./dist/transfer/capsule-export.d.ts",
+      "remnic-source": "./src/transfer/capsule-export.ts",
+      "import": "./dist/transfer/capsule-export.js"
+    },
+    "./transfer/capsule-import": {
+      "types": "./dist/transfer/capsule-import.d.ts",
+      "remnic-source": "./src/transfer/capsule-import.ts",
+      "import": "./dist/transfer/capsule-import.js"
+    },
+    "./transfer/capsule-import.js": {
+      "types": "./dist/transfer/capsule-import.d.ts",
+      "remnic-source": "./src/transfer/capsule-import.ts",
+      "import": "./dist/transfer/capsule-import.js"
+    },
+    "./transfer/constants": {
+      "types": "./dist/transfer/constants.d.ts",
+      "remnic-source": "./src/transfer/constants.ts",
+      "import": "./dist/transfer/constants.js"
+    },
+    "./transfer/constants.js": {
+      "types": "./dist/transfer/constants.d.ts",
+      "remnic-source": "./src/transfer/constants.ts",
+      "import": "./dist/transfer/constants.js"
+    },
+    "./transfer/export-json": {
+      "types": "./dist/transfer/export-json.d.ts",
+      "remnic-source": "./src/transfer/export-json.ts",
+      "import": "./dist/transfer/export-json.js"
+    },
+    "./transfer/export-json.js": {
+      "types": "./dist/transfer/export-json.d.ts",
+      "remnic-source": "./src/transfer/export-json.ts",
+      "import": "./dist/transfer/export-json.js"
+    },
+    "./transfer/export-md": {
+      "types": "./dist/transfer/export-md.d.ts",
+      "remnic-source": "./src/transfer/export-md.ts",
+      "import": "./dist/transfer/export-md.js"
+    },
+    "./transfer/export-md.js": {
+      "types": "./dist/transfer/export-md.d.ts",
+      "remnic-source": "./src/transfer/export-md.ts",
+      "import": "./dist/transfer/export-md.js"
+    },
+    "./transfer/export-sqlite": {
+      "types": "./dist/transfer/export-sqlite.d.ts",
+      "remnic-source": "./src/transfer/export-sqlite.ts",
+      "import": "./dist/transfer/export-sqlite.js"
+    },
+    "./transfer/export-sqlite.js": {
+      "types": "./dist/transfer/export-sqlite.d.ts",
+      "remnic-source": "./src/transfer/export-sqlite.ts",
+      "import": "./dist/transfer/export-sqlite.js"
+    },
+    "./transfer/fs-utils": {
+      "types": "./dist/transfer/fs-utils.d.ts",
+      "remnic-source": "./src/transfer/fs-utils.ts",
+      "import": "./dist/transfer/fs-utils.js"
+    },
+    "./transfer/fs-utils.js": {
+      "types": "./dist/transfer/fs-utils.d.ts",
+      "remnic-source": "./src/transfer/fs-utils.ts",
+      "import": "./dist/transfer/fs-utils.js"
+    },
+    "./transfer/import-json": {
+      "types": "./dist/transfer/import-json.d.ts",
+      "remnic-source": "./src/transfer/import-json.ts",
+      "import": "./dist/transfer/import-json.js"
+    },
+    "./transfer/import-json.js": {
+      "types": "./dist/transfer/import-json.d.ts",
+      "remnic-source": "./src/transfer/import-json.ts",
+      "import": "./dist/transfer/import-json.js"
+    },
+    "./transfer/import-md": {
+      "types": "./dist/transfer/import-md.d.ts",
+      "remnic-source": "./src/transfer/import-md.ts",
+      "import": "./dist/transfer/import-md.js"
+    },
+    "./transfer/import-md.js": {
+      "types": "./dist/transfer/import-md.d.ts",
+      "remnic-source": "./src/transfer/import-md.ts",
+      "import": "./dist/transfer/import-md.js"
+    },
+    "./transfer/import-sqlite": {
+      "types": "./dist/transfer/import-sqlite.d.ts",
+      "remnic-source": "./src/transfer/import-sqlite.ts",
+      "import": "./dist/transfer/import-sqlite.js"
+    },
+    "./transfer/import-sqlite.js": {
+      "types": "./dist/transfer/import-sqlite.d.ts",
+      "remnic-source": "./src/transfer/import-sqlite.ts",
+      "import": "./dist/transfer/import-sqlite.js"
+    },
+    "./transfer/sqlite-schema": {
+      "types": "./dist/transfer/sqlite-schema.d.ts",
+      "remnic-source": "./src/transfer/sqlite-schema.ts",
+      "import": "./dist/transfer/sqlite-schema.js"
+    },
+    "./transfer/sqlite-schema.js": {
+      "types": "./dist/transfer/sqlite-schema.d.ts",
+      "remnic-source": "./src/transfer/sqlite-schema.ts",
+      "import": "./dist/transfer/sqlite-schema.js"
+    },
+    "./transfer/types": {
+      "types": "./dist/transfer/types.d.ts",
+      "remnic-source": "./src/transfer/types.ts",
+      "import": "./dist/transfer/types.js"
+    },
+    "./transfer/types.js": {
+      "types": "./dist/transfer/types.d.ts",
+      "remnic-source": "./src/transfer/types.ts",
+      "import": "./dist/transfer/types.js"
+    },
+    "./trust-zones": {
+      "types": "./dist/trust-zones.d.ts",
+      "remnic-source": "./src/trust-zones.ts",
+      "import": "./dist/trust-zones.js"
+    },
+    "./trust-zones.js": {
+      "types": "./dist/trust-zones.d.ts",
+      "remnic-source": "./src/trust-zones.ts",
+      "import": "./dist/trust-zones.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "remnic-source": "./src/types.ts",
+      "import": "./dist/types.js"
+    },
+    "./types.js": {
+      "types": "./dist/types.d.ts",
+      "remnic-source": "./src/types.ts",
+      "import": "./dist/types.js"
+    },
+    "./user-message-cleaning": {
+      "types": "./dist/user-message-cleaning.d.ts",
+      "remnic-source": "./src/user-message-cleaning.ts",
+      "import": "./dist/user-message-cleaning.js"
+    },
+    "./user-message-cleaning.js": {
+      "types": "./dist/user-message-cleaning.d.ts",
+      "remnic-source": "./src/user-message-cleaning.ts",
+      "import": "./dist/user-message-cleaning.js"
+    },
+    "./user-model": {
+      "types": "./dist/user-model.d.ts",
+      "remnic-source": "./src/user-model.ts",
+      "import": "./dist/user-model.js"
+    },
+    "./user-model.js": {
+      "types": "./dist/user-model.d.ts",
+      "remnic-source": "./src/user-model.ts",
+      "import": "./dist/user-model.js"
+    },
+    "./utility-learner": {
+      "types": "./dist/utility-learner.d.ts",
+      "remnic-source": "./src/utility-learner.ts",
+      "import": "./dist/utility-learner.js"
+    },
+    "./utility-learner.js": {
+      "types": "./dist/utility-learner.d.ts",
+      "remnic-source": "./src/utility-learner.ts",
+      "import": "./dist/utility-learner.js"
+    },
+    "./utility-runtime": {
+      "types": "./dist/utility-runtime.d.ts",
+      "remnic-source": "./src/utility-runtime.ts",
+      "import": "./dist/utility-runtime.js"
+    },
+    "./utility-runtime.js": {
+      "types": "./dist/utility-runtime.d.ts",
+      "remnic-source": "./src/utility-runtime.ts",
+      "import": "./dist/utility-runtime.js"
+    },
+    "./utility-telemetry": {
+      "types": "./dist/utility-telemetry.d.ts",
+      "remnic-source": "./src/utility-telemetry.ts",
+      "import": "./dist/utility-telemetry.js"
+    },
+    "./utility-telemetry.js": {
+      "types": "./dist/utility-telemetry.d.ts",
+      "remnic-source": "./src/utility-telemetry.ts",
+      "import": "./dist/utility-telemetry.js"
+    },
+    "./utils/serialize-mutations": {
+      "types": "./dist/utils/serialize-mutations.d.ts",
+      "remnic-source": "./src/utils/serialize-mutations.ts",
+      "import": "./dist/utils/serialize-mutations.js"
+    },
+    "./utils/serialize-mutations.js": {
+      "types": "./dist/utils/serialize-mutations.d.ts",
+      "remnic-source": "./src/utils/serialize-mutations.ts",
+      "import": "./dist/utils/serialize-mutations.js"
+    },
+    "./utils/path": {
+      "types": "./dist/utils/path.d.ts",
+      "remnic-source": "./src/utils/path.ts",
+      "import": "./dist/utils/path.js"
+    },
+    "./utils/path.js": {
+      "types": "./dist/utils/path.d.ts",
+      "remnic-source": "./src/utils/path.ts",
+      "import": "./dist/utils/path.js"
+    },
+    "./verified-recall": {
+      "types": "./dist/verified-recall.d.ts",
+      "remnic-source": "./src/verified-recall.ts",
+      "import": "./dist/verified-recall.js"
+    },
+    "./verified-recall.js": {
+      "types": "./dist/verified-recall.d.ts",
+      "remnic-source": "./src/verified-recall.ts",
+      "import": "./dist/verified-recall.js"
+    },
+    "./version-utils": {
+      "types": "./dist/version-utils.d.ts",
+      "remnic-source": "./src/version-utils.ts",
+      "import": "./dist/version-utils.js"
+    },
+    "./version-utils.js": {
+      "types": "./dist/version-utils.d.ts",
+      "remnic-source": "./src/version-utils.ts",
+      "import": "./dist/version-utils.js"
+    },
+    "./whitespace": {
+      "types": "./dist/whitespace.d.ts",
+      "remnic-source": "./src/whitespace.ts",
+      "import": "./dist/whitespace.js"
+    },
+    "./whitespace.js": {
+      "types": "./dist/whitespace.d.ts",
+      "remnic-source": "./src/whitespace.ts",
+      "import": "./dist/whitespace.js"
+    },
+    "./work-product-ledger": {
+      "types": "./dist/work-product-ledger.d.ts",
+      "remnic-source": "./src/work-product-ledger.ts",
+      "import": "./dist/work-product-ledger.js"
+    },
+    "./work-product-ledger.js": {
+      "types": "./dist/work-product-ledger.d.ts",
+      "remnic-source": "./src/work-product-ledger.ts",
+      "import": "./dist/work-product-ledger.js"
+    },
+    "./work/board": {
+      "types": "./dist/work/board.d.ts",
+      "remnic-source": "./src/work/board.ts",
+      "import": "./dist/work/board.js"
+    },
+    "./work/board.js": {
+      "types": "./dist/work/board.d.ts",
+      "remnic-source": "./src/work/board.ts",
+      "import": "./dist/work/board.js"
+    },
+    "./work/boundary": {
+      "types": "./dist/work/boundary.d.ts",
+      "remnic-source": "./src/work/boundary.ts",
+      "import": "./dist/work/boundary.js"
+    },
+    "./work/boundary.js": {
+      "types": "./dist/work/boundary.d.ts",
+      "remnic-source": "./src/work/boundary.ts",
+      "import": "./dist/work/boundary.js"
+    },
+    "./work/storage": {
+      "types": "./dist/work/storage.d.ts",
+      "remnic-source": "./src/work/storage.ts",
+      "import": "./dist/work/storage.js"
+    },
+    "./work/storage.js": {
+      "types": "./dist/work/storage.d.ts",
+      "remnic-source": "./src/work/storage.ts",
+      "import": "./dist/work/storage.js"
+    },
+    "./work/types": {
+      "types": "./dist/work/types.d.ts",
+      "remnic-source": "./src/work/types.ts",
+      "import": "./dist/work/types.js"
+    },
+    "./work/types.js": {
+      "types": "./dist/work/types.d.ts",
+      "remnic-source": "./src/work/types.ts",
+      "import": "./dist/work/types.js"
+    },
+    "./write-envelope": {
+      "types": "./dist/write-envelope.d.ts",
+      "remnic-source": "./src/write-envelope.ts",
+      "import": "./dist/write-envelope.js"
+    },
+    "./write-envelope.js": {
+      "types": "./dist/write-envelope.d.ts",
+      "remnic-source": "./src/write-envelope.ts",
+      "import": "./dist/write-envelope.js"
+    },
+    "./write-quarantine": {
+      "types": "./dist/write-quarantine.d.ts",
+      "remnic-source": "./src/write-quarantine.ts",
+      "import": "./dist/write-quarantine.js"
+    },
+    "./write-quarantine.js": {
+      "types": "./dist/write-quarantine.d.ts",
+      "remnic-source": "./src/write-quarantine.ts",
+      "import": "./dist/write-quarantine.js"
+    }
+  },
+  "files": [
+    "src",
+    "dist",
+    "skills",
+    "scripts/build-with-heap.mjs",
+    "scripts/ensure-better-sqlite3.mjs",
+    "scripts/faiss_index.py",
+    "scripts/faiss_requirements.txt"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "node ./scripts/build-with-heap.mjs",
+    "check-types": "tsc --noEmit",
+    "test": "tsx --test 'src/**/*.test.ts'",
+    "postinstall": "node ./scripts/ensure-better-sqlite3.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@honcho-ai/sdk": "^2.0.0",
+    "@lancedb/lancedb": "^0.26.2",
+    "@node-rs/argon2": "^2.0.2",
+    "@orama/orama": "^3.0.0",
+    "@orama/plugin-data-persistence": "^3.0.0",
+    "@sinclair/typebox": "^0.34.0",
+    "apache-arrow": "^18.1.0",
+    "better-sqlite3": "^12.6.2",
+    "cross-spawn": "^7.0.6",
+    "meilisearch": "^0.46.0",
+    "node-gyp": "^12.3.0",
+    "openai": "^6.0.0",
+    "undici": "^6.28.0",
+    "zod": "^3.25.28",
+    "zod-to-json-schema": "^3.25.2"
+  },
+  "optionalDependencies": {
+    "@lancedb/lancedb-darwin-arm64": "^0.26.2",
+    "@lancedb/lancedb-linux-arm64-gnu": "^0.26.2",
+    "@lancedb/lancedb-linux-x64-gnu": "^0.26.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/cross-spawn": "^6.0.6",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/remnic-core"
+  },
+  "keywords": [
+    "remnic",
+    "memory",
+    "ai",
+    "agent",
+    "core"
+  ],
+  "peerDependencies": {
+    "@remnic/coding-graph": "^9.69.15"
+  },
+  "peerDependenciesMeta": {
+    "@remnic/coding-graph": {
+      "optional": true
+    }
+  }
+}

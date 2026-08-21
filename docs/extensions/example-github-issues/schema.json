@@ -1,0 +1,5 @@
+{
+  "memoryTypes": ["reference"],
+  "groupingHints": ["repository", "label", "issue-state"],
+  "version": "1.0.0"
+}

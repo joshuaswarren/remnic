@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/policy-enforcer-engine",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for policy-enforcer-engine",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

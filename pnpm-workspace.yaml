@@ -1,0 +1,16 @@
+packages:
+  - "packages/*"
+
+onlyBuiltDependencies:
+  - better-sqlite3
+  - esbuild
+  - sharp
+  - koffi
+  - protobufjs
+
+
+overrides:
+  "esbuild@>=0.27.3 <0.28.1": "0.28.1"
+  "fast-uri@>=3.0.0 <3.1.5": "3.1.5"
+  "@hono/node-server": "1.19.15"
+  "ip-address@<10.3.1": "10.5.0"

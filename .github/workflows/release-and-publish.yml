@@ -1,0 +1,750 @@
+name: Release and Publish
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version_override:
+        description: 'Exact version to publish (e.g. 9.0.0). Skips auto-bump when set.'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  pull-requests: read
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release-tests:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: root
+            groups: '--group root --group misc'
+          - shard: packages-1
+            groups: '--group packages --shard 1/2'
+          - shard: packages-2
+            groups: '--group packages --shard 2/2'
+    name: release tests (${{ matrix.shard }})
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules
+        run: pnpm rebuild better-sqlite3
+
+      - name: Build core
+        run: pnpm --filter @remnic/core build
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Tests
+        run: node scripts/run-root-tests.mjs ${{ matrix.groups }}
+        env:
+          REMNIC_REQUIRE_NATIVE_TESTS: "1"
+          REMNIC_REQUIRE_CAPABILITY_TESTS: "1"
+
+  release:
+    needs: release-tests
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
+
+      - name: Capture release source SHA
+        id: source_sha
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules
+        run: pnpm rebuild better-sqlite3
+
+      - name: Verify quality gates
+        run: |
+          pnpm run check-types
+          pnpm run build
+          node scripts/check-release-artifacts.mjs
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve bump type from merged PR labels
+        id: bump
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const sha = "${{ steps.source_sha.outputs.sha }}";
+
+            let bumpType = "patch";
+            let prNumber = "";
+            let labels = [];
+
+            try {
+              const prs = await github.request(
+                "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls",
+                {
+                  owner,
+                  repo,
+                  commit_sha: sha,
+                  mediaType: { previews: ["groot"] },
+                }
+              );
+
+              const mergedPr = prs.data.find((pr) => pr.merged_at) ?? null;
+              if (mergedPr) {
+                prNumber = String(mergedPr.number);
+                labels = (mergedPr.labels ?? [])
+                  .map((l) => String(l.name || "").toLowerCase())
+                  .filter(Boolean);
+              }
+            } catch (error) {
+              core.warning(`Could not resolve merged PR labels for ${sha}: ${error}`);
+            }
+
+            if (labels.includes("major") || labels.includes("breaking-change")) {
+              bumpType = "major";
+            } else if (labels.includes("feature") || labels.includes("enhancement")) {
+              bumpType = "minor";
+            }
+
+            core.info(
+              `Release bump resolved: ${bumpType} (sha=${sha}${prNumber ? `, pr=#${prNumber}` : ""}${labels.length ? `, labels=${labels.join(",")}` : ""})`
+            );
+            core.setOutput("bump_type", bumpType);
+            core.setOutput("pr_number", prNumber);
+            core.setOutput("pr_labels_csv", labels.join(","));
+
+      - name: Compute next version from tags
+        id: version
+        env:
+          VERSION_OVERRIDE: ${{ inputs.version_override }}
+        run: |
+          SOURCE_MAIN_SHA=$(git rev-parse HEAD)
+          {
+            echo "source_main_sha=${SOURCE_MAIN_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+          # Honor manual version override from workflow_dispatch
+          OVERRIDE="${VERSION_OVERRIDE}"
+          if [ -n "${OVERRIDE}" ]; then
+            # Strip leading 'v' if provided
+            OVERRIDE="${OVERRIDE#v}"
+            OVERRIDE_TAG="v${OVERRIDE}"
+            if git rev-parse -q --verify "refs/tags/${OVERRIDE_TAG}" >/dev/null; then
+              echo "::error title=Version override tag exists::${OVERRIDE_TAG} already exists locally. Choose a new version override."
+              exit 1
+            fi
+            FETCH_LOG="$(mktemp)"
+            trap 'rm -f "$FETCH_LOG"' EXIT
+            if git fetch --force origin "refs/tags/${OVERRIDE_TAG}:refs/tags/${OVERRIDE_TAG}" 2>"${FETCH_LOG}"; then
+              echo "::error title=Version override tag exists::${OVERRIDE_TAG} already exists on origin. Choose a new version override."
+              exit 1
+            elif ! grep -Eiq "couldn'?t find remote ref|could not find remote ref" "${FETCH_LOG}"; then
+              cat "${FETCH_LOG}" >&2
+              exit 1
+            fi
+            {
+              echo "tag_exists=false"
+              echo "tag_name=${OVERRIDE_TAG}"
+              echo "new_version=${OVERRIDE}"
+              echo "bump_type=override"
+            } >> "$GITHUB_OUTPUT"
+            node scripts/set-release-version.mjs "${OVERRIDE}"
+            pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts
+            git add package.json packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json packages/*/.codex-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
+            if git diff --cached --quiet; then
+              echo "::notice title=Release commit skipped::Version already matches v${OVERRIDE}; no package files changed."
+            else
+              git commit -m "chore(release): v${OVERRIDE} [skip ci]"
+            fi
+            exit 0
+          fi
+
+          EXISTING_TAG=""
+          while IFS= read -r tag; do
+            [ -z "${tag}" ] && continue
+            if git cat-file -e "refs/tags/${tag}^{tag}" 2>/dev/null; then
+              TAG_CONTENT="$(git cat-file -p "refs/tags/${tag}^{tag}")"
+            else
+              TAG_CONTENT="$(git log -1 --format=%B "refs/tags/${tag}")"
+            fi
+            if printf '%s\n' "${TAG_CONTENT}" | grep -Fq "source-main-sha: ${SOURCE_MAIN_SHA}"; then
+              EXISTING_TAG="${tag}"
+              break
+            fi
+          done < <(git for-each-ref refs/tags --format='%(refname:short)' | grep -E '^v')
+          if [ -n "${EXISTING_TAG}" ]; then
+            {
+              echo "tag_exists=true"
+              echo "tag_name=${EXISTING_TAG}"
+              echo "new_version=${EXISTING_TAG#v}"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          LATEST_TAG=$(git tag --list 'v*' --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | head -n 1 || true)
+          if [ -z "${LATEST_TAG}" ]; then
+            LATEST_TAG="v0.0.0"
+          fi
+          BASE_VERSION="${LATEST_TAG#v}"
+          MAJOR="${BASE_VERSION%%.*}"
+          REST="${BASE_VERSION#*.}"
+          MINOR="${REST%%.*}"
+          PATCH="${REST##*.}"
+          BUMP_TYPE="${{ steps.bump.outputs.bump_type }}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          BOOTSTRAP_PACKAGE="@remnic/core"
+          BOOTSTRAP_PUBLISHED="false"
+          if npm view "${BOOTSTRAP_PACKAGE}" version >/dev/null 2>&1; then
+            BOOTSTRAP_PUBLISHED="true"
+          fi
+          if [ "${BOOTSTRAP_PUBLISHED}" != "true" ]; then
+            BOOTSTRAP_TAG="v${PKG_VERSION}"
+            {
+              echo "bootstrap_release=true"
+            } >> "$GITHUB_OUTPUT"
+            if git rev-parse -q --verify "refs/tags/${BOOTSTRAP_TAG}" >/dev/null; then
+              {
+                echo "tag_exists=true"
+                echo "tag_name=${BOOTSTRAP_TAG}"
+                echo "new_version=${PKG_VERSION}"
+                echo "bump_type=bootstrap"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            {
+              echo "tag_exists=false"
+              echo "tag_name=${BOOTSTRAP_TAG}"
+              echo "new_version=${PKG_VERSION}"
+              echo "bump_type=bootstrap"
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice title=Bootstrap release::${BOOTSTRAP_PACKAGE} is not published yet; using package.json version ${PKG_VERSION}."
+            node scripts/set-release-version.mjs "${PKG_VERSION}"
+            pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts
+            git add package.json packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json packages/*/.codex-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
+            if git diff --cached --quiet; then
+              echo "::notice title=Release commit skipped::Version already matches v${PKG_VERSION}; no package files changed."
+            else
+              git commit -m "chore(release): v${PKG_VERSION} [skip ci]"
+            fi
+            exit 0
+          fi
+
+          case "${BUMP_TYPE}" in
+            major)
+              AUTO_VERSION="$((MAJOR + 1)).0.0"
+              ;;
+            minor)
+              AUTO_VERSION="${MAJOR}.$((MINOR + 1)).0"
+              ;;
+            *)
+              AUTO_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+              ;;
+          esac
+
+          # If package.json has a higher version than auto-bump, use it.
+          # This lets PRs that intentionally set a version (e.g. 9.1.0) win
+          # over the auto-increment (e.g. 9.0.109). PRs that don't touch
+          # the version still get auto-incremented as before.
+          # Compare using node for reliable semver comparison
+          USE_PKG="$(node -e "
+            const [a, b] = ['${PKG_VERSION}', '${AUTO_VERSION}'].map(v => v.split('.').map(Number));
+            const gt = a[0] > b[0] || (a[0] === b[0] && a[1] > b[1]) || (a[0] === b[0] && a[1] === b[1] && a[2] > b[2]);
+            console.log(gt ? 'true' : 'false');
+          ")"
+
+          if [ "${USE_PKG}" = "true" ]; then
+            NEXT_VERSION="${PKG_VERSION}"
+            echo "::notice title=Version from package.json::package.json version ${PKG_VERSION} is higher than auto-bump ${AUTO_VERSION}; using package.json version."
+          else
+            NEXT_VERSION="${AUTO_VERSION}"
+          fi
+
+          {
+            echo "base_tag=${LATEST_TAG}"
+            echo "bump_type=${BUMP_TYPE}"
+            echo "tag_exists=false"
+            echo "tag_name=v${NEXT_VERSION}"
+            echo "new_version=${NEXT_VERSION}"
+          } >> "$GITHUB_OUTPUT"
+          node scripts/set-release-version.mjs "${NEXT_VERSION}"
+          pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts
+          git add package.json packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json packages/*/.codex-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "::notice title=Release commit skipped::Version already matches v${NEXT_VERSION}; no package files changed."
+          else
+            git commit -m "chore(release): v${NEXT_VERSION} [skip ci]"
+          fi
+
+      - name: Bump changed workspace package versions
+        if: steps.version.outputs.tag_exists != 'true'
+        env:
+          BASE_TAG: ${{ steps.version.outputs.base_tag }}
+          BUMP_TYPE: ${{ steps.version.outputs.bump_type }}
+          SOURCE_MAIN_SHA: ${{ steps.version.outputs.source_main_sha }}
+        run: |
+          if [ -z "${BASE_TAG}" ]; then
+            BASE_TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${SOURCE_MAIN_SHA}^" 2>/dev/null || true)"
+          fi
+          if [ -z "${BASE_TAG}" ]; then
+            echo "::notice title=Package version bump skipped::No prior release tag found for ${SOURCE_MAIN_SHA}."
+            exit 0
+          fi
+          PACKAGE_BUMP="${BUMP_TYPE:-patch}"
+          case "${PACKAGE_BUMP}" in
+            major|minor|patch) ;;
+            *) PACKAGE_BUMP="patch" ;;
+          esac
+
+          node scripts/bump-changed-packages.mjs \
+            --base "${BASE_TAG}" \
+            --head "${SOURCE_MAIN_SHA}" \
+            --bump "${PACKAGE_BUMP}"
+
+          if git diff --quiet -- packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json packages/*/.codex-plugin/plugin.json openclaw.plugin.json; then
+            echo "::notice title=Package version bump skipped::No public workspace package versions changed."
+            exit 0
+          fi
+
+          pnpm install --lockfile-only --no-frozen-lockfile
+          git add packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json packages/*/.codex-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml
+          git commit -m "chore(release): bump changed workspace packages [skip ci]"
+
+      - name: Resolve final release metadata
+        id: release_metadata
+        env:
+          TAG_EXISTS: ${{ steps.version.outputs.tag_exists }}
+          TAG_NAME: ${{ steps.version.outputs.tag_name }}
+        run: |
+          if [ "${TAG_EXISTS}" = "true" ]; then
+            {
+              echo "tag_exists=true"
+              echo "tag_name=${TAG_NAME}"
+              echo "new_version=${TAG_NAME#v}"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          FINAL_VERSION="$(node -p "require('./package.json').version")"
+          {
+            echo "tag_exists=false"
+            echo "tag_name=v${FINAL_VERSION}"
+            echo "new_version=${FINAL_VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Promote CHANGELOG.md for release
+        if: steps.version.outputs.tag_exists != 'true'
+        env:
+          NEW_VERSION: ${{ steps.release_metadata.outputs.new_version }}
+        run: |
+          python3 - <<'PYEOF'
+          import os, re
+          from datetime import datetime, timezone
+          version = os.environ["NEW_VERSION"]
+          date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+          with open("CHANGELOG.md") as f:
+              content = f.read()
+          # Match ## [Unreleased] and its body up to the next ## [ heading
+          match = re.search(r'(## \[Unreleased\])(.*?)(?=\n## \[|\Z)', content, re.DOTALL)
+          if match:
+              body = match.group(2).strip()
+              if body:
+                  replacement = f"## [Unreleased]\n\n## [v{version}] — {date}\n\n{body}\n"
+                  content = content[:match.start()] + replacement + content[match.end():]
+                  with open("CHANGELOG.md", "w") as f:
+                      f.write(content)
+                  print(f"Promoted [Unreleased] -> [v{version}] — {date}")
+              else:
+                  print("No pending notes under [Unreleased]; skipping CHANGELOG promotion.")
+          else:
+              print("No [Unreleased] section found; skipping CHANGELOG promotion.")
+          PYEOF
+          git add CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "::notice title=CHANGELOG skip::Nothing staged; skipping changelog commit."
+          else
+            git commit -m "docs(changelog): promote [Unreleased] -> v${NEW_VERSION} [skip ci]"
+          fi
+
+      - name: Push release commits to main
+        id: release_commit
+        # Uses a deploy key (RELEASE_DEPLOY_KEY secret) for the push.
+        # PAT-based pushes (fine-grained or classic) do not satisfy the RepositoryRole
+        # bypass actor on personal-repo rulesets; a DeployKey bypass actor works reliably.
+        # Commit messages carry [skip ci] to prevent this push from re-triggering
+        # the release workflow (github.actor would be github-actions[bot] for a key push,
+        # so the job-level actor guard would fire — [skip ci] is a belt-and-suspenders guard).
+        env:
+          RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+          TAG_EXISTS: ${{ steps.release_metadata.outputs.tag_exists }}
+        run: |
+          TAG="${{ steps.release_metadata.outputs.tag_name }}"
+          if [ "${TAG_EXISTS}" = "true" ]; then
+            if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+              echo "::error title=Release tag missing::Version resolution selected existing tag ${TAG}, but it is not available locally."
+              exit 1
+            fi
+            RELEASE_COMMIT="$(git rev-parse "refs/tags/${TAG}^{}")"
+          else
+            RELEASE_COMMIT="$(git rev-parse HEAD)"
+          fi
+          echo "release_commit=${RELEASE_COMMIT}" >> "$GITHUB_OUTPUT"
+          git fetch origin main
+          if git merge-base --is-ancestor "${RELEASE_COMMIT}" origin/main; then
+            echo "::notice::Release commit already on main; skipping push."
+            exit 0
+          fi
+          # Configure deploy key for SSH push. Ruleset DeployKey bypass allows this.
+          # Use a trap to ensure the key file is removed even if the push fails.
+          mkdir -p ~/.ssh
+          echo "${RELEASE_DEPLOY_KEY}" > ~/.ssh/release_deploy_key
+          chmod 600 ~/.ssh/release_deploy_key
+          cat > ~/.ssh/known_hosts <<'EOF'
+          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+          github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+          EOF
+          chmod 600 ~/.ssh/known_hosts
+          trap 'rm -f ~/.ssh/release_deploy_key' EXIT
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/release_deploy_key -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+          git push "git@github.com:${{ github.repository }}.git" "${RELEASE_COMMIT}:refs/heads/main"
+
+      - name: Prepare publish-order helper
+        run: cp scripts/publish-order.mjs "${RUNNER_TEMP}/publish-order.mjs"
+
+      - name: Checkout release source for publish
+        run: git checkout --detach "${{ steps.release_commit.outputs.release_commit }}"
+
+      - name: Ensure npm supports trusted publishing
+        # Pin npm so provenance/trusted-publishing behavior only changes through review.
+        run: npm install -g npm@11.16.0
+
+      - name: Install dependencies for release source
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate workspace package publish order
+        run: node "${RUNNER_TEMP}/publish-order.mjs" --repo-root "$PWD" --output "${RUNNER_TEMP}/remnic-publish-order.txt"
+
+      - name: Rebuild native modules
+        run: pnpm rebuild better-sqlite3
+
+      - name: Build all packages
+        run: |
+          pnpm -r run build
+          pnpm run build
+
+      - name: Verify root release artifacts
+        run: node scripts/check-release-artifacts.mjs
+
+      - name: Verify OpenClaw ClawHub artifact packlist
+        run: pnpm run verify:openclaw-clawpack
+
+      - name: Ensure version tag on release commit
+        id: release_tag
+        env:
+          RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+          TAG: ${{ steps.release_metadata.outputs.tag_name }}
+          RELEASE_COMMIT: ${{ steps.release_commit.outputs.release_commit }}
+          SOURCE_MAIN_SHA: ${{ steps.version.outputs.source_main_sha }}
+        run: |
+          FETCH_LOG="$(mktemp)"
+          trap 'rm -f "$FETCH_LOG" ~/.ssh/release_deploy_key' EXIT
+          REMOTE_TAG_EXISTS=false
+          if git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>"${FETCH_LOG}"; then
+            REMOTE_TAG_EXISTS=true
+          elif grep -Eiq "couldn'?t find remote ref|could not find remote ref" "${FETCH_LOG}"; then
+            echo "::notice::Release tag ${TAG} does not exist on origin yet."
+          else
+            cat "${FETCH_LOG}" >&2
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            TAG_TARGET="$(git rev-parse "refs/tags/${TAG}^{}")"
+            if [ "${TAG_TARGET}" != "${RELEASE_COMMIT}" ]; then
+              echo "::error title=Release tag mismatch::${TAG} points at ${TAG_TARGET}, expected ${RELEASE_COMMIT}."
+              exit 1
+            fi
+            if [ "${REMOTE_TAG_EXISTS}" = "true" ]; then
+              echo "::notice::Release tag ${TAG} already exists on origin and points at ${RELEASE_COMMIT}."
+              echo "tag_created=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::notice::Release tag ${TAG} exists locally and points at ${RELEASE_COMMIT}; pushing missing remote tag."
+          else
+            git tag -a "${TAG}" \
+              "${RELEASE_COMMIT}" \
+              -m "Release ${TAG}" \
+              -m "source-main-sha: ${SOURCE_MAIN_SHA}"
+          fi
+
+          mkdir -p ~/.ssh
+          echo "${RELEASE_DEPLOY_KEY}" > ~/.ssh/release_deploy_key
+          chmod 600 ~/.ssh/release_deploy_key
+          cat > ~/.ssh/known_hosts <<'EOF'
+          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+          github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+          EOF
+          chmod 600 ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/release_deploy_key -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+          git push "git@github.com:${{ github.repository }}.git" "refs/tags/${TAG}"
+          echo "tag_created=true" >> "$GITHUB_OUTPUT"
+
+      - name: Fail incomplete existing npm release
+        if: steps.release_metadata.outputs.tag_exists == 'true'
+        run: |
+          VERSION="${{ steps.release_metadata.outputs.new_version }}"
+          missing=0
+          check_package() {
+            local package_name="$1"
+            local package_version="$2"
+            if ! npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+              echo "::error title=Incomplete tagged release::${package_name}@${package_version} is missing from npm for existing tag ${{ steps.release_metadata.outputs.tag_name }}."
+              missing=1
+            fi
+          }
+
+          if [ "$(node -p "require('./package.json').private || false")" != "true" ]; then
+            check_package "$(node -p "require('./package.json').name")" "${VERSION}"
+          fi
+
+          mapfile -t PUBLISH_ORDER < "${RUNNER_TEMP}/remnic-publish-order.txt"
+          for pkg_dir in "${PUBLISH_ORDER[@]}"; do
+            pkg_json="$pkg_dir/package.json"
+            if [ ! -f "$pkg_json" ]; then
+              continue
+            fi
+            if [ "$(node -p "require('./$pkg_json').private || false")" = "true" ]; then
+              continue
+            fi
+            check_package "$(node -p "require('./$pkg_json').name")" "$(node -p "require('./$pkg_json').version")"
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Existing release tag ${{ steps.release_metadata.outputs.tag_name }} is incomplete. Resolve the npm publication gap or create a superseding release instead of reusing this tag."
+            exit 1
+          fi
+
+      - name: Publish workspace packages to npm
+        run: |
+          # Publish the install surfaces supported from npm. Uses pnpm (not
+          # npm) so workspace: protocol strings are rewritten to real
+          # version numbers at pack time; npm publish does not perform this
+          # rewriting, which causes "workspace:^" to appear verbatim in the
+          # published package metadata (see issue #403).
+          #
+          # Ordering is topological: build roots first, then packages that
+          # depend on them. Optional/à-la-carte surfaces (bench, weclone,
+          # plugins) must ship so end users can install only what they need
+          # — see the à-la-carte invariant in CLAUDE.md / AGENTS.md.
+          mapfile -t PUBLISH_ORDER < "${RUNNER_TEMP}/remnic-publish-order.txt"
+          # Packages that npm rejects with E404 on publish (PUT) must not
+          # strand every package after them in topological order — that
+          # left @remnic/cli and friends lagging whole release trains.
+          # E404 means this automation identity may not publish the name,
+          # whether the name is brand new (cannot create it) or already
+          # exists (no write permission — npm returns 404, not 403, so
+          # package existence is not leaked). Both are the same operator-
+          # actionable provisioning gap, so the branch is keyed on the
+          # error class, NOT on whether the name happens to exist yet.
+          # They are collected, surfaced loudly, and skipped; everything
+          # else still publishes. Any other publish failure remains fatal.
+          UNPROVISIONED=()
+          for pkg_dir in "${PUBLISH_ORDER[@]}"; do
+            pkg_json="$pkg_dir/package.json"
+            if [ ! -f "$pkg_json" ]; then
+              echo "::warning::$pkg_json not found; skipping."
+              continue
+            fi
+            is_private="$(node -p "require('./$pkg_json').private || false")"
+            if [ "$is_private" = "true" ]; then
+              echo "::notice::Skipping private package: $pkg_dir"
+              continue
+            fi
+            if ! node -e "const os=require('./$pkg_json').os; if (!Array.isArray(os) || os.length===0) process.exit(0); process.exit(os.includes(process.platform)?0:1)"; then
+              echo "::notice::Skipping $pkg_dir (os-restricted; published by capture-native-helper.yml)"
+              continue
+            fi
+
+            pkg_name="$(node -p "require('./$pkg_json').name")"
+            pkg_version="$(node -p "require('./$pkg_json').version")"
+            if npm view "${pkg_name}@${pkg_version}" version >/dev/null 2>&1; then
+              echo "::notice::${pkg_name}@${pkg_version} already published; skipping."
+              continue
+            fi
+            echo "Publishing ${pkg_name}@${pkg_version} from ${pkg_dir}..."
+            publish_log="$(mktemp)"
+            if (cd "$pkg_dir" && pnpm publish --access public --provenance --no-git-checks) >"$publish_log" 2>&1; then
+              cat "$publish_log"
+              rm -f "$publish_log"
+              continue
+            else
+              publish_status=$?
+              cat "$publish_log"
+              if grep -q "npm error code E404" "$publish_log"; then
+                echo "::warning::This automation identity is not provisioned to publish ${pkg_name}@${pkg_version} to npm (E404 on publish — the name is either not yet created or grants this identity no write access). Set up trusted publishing for this package name, then rerun the release workflow (already-published packages are skipped automatically). Continuing with the remaining packages."
+                UNPROVISIONED+=("${pkg_name}@${pkg_version}")
+                rm -f "$publish_log"
+                continue
+              fi
+              rm -f "$publish_log"
+              exit $publish_status
+            fi
+          done
+          if [ "${#UNPROVISIONED[@]}" -gt 0 ]; then
+            {
+              echo "## Unprovisioned packages (not published)"
+              echo ""
+              echo "Provision npm trusted publishing for each name, then rerun this workflow:"
+              echo ""
+              for entry in "${UNPROVISIONED[@]}"; do
+                echo "- \`$entry\`"
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::${#UNPROVISIONED[@]} package(s) require one-time trusted-publishing provisioning (see step summary). All other packages were published."
+            exit 1
+          fi
+
+      - name: Publish root package to npm
+        run: |
+          IS_PRIVATE="$(node -p "require('./package.json').private || false")"
+          if [ "$IS_PRIVATE" = "true" ]; then
+            echo "::notice title=NPM publish skipped::Root package is private workspace metadata only."
+            exit 0
+          fi
+          VERSION="${{ steps.release_metadata.outputs.new_version }}"
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "::notice title=NPM publish skipped::${PACKAGE_NAME}@${VERSION} is already published."
+            exit 0
+          fi
+          npm publish --access public --provenance
+
+      # Publish the GitHub release BEFORE the best-effort ClawHub publish below.
+      # ClawHub is a third-party host whose backend can fail transiently (e.g.
+      # the "Too many bytes read" search-digest-sync error); creating the release
+      # first guarantees a ClawHub-side failure can never leave a release stuck
+      # as a draft after npm has already published.
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_metadata.outputs.tag_name }}
+          name: ${{ steps.release_metadata.outputs.tag_name }}
+          generate_release_notes: true
+
+      - name: Publish OpenClaw plugin to ClawHub
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+          CLAWHUB_OWNER: "remnic"
+          CLAWHUB_PACKAGE_NAME: "@remnic/plugin-openclaw"
+          NPM_PACKAGE_NAME: "@remnic/plugin-openclaw"
+          NPM_PACKAGE_PATH: "packages/plugin-openclaw"
+        run: |
+          if [ -z "${CLAWHUB_TOKEN:-}" ]; then
+            echo "::notice title=ClawHub publish skipped::CLAWHUB_TOKEN secret is not configured."
+            exit 0
+          fi
+
+          npm install -g clawhub@0.18.0
+          clawhub login --token "${CLAWHUB_TOKEN}" --no-browser
+
+          package_version="$(node -p "require('./${NPM_PACKAGE_PATH}/package.json').version")"
+          if clawhub package inspect "${CLAWHUB_PACKAGE_NAME}" --version "${package_version}" --json >/dev/null 2>&1; then
+            echo "::notice title=ClawHub publish skipped::${CLAWHUB_PACKAGE_NAME}@${package_version} is already published."
+            exit 0
+          fi
+
+          pack_dir="${RUNNER_TEMP}/clawhub-openclaw-pack"
+          rm -rf "${pack_dir}"
+          mkdir -p "${pack_dir}"
+          pnpm --filter "${NPM_PACKAGE_NAME}" pack --pack-destination "${pack_dir}"
+          tarball="$(find "${pack_dir}" -maxdepth 1 -name '*.tgz' -print -quit)"
+          if [ -z "${tarball}" ]; then
+            echo "No ${NPM_PACKAGE_NAME} tarball produced" >&2
+            exit 1
+          fi
+
+          source_commit="$(git rev-parse HEAD)"
+          publish_log="$(mktemp)"
+          if clawhub package publish "${tarball}" \
+            --family code-plugin \
+            --name "${CLAWHUB_PACKAGE_NAME}" \
+            --owner "${CLAWHUB_OWNER}" \
+            --display-name "Remnic OpenClaw Plugin" \
+            --version "${package_version}" \
+            --host-targets openclaw \
+            --source-repo "${GITHUB_REPOSITORY}" \
+            --source-ref "${{ steps.release_metadata.outputs.tag_name }}" \
+            --source-commit "${source_commit}" \
+            --source-path "${NPM_PACKAGE_PATH}" \
+            --changelog "Publish ${CLAWHUB_PACKAGE_NAME}@${package_version} from the GitHub release workflow." \
+            --json >"${publish_log}" 2>&1; then
+            cat "${publish_log}"
+            rm -f "${publish_log}"
+          else
+            publish_status=$?
+            cat "${publish_log}"
+            if grep -q "publisher does not exist on ClawHub" "${publish_log}"; then
+              echo "::notice title=ClawHub publish skipped::The authenticated ClawHub account is not provisioned as a package publisher yet."
+              rm -f "${publish_log}"
+              exit 0
+            fi
+            if grep -q "Too many bytes read in a single function execution" "${publish_log}"; then
+              echo "::notice title=ClawHub publish skipped::ClawHub publish hit its backend read limit. npm and GitHub release publication already completed; retry the ClawHub publish after ClawHub fixes or clears the limit."
+              rm -f "${publish_log}"
+              exit 0
+            fi
+            rm -f "${publish_log}"
+            exit "${publish_status}"
+          fi
+
+          clawhub package rescan "${CLAWHUB_PACKAGE_NAME}" --yes --json || true

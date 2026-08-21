@@ -1,0 +1,535 @@
+# Search Backends
+
+Remnic supports six search backends through a pluggable port/adapter architecture. Each backend implements the same `SearchBackend` interface, so switching engines requires only a config change — no code modifications.
+
+## Choosing a Backend
+
+| Backend | Dependencies | Setup | Search Quality | Best For |
+|---------|-------------|-------|---------------|----------|
+| **QMD** | QMD binary (2.1 GB models) | Medium | Highest (BM25 + vector + LLM reranking) | Production, best recall quality |
+| **Orama** | None (pure JS) | Easy | Good (hybrid FTS + vector) | Quick start, no native deps |
+| **LanceDB** | Native Arrow bindings | Medium | High (hybrid FTS + vector + RRF) | Large collections, fast vector search |
+| **Meilisearch** | Running server | Medium | High (hybrid with server-side embeddings) | Shared search, multi-service |
+| **Remote** | HTTP endpoint | Varies | Depends on service | Custom search infrastructure |
+| **Noop** | None | None | None | Extraction-only mode |
+
+## QMD (Default)
+
+QMD provides the highest quality retrieval through hybrid BM25 + vector + LLM reranking. It's the default and recommended backend.
+
+### Setup
+
+Install QMD. Remnic currently supports QMD `2.5.3` and detects the installed
+version with `qmd --version` at runtime:
+
+```bash
+npm install -g @tobilu/qmd@2.5.3
+# or: bun install -g @tobilu/qmd@2.5.3
+qmd --version
+```
+
+Add your memory directory to `~/.config/qmd/index.yml`:
+
+```yaml
+openclaw-engram:
+  path: ~/.openclaw/workspace/memory/local
+  extensions: [.md]
+```
+
+Index the collection:
+
+```bash
+qmd update && qmd embed
+```
+
+### Config
+
+```jsonc
+{
+  "searchBackend": "qmd",        // Default — can be omitted
+  "qmdEnabled": true,
+  "qmdCollection": "openclaw-engram",
+  "qmdMaxResults": 8,
+  "qmdSupportedVersion": "2.5.3",
+  "qmdAutoUpgradeEnabled": false, // opt-in: npm install -g @tobilu/qmd@2.5.3
+  "qmdChunkStrategy": "auto",
+  // Leave qmdIndexName unset unless you intentionally use a separate QMD DB.
+  // Existing Remnic/OpenClaw installs usually keep data in QMD's default "index".
+  "qmdForceCpu": false,
+  "qmdDaemonEnabled": true,      // Keep the shared MCP session warm for fast queries
+  "qmdIntentHintsEnabled": false,
+  "qmdExplainEnabled": false
+}
+```
+
+When QMD `2.5.3` is installed, Remnic uses the newer capability set when
+available: `qmd doctor` diagnostics, version-matched skill metadata, structured
+MCP `lex`/`vec`/`hyde` searches, candidate-limit forwarding, rerank toggles,
+AST-aware chunking for CLI/embed paths, scoped collection embedding, model/env
+overrides (`QMD_EMBED_MODEL`, `QMD_RERANK_MODEL`, `QMD_GENERATE_MODEL`,
+`QMD_FORCE_CPU`, `QMD_LLAMA_GPU`, `QMD_EMBED_PARALLELISM`), named index selection
+via `qmdIndexName`, and absolute snippet line numbers. Older QMD installs
+continue to work with unsupported flags omitted.
+
+Remnic also detects QMD `2.5.3`'s preferred `--format json` output selector
+for `qmd query`/`qmd search` subprocess calls. QMD `2.5.3` adds richer
+human/agent retrieval output (`get` line-range suffixes, default line-numbered
+`get`/`multi-get`, `#docid` headers, and `--full-path` for direct filesystem
+paths), but Remnic keeps its machine-readable search path on QMD's JSON output
+and preserves docids for provenance and dedupe. QMD `2.5.1` and older installs
+continue to receive the legacy `--json` aliases.
+
+Do not set `qmdIndexName` during upgrades unless you have confirmed the existing
+QMD data lives in that named index. QMD's default index is named `index` and is
+stored at `~/.cache/qmd/index.sqlite`; changing `qmdIndexName` to a new value
+creates or selects a different SQLite database, which can make existing memories
+appear missing even though the old QMD database is still intact. Before changing
+it, compare `qmd collection list` or inspect `~/.cache/qmd/*.sqlite` and preserve
+the index that contains the current `openclaw-engram*` collections.
+
+Auto-upgrade is intentionally disabled by default. Set
+`qmdAutoUpgradeEnabled: true` to let Remnic upgrade PATH/fallback QMD installs to
+`qmdSupportedVersion`. Remnic does not auto-upgrade an explicitly configured
+`qmdPath`; install the supported package manually for that path.
+
+QMD version coverage:
+
+| QMD version | Remnic behavior |
+|-------------|-----------------|
+| `2.0.0` | Uses the v2 MCP `query` tool shape and unified search semantics; legacy `search`/`vsearch` daemon tools are avoided. |
+| `2.0.1` | Detects the skill-install generation, but leaves user/global agent skill installation explicit. |
+| `2.1.0` | Enables AST chunk strategy on CLI/embed paths, rerank toggles, candidate limits, per-collection model config compatibility, and JSON line capture. |
+| `2.5.0` | Enables doctor/status diagnostics, version-matched skills, structured MCP `lex`/`vec`/`hyde` searches, absolute snippet lines, scoped embed behavior, and QMD model/GPU env controls. |
+| `2.5.3` | Uses QMD's preferred `--format json` selector for `query`/`search` subprocess calls and inherits QMD's line-range, docid-header, full-path, launcher, and Metal-teardown fixes. Remnic keeps legacy `--json` for older QMD versions. |
+
+### Upgrading QMD
+
+QMD `2.5.3` is a drop-in upgrade from any 2.x install — existing collections, indexes,
+and config files work unchanged. Remnic detects the installed version at startup and
+enables newer features only when the binary supports them, so upgrading is low-risk.
+
+```bash
+# 1. Install the supported target
+npm install -g @tobilu/qmd@2.5.3
+# or: bun install -g @tobilu/qmd@2.5.3
+
+# 2. Verify
+qmd --version        # 2.5.3
+qmd doctor           # available on QMD 2.5+
+qmd status           # existing collections should still list
+
+# 3. Restart your host so Remnic re-detects the version.
+#    Standalone:  remnic daemon restart
+#    OpenClaw:    launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
+```
+
+If native bindings misbehave after the upgrade, rebuild them with
+`npm rebuild better-sqlite3`.
+
+Moving up from QMD 1.x also resolves three issues that previously required manual
+patches, all fixed natively in 2.0+:
+
+- MCP session-ID crash — built-in `sessionIdGenerator`.
+- Model override env vars — `QMD_EMBED_MODEL`, `QMD_GENERATE_MODEL`, `QMD_RERANK_MODEL`.
+- Vector-search join performance — two-step query pattern.
+
+If you used the OpenClaw patcher for those 1.x patches, it targets source paths that no
+longer exist in 2.x and will harmlessly skip them; remove the stale QMD patch entries.
+To upgrade PATH/fallback installs automatically, set `qmdAutoUpgradeEnabled` (see the
+QMD config table above).
+
+### QMD Daemon Mode
+
+For lower latency, Remnic prefers a shared stdio `qmd mcp` session when QMD is healthy. It does not currently talk to the HTTP daemon endpoint directly, even though the legacy `qmdDaemonUrl` setting is still retained for compatibility.
+
+Remnic automatically prefers the shared MCP session when available and falls back to subprocess calls on empty results, timeouts, or transport failure.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `qmdDaemonEnabled` | `true` | Prefer the shared MCP/daemon path for search when available |
+| `qmdDaemonUrl` | `http://localhost:8181/mcp` | Legacy compatibility knob retained in config; current runtime uses shared stdio MCP |
+| `qmdDaemonRecheckIntervalMs` | `60000` | Re-probe interval after failure |
+| `qmdIntentHintsEnabled` | `false` | Forward inferred recall intent into QMD unified search when supported |
+| `qmdExplainEnabled` | `false` | Capture QMD explain traces into `memory_qmd_debug` snapshots |
+| `qmdSupportedVersion` | `2.5.3` | Highest QMD version this Remnic build will auto-install |
+| `qmdAutoUpgradeEnabled` | `false` | Opt-in auto-upgrade for PATH/fallback QMD installs |
+| `qmdAutoUpgradeCheckIntervalMs` | `86400000` | Minimum interval between auto-upgrade attempts |
+| `qmdChunkStrategy` | `auto` | Forward QMD's AST-aware chunk strategy when supported |
+| `qmdCandidateLimit` | `(none)` | Optional QMD candidate limit forwarded when supported |
+| `qmdQueryRerankEnabled` | `true` | Set `false` to pass QMD's rerank-disable flag when supported |
+| `qmdSearchStrategy` | `hybrid` | Daemon search plan: `hybrid` (lex+vec+hyde), `lex-vec`, or `lex`. See tuning note below |
+| `qmdSubprocessStrategy` | `query` | CLI fallback command: `query` (LLM expansion + rerank) or `search` (BM25-only) |
+| `qmdDaemonTimeoutMs` | `8000` | Per-call daemon search timeout in ms (1000–120000) |
+
+### Tuning daemon latency on CPU-only models
+
+By design, each daemon search runs **three** sub-queries in one request so QMD can
+fuse and rerank across all of them:
+
+| Sub-query | Models used | Relative cost (CPU-only) |
+|-----------|-------------|--------------------------|
+| `lex` | none (BM25) | fast (~200ms) |
+| `vec` | embedding | medium (~3–4s) |
+| `hyde` | generate **+** embedding | slow (~8–12s) |
+
+This is why a raw `qmd search "..."` (BM25-only) returns in ~200ms while a full
+Remnic recall through the daemon can take many seconds on CPU — the daemon is doing
+strictly more work, not adding overhead. The default `hybrid` plan maximizes recall
+quality and is unchanged.
+
+If you run QMD models on CPU and want to trade some recall for speed, lower the plan:
+
+```jsonc
+{
+  // Drop only the expensive HyDE generate leg (keeps BM25 + vector):
+  "qmdSearchStrategy": "lex-vec",
+  // …or BM25-only for the fastest possible recall:
+  // "qmdSearchStrategy": "lex",
+
+  // Give CPU-only HyDE more headroom before the daemon times out:
+  "qmdDaemonTimeoutMs": 20000
+}
+```
+
+`qmdSearchStrategy` and reranking are **orthogonal knobs** — `qmdSearchStrategy`
+chooses which retrieval legs run, while `qmdQueryRerankEnabled` controls QMD's
+reranker model pass, and reranking stays **on by default for every strategy**
+(including `lex`) so default behavior is never silently reduced. For the absolute
+lowest-latency BM25 path on CPU, pair `lex` with the reranker off — this skips the
+extra reranker-model inference on top of the BM25-only retrieval:
+
+```jsonc
+{
+  "qmdSearchStrategy": "lex",
+  "qmdQueryRerankEnabled": false  // skip the reranker model pass for max speed
+}
+```
+
+When the daemon is **disabled** (`qmdDaemonEnabled: false`), Remnic falls back to a
+`qmd query` subprocess, which runs LLM query expansion + reranking. On very large
+collections that can be slow; set `qmdSubprocessStrategy: "search"` to use BM25-only
+`qmd search` instead. This is faster but **drops** expansion + reranking, so it stays
+opt-in and `query` remains the default. (See issue #1335.)
+
+> **Why `qmd query` and not `qmd search` by default?** `qmd query` performs the LLM
+> query expansion + reranking that Remnic relies on (Remnic disables its own rerank
+> because QMD handles it). Switching the default to `qmd search` would silently remove
+> that capability, so it is gated behind `qmdSubprocessStrategy` instead.
+
+### Embedding backlog visibility and prioritized embedding
+
+QMD's vector index is built by `qmd embed`, which Remnic does **not** own or
+schedule — the QMD binary and its collection config decide when full
+re-embedding runs. Remnic only *observes* the backlog and, optionally, nudges
+it for freshly written memories.
+
+**Backlog metrics.** `engram/v1/health` (and `remnic status`) report:
+
+- `pendingEmbeddings` — documents QMD has indexed but not yet embedded
+- `oldestPendingAgeMs` — age of the oldest un-embedded document
+- `embeddingBacklogThreshold` — the configured ceiling (below)
+
+When `pendingEmbeddings` exceeds `qmdEmbeddingBacklogThreshold`, health is
+marked `degraded: true` with a reason naming the backlog. Set the threshold to
+`0` to disable backlog-based degradation entirely. This is advisory: search
+still works (BM25/fulltext), only vector recall lags.
+
+**Config:**
+
+```jsonc
+{
+  "qmdEmbeddingBacklogThreshold": 1000, // pending embeddings before health degrades (0 disables backlog degradation)
+  "qmdAutoEmbedEnabled": false          // opt-in prioritized embedding on write
+}
+```
+
+**Prioritized embedding** (`qmdAutoEmbedEnabled: true`). When enabled, each
+memory write queues its path for a debounced collection-level `qmd embed`
+trigger. The QMD CLI does not support per-file embed targeting, so each flush
+runs `qmd embed -c <collection>`, which embeds all pending documents. Writes
+are debounced (30 s) and batched (max 50 paths per flush) so a burst of
+extractions produces one embed call, not one per file. The trigger is
+fire-and-forget: an embed failure logs a warning and never blocks the write.
+This keeps new hot-collection memories vector-searchable within minutes
+instead of waiting for the next full `qmd embed`.
+
+**`qmd embed` ownership and cadence by deployment mode:**
+
+| Mode | Who runs `qmd embed` | Cadence |
+|------|----------------------|---------|
+| Standalone / CLI | Operator (or cron) | Periodic full re-embed; Remnic never schedules it |
+| OpenClaw plugin | Operator's gateway host | Same — Remnic only reports the backlog |
+| `qmdAutoEmbedEnabled: true` | Remnic, per-write | Debounced collection-level embed trigger after fresh writes |
+
+In every mode the full-collection `qmd embed` remains the operator's
+responsibility; Remnic's prioritized path triggers collection-level embeds
+after fresh writes and does not replace periodic full re-embedding.
+
+**Alerting.** Alert when `pendingEmbeddings` grows monotonically across
+consecutive health checks (the backlog is never draining). A steadily rising
+count means `qmd embed` is not running or is failing — check the QMD daemon
+and embedding provider before raising the threshold.
+
+## Orama
+
+Orama is an embedded, pure JavaScript search engine with hybrid FTS + vector support. Zero native dependencies — the easiest backend to get running.
+
+### Config
+
+```jsonc
+{
+  "searchBackend": "orama"
+}
+```
+
+That's all you need. Remnic handles database creation, document indexing, and persistence automatically.
+
+### How It Works
+
+- Database files stored at `{oramaDbPath}/{collection}.msp` (JSON format)
+- `update()` scans your memory directory for `.md` files, diffs against the index, and upserts changes
+- `embed()` computes vectors for documents missing them (requires an embedding provider)
+- Search modes: fulltext (BM25), vector, or hybrid (combines both)
+
+### Optional Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `oramaDbPath` | `{memoryDir}/orama` | Database storage directory |
+| `oramaEmbeddingDimension` | `1536` | Vector dimension (match your embedding model) |
+| `oramaCjkSegmentation` | `true` | Segment space-free scripts (CJK/Thai) into character n-grams in the lexical index (issue #2187). Set `false` to restore the stock English-only tokenizer. |
+
+### Embedding Support
+
+For vector and hybrid search, Orama needs an embedding provider. Without one, it falls back to fulltext (BM25) search only.
+
+Configure embedding via the shared embed helper:
+
+```jsonc
+{
+  "searchBackend": "orama",
+  "embeddingFallbackEnabled": true,
+  "embeddingFallbackProvider": "auto",   // "openai", "local", or "auto"
+  "openaiApiKey": "${OPENAI_API_KEY}"    // For OpenAI embeddings
+}
+```
+
+## LanceDB
+
+LanceDB is an embedded vector database with native Apache Arrow bindings. It excels at large collections and fast vector similarity search, with built-in RRF (Reciprocal Rank Fusion) reranking for hybrid queries.
+
+### Config
+
+```jsonc
+{
+  "searchBackend": "lancedb"
+}
+```
+
+### How It Works
+
+- Database stored at `{lanceDbPath}` directory (Arrow format)
+- One table per collection with columns: `docid`, `path`, `content`, `snippet`, `vector`
+- Hybrid search combines FTS and vector results with `RRFReranker`
+- FTS index auto-created on the `content` column
+
+### Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `lanceDbPath` | `{memoryDir}/lancedb` | Database directory |
+| `lanceEmbeddingDimension` | `1536` | Vector dimension |
+
+### Notes
+
+- Requires native bindings (`@lancedb/lancedb`) — may need compilation on some platforms
+- Best choice for collections with 10,000+ memories where vector search speed matters
+- Embedding configuration is the same as Orama (shared `EmbedHelper`)
+- The FTS index uses tantivy's default tokenizer, which cannot segment space-free scripts (CJK/Thai) — lexical recall over those scripts is near zero. Non-English recall on this backend rides on the vector tier (see [Non-English content](#non-english-content)).
+
+## Meilisearch
+
+Meilisearch is a server-based search engine with built-in hybrid search. Use it when you want a shared search service accessible by multiple processes or services.
+
+### Prerequisites
+
+Run a Meilisearch instance:
+
+```bash
+docker run -p 7700:7700 getmeili/meilisearch:latest
+```
+
+### Config
+
+```jsonc
+{
+  "searchBackend": "meilisearch",
+  "meilisearchHost": "http://localhost:7700",
+  "meilisearchAutoIndex": true
+}
+```
+
+### How It Works
+
+- Connects to a running Meilisearch server via the official SDK
+- When `autoIndex` is enabled, `update()` pushes documents from your memory directory to Meilisearch
+- Hybrid search uses Meilisearch's built-in embedder (configure on the server side)
+- Falls back to BM25-only search if no embedder is configured on the server
+
+### Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `meilisearchHost` | `http://localhost:7700` | Meilisearch server URL |
+| `meilisearchApiKey` | `(none)` | API key for authentication |
+| `meilisearchTimeoutMs` | `30000` | Request timeout |
+| `meilisearchAutoIndex` | `false` | Auto-push documents on update |
+
+### Meilisearch Embedder Setup
+
+For hybrid/vector search, configure an embedder on your Meilisearch instance:
+
+```bash
+curl -X PATCH 'http://localhost:7700/indexes/openclaw-engram/settings' \
+  -H 'Content-Type: application/json' \
+  --data '{
+    "embedders": {
+      "default": {
+        "source": "openAi",
+        "apiKey": "YOUR_KEY",
+        "model": "text-embedding-3-small",
+        "dimensions": 1536
+      }
+    }
+  }'
+```
+
+## Remote
+
+The Remote backend sends search requests to an HTTP REST endpoint. Use it to integrate with custom search infrastructure.
+
+### Config
+
+```jsonc
+{
+  "searchBackend": "remote",
+  "remoteSearchBaseUrl": "https://your-search-service.example.com",
+  "remoteSearchApiKey": "your-api-key"
+}
+```
+
+### Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `remoteSearchBaseUrl` | `http://localhost:8181` | Search service URL |
+| `remoteSearchApiKey` | `(none)` | API key for authentication |
+| `remoteSearchTimeoutMs` | `30000` | Request timeout |
+
+## Noop
+
+The Noop backend disables search entirely. Remnic still extracts and stores memories, but recall returns no search results. Useful for extraction-only setups or testing.
+
+```jsonc
+{
+  "searchBackend": "noop"
+}
+```
+
+## Switching Backends
+
+Switching backends is a config-only change. Your memory files are always plain markdown on disk — no data migration needed.
+
+1. Update `searchBackend` in your config
+2. Add any backend-specific settings
+3. Restart your host — standalone: `remnic daemon restart`; OpenClaw: `launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway`
+4. Verify the active backend — standalone: `remnic doctor`; OpenClaw: `openclaw engram stats`
+
+Embedded backends (Orama, LanceDB) will automatically index your existing memory files on the next update cycle.
+
+## Non-English Content
+
+Space-free scripts — Japanese, Chinese, Thai — have no word boundaries for a
+term-based lexical index to split on. Backends differ in how (or whether) they
+segment them (issue #2187):
+
+| Backend | CJK/Thai lexical segmentation | Behavior |
+|---------|------------------------------|----------|
+| **QMD** | Depends on the QMD binary's tokenizer | Check `qmd doctor` for language support |
+| **Orama** | Yes — character n-grams via `oramaCjkSegmentation` (default on) | Japanese/Chinese/Thai phrase queries match lexically, with or without embeddings. Other non-Latin scripts (Hangul, Cyrillic, Greek, Arabic, ...) are indexed as whole words. |
+| **LanceDB** | No | The FTS index uses tantivy's default tokenizer, which cannot segment space-free scripts. Non-English lexical recall is near zero; the vector tier carries recall. |
+| **Meilisearch** | Yes — natively via charabia | Server-side segmentation; nothing to configure in Remnic. |
+| **Remote** | Depends on the remote service | Consult the service's tokenizer documentation. |
+
+### Orama CJK/Thai segmentation
+
+Orama indexes CJK/Thai runs as character n-grams (single characters plus
+2–4 character grams), reusing the same segmentation strategy as the
+query-side recall tokenizer, so index terms and query terms agree. Latin
+content tokenizes exactly as before, so existing English indexes stay
+term-compatible. Other non-ASCII scripts (Hangul, Cyrillic, Greek, Arabic,
+...) are indexed as whole words in addition to any stock English tokens.
+
+The tokenization version is persisted inside each `.msp` index file. When
+Orama loads an index written by an older Remnic version, it rebuilds the
+full-text side of that index in place (vectors are preserved) the first time
+the file is opened — no operator action needed. Corpora whose content
+tokenizes identically under both tokenizers (pure legacy Latin) are not
+re-indexed; only the version marker is rewritten.
+
+To restore the pre-#2187 stock English tokenizer:
+
+```jsonc
+{
+  "searchBackend": "orama",
+  "oramaCjkSegmentation": false
+}
+```
+
+### Multilingual deployments (cross-script recall)
+
+Whatever the backend, matching a query in one script against memories written
+in another (Japanese query against English memories, or the reverse) is a
+semantic task that the lexical tier cannot perform — it depends on the
+embedding model's multilingual coverage. Configure an embedding provider
+(see the Orama and LanceDB embedding sections) for cross-script recall.
+
+Remnic plans for this explicitly (issue #2197):
+
+1. **Write time.** Every memory is stamped with a dominant-script hint in
+   frontmatter `language`, using ISO 15924 codes (`latn`, `jpan`, `kore`,
+   `hani`, `cyrl`, `grek`, `arab`, `hebr`, `thai`, `deva`). Detection is a
+   codepoint scan, not a language model: kana anywhere means `jpan`, Hangul
+   means `kore`, and otherwise the most frequent script wins. Memories written
+   before this shipped have no `language` field; they are simply ignored when
+   the corpus script is sampled.
+2. **Recall time.** The planner compares the query's dominant script against
+   the corpus's (sampled from those hints, memoized per corpus generation).
+   When they differ, the lexical page is supplemented with vector-tier hits
+   from the embedding fallback — regardless of how full the lexical page is,
+   because token overlap across scripts is near zero.
+3. **Degradation signal.** When the scripts differ and embedding fallback
+   is disabled, recall records a
+   `vector_tier_unavailable` degradation on the recall snapshot instead of
+   silently returning nothing. Read it with `remnic recall explain` or the
+   `memory_last_recall` tool: an empty cross-lingual recall then reads as
+   "vectors missing", not "no such memory".
+
+A monolingual deployment never triggers any of this — the query and corpus
+scripts match, so the lexical path is unchanged.
+
+## Global Search
+
+
+All backends support `searchGlobal()`, which searches across all collections (not just the default one). This is used by Remnic's cross-collection recall when hot/cold tiering or conversation indexing is enabled.
+
+- **QMD**: Searches all configured QMD collections
+- **Orama**: Scans all `.msp` files in the database directory
+- **LanceDB**: Queries all tables in the database
+- **Meilisearch**: Uses `multiSearch` across all server indexes
+
+## See Also
+
+- [Writing a Search Backend](writing-a-search-backend.md) — Implement your own adapter
+- [Config Reference](config-reference.md) — All search-related settings
+- [Architecture Overview](architecture/overview.md) — How search fits into the recall pipeline

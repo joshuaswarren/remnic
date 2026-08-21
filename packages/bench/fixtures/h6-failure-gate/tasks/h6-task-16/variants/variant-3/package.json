@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/search-index-cluster",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for search-index-cluster",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

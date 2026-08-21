@@ -1,0 +1,32 @@
+[
+  {
+    "uuid": "22222222-bbbb-4000-8000-000000000001",
+    "name": "Synthetic weekend CLI",
+    "description": "Fictional side project for testing",
+    "prompt_template": "Always answer concisely and respond in TypeScript idioms.",
+    "created_at": "2026-01-10T12:00:00.000Z",
+    "updated_at": "2026-02-14T09:00:00.000Z",
+    "docs": [
+      {
+        "uuid": "doc-0001",
+        "filename": "architecture.md",
+        "content": "Fictional: the CLI parses synthetic JSON and prints a report.",
+        "created_at": "2026-01-10T12:05:00.000Z"
+      },
+      {
+        "uuid": "doc-0002",
+        "filename": "conventions.md",
+        "content": "Fictional: prefer named exports, strict mode, and explicit return types.",
+        "created_at": "2026-01-11T08:30:00.000Z"
+      }
+    ]
+  },
+  {
+    "uuid": "22222222-bbbb-4000-8000-000000000002",
+    "name": "Empty project example",
+    "description": "No docs, empty template; should produce zero memories.",
+    "prompt_template": "",
+    "docs": [],
+    "created_at": "2026-02-01T00:00:00.000Z"
+  }
+]

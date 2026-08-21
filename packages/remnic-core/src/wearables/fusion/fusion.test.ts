@@ -1,0 +1,2575 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { composeDayTranscriptBody } from "../day-store.js";
+import { emptySpeakerRegistry } from "../speakers.js";
+import type { WearableConversation } from "../types.js";
+import {
+  DEFAULT_PROXIMITY_GAP_MS,
+  DEFAULT_WINDOW_TOLERANCE_MS,
+  FUSION_ALGO_VERSION,
+  canonicalDayKey,
+  clusterConversations,
+  composeFusionDayMeta,
+  fuseDay,
+  fusionInputsFromConversations,
+  hashFusionBody,
+  reconstructFusionInputs,
+  serializeFusionDay,
+  parseFusionDay,
+} from "./index.js";
+import type { FusionConversationInput } from "./index.js";
+
+const DATE = "2026-06-10";
+const REGISTRY = emptySpeakerRegistry();
+
+/** Build a minimal wearable conversation with resolved self/others. */
+function conversation(
+  source: string,
+  id: string,
+  startIso: string,
+  segments: Array<{
+    text: string;
+    speakerKey?: string;
+    speakerName?: string;
+    isWearer?: boolean;
+    startIso?: string;
+    endIso?: string;
+  }>,
+  extra: Partial<WearableConversation> = {},
+): WearableConversation {
+  return {
+    id,
+    source,
+    startIso,
+    segments: segments.map((segment) => ({
+      text: segment.text,
+      speakerKey: segment.speakerKey ?? "user",
+      ...(segment.speakerName !== undefined ? { speakerName: segment.speakerName } : {}),
+      ...(segment.isWearer !== undefined ? { isWearer: segment.isWearer } : {}),
+      ...(segment.startIso !== undefined ? { startIso: segment.startIso } : {}),
+      ...(segment.endIso !== undefined ? { endIso: segment.endIso } : {}),
+    })),
+    ...extra,
+  };
+}
+
+function inputs(
+  ...perSource: Array<{ source: string; conversations: WearableConversation[] }>
+): FusionConversationInput[] {
+  return perSource.flatMap(({ source, conversations }) =>
+    fusionInputsFromConversations(source, conversations, REGISTRY),
+  );
+}
+
+test("exact overlap: two sources, same time/text fuse to one segment, no disagreement", () => {
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation(
+            "limitless",
+            "c1",
+            "2026-06-10T09:00:00.000Z",
+            [
+              {
+                text: "Let's ship the launch on Friday.",
+                isWearer: true,
+                startIso: "2026-06-10T09:00:30.000Z",
+              },
+            ],
+            { endIso: "2026-06-10T09:01:00.000Z" },
+          ),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation(
+            "bee",
+            "c1",
+            "2026-06-10T09:00:00.000Z",
+            [
+              {
+                text: "Let's ship the launch on Friday.",
+                isWearer: true,
+                startIso: "2026-06-10T09:00:31.000Z",
+              },
+            ],
+            { endIso: "2026-06-10T09:01:00.000Z" },
+          ),
+        ],
+      },
+    ),
+    { sourceTrust: { limitless: 0.9, bee: 0.7 } },
+  );
+
+  assert.equal(fused.conversations.length, 1);
+  const conv = fused.conversations[0]!;
+  assert.deepEqual(conv.sources.sort(), ["bee", "limitless"]);
+  assert.equal(conv.segments.length, 1, "overlapping identical text collapses to one segment");
+  const segment = conv.segments[0]!;
+  assert.equal(segment.text, "Let's ship the launch on Friday.");
+  assert.equal(segment.provenance.source, "limitless");
+  assert.equal(segment.provenance.reason, "higher-trust");
+  assert.equal(segment.provenance.alternatives.length, 1);
+  assert.equal(conv.disagreements.length, 0, "identical text is not a disagreement");
+});
+
+test("partial overlap: adjacent conversations still cluster into one fused conversation", () => {
+  const clusters = clusterConversations(
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation(
+            "limitless",
+            "c1",
+            "2026-06-10T09:00:00.000Z",
+            [{ text: "First topic.", isWearer: true }],
+            { endIso: "2026-06-10T09:20:00.000Z" },
+          ),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation(
+            "bee",
+            "c1",
+            "2026-06-10T09:22:00.000Z",
+            [{ text: "Second topic.", isWearer: true }],
+            { endIso: "2026-06-10T09:40:00.000Z" },
+          ),
+        ],
+      },
+    ),
+  );
+  // 2-minute gap < 5-minute default proximity -> one cluster.
+  assert.equal(clusters.length, 1);
+});
+
+test("explicit end earlier than start is clamped to start so a within-gap neighbor still clusters (#1849)", () => {
+  // A parseable endIso that precedes the start (malformed/cross-day input)
+  // must collapse to the start: effectiveInterval returns [09:00, 09:00]
+  // instead of the negative-length [09:00, 08:55]. Without the clamp the
+  // malformed end (08:55) sits 8 min before the neighbor's 09:03 start —
+  // outside the 5-min gap — and the two split; with the clamp the 09:00 end
+  // keeps the 09:03 neighbor within the gap so they merge into one cluster.
+  const clusters = clusterConversations(
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation(
+            "limitless",
+            "c1",
+            "2026-06-10T09:00:00.000Z",
+            [{ text: "Clamped window topic.", isWearer: true }],
+            { endIso: "2026-06-10T08:55:00.000Z" },
+          ),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation(
+            "bee",
+            "c1",
+            "2026-06-10T09:03:00.000Z",
+            [{ text: "Neighbor topic.", isWearer: true }],
+            { endIso: "2026-06-10T09:10:00.000Z" },
+          ),
+        ],
+      },
+    ),
+  );
+  assert.equal(
+    clusters.length,
+    1,
+    "clamped-to-start end keeps the within-gap neighbor in one cluster",
+  );
+  assert.deepEqual(
+    clusters[0]!.map((c) => c.source).sort(),
+    ["bee", "limitless"],
+  );
+});
+
+test("same-source conversations within the proximity gap stay separate without a cross-source bridge (issue #1849)", () => {
+  // The proximity gap bridges the SAME real-world conversation recorded by
+  // DIFFERENT sources. Two conversations from the SAME source within the
+  // gap must NOT merge: no other source corroborates that they are the
+  // same event, so the source's own conversation boundaries are preserved.
+  const a: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    endIso: "2026-06-10T09:10:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "First meeting." }],
+  };
+  const b: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c2",
+    startIso: "2026-06-10T09:12:00.000Z",
+    endIso: "2026-06-10T09:20:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "Second meeting." }],
+  };
+  // 2-minute gap < 5-minute default, but SAME source => two clusters.
+  const clusters = clusterConversations([a, b]);
+  assert.equal(
+    clusters.length,
+    2,
+    "same-source conversations stay separate without a cross-source bridge",
+  );
+  assert.deepEqual(
+    clusters.map((c) => c[0]!.conversationId),
+    ["c1", "c2"],
+    "each conversation is its own cluster, in chronological order",
+  );
+});
+
+test("different-source conversations within the proximity gap still merge (cross-source bridge)", () => {
+  // Cross-source proximity bridging is the INTENDED use of the gap —
+  // verify it is preserved by the cross-source bridge rule.
+  const a: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    endIso: "2026-06-10T09:10:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "First meeting." }],
+  };
+  const b: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:12:00.000Z",
+    endIso: "2026-06-10T09:20:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "First meeting." }],
+  };
+  // 2-minute gap < 5-minute default, DIFFERENT sources => one cluster.
+  const clusters = clusterConversations([a, b]);
+  assert.equal(clusters.length, 1, "different-source conversations within the gap merge");
+  assert.deepEqual(clusters[0]!.map((c) => c.source).sort(), ["bee", "limitless"]);
+});
+
+test("same-source conversations bridged by a different-source chain merge into one cluster (issue #1849)", () => {
+  // A(src1) and C(src1) are the SAME source. B(src2) sits within the gap
+  // of both and bridges them: A→B→C is a valid cross-source chain. Without
+  // B, A and C would stay separate (same source, no bridge).
+  //
+  // Chosen behavior: a same-source pair that would NOT merge on its own
+  // MAY share a cluster when a different-source conversation within the gap
+  // corroborates the bridge — the union-find transitive closure links them
+  // through B. This preserves source boundaries when no bridge exists while
+  // still fusing corroborated chains.
+  const a: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    endIso: "2026-06-10T09:03:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "Topic one." }],
+  };
+  const b: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:06:00.000Z",
+    endIso: "2026-06-10T09:10:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "Topic one." }],
+  };
+  const c: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c2",
+    startIso: "2026-06-10T09:09:00.000Z",
+    endIso: "2026-06-10T09:20:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "Topic two." }],
+  };
+  // A-B: diff source, 3-min gap (< 5 min) => bridge.
+  // A-C: same source, and C is 6 min past A.end (outside the gap) anyway.
+  // B-C: diff source, C overlaps B => bridge.
+  // => one cluster {A, B, C}, sorted by (start, source, id).
+  const clusters = clusterConversations([a, b, c]);
+  assert.equal(
+    clusters.length,
+    1,
+    "the bee conversation bridges the two limitless conversations into one cluster",
+  );
+  assert.deepEqual(
+    clusters[0]!.map((conv) => conv.conversationId),
+    ["c1", "c1", "c2"],
+    "cluster is sorted by (start, source, id): limitless c1, bee c1, limitless c2",
+  );
+});
+
+test("conflicting ASR text for the same window is recorded as a disagreement", () => {
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "Let's ship the launch on Friday.",
+              isWearer: true,
+              startIso: "2026-06-10T09:00:30.000Z",
+            },
+          ]),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "Let's skip the launch entirely.",
+              isWearer: true,
+              startIso: "2026-06-10T09:00:31.000Z",
+            },
+          ]),
+        ],
+      },
+    ),
+  );
+
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.disagreements.length, 1);
+  const disagreement = conv.disagreements[0]!;
+  assert.equal(disagreement.kind, "asr-text");
+  assert.equal(disagreement.candidates.length, 2);
+  assert.ok(disagreement.provisional, "a provisional winner is kept, never silently dropped");
+  // The fused segment carries lowered confidence when a conflict exists.
+  assert.ok(conv.segments[0]!.confidence < 0.8);
+});
+
+test("truncation is more-complete, not a disagreement: verbatim beats clipped", () => {
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "The deploy window opens at three and closes at five.",
+              isWearer: true,
+              startIso: "2026-06-10T09:00:30.000Z",
+            },
+          ]),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "The deploy window opens at three and closes at",
+              isWearer: true,
+              startIso: "2026-06-10T09:00:31.000Z",
+            },
+          ]),
+        ],
+      },
+    ),
+  );
+
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.disagreements.length, 0, "a clipped transcript is not a conflict");
+  const segment = conv.segments[0]!;
+  assert.equal(
+    segment.text,
+    "The deploy window opens at three and closes at five.",
+  );
+  assert.equal(segment.provenance.reason, "more-complete");
+});
+
+test("summary-style + verbatim-style source: summary preserved, verbatim segments win", () => {
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "omi",
+        conversations: [
+          conversation(
+            "omi",
+            "c1",
+            "2026-06-10T09:00:00.000Z",
+            [{ text: "Discussed the launch.", isWearer: true }],
+            {
+              endIso: "2026-06-10T09:10:00.000Z",
+              title: "Launch sync",
+              summary: "A short summary of the launch discussion.",
+            },
+          ),
+        ],
+      },
+      {
+        source: "limitless",
+        conversations: [
+          conversation(
+            "limitless",
+            "c1",
+            "2026-06-10T09:00:00.000Z",
+            [
+              {
+                text: "We agreed to launch on Friday at noon.",
+                isWearer: true,
+                startIso: "2026-06-10T09:00:30.000Z",
+              },
+              {
+                text: "I will send the checklist.",
+                isWearer: true,
+                startIso: "2026-06-10T09:01:00.000Z",
+              },
+            ],
+            { endIso: "2026-06-10T09:10:00.000Z" },
+          ),
+        ],
+      },
+    ),
+  );
+
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.title, "Launch sync");
+  assert.equal(conv.summary, "A short summary of the launch discussion.");
+  // Verbatim source contributes more complete, on-the-record segments.
+  assert.ok(
+    conv.segments.some((segment) =>
+      segment.text.startsWith("We agreed to launch"),
+    ),
+    "verbatim segment is retained",
+  );
+});
+
+test("missing timestamps: segments without start are preserved and still fused", () => {
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "No timestamp on this utterance.", isWearer: true },
+          ]),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "No timestamp on this utterance.", isWearer: true },
+          ]),
+        ],
+      },
+    ),
+  );
+
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.segments.length, 1);
+  assert.equal(conv.segments[0]!.text, "No timestamp on this utterance.");
+  assert.equal(conv.segments[0]!.startIso, undefined);
+});
+
+test("speaker-label uncertainty: generic single-source label carries lowered confidence", () => {
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "Hello there.",
+              speakerKey: "0",
+              startIso: "2026-06-10T09:00:30.000Z",
+            },
+          ]),
+        ],
+      },
+    ),
+  );
+
+  const conv = fused.conversations[0]!;
+  const generic = conv.speakers.find((speaker) => !speaker.isSelf);
+  assert.ok(generic, "a non-self speaker is present");
+  assert.ok(
+    generic!.confidence <= 0.5,
+    "a generic label seen in one source is marked uncertain",
+  );
+});
+
+test("idempotency: identical inputs produce a stable id and content hash", () => {
+  const a = fuseDay(
+    DATE,
+    inputs({
+      source: "limitless",
+      conversations: [
+        conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+          { text: "Stable input.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        ]),
+      ],
+    }),
+  );
+  // Re-run with a different source ORDER — must hash identically.
+  const b = fuseDay(
+    DATE,
+    inputs({
+      source: "limitless",
+      conversations: [
+        conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+          { text: "Stable input.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        ]),
+      ],
+    }),
+  );
+
+  assert.equal(a.conversations[0]!.id, b.conversations[0]!.id);
+  assert.equal(a.contentHash, b.contentHash);
+});
+
+test("content hash folds fusion config: same inputs, changed knob => new hash", () => {
+  // Two contributing sources so per-source trust is part of the fingerprint.
+  const day = inputs(
+    {
+      source: "limitless",
+      conversations: [
+        conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+          { text: "Config-sensitive hash.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        ]),
+      ],
+    },
+    {
+      source: "bee",
+      conversations: [
+        conversation("bee", "c2", "2026-06-10T09:00:20.000Z", [
+          { text: "Second source.", isWearer: false, startIso: "2026-06-10T09:00:40.000Z" },
+        ]),
+      ],
+    },
+  );
+
+  const base = fuseDay(DATE, day);
+
+  // A change to any clustering/reconciliation knob must invalidate the hash.
+  const widerGap = fuseDay(DATE, day, { proximityGapMs: 600_000 });
+  assert.notEqual(
+    base.contentHash,
+    widerGap.contentHash,
+    "proximityGapMs change must invalidate the content hash",
+  );
+  const tighterTol = fuseDay(DATE, day, { windowToleranceMs: 5_000 });
+  assert.notEqual(
+    base.contentHash,
+    tighterTol.contentHash,
+    "windowToleranceMs change must invalidate the content hash",
+  );
+  const reweighted = fuseDay(DATE, day, { sourceTrust: { limitless: 0.95 } });
+  assert.notEqual(
+    base.contentHash,
+    reweighted.contentHash,
+    "per-source trust change must invalidate the content hash",
+  );
+
+  // Idempotency is preserved: explicit defaults hash identically to omission,
+  // and the per-conversation id stays stable across a config change.
+  const withDefaults = fuseDay(DATE, day, {
+    proximityGapMs: DEFAULT_PROXIMITY_GAP_MS,
+    windowToleranceMs: DEFAULT_WINDOW_TOLERANCE_MS,
+  });
+  assert.equal(
+    base.contentHash,
+    withDefaults.contentHash,
+    "explicit defaults must hash identically to omission",
+  );
+  assert.equal(
+    base.conversations[0]!.id,
+    widerGap.conversations[0]!.id,
+    "conversation id is input-only and stable across a config change",
+  );
+});
+
+test("content hash folds the fusion algorithm version (issue #1849)", () => {
+  // The day contentHash is the idempotency key. When the fusion ALGORITHM
+  // changes (clustering/reconciliation/reconstruction fixes) with byte-
+  // identical inputs and config, the hash must still differ so a stale
+  // artifact is regenerated rather than skipped — contentHash + bodyHash
+  // alone only prove the stored body is self-consistent, not that it was
+  // produced by the current algorithm.
+  const day = inputs(
+    {
+      source: "limitless",
+      conversations: [
+        conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+          { text: "Algorithm-sensitive hash.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        ]),
+      ],
+    },
+    {
+      source: "bee",
+      conversations: [
+        conversation("bee", "c2", "2026-06-10T09:00:20.000Z", [
+          { text: "Second source.", isWearer: false, startIso: "2026-06-10T09:00:40.000Z" },
+        ]),
+      ],
+    },
+  );
+
+  const current = fuseDay(DATE, day);
+
+  // A stale algorithm version must produce a DIFFERENT day hash.
+  const staleHash = canonicalDayKey(DATE, day, {}, "2000-01-01-stale");
+  assert.notEqual(
+    current.contentHash,
+    staleHash,
+    "a different algorithm version must invalidate the content hash",
+  );
+
+  // Same version => identical hash (idempotency preserved).
+  assert.equal(
+    current.contentHash,
+    canonicalDayKey(DATE, day, {}, FUSION_ALGO_VERSION),
+    "same version must produce the same hash",
+  );
+
+  // The per-conversation id is input-only and unaffected by the version.
+  assert.ok(
+    current.conversations[0]!.id.startsWith("fusion-"),
+    "conversation id is unaffected by the algorithm version",
+  );
+});
+
+test("hash encoding is delimiter-injection-safe: distinct inputs differing only by where a `|`/newline falls never collide (issue #1849)", () => {
+  // The conversation id + day contentHash are computed from a serialization
+  // of the structured fusion inputs. That serialization must be UNAMBIGUOUS:
+  // a user-defined speaker label or segment text containing `|` (or a
+  // newline plus a forged `seg|…` line) must not be able to forge a
+  // field/record boundary — otherwise two DISTINCT inputs would serialize to
+  // identical bytes, hash alike, and fuseDay would wrongly take the
+  // idempotent-skip path, keeping a stale artifact.
+  const startIso = "2026-06-10T09:00:00.000Z";
+
+  // Collision pair over the OLD `|`/newline-delimited form:
+  //  - "split": ONE segment whose text embeds a newline plus a forged
+  //    `seg|…` line, so its serialized bytes looked like two segment lines.
+  //  - "two": TWO real segments whose serialized lines are byte-identical
+  //    to "split" once the old delimiter joins ran.
+  const split: FusionConversationInput[] = [
+    {
+      source: "limitless",
+      conversationId: "c1",
+      startIso,
+      segments: [
+        { speaker: "Alice", isSelf: false, text: "Bob\nseg|Carol|other|||Dave" },
+      ],
+    },
+  ];
+  const two: FusionConversationInput[] = [
+    {
+      source: "limitless",
+      conversationId: "c1",
+      startIso,
+      segments: [
+        { speaker: "Alice", isSelf: false, text: "Bob" },
+        { speaker: "Carol", isSelf: false, text: "Dave" },
+      ],
+    },
+  ];
+
+  const fusedSplit = fuseDay(DATE, split);
+  const fusedTwo = fuseDay(DATE, two);
+
+  // The two distinct inputs must NOT collide.
+  assert.notEqual(
+    fusedSplit.contentHash,
+    fusedTwo.contentHash,
+    "a segment text containing a forged delimiter must not collide with two real segments",
+  );
+  assert.notEqual(
+    fusedSplit.conversations[0]!.id,
+    fusedTwo.conversations[0]!.id,
+    "the per-conversation id must also be collision-safe",
+  );
+
+  // A `|` inside a speaker label must not be confused with one inside the
+  // text field (field-boundary forgery).
+  const labelPipe: FusionConversationInput[] = [
+    {
+      source: "limitless",
+      conversationId: "c1",
+      startIso,
+      segments: [{ speaker: "Alice|Bob", isSelf: false, text: "Carol" }],
+    },
+  ];
+  const textPipe: FusionConversationInput[] = [
+    {
+      source: "limitless",
+      conversationId: "c1",
+      startIso,
+      segments: [{ speaker: "Alice", isSelf: false, text: "Bob|Carol" }],
+    },
+  ];
+  assert.notEqual(
+    fuseDay(DATE, labelPipe).contentHash,
+    fuseDay(DATE, textPipe).contentHash,
+    "a `|` in a speaker label vs in the text must hash differently",
+  );
+
+  // Idempotency is preserved for genuine no-ops: the same logical input
+  // (built twice, independently) still produces the SAME hash, so the
+  // idempotent-skip path keeps working for unchanged inputs.
+  assert.equal(
+    fuseDay(DATE, split).contentHash,
+    fuseDay(DATE, JSON.parse(JSON.stringify(split))).contentHash,
+    "identical logical inputs must hash identically (idempotent skip still works)",
+  );
+});
+
+
+test("serialize/parse round-trips a fused day file", () => {
+  const fused = fuseDay(
+    DATE,
+    inputs({
+      source: "limitless",
+      conversations: [
+        conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+          { text: "Round trip.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        ]),
+      ],
+    }),
+  );
+  const meta = composeFusionDayMeta(
+    DATE,
+    fused.conversations,
+    fused.sources,
+    fused.contentHash,
+    "2026-06-11T00:00:00.000Z",
+  );
+  const serialized = serializeFusionDay(meta, fused.conversations);
+  const parsed = parseFusionDay(serialized);
+  assert.ok(parsed);
+  assert.equal(parsed!.meta.kind, "wearable-fusion");
+  assert.equal(parsed!.meta.date, DATE);
+  assert.equal(parsed!.meta.bodyHash, hashFusionBody(fused.conversations));
+  assert.equal(parsed!.parseOk, true);
+  assert.equal(parsed!.conversations.length, 1);
+  assert.equal(parsed!.conversations[0]!.segments[0]!.text, "Round trip.");
+});
+
+test("parseFusionDay returns null for non-fusion content", () => {
+  assert.equal(parseFusionDay("---\nkind: wearable-transcript\n---\n\nbody\n"), null);
+  assert.equal(parseFusionDay("not a transcript at all"), null);
+});
+
+test("parseFusionDay accepts a well-formed conversation array", () => {
+  const fused = fuseDay(
+    DATE,
+    inputs({
+      source: "limitless",
+      conversations: [
+        conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+          { text: "Well formed.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        ]),
+      ],
+    }),
+  );
+  const serialized = serializeFusionDay(
+    composeFusionDayMeta(DATE, fused.conversations, fused.sources, fused.contentHash, "2026-06-11T00:00:00.000Z"),
+    fused.conversations,
+  );
+  const parsed = parseFusionDay(serialized);
+  assert.ok(parsed);
+  assert.equal(parsed!.parseOk, true);
+  assert.equal(parsed!.conversations.length, fused.conversations.length);
+});
+
+test("parseFusionDay accepts a legitimately-empty body", () => {
+  const serialized = serializeFusionDay(
+    composeFusionDayMeta(DATE, [], [], "abc", "2026-06-11T00:00:00.000Z"),
+    [],
+  );
+  const parsed = parseFusionDay(serialized);
+  assert.ok(parsed);
+  assert.equal(parsed!.parseOk, true);
+  assert.equal(parsed!.conversations.length, 0);
+});
+
+test("parseFusionDay rejects corrupt bodies even with matching hash + count", () => {
+  // Frontmatter carries a hash + count that would otherwise "match"; the
+  // body itself must drive parseOk:false so fuseDay force-rewrites.
+  const header = [
+    "---",
+    "kind: wearable-fusion",
+    `date: ${JSON.stringify(DATE)}`,
+    "sourceCount: 1",
+    "conversationCount: 1",
+    'contentHash: "matches"',
+    'bodyHash: "matches"',
+    'fusedAt: "2026-06-11T00:00:00.000Z"',
+    "---",
+    "",
+  ].join("\n");
+  // Non-array JSON, empty object, null, wrong-typed, and partial elements
+  // are all rejected; a legitimately-empty [] is accepted.
+  for (const [body, expectOk] of [
+    ['{"not":"array"}', false],
+    ["[{}]", false],
+    ["[null]", false],
+    ['[{"id":1}]', false],
+    ['[{"id":"x"}]', false],
+    ["[]", true],
+  ] as const) {
+    const parsed = parseFusionDay(`${header}${body}\n`);
+    assert.ok(parsed, `expected a non-null parse for body ${body}`);
+    assert.equal(
+      parsed!.parseOk,
+      expectOk,
+      `expected parseOk:${expectOk} for body ${body}`,
+    );
+    if (!expectOk) {
+      assert.equal(parsed!.conversations.length, 0, `expected empty convs for body ${body}`);
+    }
+  }
+});
+
+test("parseFusionDay rejects a blank or whitespace-only body as corrupt (#1849)", () => {
+  // An existing artifact whose body is blank/whitespace-only (frontmatter
+  // present but no JSON) is corrupt — NOT a valid empty `[]`. The
+  // serializer always writes JSON.stringify(conversations, null, 2) which
+  // produces "[]" for zero conversations, so a blank body means the file
+  // was truncated, partially written, or manually emptied.
+  const header = [
+    "---",
+    "kind: wearable-fusion",
+    `date: ${JSON.stringify(DATE)}`,
+    "sourceCount: 0",
+    "conversationCount: 0",
+    'contentHash: "abc"',
+    'bodyHash: "def"',
+    'fusedAt: "2026-06-11T00:00:00.000Z"',
+    "---",
+    "",
+  ].join("\n");
+  for (const body of ["", "   ", "\n\n", "\t"]) {
+    const parsed = parseFusionDay(`${header}${body}\n`);
+    assert.ok(parsed, `expected non-null parse for blank body`);
+    assert.equal(
+      parsed!.parseOk,
+      false,
+      `blank/whitespace body must be corrupt: ${JSON.stringify(body)}`,
+    );
+    assert.equal(parsed!.conversations.length, 0);
+  }
+  // A valid serialized [] remains accepted with parseOk true.
+  const validParsed = parseFusionDay(`${header}[]\n`);
+  assert.ok(validParsed);
+  assert.equal(validParsed!.parseOk, true);
+  assert.equal(validParsed!.conversations.length, 0);
+});
+
+test("reconstructFusionInputs parses a rendered transcript body", () => {
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 09:00–09:20 · Morning coffee (conversation conv-1)",
+    "",
+    "**Me (you)** [09:00]: Hello world.",
+    "**Jane** [09:01]: Hi there.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.conversationId, "conv-1");
+  assert.equal(conv.startIso, "2026-06-10T09:00:00.000Z");
+  assert.equal(conv.segments.length, 2);
+  assert.equal(conv.segments[0]!.speaker, "Me (you)");
+  assert.equal(conv.segments[0]!.isSelf, true);
+  assert.equal(conv.segments[1]!.speaker, "Jane");
+  assert.equal(conv.segments[1]!.isSelf, false);
+});
+
+test("reconstruct normalizes renderer 24:xx midnight clocks to valid 00:xx ISO", () => {
+  // en-US hour12:false renders the first wall-clock hour as 24:xx on some
+  // ICU builds; reconstruct must never emit an invalid/next-day timestamp.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 24:00–24:30 · Late night (conversation c1)",
+    "",
+    "**Me (you)** [24:05]: Hello world.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  // 24:00 -> 00:00 on the SAME date (not the next day); valid + parseable.
+  assert.equal(conv.startIso, "2026-06-10T00:00:00.000Z");
+  assert.equal(conv.endIso, "2026-06-10T00:30:00.000Z");
+  assert.ok(Number.isFinite(Date.parse(conv.startIso!)), "startIso is a valid timestamp");
+  assert.equal(conv.segments.length, 1);
+  const segIso = conv.segments[0]!.startIso!;
+  assert.equal(segIso, "2026-06-10T00:05:00.000Z");
+  assert.ok(Number.isFinite(Date.parse(segIso)), "24:05 -> valid 00:05 ISO");
+});
+
+test("reconstruct rolls a cross-midnight conversation end into the next day", () => {
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 23:55–00:10 · Late call (conversation c1)",
+    "",
+    "**Me (you)** [23:58]: Still talking.",
+    "**Jane** [00:05]: After midnight.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.startIso, "2026-06-10T23:55:00.000Z");
+  // end clock 00:10 < start clock 23:55 -> rolled to the next calendar day.
+  assert.equal(conv.endIso, "2026-06-11T00:10:00.000Z");
+  assert.ok(conv.endIso! >= conv.startIso!, "endIso must not precede startIso");
+  const isos = conv.segments.map((s) => s.startIso);
+  assert.ok(
+    isos.includes("2026-06-10T23:58:00.000Z"),
+    "pre-midnight segment stays on the rendered date",
+  );
+  assert.ok(
+    isos.includes("2026-06-11T00:05:00.000Z"),
+    "post-midnight segment rolls to the next day",
+  );
+});
+
+test("reconstruct rolls a post-midnight segment even when the heading end clock is missing", () => {
+  // A stored transcript whose heading end is unparseable (e.g. "--:--",
+  // the rendered form of a missing endIso) must still roll a subsequent
+  // segment whose clock precedes the start clock into the next calendar
+  // day. The roll decision is driven by the segment-vs-start comparison,
+  // not gated on a parseable heading end clock.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 23:55–--:-- · Late call (conversation c1)",
+    "",
+    "**Me (you)** [23:58]: Still talking.",
+    "**Jane** [00:05]: After midnight.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.startIso, "2026-06-10T23:55:00.000Z");
+  // No parseable end clock -> no endIso is reconstructed.
+  assert.equal(conv.endIso, undefined);
+  const isos = conv.segments.map((s) => s.startIso);
+  assert.ok(
+    isos.includes("2026-06-10T23:58:00.000Z"),
+    "pre-midnight segment stays on the rendered date",
+  );
+  assert.ok(
+    isos.includes("2026-06-11T00:05:00.000Z"),
+    "post-midnight segment rolls to the next day despite a missing heading end",
+  );
+  // The rolled segment must sort AFTER the conversation start so the
+  // timeline ordering stays correct.
+  const rolled = conv.segments.find((s) => s.startIso === "2026-06-11T00:05:00.000Z");
+  assert.ok(rolled, "rolled segment present");
+  assert.ok(
+    Date.parse(rolled!.startIso!) > Date.parse(conv.startIso!),
+    "segment ISO must sort after the start ISO",
+  );
+});
+
+test("truncated high-trust text yields to a longer corroborating transcript", () => {
+  // bee is the MORE trusted source but its text is a clipped prefix of
+  // omi's full wording; the more-complete wording must win (not the trust).
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "The deploy window opens at",
+              isWearer: true,
+              startIso: "2026-06-10T09:00:30.000Z",
+            },
+          ]),
+        ],
+      },
+      {
+        source: "omi",
+        conversations: [
+          conversation("omi", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "The deploy window opens at three and closes at five.",
+              isWearer: true,
+              startIso: "2026-06-10T09:00:30.000Z",
+            },
+          ]),
+        ],
+      },
+    ),
+    { sourceTrust: { bee: 0.95, omi: 0.6 } },
+  );
+  const conv = fused.conversations[0]!;
+  const segment = conv.segments[0]!;
+  assert.equal(
+    segment.text,
+    "The deploy window opens at three and closes at five.",
+  );
+  assert.equal(segment.provenance.reason, "more-complete");
+  assert.equal(segment.provenance.source, "omi");
+  assert.equal(conv.disagreements.length, 0, "a truncation is not a disagreement");
+});
+
+test("distinct untimestamped same-speaker utterances do not collapse across sources", () => {
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "First distinct untimestamped thought.", isWearer: true },
+          ]),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "Second distinct untimestamped thought.", isWearer: true },
+          ]),
+        ],
+      },
+    ),
+  );
+  const conv = fused.conversations[0]!;
+  assert.equal(
+    conv.segments.length,
+    2,
+    "distinct untimestamped utterances stay separate, not collapsed",
+  );
+  const texts = conv.segments.map((s) => s.text).sort();
+  assert.deepEqual(texts, [
+    "First distinct untimestamped thought.",
+    "Second distinct untimestamped thought.",
+  ]);
+});
+
+test("repeated short utterance attaches to the closest matching group, not the first (issue #1849)", () => {
+  // Source A (limitless) says "yes" twice — at 09:00:00 and 09:00:20.
+  // Source B (bee) says "yes" once at 09:00:21, which is within
+  // windowToleranceMs (30s) of BOTH of A's utterances. First-match would
+  // attach B to the 09:00:00 group (found first); closest-match must attach
+  // it to 09:00:20 (nearest), so B corroborates the utterance it actually
+  // overlaps and provenance stays correct.
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:00.000Z" },
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:20.000Z" },
+          ]),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c2", "2026-06-10T09:00:00.000Z", [
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:21.000Z" },
+          ]),
+        ],
+      },
+    ),
+    { sourceTrust: { limitless: 0.9, bee: 0.7 } },
+  );
+
+  assert.equal(fused.conversations.length, 1);
+  const conv = fused.conversations[0]!;
+  // Two distinct utterances stay separate (same source never collapses).
+  assert.equal(conv.segments.length, 2);
+
+  const byStart = [...conv.segments].sort((a, b) =>
+    (a.startIso ?? "").localeCompare(b.startIso ?? ""),
+  );
+  // The early "yes" carries ONLY limitless — B did not corroborate it.
+  assert.equal(byStart[0]!.startIso, "2026-06-10T09:00:00.000Z");
+  assert.equal(
+    byStart[0]!.provenance.alternatives.length,
+    0,
+    "B must not corroborate the 09:00:00 utterance under closest-match",
+  );
+  // The later "yes" carries BOTH sources — B corroborated the nearest group.
+  assert.equal(byStart[1]!.startIso, "2026-06-10T09:00:20.000Z");
+  assert.ok(
+    byStart[1]!.provenance.alternatives.some((a) => a.source === "bee"),
+    "B must corroborate the 09:00:20 utterance (closest match)",
+  );
+});
+
+test("equal-distance candidate groups tie-break to the earlier anchor (issue #1849)", () => {
+  // B's "yes" at 09:00:15 is 15s from A's 09:00:00 and 15s from A's
+  // 09:00:30 — an exact tie. The documented tie-break prefers the smaller
+  // anchor, so B corroborates the earlier (09:00:00) utterance.
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:00.000Z" },
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+          ]),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c2", "2026-06-10T09:00:00.000Z", [
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:15.000Z" },
+          ]),
+        ],
+      },
+    ),
+    { sourceTrust: { limitless: 0.9, bee: 0.7 } },
+  );
+
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.segments.length, 2);
+  const byStart = [...conv.segments].sort((a, b) =>
+    (a.startIso ?? "").localeCompare(b.startIso ?? ""),
+  );
+  // The 09:00:00 utterance gets B's corroboration (smaller anchor wins tie).
+  assert.equal(byStart[0]!.startIso, "2026-06-10T09:00:00.000Z");
+  assert.ok(
+    byStart[0]!.provenance.alternatives.some((a) => a.source === "bee"),
+    "tie-break must attach B to the earlier anchor (09:00:00)",
+  );
+  // The 09:00:30 utterance stays limitless-only.
+  assert.equal(byStart[1]!.startIso, "2026-06-10T09:00:30.000Z");
+  assert.equal(
+    byStart[1]!.provenance.alternatives.length,
+    0,
+    "B must not corroborate the 09:00:30 utterance",
+  );
+});
+
+test("distinct timestamped same-window utterances stay separate, not collapsed", () => {
+  // Two sources capture genuinely different utterances inside the same
+  // time window (within the alignment tolerance). They must NOT merge into
+  // one segment — that would silently drop one source's content. Each
+  // stays its own segment with its own provenance (consistent with the
+  // untimestamped-collapse guard); the cross-source conflict is still
+  // surfaced for review rather than silently resolved.
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "Meeting with Sarah at noon.",
+              isWearer: true,
+              startIso: "2026-06-10T09:00:30.000Z",
+            },
+          ]),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "Lunch with the design team.",
+              isWearer: true,
+              startIso: "2026-06-10T09:00:31.000Z",
+            },
+          ]),
+        ],
+      },
+    ),
+  );
+  const conv = fused.conversations[0]!;
+  assert.equal(
+    conv.segments.length,
+    2,
+    "distinct same-window utterances stay separate, not collapsed",
+  );
+  const texts = conv.segments.map((s) => s.text).sort();
+  assert.deepEqual(texts, [
+    "Lunch with the design team.",
+    "Meeting with Sarah at noon.",
+  ]);
+  // Provenance is preserved per segment — no source's content is lost.
+  assert.deepEqual(
+    conv.segments.map((s) => s.provenance.source).sort(),
+    ["bee", "limitless"],
+  );
+  // The cross-source conflict is surfaced for review (not silently dropped).
+  assert.equal(conv.disagreements.length, 1);
+  assert.equal(conv.disagreements[0]!.candidates.length, 2);
+});
+
+test("cross-segment ASR disagreement detected for differently-labeled self speakers (#1849)", () => {
+  // Two sources both record the WEARER but label them differently:
+  // limitless uses the default "Me (you)" while bee has an override
+  // naming the wearer "Alex" -> "Alex (you)". Both normalize to the SAME
+  // speakerKey ("self"), so grouping treats them as one identity. The
+  // cross-segment ASR-disagreement pass MUST use that same identity — not
+  // the raw display label — or a real same-window ASR conflict between
+  // them is silently missed and both confidences wrongly stay high.
+  const beeRegistry = {
+    ...REGISTRY,
+    speakers: {
+      "bee:user": {
+        name: "Alex",
+        isSelf: true,
+        updatedAt: "2026-06-10T00:00:00.000Z",
+      },
+    },
+  };
+  const limitless = fusionInputsFromConversations(
+    "limitless",
+    [
+      conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+        {
+          text: "Meeting with Sarah at noon.",
+          isWearer: true,
+          startIso: "2026-06-10T09:00:30.000Z",
+        },
+      ]),
+    ],
+    REGISTRY,
+  );
+  const bee = fusionInputsFromConversations(
+    "bee",
+    [
+      conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+        {
+          text: "Lunch with the design team.",
+          isWearer: true,
+          startIso: "2026-06-10T09:00:31.000Z",
+        },
+      ]),
+    ],
+    beeRegistry,
+  );
+  const fused = fuseDay(DATE, [...limitless, ...bee]);
+  const conv = fused.conversations[0]!;
+  // The two utterances disagree on text, so they stay separate segments.
+  assert.equal(conv.segments.length, 2);
+  // Precondition: different display labels but the same self identity.
+  assert.ok(conv.segments.every((s) => s.isSelf), "both are the wearer");
+  assert.notEqual(
+    conv.segments[0]!.speaker,
+    conv.segments[1]!.speaker,
+    "the wearer is labeled differently across the two sources",
+  );
+  // The cross-segment ASR-text disagreement IS recorded (was skipped).
+  const disagreement = conv.disagreements.find((d) => d.kind === "asr-text");
+  assert.ok(
+    disagreement,
+    "a same-self different-label ASR disagreement is recorded, not skipped",
+  );
+  assert.equal(disagreement!.candidates.length, 2);
+  // Both involved segments carry lowered confidence.
+  assert.ok(
+    conv.segments.every((s) => s.confidence < 0.8),
+    "both disagreeing segments carry lowered confidence",
+  );
+});
+
+test("differently-labeled self speakers that agree still merge into one segment (#1849)", () => {
+  // Same two-source setup as above, but the text AGREES. Since both
+  // normalize to speakerKey "self" and the text corroborates, they merge
+  // into ONE segment (no cross-segment disagreement) — the fix must not
+  // over-trigger and split an agreeing utterance.
+  const beeRegistry = {
+    ...REGISTRY,
+    speakers: {
+      "bee:user": {
+        name: "Alex",
+        isSelf: true,
+        updatedAt: "2026-06-10T00:00:00.000Z",
+      },
+    },
+  };
+  const text = "Let's ship the launch on Friday.";
+  const limitless = fusionInputsFromConversations(
+    "limitless",
+    [
+      conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+        { text, isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+      ]),
+    ],
+    REGISTRY,
+  );
+  const bee = fusionInputsFromConversations(
+    "bee",
+    [
+      conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+        { text, isWearer: true, startIso: "2026-06-10T09:00:31.000Z" },
+      ]),
+    ],
+    beeRegistry,
+  );
+  const fused = fuseDay(DATE, [...limitless, ...bee]);
+  const conv = fused.conversations[0]!;
+  // The agreeing utterances merge into ONE segment, not two.
+  assert.equal(conv.segments.length, 1);
+  assert.equal(conv.segments[0]!.text, text);
+  assert.equal(conv.segments[0]!.isSelf, true);
+  // No cross-segment ASR disagreement for corroborating text.
+  const asrDisagreement = conv.disagreements.find((d) => d.kind === "asr-text");
+  assert.equal(
+    asrDisagreement,
+    undefined,
+    "agreeing utterances produce no cross-segment ASR disagreement",
+  );
+  // Corroboration BOOSTS confidence — it is not lowered.
+  assert.ok(
+    conv.segments[0]!.confidence > 0.8,
+    "corroborated utterance keeps boosted confidence",
+  );
+});
+
+test("equal-time same-source utterances keep original transcript order, not label order", () => {
+  // From stored transcripts, segment times are minute-precision, so several
+  // utterances from one source can share an identical anchorMs. The
+  // alignment tie-break must preserve the ORIGINAL transcript sequence:
+  // sorting equal-time segments by speaker label would scramble them
+  // ("Amy" before "Zoe" even though Zoe spoke first).
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "Zoe spoke first.",
+              speakerName: "Zoe",
+              startIso: "2026-06-10T09:00:00.000Z",
+            },
+            {
+              text: "Amy spoke second.",
+              speakerName: "Amy",
+              startIso: "2026-06-10T09:00:00.000Z",
+            },
+          ]),
+        ],
+      },
+    ),
+  );
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.segments.length, 2);
+  assert.deepEqual(
+    conv.segments.map((s) => s.text),
+    ["Zoe spoke first.", "Amy spoke second."],
+    "equal-time utterances keep original transcript order, not label order",
+  );
+  assert.deepEqual(conv.segments.map((s) => s.speaker), ["Zoe", "Amy"]);
+});
+
+test("untimestamped same-source utterances keep original transcript order", () => {
+  // Missing times all share the missing-anchor group; the tie-break must
+  // still preserve original transcript sequence rather than speaker label.
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "Zoe untimestamped first.", speakerName: "Zoe" },
+            { text: "Amy untimestamped second.", speakerName: "Amy" },
+          ]),
+        ],
+      },
+    ),
+  );
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.segments.length, 2);
+  assert.deepEqual(
+    conv.segments.map((s) => s.text),
+    ["Zoe untimestamped first.", "Amy untimestamped second."],
+  );
+  assert.deepEqual(conv.segments.map((s) => s.speaker), ["Zoe", "Amy"]);
+});
+
+test("raw diarization keys like SPEAKER_00 are treated as generic speakers", () => {
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "omi",
+        conversations: [
+          conversation("omi", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "Hello there.",
+              speakerKey: "SPEAKER_00",
+              startIso: "2026-06-10T09:00:30.000Z",
+            },
+          ]),
+        ],
+      },
+    ),
+  );
+  const conv = fused.conversations[0]!;
+  const speaker = conv.speakers.find((s) => !s.isSelf);
+  assert.ok(speaker, "a non-self speaker is present");
+  assert.equal(speaker!.label, "SPEAKER_00");
+  assert.ok(
+    speaker!.confidence <= 0.5,
+    "raw diarization key is generic (<=0.5), not a confident attribution",
+  );
+});
+
+test("reconstruct round-trips through the real composeDayTranscriptBody renderer", () => {
+  // Feed the actual renderer's output through reconstruct (not a hand-
+  // written body) so renderer/parser drift is caught. The renderer emits
+  // minute-precision clocks, so reconstructed ISOs zero the seconds.
+  const conversations = [
+    conversation(
+      "limitless",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [
+        { text: "Hello world.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        { text: "Good to see you.", startIso: "2026-06-10T09:01:00.000Z" },
+      ],
+      { title: "Morning sync", endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("limitless", DATE, "UTC", conversations, REGISTRY);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body, escaped: true }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.conversationId, "c1");
+  assert.equal(conv.startIso, "2026-06-10T09:00:00.000Z");
+  assert.equal(conv.endIso, "2026-06-10T09:10:00.000Z");
+  assert.equal(conv.title, "Morning sync");
+  assert.equal(conv.segments.length, 2);
+  assert.equal(conv.segments[0]!.text, "Hello world.");
+  assert.equal(conv.segments[0]!.isSelf, true);
+  assert.equal(conv.segments[0]!.startIso, "2026-06-10T09:00:00.000Z");
+  assert.equal(conv.segments[1]!.text, "Good to see you.");
+  assert.equal(conv.segments[1]!.isSelf, false);
+  assert.equal(conv.segments[1]!.startIso, "2026-06-10T09:01:00.000Z");
+});
+
+test("equal-key comparator inputs keep stable input order (deterministic across runs)", () => {
+  // Two cross-source conflicts where the bee source contributes TWO same-
+  // speaker, same-length cands. bee1 and bee2 tie on every comparator key
+  // (trust, text length, source) — only a STABLE secondary key keeps them
+  // in input order. A comparator that returns nonzero for equal items (the
+  // `a < b ? -1 : 1` antipattern) leaves their order undefined.
+  const textSeed = "Limitless seed text.";
+  const textBee1 = "Bee conflict one xyz.";
+  const textBee2 = "Bee conflict two xyz.";
+  const build = () =>
+    fuseDay(
+      DATE,
+      inputs(
+        {
+          source: "limitless",
+          conversations: [
+            conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+              {
+                text: textSeed,
+                speakerName: "Jane",
+                startIso: "2026-06-10T09:00:30.000Z",
+              },
+            ]),
+          ],
+        },
+        {
+          source: "bee",
+          conversations: [
+            conversation("bee", "c1", "2026-06-10T09:00:05.000Z", [
+              {
+                text: textBee1,
+                speakerName: "Jane",
+                startIso: "2026-06-10T09:00:30.000Z",
+              },
+              {
+                text: textBee2,
+                speakerName: "Jane",
+                startIso: "2026-06-10T09:00:30.000Z",
+              },
+            ]),
+          ],
+        },
+      ),
+    );
+
+  const fused = build();
+  // Deterministic: re-running produces identical output.
+  assert.deepEqual(build(), fused);
+
+  const conv = fused.conversations[0]!;
+  // The three distinct same-window utterances stay separate and surface one
+  // cross-segment ASR conflict.
+  assert.equal(conv.segments.length, 3);
+  const disagreement = conv.disagreements.find((d) => d.kind === "asr-text");
+  assert.ok(disagreement, "a cross-segment asr-text disagreement is recorded");
+  const values = disagreement!.candidates.map((c) => c.value);
+  assert.equal(values.length, 3);
+  // Stable: the two equal-key bee cands keep input order (bee1 before bee2),
+  // never swapped by an unstable comparator.
+  assert.ok(
+    values.indexOf(textBee1) < values.indexOf(textBee2),
+    "equal-key cands keep stable input order",
+  );
+});
+
+test("same window + same text + different speaker fuses to one segment with a recorded speaker conflict", () => {
+  // Two sources capture the same utterance in the same window but DISAGREE
+  // on the speaker (Jane vs John). The same-speaker gate must not split
+  // these into two segments: they corroborate on time+text, so they fuse
+  // into ONE utterance and the speaker disagreement is recorded with
+  // provenance for each label. (The r2 separation is about DIFFERENT text;
+  // this is SAME text, different speaker.)
+  const text = "Let's ship the launch on Friday.";
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            { text, speakerName: "Jane", startIso: "2026-06-10T09:00:30.000Z" },
+          ]),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            { text, speakerName: "John", startIso: "2026-06-10T09:00:30.000Z" },
+          ]),
+        ],
+      },
+    ),
+    { sourceTrust: { limitless: 0.9 } },
+  );
+  const conv = fused.conversations[0]!;
+  // ONE fused segment — not two separate ones.
+  assert.equal(conv.segments.length, 1);
+  const segment = conv.segments[0]!;
+  assert.equal(segment.text, text);
+  // The higher-trust source's attribution wins provisionally.
+  assert.equal(segment.speaker, "Jane");
+  assert.equal(segment.isSelf, false);
+  // A speaker conflict is recorded (not silently dropped).
+  const speakerDisagreement = conv.disagreements.find(
+    (d) => d.kind === "speaker",
+  );
+  assert.ok(speakerDisagreement, "a speaker disagreement is recorded");
+  const labeled = speakerDisagreement!.candidates.map(
+    (c) => `${c.source}=${c.value}`,
+  );
+  assert.deepEqual([...labeled].sort(), ["bee=John", "limitless=Jane"]);
+  assert.deepEqual(speakerDisagreement!.provisional, {
+    source: "limitless",
+    value: "Jane",
+  });
+  // Confidence is lowered by the unresolved speaker conflict.
+  assert.ok(segment.confidence < 0.8);
+  // No attribution is lost: both labels still appear in the speaker list.
+  const labels = conv.speakers.filter((s) => !s.isSelf).map((s) => s.label);
+  assert.ok(
+    labels.includes("Jane") && labels.includes("John"),
+    "both speaker labels are retained",
+  );
+});
+
+test("cluster interval spans to the latest segment start when the conversation end is missing", () => {
+  // A stored transcript renders a missing conversation end as "--:--".
+  // reconstructFusionInputs rebuilds segments with only a startIso, so the
+  // cluster interval must DERIVE its end from the latest segment start —
+  // not collapse to a zero-length point at the conversation start. A later
+  // conversation that sits within the proximity gap of the LAST segment
+  // (but far past the start) must join the same cluster.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 09:00–--:-- · Morning (conversation c1)",
+    "",
+    "**Me (you)** [09:00]: First.",
+    "**Jane** [09:15]: Second.",
+    "**Jane** [09:30]: Third.",
+    "",
+  ].join("\n");
+  const reconstructed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(reconstructed.length, 1);
+  assert.equal(reconstructed[0]!.endIso, undefined, "no end clock -> no endIso");
+  // bee starts 3 min after the last limitless segment (09:33) — within the
+  // 5-minute gap of 09:30, so it clusters. The old zero-length bug measured
+  // the gap from 09:00 (33 min) and split them into two clusters.
+  const bee: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:33:00.000Z",
+    endIso: "2026-06-10T09:40:00.000Z",
+    segments: [
+      { speaker: "Bee", isSelf: false, text: "Follow up.", startIso: "2026-06-10T09:33:00.000Z" },
+    ],
+  };
+  const clusters = clusterConversations([...reconstructed, bee]);
+  assert.equal(
+    clusters.length,
+    1,
+    "missing-end conversation clusters by its last segment start, not its conversation start",
+  );
+});
+
+test("missing-end interval does not over-extend: a neighbor past the gap of the last segment stays separate", () => {
+  // The derived interval must be exactly [start, last segment start], not
+  // unbounded. A neighbor 10 min past the last segment (> 5 min gap) must
+  // NOT cluster with the missing-end conversation.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 09:00–--:-- · Morning (conversation c1)",
+    "",
+    "**Me (you)** [09:00]: First.",
+    "**Jane** [09:30]: Last segment.",
+    "",
+  ].join("\n");
+  const reconstructed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  const bee: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:40:00.000Z",
+    endIso: "2026-06-10T09:50:00.000Z",
+    segments: [
+      { speaker: "Bee", isSelf: false, text: "Later.", startIso: "2026-06-10T09:40:00.000Z" },
+    ],
+  };
+  const clusters = clusterConversations([...reconstructed, bee]);
+  assert.equal(clusters.length, 2, "10 min past the last segment is outside the gap");
+});
+
+test("cluster interval spans rolled cross-midnight segments when the conversation end is missing", () => {
+  // Cross-midnight segments in a missing-end conversation are rolled to the
+  // next calendar day by reconstruct; the cluster interval end must reach
+  // the rolled last segment so a post-midnight neighbor clusters correctly.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 23:55–--:-- · Late call (conversation c1)",
+    "",
+    "**Me (you)** [23:58]: Still talking.",
+    "**Jane** [00:05]: After midnight.",
+    "",
+  ].join("\n");
+  const reconstructed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(reconstructed.length, 1);
+  assert.equal(reconstructed[0]!.endIso, undefined);
+  // The latest segment rolled to 2026-06-11T00:05; a bee conversation at
+  // 00:08 (3 min later) must cluster with it.
+  const bee: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-11T00:08:00.000Z",
+    endIso: "2026-06-11T00:15:00.000Z",
+    segments: [
+      { speaker: "Bee", isSelf: false, text: "Late.", startIso: "2026-06-11T00:08:00.000Z" },
+    ],
+  };
+  const clusters = clusterConversations([...reconstructed, bee]);
+  assert.equal(
+    clusters.length,
+    1,
+    "cross-midnight missing-end conversation clusters by its rolled last segment",
+  );
+});
+
+test("derived interval uses max(segment ends or segment starts) for mixed-segment inputs", () => {
+  // Directly constructed input proving the coherent model: when the
+  // conversation end is absent and segments carry a MIX of endIso and
+  // startIso, the window end is the maximum segment EXTENT (each segment's
+  // end when known, else its start). Here the second segment's start
+  // (09:20) must beat the first segment's end (09:10).
+  const mixed: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    segments: [
+      {
+        speaker: "Jane",
+        isSelf: false,
+        text: "First.",
+        startIso: "2026-06-10T09:00:00.000Z",
+        endIso: "2026-06-10T09:10:00.000Z",
+      },
+      { speaker: "Jane", isSelf: false, text: "Second.", startIso: "2026-06-10T09:20:00.000Z" },
+    ],
+  };
+  const bee: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:23:00.000Z",
+    endIso: "2026-06-10T09:30:00.000Z",
+    segments: [
+      { speaker: "Bee", isSelf: false, text: "After.", startIso: "2026-06-10T09:23:00.000Z" },
+    ],
+  };
+  // bee at 09:23 is within the 5-min gap of the derived end 09:20 -> one
+  // cluster. If the interval had stopped at the first segment's END (09:10)
+  // the gap would be 13 min and they would split.
+  const clusters = clusterConversations([mixed, bee]);
+  assert.equal(clusters.length, 1, "max segment extent (start beats earlier end) spans the window");
+});
+
+test("derived interval is clamped to end >= start for a missing-end conversation", () => {
+  // Guarantee the [start, end] window is always valid: a conversation with
+  // no end and only segments that somehow parse before the start still
+  // yields end >= start (a point interval), never a negative-length window.
+  const anomalous: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    segments: [
+      { speaker: "Jane", isSelf: false, text: "Early.", startIso: "2026-06-10T08:30:00.000Z" },
+    ],
+  };
+  const clusters = clusterConversations([anomalous]);
+  assert.equal(clusters.length, 1);
+  // The conversation is emitted (not dropped) and forms a valid cluster.
+  assert.equal(clusters[0]!.length, 1);
+});
+
+test("fused conversation end spans a missing-end source's later segments, not the short explicit end (issue #1849)", () => {
+  // Source A (bee) carries an explicit SHORT end (09:05); source B
+  // (limitless) is a stored transcript whose heading end renders as
+  // "--:--" (no endIso) with later utterances — its last segment starts at
+  // 09:30. Reconstructed segments carry only a startIso, so a fused end
+  // derived from conversation-level ends ALONE would stop at A's 09:05,
+  // clipping the conversation before B's later segments. The fused end must
+  // span B's last segment start (issue #1849: segment-extent derivation).
+  const bBody = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 09:00–--:-- · Sync (conversation c1)",
+    "",
+    "**Me (you)** [09:00]: Plan A.",
+    "**Jane** [09:30]: Later topic.",
+    "",
+  ].join("\n");
+  const bInputs = reconstructFusionInputs(DATE, [{ source: "limitless", body: bBody }]);
+  assert.equal(bInputs.length, 1);
+  assert.equal(bInputs[0]!.endIso, undefined, "B has no heading end");
+  const a: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    endIso: "2026-06-10T09:05:00.000Z",
+    segments: [
+      { speaker: "Me (you)", isSelf: true, text: "Plan A.", startIso: "2026-06-10T09:00:00.000Z" },
+    ],
+  };
+  const fused = fuseDay(DATE, [...bInputs, a]);
+  assert.equal(fused.conversations.length, 1, "A + B cluster into one conversation");
+  // B's "Later topic." (09:30) is B-only and must survive as a segment.
+  assert.ok(
+    fused.conversations[0]!.segments.some((s) => s.text === "Later topic."),
+    "B's later segment is preserved",
+  );
+  assert.equal(
+    fused.conversations[0]!.endIso,
+    "2026-06-10T09:30:00.000Z",
+    "fused end spans B's last segment start, not A's short explicit end",
+  );
+});
+
+test("fused conversation end keeps the latest explicit conversation end when no missing-end source extends past it (issue #1849)", () => {
+  // No over-extension: when every source carries an explicit conversation
+  // end and all segments sit within those ends, the segment-extent fallback
+  // must NOT override the latest explicit conversation end. Here A ends at
+  // 09:40 and B at 09:35; segment ends are far earlier (09:00:30 / 09:05:30),
+  // so the fused end stays 09:40.
+  const a: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    endIso: "2026-06-10T09:40:00.000Z",
+    segments: [
+      {
+        speaker: "Me (you)",
+        isSelf: true,
+        text: "Hello.",
+        startIso: "2026-06-10T09:00:00.000Z",
+        endIso: "2026-06-10T09:00:30.000Z",
+      },
+    ],
+  };
+  const b: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:05:00.000Z",
+    endIso: "2026-06-10T09:35:00.000Z",
+    segments: [
+      {
+        speaker: "Jane",
+        isSelf: false,
+        text: "Hi back.",
+        startIso: "2026-06-10T09:05:00.000Z",
+        endIso: "2026-06-10T09:05:30.000Z",
+      },
+    ],
+  };
+  const fused = fuseDay(DATE, [a, b]);
+  assert.equal(fused.conversations.length, 1);
+  assert.equal(
+    fused.conversations[0]!.endIso,
+    "2026-06-10T09:40:00.000Z",
+    "latest explicit conversation end wins; segment extents do not shrink it",
+  );
+});
+
+test("fused conversation end is clamped to >= start when a missing-end source's segments precede the start (issue #1849)", () => {
+  // Mirrors the cluster interval clamp (cluster.ts): a missing-end
+  // conversation whose only segment parses BEFORE the conversation start
+  // must still yield a fused end >= start — never a negative-length window.
+  const anomalous: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    segments: [
+      { speaker: "Jane", isSelf: false, text: "Early.", startIso: "2026-06-10T08:30:00.000Z" },
+    ],
+  };
+  const fused = fuseDay(DATE, [anomalous]);
+  assert.equal(fused.conversations.length, 1);
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.endIso, "2026-06-10T09:00:00.000Z", "end clamped to the cluster start");
+  assert.ok(Date.parse(conv.endIso!) >= Date.parse(conv.startIso!));
+});
+
+test("fused conversation end spans rolled cross-midnight segments of a missing-end source (issue #1849)", () => {
+  // A missing-end ("--:--") conversation whose segments wrap past midnight
+  // are rolled to the next calendar day by reconstruct. The fused end must
+  // reach the rolled last segment (2026-06-11T00:05), not a short explicit
+  // end from a corroborating source (bee ends at 00:00).
+  const bBody = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 23:55–--:-- · Late call (conversation c1)",
+    "",
+    "**Me (you)** [23:58]: Still talking.",
+    "**Jane** [00:05]: After midnight.",
+    "",
+  ].join("\n");
+  const bInputs = reconstructFusionInputs(DATE, [{ source: "limitless", body: bBody }]);
+  assert.equal(bInputs[0]!.endIso, undefined);
+  const a: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T23:55:00.000Z",
+    endIso: "2026-06-11T00:00:00.000Z",
+    segments: [
+      { speaker: "Me (you)", isSelf: true, text: "Still talking.", startIso: "2026-06-10T23:58:00.000Z" },
+    ],
+  };
+  const fused = fuseDay(DATE, [...bInputs, a]);
+  assert.equal(fused.conversations.length, 1);
+  assert.equal(
+    fused.conversations[0]!.endIso,
+    "2026-06-11T00:05:00.000Z",
+    "fused end spans B's rolled post-midnight segment start",
+  );
+});
+
+/** True when every timestamped segment precedes any later-timestamped one
+ * and untimestamped segments trail (non-decreasing startIso). The fused
+ * output must always satisfy this — the group-anchor emission + defensive
+ * final sort guarantee it. */
+function isChronologicallySorted(
+  segments: { startIso?: string }[],
+): boolean {
+  let last = -Infinity;
+  for (const seg of segments) {
+    const ms = seg.startIso !== undefined ? Date.parse(seg.startIso) : NaN;
+    if (!Number.isFinite(ms)) continue; // untimestamped trails; checked elsewhere
+    if (ms < last) return false;
+    last = ms;
+  }
+  return true;
+}
+
+test("fused segment keeps the group anchor clock, not the higher-trust source's later clock (issue #1849 chronology)", () => {
+  // bee (low-trust) captures "yes" at 09:00:00; limitless (high-trust)
+  // captures a DIFFERENT utterance "standup notes" at 09:00:10, then
+  // corroborates "yes" at 09:00:25 (within the 30s tolerance of 09:00:00).
+  // The fused "yes" group's anchor is 09:00:00; the high-trust chosen
+  // member's clock is 09:00:25. Emitting chosen.startIso would place the
+  // "yes" segment at 09:00:25 — AFTER the 09:00:10 "standup notes" segment
+  // — yet the group sorts at the 09:00:00 anchor (first), so the printed
+  // timeline would read 09:00:25 before 09:00:10: corrupted chronology.
+  // The fix emits the anchor clock for the timeline position while the
+  // high-trust source still provides the text; its original clock is kept
+  // in provenance for traceability.
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:00.000Z" },
+          ]),
+        ],
+      },
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c2", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "standup notes",
+              isWearer: true,
+              startIso: "2026-06-10T09:00:10.000Z",
+            },
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:25.000Z" },
+          ]),
+        ],
+      },
+    ),
+    { sourceTrust: { bee: 0.6, limitless: 0.9 } },
+  );
+
+  const conv = fused.conversations[0]!;
+  // The two "yes" utterances fuse; "standup notes" stays separate.
+  assert.equal(conv.segments.length, 2);
+
+  const yes = conv.segments.find((s) => s.text === "yes")!;
+  const notes = conv.segments.find((s) => s.text === "standup notes")!;
+  assert.ok(yes, "the fused yes segment is present");
+  assert.ok(notes, "the standup notes segment is present");
+
+  // Timeline position is the GROUP ANCHOR (09:00:00), not the chosen
+  // source's 09:00:25 clock.
+  assert.equal(yes.startIso, "2026-06-10T09:00:00.000Z");
+  assert.equal(notes.startIso, "2026-06-10T09:00:10.000Z");
+
+  // The higher-trust source (limitless) still provides the TEXT — provenance
+  // records it — but the emitted chronology uses the anchor, so the
+  // high-trust "yes" does NOT jump ahead of the 09:00:10 segment.
+  assert.equal(yes.provenance.source, "limitless");
+  assert.equal(yes.provenance.reason, "higher-trust");
+  // The source's ORIGINAL recording clock is preserved in provenance.
+  assert.equal(
+    yes.provenance.sourceStartIso,
+    "2026-06-10T09:00:25.000Z",
+    "provenance keeps the higher-trust source's original time",
+  );
+
+  // The fused "yes" sits at the anchor (09:00:00) which is BEFORE the
+  // 09:00:10 "standup notes" — chronologically correct. Before the fix the
+  // high-trust segment's 09:00:25 clock would have printed it after 09:10.
+  assert.ok(
+    conv.segments.indexOf(yes) < conv.segments.indexOf(notes),
+    "the anchor-clock fused segment precedes the later intervening segment",
+  );
+  assert.ok(
+    Date.parse(yes.startIso!) <= Date.parse(notes.startIso!),
+    "emitted timestamps are non-decreasing across the two segments",
+  );
+
+  // Final-output-sorted assertion: the whole fused conversation is
+  // chronologically ordered by startIso.
+  assert.ok(
+    isChronologicallySorted(conv.segments),
+    "the fused output is sorted by timestamp (non-decreasing startIso)",
+  );
+});
+
+test("equal-anchor fused segments keep their source/cluster sequence, not trust order (final sort stability)", () => {
+  // Two distinct utterances from two sources at the SAME timestamp land at
+  // the same anchor. Clustering orders conversations by (start, source, id),
+  // so bee precedes limitless here regardless of the inputs() call order.
+  // The defensive final sort must keep that deterministic sequence via the
+  // pre-sort index tie-break — NOT reorder by trust. bee is the LOWER-trust
+  // source, so a trust-based tie-break would put limitless first; the test
+  // asserts bee stays first, proving the tie-break is sequence, not trust.
+  const build = () =>
+    fuseDay(
+      DATE,
+      inputs(
+        {
+          source: "limitless",
+          conversations: [
+            conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+              {
+                text: "Limitless same-anchor utterance.",
+                isWearer: true,
+                startIso: "2026-06-10T09:00:00.000Z",
+              },
+            ]),
+          ],
+        },
+        {
+          source: "bee",
+          conversations: [
+            conversation("bee", "c2", "2026-06-10T09:00:00.000Z", [
+              {
+                text: "Bee same-anchor utterance.",
+                isWearer: true,
+                startIso: "2026-06-10T09:00:00.000Z",
+              },
+            ]),
+          ],
+        },
+      ),
+      { sourceTrust: { bee: 0.6, limitless: 0.9 } },
+    );
+
+  const fused = build();
+  // Deterministic: re-running produces identical output.
+  assert.deepEqual(build(), fused);
+
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.segments.length, 2);
+  // bee precedes limitless by the (start, source) cluster sequence — NOT by
+  // trust, which would put the higher-trust limitless first.
+  assert.deepEqual(
+    conv.segments.map((s) => s.text),
+    ["Bee same-anchor utterance.", "Limitless same-anchor utterance."],
+    "equal-anchor segments keep source/cluster sequence, not trust order",
+  );
+  assert.deepEqual(
+    conv.segments.map((s) => s.provenance.source),
+    ["bee", "limitless"],
+    "bee (lower-trust) precedes limitless (higher-trust) — sequence wins",
+  );
+  // Both share the anchor; equal timestamps did not reorder them.
+  assert.equal(conv.segments[0]!.startIso, "2026-06-10T09:00:00.000Z");
+  assert.equal(conv.segments[1]!.startIso, "2026-06-10T09:00:00.000Z");
+  assert.ok(isChronologicallySorted(conv.segments));
+});
+
+test("missing-timestamp segments keep their position after the timed ones (final sort)", () => {
+  // A MIX of timestamped and untimestamped utterances. The defensive final
+  // sort must place timed segments first (in time order) and let
+  // untimestamped ones trail in their original relative order — never
+  // interspersing or scrambling the missing-time entries.
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "Timed one.", isWearer: true, startIso: "2026-06-10T09:00:00.000Z" },
+            { text: "Untimed one.", isWearer: true },
+            { text: "Untimed two.", isWearer: true },
+          ]),
+        ],
+      },
+    ),
+  );
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.segments.length, 3);
+  // The timed segment leads; the two untimestamped segments follow in
+  // their original transcript order (one before two).
+  assert.equal(conv.segments[0]!.text, "Timed one.");
+  assert.notEqual(conv.segments[0]!.startIso, undefined);
+  assert.equal(conv.segments[1]!.text, "Untimed one.");
+  assert.equal(conv.segments[1]!.startIso, undefined);
+  assert.equal(conv.segments[2]!.text, "Untimed two.");
+  assert.equal(conv.segments[2]!.startIso, undefined);
+  assert.ok(isChronologicallySorted(conv.segments));
+});
+
+test("cross-source clock skew does not scramble same-anchor utterances (final sort)", () => {
+  // Two distinct utterances, each corroborated across two sources whose
+  // clocks are skewed (bee at 09:00:00, limitless +4s at 09:00:04). Each
+  // utterance fuses to one segment at the bee anchor (09:00:00). The
+  // defensive final sort sees two segments sharing the anchor timestamp;
+  // it must keep their input order (first topic before second topic), not
+  // let the skew or any source key reorder them.
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "First topic.", isWearer: true, startIso: "2026-06-10T09:00:00.000Z" },
+            { text: "Second topic.", isWearer: true, startIso: "2026-06-10T09:00:00.000Z" },
+          ]),
+        ],
+      },
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c2", "2026-06-10T09:00:00.000Z", [
+            { text: "First topic.", isWearer: true, startIso: "2026-06-10T09:00:04.000Z" },
+            { text: "Second topic.", isWearer: true, startIso: "2026-06-10T09:00:04.000Z" },
+          ]),
+        ],
+      },
+    ),
+  );
+  const conv = fused.conversations[0]!;
+  // Two distinct utterances, each corroborated -> two fused segments.
+  assert.equal(conv.segments.length, 2);
+  // Both emitted at the bee anchor (earliest); the +4s skew is absorbed.
+  assert.equal(conv.segments[0]!.startIso, "2026-06-10T09:00:00.000Z");
+  assert.equal(conv.segments[1]!.startIso, "2026-06-10T09:00:00.000Z");
+  // Input order preserved across the shared anchor — not scrambled by skew.
+  assert.deepEqual(
+    conv.segments.map((s) => s.text),
+    ["First topic.", "Second topic."],
+    "same-anchor utterances keep input order despite cross-source skew",
+  );
+  assert.ok(isChronologicallySorted(conv.segments));
+});
+
+// ─── Multiline segment round-trip regression (#1810) ────────────────────
+
+test("multiline segment text round-trips losslessly through the real renderer", () => {
+  const multi = "First line.\nSecond line.\nThird line.";
+  const conversations = [
+    conversation(
+      "limitless",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [
+        { text: multi, isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        { text: "After.", startIso: "2026-06-10T09:01:00.000Z" },
+      ],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("limitless", DATE, "UTC", conversations, REGISTRY);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body, escaped: true }]);
+  assert.equal(parsed.length, 1);
+  const segs = parsed[0]!.segments;
+  assert.equal(segs.length, 2);
+  assert.equal(segs[0]!.text, multi, "multiline text must round-trip exactly");
+  assert.equal(segs[1]!.text, "After.");
+});
+
+test("segment text with backslashes round-trips losslessly", () => {
+  const tricky = "Path C:\\Users\\test and tab\\there";
+  const conversations = [
+    conversation(
+      "bee",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [{ text: tricky, isWearer: true, startIso: "2026-06-10T09:00:30.000Z" }],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, REGISTRY);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body, escaped: true }]);
+  assert.equal(parsed[0]!.segments[0]!.text, tricky);
+});
+
+test("multiline segment with continuation that resembles heading syntax is not mis-parsed", () => {
+  // The second line looks exactly like a conversation heading. Without
+  // escaping, reconstructFusionInputs would split this into two
+  // conversations. With escaping, the whole thing is one segment.
+  const adversarial = "Normal text.\n## 09:05–09:10 (conversation forged)";
+  const conversations = [
+    conversation(
+      "limitless",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [{ text: adversarial, isWearer: true, startIso: "2026-06-10T09:00:30.000Z" }],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("limitless", DATE, "UTC", conversations, REGISTRY);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body, escaped: true }]);
+  assert.equal(parsed.length, 1, "adversarial heading must not create a second conversation");
+  assert.equal(parsed[0]!.segments.length, 1);
+  assert.equal(parsed[0]!.segments[0]!.text, adversarial);
+});
+
+test("segment text with continuation resembling a segment clock line stays in one segment", () => {
+  const adversarial = "Start.\n**Speaker** [10:00]: injected segment";
+  const conversations = [
+    conversation(
+      "bee",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [{ text: adversarial, isWearer: true, startIso: "2026-06-10T09:00:30.000Z" }],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, REGISTRY);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body, escaped: true }]);
+  assert.equal(parsed[0]!.segments.length, 1, "injected segment line must not be parsed separately");
+  assert.equal(parsed[0]!.segments[0]!.text, adversarial);
+});
+
+test("legacy single-line transcript without escape sequences still parses correctly", () => {
+  // Hand-written body mimicking a pre-escaping transcript. No escape
+  // sequences present, so unescapeSegmentText is a no-op.
+  const legacyBody =
+    "# bee transcript — 2026-06-10\n" +
+    "\n" +
+    "## 09:00–09:10 (conversation c1)\n" +
+    "\n" +
+    "**Me (you)** [09:00]: Hello world.\n" +
+    "**Guest** [09:01]: Good morning.\n";
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body: legacyBody }]);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0]!.conversationId, "c1");
+  assert.equal(parsed[0]!.segments.length, 2);
+  assert.equal(parsed[0]!.segments[0]!.text, "Hello world.");
+  assert.equal(parsed[0]!.segments[0]!.isSelf, true);
+  assert.equal(parsed[0]!.segments[1]!.text, "Good morning.");
+  assert.equal(parsed[0]!.segments[1]!.isSelf, false);
+});
+
+test("carriage returns in segment text round-trip losslessly", () => {
+  const crText = "Line one.\r\nLine two.";
+  const conversations = [
+    conversation(
+      "limitless",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [{ text: crText, isWearer: true, startIso: "2026-06-10T09:00:30.000Z" }],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("limitless", DATE, "UTC", conversations, REGISTRY);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body, escaped: true }]);
+  assert.equal(parsed[0]!.segments[0]!.text, crText);
+});
+
+test("unicode and mixed special characters in segment text round-trip losslessly", () => {
+  const unicode = "日本語テスト emoji 🎉 and newline\nplus backslash \\ and more";
+  const conversations = [
+    conversation(
+      "bee",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [{ text: unicode, isWearer: true, startIso: "2026-06-10T09:00:30.000Z" }],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, REGISTRY);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body, escaped: true }]);
+  assert.equal(parsed[0]!.segments[0]!.text, unicode);
+});
+
+test("legacy transcript with unknown backslash sequences preserves them losslessly", () => {
+  // Pre-escaper transcripts may contain arbitrary backslash sequences
+  // (Windows paths, regex) that the escaper would never emit.  These
+  // must round-trip: unescapeSegmentText keeps the backslash for any
+  // escape it does not recognise, while \n / \r / \\ still decode.
+  const legacyBody =
+    "# bee transcript — 2026-06-10\n" +
+    "\n" +
+    "## 09:00–09:10 (conversation c1)\n" +
+    "\n" +
+    '**Me (you)** [09:00]: Path is C:\\Users\\josh and config at D:\\data\n' +
+    "**Guest** [09:01]: Regex \\d+ matches digits, \\w+ matches words\n";
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body: legacyBody }]);
+  assert.equal(parsed[0]!.segments[0]!.text, "Path is C:\\Users\\josh and config at D:\\data");
+  assert.equal(parsed[0]!.segments[1]!.text, "Regex \\d+ matches digits, \\w+ matches words");
+});
+
+
+test("reconstruct rolls a long-but-plausible cross-midnight wrap into the next day (#1849)", () => {
+  // start 22:00 -> end 02:00 wraps 4h (240 min) — well within the
+  // plausible-conversation bound, so the end still rolls to the next day.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 22:00–02:00 · Overnight (conversation c1)",
+    "",
+    "**Me (you)** [23:30]: Still awake.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.startIso, "2026-06-10T22:00:00.000Z");
+  assert.equal(conv.endIso, "2026-06-11T02:00:00.000Z");
+  assert.ok(conv.endIso! >= conv.startIso!, "plausible wrap rolls end forward");
+});
+
+test("reconstruct does NOT roll an implausible near-24h earlier end clock (#1849)", () => {
+  // start 14:00 -> end 13:00 implies a ~23h wrap, almost certainly a
+  // malformed/ordinary earlier clock, not a midnight crossing. The end must
+  // STAY on the same date (earlier than the start) so the downstream cluster
+  // clamp collapses it to the start instead of spanning the whole day and
+  // broadly clustering unrelated neighbors.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 14:00–13:00 · Sync (conversation c1)",
+    "",
+    "**Me (you)** [14:05]: Discussed the roadmap.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.startIso, "2026-06-10T14:00:00.000Z");
+  // NOT rolled: end stays on the same date, preceding the start.
+  assert.equal(conv.endIso, "2026-06-10T13:00:00.000Z");
+  assert.ok(conv.endIso! < conv.startIso!, "implausible earlier end is left for the clamp");
+  // The segment clock (14:05 >= start 14:00) is unaffected and stays put.
+  assert.equal(conv.segments[0]!.startIso, "2026-06-10T14:05:00.000Z");
+});
+
+test("implausible earlier end does not span the day: cluster clamps it to the start (#1849)", () => {
+  // Reconstructed from a 14:00->13:00 heading (implausible wrap, not rolled),
+  // the conversation end precedes its start exactly like a direct malformed
+  // input, so effectiveInterval clamps it to [14:00, 14:00] instead of a
+  // ~23h window. A different-source neighbor at 14:03 (within the 5-min gap)
+  // therefore clusters with it rather than being swallowed by a day-long span.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 14:00–13:00 · Sync (conversation c1)",
+    "",
+    "**Me (you)** [14:00]: Roadmap.",
+    "",
+  ].join("\n");
+  const limitless = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  const bee: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T14:03:00.000Z",
+    endIso: "2026-06-10T14:08:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "Neighbor." }],
+  };
+  const clusters = clusterConversations([...limitless, bee]);
+  assert.equal(
+    clusters.length,
+    1,
+    "clamped point-window keeps the within-gap neighbor in one cluster (no broad clustering)",
+  );
+});
+
+test("reconstruct never attributes a non-self speaker whose name ends in (you) as self (issue #1849)", () => {
+  // A non-self override stored with a name that already ends in the
+  // reserved `(you)` marker. The renderer (resolveSpeaker) reserves the
+  // marker, so the stored transcript line carries NO marker for Pat, and
+  // reconstruct reads self status only from the authoritative marker.
+  const registry = emptySpeakerRegistry();
+  registry.selfName = "Jordan";
+  registry.speakers["bee:SPEAKER_01"] = {
+    name: "Pat (you)",
+    updatedAt: "2026-06-10T00:00:00Z",
+  };
+  const conversations = [
+    conversation(
+      "bee",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [
+        { text: "I am the wearer.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        { text: "I am Pat.", speakerKey: "SPEAKER_01", startIso: "2026-06-10T09:01:00.000Z" },
+      ],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, registry);
+
+  // The rendered body must NOT place a `(you)` marker on the non-self
+  // Pat line — the marker is reserved for the wearer only.
+  assert.ok(/\*\*Pat\*\* \[09:01\]: I am Pat\./.test(body), "Pat's label has no (you) marker: " + body);
+
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body, escaped: true }]);
+  assert.equal(parsed.length, 1);
+  const segs = parsed[0]!.segments;
+  assert.equal(segs.length, 2);
+  // Wearer keeps the authoritative marker -> self.
+  assert.equal(segs[0]!.speaker, "Jordan (you)");
+  assert.equal(segs[0]!.isSelf, true);
+  // Pat is NOT attributed as self despite the stored name ending in (you).
+  assert.equal(segs[1]!.speaker, "Pat");
+  assert.equal(segs[1]!.isSelf, false);
+});
+
+test("reconstruct does NOT roll an implausible earlier SEGMENT clock into the next day (#1849)", () => {
+  // start 14:00, a segment clocked at 13:00 (provider skew / a clock that
+  // ran backwards). The implied wrap (14:00 -> midnight -> 13:00) is ~23h,
+  // far past the plausible-conversation bound. The segment must STAY on the
+  // same date so it precedes the start and the downstream cluster clamp
+  // collapses it — NOT roll to the next day and stretch a ~23h interval
+  // that broadly clusters unrelated neighbors.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 14:00–15:00 · Sync (conversation c1)",
+    "",
+    "**Me (you)** [14:00]: Opening remark.",
+    "**Jane** [13:00]: Provider-skewed earlier clock.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.startIso, "2026-06-10T14:00:00.000Z");
+  // The 13:00 segment is NOT rolled to 2026-06-11; it stays on 2026-06-10.
+  const skewed = conv.segments.find((s) => s.text === "Provider-skewed earlier clock.");
+  assert.ok(skewed, "provider-skewed segment present");
+  assert.equal(
+    skewed!.startIso,
+    "2026-06-10T13:00:00.000Z",
+    "implausible earlier segment stays on the same date",
+  );
+  // It precedes the conversation start, leaving it for the cluster clamp.
+  assert.ok(
+    Date.parse(skewed!.startIso!) < Date.parse(conv.startIso!),
+    "same-date earlier segment precedes the start (ready for clamping)",
+  );
+});
+
+test("reconstruct still rolls a plausible post-midnight SEGMENT clock into the next day (#1849)", () => {
+  // start 23:55, a segment at 00:05 wraps only 10 min — well within the
+  // plausible bound. The segment MUST roll forward despite the heading end
+  // clock also being plausible; the segment-vs-start plausibility gate must
+  // not over-tighten and suppress genuine midnight wraps.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 23:55–00:10 · Late (conversation c1)",
+    "",
+    "**Me (you)** [23:58]: Still talking.",
+    "**Jane** [00:05]: After midnight.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.startIso, "2026-06-10T23:55:00.000Z");
+  assert.equal(conv.endIso, "2026-06-11T00:10:00.000Z");
+  const isos = conv.segments.map((s) => s.startIso);
+  assert.ok(
+    isos.includes("2026-06-10T23:58:00.000Z"),
+    "pre-midnight segment stays on the rendered date",
+  );
+  assert.ok(
+    isos.includes("2026-06-11T00:05:00.000Z"),
+    "plausible post-midnight segment rolls to the next day",
+  );
+});
+
+test("reconstruct rolls a long-but-plausible post-midnight segment (boundary of the wrap bound) (#1849)", () => {
+  // start 20:00, segment 01:00: implied wrap = 240 + 60 = 300 min, well
+  // within the 12h bound. Must still roll.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 20:00–--:-- · Evening (conversation c1)",
+    "",
+    "**Jane** [01:00]: Past midnight, long evening.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.startIso, "2026-06-10T20:00:00.000Z");
+  assert.equal(
+    conv.segments[0]!.startIso,
+    "2026-06-11T01:00:00.000Z",
+    "long-but-plausible wrap (5h) still rolls to the next day",
+  );
+});
+
+test("implausible earlier segment does not span the day: neighbor clusters, not swallows (#1849)", () => {
+  // A 14:00-start conversation with a 13:00 provider-skewed segment. The
+  // segment stays same-date (13:00 < start 14:00) and is clamped by the
+  // interval to [14:00, 14:00]. A different-source neighbor at 14:03 (within
+  // the 5-min gap) clusters with it. If the segment had wrongly rolled to
+  // 2026-06-11T13:00 the window would span ~23h and swallow far-flung
+  // neighbors instead of clustering only nearby ones.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 14:00–15:00 · Sync (conversation c1)",
+    "",
+    "**Me (you)** [14:00]: Roadmap.",
+    "**Jane** [13:00]: Skew.",
+    "",
+  ].join("\n");
+  const limitless = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  const bee: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T14:03:00.000Z",
+    endIso: "2026-06-10T14:08:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "Neighbor." }],
+  };
+  const clusters = clusterConversations([...limitless, bee]);
+  assert.equal(clusters.length, 1, "clamped window clusters the nearby neighbor");
+});
+
+test("speaker label containing markdown delimiters round-trips through compose → reconstruct (#1849)", () => {
+  // A user-defined speaker label with `**`, `[`, and `]` — the exact
+  // characters that delimit a segment line. Without safe serialization the
+  // `**` (or `[clock]`) inside the label can break parseTranscriptSegmentLine
+  // parsing; with escape/unescape the label survives losslessly.
+  const registry = emptySpeakerRegistry();
+  registry.speakers["bee:SPEAKER_01"] = {
+    name: 'A**B [weird]: label',
+    updatedAt: "2026-06-10T00:00:00Z",
+  };
+  const conversations = [
+    conversation(
+      "bee",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [
+        { text: "I am the wearer.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        { text: "I am tricky.", speakerKey: "SPEAKER_01", startIso: "2026-06-10T09:01:00.000Z" },
+      ],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, registry);
+  // The stored body MUST serialize the delimiters safely (no raw ** [ ]: ).
+  assert.ok(
+    !/\*\*A\*\*B/.test(body),
+    "label delimiters are escaped in the stored body: " + body,
+  );
+  // Reconstruct decodes the label back to the original form.
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body, escaped: true }]);
+  assert.equal(parsed.length, 1);
+  const segs = parsed[0]!.segments;
+  assert.equal(segs.length, 2);
+  assert.equal(segs[0]!.speaker, "Me (you)");
+  assert.equal(segs[0]!.isSelf, true);
+  assert.equal(segs[1]!.speaker, 'A**B [weird]: label', "delimited label round-trips losslessly");
+  assert.equal(segs[1]!.isSelf, false);
+});
+
+test("speaker label A**B alone round-trips through compose → reconstruct (#1849)", () => {
+  // Minimal repro from the contract: a label that is exactly `A**B`.
+  const registry = emptySpeakerRegistry();
+  registry.speakers["bee:SPEAKER_01"] = {
+    name: "A**B",
+    updatedAt: "2026-06-10T00:00:00Z",
+  };
+  const conversations = [
+    conversation(
+      "bee",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [{ text: "Hello.", speakerKey: "SPEAKER_01", startIso: "2026-06-10T09:00:30.000Z" }],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, registry);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body, escaped: true }]);
+  assert.equal(parsed[0]!.segments[0]!.speaker, "A**B");
+});

@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/media-transcoder-service",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for media-transcoder-service",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

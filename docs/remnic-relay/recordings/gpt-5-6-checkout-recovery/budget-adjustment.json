@@ -1,0 +1,9 @@
+{
+  "accountCreditCapUnits": 2473,
+  "quarantinedUncertainUnits": 300,
+  "quarantinedLedgerSha256": "2c5436ca2724170434782ae5755c731f4f22fca80953312a382b0f5b8318f929",
+  "effectiveBudgetUnits": 2173,
+  "reserveUnits": 473,
+  "plannedSpendCeilingUnits": 1700,
+  "basis": "worst-case carry-forward for prior uncertain dispatch"
+}

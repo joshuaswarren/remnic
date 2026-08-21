@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "benchmarkId": "ama-memory",
+  "title": "AMA Memory Baseline",
+  "tags": ["ama", "ci"],
+  "cases": [
+    {
+      "id": "ama-1",
+      "prompt": "Recall the objective state for the active task."
+    },
+    {
+      "id": "ama-2",
+      "prompt": "Recall the most recent causal follow-up."
+    }
+  ]
+}

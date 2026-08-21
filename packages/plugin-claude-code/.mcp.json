@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "remnic": {
+      "type": "http",
+      "url": "http://localhost:4318/mcp",
+      "headers": {
+        "Authorization": "Bearer {{REMNIC_TOKEN}}",
+        "X-Engram-Client-Id": "claude-code"
+      }
+    }
+  }
+}

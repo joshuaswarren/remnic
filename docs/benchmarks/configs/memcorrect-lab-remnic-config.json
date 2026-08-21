@@ -1,0 +1,10 @@
+{
+  "$comment": "Pinned Remnic config for the MemCorrect v1 lab run (issue #1725 / plan item 2b). Used with `remnic bench run memcorrect-v1 --runtime-profile real --remnic-config <this file> --memcorrect-adapter remnic` on the RTX 3090 lab host. The real profile preserves Remnic's shipped defaults (full fact pipeline, contradiction detection, tombstones, correction contract); this file pins only the local-LLM endpoint and the extraction gates so the run is hermetic and reproducible without environment-variable templating.",
+  "modelSource": "plugin",
+  "localLlmEnabled": true,
+  "localLlmFallback": false,
+  "localLlmUrl": "http://127.0.0.1:11434",
+  "localLlmModel": "qwen2.5-7b-32k:latest",
+  "extractionMinUserTurns": 0,
+  "extractionMinChars": 10
+}

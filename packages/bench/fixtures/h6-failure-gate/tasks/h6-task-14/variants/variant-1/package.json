@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/identity-provider-node",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for identity-provider-node",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

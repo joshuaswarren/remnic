@@ -1,0 +1,38 @@
+name: Secret Scan
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  gitleaks:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Gitleaks
+        run: |
+          set -euo pipefail
+          VERSION="8.24.3"
+          EXPECTED_SHA256="9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c"
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          echo "${EXPECTED_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+
+      - name: Scan repository files
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          git archive --format=tar HEAD | tar -xf - -C "$tmpdir"
+          gitleaks detect --source "$tmpdir" --no-git --redact --exit-code 1

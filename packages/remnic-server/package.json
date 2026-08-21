@@ -1,0 +1,58 @@
+{
+  "name": "@remnic/server",
+  "version": "9.69.15",
+  "description": "Standalone Remnic memory server — HTTP + MCP without OpenClaw",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "remnic-source": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "remnic-server": "./bin/remnic-server.js",
+    "engram-server": "./bin/engram-server.js"
+  },
+  "files": [
+    "bin/*.js",
+    "dist",
+    "src/index.ts",
+    "src/admin-console-config.ts",
+    "src/oauth.ts",
+    "src/server-env.ts",
+    "src/startup-readiness.ts",
+    "src/support-passport-runtime.ts"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "npm run check-types && tsup src/index.ts --format esm --target es2022 --platform node --outDir dist --dts && node scripts/verify-bin.mjs",
+    "verify:bin": "node scripts/verify-bin.mjs",
+    "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
+    "check-types": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@remnic/core": "workspace:^",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.5.2"
+  },
+  "devDependencies": {
+    "@remnic/core": "workspace:^",
+    "@types/express": "^4.17.21",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/remnic-server"
+  }
+}

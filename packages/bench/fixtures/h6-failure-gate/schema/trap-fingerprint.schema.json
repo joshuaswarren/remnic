@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "trap-fingerprint.schema.json",
+  "title": "H6TrapFingerprintV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "trapId",
+    "symbol",
+    "file",
+    "pattern",
+    "strategyId"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "trapId": {
+      "type": "string",
+      "enum": [
+        "flaky-looking-test",
+        "misleading-error-message",
+        "wrong-layer-fix",
+        "hidden-invariant",
+        "stale-cache-illusion",
+        "config-shadowing"
+      ]
+    },
+    "symbol": {
+      "type": "string",
+      "minLength": 1
+    },
+    "file": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pattern": {
+      "type": "string",
+      "minLength": 1
+    },
+    "strategyId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

@@ -1,0 +1,12 @@
+[
+  {
+    "id": "1001",
+    "content": "Fictional example: prefers Celsius over Fahrenheit.",
+    "created_at": "2024-11-01T08:00:00.000Z"
+  },
+  {
+    "id": "1002",
+    "text": "Fictional example: reviewed a paper on retrieval-augmented generation.",
+    "created_at": "2024-11-05T10:30:00.000Z"
+  }
+]

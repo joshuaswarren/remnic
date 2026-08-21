@@ -1,0 +1,60 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { ensurePackageBuild } from "./build-staleness.mjs";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+ensurePackageBuild(
+  repoRoot,
+  "@remnic/core",
+  path.join(repoRoot, "packages", "remnic-core", "dist", "index.js"),
+  [
+    path.join(repoRoot, "packages", "remnic-core", "src"),
+    path.join(repoRoot, "packages", "remnic-core", "package.json"),
+    path.join(repoRoot, "packages", "remnic-core", "tsup.config.ts"),
+    path.join(repoRoot, "packages", "remnic-core", "tsconfig.json"),
+  ],
+);
+ensurePackageBuild(
+  repoRoot,
+  "@remnic/plugin-openclaw",
+  path.join(repoRoot, "packages", "plugin-openclaw", "dist", "managed-upgrade.js"),
+  [
+    path.join(repoRoot, "packages", "plugin-openclaw", "src", "managed-upgrade.ts"),
+    path.join(repoRoot, "packages", "plugin-openclaw", "package.json"),
+    path.join(repoRoot, "packages", "plugin-openclaw", "tsup.config.ts"),
+    path.join(repoRoot, "packages", "plugin-openclaw", "tsconfig.json"),
+  ],
+);
+ensurePackageBuild(
+  repoRoot,
+  "@remnic/bench",
+  path.join(repoRoot, "packages", "bench", "dist", "index.js"),
+  [
+    path.join(repoRoot, "packages", "bench", "src"),
+    path.join(repoRoot, "packages", "bench", "package.json"),
+    path.join(repoRoot, "packages", "bench", "tsup.config.ts"),
+    path.join(repoRoot, "packages", "bench", "tsconfig.json"),
+  ],
+);
+ensurePackageBuild(
+  repoRoot,
+  "@remnic/plugin-pi",
+  path.join(repoRoot, "packages", "plugin-pi", "dist", "publisher.js"),
+  [
+    path.join(repoRoot, "packages", "plugin-pi", "src"),
+    path.join(repoRoot, "packages", "plugin-pi", "package.json"),
+    path.join(repoRoot, "packages", "plugin-pi", "tsconfig.json"),
+  ],
+);
+ensurePackageBuild(
+  repoRoot,
+  "@remnic/export-weclone",
+  path.join(repoRoot, "packages", "export-weclone", "dist", "index.js"),
+  [
+    path.join(repoRoot, "packages", "export-weclone", "src"),
+    path.join(repoRoot, "packages", "export-weclone", "package.json"),
+    path.join(repoRoot, "packages", "export-weclone", "tsup.config.ts"),
+    path.join(repoRoot, "packages", "export-weclone", "tsconfig.json"),
+  ],
+);

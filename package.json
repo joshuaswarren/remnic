@@ -1,0 +1,1064 @@
+{
+  "name": "remnic-workspace",
+  "version": "9.69.15",
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "type": "module",
+  "description": "Workspace root for the Remnic monorepo.",
+  "keywords": [
+    "openclaw",
+    "memory",
+    "ai-memory",
+    "ai-agent",
+    "long-term-memory",
+    "llm",
+    "openai",
+    "plugin",
+    "local-first",
+    "markdown",
+    "knowledge-graph",
+    "semantic-search",
+    "qmd",
+    "engram",
+    "conversational-ai",
+    "agent-memory"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git"
+  },
+  "homepage": "https://github.com/joshuaswarren/remnic#readme",
+  "bugs": {
+    "url": "https://github.com/joshuaswarren/remnic/issues"
+  },
+  "author": "Joshua Warren",
+  "workspaces": ["packages/*"],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "main": "dist/index.js",
+  "bin": {
+    "engram-access": "./bin/engram-access.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js"
+    },
+    "./memory-projection-format": {
+      "import": "./dist/memory-projection-format.js"
+    },
+    "./memory-projection-format.js": {
+      "import": "./dist/memory-projection-format.js"
+    },
+    "./model-registry": {
+      "import": "./dist/model-registry.js"
+    },
+    "./model-registry.js": {
+      "import": "./dist/model-registry.js"
+    },
+    "./models-json": {
+      "import": "./dist/models-json.js"
+    },
+    "./models-json.js": {
+      "import": "./dist/models-json.js"
+    },
+    "./orchestrator": {
+      "import": "./dist/orchestrator.js"
+    },
+    "./orchestrator.js": {
+      "import": "./dist/orchestrator.js"
+    },
+    "./access-cli": {
+      "import": "./dist/access-cli.js"
+    },
+    "./access-cli.js": {
+      "import": "./dist/access-cli.js"
+    },
+    "./secure-store": {
+      "import": "./dist/secure-store/index.js"
+    },
+    "./secure-store.js": {
+      "import": "./dist/secure-store/index.js"
+    },
+    "./secure-store/index": {
+      "import": "./dist/secure-store/index.js"
+    },
+    "./secure-store/index.js": {
+      "import": "./dist/secure-store/index.js"
+    },
+    "./adapters": {
+      "import": "./dist/adapters/index.js"
+    },
+    "./adapters.js": {
+      "import": "./dist/adapters/index.js"
+    },
+    "./adapters/claude-code": {
+      "import": "./dist/adapters/claude-code.js"
+    },
+    "./adapters/claude-code.js": {
+      "import": "./dist/adapters/claude-code.js"
+    },
+    "./adapters/codex": {
+      "import": "./dist/adapters/codex.js"
+    },
+    "./adapters/codex.js": {
+      "import": "./dist/adapters/codex.js"
+    },
+    "./adapters/hermes": {
+      "import": "./dist/adapters/hermes.js"
+    },
+    "./adapters/hermes.js": {
+      "import": "./dist/adapters/hermes.js"
+    },
+    "./adapters/index": {
+      "import": "./dist/adapters/index.js"
+    },
+    "./adapters/index.js": {
+      "import": "./dist/adapters/index.js"
+    },
+    "./adapters/registry": {
+      "import": "./dist/adapters/registry.js"
+    },
+    "./adapters/registry.js": {
+      "import": "./dist/adapters/registry.js"
+    },
+    "./adapters/replit": {
+      "import": "./dist/adapters/replit.js"
+    },
+    "./adapters/replit.js": {
+      "import": "./dist/adapters/replit.js"
+    },
+    "./adapters/types": {
+      "import": "./dist/adapters/types.js"
+    },
+    "./adapters/types.js": {
+      "import": "./dist/adapters/types.js"
+    },
+    "./cli": {
+      "import": "./dist/cli.js"
+    },
+    "./cli.js": {
+      "import": "./dist/cli.js"
+    },
+    "./compat/checks": {
+      "import": "./dist/compat/checks.js"
+    },
+    "./compat/checks.js": {
+      "import": "./dist/compat/checks.js"
+    },
+    "./compat/types": {
+      "import": "./dist/compat/types.js"
+    },
+    "./compat/types.js": {
+      "import": "./dist/compat/types.js"
+    },
+    "./connectors": {
+      "import": "./dist/connectors/index.js"
+    },
+    "./connectors.js": {
+      "import": "./dist/connectors/index.js"
+    },
+    "./connectors/codex-materialize": {
+      "import": "./dist/connectors/codex-materialize.js"
+    },
+    "./connectors/codex-materialize.js": {
+      "import": "./dist/connectors/codex-materialize.js"
+    },
+    "./connectors/codex-materialize-runner": {
+      "import": "./dist/connectors/codex-materialize-runner.js"
+    },
+    "./connectors/codex-materialize-runner.js": {
+      "import": "./dist/connectors/codex-materialize-runner.js"
+    },
+    "./conversation-index/backend": {
+      "import": "./dist/conversation-index/backend.js"
+    },
+    "./conversation-index/backend.js": {
+      "import": "./dist/conversation-index/backend.js"
+    },
+    "./conversation-index/chunker": {
+      "import": "./dist/conversation-index/chunker.js"
+    },
+    "./conversation-index/chunker.js": {
+      "import": "./dist/conversation-index/chunker.js"
+    },
+    "./conversation-index/cleanup": {
+      "import": "./dist/conversation-index/cleanup.js"
+    },
+    "./conversation-index/cleanup.js": {
+      "import": "./dist/conversation-index/cleanup.js"
+    },
+    "./conversation-index/faiss-adapter": {
+      "import": "./dist/conversation-index/faiss-adapter.js"
+    },
+    "./conversation-index/faiss-adapter.js": {
+      "import": "./dist/conversation-index/faiss-adapter.js"
+    },
+    "./conversation-index/indexer": {
+      "import": "./dist/conversation-index/indexer.js"
+    },
+    "./conversation-index/indexer.js": {
+      "import": "./dist/conversation-index/indexer.js"
+    },
+    "./conversation-index/search": {
+      "import": "./dist/conversation-index/search.js"
+    },
+    "./conversation-index/search.js": {
+      "import": "./dist/conversation-index/search.js"
+    },
+    "./consolidation-provenance-check": {
+      "import": "./dist/consolidation-provenance-check.js"
+    },
+    "./consolidation-provenance-check.js": {
+      "import": "./dist/consolidation-provenance-check.js"
+    },
+    "./consolidation-operator": {
+      "import": "./dist/consolidation-operator.js"
+    },
+    "./consolidation-operator.js": {
+      "import": "./dist/consolidation-operator.js"
+    },
+    "./consolidation-undo": {
+      "import": "./dist/consolidation-undo.js"
+    },
+    "./consolidation-undo.js": {
+      "import": "./dist/consolidation-undo.js"
+    },
+    "./delinearize": {
+      "import": "./dist/delinearize.js"
+    },
+    "./delinearize.js": {
+      "import": "./dist/delinearize.js"
+    },
+    "./embedding-fallback": {
+      "import": "./dist/embedding-fallback.js"
+    },
+    "./embedding-fallback.js": {
+      "import": "./dist/embedding-fallback.js"
+    },
+    "./enrichment": {
+      "import": "./dist/enrichment.js"
+    },
+    "./enrichment.js": {
+      "import": "./dist/enrichment.js"
+    },
+    "./entity-retrieval": {
+      "import": "./dist/entity-retrieval.js"
+    },
+    "./entity-retrieval.js": {
+      "import": "./dist/entity-retrieval.js"
+    },
+    "./evals": {
+      "import": "./dist/evals.js"
+    },
+    "./evals.js": {
+      "import": "./dist/evals.js"
+    },
+    "./extraction": {
+      "import": "./dist/extraction.js"
+    },
+    "./extraction.js": {
+      "import": "./dist/extraction.js"
+    },
+    "./explicit-capture": {
+      "import": "./dist/explicit-capture.js"
+    },
+    "./explicit-capture.js": {
+      "import": "./dist/explicit-capture.js"
+    },
+    "./fallback-llm": {
+      "import": "./dist/fallback-llm.js"
+    },
+    "./fallback-llm.js": {
+      "import": "./dist/fallback-llm.js"
+    },
+    "./graph": {
+      "import": "./dist/graph.js"
+    },
+    "./graph.js": {
+      "import": "./dist/graph.js"
+    },
+    "./graph-dashboard-diff": {
+      "import": "./dist/graph-dashboard-diff.js"
+    },
+    "./graph-dashboard-diff.js": {
+      "import": "./dist/graph-dashboard-diff.js"
+    },
+    "./graph-dashboard-key": {
+      "import": "./dist/graph-dashboard-key.js"
+    },
+    "./graph-dashboard-key.js": {
+      "import": "./dist/graph-dashboard-key.js"
+    },
+    "./graph-dashboard-parser": {
+      "import": "./dist/graph-dashboard-parser.js"
+    },
+    "./graph-dashboard-parser.js": {
+      "import": "./dist/graph-dashboard-parser.js"
+    },
+    "./graph-edge-reinforcement": {
+      "import": "./dist/graph-edge-reinforcement.js"
+    },
+    "./graph-edge-reinforcement.js": {
+      "import": "./dist/graph-edge-reinforcement.js"
+    },
+    "./graph-events": {
+      "import": "./dist/graph-events.js"
+    },
+    "./graph-events.js": {
+      "import": "./dist/graph-events.js"
+    },
+    "./graph-snapshot": {
+      "import": "./dist/graph-snapshot.js"
+    },
+    "./graph-snapshot.js": {
+      "import": "./dist/graph-snapshot.js"
+    },
+    "./harmonic-retrieval": {
+      "import": "./dist/harmonic-retrieval.js"
+    },
+    "./harmonic-retrieval.js": {
+      "import": "./dist/harmonic-retrieval.js"
+    },
+    "./himem": {
+      "import": "./dist/himem.js"
+    },
+    "./himem.js": {
+      "import": "./dist/himem.js"
+    },
+    "./hygiene": {
+      "import": "./dist/hygiene.js"
+    },
+    "./hygiene.js": {
+      "import": "./dist/hygiene.js"
+    },
+    "./identity-continuity": {
+      "import": "./dist/identity-continuity.js"
+    },
+    "./identity-continuity.js": {
+      "import": "./dist/identity-continuity.js"
+    },
+    "./importance": {
+      "import": "./dist/importance.js"
+    },
+    "./importance.js": {
+      "import": "./dist/importance.js"
+    },
+    "./json-store": {
+      "import": "./dist/json-store.js"
+    },
+    "./json-store.js": {
+      "import": "./dist/json-store.js"
+    },
+    "./lcm": {
+      "import": "./dist/lcm/index.js"
+    },
+    "./lcm.js": {
+      "import": "./dist/lcm/index.js"
+    },
+    "./lcm/index": {
+      "import": "./dist/lcm/index.js"
+    },
+    "./lcm/index.js": {
+      "import": "./dist/lcm/index.js"
+    },
+    "./lcm/archive": {
+      "import": "./dist/lcm/archive.js"
+    },
+    "./lcm/archive.js": {
+      "import": "./dist/lcm/archive.js"
+    },
+    "./lcm/dag": {
+      "import": "./dist/lcm/dag.js"
+    },
+    "./lcm/dag.js": {
+      "import": "./dist/lcm/dag.js"
+    },
+    "./lcm/engine": {
+      "import": "./dist/lcm/engine.js"
+    },
+    "./lcm/engine.js": {
+      "import": "./dist/lcm/engine.js"
+    },
+    "./lcm/queue": {
+      "import": "./dist/lcm/queue.js"
+    },
+    "./lcm/queue.js": {
+      "import": "./dist/lcm/queue.js"
+    },
+    "./lcm/recall": {
+      "import": "./dist/lcm/recall.js"
+    },
+    "./lcm/recall.js": {
+      "import": "./dist/lcm/recall.js"
+    },
+    "./lcm/schema": {
+      "import": "./dist/lcm/schema.js"
+    },
+    "./lcm/schema.js": {
+      "import": "./dist/lcm/schema.js"
+    },
+    "./lcm/summarizer": {
+      "import": "./dist/lcm/summarizer.js"
+    },
+    "./lcm/summarizer.js": {
+      "import": "./dist/lcm/summarizer.js"
+    },
+    "./lcm/tools": {
+      "import": "./dist/lcm/tools.js"
+    },
+    "./lcm/tools.js": {
+      "import": "./dist/lcm/tools.js"
+    },
+    "./memory-projection-store": {
+      "import": "./dist/memory-projection-store.js"
+    },
+    "./memory-projection-store.js": {
+      "import": "./dist/memory-projection-store.js"
+    },
+    "./migrate/from-engram": {
+      "import": "./dist/migrate/from-engram.js"
+    },
+    "./migrate/from-engram.js": {
+      "import": "./dist/migrate/from-engram.js"
+    },
+    "./namespaces/migrate": {
+      "import": "./dist/namespaces/migrate.js"
+    },
+    "./namespaces/migrate.js": {
+      "import": "./dist/namespaces/migrate.js"
+    },
+    "./namespaces/principal": {
+      "import": "./dist/namespaces/principal.js"
+    },
+    "./namespaces/principal.js": {
+      "import": "./dist/namespaces/principal.js"
+    },
+    "./namespaces/search": {
+      "import": "./dist/namespaces/search.js"
+    },
+    "./namespaces/search.js": {
+      "import": "./dist/namespaces/search.js"
+    },
+    "./namespaces/storage": {
+      "import": "./dist/namespaces/storage.js"
+    },
+    "./namespaces/storage.js": {
+      "import": "./dist/namespaces/storage.js"
+    },
+    "./openai-chat-compat": {
+      "import": "./dist/openai-chat-compat.js"
+    },
+    "./openai-chat-compat.js": {
+      "import": "./dist/openai-chat-compat.js"
+    },
+    "./operator-toolkit": {
+      "import": "./dist/operator-toolkit.js"
+    },
+    "./operator-toolkit.js": {
+      "import": "./dist/operator-toolkit.js"
+    },
+    "./opik-exporter": {
+      "import": "./dist/opik-exporter.js"
+    },
+    "./opik-exporter.js": {
+      "import": "./dist/opik-exporter.js"
+    },
+    "./profiling": {
+      "import": "./dist/profiling.js"
+    },
+    "./profiling.js": {
+      "import": "./dist/profiling.js"
+    },
+    "./qmd": {
+      "import": "./dist/qmd.js"
+    },
+    "./qmd.js": {
+      "import": "./dist/qmd.js"
+    },
+    "./qmd-recall-cache": {
+      "import": "./dist/qmd-recall-cache.js"
+    },
+    "./qmd-recall-cache.js": {
+      "import": "./dist/qmd-recall-cache.js"
+    },
+    "./reconstruct": {
+      "import": "./dist/reconstruct.js"
+    },
+    "./reconstruct.js": {
+      "import": "./dist/reconstruct.js"
+    },
+    "./relevance": {
+      "import": "./dist/relevance.js"
+    },
+    "./relevance.js": {
+      "import": "./dist/relevance.js"
+    },
+    "./rerank": {
+      "import": "./dist/rerank.js"
+    },
+    "./rerank.js": {
+      "import": "./dist/rerank.js"
+    },
+    "./retrieval": {
+      "import": "./dist/retrieval.js"
+    },
+    "./retrieval.js": {
+      "import": "./dist/retrieval.js"
+    },
+    "./retrieval-agents": {
+      "import": "./dist/retrieval-agents.js"
+    },
+    "./retrieval-agents.js": {
+      "import": "./dist/retrieval-agents.js"
+    },
+    "./replay/normalizers/chatgpt": {
+      "import": "./dist/replay/normalizers/chatgpt.js"
+    },
+    "./replay/normalizers/chatgpt.js": {
+      "import": "./dist/replay/normalizers/chatgpt.js"
+    },
+    "./replay/normalizers/claude": {
+      "import": "./dist/replay/normalizers/claude.js"
+    },
+    "./replay/normalizers/claude.js": {
+      "import": "./dist/replay/normalizers/claude.js"
+    },
+    "./replay/normalizers/openclaw": {
+      "import": "./dist/replay/normalizers/openclaw.js"
+    },
+    "./replay/normalizers/openclaw.js": {
+      "import": "./dist/replay/normalizers/openclaw.js"
+    },
+    "./replay/normalizers/shared": {
+      "import": "./dist/replay/normalizers/shared.js"
+    },
+    "./replay/normalizers/shared.js": {
+      "import": "./dist/replay/normalizers/shared.js"
+    },
+    "./replay/runner": {
+      "import": "./dist/replay/runner.js"
+    },
+    "./replay/runner.js": {
+      "import": "./dist/replay/runner.js"
+    },
+    "./replay/types": {
+      "import": "./dist/replay/types.js"
+    },
+    "./replay/types.js": {
+      "import": "./dist/replay/types.js"
+    },
+    "./resume-bundles": {
+      "import": "./dist/resume-bundles.js"
+    },
+    "./resume-bundles.js": {
+      "import": "./dist/resume-bundles.js"
+    },
+    "./maintenance/archive-observations": {
+      "import": "./dist/maintenance/archive-observations.js"
+    },
+    "./maintenance/archive-observations.js": {
+      "import": "./dist/maintenance/archive-observations.js"
+    },
+    "./maintenance/backup-stamp": {
+      "import": "./dist/maintenance/backup-stamp.js"
+    },
+    "./maintenance/backup-stamp.js": {
+      "import": "./dist/maintenance/backup-stamp.js"
+    },
+    "./maintenance/memory-governance": {
+      "import": "./dist/maintenance/memory-governance.js"
+    },
+    "./maintenance/memory-governance.js": {
+      "import": "./dist/maintenance/memory-governance.js"
+    },
+    "./maintenance/memory-governance-cron": {
+      "import": "./dist/maintenance/memory-governance-cron.js"
+    },
+    "./maintenance/memory-governance-cron.js": {
+      "import": "./dist/maintenance/memory-governance-cron.js"
+    },
+    "./maintenance/migrate-observations": {
+      "import": "./dist/maintenance/migrate-observations.js"
+    },
+    "./maintenance/migrate-observations.js": {
+      "import": "./dist/maintenance/migrate-observations.js"
+    },
+    "./maintenance/observation-ledger-utils": {
+      "import": "./dist/maintenance/observation-ledger-utils.js"
+    },
+    "./maintenance/observation-ledger-utils.js": {
+      "import": "./dist/maintenance/observation-ledger-utils.js"
+    },
+    "./maintenance/rebuild-memory-lifecycle-ledger": {
+      "import": "./dist/maintenance/rebuild-memory-lifecycle-ledger.js"
+    },
+    "./maintenance/rebuild-memory-lifecycle-ledger.js": {
+      "import": "./dist/maintenance/rebuild-memory-lifecycle-ledger.js"
+    },
+    "./maintenance/rebuild-memory-projection": {
+      "import": "./dist/maintenance/rebuild-memory-projection.js"
+    },
+    "./maintenance/rebuild-memory-projection.js": {
+      "import": "./dist/maintenance/rebuild-memory-projection.js"
+    },
+    "./maintenance/rebuild-observations": {
+      "import": "./dist/maintenance/rebuild-observations.js"
+    },
+    "./maintenance/rebuild-observations.js": {
+      "import": "./dist/maintenance/rebuild-observations.js"
+    },
+    "./routing/engine": {
+      "import": "./dist/routing/engine.js"
+    },
+    "./routing/engine.js": {
+      "import": "./dist/routing/engine.js"
+    },
+    "./routing/store": {
+      "import": "./dist/routing/store.js"
+    },
+    "./routing/store.js": {
+      "import": "./dist/routing/store.js"
+    },
+    "./runtime/better-sqlite": {
+      "import": "./dist/runtime/better-sqlite.js"
+    },
+    "./runtime/better-sqlite.js": {
+      "import": "./dist/runtime/better-sqlite.js"
+    },
+    "./runtime/child-process": {
+      "import": "./dist/runtime/child-process.js"
+    },
+    "./runtime/child-process.js": {
+      "import": "./dist/runtime/child-process.js"
+    },
+    "./runtime/env": {
+      "import": "./dist/runtime/env.js"
+    },
+    "./runtime/env.js": {
+      "import": "./dist/runtime/env.js"
+    },
+    "./sanitize": {
+      "import": "./dist/sanitize.js"
+    },
+    "./sanitize.js": {
+      "import": "./dist/sanitize.js"
+    },
+    "./search": {
+      "import": "./dist/search/index.js"
+    },
+    "./search.js": {
+      "import": "./dist/search/index.js"
+    },
+    "./search/document-scanner": {
+      "import": "./dist/search/document-scanner.js"
+    },
+    "./search/document-scanner.js": {
+      "import": "./dist/search/document-scanner.js"
+    },
+    "./search/embed-helper": {
+      "import": "./dist/search/embed-helper.js"
+    },
+    "./search/embed-helper.js": {
+      "import": "./dist/search/embed-helper.js"
+    },
+    "./search/factory": {
+      "import": "./dist/search/factory.js"
+    },
+    "./search/factory.js": {
+      "import": "./dist/search/factory.js"
+    },
+    "./search/index": {
+      "import": "./dist/search/index.js"
+    },
+    "./search/index.js": {
+      "import": "./dist/search/index.js"
+    },
+    "./search/lancedb-backend": {
+      "import": "./dist/search/lancedb-backend.js"
+    },
+    "./search/lancedb-backend.js": {
+      "import": "./dist/search/lancedb-backend.js"
+    },
+    "./search/meilisearch-backend": {
+      "import": "./dist/search/meilisearch-backend.js"
+    },
+    "./search/meilisearch-backend.js": {
+      "import": "./dist/search/meilisearch-backend.js"
+    },
+    "./search/noop-backend": {
+      "import": "./dist/search/noop-backend.js"
+    },
+    "./search/noop-backend.js": {
+      "import": "./dist/search/noop-backend.js"
+    },
+    "./search/orama-backend": {
+      "import": "./dist/search/orama-backend.js"
+    },
+    "./search/orama-backend.js": {
+      "import": "./dist/search/orama-backend.js"
+    },
+    "./search/port": {
+      "import": "./dist/search/port.js"
+    },
+    "./search/port.js": {
+      "import": "./dist/search/port.js"
+    },
+    "./search/remote-backend": {
+      "import": "./dist/search/remote-backend.js"
+    },
+    "./search/remote-backend.js": {
+      "import": "./dist/search/remote-backend.js"
+    },
+    "./schemas": {
+      "import": "./dist/schemas.js"
+    },
+    "./schemas.js": {
+      "import": "./dist/schemas.js"
+    },
+    "./sdk-compat": {
+      "import": "./dist/sdk-compat.js"
+    },
+    "./sdk-compat.js": {
+      "import": "./dist/sdk-compat.js"
+    },
+    "./signal": {
+      "import": "./dist/signal.js"
+    },
+    "./signal.js": {
+      "import": "./dist/signal.js"
+    },
+    "./source-attribution": {
+      "import": "./dist/source-attribution.js"
+    },
+    "./source-attribution.js": {
+      "import": "./dist/source-attribution.js"
+    },
+    "./summarizer": {
+      "import": "./dist/summarizer.js"
+    },
+    "./summarizer.js": {
+      "import": "./dist/summarizer.js"
+    },
+    "./summary-snapshot": {
+      "import": "./dist/summary-snapshot.js"
+    },
+    "./summary-snapshot.js": {
+      "import": "./dist/summary-snapshot.js"
+    },
+    "./temporal-index": {
+      "import": "./dist/temporal-index.js"
+    },
+    "./temporal-index.js": {
+      "import": "./dist/temporal-index.js"
+    },
+    "./temporal-validity": {
+      "import": "./dist/temporal-validity.js"
+    },
+    "./temporal-validity.js": {
+      "import": "./dist/temporal-validity.js"
+    },
+    "./tier-migration": {
+      "import": "./dist/tier-migration.js"
+    },
+    "./tier-migration.js": {
+      "import": "./dist/tier-migration.js"
+    },
+    "./tier-routing": {
+      "import": "./dist/tier-routing.js"
+    },
+    "./tier-routing.js": {
+      "import": "./dist/tier-routing.js"
+    },
+    "./threading": {
+      "import": "./dist/threading.js"
+    },
+    "./threading.js": {
+      "import": "./dist/threading.js"
+    },
+    "./tmt": {
+      "import": "./dist/tmt.js"
+    },
+    "./tmt.js": {
+      "import": "./dist/tmt.js"
+    },
+    "./topics": {
+      "import": "./dist/topics.js"
+    },
+    "./topics.js": {
+      "import": "./dist/topics.js"
+    },
+    "./transcript": {
+      "import": "./dist/transcript.js"
+    },
+    "./transcript.js": {
+      "import": "./dist/transcript.js"
+    },
+    "./trust-zones": {
+      "import": "./dist/trust-zones.js"
+    },
+    "./trust-zones.js": {
+      "import": "./dist/trust-zones.js"
+    },
+    "./types": {
+      "import": "./dist/types.js"
+    },
+    "./types.js": {
+      "import": "./dist/types.js"
+    },
+    "./utility-learner": {
+      "import": "./dist/utility-learner.js"
+    },
+    "./utility-learner.js": {
+      "import": "./dist/utility-learner.js"
+    },
+    "./utility-telemetry": {
+      "import": "./dist/utility-telemetry.js"
+    },
+    "./utility-telemetry.js": {
+      "import": "./dist/utility-telemetry.js"
+    },
+    "./session-observer-bands": {
+      "import": "./dist/session-observer-bands.js"
+    },
+    "./session-observer-bands.js": {
+      "import": "./dist/session-observer-bands.js"
+    },
+    "./session-observer-state": {
+      "import": "./dist/session-observer-state.js"
+    },
+    "./session-observer-state.js": {
+      "import": "./dist/session-observer-state.js"
+    },
+    "./session-integrity": {
+      "import": "./dist/session-integrity.js"
+    },
+    "./session-integrity.js": {
+      "import": "./dist/session-integrity.js"
+    },
+    "./store-contract": {
+      "import": "./dist/store-contract.js"
+    },
+    "./store-contract.js": {
+      "import": "./dist/store-contract.js"
+    },
+    "./shared-context/manager": {
+      "import": "./dist/shared-context/manager.js"
+    },
+    "./shared-context/manager.js": {
+      "import": "./dist/shared-context/manager.js"
+    },
+    "./work/board": {
+      "import": "./dist/work/board.js"
+    },
+    "./work/board.js": {
+      "import": "./dist/work/board.js"
+    },
+    "./work/boundary": {
+      "import": "./dist/work/boundary.js"
+    },
+    "./work/boundary.js": {
+      "import": "./dist/work/boundary.js"
+    },
+    "./work/storage": {
+      "import": "./dist/work/storage.js"
+    },
+    "./work/storage.js": {
+      "import": "./dist/work/storage.js"
+    },
+    "./work/types": {
+      "import": "./dist/work/types.js"
+    },
+    "./work/types.js": {
+      "import": "./dist/work/types.js"
+    },
+    "./transfer/autodetect": {
+      "import": "./dist/transfer/autodetect.js"
+    },
+    "./transfer/autodetect.js": {
+      "import": "./dist/transfer/autodetect.js"
+    },
+    "./transfer/backup": {
+      "import": "./dist/transfer/backup.js"
+    },
+    "./transfer/backup.js": {
+      "import": "./dist/transfer/backup.js"
+    },
+    "./transfer/capsule-export": {
+      "import": "./dist/transfer/capsule-export.js"
+    },
+    "./transfer/capsule-export.js": {
+      "import": "./dist/transfer/capsule-export.js"
+    },
+    "./transfer/capsule-import": {
+      "import": "./dist/transfer/capsule-import.js"
+    },
+    "./transfer/capsule-import.js": {
+      "import": "./dist/transfer/capsule-import.js"
+    },
+    "./transfer/constants": {
+      "import": "./dist/transfer/constants.js"
+    },
+    "./transfer/constants.js": {
+      "import": "./dist/transfer/constants.js"
+    },
+    "./transfer/export-json": {
+      "import": "./dist/transfer/export-json.js"
+    },
+    "./transfer/export-json.js": {
+      "import": "./dist/transfer/export-json.js"
+    },
+    "./transfer/export-md": {
+      "import": "./dist/transfer/export-md.js"
+    },
+    "./transfer/export-md.js": {
+      "import": "./dist/transfer/export-md.js"
+    },
+    "./transfer/export-sqlite": {
+      "import": "./dist/transfer/export-sqlite.js"
+    },
+    "./transfer/export-sqlite.js": {
+      "import": "./dist/transfer/export-sqlite.js"
+    },
+    "./transfer/fs-utils": {
+      "import": "./dist/transfer/fs-utils.js"
+    },
+    "./transfer/fs-utils.js": {
+      "import": "./dist/transfer/fs-utils.js"
+    },
+    "./transfer/import-json": {
+      "import": "./dist/transfer/import-json.js"
+    },
+    "./transfer/import-json.js": {
+      "import": "./dist/transfer/import-json.js"
+    },
+    "./transfer/import-md": {
+      "import": "./dist/transfer/import-md.js"
+    },
+    "./transfer/import-md.js": {
+      "import": "./dist/transfer/import-md.js"
+    },
+    "./transfer/import-sqlite": {
+      "import": "./dist/transfer/import-sqlite.js"
+    },
+    "./transfer/import-sqlite.js": {
+      "import": "./dist/transfer/import-sqlite.js"
+    },
+    "./transfer/sqlite-schema": {
+      "import": "./dist/transfer/sqlite-schema.js"
+    },
+    "./transfer/sqlite-schema.js": {
+      "import": "./dist/transfer/sqlite-schema.js"
+    },
+    "./transfer/types": {
+      "import": "./dist/transfer/types.js"
+    },
+    "./transfer/types.js": {
+      "import": "./dist/transfer/types.js"
+    }
+  },
+  "files": ["dist", "bin/engram-access.js", "openclaw.plugin.json", "scripts/ensure-better-sqlite3.mjs"],
+  "dependencies": {
+    "@honcho-ai/sdk": "^2.0.0",
+    "@lancedb/lancedb": "^0.26.2",
+    "@node-rs/argon2": "^2.0.2",
+    "@orama/orama": "^3.0.0",
+    "@orama/plugin-data-persistence": "^3.0.0",
+    "@remnic/core": "workspace:^",
+    "@remnic/plugin-openclaw": "workspace:^",
+    "@sinclair/typebox": "^0.34.0",
+    "apache-arrow": "^18.1.0",
+    "better-sqlite3": "^12.6.2",
+    "meilisearch": "^0.46.0",
+    "node-gyp": "^12.3.0",
+    "openai": "^6.0.0",
+    "zod": "^3.24.0"
+  },
+  "optionalDependencies": {
+    "@lancedb/lancedb-darwin-arm64": "^0.26.2",
+    "@lancedb/lancedb-linux-arm64-gnu": "^0.26.2",
+    "@lancedb/lancedb-linux-x64-gnu": "^0.26.2"
+  },
+  "openclaw": {
+    "plugin": "./openclaw.plugin.json",
+    "extensions": ["./dist/index.js"]
+  },
+  "scripts": {
+    "sync:openclaw-plugin": "node scripts/sync-openclaw-plugin.mjs",
+    "check:openclaw-plugin-sync": "node scripts/check-openclaw-plugin-sync.mjs",
+    "sync:hook-runner": "node scripts/sync-hook-runner.mjs",
+    "check:hook-runner-sync": "node scripts/check-hook-runner-sync.mjs",
+    "check:hook-grep-targets": "node scripts/check-hook-grep-targets.mjs",
+    "check:last-recall-json-load": "node scripts/check-last-recall-json-load.mjs",
+    "check:openclaw-sdk-surface": "node scripts/check-openclaw-sdk-surface.mjs",
+    "check:openclaw-sdk-surface:required": "node scripts/check-openclaw-sdk-surface.mjs --require",
+    "check:ratchets": "node scripts/check-ratchets.mjs",
+    "check:docs-parity": "node scripts/check-docs-parity.mjs",
+    "check:regex-safety": "node scripts/check-regex-safety.mjs",
+    "check:pre-push": "node scripts/check-pre-push.mjs",
+    "release:bump-changed-packages": "node scripts/bump-changed-packages.mjs",
+    "build": "node scripts/pnpm.mjs --filter @remnic/core build && node scripts/pnpm.mjs --filter @remnic/plugin-openclaw build && node scripts/pnpm.mjs run check:openclaw-plugin-sync && tsup && node scripts/copy-admin-console.mjs",
+    "dev": "node scripts/pnpm.mjs --filter @remnic/plugin-openclaw build && node scripts/pnpm.mjs --parallel --filter remnic-workspace --filter @remnic/plugin-openclaw run dev:watch",
+    "dev:watch": "tsup --watch",
+    "check-types": "node scripts/pnpm.mjs --filter @remnic/core build && tsc --noEmit && node scripts/pnpm.mjs --recursive --if-present --filter=\"./packages/*\" run check-types && node scripts/check-test-types.mjs",
+    "check-config-contract": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx scripts/validate-config-contract.ts",
+    "test": "node scripts/pnpm.mjs --filter @remnic/core build && node scripts/run-root-tests.mjs",
+    "test:file": "node scripts/test-file.mjs",
+    "test:openclaw-scenarios": "node scripts/with-source-conditions.mjs node scripts/pnpm.mjs exec tsx --test tests/openclaw-adapter-scenarios.test.ts",
+    "test:openclaw-privacy": "node scripts/with-source-conditions.mjs node scripts/pnpm.mjs exec tsx --test tests/openclaw-hook-privacy.test.ts",
+    "test:entity-hardening": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test tests/intent.test.ts tests/recall-no-recall-short-circuit.test.ts tests/orchestrator-path-filter.test.ts tests/orchestrator-characterization.test.ts tests/artifact-cache.test.ts tests/memory-cache.test.ts tests/entity-retrieval.test.ts tests/entity-synthesis-storage.test.ts tests/entity-synthesis-orchestrator.test.ts tests/config-recall-pipeline.test.ts tests/entity-contamination.test.ts tests/entity-alias-isolation.test.ts tests/cache-invalidation-coherence.test.ts",
+    "test:support-passport-ui": "playwright test --config playwright.config.ts",
+    "demo:support-passport:replay": "node scripts/support-passport/serve-replay.mjs",
+    "demo:support-passport:capture": "node scripts/support-passport/capture-demo.mjs",
+    "demo:support-passport:live": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx scripts/support-passport/run-live-demo.mjs",
+    "demo:support-passport:validate-receipt": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx scripts/support-passport/verify-receipt.mjs",
+    "demo:coding-agent-memory": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx examples/coding-agent-memory-demo/demo.mts",
+    "test:coding-agent-memory-demo": "node examples/coding-agent-memory-demo/smoke-test.mjs",
+    "test:release-smoke": "node scripts/pnpm.mjs run build && node scripts/check-release-artifacts.mjs",
+    "plugin:inspect": "node scripts/pnpm.mjs --filter @remnic/plugin-openclaw run plugin:inspect",
+    "plugin:inspect:runtime": "node scripts/pnpm.mjs --filter @remnic/plugin-openclaw run plugin:inspect:runtime",
+    "scan:openclaw-plugin": "node scripts/openclaw-plugin-security-scan.mjs packages/plugin-openclaw",
+    "verify:openclaw-clawpack": "node scripts/verify-openclaw-clawpack.mjs",
+    "bench:list": "node scripts/run-bench-cli.mjs list",
+    "bench:run": "node scripts/run-bench-cli.mjs run",
+    "bench:compare": "node scripts/run-bench-cli.mjs compare",
+    "bench:quick": "node scripts/run-bench-cli.mjs run --quick longmemeval",
+    "figures:paper": "node scripts/generate-paper-figures.mjs",
+    "eval:ci-gate": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx scripts/eval-ci-gate.ts",
+    "eval:run": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx evals/run.ts",
+    "eval:download": "bash evals/scripts/download-datasets.sh",
+    "eval:bench": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx evals/run.ts --benchmark all",
+    "relay:fixtures": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx scripts/relay/fixture-manifest.ts",
+    "relay:preflight": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx scripts/relay/preflight.ts",
+    "relay:test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test tests/relay-codex-jsonl.test.ts tests/relay-isolated-runner.test.ts tests/relay-recording.test.ts tests/relay-judge-package.test.mjs",
+    "relay:live": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx scripts/relay/live.ts",
+    "relay:replay": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx scripts/relay/replay.ts",
+    "relay:judge": "node scripts/relay/judge-package.mjs verify",
+    "relay:demo": "node scripts/relay/judge-package.mjs serve",
+    "relay:judge:clean-room": "node scripts/verify-relay-judge-package.mjs",
+    "lint": "biome check --diagnostic-level=error --files-ignore-unknown=true biome.json eslint.config.js package.json",
+    "preflight": "bash scripts/pr-preflight.sh full",
+    "preflight:quick": "bash scripts/pr-preflight.sh quick",
+    "review:cursor": "bash scripts/cursor-prepush-review.sh",
+    "review:patterns": "bash scripts/check-review-patterns.sh",
+    "hooks:install": "bash scripts/install-git-hooks.sh",
+    "migrate": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx scripts/migrate.ts",
+    "postinstall": "node scripts/ensure-better-sqlite3.mjs",
+    "prepack": "node scripts/pnpm.mjs run check-types && node scripts/pnpm.mjs run build"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "@biomejs/biome": "1.9.4",
+    "@openclaw/plugin-inspector": "0.3.10",
+    "@playwright/test": "^1.62.1",
+    "@remnic/bench": "workspace:*",
+    "@types/better-sqlite3": "^7.6.13",
+    "semver": "^7.7.4",
+    "tsup": "^8.5.1",
+    "tsx": "^4.0.0",
+    "turbo": "2.9.14",
+    "typescript": "^5.9.3",
+    "ajv": "^8.20.0"
+  }
+}

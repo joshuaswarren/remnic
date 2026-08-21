@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/metrics-collector-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for metrics-collector-agent",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

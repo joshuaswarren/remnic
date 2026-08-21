@@ -1,0 +1,24 @@
+{
+  "memory": [
+    {
+      "id": "11111111-aaaa-4000-8000-000000000001",
+      "content": "Prefers concise answers over verbose explanations.",
+      "created_at": "2026-02-14T09:30:00.000Z",
+      "updated_at": "2026-02-14T09:30:00.000Z",
+      "pinned": false,
+      "tags": ["preferences"]
+    },
+    {
+      "id": "11111111-aaaa-4000-8000-000000000002",
+      "content": "Uses TypeScript with strict mode on all personal projects.",
+      "created_at": "2026-03-01T14:00:00.000Z",
+      "pinned": true
+    },
+    {
+      "id": "11111111-aaaa-4000-8000-000000000003",
+      "content": "Example soft-deleted entry that must be skipped.",
+      "created_at": "2025-12-01T00:00:00.000Z",
+      "deleted": true
+    }
+  ]
+}

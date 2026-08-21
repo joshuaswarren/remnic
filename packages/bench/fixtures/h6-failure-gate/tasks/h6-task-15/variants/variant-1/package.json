@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/config-server-cluster",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for config-server-cluster",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

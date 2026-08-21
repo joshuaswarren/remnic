@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "benchmarks": {
+    "longmemeval": {
+      "metrics": {
+        "contains_answer": 1,
+        "f1": 0.2,
+        "llm_judge": 1,
+        "search_hits": 0
+      }
+    },
+    "locomo": {
+      "metrics": {
+        "contains_answer": 1,
+        "f1": 0.041667,
+        "llm_judge": 1,
+        "rouge_l": 0.041667
+      }
+    }
+  }
+}

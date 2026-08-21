@@ -1,0 +1,37 @@
+name: Bench Smoke
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  bench-smoke:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run bench-smoke regression gate
+        # Runs both LongMemEval + LoCoMo smoke fixtures against the
+        # committed baseline with the default 5% tolerance. Does NOT
+        # touch real datasets or LLM APIs (CLAUDE.md rule 50: no `|| true`).
+        run: pnpm exec tsx scripts/bench/bench-smoke.ts --seed 1

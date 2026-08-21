@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/schema-registry-store",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for schema-registry-store",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

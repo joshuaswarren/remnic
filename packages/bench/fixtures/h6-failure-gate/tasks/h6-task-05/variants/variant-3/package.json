@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/hyperion-router-mesh",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for hyperion-router-mesh",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

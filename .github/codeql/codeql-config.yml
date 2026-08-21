@@ -1,0 +1,26 @@
+name: "Remnic CodeQL config"
+
+# Scope the JavaScript/TypeScript database to shipped source code.
+# Tests, evals, benchmarks, docs and build output are excluded so the
+# full default-branch scan stays well under the workflow timeout and
+# does not exhaust the runner's disk during database extraction.
+paths-ignore:
+  - '**/*.test.ts'
+  - '**/*.test.tsx'
+  - '**/*.spec.ts'
+  - '**/*.spec.tsx'
+  - '**/*.d.ts'
+  - '**/__tests__/**'
+  - '**/__mocks__/**'
+  - tests/**
+  - '**/tests/**'
+  - evals/**
+  - '**/evals/**'
+  - benchmarks/**
+  - '**/benchmarks/**'
+  - docs/**
+  - examples/**
+  - '**/dist/**'
+  - '**/build/**'
+  - '**/.turbo/**'
+  - '**/node_modules/**'

@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/scheduler-daemon-service",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for scheduler-daemon-service",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

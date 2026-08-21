@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/cyber-telemetry-stream",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for cyber-telemetry-stream",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

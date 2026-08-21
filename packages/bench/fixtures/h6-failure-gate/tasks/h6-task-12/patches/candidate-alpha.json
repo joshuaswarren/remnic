@@ -1,0 +1,14 @@
+{
+  "id": "candidate-alpha",
+  "description": "Candidate alpha.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nclass Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n  records.push({ key: input.key.trim(), title: input.title.trim() });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title.toUpperCase();\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
+    },
+    {
+      "path": "src/user-schema.mjs",
+      "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n  return Boolean(\n    user &&\n    typeof user.key === \"string\" &&\n    user.key.trim().length > 0 &&\n    typeof user.title === \"string\" &&\n    user.title.trim().length > 0\n  );\n}\n"
+    }
+  ]
+}

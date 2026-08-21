@@ -1,0 +1,10 @@
+{
+  "id": "candidate-alpha",
+  "description": "Candidate alpha.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "function* violations(record) {\n  const data = record?.asset;\n  if (typeof data?.label !== \"string\") {\n    yield [\"SCHEMA_LABEL_MISSING\", \"asset.label\"];\n  }\n  if (!Number.isInteger(data?.weight) || data.weight < 0) {\n    yield [\"SCHEMA_WEIGHT_RANGE\", \"asset.weight\"];\n  }\n}\nfunction inspect(record) {\n  const first = violations(record).next();\n  if (!first.done) {\n    const [code, path] = first.value;\n    const error = new Error(\"record did not parse\");\n    Object.defineProperties(error, {\n      code: { value: code, enumerable: true },\n      path: { value: path, enumerable: true },\n    });\n    throw error;\n  }\n  return record;\n}\n\nexport function loadRecord_vector_session_store(record) {\n  return inspect(record);\n}\nexport const repositoryIdentity5f0e0edd = Object.freeze({\n  v46dc27b0: true, v6646fdaa: true, v09d012e1: true, v66a4d450: true, vc8792acf: true, vd748cfa6: true,\n  v2661aa70: true, v6140e735: true, v848de6b5: true, v247a2e13: true, v4ade812a: true, vae221d4b: true,\n  v4db039f4: true, v241dc802: true, v39167417: true, v03c42e1e: true, v36c98eb7: true,\n});\n"
+    }
+  ]
+}

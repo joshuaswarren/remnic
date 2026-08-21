@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "action-intent.schema.json",
+  "title": "H6ActionIntentV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "actionType",
+    "targetSymbol",
+    "filePath",
+    "contextHash"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "actionType": {
+      "type": "string",
+      "minLength": 1
+    },
+    "targetSymbol": {
+      "type": "string",
+      "minLength": 1
+    },
+    "filePath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "contextHash": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

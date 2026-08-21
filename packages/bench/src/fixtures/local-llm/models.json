@@ -1,0 +1,22 @@
+{
+  "_comment": "Canned /v1/models response for the local-llm CI smoke test (issue #566 slice 5). Two models so the smoke test can verify the array-fanout path without being tied to a real model id.",
+  "object": "list",
+  "data": [
+    {
+      "id": "local-llm-fixture-small",
+      "name": "local-llm-fixture-small",
+      "context_length": 8192,
+      "capabilities": ["completion"],
+      "quantization": "Q4_K_M",
+      "parameter_count": "7B"
+    },
+    {
+      "id": "local-llm-fixture-large",
+      "name": "local-llm-fixture-large",
+      "context_length": 32768,
+      "capabilities": ["completion"],
+      "quantization": "Q8_0",
+      "parameter_count": "70B"
+    }
+  ]
+}

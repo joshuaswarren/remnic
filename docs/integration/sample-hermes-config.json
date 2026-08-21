@@ -1,0 +1,9 @@
+{
+  "remnic": {
+    "host": "127.0.0.1",
+    "port": 4318,
+    "token": "",
+    "session_key": "",
+    "timeout": 30.0
+  }
+}

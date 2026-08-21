@@ -1,0 +1,20 @@
+export {
+  clearIndexes,
+  clearIndexesAsync,
+  deindexMemory,
+  deindexMemoryAsync,
+  extractTagsFromPrompt,
+  indexMemoriesBatch,
+  indexMemoriesBatchAsync,
+  indexMemory,
+  indexMemoryAsync,
+  indexesExist,
+  indexesExistAsync,
+  isTemporalQuery,
+  queryByDateRangeAsync,
+  queryByTagsAsync,
+  recencyWindowBoundsFromPrompt,
+  recencyWindowFromPrompt,
+  resolvePromptTagPrefilterAsync,
+} from "@remnic/core/temporal-index";
+export * from "@remnic/core/temporal-index";

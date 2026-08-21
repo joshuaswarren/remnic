@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "remnic-hermes"
+version = "1.0.8"
+description = "Remnic MemoryProvider plugin for Hermes Agent"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Joshua Warren" }]
+keywords = ["remnic", "memory", "hermes", "ai-agent", "memory-provider"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21.0",
+    "mypy>=1.0",
+    "ruff>=0.15.22,<0.16",
+]
+test = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/joshuaswarren/remnic"
+Repository = "https://github.com/joshuaswarren/remnic"
+Issues = "https://github.com/joshuaswarren/remnic/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["remnic_hermes"]
+force-include = { "plugin.yaml" = "plugin.yaml" }
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "remnic_hermes/",
+    "README.md",
+    "pyproject.toml",
+    "plugin.yaml",
+]
+
+[tool.mypy]
+strict = true
+python_version = "3.10"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

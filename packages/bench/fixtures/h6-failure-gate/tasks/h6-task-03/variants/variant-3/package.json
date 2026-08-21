@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/starlight-auth-vault",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for starlight-auth-vault",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

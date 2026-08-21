@@ -1,0 +1,48 @@
+{
+  "name": "@remnic/connector-weclone",
+  "version": "9.69.15",
+  "description": "OpenAI-compatible proxy adding Remnic persistent memory to WeClone avatars",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "remnic-weclone-proxy": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts src/cli.ts --format esm --dts",
+    "check-types": "tsc --noEmit",
+    "test": "npm run build && tsx --test src/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/connector-weclone"
+  },
+  "keywords": [
+    "remnic",
+    "memory",
+    "weclone",
+    "proxy",
+    "ai-agent"
+  ]
+}

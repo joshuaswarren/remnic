@@ -1,0 +1,30 @@
+[
+  {
+    "uuid": "33333333-cccc-4000-8000-000000000001",
+    "name": "Fictional: planning an OSS release",
+    "summary": "Discussion of synthetic release steps",
+    "created_at": "2026-02-15T15:00:00.000Z",
+    "chat_messages": [
+      {
+        "uuid": "m1",
+        "sender": "human",
+        "text": "What is a good checklist for cutting a minor release?",
+        "created_at": "2026-02-15T15:00:00.000Z"
+      },
+      {
+        "uuid": "m2",
+        "sender": "assistant",
+        "text": "Sure, here is a checklist...",
+        "created_at": "2026-02-15T15:00:10.000Z"
+      },
+      {
+        "uuid": "m3",
+        "sender": "human",
+        "content": [
+          { "type": "text", "text": "Add a CHANGELOG step and a tag step." }
+        ],
+        "created_at": "2026-02-15T15:01:00.000Z"
+      }
+    ]
+  }
+]

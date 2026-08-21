@@ -1,0 +1,10 @@
+{
+  "id": "candidate-alpha",
+  "description": "Candidate alpha.",
+  "files": [
+    {
+      "path": "config/default.json",
+      "content": "{\n  \"batchSize\": 40,\n  \"workers\": 4\n}\n"
+    }
+  ]
+}

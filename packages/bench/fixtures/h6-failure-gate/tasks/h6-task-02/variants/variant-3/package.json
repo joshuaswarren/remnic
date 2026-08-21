@@ -1,0 +1,9 @@
+{
+  "name": "@vellum-quarry/nexus-billing-engine",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Synthetic repo for nexus-billing-engine",
+  "scripts": {
+    "test": "node test/check.js"
+  }
+}

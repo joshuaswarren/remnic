@@ -1,0 +1,38 @@
+{
+  "repository": {
+    "pullRequest": {
+      "reviewThreads": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "id": "PRRT_kwDOUnresolved2441",
+            "isResolved": false,
+            "comments": {
+              "nodes": [
+                {
+                  "author": { "login": "coderabbitai" },
+                  "body": "The GraphQL reviewThreads query currently truncates each comment body to 400-500 characters before the agent can reply or resolve the thread. Thread IDs are required for addPullRequestReviewThreadReply and resolveReviewThread, but they only appear on the full reviewThreads connection. This paragraph exists so the fixture body is longer than the historical truncation limit and the digest command must pass it through unchanged. Repeat-padding follows so a 500-character slice cannot accidentally satisfy the test: AAAAAAAAAA BBBBBBBBBB CCCCCCCCCC DDDDDDDDDD EEEEEEEEEE FFFFFFFFFF GGGGGGGGGG HHHHHHHHHH IIIIIIIIII JJJJJJJJJJ KKKKKKKKKK LLLLLLLLLL MMMMMMMMMM NNNNNNNNNN OOOOOOOOOO PPPPPPPPPP QQQQQQQQQQ RRRRRRRRRR SSSSSSSSSS TTTTTTTTTT. Marker: FULL_BODY_PASSTHROUGH_TOKEN_2441"
+                }
+              ]
+            }
+          },
+          {
+            "id": "PRRT_kwDOResolved2441",
+            "isResolved": true,
+            "comments": {
+              "nodes": [
+                {
+                  "author": { "login": "cursor" },
+                  "body": "Already addressed in the previous round."
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

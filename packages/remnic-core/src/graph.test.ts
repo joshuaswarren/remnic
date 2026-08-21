@@ -1,0 +1,490 @@
+import assert from "node:assert/strict";
+import { appendFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import {
+  type ActivationPredecessor,
+  type GraphConfig,
+  type GraphEdge,
+  GraphIndex,
+  graphFilePath,
+  readEdges,
+  reconstructActivationPath,
+} from "./graph.js";
+
+function makeGraphConfig(): GraphConfig {
+  return {
+    multiGraphMemoryEnabled: true,
+    entityGraphEnabled: true,
+    timeGraphEnabled: false,
+    causalGraphEnabled: false,
+    maxGraphTraversalSteps: 2,
+    graphActivationDecay: 0.5,
+    maxEntityGraphEdgesPerMemory: 10,
+    graphLateralInhibitionEnabled: false,
+    graphLateralInhibitionBeta: 0,
+    graphLateralInhibitionTopM: 0,
+    graphTraversalConfidenceFloor: 0.2,
+    graphTraversalPageRankIterations: 0,
+    graphEdgeCacheIncrementalEnabled: true,
+  };
+}
+
+test("graph reads skip malformed JSON edge objects before traversal", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-malformed-"));
+  try {
+    const filePath = graphFilePath(memoryDir, "entity");
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(
+      filePath,
+      [
+        JSON.stringify({
+          from: "a",
+          type: "entity",
+          weight: 1,
+          label: "broken",
+          ts: "2026-01-01T00:00:00.000Z",
+        }),
+        JSON.stringify({
+          from: "a",
+          to: "c",
+          type: "entity",
+          weight: 1,
+          label: "valid",
+          ts: "2026-01-01T00:00:00.000Z",
+        }),
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    const edges = await readEdges(memoryDir, "entity");
+    assert.deepEqual(
+      edges.map((edge) => edge.to),
+      ["c"]
+    );
+
+    const graph = new GraphIndex(memoryDir, makeGraphConfig());
+    const activated = await graph.spreadingActivation(["a"]);
+    assert.deepEqual(
+      activated.map((candidate) => candidate.path),
+      ["c"]
+    );
+    assert.equal(Number.isFinite(activated[0]?.score), true);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("spreadingActivation propagates accumulated activation from multiple seeds", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-multi-seed-"));
+  try {
+    await writeGraphEdges(memoryDir, [
+      makeEdge("seed-a", "shared"),
+      makeEdge("seed-b", "shared"),
+      makeEdge("shared", "downstream"),
+    ]);
+
+    const graph = new GraphIndex(memoryDir, makeGraphConfig());
+    const activated = await graph.spreadingActivation(["seed-a", "seed-b"]);
+    const scores = new Map(activated.map((candidate) => [candidate.path, candidate.score]));
+
+    assert.equal(scores.get("shared"), 1);
+    assert.equal(scores.get("downstream"), 0.5);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("spreadingActivation propagates same-depth alternate path activation", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-alt-path-"));
+  try {
+    await writeGraphEdges(memoryDir, [
+      makeEdge("seed", "left"),
+      makeEdge("seed", "right"),
+      makeEdge("left", "shared"),
+      makeEdge("right", "shared"),
+      makeEdge("shared", "downstream"),
+    ]);
+
+    const graph = new GraphIndex(memoryDir, {
+      ...makeGraphConfig(),
+      maxGraphTraversalSteps: 3,
+    });
+    const activated = await graph.spreadingActivation(["seed"]);
+    const scores = new Map(activated.map((candidate) => [candidate.path, candidate.score]));
+
+    assert.equal(scores.get("left"), 0.5);
+    assert.equal(scores.get("right"), 0.5);
+    assert.equal(scores.get("shared"), 0.5);
+    assert.equal(scores.get("downstream"), 0.25);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+test("spreadingActivation records seed-first paths with aligned edge metadata", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-order-"));
+  try {
+    await writeGraphEdges(memoryDir, [makeEdge("seed", "middle", "entity", 0.8)]);
+    await writeGraphEdges(memoryDir, [makeEdge("middle", "candidate", "causal", 0.7)], "causal");
+
+    const graph = new GraphIndex(memoryDir, {
+      ...makeGraphConfig(),
+      causalGraphEnabled: true,
+      maxGraphTraversalSteps: 2,
+    });
+    const activated = await graph.spreadingActivation(["seed"], undefined, { recordPaths: true });
+
+    assert.deepEqual(activated.find((candidate) => candidate.path === "candidate")?.activationPath, {
+      nodeIds: ["seed", "middle", "candidate"],
+      edgeConfidences: [0.8, 0.7],
+      graphTypes: ["entity", "causal"],
+    });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("spreadingActivation keeps the first shortest predecessor path", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-shortest-"));
+  try {
+    await writeGraphEdges(memoryDir, [
+      makeEdge("seed", "long"),
+      makeEdge("seed", "short"),
+      makeEdge("long", "candidate"),
+      makeEdge("short", "candidate"),
+    ]);
+
+    const graph = new GraphIndex(memoryDir, { ...makeGraphConfig(), maxGraphTraversalSteps: 2 });
+    const activated = await graph.spreadingActivation(["seed"], undefined, { recordPaths: true });
+
+    assert.deepEqual(activated.find((candidate) => candidate.path === "candidate")?.activationPath, {
+      nodeIds: ["seed", "long", "candidate"],
+      edgeConfidences: [1, 1],
+      graphTypes: ["entity", "entity"],
+    });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+test("spreadingActivation records the stronger equal-hop predecessor", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-strength-"));
+  try {
+    await writeGraphEdges(memoryDir, [
+      makeEdge("seed", "weak"),
+      makeEdge("seed", "strong"),
+      makeEdge("weak", "candidate", "entity", 0.4),
+      makeEdge("strong", "candidate", "entity", 0.9),
+    ]);
+
+    const graph = new GraphIndex(memoryDir, { ...makeGraphConfig(), maxGraphTraversalSteps: 2 });
+    const activated = await graph.spreadingActivation(["seed"], undefined, { recordPaths: true });
+
+    assert.deepEqual(activated.find((candidate) => candidate.path === "candidate")?.activationPath, {
+      nodeIds: ["seed", "strong", "candidate"],
+      edgeConfidences: [1, 0.9],
+      graphTypes: ["entity", "entity"],
+    });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("spreadingActivation uses a lexical predecessor tie-break", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-lexical-"));
+  try {
+    await writeGraphEdges(memoryDir, [
+      makeEdge("seed", "zulu"),
+      makeEdge("seed", "alpha"),
+      makeEdge("zulu", "candidate"),
+      makeEdge("alpha", "candidate"),
+    ]);
+
+    const graph = new GraphIndex(memoryDir, { ...makeGraphConfig(), maxGraphTraversalSteps: 2 });
+    const activated = await graph.spreadingActivation(["seed"], undefined, { recordPaths: true });
+
+    assert.deepEqual(activated.find((candidate) => candidate.path === "candidate")?.activationPath, {
+      nodeIds: ["seed", "alpha", "candidate"],
+      edgeConfidences: [1, 1],
+      graphTypes: ["entity", "entity"],
+    });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+
+test("spreadingActivation keeps predecessor paths isolated per seed", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-seeds-"));
+  try {
+    await writeGraphEdges(memoryDir, [
+      makeEdge("seed-a", "middle-a"),
+      makeEdge("seed-b", "middle-b"),
+      makeEdge("middle-a", "shared"),
+      makeEdge("middle-b", "shared"),
+    ]);
+
+    const graph = new GraphIndex(memoryDir, { ...makeGraphConfig(), maxGraphTraversalSteps: 2 });
+    const activated = await graph.spreadingActivation(["seed-a", "seed-b"], undefined, { recordPaths: true });
+
+    assert.deepEqual(activated.find((candidate) => candidate.path === "shared")?.activationPath, {
+      nodeIds: ["seed-a", "middle-a", "shared"],
+      edgeConfidences: [1, 1],
+      graphTypes: ["entity", "entity"],
+    });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("spreadingActivation reconstructs bounded paths through cycles without looping", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-cycle-"));
+  try {
+    await writeGraphEdges(memoryDir, [
+      makeEdge("seed", "a"),
+      makeEdge("a", "b"),
+      makeEdge("b", "a"),
+      makeEdge("b", "candidate"),
+    ]);
+
+    const graph = new GraphIndex(memoryDir, { ...makeGraphConfig(), maxGraphTraversalSteps: 3 });
+    const activated = await graph.spreadingActivation(["seed"], undefined, { recordPaths: true });
+    const candidatePath = activated.find((candidate) => candidate.path === "candidate")?.activationPath;
+
+    assert.deepEqual(candidatePath, {
+      nodeIds: ["seed", "a", "b", "candidate"],
+      edgeConfidences: [1, 1, 1],
+      graphTypes: ["entity", "entity", "entity"],
+    });
+    assert.ok(activated.every((candidate) => (candidate.activationPath?.nodeIds.length ?? 0) <= 4));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("spreadingActivation path recording is deterministic and opt-in output stays unchanged", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-determinism-"));
+  try {
+    await writeGraphEdges(memoryDir, [
+      makeEdge("seed", "left"),
+      makeEdge("seed", "right"),
+      makeEdge("left", "candidate"),
+      makeEdge("right", "candidate"),
+    ]);
+
+    const graph = new GraphIndex(memoryDir, { ...makeGraphConfig(), maxGraphTraversalSteps: 2 });
+    const baseline = await graph.spreadingActivation(["seed"]);
+    const explicitDisabled = await graph.spreadingActivation(["seed"], undefined, { recordPaths: false });
+    const first = await graph.spreadingActivation(["seed"], undefined, { recordPaths: true });
+    const second = await graph.spreadingActivation(["seed"], undefined, { recordPaths: true });
+
+    assert.deepEqual(explicitDisabled, baseline);
+    assert.ok(baseline.every((candidate) => !("activationPath" in candidate)));
+    assert.deepEqual(second, first);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("reconstructActivationPath returns a zero-hop path for a seed candidate", () => {
+  assert.deepEqual(reconstructActivationPath("seed", "seed", new Map(), 0), {
+    nodeIds: ["seed"],
+    edgeConfidences: [],
+    graphTypes: [],
+  });
+});
+
+test("reconstructActivationPath fails closed when a predecessor is missing", () => {
+  const predecessors = new Map<string, ActivationPredecessor>([
+    [
+      "seed\0candidate",
+      { prev: "middle", edgeConfidence: 0.8, graphType: "entity" },
+    ],
+  ]);
+
+  assert.equal(reconstructActivationPath("seed", "candidate", predecessors, 2), null);
+});
+
+test("reconstructActivationPath fails closed on a cycle beyond the step cap", () => {
+  const predecessors = new Map<string, ActivationPredecessor>([
+    [
+      "seed\0candidate",
+      { prev: "cycle-a", edgeConfidence: 0.8, graphType: "entity" },
+    ],
+    [
+      "seed\0cycle-a",
+      { prev: "cycle-b", edgeConfidence: 0.7, graphType: "time" },
+    ],
+    [
+      "seed\0cycle-b",
+      { prev: "cycle-a", edgeConfidence: 0.6, graphType: "causal" },
+    ],
+  ]);
+
+  assert.equal(reconstructActivationPath("seed", "candidate", predecessors, 4), null);
+});
+
+function makeEdge(
+  from: string,
+  to: string,
+  type: GraphEdge["type"] = "entity",
+  confidence?: number,
+): GraphEdge {
+  return {
+    from,
+    to,
+    type,
+    weight: 1,
+    ...(confidence === undefined ? {} : { confidence }),
+    label: "test",
+    ts: "2026-01-01T00:00:00.000Z",
+  };
+}
+
+async function writeGraphEdges(
+  memoryDir: string,
+  edges: GraphEdge[],
+  type: GraphEdge["type"] = "entity",
+): Promise<void> {
+  const filePath = graphFilePath(memoryDir, type);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${edges.map((edge) => JSON.stringify(edge)).join("\n")}\n`, "utf-8");
+}
+
+
+// ---------------------------------------------------------------------------
+// Incremental edge cache (issue #1904). onMemoryWritten pushes single-writer
+// appends into the warm cache in place and reloads only on a peer append.
+// These use a delete-the-file-then-traverse probe instead of a readAllEdges
+// spy: it proves the same invariant more robustly (a reload would read the
+// now-missing file and return nothing, so surviving edges prove no reload).
+// ---------------------------------------------------------------------------
+
+const onWriteOpts = {
+  entityRef: "Acme",
+  content: "",
+  created: "2026-01-01T00:00:00.000Z",
+};
+
+test("#1904: onMemoryWritten pushes appended edges into the warm cache in place (no reload)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-incr-"));
+  try {
+    await writeGraphEdges(memoryDir, [makeEdge("seed", "old-sibling")]);
+    const graph = new GraphIndex(memoryDir, makeGraphConfig());
+    // Warm the edge cache (records the file-size baseline).
+    await graph.spreadingActivation(["seed"]);
+    // Single-writer append through the write path.
+    await graph.onMemoryWritten({
+      ...onWriteOpts,
+      memoryPath: "facts/new.md",
+      entitySiblings: ["facts/sibling.md"],
+    });
+    // Delete the on-disk file: a full reload would now find nothing. The warm
+    // cache must still serve the just-appended edge, proving it was pushed in
+    // place rather than reconstructed from disk.
+    await rm(graphFilePath(memoryDir, "entity"), { force: true });
+    const activated = await graph.spreadingActivation(["facts/new.md"]);
+    const paths = new Set(activated.map((candidate) => candidate.path));
+    assert.ok(
+      paths.has("facts/sibling.md"),
+      "the in-place-pushed edge must remain traversable after the file is removed (no reload)",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#1904: onMemoryWritten reloads the edge cache when a peer appended (size mismatch)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-peer-"));
+  try {
+    await writeGraphEdges(memoryDir, [makeEdge("seed", "old-sibling")]);
+    const graph = new GraphIndex(memoryDir, makeGraphConfig());
+    await graph.spreadingActivation(["seed"]); // warm + size baseline
+    // A peer process appends directly to the file, bypassing this GraphIndex so
+    // its size baseline does not account for the extra bytes.
+    const peerEdge = makeEdge("facts/new.md", "facts/peer.md");
+    await appendFile(graphFilePath(memoryDir, "entity"), `${JSON.stringify(peerEdge)}\n`, "utf8");
+    // Our own append: on-disk size now exceeds baseline + our bytes → mismatch.
+    await graph.onMemoryWritten({
+      ...onWriteOpts,
+      memoryPath: "facts/new.md",
+      entitySiblings: ["facts/sibling.md"],
+    });
+    // The size mismatch must have nulled the cache; the next traversal reloads
+    // and sees BOTH the peer edge and our edge. A stale in-place push would have
+    // missed the peer edge entirely.
+    const activated = await graph.spreadingActivation(["facts/new.md"]);
+    const paths = new Set(activated.map((candidate) => candidate.path));
+    assert.ok(paths.has("facts/peer.md"), "peer-appended edge must appear after the coherence reload");
+    assert.ok(paths.has("facts/sibling.md"), "our appended edge must also appear after the reload");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#1904: graphEdgeCacheIncrementalEnabled=false nulls the edge cache on every write (legacy)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-legacy-"));
+  try {
+    await writeGraphEdges(memoryDir, [makeEdge("seed", "old-sibling")]);
+    const graph = new GraphIndex(memoryDir, { ...makeGraphConfig(), graphEdgeCacheIncrementalEnabled: false });
+    await graph.spreadingActivation(["seed"]); // warm
+    await graph.onMemoryWritten({
+      ...onWriteOpts,
+      memoryPath: "facts/new.md",
+      entitySiblings: ["facts/sibling.md"],
+    });
+    // Legacy: the cache was nulled, so the next traversal reloads from disk.
+    // Remove the file first — a nulled cache reloads nothing, proving the write
+    // did not extend a warm cache in place.
+    await rm(graphFilePath(memoryDir, "entity"), { force: true });
+    const activated = await graph.spreadingActivation(["facts/new.md"]);
+    const paths = new Set(activated.map((candidate) => candidate.path));
+    assert.ok(
+      !paths.has("facts/sibling.md"),
+      "legacy mode must null the cache on every write (nothing served after the file is removed)",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#1904: onMemoryWritten reloads when an equal-length atomic rewrite changed the inode (Codex)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-rewrite-"));
+  try {
+    // Initial edge: seed -> old-sibling. An atomic rewrite later swaps the
+    // target to "new-sibling" (also 11 chars), so the JSONL line length is
+    // unchanged — a size-only check could not detect this. The temp+rename
+    // the decay writer uses changes the inode, which the identity check MUST
+    // treat as a divergence and force a reload.
+    await writeGraphEdges(memoryDir, [makeEdge("seed", "old-sibling")]);
+    const graph = new GraphIndex(memoryDir, makeGraphConfig());
+    await graph.spreadingActivation(["seed"]); // warm + identity baseline
+    // Peer (decay-style) equal-length atomic rewrite via temp + rename.
+    const file = graphFilePath(memoryDir, "entity");
+    const rewritten = `${JSON.stringify(makeEdge("seed", "new-sibling"))}\n`;
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tmp, rewritten, "utf8");
+    await rename(tmp, file);
+    // Our own append: the inode changed (temp+rename), so the cache must null
+    // and the next traversal must reload — making the rewritten target visible.
+    await graph.onMemoryWritten({
+      ...onWriteOpts,
+      memoryPath: "facts/new.md",
+      entitySiblings: ["facts/sibling.md"],
+    });
+    const activated = await graph.spreadingActivation(["seed"]);
+    const paths = new Set(activated.map((candidate) => candidate.path));
+    assert.ok(
+      paths.has("new-sibling"),
+      "an equal-length atomic rewrite changed the inode and must force a reload so the new target appears",
+    );
+    assert.ok(
+      !paths.has("old-sibling"),
+      "the pre-rewrite target must not linger (a stale in-place push would have kept it)",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

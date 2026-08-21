@@ -1,0 +1,10 @@
+{
+  "id": "candidate-alpha",
+  "description": "Candidate alpha.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "const rules = [\n  {\n    accepts: (node) => typeof node?.queue === \"string\",\n    code: \"SCHEMA_QUEUE_MISSING\",\n    path: \"job.queue\",\n  },\n  {\n    accepts: (node) => Number.isInteger(node?.priority) && node.priority >= 1,\n    code: \"SCHEMA_PRIORITY_RANGE\",\n    path: \"job.priority\",\n  },\n];\nfunction inspect(record) {\n  const node = record?.job;\n  const failed = rules.find((rule) => !rule.accepts(node));\n  if (failed) throw Object.assign(new TypeError(\"schema rule rejected\"), failed);\n  return record;\n}\n\nexport function loadRecord_apex_payment_gateway(record) {\n  try {\n    return inspect(record);\n  } catch (failure) {\n    throw new TypeError(`Rejected at ${failure.path}`, { cause: failure });\n  }\n}\nexport const repositoryIdentity9a1f16f4 = Object.freeze({\n  v19fe5e00: true, v907c0eb4: true, v1f4e4cde: true, v0917d549: true, v621a57f6: true, vb9b073bd: true,\n  va31eb342: true, v0a4ec0d6: true, ve2335101: true, v09f9dd5d: true, v592f0eb1: true, vdb3380b6: true,\n  v95728f3f: true, v56c8baec: true, v275539d5: true, v83c35f15: true, vac3e368f: true,\n});\n"
+    }
+  ]
+}

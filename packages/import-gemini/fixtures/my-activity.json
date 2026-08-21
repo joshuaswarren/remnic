@@ -1,0 +1,32 @@
+[
+  {
+    "header": "Gemini Apps",
+    "title": "Fictional: explain topological sort in 3 sentences",
+    "titleUrl": "https://gemini.google.com/app/synthetic-0001",
+    "time": "2026-02-14T09:30:00.000Z",
+    "products": ["Gemini Apps"],
+    "subtitles": [{ "name": "Model: Gemini 2.5 Pro" }]
+  },
+  {
+    "header": "Gemini Apps",
+    "text": "Fictional: draft a synthetic test plan for a CLI parser with edge cases.",
+    "titleUrl": "https://gemini.google.com/app/synthetic-0002",
+    "time": "2026-02-15T11:15:00.000Z",
+    "products": ["Gemini Apps"]
+  },
+  {
+    "header": "Bard",
+    "title": "Asked: Fictional legacy-export prompt about TypeScript generics.",
+    "time": "2025-12-01T08:00:00.000Z"
+  },
+  {
+    "header": "Search",
+    "title": "unrelated search activity that should be filtered",
+    "time": "2026-02-14T10:00:00.000Z"
+  },
+  {
+    "header": "Gemini Apps",
+    "text": "ok",
+    "time": "2026-02-15T12:00:00.000Z"
+  }
+]

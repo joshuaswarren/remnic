@@ -1,0 +1,26 @@
+{
+  "profile": "local-lab",
+  "responder": {
+    "provider": "ollama",
+    "baseUrl": "http://127.0.0.1:11434",
+    "model": "qwen2.5-7b-32k:latest",
+    "quantization": "Q4_K_M",
+    "ctx": 32768,
+    "temperature": 0,
+    "seed": 47
+  },
+  "judge": {
+    "provider": "ollama",
+    "baseUrl": "http://127.0.0.1:11434",
+    "model": "qwen2.5-7b-32k:latest",
+    "quantization": "Q4_K_M",
+    "ctx": 32768,
+    "temperature": 0,
+    "seed": 47
+  },
+  "phases": "sequential",
+  "notes": {
+    "host": "RTX 3090 lab box (24 GB VRAM), Ollama transport",
+    "usage": "Tier-L local-lab runs and `remnic bench judge-calibrate` (the judge role is the Tier-L side of the Cohen's-kappa cross-tier calibration; the Tier-F gold judge is supplied via --judge-provider/--judge-model)."
+  }
+}

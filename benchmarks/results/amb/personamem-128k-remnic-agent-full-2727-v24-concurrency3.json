@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "agent-memory-benchmark",
+  "upstreamRepository": "https://github.com/vectorize-io/agent-memory-benchmark",
+  "externalResults": "https://raw.githubusercontent.com/vectorize-io/agent-memory-benchmark/main/external_results.json",
+  "dataset": "personamem",
+  "split": "128k",
+  "memoryProvider": "remnic",
+  "memory_provider": "remnic",
+  "mode": "agent",
+  "runName": "remnic-agent-full-2727-v24-concurrency3",
+  "run_name": "remnic-agent-full-2727-v24-concurrency3",
+  "totalQueries": 2727,
+  "total_queries": 2727,
+  "correct": 1660,
+  "wrong": 1067,
+  "accuracy": 0.6087275394206088,
+  "targetAccuracy": 0.52,
+  "targetMemory": "Gemini-1.5-Flash",
+  "targetSource": "PersonaMem Paper (arXiv:2504.14225)",
+  "sota": false,
+  "beatsTarget": true,
+  "provenanceVerified": false,
+  "answer_llm": "codex:gpt-5.5:xhigh:fast",
+  "judge_llm": "codex:gpt-5.5:xhigh:fast",
+  "rawResult": {
+    "path": "outputs-remnic-agent-official/personamem/remnic-agent-full-2727-v24-concurrency3/agent/128k.json",
+    "bytes": 44320103,
+    "sha256": "8352847add7ce15e85d522c490b920fdcf540d4901cc2058da5622829b87ab44"
+  },
+  "llm": {
+    "answerLlm": "codex:gpt-5.5:xhigh:fast",
+    "judgeLlm": "codex:gpt-5.5:xhigh:fast",
+    "answer_llm": "codex:gpt-5.5:xhigh:fast",
+    "judge_llm": "codex:gpt-5.5:xhigh:fast",
+    "codexModel": "gpt-5.5",
+    "reasoningEffort": "xhigh",
+    "serviceTier": "fast",
+    "notes": [
+      "The AMB installer and wrapper force Codex CLI for benchmark LLM calls.",
+      "The wrapper unsets GEMINI_API_KEY and GOOGLE_API_KEY before invoking AMB.",
+      "targetMemory records the public AMB baseline being beaten, not a model used in this Remnic run."
+    ]
+  },
+  "command": "REMNIC_AMB_CONCURRENCY=3 scripts/bench/run-amb-remnic.sh --amb <agent-memory-benchmark-checkout> --split 128k --mode agent --output-dir outputs-remnic-agent-official --name remnic-agent-full-2727-v24-concurrency3",
+  "verification": {
+    "command": "node scripts/bench/verify-amb-sota.mjs --result <agent-memory-benchmark-checkout>/outputs-remnic-agent-official/personamem/remnic-agent-full-2727-v24-concurrency3/agent/128k.json --min-queries 2727 --manifest-out benchmarks/results/amb/remnic-agent-full-2727-v24-concurrency3-sota-manifest.json --command \"REMNIC_AMB_CONCURRENCY=3 scripts/bench/run-amb-remnic.sh --amb <agent-memory-benchmark-checkout> --split 128k --mode agent --output-dir outputs-remnic-agent-official --name remnic-agent-full-2727-v24-concurrency3\" --amb-dir <agent-memory-benchmark-checkout>",
+    "sota": false,
+    "beatsTarget": true,
+    "status": "rejected_dirty_provenance",
+    "reason": "The original verifier manifest recorded a dirty Remnic checkout and missing AMB git provenance. Current verification rejects dirty or missing provenance before publishing a SOTA claim.",
+    "generatedManifest": "benchmarks/results/amb/remnic-agent-full-2727-v24-concurrency3-sota-manifest.json"
+  }
+}

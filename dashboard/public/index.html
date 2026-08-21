@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Remnic Graph Dashboard</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f8fb;
+        --card: #ffffff;
+        --ink: #1f2937;
+        --muted: #6b7280;
+        --line: #d0d7e2;
+        --accent: #0f766e;
+      }
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        background: radial-gradient(circle at top left, #e6f5f3, var(--bg) 55%);
+        color: var(--ink);
+      }
+      .wrap {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+      h1 {
+        margin: 0 0 16px;
+        font-size: 24px;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .pill {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 6px 10px;
+        font-size: 12px;
+        background: #fff;
+      }
+      pre {
+        margin: 0;
+        max-height: 420px;
+        overflow: auto;
+        font-size: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: #fcfdff;
+      }
+      .accent {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Remnic Graph Dashboard</h1>
+      <div class="card">
+        <div class="row">
+          <span class="pill">status: <strong id="status">loading</strong></span>
+          <span class="pill">nodes: <strong id="nodes">0</strong></span>
+          <span class="pill">edges: <strong id="edges">0</strong></span>
+          <span class="pill">clients: <strong id="clients">0</strong></span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="muted">Latest patch</div>
+        <pre id="patch">waiting for updates...</pre>
+      </div>
+      <div class="card">
+        <div class="muted">Current graph snapshot</div>
+        <pre id="graph"></pre>
+      </div>
+      <p class="muted">
+        Live updates use WebSocket diffs from <span class="accent">/api/graph</span> + patch stream.
+      </p>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+  </html>

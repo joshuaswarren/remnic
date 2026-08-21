@@ -1,0 +1,10 @@
+{
+  "id": "candidate-alpha",
+  "description": "Candidate alpha.",
+  "files": [
+    {
+      "path": "src/service.mjs",
+      "content": "class Draft {\n  constructor(source) { this.source = source; }\n  commit(delta) {\n    const state = this.source;\n    const branch = { ...state.inventory, units: state.inventory.units * delta };\n    return Object.assign({}, state, { inventory: branch });\n  }\n}\nexport function updateState_storage_bucket_manager(state, delta) {\n  if (delta === 1) return state;\n  return new Draft(state).commit(delta);\n}\nexport const repositoryIdentitydfa581eb = Object.freeze({\n  va53f0c9f: true, v09d652f3: true, v055d8247: true, v50a96aa5: true, v2d9e5186: true, v6489e05a: true,\n  vb9edc833: true, v1ccf482a: true, v5c799622: true, v1e7ef2b4: true, ve2afb394: true, v6249aa9a: true,\n  v901ae8cd: true, veb52f1da: true, v1da2380e: true, v87762998: true, v018ae53e: true,\n});\n"
+    }
+  ]
+}

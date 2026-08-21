@@ -1,0 +1,10 @@
+export type { SearchBackend, SearchResult } from "./port.js";
+export { NoopSearchBackend } from "./noop-backend.js";
+export { RemoteSearchBackend } from "./remote-backend.js";
+export { LanceDbBackend } from "./lancedb-backend.js";
+export { MeilisearchBackend } from "./meilisearch-backend.js";
+export { OramaBackend } from "./orama-backend.js";
+export { EmbedHelper } from "./embed-helper.js";
+export { scanMemoryDir } from "./document-scanner.js";
+export type { IndexableDocument } from "./document-scanner.js";
+export { createSearchBackend, createConversationSearchBackend, createConversationIndexRuntime } from "./factory.js";

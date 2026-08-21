@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "name": "remnic",
+  "description": "Remnic: Local-first AI memory with semantic search and consolidation",
+  "plugins": [
+    {
+      "name": "remnic",
+      "version": "9.3.11",
+      "description": "Persistent memory plugin for Codex CLI",
+      "repository": "joshuaswarren/remnic",
+      "installType": "github",
+      "entry": "packages/plugin-codex",
+      "configSchema": "openclaw.plugin.json"
+    }
+  ]
+}

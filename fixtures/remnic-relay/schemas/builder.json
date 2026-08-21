@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "decision_applied", "files_changed", "tests_run"],
+  "properties": {
+    "summary": { "type": "string" },
+    "decision_applied": { "type": "string" },
+    "files_changed": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "tests_run": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

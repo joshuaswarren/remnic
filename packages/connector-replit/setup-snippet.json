@@ -1,0 +1,8 @@
+{
+  "$comment": "Copy this MCP config into Replit's Integrations pane",
+  "url": "http://localhost:4318/mcp",
+  "headers": {
+    "Authorization": "Bearer {{YOUR_ENGRAM_TOKEN}}",
+    "X-Engram-Client-Id": "replit"
+  }
+}

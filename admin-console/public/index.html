@@ -1,0 +1,1265 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Remnic Admin Console</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4efe6;
+        --surface: #fbf8f2;
+        --surface-strong: #fffdf8;
+        --ink: #1b1d22;
+        --muted: #646b74;
+        --line: #d7cfc0;
+        --accent: #0f6b63;
+        --accent-ink: #e7fffb;
+        --warn: #8b3a22;
+        --ok: #22543d;
+        --shadow: 0 18px 42px rgba(40, 33, 18, 0.08);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(15, 107, 99, 0.12), transparent 34%),
+          radial-gradient(circle at top right, rgba(139, 58, 34, 0.1), transparent 28%),
+          linear-gradient(180deg, #f9f4ea 0%, var(--bg) 100%);
+      }
+      main {
+        max-width: 1440px;
+        margin: 0 auto;
+        padding: 28px 20px 48px;
+      }
+      header {
+        display: grid;
+        gap: 14px;
+        margin-bottom: 18px;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(2rem, 3vw, 3.25rem);
+        line-height: 0.95;
+        letter-spacing: -0.03em;
+      }
+      .subtitle {
+        max-width: 820px;
+        color: var(--muted);
+        font-size: 0.98rem;
+      }
+      .auth-bar,
+      .grid,
+      .subgrid {
+        display: grid;
+        gap: 16px;
+      }
+      .auth-bar {
+        grid-template-columns: 1.3fr 1fr auto;
+        align-items: center;
+      }
+      .grid {
+        grid-template-columns: 1.2fr 0.8fr;
+      }
+      .card {
+        background: linear-gradient(180deg, var(--surface-strong) 0%, var(--surface) 100%);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        box-shadow: var(--shadow);
+        padding: 18px;
+      }
+      .card h2,
+      .card h3 {
+        margin: 0 0 10px;
+        font-size: 1rem;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+      }
+      label {
+        display: grid;
+        gap: 6px;
+        font-size: 0.82rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+      }
+      input,
+      select,
+      textarea,
+      button {
+        font: inherit;
+      }
+      input,
+      select,
+      textarea {
+        width: 100%;
+        padding: 12px 14px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: #fffefb;
+        color: var(--ink);
+      }
+      input[readonly] {
+        background: #f7f2ea;
+      }
+      textarea {
+        min-height: 140px;
+        resize: vertical;
+      }
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 11px 16px;
+        background: var(--ink);
+        color: white;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #ede6d9;
+        color: var(--ink);
+      }
+      button.accent {
+        background: var(--accent);
+        color: var(--accent-ink);
+      }
+      button.warn {
+        background: var(--warn);
+      }
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+      .toolbar {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: end;
+      }
+      .toolbar > label {
+        flex: 1 1 180px;
+      }
+      .pager {
+        justify-content: space-between;
+      }
+      .list {
+        display: grid;
+        gap: 10px;
+        max-height: 460px;
+        overflow: auto;
+      }
+      .item {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px;
+        background: rgba(255, 255, 255, 0.74);
+      }
+      .item button {
+        margin-top: 10px;
+      }
+      .meta,
+      .pill-row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .pill {
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: #fff;
+        padding: 4px 9px;
+        font-size: 0.78rem;
+        color: var(--muted);
+      }
+      pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: "SF Mono", "Monaco", monospace;
+        font-size: 0.82rem;
+        line-height: 1.45;
+      }
+      .mono-box {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: #fffdf9;
+        padding: 14px;
+        max-height: 360px;
+        overflow: auto;
+      }
+      .status {
+        font-size: 0.84rem;
+        color: var(--muted);
+      }
+      .callout {
+        border: 1px dashed var(--line);
+        border-radius: 14px;
+        padding: 12px 14px;
+        background: rgba(255, 255, 255, 0.62);
+        color: var(--muted);
+        font-size: 0.88rem;
+        line-height: 1.45;
+      }
+      .status.ok {
+        color: var(--ok);
+      }
+      .status.error {
+        color: var(--warn);
+      }
+      .quality-grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin-top: 12px;
+      }
+      .quality-stat {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.74);
+        padding: 14px;
+      }
+      .quality-stat strong {
+        display: block;
+        font-size: 1.5rem;
+        line-height: 1;
+        margin-bottom: 4px;
+      }
+      .subgrid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .runtime-grid {
+        display: grid;
+        grid-template-columns: 0.9fr 1.1fr;
+        gap: 16px;
+        margin-top: 16px;
+      }
+      .runtime-stack,
+      .toggle-list {
+        display: grid;
+        gap: 10px;
+      }
+      .compact-list {
+        display: grid;
+        gap: 8px;
+        max-height: 250px;
+        overflow: auto;
+      }
+      .compact-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.74);
+        padding: 10px 12px;
+      }
+      .compact-item strong {
+        display: block;
+        font-size: 0.9rem;
+      }
+      .compact-item .status {
+        font-size: 0.78rem;
+      }
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.72);
+        padding: 10px 12px;
+      }
+      .toggle-row label {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-direction: row;
+        gap: 10px;
+        width: 100%;
+        text-transform: none;
+        letter-spacing: 0;
+        color: var(--ink);
+      }
+      .toggle-row input[type="checkbox"] {
+        width: auto;
+      }
+      /* ── Memory Graph pane ─────────────────────────────────── */
+      .graph-wrap {
+        position: relative;
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: #fffdf9;
+        overflow: hidden;
+        margin-top: 12px;
+      }
+      #graphCanvas {
+        display: block;
+        width: 100%;
+        height: 520px;
+        cursor: grab;
+        touch-action: none;
+      }
+      #graphCanvas:active {
+        cursor: grabbing;
+      }
+      #graphTooltip {
+        position: absolute;
+        top: 0;
+        left: 0;
+        pointer-events: none;
+        background: rgba(27, 29, 34, 0.88);
+        color: #fff;
+        border-radius: 9px;
+        padding: 7px 11px;
+        font-size: 0.78rem;
+        line-height: 1.5;
+        max-width: 280px;
+        white-space: pre-wrap;
+        word-break: break-all;
+        display: none;
+        z-index: 10;
+      }
+      .graph-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 8px;
+        font-size: 0.78rem;
+        color: var(--muted);
+      }
+      .graph-legend-item {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .graph-legend-swatch {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      /* ── Graph search highlight + drill-through (issue #691 PR 4/5) ── */
+      .graph-search-bar {
+        display: flex;
+        gap: 10px;
+        align-items: flex-end;
+        margin-top: 12px;
+        flex-wrap: wrap;
+      }
+      .graph-search-bar label {
+        flex: 1 1 220px;
+      }
+      .graph-node-panel {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.82);
+        padding: 16px;
+        margin-top: 12px;
+        display: none;
+      }
+      .graph-node-panel.visible {
+        display: block;
+      }
+      .graph-node-panel h3 {
+        margin: 0 0 8px;
+        font-size: 0.9rem;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .graph-node-panel-body {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr 1fr;
+      }
+      .graph-node-frontmatter {
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: #fffdf9;
+        padding: 10px;
+        font-size: 0.82rem;
+        overflow: auto;
+        max-height: 260px;
+      }
+      .graph-node-frontmatter table {
+        border-collapse: collapse;
+        width: 100%;
+      }
+      .graph-node-frontmatter td {
+        padding: 3px 6px;
+        vertical-align: top;
+      }
+      .graph-node-frontmatter td:first-child {
+        color: var(--muted);
+        white-space: nowrap;
+        font-weight: 600;
+        padding-right: 10px;
+      }
+      .graph-node-content {
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: #fffdf9;
+        padding: 10px;
+        font-size: 0.82rem;
+        line-height: 1.55;
+        overflow: auto;
+        max-height: 260px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .graph-node-edges {
+        grid-column: 1 / -1;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: #fffdf9;
+        padding: 10px;
+        font-size: 0.82rem;
+        overflow: auto;
+        max-height: 160px;
+      }
+      .graph-node-edges ul {
+        margin: 0;
+        padding-left: 18px;
+      }
+      .graph-node-edges li {
+        margin-bottom: 3px;
+        color: var(--muted);
+      }
+      .graph-node-edges li strong {
+        color: var(--ink);
+      }
+      /* ── Memory check-in deck (issue #2351) ────────────────── */
+      .checkin-card {
+        display: grid;
+        gap: 10px;
+        margin-top: 16px;
+      }
+      .checkin-headline {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 10px;
+      }
+      .checkin-count {
+        font-size: 1.3rem;
+        font-weight: 600;
+      }
+      /* Every deck control has to stay tappable at 44x44 CSS px. */
+      .deck-touch {
+        min-height: 44px;
+        min-width: 44px;
+      }
+      .deck-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: rgba(27, 29, 34, 0.52);
+      }
+      /* Both the entry card and the deck toggle the `hidden` attribute, and the
+         display:grid/flex rules above would otherwise defeat it. */
+      .checkin-card[hidden],
+      .deck-overlay[hidden],
+      .deck-overlay [hidden] {
+        display: none !important;
+      }
+      .deck-shell {
+        position: relative;
+        width: min(680px, 100%);
+        max-height: calc(100vh - 40px);
+        overflow: auto;
+        display: grid;
+        gap: 14px;
+        align-content: start;
+      }
+      .deck-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .deck-header h2 {
+        margin: 0;
+      }
+      .deck-header-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+      .deck-stage {
+        position: relative;
+        padding-bottom: 30px;
+      }
+      .deck-depth {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+      /* Shares the active card's box, then slides down far enough to leave a
+         sliver showing beneath it. scaleX only, so the bottom edge stays
+         predictable. */
+      .deck-depth-card {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: calc(100% - 30px);
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        padding-bottom: 2px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--surface);
+        overflow: hidden;
+      }
+      .deck-depth-1 {
+        transform: translateY(15px) scaleX(0.986);
+        opacity: 0.72;
+      }
+      .deck-depth-2 {
+        transform: translateY(29px) scaleX(0.968);
+        opacity: 0.44;
+      }
+      /* One legible hint is enough; a second label is just noise. */
+      .deck-depth-2 .deck-depth-label {
+        display: none;
+      }
+      .deck-depth-label {
+        max-width: 78%;
+        font-size: 0.72rem;
+        line-height: 1;
+        color: var(--muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .deck-card {
+        position: relative;
+        z-index: 2;
+        display: grid;
+        gap: 12px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: linear-gradient(180deg, var(--surface-strong) 0%, var(--surface) 100%);
+        box-shadow: var(--shadow);
+        padding: 18px;
+        transition:
+          transform var(--deck-motion-ms, 220ms) ease,
+          opacity var(--deck-motion-ms, 220ms) ease;
+      }
+      .deck-card h3 {
+        margin: 0 0 6px;
+        font-size: 0.82rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .deck-content {
+        margin: 0;
+        font-size: 1.05rem;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .deck-effects {
+        margin: 0;
+        padding-left: 18px;
+        font-size: 0.84rem;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      .deck-effects strong {
+        color: var(--ink);
+      }
+      .deck-evidence {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: #fffdf9;
+        padding: 12px;
+      }
+      .deck-evidence-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .deck-evidence-head h3 {
+        margin: 0;
+      }
+      .deck-evidence-item {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.74);
+        padding: 10px 12px;
+        font-size: 0.86rem;
+      }
+      .deck-evidence-item p {
+        margin: 8px 0 0;
+        line-height: 1.5;
+        word-break: break-word;
+      }
+      .deck-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .deck-action {
+        display: grid;
+        gap: 2px;
+        justify-items: center;
+        flex: 1 1 120px;
+        min-height: 44px;
+        min-width: 44px;
+        padding: 8px 14px;
+      }
+      .deck-action-hint {
+        font-size: 0.7rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        opacity: 0.75;
+      }
+      .deck-fix,
+      .deck-summary {
+        display: grid;
+        gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.74);
+        padding: 14px;
+      }
+      .deck-fix-preview {
+        display: grid;
+        gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: #fffdf9;
+        padding: 12px;
+      }
+      .deck-fix-warnings {
+        margin: 0;
+        padding-left: 18px;
+        font-size: 0.84rem;
+        color: var(--warn);
+      }
+      .deck-summary h3 {
+        margin: 0;
+        font-size: 1.05rem;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      .deck-summary ul {
+        margin: 0;
+        padding-left: 18px;
+        font-size: 0.9rem;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      /* Paired glyph + text so state is never carried by colour alone. */
+      .deck-notice {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.72);
+        padding: 10px 12px;
+        font-size: 0.88rem;
+        color: var(--muted);
+      }
+      .deck-notice.error {
+        border-color: var(--warn);
+        background: rgba(139, 58, 34, 0.08);
+        color: var(--warn);
+      }
+      .deck-notice-icon {
+        flex: 0 0 auto;
+        font-weight: 700;
+      }
+      /* Covers the shell without reflowing it, so the card cannot move while a
+         request is in flight. */
+      .deck-pending {
+        position: absolute;
+        inset: 0;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 18px;
+        background: rgba(251, 248, 242, 0.74);
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+      .deck-skeleton {
+        display: grid;
+        gap: 10px;
+      }
+      .deck-skeleton-line {
+        height: 14px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #efe8dc 0%, #f8f4ec 50%, #efe8dc 100%);
+        background-size: 200% 100%;
+        animation: deck-shimmer 1.2s linear infinite;
+      }
+      .deck-skeleton-line.wide {
+        height: 58px;
+        border-radius: 14px;
+      }
+      @keyframes deck-shimmer {
+        from {
+          background-position: 200% 0;
+        }
+        to {
+          background-position: -200% 0;
+        }
+      }
+      .deck-live {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+      /* Reduced motion trades the card slide for a 150 ms opacity change. */
+      .deck-overlay[data-motion="reduced"] .deck-card {
+        transition: opacity var(--deck-motion-ms, 150ms) ease;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .deck-card {
+          transition: opacity 150ms ease;
+        }
+        .deck-skeleton-line {
+          animation: none;
+        }
+      }
+      @media (max-width: 480px) {
+        .deck-overlay {
+          padding: 0;
+          align-items: stretch;
+        }
+        .deck-shell {
+          width: 100%;
+          max-height: 100vh;
+          border-width: 0;
+          border-radius: 0;
+        }
+        .deck-actions {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+      @media (max-width: 768px) {
+        .graph-node-panel-body {
+          grid-template-columns: 1fr;
+        }
+        .graph-node-edges {
+          grid-column: 1;
+        }
+      }
+      @media (max-width: 1080px) {
+        .grid,
+        .runtime-grid,
+        .subgrid,
+        .auth-bar,
+        .quality-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .timeline-card {
+        border-left: 4px solid var(--accent);
+        background: #fffefb;
+        border-radius: 10px;
+        padding: 10px 12px;
+        margin: 8px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Remnic Admin Console</h1>
+        <div class="subtitle">
+          Local operator surface for recall inspection, quality review, memory browsing, and maintenance status.
+          The UI shell is static; every data fetch and operator action still goes through the loopback bearer-token API.
+        </div>
+      </header>
+
+      <section class="card auth-bar">
+        <label>
+          Umbrel App Password / Bearer Token
+          <input
+            id="tokenInput"
+            type="password"
+            placeholder="Paste the default app password shown by Umbrel"
+            autocomplete="off"
+          />
+        </label>
+        <div class="status" id="authStatus">Waiting for token.</div>
+        <div class="toolbar">
+          <button class="accent" id="connectButton">Connect</button>
+          <button class="secondary" id="clearTokenButton">Clear</button>
+        </div>
+      </section>
+
+      <section class="card checkin-card" id="memoryCheckinCard" hidden>
+        <h2>Memory check-in</h2>
+        <div class="checkin-headline">
+          <span class="checkin-count" id="memoryCheckinCount">0 memories to confirm</span>
+          <span class="pill" id="memoryCheckinHint">A quick review</span>
+        </div>
+        <div class="status" id="memoryCheckinLine">Confirm what Remnic should trust.</div>
+        <div class="toolbar">
+          <button class="accent deck-touch" id="memoryCheckinStartButton">Start check-in</button>
+        </div>
+      </section>
+
+      <section class="runtime-grid">
+        <div class="card runtime-stack">
+          <h2>Runtime</h2>
+          <div class="status" id="runtimeStatus">Not connected.</div>
+          <label>
+            Config Path
+            <input id="runtimeConfigPath" type="text" readonly value="" placeholder="Not loaded." />
+          </label>
+          <div class="subgrid">
+            <label>
+              Model Source
+              <select id="modelSourceSelect">
+                <option value="plugin">plugin</option>
+                <option value="gateway">gateway</option>
+              </select>
+            </label>
+            <label>
+              Default Model
+              <select id="defaultModelSelect"></select>
+            </label>
+          </div>
+          <div class="subgrid">
+            <label>
+              Local LLM URL
+              <input id="localLlmUrlInput" type="text" placeholder="http://127.0.0.1:11434" />
+            </label>
+            <label>
+              Local Model
+              <input id="localLlmModelInput" type="text" placeholder="nomic-embed-text" />
+            </label>
+          </div>
+          <label>
+            Gateway Agent
+            <input id="gatewayAgentIdInput" type="text" placeholder="agent id" />
+          </label>
+          <div class="toolbar">
+            <button class="accent" id="saveRuntimeConfigButton">Save Runtime</button>
+            <button class="secondary" id="refreshRuntimeButton">Refresh</button>
+          </div>
+        </div>
+
+        <div class="card runtime-stack">
+          <h2>Harnesses</h2>
+          <div class="compact-list" id="harnessList"></div>
+          <h2>Providers</h2>
+          <div class="compact-list" id="providerList"></div>
+          <h2>Models</h2>
+          <div class="compact-list" id="modelList"></div>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top: 16px;">
+        <h2>Optional Features</h2>
+        <div class="toggle-list" id="featureToggleList"></div>
+      </section>
+
+      <div class="grid">
+        <section class="card">
+          <h2>Memory Browser</h2>
+          <div class="toolbar">
+            <label>
+              Query
+              <input id="memoryQuery" type="text" placeholder="Search id, path, tags, or content" />
+            </label>
+            <label>
+              Status
+              <select id="memoryStatus">
+                <option value="">All</option>
+                <option value="active">active</option>
+                <option value="pending_review">pending_review</option>
+                <option value="quarantined">quarantined</option>
+                <option value="rejected">rejected</option>
+                <option value="superseded">superseded</option>
+                <option value="archived">archived</option>
+              </select>
+            </label>
+            <label>
+              Category
+              <input id="memoryCategory" type="text" placeholder="fact, decision, preference..." />
+            </label>
+            <label>
+              Sort
+              <select id="memorySort">
+                <option value="updated_desc">updated desc</option>
+                <option value="updated_asc">updated asc</option>
+                <option value="created_desc">created desc</option>
+                <option value="created_asc">created asc</option>
+              </select>
+            </label>
+            <label>
+              Page Size
+              <select id="memoryPageSize">
+                <option value="10">10</option>
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+              </select>
+            </label>
+            <button id="searchMemoriesButton">Search</button>
+          </div>
+          <div class="toolbar pager" style="margin-top: 12px;">
+            <div class="status" id="memoryBrowserStatus">No search run yet.</div>
+            <div class="toolbar">
+              <button class="secondary" id="memoryPrevButton">Previous</button>
+              <div class="status" id="memoryPageStatus">Page 1</div>
+              <button class="secondary" id="memoryNextButton">Next</button>
+            </div>
+          </div>
+          <div class="list" id="memoryList"></div>
+        </section>
+
+        <section class="card">
+          <h2>Memory Detail</h2>
+          <div class="status" id="memoryDetailStatus">Select a memory from the browser or review queue.</div>
+          <div class="toolbar" style="margin-top: 12px;">
+            <label style="flex: 1;">
+              Raw Path
+              <input
+                id="memoryRawPath"
+                type="text"
+                readonly
+                value=""
+                placeholder="No memory selected."
+              />
+            </label>
+            <button class="secondary" id="copyMemoryPathButton">Copy Path</button>
+          </div>
+          <div class="pill-row" id="memoryDetailMeta" style="margin-top: 12px;"></div>
+          <div class="subgrid" style="margin-top: 12px;">
+            <div class="mono-box"><pre id="memoryContent">No memory selected.</pre></div>
+            <div class="mono-box"><pre id="memoryTimeline">Timeline will appear here.</pre></div>
+          </div>
+        </section>
+      </div>
+
+      <div class="grid" style="margin-top: 16px;">
+        <section class="card">
+          <h2>Recall Debugger</h2>
+          <div class="toolbar">
+            <label style="flex: 1;">
+              Query
+              <input id="recallQuery" type="text" placeholder="Ask what the model would recall" />
+            </label>
+            <label>
+              Session Key
+              <input id="recallSessionKey" type="text" placeholder="console-session" />
+            </label>
+            <button id="runRecallButton">Run Recall</button>
+          </div>
+          <div class="status" id="recallStatus">No recall run yet.</div>
+          <div class="subgrid" style="margin-top: 12px;">
+            <div class="mono-box"><pre id="recallContext">Injected context will appear here.</pre></div>
+            <div class="mono-box"><pre id="recallExplain">Recall snapshot will appear here.</pre></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Quality Dashboard</h2>
+          <div class="status" id="qualityStatus">Not loaded.</div>
+          <div class="quality-grid" id="qualitySummary"></div>
+          <div class="mono-box" style="margin-top: 12px;"><pre id="qualityJson">Quality summary will appear here.</pre></div>
+        </section>
+      </div>
+
+      <div class="grid" style="margin-top: 16px;">
+        <section class="card">
+          <h2>Trust Zones</h2>
+          <div class="callout">
+            Demo data is never seeded automatically. Use the explicit seed action below only when you want a buyer-facing trust-zone walkthrough dataset.
+          </div>
+          <div class="toolbar" style="margin-top: 12px;">
+            <label style="flex: 1;">
+              Query
+              <input id="trustZoneQuery" type="text" placeholder="Search summaries, tags, metadata, or entity refs" />
+            </label>
+            <label>
+              Zone
+              <select id="trustZoneZone">
+                <option value="">All</option>
+                <option value="quarantine">quarantine</option>
+                <option value="working">working</option>
+                <option value="trusted">trusted</option>
+              </select>
+            </label>
+            <label>
+              Source
+              <select id="trustZoneSourceClass">
+                <option value="">All</option>
+                <option value="tool_output">tool_output</option>
+                <option value="web_content">web_content</option>
+                <option value="subagent_trace">subagent_trace</option>
+                <option value="system_memory">system_memory</option>
+                <option value="user_input">user_input</option>
+                <option value="manual">manual</option>
+              </select>
+            </label>
+            <label>
+              Page Size
+              <select id="trustZonePageSize">
+                <option value="8">8</option>
+                <option value="12" selected>12</option>
+                <option value="20">20</option>
+              </select>
+            </label>
+            <button id="refreshTrustZonesButton">Refresh</button>
+            <button class="secondary" id="previewTrustZoneSeedButton">Preview Demo Seed</button>
+            <button class="accent" id="seedTrustZoneDemoButton">Seed Demo Dataset</button>
+          </div>
+          <div class="toolbar pager" style="margin-top: 12px;">
+            <div class="status" id="trustZoneStatus">No trust-zone data loaded yet.</div>
+            <div class="toolbar">
+              <button class="secondary" id="trustZonePrevButton">Previous</button>
+              <div class="status" id="trustZonePageStatus">Page 1</div>
+              <button class="secondary" id="trustZoneNextButton">Next</button>
+            </div>
+          </div>
+          <div class="list" id="trustZoneList"></div>
+        </section>
+
+        <section class="card">
+          <h2>Trust Zone Detail</h2>
+          <div class="status" id="trustZoneDetailStatus">Select a trust-zone record to inspect raw lineage and promotion state.</div>
+          <div class="mono-box" style="margin-top: 12px;"><pre id="trustZoneDetail">Trust-zone detail will appear here.</pre></div>
+          <div class="mono-box" style="margin-top: 12px;"><pre id="trustZoneSeedResult">Demo seed previews and promotion results will appear here.</pre></div>
+        </section>
+      </div>
+
+      <div class="grid" style="margin-top: 16px;">
+        <section class="card">
+          <h2>Review Queue</h2>
+          <div class="toolbar">
+            <button id="refreshQueueButton">Refresh Queue</button>
+          </div>
+          <div class="status" id="reviewQueueStatus">No governance review queue loaded yet.</div>
+          <div class="list" id="reviewQueueList"></div>
+        </section>
+
+        <section class="card">
+          <h2>Entity Explorer</h2>
+          <div class="toolbar">
+            <label style="flex: 1;">
+              Query
+              <input id="entityQuery" type="text" placeholder="Search entity names, aliases, or summaries" />
+            </label>
+            <button id="searchEntitiesButton">Search</button>
+          </div>
+          <div class="status" id="entityStatus">No entity search run yet.</div>
+          <div class="subgrid" style="margin-top: 12px;">
+            <div class="list" id="entityList"></div>
+            <div class="mono-box"><pre id="entityDetail">Entity detail will appear here.</pre></div>
+          </div>
+        </section>
+      </div>
+
+      <section class="card" style="margin-top: 16px;">
+        <h2>Memory Graph</h2>
+        <div class="toolbar">
+          <label>
+            Edge Limit
+            <select id="graphLimit">
+              <option value="100">100</option>
+              <option value="250" selected>250</option>
+              <option value="500">500</option>
+              <option value="1000">1000</option>
+            </select>
+          </label>
+          <label style="flex: 1;">
+            Focus Node Id
+            <input id="graphFocusNodeId" type="text" placeholder="Optional — relative memory path" />
+          </label>
+          <button id="refreshGraphButton">Refresh</button>
+          <button class="secondary" id="resetGraphViewButton">Reset View</button>
+        </div>
+        <div class="graph-search-bar">
+          <label style="flex: 1;">
+            Search Nodes
+            <input id="graphSearchQuery" type="text" placeholder="Semantic search — highlights matching nodes" />
+          </label>
+          <button id="graphSearchButton">Search</button>
+          <button class="secondary" id="graphClearSearchButton">Clear</button>
+        </div>
+        <div class="status" id="graphStatus">Graph will load after connect.</div>
+        <div class="graph-wrap">
+          <canvas id="graphCanvas"></canvas>
+          <div id="graphTooltip"></div>
+        </div>
+        <div class="graph-legend" id="graphLegend"></div>
+        <div class="graph-node-panel" id="graphNodePanel">
+          <h3 id="graphNodePanelTitle">Node Detail</h3>
+          <div class="status" id="graphNodePanelStatus"></div>
+          <div class="graph-node-panel-body">
+            <div class="graph-node-frontmatter" id="graphNodeFrontmatter">
+              <em>No node selected.</em>
+            </div>
+            <div class="graph-node-content" id="graphNodeContent">No node selected.</div>
+            <div class="graph-node-edges" id="graphNodeEdges">
+              <strong>Related edges will appear here.</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top: 16px;" id="timelinePane">
+        <h2>Timeline</h2>
+        <div class="toolbar" id="timelineNav">
+          <button class="secondary" id="timelinePrevButton">Previous</button>
+          <button class="secondary" id="timelineTodayButton">Today</button>
+          <button class="secondary" id="timelineNextButton">Next</button>
+          <label>
+            Date
+            <input id="timelineDateInput" type="date" />
+          </label>
+        </div>
+        <div class="status" id="timelineStatus">Timeline will load after connect.</div>
+        <h3 id="timelineWeekHeading">Week</h3>
+        <div class="list" id="timelineCards"></div>
+      </section>
+
+      <section class="card" style="margin-top: 16px;">
+        <h2>Maintenance</h2>
+        <div class="status" id="maintenanceStatus">Not loaded.</div>
+        <div class="mono-box"><pre id="maintenanceJson">Maintenance summary will appear here.</pre></div>
+      </section>
+    </main>
+    <div class="deck-overlay" id="reviewDeckOverlay" data-motion="full" hidden>
+      <div
+        class="card deck-shell"
+        id="reviewDeckShell"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="reviewDeckTitle"
+      >
+        <div class="deck-header">
+          <h2 id="reviewDeckTitle">Memory check-in</h2>
+          <div class="deck-header-actions">
+            <span class="pill" id="reviewDeckProgress" hidden></span>
+            <button class="secondary deck-touch" id="reviewDeckUndoButton" hidden>Undo</button>
+            <button class="secondary deck-touch" id="reviewDeckCloseButton">Close</button>
+          </div>
+        </div>
+
+        <div class="deck-notice" id="reviewDeckNotice" hidden>
+          <span class="deck-notice-icon" aria-hidden="true">!</span>
+          <span id="reviewDeckNoticeText"></span>
+          <button class="secondary deck-touch" id="reviewDeckRetryButton" hidden>Retry</button>
+        </div>
+
+        <div class="deck-skeleton" id="reviewDeckSkeleton" aria-hidden="true" hidden>
+          <div class="deck-skeleton-line" style="width: 42%;"></div>
+          <div class="deck-skeleton-line wide"></div>
+          <div class="deck-skeleton-line" style="width: 68%;"></div>
+        </div>
+
+        <div class="deck-stage" id="reviewDeckStage" hidden>
+          <div class="deck-depth" id="reviewDeckDepth" aria-hidden="true"></div>
+          <article class="deck-card" id="reviewDeckCard" tabindex="-1">
+            <div class="meta">
+              <span class="pill" id="reviewDeckReason"></span>
+              <span class="pill" id="reviewDeckSources"></span>
+              <span class="pill" id="reviewDeckRefreshed" hidden>Refreshed &mdash; this memory changed</span>
+            </div>
+            <p class="deck-content" id="reviewDeckContent"></p>
+            <div class="callout">
+              <strong>Why this is here</strong>
+              <div id="reviewDeckWhy"></div>
+            </div>
+            <div class="toolbar">
+              <button
+                class="secondary deck-touch"
+                id="reviewDeckEvidenceButton"
+                aria-expanded="false"
+                aria-controls="reviewDeckEvidence"
+              >
+                See evidence
+              </button>
+            </div>
+            <div class="deck-evidence" id="reviewDeckEvidence" hidden>
+              <div class="deck-evidence-head">
+                <h3>Evidence</h3>
+                <button class="secondary deck-touch" id="reviewDeckEvidenceCloseButton">Hide evidence</button>
+              </div>
+              <div class="list" id="reviewDeckEvidenceList" style="margin-top: 10px;"></div>
+            </div>
+            <div>
+              <h3>What each answer does</h3>
+              <ul class="deck-effects" id="reviewDeckEffects"></ul>
+            </div>
+          </article>
+        </div>
+
+        <div class="deck-actions" id="reviewDeckActions" hidden></div>
+
+        <div class="deck-fix" id="reviewDeckFix" hidden>
+          <label>
+            What should this say instead?
+            <textarea
+              id="reviewDeckFixInput"
+              rows="3"
+              placeholder="Write the corrected version"
+              style="min-height: 88px;"
+            ></textarea>
+          </label>
+          <div class="toolbar">
+            <button class="accent deck-touch" id="reviewDeckPrepareButton">Prepare correction</button>
+            <button class="secondary deck-touch" id="reviewDeckCancelFixButton">Cancel</button>
+          </div>
+          <div class="deck-fix-preview" id="reviewDeckFixPreview" hidden>
+            <h3>Correction preview</h3>
+            <pre id="reviewDeckFixPreviewText"></pre>
+            <ul class="deck-fix-warnings" id="reviewDeckFixWarnings" hidden></ul>
+            <button class="accent deck-touch" id="reviewDeckConfirmFixButton" hidden>Confirm and apply</button>
+          </div>
+          <div class="status" id="reviewDeckFixStatus"></div>
+        </div>
+
+        <div class="callout" id="reviewDeckEmpty" hidden>
+          Nothing to confirm right now. Remnic will collect more as you keep working.
+        </div>
+
+        <div class="deck-summary" id="reviewDeckSummary" hidden>
+          <h3 id="reviewDeckSummaryHeadline"></h3>
+          <ul id="reviewDeckSummaryLines"></ul>
+          <div class="toolbar">
+            <button class="accent deck-touch" id="reviewDeckDoneButton">Done</button>
+          </div>
+        </div>
+
+        <div class="deck-pending" id="reviewDeckPending" hidden>
+          <span id="reviewDeckPendingLabel">Saving your answer...</span>
+        </div>
+      </div>
+      <div class="deck-live" id="reviewDeckLive" role="status" aria-live="polite" aria-atomic="true"></div>
+    </div>
+    <script src="review-deck.js"></script>
+    <script src="timeline-pane.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

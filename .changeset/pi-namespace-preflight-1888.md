@@ -1,0 +1,8 @@
+---
+"@remnic/core": patch
+"@remnic/plugin-pi": patch
+---
+
+Client startup namespace preflight (issue #1888 part 3). The plugin-pi extension now validates, at each `session_start`, whether its configured namespace resolves as writable for its (token-resolved) principal. When it does not, every memory write would be rejected and — since the dead-letter quarantine landed — parked instead of stored; the extension now surfaces that LOUDLY (a persistent `remnic_state` error entry re-emitted each session plus an error notification) instead of leaving the silent per-call rejections invisible. It records the current state authoritatively (a `NAMESPACE_OK` entry once writable) so the latest state survives an extension/host restart, and a daemon that cannot be reached (or answers with a malformed denial) is treated as indeterminate so a flaky daemon never triggers a false alarm. The daemon health probe + circuit-breaker update now run at `session_start` regardless of `statusEnabled`, so an offline daemon is marked unreachable and the preflight and later hooks fast-skip instead of each spending a full request budget.
+
+The daemon exposes a new read-only `GET /engram/v1/namespace/writable` endpoint (operation `namespace_writable`, bearer-gated like its peers). Both the HTTP route and the batch/MCP operation handler call a new `resolveNamespacePreflight` resolver that combines the token's namespace allow-list with policy writability: a namespace-scoped token asking about a namespace outside its allow-list gets a definitive `{ ok: false }` (surfaced to the client, revealing nothing about the foreign namespace's policy) rather than a hard authorization error a client would swallow. No write, no storage access.

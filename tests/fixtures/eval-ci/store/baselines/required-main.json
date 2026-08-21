@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "snapshotId": "required-main",
+  "createdAt": "2026-03-08T13:20:00.000Z",
+  "sourceRootDir": "tests/fixtures/eval-ci/store",
+  "benchmarkCount": 1,
+  "benchmarks": [
+    {
+      "benchmarkId": "ama-memory",
+      "runId": "ama-memory-main",
+      "completedAt": "2026-03-07T08:05:00.000Z",
+      "gitRef": "main",
+      "passRate": 0.8,
+      "metrics": {
+        "actionOutcomeScore": 0.81,
+        "trustViolationRate": 0.03
+      }
+    }
+  ],
+  "notes": "Required CI baseline snapshot for benchmark delta gating.",
+  "gitRef": "main"
+}
