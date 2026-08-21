@@ -1137,6 +1137,11 @@ See [compounding.md](compounding.md).
 | `semanticDedupEnabled` | `true` | Write-time semantic similarity guard (issue #373) — embeds each candidate fact, queries the top-K nearest neighbors, and skips the write when cosine similarity ≥ `semanticDedupThreshold`. Fails open when the embedding backend is unavailable. |
 | `semanticDedupThreshold` | `0.92` | Cosine similarity threshold in `[0, 1]` above which a candidate fact is treated as a near-duplicate and skipped. |
 | `semanticDedupCandidates` | `5` | Number of nearest-neighbor candidates to compare against during the write-time semantic dedup check. |
+| `semanticMerge.enabled` | `false` | Judge-mediated merge-on-write (issue #2330). Master gate; with it off there is no lookup and no judge call — byte-identical behavior to before the feature. |
+| `semanticMerge.minSimilarity` | `0.8` | Lower bound of the merge band `[minSimilarity, semanticDedupThreshold)`. Must be **strictly below** `semanticDedupThreshold` (which owns the near-duplicate skip path above it); an equal or higher value is rejected at config parse time. |
+| `semanticMerge.maxCandidates` | `3` | Maximum in-band neighbors offered to the merge judge. **Set to `0` to disable merging entirely** — the short-circuit happens before any embedding lookup. |
+| `semanticMerge.categories` | `["fact","preference","decision","relationship","skill"]` | Memory categories eligible for merging. The episodic and immutable categories (procedure, reasoning trace, moment, correction) never merge regardless of this list. |
+| `semanticMerge.shadowMode` | `false` | Decision-only rollout mode: run the lookup and judge, log the would-merge verdict, then always create. Never mutates an existing memory. |
 | `noveltyGateEnabled` | `false` | Write-path embedding-density novelty gate (issue #1953). Off = unchanged persist path. |
 | `noveltyAddThreshold` | `0.55` | Novelty score ≥ this value is ADD (skip semantic/LLM dedup). |
 | `noveltyNoopThreshold` | `0.15` | Novelty score ≤ this value is NOOP (drop; do not write contentHashIndex). Between the two thresholds is UNCERTAIN. |
@@ -1163,6 +1168,36 @@ miss and before any storage work:
 The guard shares its decision function with the CLI `remnic dedup` tooling
 via `packages/remnic-core/src/dedup/semantic.ts`, so there is a single source
 of truth for similarity logic across read-time and write-time code paths.
+
+### Judge-mediated merge-on-write (issue #2330)
+
+Semantic dedup only ever *rejects*: a paraphrase below `semanticDedupThreshold`
+is written as a brand-new fragment, so near-duplicate variants accumulate in the
+`[0.80, 0.92)` band. `semanticMerge` closes that gap by turning an in-band match
+into a create-or-update decision:
+
+1. Query the same namespace-scoped lookup semantic dedup uses, keeping only
+   neighbors inside `[minSimilarity, semanticDedupThreshold)` that share the
+   candidate's category and are still `active`.
+2. Ask an LLM merge judge (routed like the extraction judge — local model first,
+   then the gateway fallback chain) whether the pair describes the same
+   underlying concept. `contradicts` and `create` verdicts fall through to the
+   normal write, leaving contradiction detection and temporal supersession
+   untouched.
+3. On a `merge` verdict, validate the returned target id against the candidate
+   set, snapshot the target as a page version with trigger `semantic-merge`,
+   update the memory **in place** (same id and path), stamp
+   `derived_via: merge`, bump `reinforcement_count`, append the incoming fact's
+   provenance `sources`, resync the fact-content hash index, and reindex.
+4. Any doubt — no in-band candidate, fabricated target id, empty or oversized
+   merged content, judge error or timeout, inactive target, failed snapshot or
+   update — creates the new fact exactly as before. The unsafe default is
+   always *create*, and the merged entry is recoverable from the page-version
+   snapshot.
+
+Merging requires page versioning (`versioningEnabled`): without it there is no
+pre-merge snapshot to roll back to, so the merge is refused and the fact is
+created instead.
 
 ## v8.2 Graph Recall Activation
 

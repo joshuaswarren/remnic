@@ -1942,6 +1942,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig, D
   semanticDedupEnabled: boolean;
   semanticDedupThreshold: number;
   semanticDedupCandidates: number;
+  semanticMerge: SemanticMergeConfig; // judge-mediated merge-on-write (#2330); default off
   noveltyGateEnabled: boolean;
   noveltyAddThreshold: number;
   noveltyNoopThreshold: number;
@@ -2333,6 +2334,13 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig, D
    * config parse time; invalid entries reject the config loudly.
    */
   offlineSyncExcludes: string[];
+}
+export interface SemanticMergeConfig {
+  enabled: boolean;
+  minSimilarity: number;
+  maxCandidates: number;
+  categories: readonly string[];
+  shadowMode: boolean;
 }
 
 /** Runtime configuration for the daily context briefing feature. */

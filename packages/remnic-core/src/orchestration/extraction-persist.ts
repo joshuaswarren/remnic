@@ -117,6 +117,7 @@ import {
 } from "../orchestrator.js";
 import type { HarmonicConstructionInput } from "../harmonic-construction.js";
 import { persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
+import { applySemanticMergeAtPersist } from "./semantic-merge-persist.js";
 import { ExtractionAnchorSnapshot } from "./extraction-anchor-snapshot.js";
 
 export class ExtractionPersistCoordinator {
@@ -269,7 +270,7 @@ export class ExtractionPersistCoordinator {
         memoryPathById.set(id, relPath);
       }
     };
-    let dedupedCount = 0;
+    let dedupedCount = 0, semanticMergedCount = 0;
     // Counter for facts skipped by the importance write-gate (issue #372).
     let importanceGatedCount = 0;
     // UUI2: short-circuit semantic dedup after first backend-unavailable signal
@@ -2546,19 +2547,19 @@ export class ExtractionPersistCoordinator {
             : undefined;
 
       // Normal write (no chunking)
-      // Compute the cited content once so that writeMemory and writeArtifact
-      // (when verbatim artifacts are enabled) share the same citation timestamp.
-      // Calling applyInlineCitation twice on the same raw content would produce
-      // two different timestamps, creating duplicate citations with divergent
-      // provenance metadata on the memory and artifact copies of the same fact.
-      // Pass the RAW (pre-citation) fact as `contentHashSource` so the
-      // fact-content hash index records the hash of the canonical fact text
-      // rather than the citation-annotated variant. When inline attribution is
-      // enabled, `applyInlineCitation` appends a timestamp-bearing marker, so
-      // hashing the persisted body would produce a different hash on every
-      // write and defeat cross-session dedup (see `findDuplicateExplicitCapture`
-      // in explicit-capture.ts which calls `hasFactContentHash(candidate.content)`
-      // on raw content).
+      // Cite once so memory and artifact copies share one timestamp; hash the RAW
+      // pre-citation text for facts (a per-write marker would defeat dedup).
+      // Merge-on-write (issue #2330): a judge-approved in-band match updates the
+      // existing memory in place instead of writing a new fragment.
+      const semanticMerge = await applySemanticMergeAtPersist(this.deps, {
+        storage: targetStorage, content: fact.content, category: writeCategory, sources: fact.sources,
+        skip: contradictionDetected || faithfulnessEnforceStatus === "pending_review",
+      });
+      if (semanticMerge.action === "merged") {
+        semanticMergedCount++;
+        await anchorSnapshots.replace(targetStorage, semanticMerge.targetId, writeCategory, memoryPathById);
+        continue;
+      }
       const rawPersistBody =
         writeCategory === "procedure"
           ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
@@ -2985,7 +2986,7 @@ export class ExtractionPersistCoordinator {
         );
     }
 
-    const dedupSuffix = dedupedCount > 0 ? ` (${dedupedCount} deduped)` : "";
+    const dedupSuffix = `${dedupedCount > 0 ? ` (${dedupedCount} deduped)` : ""}${semanticMergedCount > 0 ? ` (${semanticMergedCount} merged)` : ""}`;
     const gatedSuffix =
       importanceGatedCount > 0 ? ` (${importanceGatedCount} gated)` : "";
     const judgeSuffix =
@@ -2993,7 +2994,7 @@ export class ExtractionPersistCoordinator {
     const redactionSuffix =
       redactionGatedCount > 0 ? ` (${redactionGatedCount} redacted)` : "";
     log.info(
-      `persisted: ${facts.length - dedupedCount - importanceGatedCount - judgeGatedCount - redactionGatedCount} facts${dedupSuffix}${gatedSuffix}${judgeSuffix}${redactionSuffix}, ${entities.length} entities, ${questions.length} questions, ${profileUpdates.length} profile updates`,
+      `persisted: ${facts.length - dedupedCount - importanceGatedCount - judgeGatedCount - redactionGatedCount - semanticMergedCount} facts${dedupSuffix}${gatedSuffix}${judgeSuffix}${redactionSuffix}, ${entities.length} entities, ${questions.length} questions, ${profileUpdates.length} profile updates`,
     );
     if (harmonicConstructionEnabled && harmonicFactsByStorage.size > 0) {
       await persistConstructedHarmonicRecords({

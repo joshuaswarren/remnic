@@ -1,0 +1,9 @@
+---
+"@remnic/core": minor
+---
+
+Wire judge-mediated merge-on-write into the extraction write path (issue #2330). An extracted fact whose nearest neighbor scores inside `[semanticMerge.minSimilarity, semanticDedupThreshold)` is offered to an LLM merge judge; on a `merge` verdict the existing memory is updated in place — same id, same path — instead of a near-duplicate fragment being written. A merge snapshots the target as a page version under the new `semantic-merge` trigger, stamps `derived_via: merge`, bumps `reinforcement_count`, appends the incoming fact's provenance `sources`, resyncs the fact-content hash index off the same content form the write path hashes, and reindexes the target.
+
+Off by default behind the new `semanticMerge` config block (`enabled`, `minSimilarity`, `maxCandidates` — `0` disables merging before any embedding lookup — `categories`, `shadowMode`). With the gate off there is no lookup and no judge call. `semanticMerge.minSimilarity` must be strictly below `semanticDedupThreshold`, and a config that inverts the band is rejected at parse time. The near-duplicate skip path, contradiction detection, and temporal supersession are unchanged; `procedure`, `reasoning_trace`, `moment`, and `correction` never merge. Every failure mode — no in-band candidate, embedding-backend outage, fabricated target id, empty or oversized merged content, judge error, inactive target, failed snapshot or update — creates the new fact as before, each with its own telemetry reason, and `shadowMode` decides without ever mutating.
+
+Also fixes a latent page-versioning defect found while adding the trigger: `readManifest` validated snapshot triggers against a hardcoded list, so any trigger added to the `VersionTrigger` union would have produced manifests that then failed to parse. The runtime allow-list is now derived from the union.

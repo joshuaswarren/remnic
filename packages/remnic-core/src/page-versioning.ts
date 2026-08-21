@@ -46,7 +46,18 @@ export interface PageVersion {
   note?: string;
 }
 
-export type VersionTrigger = "write" | "consolidation" | "revert" | "manual";
+/**
+ * Snapshot triggers. The runtime allow-list in `readManifest` is derived from
+ * this array, so adding a trigger cannot leave a written manifest unreadable.
+ */
+export const VERSION_TRIGGERS = Object.freeze([
+  "write",
+  "consolidation",
+  "revert",
+  "manual",
+  "semantic-merge",
+] as const);
+export type VersionTrigger = (typeof VERSION_TRIGGERS)[number];
 
 export interface VersionHistory {
   pagePath: string;
@@ -158,7 +169,7 @@ async function readManifest(
         typeof version.contentHash !== "string" ||
         typeof version.sizeBytes !== "number" ||
         !Number.isFinite(version.sizeBytes) ||
-        !["write", "consolidation", "revert", "manual"].includes(String(version.trigger))
+        !(VERSION_TRIGGERS as readonly string[]).includes(String(version.trigger))
       ) {
         throw new Error(`manifest version ${index} has invalid shape`);
       }

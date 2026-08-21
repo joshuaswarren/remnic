@@ -64,6 +64,11 @@ function cosine(a: number[], b: number[]): number {
   return raw;
 }
 
+/** The semantic-dedup threshold exactly as `parseWritePathDedupConfig` resolves it. */
+export function semanticDedupThresholdFrom(cfg: Record<string, unknown>): number {
+  return clamp01(coerceNumber(cfg.semanticDedupThreshold, "semanticDedupThreshold"), 0.92);
+}
+
 export function parseWritePathDedupConfig(cfg: Record<string, unknown>): WritePathDedupConfig {
   const rawCandidates = coerceNumber(cfg.semanticDedupCandidates, "semanticDedupCandidates");
   let semanticDedupCandidates = 5;
@@ -73,10 +78,7 @@ export function parseWritePathDedupConfig(cfg: Record<string, unknown>): WritePa
   }
   return {
     semanticDedupEnabled: coerceBooleanLike(cfg.semanticDedupEnabled, "semanticDedupEnabled") !== false,
-    semanticDedupThreshold: clamp01(
-      coerceNumber(cfg.semanticDedupThreshold, "semanticDedupThreshold"),
-      0.92,
-    ),
+    semanticDedupThreshold: semanticDedupThresholdFrom(cfg),
     semanticDedupCandidates,
     noveltyGateEnabled: coerceBooleanLike(cfg.noveltyGateEnabled, "noveltyGateEnabled") === true,
     noveltyAddThreshold: clamp01(

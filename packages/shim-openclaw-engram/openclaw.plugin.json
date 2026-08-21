@@ -5533,6 +5533,51 @@
         "maximum": 1,
         "description": "Cosine similarity threshold in [0, 1]. Candidate facts whose nearest neighbor scores at or above this value are treated as duplicates and skipped."
       },
+      "semanticMerge": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Judge-mediated merge-on-write (issue #2330). When enabled, a new fact whose nearest neighbor scores inside [minSimilarity, semanticDedupThreshold) is offered to an LLM merge judge; on a merge verdict the existing memory is updated in place instead of a new fragment being written. Every failure mode falls back to creating the new fact.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master gate. Default off — with it off no lookup and no judge call happen."
+          },
+          "minSimilarity": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.8,
+            "description": "Lower bound of the merge band. Must be strictly below semanticDedupThreshold, which owns the near-duplicate skip path above it; an equal or higher value is rejected at config parse time."
+          },
+          "maxCandidates": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 3,
+            "description": "Maximum in-band neighbors offered to the merge judge. Set to 0 to disable merging entirely (short-circuits before any embedding lookup)."
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "fact",
+              "preference",
+              "decision",
+              "relationship",
+              "skill"
+            ],
+            "description": "Categories eligible for merging. procedure, reasoning_trace, moment, and correction never merge regardless of this list."
+          },
+          "shadowMode": {
+            "type": "boolean",
+            "default": false,
+            "description": "Decision-only rollout mode: run the lookup and judge, log the would-merge verdict, then always create. Never mutates an existing memory."
+          }
+        }
+      },
       "semanticRulePromotionEnabled": {
         "type": "boolean",
         "default": false,

@@ -49,6 +49,7 @@ import { parseDriftDetectionConfig } from "./preferences/drift-config.js";
 import { parseContradictionLocalizationConfig, parseContradictionScanConfig } from "./contradiction-config.js";
 import { parseGraphPathScoringConfig } from "./graph-path-scoring-config.js";
 import { parseWritePathDedupConfig } from "./dedup/novelty-gate.js";
+import { parseSemanticMergeConfig } from "./dedup/merge.js";
 import { hasLegacyConnectorEntries } from "./connectors/paths.js";
 import {
   parseQmdChunkStrategy,
@@ -3192,6 +3193,7 @@ export function parseConfig(
     // v6.0 Fact deduplication & archival
     factDeduplicationEnabled: cfg.factDeduplicationEnabled !== false,
     ...parseWritePathDedupConfig(cfg),
+    ...parseSemanticMergeConfig(cfg),
     factArchivalEnabled: cfg.factArchivalEnabled === true,
     factArchivalAgeDays:
       typeof cfg.factArchivalAgeDays === "number" ? cfg.factArchivalAgeDays : 90,
