@@ -138,6 +138,13 @@ const CHECKS = [
   {
     name: "config contract",
     argv: ["npx", "tsx", "scripts/validate-config-contract.ts"],
+    // CI's Config contract step uses the real PR base; defaulting to
+    // `origin/main` here fails closed on a missing ref, or treats entries
+    // already accepted on the true base as newly grandfathered.
+    env: {
+      REMNIC_CONFIG_CONTRACT_BASE_REF:
+        process.env.REMNIC_CONFIG_CONTRACT_BASE_REF ?? resolvedBase?.ref ?? "origin/main",
+    },
     hint: "A parsed config key is undocumented, or the parsed-keys snapshot drifted. Document the FULL key path in docs/config-reference.md, then regenerate: npx tsx scripts/config-contract/extract-parsed-keys.ts --write",
   },
   {

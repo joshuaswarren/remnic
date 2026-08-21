@@ -195,12 +195,12 @@ test("a closing keyword behind a determiner is description, not a claim (this-ru
   );
   assert.deepEqual([...issues], [2712], "only the claimed issue counts");
 
-  // Every determiner form stays descriptive.
-  for (const lead of ["the", "this", "that", "already", "was", "recently"]) {
+  // Only ARTICLES form the descriptive noun phrase.
+  for (const article of ["the", "a", "an"]) {
     assert.equal(
-      extractIssueRefs(`Follow-up to ${lead} closed #999.`).size,
+      extractIssueRefs(`Follow-up to ${article} closed #999.`).size,
       0,
-      `"${lead} closed #999" must not count as a claim`
+      `"${article} closed #999" must not count as a claim`
     );
   }
 
@@ -208,16 +208,21 @@ test("a closing keyword behind a determiner is description, not a claim (this-ru
   assert.deepEqual([...extractIssueRefs("Closes #5 and #6")].sort((a, b) => a - b), [5, 6]);
   assert.deepEqual([...extractIssueRefs("This reverts behavior; Fixes #78")], [78]);
 
-  // A determiner in front of a PRESENT-tense keyword is still a claim.
-  // Suppressing on the determiner alone undercounted these, which would let a
-  // real multi-issue PR evade the gate — worse than the false positive above.
+  // Present-tense keywords behind a demonstrative are ordinary claims.
   assert.deepEqual([...extractIssueRefs("This fixes #123")], [123]);
   assert.deepEqual([...extractIssueRefs("That resolves #456")], [456]);
   assert.deepEqual([...extractIssueRefs("This closes #7 and #8")].sort((a, b) => a - b), [7, 8]);
+
+  // So are PAST-tense keywords whose lead is the grammatical subject rather
+  // than an article — suppressing these undercounted a real multi-issue PR.
+  assert.deepEqual([...extractIssueRefs("This closed #123 and #456")].sort((a, b) => a - b), [123, 456]);
+  assert.deepEqual([...extractIssueRefs("That fixed #7")], [7]);
+  assert.deepEqual([...extractIssueRefs("Already resolved #9")], [9]);
+
   assert.deepEqual(
     [...extractIssueRefs("This fixes #10. Follow-up to the closed #11.")],
     [10],
-    "present-tense claim counts while the historical reference beside it does not"
+    "the claim counts while the article-led historical reference beside it does not"
   );
 });
 
