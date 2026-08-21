@@ -28,12 +28,13 @@ interface StubOrchestrator {
 
 function makeService(
   memoryDir: string,
-  transcriptEnabled: boolean
+  transcriptEnabled: boolean,
+  transcriptSkipChannelTypes: string[] = []
 ): { service: EngramAccessService; orchestrator: StubOrchestrator } {
   const config = {
     memoryDir,
     transcriptEnabled,
-    transcriptSkipChannelTypes: [],
+    transcriptSkipChannelTypes,
     namespacesEnabled: false,
     defaultNamespace: "default",
   } as unknown as PluginConfig;
@@ -214,4 +215,19 @@ test("observeTranscriptSessionKey scopes transcripts to the effective write name
   // A default-store write keeps the raw key (single-store deployments
   // unchanged, mirroring the LCM archive key rules).
   assert.equal(observeTranscriptSessionKey("agent:shared-key:s1", "generalist", config), "agent:shared-key:s1");
+});
+
+test("skip-listed channel types report transcriptPersisted=false, not a silent success (#2783 review)", async () => {
+  await withTempDir(async (dir) => {
+    // cron is in the default skip list; a session whose channel type
+    // resolves to it must not report persisted=true for a no-op append.
+    const { service } = makeService(dir, true, ["cron"]);
+    const response = await service.observe({
+      sessionKey: "agent:nightly:cron:job-1",
+      messages: [{ role: "user", content: "this nightly cron turn must not claim transcript persistence" }],
+    });
+    assert.equal(response.transcriptPersisted, false);
+    const entries = await readAllTranscriptLines(dir);
+    assert.equal(entries.length, 0);
+  });
 });

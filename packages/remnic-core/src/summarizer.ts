@@ -753,6 +753,7 @@ Respond with valid JSON matching this schema:
 
     const sessionKeys = new Set<string>();
     let newestEntryTimestamp: string | null = null;
+    let newestEntryTimeMs = Number.NaN;
     const collect = async (transcriptPath: string): Promise<void> => {
       try {
         const raw = await readFile(transcriptPath, "utf-8");
@@ -763,11 +764,15 @@ Respond with valid JSON matching this schema:
             if (typeof entry.sessionKey === "string" && entry.sessionKey.length > 0) {
               sessionKeys.add(entry.sessionKey);
             }
-            if (
-              typeof entry.timestamp === "string" &&
-              (newestEntryTimestamp === null || entry.timestamp > newestEntryTimestamp)
-            ) {
-              newestEntryTimestamp = entry.timestamp;
+            // Compare parsed epoch values, never strings: a malformed
+            // timestamp in a hand-edited file must not poison the staleness
+            // signal with a lexically-maximal garbage value (review).
+            if (typeof entry.timestamp === "string") {
+              const timeMs = new Date(entry.timestamp).getTime();
+              if (Number.isFinite(timeMs) && (Number.isNaN(newestEntryTimeMs) || timeMs > newestEntryTimeMs)) {
+                newestEntryTimeMs = timeMs;
+                newestEntryTimestamp = entry.timestamp;
+              }
             }
           } catch {
             // ignore malformed transcript lines

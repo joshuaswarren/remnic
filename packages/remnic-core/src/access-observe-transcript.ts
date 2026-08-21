@@ -24,6 +24,14 @@ import type { TranscriptEntry } from "./types.js";
 
 const OBSERVE_TRANSCRIPT_DEDUPE_MAX_ENTRIES = 8192;
 const OBSERVE_TRANSCRIPT_MIN_CONTENT_CHARS = 10;
+/**
+ * A fingerprint only suppresses re-POSTs inside this window. A client retry
+ * lands seconds later; a session LEGITIMATELY repeating the same >10-char
+ * turn usually does so minutes or hours later, and that repeat is a real
+ * conversation event the transcripts must keep (review: preserve legitimate
+ * repeated turns).
+ */
+const OBSERVE_TRANSCRIPT_DEDUPE_TTL_MS = 10 * 60 * 1000;
 
 /**
  * The transcript-side session identity for an observe payload (issue #2783
@@ -46,7 +54,7 @@ export function observeTranscriptSessionKey(
 
 /** Bounded FIFO of seen fingerprints; insertion order is the eviction order. */
 export class ObserveTranscriptPersister {
-  private readonly seenFingerprints = new Set<string>();
+  private readonly seenFingerprintsAt = new Map<string, number>();
 
   /**
    * Append every eligible message of an observe payload to the per-session
@@ -59,6 +67,13 @@ export class ObserveTranscriptPersister {
     messages: ReadonlyArray<{ role: string; content: string }>
   ): Promise<boolean> {
     let persisted = false;
+    // TranscriptManager.append silently no-ops for skip-listed channel types
+    // (cron by default) — check BEFORE appending so the response's
+    // transcriptPersisted stays truthful (review: report skipped appends).
+    const { channelType } = orchestrator.transcript.getTranscriptPath(sessionKey);
+    if (orchestrator.config.transcriptSkipChannelTypes.includes(channelType)) {
+      return false;
+    }
     for (const message of messages) {
       if (message.content.length < OBSERVE_TRANSCRIPT_MIN_CONTENT_CHARS) continue;
       // Fixed-size digest, never the raw content: 8192 retained entries of
@@ -67,7 +82,10 @@ export class ObserveTranscriptPersister {
       const fingerprint = createHash("sha256")
         .update(`${sessionKey}\0${message.role}\0${message.content}`)
         .digest("hex");
-      if (this.seenFingerprints.has(fingerprint)) continue;
+      const nowMs = Date.now();
+      const seenAt = this.seenFingerprintsAt.get(fingerprint);
+      if (seenAt !== undefined && nowMs - seenAt < OBSERVE_TRANSCRIPT_DEDUPE_TTL_MS) continue;
+      this.seenFingerprintsAt.delete(fingerprint);
       const entry: TranscriptEntry = {
         timestamp: new Date().toISOString(),
         role: message.role as TranscriptEntry["role"],
@@ -92,10 +110,10 @@ export class ObserveTranscriptPersister {
   }
 
   private remember(fingerprint: string): void {
-    this.seenFingerprints.add(fingerprint);
-    if (this.seenFingerprints.size > OBSERVE_TRANSCRIPT_DEDUPE_MAX_ENTRIES) {
-      const oldest = this.seenFingerprints.keys().next().value;
-      if (typeof oldest === "string") this.seenFingerprints.delete(oldest);
+    this.seenFingerprintsAt.set(fingerprint, Date.now());
+    if (this.seenFingerprintsAt.size > OBSERVE_TRANSCRIPT_DEDUPE_MAX_ENTRIES) {
+      const oldest = this.seenFingerprintsAt.keys().next().value;
+      if (typeof oldest === "string") this.seenFingerprintsAt.delete(oldest);
     }
   }
 }
