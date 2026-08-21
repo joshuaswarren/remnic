@@ -2569,7 +2569,30 @@ test("parseConfig forwards activity source settings", () => {
     minConfidence: 0.7,
     minImportance: "normal",
     maxMemoriesPerDay: 0,
-    timeline: { enabled: false, journal: { enabled: false, source: "file" }, qa: { enabled: false, maxRangeDays: 31 } },
+    timeline: {
+      enabled: false,
+      journal: { enabled: false, source: "file" },
+      qa: { enabled: false, maxRangeDays: 31 },
+      vault: {
+        enabled: false,
+        vaultPath: "",
+        dailyNotePath: "{yyyy}-{MM}-{dd}.md",
+        weeklyNotePath: "",
+        createMissingNotes: false,
+        noteTemplate: "",
+        sectionStrategy: "markers",
+        publish: {
+          timeline: { enabled: true, target: "daily", section: "Timeline" },
+          standup: { enabled: false, target: "daily", section: "Standup" },
+          weekly: { enabled: false, target: "weekly", section: "Weekly Review" },
+          locations: { enabled: false, target: "daily", section: "Locations" },
+        },
+        insertUnderHeading: "",
+        wikilinks: { places: false, placesFolder: "Places" },
+        properties: { mode: "off", prefix: "remnic_" },
+        autoPublish: true,
+      },
+    },
   });
 });
 
