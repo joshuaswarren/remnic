@@ -381,6 +381,14 @@ async function harness(
     targetFaithfulness?: { verdict: "entailed" | "contradicted" | "unsupported" | "unchecked" | "skipped_no_span" };
     /** Stamp `sourceConnector` on the target's frontmatter (finding D). */
     targetSourceConnector?: string;
+    /** Stamp `valid_at` on the target's frontmatter (round N+2 A). */
+    targetValidAt?: string;
+    /** Stamp `invalid_at` on the target's frontmatter (round N+2 A). */
+    targetInvalidAt?: string;
+    /** Stamp `memoryKind` on the target's frontmatter (round N+2 B). */
+    targetMemoryKind?: MemoryFrontmatter["memoryKind"];
+    /** Top-level parseConfig overrides (citation enablement, round N+2 C). */
+    topLevelConfig?: Record<string, unknown>;
     lookupHits?: SemanticDedupHit[];
     mutateOnWrite?: string;
     /**
@@ -416,6 +424,9 @@ async function harness(
       : {}),
     ...(overrides.targetFaithfulness ? { faithfulness: overrides.targetFaithfulness } : {}),
     ...(overrides.targetSourceConnector ? { sourceConnector: overrides.targetSourceConnector } : {}),
+    ...(overrides.targetValidAt ? { valid_at: overrides.targetValidAt } : {}),
+    ...(overrides.targetInvalidAt ? { invalid_at: overrides.targetInvalidAt } : {}),
+    ...(overrides.targetMemoryKind ? { memoryKind: overrides.targetMemoryKind } : {}),
     sources: [TARGET_SOURCE],
   } as unknown as MemoryFrontmatter;
   await writeFile(targetPath, `---\nid: fact-target\ncategory: fact\n---\n\n${EXISTING}\n`, "utf8");
@@ -508,6 +519,7 @@ async function harness(
   const config = parseConfig({
     memoryDir: dir,
     versioningEnabled: true,
+    ...(overrides.topLevelConfig ?? {}),
     semanticMerge: { enabled: true, ...(overrides.config ?? {}) },
   }) as PluginConfig;
 
@@ -1766,5 +1778,214 @@ test("parseSemanticMergeConfig: unknown or never-mergeable categories are reject
       semanticMerge: { categories: [...MERGEABLE_MEMORY_CATEGORIES, "rule"] },
     }).semanticMerge.categories,
     [...MERGEABLE_MEMORY_CATEGORIES, "rule"],
+  );
+});
+
+// ── Round N+2: validity bounds, memoryKind parity, raw hash, strict config ───
+
+test("applySemanticMergeAtPersist: a target with invalid_at never takes unbounded claims (round N+2 A)", async () => {
+  // inferMemoryStatus ignores temporal validity, so this target is still
+  // lifecycle-active — only the parity gate stands between the fresh claim
+  // and isValidityExpiredNow removing the merged body from normal recall.
+  const h = await harness({ targetInvalidAt: "2026-08-01T00:00:00.000Z" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: {},
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "created", reason: "metadata_unpreservable" });
+  assert.deepEqual(h.calls.contentUpdates, []);
+  assert.deepEqual(h.calls.frontmatterPatches, []);
+
+  // A valid_at the incoming fact does not carry is equally unmergable: the
+  // merged body would silently inherit the target's bound.
+  const bounded = await harness({ targetValidAt: "2026-08-01T00:00:00.000Z" });
+  const boundedOutcome = await applySemanticMergeAtPersist(bounded.deps, {
+    storage: bounded.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: {},
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(boundedOutcome, { action: "created", reason: "metadata_unpreservable" });
+  assert.deepEqual(bounded.calls.contentUpdates, []);
+});
+
+test("applySemanticMergeAtPersist: a bounded-compatible pair still merges (round N+2 A)", async () => {
+  const VALID = "2026-08-01T00:00:00.000Z";
+  const h = await harness({ targetValidAt: VALID });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { validAt: VALID },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+});
+
+test("applySemanticMergeAtPersist: mismatched memoryKind bypasses to the create path (round N+2 B)", async () => {
+  // A time-specific (episode) fact into a note target: the merged record
+  // would keep `note`, so the incoming claims never reach the episode cache
+  // or the episode-only verification/promotion paths. The refusal is the
+  // documented rule — episode-cache membership follows the record's kind,
+  // and the create path stamps the kind it computed.
+  const episode = await harness({ targetMemoryKind: "note" });
+  const episodeOutcome = await applySemanticMergeAtPersist(episode.deps, {
+    storage: episode.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { memoryKind: "episode" },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(episodeOutcome, { action: "created", reason: "metadata_unpreservable" });
+  assert.deepEqual(episode.calls.contentUpdates, []);
+  assert.deepEqual(episode.calls.frontmatterPatches, []);
+
+  // The reverse: a stable note into an episode target would wrongly expose
+  // the merged claims through the episode-only paths.
+  const note = await harness({ targetMemoryKind: "episode" });
+  const noteOutcome = await applySemanticMergeAtPersist(note.deps, {
+    storage: note.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { memoryKind: "note" },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(noteOutcome, { action: "created", reason: "metadata_unpreservable" });
+  assert.deepEqual(note.calls.contentUpdates, []);
+
+  // A kinded fact into an unkinded legacy target also bypasses: the merged
+  // record would carry no kind for claims the classifier did see.
+  const legacy = await harness();
+  const legacyOutcome = await applySemanticMergeAtPersist(legacy.deps, {
+    storage: legacy.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { memoryKind: "note" },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(legacyOutcome, { action: "created", reason: "metadata_unpreservable" });
+});
+
+test("applySemanticMergeAtPersist: equal kinds and classification-off still merge (round N+2 B)", async () => {
+  const equal = await harness({ targetMemoryKind: "note" });
+  const equalOutcome = await applySemanticMergeAtPersist(equal.deps, {
+    storage: equal.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { memoryKind: "note" },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(equalOutcome.action, "merged");
+
+  // episodeNoteMode off: the incoming fact carries no kind, no episode path
+  // consults the field, and a kinded target keeps merging.
+  const off = await harness({ targetMemoryKind: "note" });
+  const offOutcome = await applySemanticMergeAtPersist(off.deps, {
+    storage: off.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: {},
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(offOutcome.action, "merged");
+});
+
+test("applySemanticMergeAtPersist: a cited merged body hashes as its raw pre-citation form (round N+2 C)", async () => {
+  const CITED_MERGED = `${MERGED} [Source: agent=test-agent, session=project/example/1, ts=2026-08-20T00:00:00Z]`;
+  const h = await harness({ topLevelConfig: { inlineSourceAttributionEnabled: true } });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: async () => ({
+      decision: "merge",
+      targetId: "fact-target",
+      mergedContent: CITED_MERGED,
+      reason: "same cadence, citation retained from the stored target",
+    }),
+  });
+  assert.equal(outcome.action, "merged");
+  const stamped = h.calls.frontmatterPatches.at(-1)?.patch.contentHash;
+  // The ordinary write path hashes sanitizeMemoryContent(contentHashSource)
+  // — the raw fact body BEFORE any citation is attached (storage.ts).
+  const ordinaryWriteHash = ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text);
+  const citedFormHash = ContentHashIndex.computeHash(sanitizeMemoryContent(CITED_MERGED).text);
+  assert.equal(stamped, ordinaryWriteHash);
+  assert.notEqual(stamped, citedFormHash);
+});
+
+test("applySemanticMergeAtPersist: real storage dedups the raw equivalent of a cited merge (round N+2 C)", async () => {
+  const CITED_MERGED = `${MERGED} [Source: agent=test-agent, session=project/example/1, ts=2026-08-20T00:00:00Z]`;
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-cited-"));
+  const storage = new StorageManager(dir);
+  await storage.ensureDirectories();
+  const created = await storage.writeMemory("fact", EXISTING, { source: "test" });
+  const deps = {
+    config: parseConfig({
+      memoryDir: dir,
+      versioningEnabled: true,
+      inlineSourceAttributionEnabled: true,
+      semanticMerge: { enabled: true },
+    }),
+    getLocalLlm: () => null,
+    semanticDedupLookup: async () => [{ id: created.id, score: 0.85 }],
+    indexPersistedMemory: async () => {},
+  } as unknown as ExtractionPersistDeps;
+  const outcome = await applySemanticMergeAtPersist(deps, {
+    storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: async () => ({
+      decision: "merge",
+      targetId: created.id,
+      mergedContent: CITED_MERGED,
+      reason: "same cadence, citation retained",
+    }),
+  });
+  assert.equal(outcome.action, "merged");
+  // The raw-body identity is registered, so the equivalent raw fact dedups
+  // instead of fragmenting; the cited form is NOT a separate identity.
+  assert.equal(await storage.hasFactContentHash(MERGED), true);
+  assert.equal(await storage.hasFactContentHash(CITED_MERGED), false);
+});
+
+test("parseSemanticMergeConfig: present-but-unparseable maxCandidates throws; absent still defaults (round N+2 D)", () => {
+  for (const bad of [
+    "abc",
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    { count: 3 },
+    null,
+  ]) {
+    assert.throws(
+      () => parseSemanticMergeConfig({ semanticMerge: { enabled: true, maxCandidates: bad } }),
+      /semanticMerge\.maxCandidates must be an integer >= 0/,
+      String(bad),
+    );
+  }
+  // Only an absent key takes the default; an unparseable value under
+  // enabled: true must not silently arm judge lookups at 3.
+  assert.equal(
+    parseSemanticMergeConfig({ semanticMerge: {} }).semanticMerge.maxCandidates,
+    DEFAULT_SEMANTIC_MERGE_CANDIDATES,
+  );
+  assert.equal(
+    parseSemanticMergeConfig({ semanticMerge: { maxCandidates: "12" } }).semanticMerge.maxCandidates,
+    12,
   );
 });

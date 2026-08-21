@@ -43,6 +43,11 @@ import { confidenceTier } from "../types.js";
 import { REFUSED_MERGE_CATEGORIES } from "../dedup/merge-on-write.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import {
+  hasCitationForTemplate,
+  stripCitationForTemplate,
+} from "../source-attribution.js";
+import {
+  resolvePipelineProcessingCapabilities,
   resolvePresentationCapabilities,
   resolveRecallAuxiliaryCapabilities,
 } from "../capabilities.js";
@@ -276,6 +281,18 @@ export interface ApplySemanticMergeOptions {
      * the target's effective one bypasses the merge.
      */
     faithfulness?: FaithfulnessFrontmatter;
+    /**
+     * Episode/note classification the write path would stamp when
+     * `episodeNoteMode` is on (round N+2, finding B). The merge patch has
+     * no `memoryKind` carrier, so the merged record keeps the target's
+     * kind — the classification that drives episode-cache membership and
+     * the episode-only verification/promotion paths. A computed incoming
+     * kind that differs from the target's committed kind (including a
+     * kinded fact into an unkinded legacy target) bypasses the merge.
+     * Undefined means classification is off and no episode path consults
+     * the field, so those merges keep passing.
+     */
+    memoryKind?: MemoryFrontmatter["memoryKind"];
   };
   /**
    * Navigation links the caller suggested for the incoming fact (finding B).
@@ -326,9 +343,12 @@ const PROVENANCE_STRENGTH_RANK: Record<string, number> = {
  *    re-verified active), provenance (only when downgraded to the
  *    least-trusted side, see below).
  *  - equality-required (bypass on mismatch): category (also enforced at
- *    candidate resolution), entityRef, validAt, subject (effective),
- *    sourceConnector (against the COLD-AWARE target snapshot, finding D),
- *    faithfulness verdict (effective, finding C).
+ *    candidate resolution), entityRef, effective validity bounds — both
+ *    sides unbounded, or an incoming validAt identical to the target's
+ *    valid_at; a target carrying invalid_at never merges (round N+2 A) —
+ *    subject (effective), memoryKind when the incoming fact carries a
+ *    computed kind (round N+2 B), sourceConnector (against the COLD-AWARE
+ *    target snapshot, finding D), faithfulness verdict (effective, finding C).
  *  - monotone-preservable (bypass when the incoming side exceeds what the
  *    target retains): tags (target must be a superset), importance score
  *    (incoming may not exceed), confidence score (incoming may not exceed;
@@ -388,6 +408,22 @@ export function createPathMergeParity(input: {
   }
   if (md?.validAt !== undefined && md.validAt !== target.frontmatter.valid_at) {
     return { ok: false, field: "validAt" };
+  }
+  // Round N+2 (A) — effective validity bounds. The merged body inherits the
+  // TARGET's valid_at/invalid_at (the patch has no carrier for either), and
+  // inferMemoryStatus ignores temporal validity, so a lifecycle-active
+  // target with a past invalid_at takes the fresh claims out of normal
+  // recall the moment they merge in (isValidityExpiredNow reads the bound).
+  // Refuse instead: a target carrying invalid_at never merges (a non-
+  // bi-temporal incoming fact cannot carry one — bi-temporal facts already
+  // bypass above), and a target carrying valid_at merges only with an
+  // incoming fact carrying the same bound via the equality check above.
+  // Both-unbounded pairs keep merging.
+  if (target.frontmatter.invalid_at !== undefined) {
+    return { ok: false, field: "validity_bounds" };
+  }
+  if (target.frontmatter.valid_at !== undefined && md?.validAt === undefined) {
+    return { ok: false, field: "validity_bounds" };
   }
   const targetTags = new Set(target.frontmatter.tags ?? []);
   if ((md?.tags ?? []).some((tag) => !targetTags.has(tag))) {
@@ -465,6 +501,11 @@ export function createPathMergeParity(input: {
   if ((md?.subject ?? "user") !== (target.frontmatter.subject ?? "user")) {
     return { ok: false, field: "subject" };
   }
+  // Round N+2 (B) — memoryKind parity. See the field doc on
+  // ApplySemanticMergeOptions.incomingMetadata.memoryKind.
+  if (md?.memoryKind !== undefined && md.memoryKind !== target.frontmatter.memoryKind) {
+    return { ok: false, field: "memoryKind" };
+  }
   // Origin: the merged body renders under the TARGET's origin at recall, so
   // an UNTRUSTED incoming origin (per the deployment's untrustedOrigins)
   // merging into a TRUSTED target would hand injected text unfenced,
@@ -500,6 +541,27 @@ export function createPathMergeParity(input: {
     ...(confidenceFloor !== undefined ? { confidenceFloor } : {}),
   };
 }
+/**
+ * Round N+2 (C) — the canonical RAW pre-citation merged body for hashing.
+ * The judge composes mergedContent from the stored target body, which
+ * carries an appended citation marker when inline source attribution is
+ * enabled; the ordinary write path hashes `contentHashSource` — the raw
+ * fact text BEFORE any citation is attached. Hashing the cited body would
+ * give the merged record a different identity than the equivalent raw
+ * write (checklist #13), so the configured citation form is stripped
+ * first, exactly like the write path's `rawChunkedContent`
+ * canonicalization.
+ */
+function rawPreCitationMergedBody(deps: ExtractionPersistDeps, mergedContent: string): string {
+  if (resolvePipelineProcessingCapabilities(deps.config).inlineSourceAttribution !== true) {
+    return mergedContent;
+  }
+  const template = deps.config.inlineSourceAttributionFormat;
+  return hasCitationForTemplate(mergedContent, template)
+    ? stripCitationForTemplate(mergedContent, template)
+    : mergedContent;
+}
+
 function versioningConfigFrom(deps: ExtractionPersistDeps): VersioningConfig {
   return {
     enabled: resolveRecallAuxiliaryCapabilities(deps.config).versioning,
@@ -770,11 +832,15 @@ export async function applySemanticMergeAtPersist(
     // Item B — `updateMemoryIfUnchanged` keeps the target's old
     // `frontmatter.contentHash`, so the patch must restamp the identity the
     // write path would register: the hash of the SAME canonical form normal
-    // persistence hashes (sanitized raw pre-citation content), never a cited
-    // variant. Facts only, mirroring `contentHashSource` on the write path.
+    // persistence hashes — the sanitized RAW pre-citation body, with the
+    // configured citation form stripped off the judge-composed merged text
+    // first (round N+2 C). Facts only, mirroring `contentHashSource` on the
+    // write path.
     const mergedFactHash =
       options.category === "fact"
-        ? ContentHashIndex.computeHash(sanitizeMemoryContent(decision.mergedContent).text)
+        ? ContentHashIndex.computeHash(
+            sanitizeMemoryContent(rawPreCitationMergedBody(deps, decision.mergedContent)).text,
+          )
         : undefined;
     // Finding B — the incoming fact's suggested navigation links attach to
     // the target here, in the same conditional patch (the fact is never

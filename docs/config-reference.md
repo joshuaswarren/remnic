@@ -1166,7 +1166,7 @@ See [compounding.md](compounding.md).
 | `semanticMerge` | — | Must be an object when present; a present non-object value (`semanticMerge: true`, `"enabled"`, an array, `null`) is rejected at parse time. Only an absent block falls back to the defaults below. |
 | `semanticMerge.enabled` | `false` | Judge-mediated merge-on-write (issue #2330). Master gate; with it off there is no lookup and no judge call — byte-identical behavior to before the feature. |
 | `semanticMerge.minSimilarity` | `0.8` | Lower bound of the merge band `[minSimilarity, semanticDedupThreshold)`. Must be **strictly below** `semanticDedupThreshold` (which owns the near-duplicate skip path above it); an equal or higher value is rejected at config parse time whenever merging is enabled or this key is set explicitly. A pre-existing config that lowered `semanticDedupThreshold` to at or below `0.8` and never configured `semanticMerge` keeps starting — the disabled feature performs no band lookup. |
-| `semanticMerge.maxCandidates` | `3` | Maximum in-band neighbors offered to the merge judge. Must be an **integer ≥ 0** — non-integer values (`0.5`, `3.7`) are rejected at parse time rather than floored. **Set to `0` to disable merging entirely** — the short-circuit happens before any embedding lookup. |
+| `semanticMerge.maxCandidates` | `3` | Maximum in-band neighbors offered to the merge judge. Must be an **integer ≥ 0** — non-integer values (`0.5`, `3.7`) are rejected at parse time rather than floored, and a **present-but-unparseable** value (`"abc"`, an object, `null`, `NaN`, `Infinity`) is rejected too instead of silently falling back to the default: only an absent key means `3`. **Set to `0` to disable merging entirely** — the short-circuit happens before any embedding lookup. |
 | `semanticMerge.categories` | `["fact","preference","decision","relationship","skill"]` | Memory categories eligible for merging; must be an array of mergeable category names — every entry must be one of `fact, preference, entity, decision, relationship, principle, commitment, skill, rule`. Anything else (a malformed array, an unknown entry such as `facts`, or an episodic/immutable category) is rejected at parse time with the valid list, never silently replaced with the defaults — an unknown entry would silently disable merging for every category because no extracted memory can match it. The episodic and immutable categories (procedure, reasoning trace, moment, correction) never merge regardless of this list and cannot be listed. |
 | `semanticMerge.shadowMode` | `false` | Decision-only rollout mode: run the lookup and judge, log the would-merge verdict, then always create. Never mutates an existing memory. |
 | `noveltyGateEnabled` | `false` | Write-path embedding-density novelty gate (issue #1953). Off = unchanged persist path. |
@@ -1221,8 +1221,11 @@ into a create-or-update decision:
    then update the memory **in place** (same id and path) with a
    compare-and-swap against the exact body the judge was shown, then stamp
    `derived_via: merge`, bump `reinforcement_count`, restamp `contentHash`
-   from the same canonical (sanitized raw pre-citation) form the normal write
-   path hashes, and append the incoming fact's provenance `sources` through
+   from the same canonical form the normal write path hashes — the sanitized
+   RAW body with the configured citation form stripped off the judge-composed
+   merged text first, so a merged record's identity equals the ordinary write
+   of the equivalent raw fact and exact dedup never fragments — and append
+   the incoming fact's provenance `sources` through
    the conditional frontmatter API — a second compare-and-swap, so provenance
    can only ever land on the merged body this run committed — resync the
    fact-content hash index, reindex, and, when verbatim artifacts are enabled
@@ -1236,13 +1239,25 @@ into a create-or-update decision:
    create path would have stored for that fact alone.
 4. A merge carries only content, category, sources, and connector. A fact
    that also carries extraction metadata the merge cannot preserve —
-   structured attributes, an entity ref, bi-temporal bounds, tags the target
-   lacks, a higher importance, stronger provenance, a subject classification
+   structured attributes, an entity ref, bi-temporal bounds, effective
+   validity bounds the incoming fact does not carry identically (the merged
+   body inherits the target's `valid_at`/`invalid_at`, so a target with
+   `invalid_at` never merges and a target with `valid_at` merges only with an
+   incoming fact carrying the same bound — otherwise a fresh unbounded claim
+   would inherit an expired bound and drop out of normal recall the moment it
+   merges), tags the target lacks, a higher importance, stronger provenance, a
+   subject classification
    whose effective value (absent = the least-privileged `user`, the same
    default the subject guard applies) differs from the target's effective
    subject (so an unclassified fact extracted with classification disabled is
    never merged into an `agent`-labeled memory that reinforcement could then
-   promote), a `toolScoped: true` classification the target lacks (a
+   promote), a computed episode/note `memoryKind` that differs from the
+   target's committed kind (the merged record keeps the target's kind — the
+   classification that drives episode-cache membership and the episode-only
+   verification and promotion paths — so a time-specific fact is never filed
+   as a note and a stable note never rides the episode-only paths; a fact
+   extracted with classification disabled carries no kind and still merges), a
+   `toolScoped: true` classification the target lacks (a
    tool-scoped fact never widens into an unscoped target; an already-scoped
    target keeps its stricter flag), or an untrusted authority origin (per
    `untrustedOrigins`) offered to a trusted-origin target (the merged body

@@ -257,9 +257,10 @@ function describeValue(value: unknown): string {
  * parse-time rejection of an empty merge band (`minSimilarity` must be
  * strictly below the semantic-dedup threshold that owns the band's top).
  * Invalid input is rejected, never silently defaulted or reinterpreted: a
- * present block that is not an object, a non-integer `maxCandidates`, or a
- * malformed `categories` array each throw (only an absent block means
- * "use the defaults").
+ * present block that is not an object, an unparseable or non-integer
+ * `maxCandidates` ("abc", an object, NaN, or infinity), or a malformed
+ * `categories` array each throw (only an absent key means "use the
+ * defaults").
  *
  * The band check applies only when it can describe a real misconfiguration:
  * merging is enabled, or `minSimilarity` was set explicitly. A deployment
@@ -296,10 +297,22 @@ export function parseSemanticMergeConfig(
     raw.minSimilarity === undefined
       ? DEFAULT_SEMANTIC_MERGE_MIN
       : parseMinMergeScore(raw.minSimilarity);
-  const rawCandidates = coerceNumber(raw.maxCandidates, "semanticMerge.maxCandidates");
-  if (rawCandidates !== undefined && (!Number.isInteger(rawCandidates) || rawCandidates < 0)) {
+  // Round N+2 (D) — distinguish an ABSENT key from a present-but-unparseable
+  // value (#1/#39/#45): coerceNumber returns undefined for "abc", objects,
+  // NaN, and ±Infinity, and an undefined result here must never fall back to
+  // the default — that would silently enable judge lookups under an invalid
+  // config. Only an absent key means "use the default".
+  const rawCandidatesValue = raw.maxCandidates;
+  const rawCandidates =
+    rawCandidatesValue === undefined
+      ? undefined
+      : coerceNumber(rawCandidatesValue, "semanticMerge.maxCandidates");
+  if (
+    rawCandidatesValue !== undefined &&
+    (rawCandidates === undefined || !Number.isInteger(rawCandidates) || rawCandidates < 0)
+  ) {
     throw new Error(
-      `semanticMerge.maxCandidates must be an integer >= 0 (got ${describeValue(raw.maxCandidates)}). Set 0 to disable merging entirely.`,
+      `semanticMerge.maxCandidates must be an integer >= 0 (got ${describeValue(rawCandidatesValue)}). Remove the key to use the default (${DEFAULT_SEMANTIC_MERGE_CANDIDATES}) or set 0 to disable merging entirely.`,
     );
   }
   const maxCandidates =
