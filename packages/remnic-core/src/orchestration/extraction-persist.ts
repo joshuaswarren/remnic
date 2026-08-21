@@ -2552,7 +2552,7 @@ export class ExtractionPersistCoordinator {
       // Merge-on-write (issue #2330): a judge-approved in-band match updates the
       // existing memory in place instead of writing a new fragment.
       const semanticMerge = await applySemanticMergeAtPersist(this.deps, {
-        storage: targetStorage, content: fact.content, category: writeCategory, sources: fact.sources,
+        storage: targetStorage, content: fact.content, category: writeCategory, sources: fact.sources, sourceConnector: extractionSourceConnector,
         skip: contradictionDetected || faithfulnessEnforceStatus === "pending_review",
       });
       if (semanticMerge.action === "merged") {

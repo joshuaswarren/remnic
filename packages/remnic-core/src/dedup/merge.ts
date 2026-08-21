@@ -19,6 +19,7 @@ import { semanticDedupThresholdFrom } from "./novelty-gate.js";
 import { parseMinMergeScore } from "./merge-min-score.js";
 import { checkMergedContent } from "./merge-content.js";
 import type { SemanticDedupHit, SemanticDedupLookup } from "./semantic.js";
+import { connectorMatchesScope, normalizeConnectorScope } from "./connector-scope.js";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -68,7 +69,20 @@ export type MergeCreateReason =
 
 export type MergeDecision =
   | { action: "create"; reason: MergeCreateReason }
-  | { action: "merge"; targetId: string; mergedContent: string; reason: "judge_merge" };
+  | {
+      action: "merge";
+      targetId: string;
+      mergedContent: string;
+      /**
+       * The target body the judge actually merged. The persist side must
+       * compare it against the target it is about to write and fall back to
+       * create when it differs: in a multi-writer deployment another
+       * extraction can update the target between this decision and the write,
+       * and `mergedContent` was computed from the older body.
+       */
+      targetContent: string;
+      reason: "judge_merge";
+    };
 
 export interface DecideSemanticMergeOptions {
   content: string;
@@ -79,6 +93,14 @@ export interface DecideSemanticMergeOptions {
   /** Upper bound of the merge band: the semantic-dedup threshold. */
   dedupThreshold: number;
   resolveCandidate: MergeCandidateResolver;
+  /**
+   * Provenance connector of the INCOMING fact. A provenance-bearing fact may
+   * only merge into a neighbor from the same connector — otherwise the merge
+   * rewrites another connector's memory while its `sourceConnector`
+   * frontmatter still identifies that connector. Same shared scope contract
+   * the novelty and semantic-dedup gates apply (`connector-scope.ts`).
+   */
+  sourceConnector?: string;
 }
 
 // ── Decision function ─────────────────────────────────────────────────────────
@@ -114,6 +136,12 @@ export async function decideSemanticMerge(
     return { action: "create", reason: "no_candidates" };
   }
 
+  // Shared connector scope (`connector-scope.ts`): a provenance-bearing fact
+  // may only merge into a neighbor from the SAME connector. Without this the
+  // judge can rewrite connector A's memory with connector B's claim while A's
+  // `sourceConnector` frontmatter still identifies A — the same provenance
+  // corruption the novelty and semantic-dedup gates already refuse.
+  const scope = normalizeConnectorScope(options.sourceConnector);
   const candidates: MergeCandidate[] = [];
   for (const hit of hits) {
     if (
@@ -130,6 +158,7 @@ export async function decideSemanticMerge(
     if (!(hit.score >= config.minSimilarity && hit.score < options.dedupThreshold)) {
       continue;
     }
+    if (!connectorMatchesScope(hit.sourceConnector, scope)) continue;
     const meta = await options.resolveCandidate(hit.id);
     if (!meta) continue;
     if (meta.category !== options.category) continue;
@@ -179,6 +208,7 @@ export async function decideSemanticMerge(
     action: "merge",
     targetId: target.memoryId,
     mergedContent: content.content,
+    targetContent: target.content,
     reason: "judge_merge",
   };
 }
@@ -211,6 +241,13 @@ function describeValue(value: unknown): string {
  * string coercion for numbers ("0" is zero, never coerced upward), and
  * parse-time rejection of an empty merge band (`minSimilarity` must be
  * strictly below the semantic-dedup threshold that owns the band's top).
+ *
+ * The band check applies only when it can describe a real misconfiguration:
+ * merging is enabled, or `minSimilarity` was set explicitly. A deployment
+ * that predates this block and lowered `semanticDedupThreshold` to <= the
+ * default merge minimum must keep starting — the disabled feature performs
+ * no band lookup at all, so rejecting that config would be a gratuitous
+ * backward-compatibility break.
  */
 export function parseSemanticMergeConfig(
   cfg: Record<string, unknown>,
@@ -246,15 +283,16 @@ export function parseSemanticMergeConfig(
     Array.isArray(raw.categories) && raw.categories.every((c) => typeof c === "string" && c.length > 0)
       ? [...(raw.categories as string[])]
       : [...DEFAULT_SEMANTIC_MERGE_CATEGORIES];
+  const enabled = parseGate("enabled", false);
   const dedupThreshold = semanticDedupThresholdFrom(cfg);
-  if (minSimilarity >= dedupThreshold) {
+  if ((enabled || raw.minSimilarity !== undefined) && minSimilarity >= dedupThreshold) {
     throw new Error(
       `semanticMerge.minSimilarity (${minSimilarity}) must be strictly below semanticDedupThreshold (${dedupThreshold}) — the near-duplicate skip path owns similarities at or above it.`,
     );
   }
   return {
     semanticMerge: {
-      enabled: parseGate("enabled", false),
+      enabled,
       minSimilarity,
       maxCandidates,
       categories,

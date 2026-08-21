@@ -1,4 +1,5 @@
 import { coerceBooleanLike, coerceNumber } from "../connectors/coerce.js";
+import { connectorMatchesScope, normalizeConnectorScope } from "./connector-scope.js";
 
 /**
  * Embedding-density novelty gate (issue #1953, SAGE).
@@ -98,12 +99,11 @@ export function embeddingsFromCosineHits(
 ): { embedding: number[]; neighborhood: NoveltyNeighbor[] } {
   // Connector-aware scoping (PR #2564 review finding on 54d865cb9): a
   // neighbor from a different (or unattributed) connector must not drive a
-  // noop — same contract as the semantic skip gate (PR #1852). Candidates
-  // without a connector keep the unscoped neighborhood.
-  const candidateConnector = opts.candidateConnector?.trim() || undefined;
-  const scoped = candidateConnector
-    ? hits.filter((hit) => (hit.sourceConnector?.trim() || undefined) === candidateConnector)
-    : hits;
+  // noop — the shared contract in `connector-scope.ts`, also applied by the
+  // semantic skip gate and merge-on-write. Candidates without a connector
+  // keep the unscoped neighborhood.
+  const scope = normalizeConnectorScope(opts.candidateConnector);
+  const scoped = hits.filter((hit) => connectorMatchesScope(hit.sourceConnector, scope));
   return {
     embedding: [1, 0],
     neighborhood: scoped.map((hit) => {

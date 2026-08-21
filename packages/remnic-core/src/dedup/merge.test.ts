@@ -273,8 +273,10 @@ interface MergeHarness {
   deps: ExtractionPersistDeps;
   storage: StorageManager;
   target: MemoryFile;
+  /** Simulate another writer committing a new body to the target. */
+  setTargetContent: (content: string) => Promise<void>;
   calls: {
-    contentUpdates: Array<{ id: string; content: string }>;
+    contentUpdates: Array<{ id: string; content: string; actor?: string }>;
     frontmatterPatches: Array<{ id: string; patch: Partial<MemoryFrontmatter> }>;
     hashRemovals: string[];
     hashAdds: string[];
@@ -295,6 +297,12 @@ async function harness(
     targetStatus?: MemoryStatus;
     lookupHits?: SemanticDedupHit[];
     verdict?: MergeJudgeRawVerdict;
+    /** Simulate a concurrent writer landing between the CAS read and write. */
+    mutateOnWrite?: string;
+    /** Force the frontmatter patch to fail after the content update commits. */
+    frontmatterFails?: boolean;
+    /** Force the automatic rollback of that committed content to fail. */
+    rollbackFails?: boolean;
   } = {},
 ): Promise<MergeHarness> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-"));
@@ -315,6 +323,9 @@ async function harness(
   } as unknown as MemoryFrontmatter;
   await writeFile(targetPath, `---\nid: fact-target\ncategory: fact\n---\n\n${EXISTING}\n`, "utf8");
   const target: MemoryFile = { path: targetPath, frontmatter, content: EXISTING };
+  // Live state: the CAS compares against what is on disk NOW, so a stub that
+  // returned the original snapshot forever could never fail a compare.
+  let state: MemoryFile = { ...target };
 
   const calls: MergeHarness["calls"] = {
     contentUpdates: [],
@@ -324,17 +335,44 @@ async function harness(
     reindexed: [],
     lookupStorages: [],
   };
+  const commit = async (content: string): Promise<void> => {
+    state = { ...state, content };
+    await writeFile(targetPath, `---\nid: fact-target\ncategory: fact\n---\n\n${content}\n`, "utf8");
+  };
   const storage = {
     dir,
-    getMemoryByIdIncludingArchived: async (id: string) => (id === target.frontmatter.id ? target : null),
-    updateMemory: async (id: string, content: string) => {
-      calls.contentUpdates.push({ id, content });
-      await writeFile(targetPath, `---\nid: fact-target\ncategory: fact\n---\n\n${content}\n`, "utf8");
+    getMemoryByIdIncludingArchived: async (id: string) => (id === state.frontmatter.id ? state : null),
+    // The id-keyed update: it re-reads and overwrites whatever is there now.
+    // Present so that a revert to this unsafe API fails on the assertions
+    // below rather than on a missing stub method.
+    updateMemory: async (id: string, content: string, options?: { actor?: string }) => {
+      if (id !== state.frontmatter.id) return false;
+      if (overrides.mutateOnWrite !== undefined && options?.actor === "semantic-merge") {
+        await commit(overrides.mutateOnWrite);
+      }
+      calls.contentUpdates.push({ id, content, actor: options?.actor });
+      await commit(content);
+      return true;
+    },
+    // Signature-faithful to StorageManager.updateMemoryIfUnchanged: the
+    // compare is on the caller's snapshot, not on the id.
+    updateMemoryIfUnchanged: async (
+      expected: MemoryFile,
+      content: string,
+      options?: { actor?: string },
+    ) => {
+      if (overrides.rollbackFails && options?.actor === "semantic-merge-rollback") return false;
+      if (overrides.mutateOnWrite !== undefined && options?.actor === "semantic-merge") {
+        await commit(overrides.mutateOnWrite);
+      }
+      if (expected.content !== state.content) return false;
+      calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: options?.actor });
+      await commit(content);
       return true;
     },
     updateMemoryFrontmatter: async (id: string, patch: Partial<MemoryFrontmatter>) => {
       calls.frontmatterPatches.push({ id, patch });
-      return true;
+      return overrides.frontmatterFails !== true;
     },
     removeFactContentHashesForMemories: async (memories: MemoryFile[]) => {
       calls.hashRemovals.push(...memories.map((m) => m.content));
@@ -362,7 +400,7 @@ async function harness(
     },
   } as unknown as ExtractionPersistDeps;
 
-  return { deps, storage, target, calls };
+  return { deps, storage, target, setTargetContent: commit, calls };
 }
 
 const acceptingJudge = async (input: {
@@ -384,9 +422,11 @@ test("applySemanticMergeAtPersist: merges in place with snapshot, provenance, ha
     judgeCall: (options) => acceptingJudge(options),
   });
 
-  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target" });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", provenancePatched: true });
   // Same id, same file path — an update, never a new fragment.
-  assert.deepEqual(h.calls.contentUpdates, [{ id: "fact-target", content: MERGED }]);
+  assert.deepEqual(h.calls.contentUpdates, [
+    { id: "fact-target", content: MERGED, actor: "semantic-merge" },
+  ]);
   assert.equal(await readFile(h.target.path, "utf8").then((t) => t.includes(MERGED)), true);
 
   // Rollback data exists under the dedicated trigger.
@@ -482,4 +522,175 @@ test("applySemanticMergeAtPersist: versioning off refuses to merge (no rollback 
   });
   assert.deepEqual(outcome, { action: "created", reason: "snapshot_unavailable" });
   assert.deepEqual(h.calls.contentUpdates, []);
+});
+
+// ── Finding 1: connector boundaries survive a merge ──────────────────────────
+
+test("decideSemanticMerge: a foreign-connector neighbor is never a merge target", async () => {
+  const base = {
+    content: INCOMING,
+    category: "fact",
+    config: MERGE_CONFIG,
+    dedupThreshold: 0.92,
+    resolveCandidate: candidateResolver(),
+    judge: mergeJudge,
+  };
+  // Connector B's fact must not rewrite connector A's memory: A's
+  // `sourceConnector` frontmatter would still name A after the merge.
+  const foreign = await decideSemanticMerge({
+    ...base,
+    sourceConnector: "connector-b",
+    lookup: async () => [{ id: "mem-a", score: 0.85, sourceConnector: "connector-a" }],
+  });
+  assert.deepEqual(foreign, { action: "create", reason: "no_candidates" });
+
+  // An unattributed neighbor is equally ineligible for a scoped candidate.
+  const unattributed = await decideSemanticMerge({
+    ...base,
+    sourceConnector: "connector-b",
+    lookup: async () => hits(["mem-operator", 0.85]),
+  });
+  assert.deepEqual(unattributed, { action: "create", reason: "no_candidates" });
+
+  // Same connector merges, and a whitespace-only scope is "unattributed",
+  // preserving the pre-provenance unscoped behavior.
+  const same = await decideSemanticMerge({
+    ...base,
+    sourceConnector: "connector-b",
+    lookup: async () => [{ id: "mem-b", score: 0.85, sourceConnector: "connector-b" }],
+  });
+  assert.equal(same.action, "merge");
+  const unscoped = await decideSemanticMerge({
+    ...base,
+    sourceConnector: "   ",
+    lookup: async () => [{ id: "mem-a", score: 0.85, sourceConnector: "connector-a" }],
+  });
+  assert.equal(unscoped.action, "merge");
+});
+
+test("applySemanticMergeAtPersist: the incoming fact's connector scopes the lookup", async () => {
+  const h = await harness({
+    lookupHits: [{ id: "fact-target", score: 0.85, sourceConnector: "connector-a" }],
+  });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sourceConnector: "connector-b",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "created", reason: "no_candidates" });
+  assert.deepEqual(h.calls.contentUpdates, []);
+  assert.equal(await readFile(h.target.path, "utf8").then((t) => t.includes(EXISTING)), true);
+});
+
+// ── Finding 2: the write is conditional on the judged snapshot ───────────────
+
+test("applySemanticMergeAtPersist: a target changed after judging creates, never clobbers", async () => {
+  const CONCURRENT = "Billing service deploys happen on Tuesdays, paused during freeze weeks.";
+  const h = await harness();
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    // Another extraction lands between the judge resolving the target body
+    // and the write. `MERGED` was composed from the older body.
+    judgeCall: async (options) => {
+      const verdict = await acceptingJudge(options);
+      await h.setTargetContent(CONCURRENT);
+      return verdict;
+    },
+  });
+  assert.deepEqual(outcome, { action: "created", reason: "target_changed" });
+  assert.deepEqual(h.calls.contentUpdates, []);
+  // The concurrent writer's details survive verbatim.
+  const onDisk = await readFile(h.target.path, "utf8");
+  assert.equal(onDisk.includes(CONCURRENT), true);
+  assert.equal(onDisk.includes(MERGED), false);
+});
+
+test("applySemanticMergeAtPersist: a failed compare-and-swap creates instead of overwriting", async () => {
+  const RACED = "Billing service deploys happen on Tuesdays, except during a freeze.";
+  const h = await harness({ mutateOnWrite: RACED });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "created", reason: "target_changed" });
+  assert.deepEqual(h.calls.contentUpdates, []);
+  const onDisk = await readFile(h.target.path, "utf8");
+  assert.equal(onDisk.includes(RACED), true);
+  assert.equal(onDisk.includes(MERGED), false);
+});
+
+// ── Finding 3: a failed frontmatter patch rolls the content back ─────────────
+
+test("applySemanticMergeAtPersist: a failed frontmatter patch restores the pre-merge body", async () => {
+  const h = await harness({ frontmatterFails: true });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  // Reporting `created` is only honest once the target no longer holds the
+  // merged text — otherwise the caller writes a duplicate.
+  assert.deepEqual(outcome, { action: "created", reason: "update_failed" });
+  const onDisk = await readFile(h.target.path, "utf8");
+  assert.equal(onDisk.includes(EXISTING), true);
+  assert.equal(onDisk.includes(MERGED), false);
+  assert.deepEqual(h.calls.contentUpdates, [
+    { id: "fact-target", content: MERGED, actor: "semantic-merge" },
+    { id: "fact-target", content: EXISTING, actor: "semantic-merge-rollback" },
+  ]);
+  // Neither hash resync nor reindex may run for a merge that did not stand.
+  assert.deepEqual(h.calls.hashRemovals, []);
+  assert.deepEqual(h.calls.reindexed, []);
+});
+
+test("applySemanticMergeAtPersist: an unrollbackable patch failure reports merged, not created", async () => {
+  const h = await harness({ frontmatterFails: true, rollbackFails: true });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  // The merged text IS in the target; claiming `created` would duplicate it.
+  assert.deepEqual(outcome, {
+    action: "merged",
+    targetId: "fact-target",
+    provenancePatched: false,
+  });
+  assert.equal(await readFile(h.target.path, "utf8").then((t) => t.includes(MERGED)), true);
+});
+
+// ── Finding 4: a disabled feature never invalidates a legacy config ──────────
+
+test("parseSemanticMergeConfig: a low dedup threshold with no semanticMerge block still parses", () => {
+  for (const semanticDedupThreshold of [0.8, 0.75, 0.5]) {
+    const { semanticMerge } = parseSemanticMergeConfig({ semanticDedupThreshold });
+    assert.equal(semanticMerge.enabled, false, `threshold ${semanticDedupThreshold}`);
+    assert.equal(semanticMerge.minSimilarity, DEFAULT_SEMANTIC_MERGE_MIN);
+  }
+  // parseConfig is the real startup path a legacy deployment takes.
+  assert.equal(parseConfig({ semanticDedupThreshold: 0.8 }).semanticMerge.enabled, false);
+  // Enabling it against the same threshold is a real misconfiguration.
+  assert.throws(
+    () => parseSemanticMergeConfig({ semanticDedupThreshold: 0.8, semanticMerge: { enabled: true } }),
+    /strictly below semanticDedupThreshold/,
+  );
+  // An explicitly inverted band is rejected even while disabled.
+  assert.throws(
+    () =>
+      parseSemanticMergeConfig({
+        semanticDedupThreshold: 0.8,
+        semanticMerge: { minSimilarity: 0.9 },
+      }),
+    /strictly below semanticDedupThreshold/,
+  );
 });

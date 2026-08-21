@@ -45,13 +45,24 @@ import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
 export type SemanticMergeCreateReason =
   | MergeCreateReason
   | "target_inactive"
+  | "target_changed"
   | "snapshot_unavailable"
   | "snapshot_failed"
   | "update_failed"
   | "shadow_would_merge";
 
 export type SemanticMergePersistOutcome =
-  | { action: "merged"; targetId: string }
+  | {
+      action: "merged";
+      targetId: string;
+      /**
+       * False only in the degraded case where the content update committed,
+       * the frontmatter patch failed, AND the automatic rollback could not
+       * run. The merged text IS in the target, so the caller must not write
+       * the fact again; the pre-merge snapshot is named in the error log.
+       */
+      provenancePatched: boolean;
+    }
   | { action: "created"; reason: SemanticMergeCreateReason };
 
 /** Categories that never merge (episodic / immutable by nature). */
@@ -64,6 +75,12 @@ export interface ApplySemanticMergeOptions {
   category: string;
   /** The incoming fact's claim-level provenance spans, appended to the target. */
   sources?: ProvenanceSource[];
+  /**
+   * Provenance connector of the incoming fact. Forwarded to the decision so a
+   * cross-connector neighbor is never a merge target (same scope contract the
+   * novelty and semantic-dedup gates apply).
+   */
+  sourceConnector?: string;
   /** Caller-side bypass: contradiction detected or pending_review routing. */
   skip?: boolean;
   /** Injection seam for tests. */
@@ -77,6 +94,27 @@ function versioningConfigFrom(deps: ExtractionPersistDeps): VersioningConfig {
     maxVersionsPerPage: deps.config.versioningMaxPerPage,
     sidecarDir: deps.config.versioningSidecarDir,
   };
+}
+
+/**
+ * Restore the pre-merge body after a committed content update whose
+ * frontmatter patch failed. Compare-and-swap against the CURRENT state so a
+ * third writer that landed after the merge is never clobbered by the
+ * rollback; `false` means the target still holds merged text.
+ */
+async function restorePreMergeContent(
+  storage: StorageManager,
+  target: { path: string; content: string; frontmatter: { id: string } },
+): Promise<boolean> {
+  try {
+    const current = await storage.getMemoryByIdIncludingArchived(target.frontmatter.id);
+    if (!current || current.path !== target.path) return false;
+    return await storage.updateMemoryIfUnchanged(current, target.content, {
+      actor: "semantic-merge-rollback",
+    });
+  } catch {
+    return false;
+  }
 }
 
 export async function applySemanticMergeAtPersist(
@@ -95,6 +133,7 @@ export async function applySemanticMergeAtPersist(
     content: options.content,
     category: options.category,
     config,
+    sourceConnector: options.sourceConnector,
     dedupThreshold: deps.config.semanticDedupThreshold,
     lookup: (content, limit) => deps.semanticDedupLookup(content, limit, options.storage),
     resolveCandidate: async (memoryId) => {
@@ -147,6 +186,13 @@ export async function applySemanticMergeAtPersist(
   if (!target || inferMemoryStatus(target.frontmatter, target.path) !== "active") {
     return { action: "created", reason: "target_inactive" };
   }
+  // `mergedContent` was composed from the body the judge was shown. In a
+  // multi-writer deployment another extraction can update the target between
+  // that resolve and now; writing the merge would silently drop the
+  // concurrent writer's details. A changed body creates instead.
+  if (target.content !== decision.targetContent) {
+    return { action: "created", reason: "target_changed" };
+  }
 
   // Step 2 — rollback data BEFORE any mutation (checklist #14). A failed
   // snapshot must leave the target untouched. Versioning disabled means no
@@ -175,9 +221,12 @@ export async function applySemanticMergeAtPersist(
     return { action: "created", reason: "snapshot_failed" };
   }
 
-  // Step 3 — update in place, preserving the id. The active-target check
+  // Step 3 — update in place, preserving the id, via compare-and-swap on the
+  // snapshot just read: a writer landing between the read and the write must
+  // win rather than be overwritten from a stale body. The active-target check
   // above makes a tombstone block structurally impossible here.
   const nowIso = (options.now ? options.now() : new Date()).toISOString();
+  let contentCommitted = false;
   try {
     const frontmatter = buildMergeFrontmatterUpdate({
       targetSources: (target.frontmatter.sources ?? []) as MergeProvenanceSource[],
@@ -185,25 +234,33 @@ export async function applySemanticMergeAtPersist(
       targetReinforcementCount: target.frontmatter.reinforcement_count,
       nowIso,
     });
-    const updated = await options.storage.updateMemory(decision.targetId, decision.mergedContent, {
+    const updated = await options.storage.updateMemoryIfUnchanged(target, decision.mergedContent, {
       actor: "semantic-merge",
     });
-    if (!updated) return { action: "created", reason: "update_failed" };
+    if (!updated) return { action: "created", reason: "target_changed" };
+    contentCommitted = true;
     const patched = await options.storage.updateMemoryFrontmatter(decision.targetId, {
       updated: frontmatter.updated,
       derived_via: frontmatter.derived_via,
       reinforcement_count: frontmatter.reinforcement_count,
       sources: frontmatter.sources,
     });
-    if (!patched) {
-      log.warn(
-        `semantic-merge: frontmatter patch failed for ${decision.targetId} after content update (snapshot ${versionId} holds the pre-merge state); creating new fact. Recover with revertToVersion.`,
-      );
-      return { action: "created", reason: "update_failed" };
-    }
+    if (!patched) throw new Error("frontmatter patch rejected");
   } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    // Content already committed means the merged text is IN the target.
+    // Reporting `created` here would write the fact a second time AND leave
+    // the merged claims without the incoming provenance and reinforcement
+    // metadata, so the pre-merge body is restored first; only a successful
+    // restore may fall back to create.
+    if (contentCommitted && !(await restorePreMergeContent(options.storage, target))) {
+      log.error(
+        `semantic-merge: ${decision.targetId} holds merged content without provenance metadata and the rollback failed (${detail}); snapshot ${versionId} holds the pre-merge state — recover with revertToVersion. Not creating a duplicate fact.`,
+      );
+      return { action: "merged", targetId: decision.targetId, provenancePatched: false };
+    }
     log.warn(
-      `semantic-merge: update failed for ${decision.targetId} (snapshot ${versionId} holds the pre-merge state): ${err instanceof Error ? err.message : String(err)}`,
+      `semantic-merge: update failed for ${decision.targetId}${contentCommitted ? " (content rolled back)" : ""} (snapshot ${versionId} holds the pre-merge state): ${detail}`,
     );
     return { action: "created", reason: "update_failed" };
   }
@@ -235,5 +292,5 @@ export async function applySemanticMergeAtPersist(
   log.info(
     `semantic-merge: merged fact into ${decision.targetId} (version ${versionId})`,
   );
-  return { action: "merged", targetId: decision.targetId };
+  return { action: "merged", targetId: decision.targetId, provenancePatched: true };
 }

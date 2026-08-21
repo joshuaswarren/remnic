@@ -1138,7 +1138,7 @@ See [compounding.md](compounding.md).
 | `semanticDedupThreshold` | `0.92` | Cosine similarity threshold in `[0, 1]` above which a candidate fact is treated as a near-duplicate and skipped. |
 | `semanticDedupCandidates` | `5` | Number of nearest-neighbor candidates to compare against during the write-time semantic dedup check. |
 | `semanticMerge.enabled` | `false` | Judge-mediated merge-on-write (issue #2330). Master gate; with it off there is no lookup and no judge call — byte-identical behavior to before the feature. |
-| `semanticMerge.minSimilarity` | `0.8` | Lower bound of the merge band `[minSimilarity, semanticDedupThreshold)`. Must be **strictly below** `semanticDedupThreshold` (which owns the near-duplicate skip path above it); an equal or higher value is rejected at config parse time. |
+| `semanticMerge.minSimilarity` | `0.8` | Lower bound of the merge band `[minSimilarity, semanticDedupThreshold)`. Must be **strictly below** `semanticDedupThreshold` (which owns the near-duplicate skip path above it); an equal or higher value is rejected at config parse time whenever merging is enabled or this key is set explicitly. A pre-existing config that lowered `semanticDedupThreshold` to at or below `0.8` and never configured `semanticMerge` keeps starting — the disabled feature performs no band lookup. |
 | `semanticMerge.maxCandidates` | `3` | Maximum in-band neighbors offered to the merge judge. **Set to `0` to disable merging entirely** — the short-circuit happens before any embedding lookup. |
 | `semanticMerge.categories` | `["fact","preference","decision","relationship","skill"]` | Memory categories eligible for merging. The episodic and immutable categories (procedure, reasoning trace, moment, correction) never merge regardless of this list. |
 | `semanticMerge.shadowMode` | `false` | Decision-only rollout mode: run the lookup and judge, log the would-merge verdict, then always create. Never mutates an existing memory. |
@@ -1178,7 +1178,9 @@ into a create-or-update decision:
 
 1. Query the same namespace-scoped lookup semantic dedup uses, keeping only
    neighbors inside `[minSimilarity, semanticDedupThreshold)` that share the
-   candidate's category and are still `active`.
+   candidate's category, share its provenance connector (the same
+   connector-scope rule the novelty and near-duplicate gates apply, so a merge
+   can never rewrite another connector's memory), and are still `active`.
 2. Ask an LLM merge judge (routed like the extraction judge — local model first,
    then the gateway fallback chain) whether the pair describes the same
    underlying concept. `contradicts` and `create` verdicts fall through to the
@@ -1186,14 +1188,22 @@ into a create-or-update decision:
    untouched.
 3. On a `merge` verdict, validate the returned target id against the candidate
    set, snapshot the target as a page version with trigger `semantic-merge`,
-   update the memory **in place** (same id and path), stamp
+   then update the memory **in place** (same id and path) with a
+   compare-and-swap against the exact body the judge was shown, stamp
    `derived_via: merge`, bump `reinforcement_count`, append the incoming fact's
    provenance `sources`, resync the fact-content hash index, and reindex.
 4. Any doubt — no in-band candidate, fabricated target id, empty or oversized
-   merged content, judge error or timeout, inactive target, failed snapshot or
-   update — creates the new fact exactly as before. The unsafe default is
-   always *create*, and the merged entry is recoverable from the page-version
-   snapshot.
+   merged content, judge error or timeout, inactive target, a target another
+   writer changed after it was judged, failed snapshot or update — creates the
+   new fact exactly as before. The unsafe default is always *create*, and the
+   merged entry is recoverable from the page-version snapshot. When a content
+   update commits but its provenance patch fails, the pre-merge body is
+   restored automatically before falling back to create, so the fact is never
+   both merged and written again. If that restore cannot run either — another
+   writer landed on the target in between — the outcome is reported as a merge
+   rather than a create, so the fact is still never written twice; the target
+   then holds merged text without the incoming provenance and reinforcement
+   metadata, and the error log names the page version to recover from.
 
 Merging requires page versioning (`versioningEnabled`): without it there is no
 pre-merge snapshot to roll back to, so the merge is refused and the fact is

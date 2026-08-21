@@ -59,6 +59,7 @@
     "packages/remnic-core/src/orchestration/extraction-origin-context.ts",
     "packages/remnic-core/src/orchestration/extraction-run-helpers.ts",
     "packages/remnic-core/src/orchestration/extraction-persist.ts",
+    "packages/remnic-core/src/orchestration/semantic-merge-persist.ts",
     "packages/remnic-core/src/orchestration/extraction-injection-gate.ts",
     "packages/remnic-core/src/orchestration/extraction-anchor-snapshot.ts",
     "packages/remnic-core/src/orchestration/extraction-persist-promotion.ts",
