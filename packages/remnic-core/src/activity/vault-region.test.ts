@@ -22,3 +22,8 @@ test("validateRegionName rejects the HTML comment closer", () => {
   assert.deepEqual(validateRegionName("foo-->bar"), { ok: false, error: "invalid_name" });
   assert.deepEqual(validateRegionName("timeline-->"), { ok: false, error: "invalid_name" });
 });
+
+test("validateRegionName rejects a colon, which the marker grammar delimits with", () => {
+  assert.deepEqual(validateRegionName("Work:Timeline"), { ok: false, error: "invalid_name" });
+  assert.deepEqual(validateRegionName("timeline:start"), { ok: false, error: "invalid_name" });
+});

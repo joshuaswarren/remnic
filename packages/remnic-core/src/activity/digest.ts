@@ -141,6 +141,27 @@ export function activityDayWindow(date: string, timezone: string): { startUtc: s
   };
 }
 
+/**
+ * The local calendar day (YYYY-MM-DD) an instant falls in for an IANA
+ * timezone — the day key `activityDayWindow` buckets on. Callers that need
+ * "today" for activity artifacts MUST use this rather than the host-local
+ * date, which drifts a day near either timezone's midnight.
+ */
+export function activityDateInTimezone(instant: Date, timezone: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(instant);
+    const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? "";
+    return `${get("year")}-${get("month")}-${get("day")}`;
+  } catch {
+    return instant.toISOString().slice(0, 10);
+  }
+}
+
 // ── Rendering ───────────────────────────────────────────────────────────────
 
 function sortedByTime(snapshots: ActivitySnapshot[]): ActivitySnapshot[] {

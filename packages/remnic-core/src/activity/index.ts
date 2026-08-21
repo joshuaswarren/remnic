@@ -27,6 +27,8 @@ export * from "./privacy-status.js";
 export * from "./privacy-gate-resolve.js";
 export * from "./privacy-window.js";
 export * from "./vault-path.js";
+export * from "./vault-publisher.js";
+export * from "./vault-region-pair.js";
 export * from "./vault-publish.js";
 export * from "./vault-status.js";
 export * from "./vault-insert.js";

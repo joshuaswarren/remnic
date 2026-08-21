@@ -105,6 +105,50 @@ export interface ActivityTimelineJournalConfig {
   heading?: string;
 }
 
+/** Section ownership strategy for vault publishing (issue #1985). */
+export type VaultSectionStrategy = "markers" | "heading";
+
+/** Where section stats are written (issue #1985). `off` writes none. */
+export type VaultPropertiesMode = "off" | "frontmatter" | "dataview-inline";
+
+export interface ActivityTimelineVaultTargetConfig {
+  enabled: boolean;
+  target: "daily" | "weekly";
+  section: string;
+}
+
+/**
+ * Opt-in markdown-vault publisher settings (issue #1985). Default off:
+ * `enabled: false` means no vault reads or writes ever occur.
+ */
+export interface ActivityTimelineVaultConfig {
+  enabled: boolean;
+  /** Vault root; absolute or `~` path. Required and non-empty when enabled. */
+  vaultPath: string;
+  /** Vault-relative daily-note path template; date tokens. */
+  dailyNotePath: string;
+  /** Empty means weekly-note publishing is disabled. */
+  weeklyNotePath: string;
+  createMissingNotes: boolean;
+  /** Vault-relative template file, used only when creating a missing note. */
+  noteTemplate: string;
+  sectionStrategy: VaultSectionStrategy;
+  publish: {
+    timeline: ActivityTimelineVaultTargetConfig;
+    /** Standup target lights up when phase 3 lands. */
+    standup: ActivityTimelineVaultTargetConfig;
+    /** Weekly target lights up when phase 4 lands. */
+    weekly: ActivityTimelineVaultTargetConfig;
+    /** Locations target lights up with the location day renderer. */
+    locations: ActivityTimelineVaultTargetConfig;
+  };
+  /** Markers strategy: heading under which missing marker pairs are inserted; empty = never insert. */
+  insertUnderHeading: string;
+  wikilinks: { places: boolean; placesFolder: string };
+  properties: { mode: VaultPropertiesMode; prefix: string };
+  autoPublish: boolean;
+}
+
 /** Opt-in timeline Q&A range/search settings (issue #1983 PR1). Default off. */
 export interface ActivityTimelineQaConfig {
   enabled: boolean;
@@ -117,6 +161,7 @@ export interface ActivityTimelineConfig {
   enabled: boolean;
   journal: ActivityTimelineJournalConfig;
   qa: ActivityTimelineQaConfig;
+  vault: ActivityTimelineVaultConfig;
 }
 
 /** Opt-in activity synchronization + trust-gated extraction settings. */

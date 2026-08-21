@@ -24,6 +24,7 @@
 import { ActivityStore } from "./store.js";
 import { syncActivitySource } from "./pipeline.js";
 import { ActivityHttpSourceClient } from "./source-client.js";
+import { activityDateInTimezone } from "./digest.js";
 import { displayErrorDetail } from "../runtime/better-sqlite.js";
 import type { ActivityConfig, ActivitySourceClient, ActivitySourceConfig } from "./types.js";
 
@@ -87,22 +88,6 @@ export interface ActivitySyncRunOptions {
   reindexSearch?: (signal?: AbortSignal) => Promise<void>;
 }
 
-/** Format a Date as YYYY-MM-DD in an IANA timezone (local calendar day). */
-function localDateInTimezone(instant: Date, timezone: string): string {
-  try {
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: timezone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).formatToParts(instant);
-    const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? "";
-    return `${get("year")}-${get("month")}-${get("day")}`;
-  } catch {
-    return instant.toISOString().slice(0, 10);
-  }
-}
-
 /** Previous calendar date via pure date arithmetic (no DST wall-clock drift). */
 function previousIsoDate(date: string): string {
   const parsed = new Date(`${date}T00:00:00Z`);
@@ -117,7 +102,7 @@ function previousIsoDate(date: string): string {
  */
 export function resolveActivitySyncDates(syncDays: number, timezone: string, now: Date): string[] {
   const dates: string[] = [];
-  let cursor = localDateInTimezone(now, timezone);
+  let cursor = activityDateInTimezone(now, timezone);
   for (let count = 0; count < syncDays; count++) {
     dates.unshift(cursor);
     cursor = previousIsoDate(cursor);

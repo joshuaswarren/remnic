@@ -1,7 +1,10 @@
+import path from "node:path";
+
 import { coerceBooleanLike, coerceNumber } from "../connectors/coerce.js";
 import { assertValidTimezone } from "./digest.js";
 import { resolveJournalSource } from "./journal-source.js";
-import type { ImportanceLevel } from "../types.js";
+import { validateVaultNoteTemplate } from "./vault-path.js";
+import { validateRegionName } from "./vault-region.js";
 import type {
   ActivityConfig,
   ActivityExtractionMode,
@@ -9,7 +12,10 @@ import type {
   ActivityTimelineConfig,
   ActivityTimelineJournalConfig,
   ActivityTimelineQaConfig,
+  ActivityTimelineVaultConfig,
+  ActivityTimelineVaultTargetConfig,
 } from "./types.js";
+import type { ImportanceLevel } from "../types.js";
 
 const EXTRACTION_MODES: readonly ActivityExtractionMode[] = ["off", "smart"];
 const IMPORTANCE_LEVELS: readonly ImportanceLevel[] = ["critical", "high", "normal", "low", "trivial"];
@@ -30,7 +36,12 @@ export function defaultActivityConfig(): ActivityConfig {
     minConfidence: 0.7,
     minImportance: "normal",
     maxMemoriesPerDay: 0,
-    timeline: { enabled: false, journal: { enabled: false, source: "file" }, qa: { enabled: false, maxRangeDays: 31 } },
+    timeline: {
+      enabled: false,
+      journal: { enabled: false, source: "file" },
+      qa: { enabled: false, maxRangeDays: 31 },
+      vault: parseTimelineVaultConfig(undefined),
+    },
   };
 }
 
@@ -201,7 +212,14 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
  * is malformed and must fail rather than silently disabling the layer.
  */
 function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
-  if (raw === undefined) return { enabled: false, journal: { enabled: false, source: "file" }, qa: parseTimelineQaConfig(undefined) };
+  if (raw === undefined) {
+    return {
+      enabled: false,
+      journal: { enabled: false, source: "file" },
+      qa: parseTimelineQaConfig(undefined),
+      vault: parseTimelineVaultConfig(undefined),
+    };
+  }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new TypeError("activity.timeline must be an object");
   }
@@ -214,7 +232,241 @@ function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
     enabled: enabledValue ?? false,
     journal: parseTimelineJournalConfig(timeline.journal),
     qa: parseTimelineQaConfig(timeline.qa),
+    vault: parseTimelineVaultConfig(timeline.vault),
   };
+}
+
+/**
+ * Parse the `activity.timeline.vault.*` block (issue #1985). Default off.
+ * Invalid values are rejected at parse time naming the missing or invalid
+ * prerequisite — never silently defaulted.
+ */
+export function parseTimelineVaultConfig(raw: unknown): ActivityTimelineVaultConfig {
+  if (raw === undefined) return defaultVaultConfig();
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new TypeError("activity.timeline.vault must be an object");
+  }
+  const vault = raw as Record<string, unknown>;
+  const enabled = requireBool(vault.enabled, "activity.timeline.vault.enabled", false);
+  const createMissingNotes = requireBool(vault.createMissingNotes, "activity.timeline.vault.createMissingNotes", false);
+  const autoPublish = requireBool(vault.autoPublish, "activity.timeline.vault.autoPublish", true);
+  const vaultPath = optionalNonEmptyString(vault.vaultPath, "activity.timeline.vault.vaultPath") ?? "";
+  const dailyNotePath =
+    optionalNonEmptyString(vault.dailyNotePath, "activity.timeline.vault.dailyNotePath") ?? "{yyyy}-{MM}-{dd}.md";
+  const weeklyNotePath = optionalNonEmptyString(vault.weeklyNotePath, "activity.timeline.vault.weeklyNotePath") ?? "";
+  const noteTemplate = optionalNonEmptyString(vault.noteTemplate, "activity.timeline.vault.noteTemplate") ?? "";
+  const insertUnderHeading =
+    optionalNonEmptyString(vault.insertUnderHeading, "activity.timeline.vault.insertUnderHeading") ?? "";
+
+  if (typeof vault.sectionStrategy !== "undefined" && typeof vault.sectionStrategy !== "string") {
+    throw new TypeError("activity.timeline.vault.sectionStrategy must be a string");
+  }
+  const sectionStrategy = (vault.sectionStrategy as string | undefined) ?? "markers";
+  if (sectionStrategy !== "markers" && sectionStrategy !== "heading") {
+    throw new RangeError('activity.timeline.vault.sectionStrategy must be one of "markers", "heading"');
+  }
+
+  // The documented `vaultPath` contract: absolute on the host platform, or
+  // `~` / `~`-rooted for `expandTildePath`. Everything else — `.`, `vault`,
+  // `../notes`, whitespace — is relative and would resolve against whatever
+  // directory the daemon or CLI happened to launch from, so an enabled vault
+  // rejects it at parse time.
+  const tildeRooted = vaultPath === "~" || vaultPath.startsWith("~/") || vaultPath.startsWith("~\\");
+  if (enabled && (vaultPath.trim().length === 0 || (!tildeRooted && !path.isAbsolute(vaultPath)))) {
+    throw new RangeError(
+      "activity.timeline.vault.vaultPath must be an absolute or `~`-rooted path when activity.timeline.vault.enabled is true; " +
+        `a relative path resolves against the process working directory (got ${JSON.stringify(vaultPath)})`,
+    );
+  }
+  try {
+    validateVaultNoteTemplate(dailyNotePath);
+  } catch (err) {
+    throw new RangeError(`activity.timeline.vault.dailyNotePath: ${(err as Error).message}`);
+  }
+  if (weeklyNotePath.length > 0) {
+    try {
+      validateVaultNoteTemplate(weeklyNotePath);
+    } catch (err) {
+      throw new RangeError(`activity.timeline.vault.weeklyNotePath: ${(err as Error).message}`);
+    }
+  }
+  if (createMissingNotes) {
+    if (noteTemplate.length === 0) {
+      throw new RangeError(
+        "activity.timeline.vault.noteTemplate must name a vault-relative template file when activity.timeline.vault.createMissingNotes is true",
+      );
+    }
+    try {
+      validateVaultNoteTemplate(noteTemplate);
+    } catch (err) {
+      throw new RangeError(`activity.timeline.vault.noteTemplate: ${(err as Error).message}`);
+    }
+  }
+
+  const publish = parseVaultPublishBlock(vault.publish, weeklyNotePath);
+  const wikilinksRaw = vault.wikilinks;
+  const wikilinks =
+    wikilinksRaw === undefined
+      ? { places: false, placesFolder: "Places" }
+      : parseVaultWikilinks(wikilinksRaw);
+  const propertiesRaw = vault.properties;
+  const properties: ActivityTimelineVaultConfig["properties"] =
+    propertiesRaw === undefined ? { mode: "off", prefix: "remnic_" } : parseVaultProperties(propertiesRaw);
+
+  return {
+    enabled,
+    vaultPath,
+    dailyNotePath,
+    weeklyNotePath,
+    createMissingNotes,
+    noteTemplate,
+    sectionStrategy,
+    publish,
+    insertUnderHeading,
+    wikilinks,
+    properties,
+    autoPublish,
+  };
+}
+
+function defaultVaultConfig(): ActivityTimelineVaultConfig {
+  return {
+    enabled: false,
+    vaultPath: "",
+    dailyNotePath: "{yyyy}-{MM}-{dd}.md",
+    weeklyNotePath: "",
+    createMissingNotes: false,
+    noteTemplate: "",
+    sectionStrategy: "markers",
+    publish: {
+      timeline: { enabled: true, target: "daily", section: "Timeline" },
+      standup: { enabled: false, target: "daily", section: "Standup" },
+      weekly: { enabled: false, target: "weekly", section: "Weekly Review" },
+      locations: { enabled: false, target: "daily", section: "Locations" },
+    },
+    insertUnderHeading: "",
+    wikilinks: { places: false, placesFolder: "Places" },
+    properties: { mode: "off", prefix: "remnic_" },
+    autoPublish: true,
+  };
+}
+
+function requireBool(value: unknown, key: string, fallback: boolean): boolean {
+  const coerced = coerceBooleanLike(value, key);
+  if (value === undefined) return fallback;
+  if (coerced === undefined) {
+    throw new TypeError(`${key} must be a boolean`);
+  }
+  return coerced;
+}
+
+function optionalNonEmptyString(value: unknown, key: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new TypeError(`${key} must be a string`);
+  }
+  return value;
+}
+
+function parseVaultPublishBlock(
+  raw: unknown,
+  weeklyNotePath: string,
+): ActivityTimelineVaultConfig["publish"] {
+  const defaults = defaultVaultConfig().publish;
+  if (raw === undefined) return defaults;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new TypeError("activity.timeline.vault.publish must be an object");
+  }
+  const block = raw as Record<string, unknown>;
+  // Each kind is read at its literal path so the config-contract extractor
+  // can attribute publish.<kind>.<leaf> to real parse sites (§40).
+  const publish = {
+    timeline: parseVaultTarget(block.timeline, "timeline", defaults.timeline, weeklyNotePath),
+    standup: parseVaultTarget(block.standup, "standup", defaults.standup, weeklyNotePath),
+    weekly: parseVaultTarget(block.weekly, "weekly", defaults.weekly, weeklyNotePath),
+    locations: parseVaultTarget(block.locations, "locations", defaults.locations, weeklyNotePath),
+  };
+  for (const targetFile of ["daily", "weekly"] as const) {
+    const sections = (["timeline", "standup", "weekly", "locations"] as const)
+      .filter((kind) => publish[kind].target === targetFile && publish[kind].enabled)
+      .map((kind) => publish[kind].section);
+    const duplicates = sections.filter((section, index) => sections.indexOf(section) !== index);
+    if (duplicates.length > 0) {
+      throw new RangeError(
+        `activity.timeline.vault.publish section names must be unique per target file; duplicate ${targetFile} section(s): ${[...new Set(duplicates)].join(", ")}`,
+      );
+    }
+  }
+  return publish;
+}
+
+function parseVaultTarget(
+  raw: unknown,
+  kind: string,
+  fallback: ActivityTimelineVaultTargetConfig,
+  weeklyNotePath: string,
+): ActivityTimelineVaultTargetConfig {
+  if (raw === undefined) return fallback;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new TypeError(`activity.timeline.vault.publish.${kind} must be an object`);
+  }
+  const entry = raw as Record<string, unknown>;
+  const enabled = requireBool(entry.enabled, `activity.timeline.vault.publish.${kind}.enabled`, fallback.enabled);
+  const target = entry.target === undefined ? fallback.target : entry.target;
+  if (target !== "daily" && target !== "weekly") {
+    throw new RangeError(`activity.timeline.vault.publish.${kind}.target must be one of "daily", "weekly"`);
+  }
+  const section = entry.section === undefined ? fallback.section : entry.section;
+  if (typeof section !== "string" || section.trim().length === 0 || section !== section.trim()) {
+    throw new RangeError(`activity.timeline.vault.publish.${kind}.section must be a non-empty trimmed string`);
+  }
+  // The accepted config domain must equal what the publisher accepts: a name
+  // containing `-->` or a line break passes the trimmed-string check above
+  // but is rejected downstream by `publishVaultNote`, which would turn an
+  // apparently valid config into a runtime failure.
+  if (!validateRegionName(section).ok) {
+    throw new RangeError(
+      `activity.timeline.vault.publish.${kind}.section must not contain a line break or "-->"`,
+    );
+  }
+  // The path is required only by an entry that will actually publish to the
+  // weekly file; a disabled entry must load the same whether its object is
+  // explicit (serialized schema default) or omitted entirely.
+  if (enabled && target === "weekly" && weeklyNotePath.length === 0) {
+    throw new RangeError(
+      `activity.timeline.vault.publish.${kind}.target is "weekly" but activity.timeline.vault.weeklyNotePath is empty; configure weeklyNotePath first`,
+    );
+  }
+  return { enabled, target, section };
+}
+
+function parseVaultWikilinks(raw: unknown): ActivityTimelineVaultConfig["wikilinks"] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new TypeError("activity.timeline.vault.wikilinks must be an object");
+  }
+  const block = raw as Record<string, unknown>;
+  const places = requireBool(block.places, "activity.timeline.vault.wikilinks.places", false);
+  const placesFolder =
+    optionalNonEmptyString(block.placesFolder, "activity.timeline.vault.wikilinks.placesFolder") ?? "Places";
+  return { places, placesFolder };
+}
+
+function parseVaultProperties(raw: unknown): ActivityTimelineVaultConfig["properties"] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new TypeError("activity.timeline.vault.properties must be an object");
+  }
+  const block = raw as Record<string, unknown>;
+  const mode = block.mode === undefined ? "off" : block.mode;
+  if (mode !== "off" && mode !== "frontmatter" && mode !== "dataview-inline") {
+    throw new RangeError(
+      'activity.timeline.vault.properties.mode must be one of "off", "frontmatter", "dataview-inline"',
+    );
+  }
+  const prefix = optionalNonEmptyString(block.prefix, "activity.timeline.vault.properties.prefix") ?? "remnic_";
+  if (prefix.trim().length === 0 || prefix !== prefix.trim()) {
+    throw new RangeError("activity.timeline.vault.properties.prefix must be non-empty and trimmed");
+  }
+  return { mode, prefix };
 }
 
 function parseTimelineJournalConfig(raw: unknown): ActivityTimelineJournalConfig {
@@ -265,3 +517,4 @@ function parseTimelineQaConfig(raw: unknown): ActivityTimelineQaConfig {
   }
   return { enabled: enabledValue ?? false, maxRangeDays };
 }
+

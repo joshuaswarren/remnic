@@ -18,7 +18,7 @@ import { registerMeetingsCommands } from "./cli/meetings-commands.js"; import { 
 import { registerExportOkfCommand, registerOkfCommands } from "./cli/okf-commands.js";
 import { registerSkillsCommands } from "./cli/skills-commands.js";
 import { registerResearchStatusCommands } from "./cli/research-status-commands.js";
-import { registerCreationLedgerCommands } from "./cli/creation-ledger-commands.js";
+import { registerCreationLedgerCommands } from "./cli/creation-ledger-commands.js"; import { registerTimelineCommands } from "./cli/timeline-publish-commands.js";
 import type {
   BehaviorSignalEvent,
   ContinuityIncidentRecord,
@@ -6230,7 +6230,7 @@ export function registerCli(
 
       registerResearchStatusCommands(cmd, orchestrator);
 
-      registerCreationLedgerCommands(cmd, orchestrator); registerMeetingsCommands(cmd, orchestrator); registerOkfCommands(cmd, orchestrator); registerDeepRecallCommands(cmd, orchestrator);
+      registerCreationLedgerCommands(cmd, orchestrator); registerMeetingsCommands(cmd, orchestrator); registerOkfCommands(cmd, orchestrator); registerDeepRecallCommands(cmd, orchestrator); registerTimelineCommands(cmd, orchestrator);
 
       cmd
         .command("trust-zone-promote")
