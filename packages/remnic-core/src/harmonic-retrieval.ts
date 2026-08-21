@@ -232,7 +232,7 @@ function scoreAnchor(
   return { score, matchedFields };
 }
 
-async function readAbstractionNodes(options: {
+export async function readAbstractionNodes(options: {
   memoryDir: string;
   abstractionNodeStoreDir?: string;
 }): Promise<AbstractionNode[]> {
@@ -249,7 +249,7 @@ async function readAbstractionNodes(options: {
   return nodes;
 }
 
-async function readCueAnchors(options: {
+export async function readCueAnchors(options: {
   memoryDir: string;
   abstractionNodeStoreDir?: string;
 }): Promise<CueAnchor[]> {

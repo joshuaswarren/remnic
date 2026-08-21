@@ -169,6 +169,14 @@ import {
 } from "./admin/admin-surfaces.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import {
+  type DeepRecallResult,
+  runBudgetedDeepRecall,
+} from "./deep-recall.js";
+import { callDeepRecallPolicyLlm } from "./deep-recall-policy-llm.js";
+import { renderDeepRecallResult } from "./deep-recall-renderer.js";
+import { readAbstractionNodes, readCueAnchors } from "./harmonic-retrieval.js";
+import { stripAttributesSuffix } from "./structured-attributes.js";
+import {
   type GraphSnapshotNodeMetadata,
   type GraphSnapshotRequest,
   type GraphSnapshotResponse,
@@ -2682,6 +2690,127 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     })();
 
     return toRecallExplainJson(snapshot);
+  }
+
+  /**
+   * Budgeted REFINE/EXPAND/STOP deep recall (issue #2332). Deep surface
+   * only — never called from the recall hot path. Single implementation
+   * for MCP, HTTP, and CLI (rule 22: one renderer, one service method).
+   */
+  async deepRecall(request: {
+    query: string;
+    namespace?: string;
+    sessionKey?: string;
+    authenticatedPrincipal?: string;
+    maxSteps?: number;
+  }): Promise<DeepRecallResult & { rendered: string }> {
+    const cfg = this.orchestrator.config.deepRecall;
+    if (!cfg.enabled) {
+      return {
+        ok: false,
+        error: "disabled",
+        entries: [],
+        trace: [],
+        rendered: "deep recall is disabled; set deepRecall.enabled",
+      };
+    }
+    const query = typeof request.query === "string" ? request.query.trim() : "";
+    if (query.length === 0) {
+      throw new EngramAccessInputError("deepRecall: query is required");
+    }
+    let effective = cfg;
+    const requestedSteps = request.maxSteps;
+    if (requestedSteps !== undefined) {
+      if (typeof requestedSteps !== "number" || !Number.isInteger(requestedSteps) || requestedSteps < 0) {
+        throw new EngramAccessInputError("deepRecall: maxSteps must be a non-negative integer");
+      }
+      // `deepRecall.maxSteps: 0` is a documented disable value (§33): the
+      // policy loop is off, so ANY positive override is a refusal rather than
+      // a ceiling comparison. The zero case resolves first, so the ceiling
+      // threshold below only runs while the loop is enabled.
+      if (cfg.maxSteps <= 0) {
+        if (requestedSteps > 0) {
+          throw new EngramAccessInputError(
+            "deepRecall: the policy loop is disabled (deepRecall.maxSteps=0); maxSteps must be 0",
+          );
+        }
+      } else if (requestedSteps > cfg.maxSteps) {
+        throw new EngramAccessInputError(
+          `deepRecall: maxSteps ${requestedSteps} exceeds the configured ceiling ${cfg.maxSteps}`,
+        );
+      }
+      effective = { ...cfg, maxSteps: requestedSteps };
+    }
+    const principal =
+      request.authenticatedPrincipal?.trim() || resolvePrincipal(request.sessionKey, this.orchestrator.config);
+    // Read path resolves through the SAME namespace layer as memoryGet (§30):
+    // one resolved namespace, one storage instance, for seeds and expansions.
+    const resolvedNamespace = this.resolveReadableNamespace(request.namespace, principal);
+    const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    const config = this.orchestrator.config;
+    // Seed QMD hits carry the indexer's docid; resolving each hit's path
+    // against the namespace storage maps it to the real memory id that the
+    // anchor graph joins on. Unresolvable hits keep their docid and simply
+    // never join the graph.
+    const seedPathIndex = new Map<string, string>();
+    for (const memory of await storage.readAllMemories()) {
+      const rel = toMemoryPathRel(storage.dir, memory.path).split(nodePath.sep).join("/");
+      seedPathIndex.set(rel, memory.frontmatter.id);
+      seedPathIndex.set(memory.path.split(nodePath.sep).join("/"), memory.frontmatter.id);
+    }
+    const result = await runBudgetedDeepRecall(
+      {
+        config: effective,
+        searchSeed: async (seedQuery, limit) => {
+          const hits = await this.orchestrator.qmd.search(seedQuery, config.qmdCollection, limit);
+          return hits
+            .filter((hit) => typeof hit.path === "string" && hit.path.length > 0)
+            .map((hit) => {
+              const normalizedPath = hit.path.split(nodePath.sep).join("/");
+              const memoryId =
+                seedPathIndex.get(normalizedPath) ??
+                seedPathIndex.get(normalizedPath.replace(/^.\//, "")) ??
+                hit.docid;
+              return { memoryId, score: typeof hit.score === "number" && Number.isFinite(hit.score) ? hit.score : 0 };
+            });
+        },
+        loadGraph: async () => ({
+          nodes: await readAbstractionNodes({
+            memoryDir: storage.dir,
+            abstractionNodeStoreDir: config.abstractionNodeStoreDir,
+          }),
+          anchors: await readCueAnchors({
+            memoryDir: storage.dir,
+            abstractionNodeStoreDir: config.abstractionNodeStoreDir,
+          }),
+        }),
+        loadMemory: async (memoryId) => {
+          const memory = await storage.getMemoryById(memoryId);
+          if (!memory) return null;
+          return {
+            memoryId,
+            content: memory.frontmatter.structuredAttributes
+              ? stripAttributesSuffix(memory.content)
+              : memory.content,
+            // Enumerate the active set — never an exclusion list (§41).
+            active: inferMemoryStatus(
+              memory.frontmatter,
+              toMemoryPathRel(storage.dir, memory.path)
+            ) === "active",
+          };
+        },
+        callPolicy: (statePrompt, timeoutMs) =>
+          callDeepRecallPolicyLlm({
+            statePrompt,
+            config,
+            localLlm: this.orchestrator.localLlm ?? null,
+            fallbackLlm: this.orchestrator.fastGatewayLlm ?? null,
+            timeoutMs,
+          }),
+      },
+      query,
+    );
+    return { ...result, rendered: renderDeepRecallResult(result) };
   }
 
   async recallXray(request: {

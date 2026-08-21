@@ -242,6 +242,18 @@ export const observeRequestSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Deep recall (issue #2332)
+// ---------------------------------------------------------------------------
+
+export const deepRecallRequestSchema = z.object({
+  query: z.string().trim().min(1, "query is required").max(2000),
+  /** Optional policy-step ceiling; validated against the configured maximum in the service. */
+  maxSteps: z.union([z.number().int().min(0), z.string()]).optional(),
+  namespace: namespaceSchema,
+  sessionKey: z.string().optional(),
+});
+
+// ---------------------------------------------------------------------------
 // Memory store / suggestion submit
 // ---------------------------------------------------------------------------
 
