@@ -1,12 +1,16 @@
 /**
  * Regression: the OpenClaw `shared_context_write_output` tool stamps the HOST
  * RUNTIME agent id as the shared-context envelope origin (issue #1957 review
- * round 2).
+ * round 2), and still writes on hosts that expose none (round 3).
  *
- * The previous fix passed `agentAccessHttp.principal`, which belongs to the
+ * The round-1 fix passed `agentAccessHttp.principal`, which belongs to the
  * separate external HTTP bridge: unset (the default) it left the
  * model-supplied `agentId` as the origin — a provenance-spoofing hole — and
- * configured for the bridge it rejected every legitimate tool write.
+ * configured for the bridge it rejected every legitimate tool write. The
+ * round-2 fix then refused every write on a host without
+ * `api.runtime.agent.id`, which is optional in the SDK and absent on older
+ * hosts inside the supported compatibility window — a permanent refusal on a
+ * previously working tool.
  *
  * Exercises the REAL `registerTools` registration and the REAL
  * `SharedContextManager` write path. No stubbed provenance.
@@ -20,6 +24,7 @@ import path from "node:path";
 import { registerTools } from "../src/tools.ts";
 import { parseConfig } from "../src/config.js";
 import { SharedContextManager } from "../src/shared-context/manager.js";
+import { UNATTRIBUTED_TOOL_WRITE_ORIGIN } from "../src/tool-write-origin.js";
 
 type RegisteredTool = {
   name: string;
@@ -112,14 +117,36 @@ test("a model-supplied agentId naming another agent cannot become the origin", a
   assert.deepEqual(await readdir(outputsDir), []);
 });
 
-test("a host with no runtime agent id refuses the write instead of trusting the caller", async (t) => {
+test("a host with no runtime agent id still writes, under a non-attributable origin", async (t) => {
   const { tool, outputsDir, cleanup } = await setup(undefined);
   t.after(cleanup);
 
   const text = toolText(
     await tool.execute("tc-3", { agentId: "oracle", title: "Unattributable", content: "body" }),
   );
+  const fp = text.match(/Wrote shared agent output: (.+)/)?.[1];
+  assert.ok(fp, `expected a written path on an older host, got: ${text}`);
+
+  // The write lands, but the model-supplied "oracle" is discarded: neither the
+  // origin nor the on-disk layout attributes the item to any real agent.
+  const raw = await readFile(fp!, "utf-8");
+  assert.match(raw, /^sharedBy: "unattributed:openclaw-host"$/m);
+  assert.doesNotMatch(raw, /oracle/);
+  assert.deepEqual(await readdir(outputsDir), [encodeURIComponent(UNATTRIBUTED_TOOL_WRITE_ORIGIN)]);
+});
+
+test("the reserved unattributed origin cannot be claimed on a host that has an agent id", async (t) => {
+  const { tool, outputsDir, cleanup } = await setup("runtime-agent");
+  t.after(cleanup);
+
+  const text = toolText(
+    await tool.execute("tc-4", {
+      agentId: UNATTRIBUTED_TOOL_WRITE_ORIGIN,
+      title: "Laundered",
+      content: "body",
+    }),
+  );
   assert.match(text, /shared_context_write_output error:/);
-  assert.match(text, /no runtime agent id/);
+  assert.match(text, /write origin mismatch/);
   assert.deepEqual(await readdir(outputsDir), []);
 });

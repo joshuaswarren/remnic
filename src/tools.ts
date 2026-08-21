@@ -16,7 +16,7 @@ import {
 import { log } from "./logger.js";
 import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
 import { executeMemoryPromote } from "./memory-promote.js";
-import { requireOpenClawToolWriteOrigin } from "./tool-write-origin.js";
+import { openClawToolWriteOrigin } from "./tool-write-origin.js";
 import { WorkStorage } from "@remnic/core/work/storage";
 import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "@remnic/core/work/board";
 import { wrapWorkLayerContext } from "@remnic/core/work/boundary";
@@ -2875,7 +2875,7 @@ Best for:
       parameters: Type.Object({
         // Provenance is server-derived from the host runtime agent; a
         // mismatching value here is rejected, never used as the origin.
-        agentId: Type.String({ description: "Agent ID producing this output; must match this host's runtime agent id." }),
+        agentId: Type.String({ description: "Agent ID producing this output; must match this host's runtime agent id when the host exposes one." }),
         title: Type.String({ description: "Short title for the output." }),
         content: Type.String({ description: "Markdown content to write." }),
       }),
@@ -2888,10 +2888,9 @@ Best for:
         }
         try {
           const fp = await orchestrator.sharedContext.writeAgentOutput({
-            agentId,
             title,
             content,
-            authenticatedIdentity: requireOpenClawToolWriteOrigin(hostRuntimeAgentId),
+            ...openClawToolWriteOrigin(hostRuntimeAgentId, agentId),
           });
           return toolResult(`Wrote shared agent output: ${fp}`);
         } catch (err) {
