@@ -320,10 +320,32 @@ test("a non-loopback remote origin refuses the local daemon lifecycle; loopback 
   assert.equal(refusedFromConfig.remoteUrl, "https://config.example.com");
 
   // Loopback origins and no remote URL keep the local lifecycle allowed.
-  process.env.REMNIC_DAEMON_URL = "http://127.0.0.1:4318";
-  assert.equal(resolveHostedOnlyDaemonRefusal("/nonexistent/remnic.config.json"), undefined);
-  process.env.REMNIC_DAEMON_URL = "http://localhost:4318";
-  assert.equal(resolveHostedOnlyDaemonRefusal("/nonexistent/remnic.config.json"), undefined);
+  // The whole 127.0.0.0/8 range is loopback, not just the .1 literal.
+  for (const loopback of [
+    "http://127.0.0.1:4318",
+    "http://127.0.0.2:4318",
+    "http://127.255.255.254:4318",
+    "http://localhost:4318",
+    "http://[::1]:4318",
+    "http://[::ffff:127.0.0.1]:4318",
+  ]) {
+    process.env.REMNIC_DAEMON_URL = loopback;
+    assert.equal(
+      resolveHostedOnlyDaemonRefusal("/nonexistent/remnic.config.json"),
+      undefined,
+      `${loopback} must stay local mode`,
+    );
+  }
+
+  // Lookalikes are remote: a hostname that merely starts with the loopback
+  // literal, and a non-loopback quad whose digits resemble one.
+  for (const remote of ["http://127.0.0.1.example.com:4318", "http://12.7.0.1:4318"]) {
+    process.env.REMNIC_DAEMON_URL = remote;
+    const lookalike = resolveHostedOnlyDaemonRefusal("/nonexistent/remnic.config.json");
+    assert.ok(lookalike, `${remote} must refuse the local daemon`);
+    assert.equal(lookalike.remoteUrl, remote);
+  }
+
   delete process.env.REMNIC_DAEMON_URL;
   assert.equal(resolveHostedOnlyDaemonRefusal("/nonexistent/remnic.config.json"), undefined);
 });

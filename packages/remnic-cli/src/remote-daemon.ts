@@ -201,16 +201,36 @@ export interface HostedOnlyDaemonRefusal {
 }
 
 /**
- * Hostnames that stay local mode for daemon lifecycle purposes. A remote
- * origin on one of these is the same machine, so `daemon start` keeps its
- * meaning. `URL.hostname` keeps the brackets on IPv6 literals.
+ * Non-IPv4 loopback hostnames that stay local mode for daemon lifecycle
+ * purposes. `URL.hostname` keeps the brackets on IPv6 literals and
+ * compresses the IPv4-mapped loopback (`::ffff:127.0.0.1`) to
+ * `[::ffff:7f00:1]`, so both spellings are listed.
  */
 const LOOPBACK_HOSTNAMES: Record<string, true> = {
   localhost: true,
-  "127.0.0.1": true,
   "[::1]": true,
   "::1": true,
+  "[::ffff:7f00:1]": true,
+  "::ffff:7f00:1": true,
 };
+
+/**
+ * True for any host in `127.0.0.0/8`. The WHATWG URL parser already
+ * canonicalizes IPv4 shorthand (`127.1`) and hex forms to a dotted quad,
+ * so a strict four-octet parse is enough here: each part must be 1-3
+ * digits (no sign, no empty part) and 0-255. Anything else — including a
+ * lookalike hostname such as `127.0.0.1.example.com` — is not loopback,
+ * which keeps an unparseable value on the REMOTE side of this guard.
+ */
+function isIpv4LoopbackHost(hostname: string): boolean {
+  const parts = hostname.split(".");
+  if (parts.length !== 4) return false;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return false;
+    if (Number(part) > 255) return false;
+  }
+  return Number(parts[0]) === 127;
+}
 
 /**
  * Hosted-only mode (issue #2712): when the resolved remote origin — same
@@ -233,7 +253,7 @@ export function resolveHostedOnlyDaemonRefusal(
     // impossible. Keep the local path rather than guessing.
     return undefined;
   }
-  if (LOOPBACK_HOSTNAMES[hostname]) return undefined;
+  if (LOOPBACK_HOSTNAMES[hostname] || isIpv4LoopbackHost(hostname)) return undefined;
   return { remoteUrl };
 }
 
