@@ -1580,6 +1580,7 @@
     "semanticDedupEnabled.trim",
     "semanticDedupThreshold.trim",
     "sessionObserverBands.map",
+    "sharedContextAllowBindingAuthority.trim",
     "sharedContextDir.length",
     "sharedNamespace.length",
     "subjectClassification.enabled.trim",
