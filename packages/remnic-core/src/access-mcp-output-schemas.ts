@@ -18,7 +18,7 @@ const T_NULLABLE_STRING = { type: ["string", "null"] } as const;
 /** Build a JSON Schema object type with the given properties. */
 function objectSchema(
   properties: Record<string, Readonly<Record<string, unknown>>>,
-  required?: readonly string[],
+  required?: readonly string[]
 ): Record<string, unknown> {
   return {
     type: "object",
@@ -82,8 +82,20 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     skipped: T_NUMBER,
     removed: T_ARRAY,
   }),
-  deep_recall: objectSchema({ ok: T_BOOLEAN, error: T_NULLABLE_STRING, entries: T_ARRAY, trace: T_ARRAY, rendered: T_STRING }, ["entries", "trace"]),
-  standup: objectSchema({ date: T_STRING, yesterday: T_STRING, today: T_STRING, highlights: T_ARRAY, priorities: T_ARRAY, blockers: T_ARRAY, activityGrid: T_STRING, markdown: T_STRING }),
+  deep_recall: objectSchema(
+    { ok: T_BOOLEAN, error: T_NULLABLE_STRING, entries: T_ARRAY, trace: T_ARRAY, rendered: T_STRING },
+    ["entries", "trace"]
+  ),
+  standup: objectSchema({
+    date: T_STRING,
+    yesterday: T_STRING,
+    today: T_STRING,
+    highlights: T_ARRAY,
+    priorities: T_ARRAY,
+    blockers: T_ARRAY,
+    activityGrid: T_STRING,
+    markdown: T_STRING,
+  }),
   action_confidence: objectSchema({
     schemaVersion: T_NUMBER,
     decision: T_STRING,
@@ -176,6 +188,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     effectiveNamespace: T_STRING,
     lcmArchived: T_BOOLEAN,
     extractionQueued: T_BOOLEAN,
+    transcriptPersisted: T_BOOLEAN,
   }),
   lcm_search: objectSchema({
     query: T_STRING,
@@ -274,42 +287,45 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     guidelineVersion: { type: ["number", "null"] } as const,
   }),
   memory_search: objectSchema({ query: T_STRING, results: T_ARRAY, count: T_NUMBER }),
-  external_wiki_search: objectSchema({
-    query: T_STRING,
-    hits: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          wikiId: T_STRING,
-          title: T_STRING,
-          path: T_STRING,
-          snippet: T_STRING,
-          score: T_NUMBER,
-          rank: T_NUMBER,
-          citations: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                path: T_STRING,
-                lineStart: T_NUMBER,
-                lineEnd: T_NUMBER,
-                note: T_STRING,
+  external_wiki_search: objectSchema(
+    {
+      query: T_STRING,
+      hits: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            wikiId: T_STRING,
+            title: T_STRING,
+            path: T_STRING,
+            snippet: T_STRING,
+            score: T_NUMBER,
+            rank: T_NUMBER,
+            citations: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  path: T_STRING,
+                  lineStart: T_NUMBER,
+                  lineEnd: T_NUMBER,
+                  note: T_STRING,
+                },
+                required: ["path", "lineStart", "lineEnd", "note"],
+                additionalProperties: false,
               },
-              required: ["path", "lineStart", "lineEnd", "note"],
-              additionalProperties: false,
             },
+            indexBlurb: T_STRING,
           },
-          indexBlurb: T_STRING,
+          required: ["wikiId", "title", "path", "snippet", "score", "rank", "citations"],
+          additionalProperties: false,
         },
-        required: ["wikiId", "title", "path", "snippet", "score", "rank", "citations"],
-        additionalProperties: false,
       },
+      count: T_NUMBER,
+      degradedWikiIds: T_ARRAY,
     },
-    count: T_NUMBER,
-    degradedWikiIds: T_ARRAY,
-  }, ["query", "hits", "count", "degradedWikiIds"]),
+    ["query", "hits", "count", "degradedWikiIds"]
+  ),
   memory_profile: objectSchema({ profile: T_STRING }),
   memory_entities_list: objectSchema({ entities: T_ARRAY, count: T_NUMBER }),
   memory_questions: objectSchema({ questions: T_ARRAY, count: T_NUMBER }),
@@ -416,6 +432,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     summariesWritten: T_NUMBER,
     staleStore: T_BOOLEAN,
     newestEntryTimestamp: T_NULLABLE_STRING,
+    scanFailed: T_BOOLEAN,
     warning: T_STRING,
   }),
   conversation_index_update: objectSchema({

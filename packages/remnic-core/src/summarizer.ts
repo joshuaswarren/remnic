@@ -9,20 +9,14 @@ import { extractJsonCandidates } from "./json-extract.js";
 import type { HourlySummary, TranscriptEntry, PluginConfig, GatewayConfig } from "./types.js";
 import type { TranscriptManager } from "./transcript.js";
 import { readSummarySnapshot, upsertSummarySnapshot, writeSummarySnapshot } from "./summary-snapshot.js";
-import {
-  encodeStoragePathSegment,
-  resolveSafeStoragePath,
-} from "./storage-paths.js";
+import { encodeStoragePathSegment, resolveSafeStoragePath } from "./storage-paths.js";
 import { sessionStoragePaths } from "./session-identity.js";
 import { resolveLocalLlmCapabilities } from "./capabilities.js";
 import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
 
 // Schema for LLM summary output
 const HourlySummarySchema = z.object({
-  bullets: z
-    .array(z.string().trim().min(1))
-    .min(1)
-    .describe("3-5 bullet points summarizing the hour's activity"),
+  bullets: z.array(z.string().trim().min(1)).min(1).describe("3-5 bullet points summarizing the hour's activity"),
 });
 
 type HourlySummaryResult = z.infer<typeof HourlySummarySchema>;
@@ -61,6 +55,8 @@ export interface HourlySummarizerRunStats {
   staleStore: boolean;
   /** ISO timestamp of the newest transcript entry seen by the scan, when any exist. */
   newestEntryTimestamp: string | null;
+  /** True when the transcript scan itself FAILED (unreadable store) — distinct from an empty store. */
+  scanFailed: boolean;
 }
 
 /** A store whose newest entry is older than this is considered stale (starvation signal, issue #2783). */
@@ -74,7 +70,12 @@ export class HourlySummarizer {
   private modelRegistry: ModelRegistry;
   private transcript?: TranscriptManager;
 
-  constructor(config: PluginConfig, gatewayConfig?: GatewayConfig, modelRegistry?: ModelRegistry, transcript?: TranscriptManager) {
+  constructor(
+    config: PluginConfig,
+    gatewayConfig?: GatewayConfig,
+    modelRegistry?: ModelRegistry,
+    transcript?: TranscriptManager
+  ) {
     this.config = config;
     this.summariesDir = path.join(config.memoryDir, "summaries", "hourly");
     this.modelRegistry = modelRegistry ?? new ModelRegistry(config.memoryDir);
@@ -84,12 +85,13 @@ export class HourlySummarizer {
     this.localLlm = new LocalLlmClient(config, this.modelRegistry);
 
     // Initialize fallback client with gateway config
-    this.fallbackLlm = new FallbackLlmClient(
-      gatewayConfig,
-      fallbackLlmRuntimeContextFromConfig(config),
-    );
+    this.fallbackLlm = new FallbackLlmClient(gatewayConfig, fallbackLlmRuntimeContextFromConfig(config));
 
-    if (!gatewayConfig?.agents?.defaults?.model?.primary && !resolveLocalLlmCapabilities(config).localLlm && config.modelSource !== "gateway") {
+    if (
+      !gatewayConfig?.agents?.defaults?.model?.primary &&
+      !resolveLocalLlmCapabilities(config).localLlm &&
+      config.modelSource !== "gateway"
+    ) {
       log.warn("no gateway default AI and local LLM disabled — hourly summarization disabled");
     }
   }
@@ -102,7 +104,9 @@ export class HourlySummarizer {
     return resolveLocalLlmCapabilities(this.config).localLlm && !this.useGatewayModelSource;
   }
 
-  private withGatewayAgent(options: import("./fallback-llm.js").FallbackLlmOptions): import("./fallback-llm.js").FallbackLlmOptions {
+  private withGatewayAgent(
+    options: import("./fallback-llm.js").FallbackLlmOptions
+  ): import("./fallback-llm.js").FallbackLlmOptions {
     if (!this.useGatewayModelSource) return options;
     // Shared resolution (taskModelChain > gatewayAgentId) — gotcha #22. Issue #1365.
     return { ...options, ...gatewayTaskChainOptions(this.config) };
@@ -114,10 +118,7 @@ export class HourlySummarizer {
   }
 
   private async summarySessionDir(sessionKey: string): Promise<string> {
-    return resolveSafeStoragePath(
-      this.summariesDir,
-      encodeStoragePathSegment(sessionKey, "session"),
-    );
+    return resolveSafeStoragePath(this.summariesDir, encodeStoragePathSegment(sessionKey, "session"));
   }
 
   private async legacySummarySessionDir(sessionKey: string): Promise<string | null> {
@@ -146,9 +147,7 @@ export class HourlySummarizer {
     if (entries.length === 0) return null;
 
     // Format entries for the LLM
-    const conversation = entries
-      .map((e) => `[${e.role}] ${e.content}`)
-      .join("\n\n");
+    const conversation = entries.map((e) => `[${e.role}] ${e.content}`).join("\n\n");
 
     if (resolvePipelineProcessingCapabilities(this.config).hourlySummariesExtended) {
       const extended = await this.generateExtended(sessionKey, hourStart, conversation, entries);
@@ -182,9 +181,7 @@ export class HourlySummarizer {
         const localResult = await this.generateWithLocalLlm(conversation);
         if (localResult) {
           const durationMs = Date.now() - startTime;
-          log.debug(
-            `generated hourly summary for ${sessionKey} at ${hourIso} in ${durationMs}ms using local LLM`
-          );
+          log.debug(`generated hourly summary for ${sessionKey} at ${hourIso} in ${durationMs}ms using local LLM`);
           return {
             hour: hourIso,
             sessionKey,
@@ -236,15 +233,13 @@ Respond with valid JSON matching this schema:
       const result = await this.fallbackLlm.parseWithSchema(
         messages,
         HourlySummarySchema,
-        this.withGatewayAgent({ temperature: 0.3, maxTokens: 8192 }),
+        this.withGatewayAgent({ temperature: 0.3, maxTokens: 8192 })
       );
 
       const durationMs = Date.now() - startTime;
 
       if (result) {
-        log.debug(
-          `generated hourly summary for ${sessionKey} at ${hourIso} in ${durationMs}ms via fallback`,
-        );
+        log.debug(`generated hourly summary for ${sessionKey} at ${hourIso} in ${durationMs}ms via fallback`);
         return {
           hour: hourIso,
           sessionKey,
@@ -266,7 +261,7 @@ Respond with valid JSON matching this schema:
     sessionKey: string,
     hourStart: Date,
     conversation: string,
-    entries: TranscriptEntry[],
+    entries: TranscriptEntry[]
   ): Promise<(HourlySummaryExtendedResult & { _meta: HourlySummaryExtendedMeta }) | null> {
     const hourIso = hourStart.toISOString();
     const startTime = Date.now();
@@ -280,12 +275,17 @@ Respond with valid JSON matching this schema:
 
     const sys = `You are a conversation summarization system.\n\nSummarize the hour into structured sections.\n\nReturn valid JSON matching:\n{\n  \"topics\": [\"...\"],\n  \"decisions\": [\"...\"],\n  \"actionItems\": [\"...\"],\n  \"rejected\": [\"...\"]\n}\n\nGuidelines:\n- Prefer concrete topics and decisions.\n- Action items should be imperative.\n- Rejected ideas are things that were explicitly discarded or reversed.\n- If there are none for a section, return an empty array.\n`;
 
-    const toolStatsLine = Object.keys(toolCounts).length > 0
-      ? `Tools used (counts): ${Object.entries(toolCounts).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([k,v])=>`${k}=${v}`).join(", ")}\n\n`
-      : "";
+    const toolStatsLine =
+      Object.keys(toolCounts).length > 0
+        ? `Tools used (counts): ${Object.entries(toolCounts)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 10)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(", ")}\n\n`
+        : "";
     const userTurns = entries.filter((e) => e.role === "user").length;
     const assistantTurns = entries.filter((e) => e.role === "assistant").length;
-    const toolCalls = Object.values(toolCounts).reduce((a,b)=>a+b,0);
+    const toolCalls = Object.values(toolCounts).reduce((a, b) => a + b, 0);
     const statsLine = `Stats: userTurns=${userTurns}, assistantTurns=${assistantTurns}, toolCalls=${toolCalls}\n\n`;
 
     const user = `Hour: ${hourIso}\nSession: ${sessionKey}\n\n${statsLine}${toolStatsLine}Conversation:\n${conversation}\n`;
@@ -293,8 +293,14 @@ Respond with valid JSON matching this schema:
     // Try local LLM first if enabled
     if (this.shouldUseLocalLlm) {
       try {
-        const contextSizes = this.modelRegistry.calculateContextSizes(this.config.localLlmModel, this.config.localLlmMaxContext);
-        const truncated = user.length > contextSizes.maxInputChars ? user.slice(0, contextSizes.maxInputChars) + "\n\n[truncated]" : user;
+        const contextSizes = this.modelRegistry.calculateContextSizes(
+          this.config.localLlmModel,
+          this.config.localLlmMaxContext
+        );
+        const truncated =
+          user.length > contextSizes.maxInputChars
+            ? user.slice(0, contextSizes.maxInputChars) + "\n\n[truncated]"
+            : user;
         const response = await this.localLlm.chatCompletion(
           [
             { role: "system", content: "Output valid JSON only." },
@@ -305,7 +311,7 @@ Respond with valid JSON matching this schema:
             maxTokens: contextSizes.maxOutputTokens,
             operation: "hourly_summary_extended",
             priority: "background",
-          },
+          }
         );
         if (response?.content) {
           const content = response.content.trim();
@@ -314,7 +320,7 @@ Respond with valid JSON matching this schema:
               const parsed = JSON.parse(candidate);
               const result = HourlySummaryExtendedSchema.parse(parsed);
               log.debug(
-                `generated extended hourly summary for ${sessionKey} at ${hourIso} in ${Date.now() - startTime}ms (local)`,
+                `generated extended hourly summary for ${sessionKey} at ${hourIso} in ${Date.now() - startTime}ms (local)`
               );
               return { ...result, _meta: { userTurns, assistantTurns, toolCalls, toolCounts } };
             } catch {
@@ -335,10 +341,12 @@ Respond with valid JSON matching this schema:
           { role: "user" as const, content: user },
         ],
         HourlySummaryExtendedSchema,
-        this.withGatewayAgent({ temperature: 0.2, maxTokens: 2048 }),
+        this.withGatewayAgent({ temperature: 0.2, maxTokens: 2048 })
       );
       if (result) {
-        log.debug(`generated extended hourly summary for ${sessionKey} at ${hourIso} in ${Date.now() - startTime}ms (fallback)`);
+        log.debug(
+          `generated extended hourly summary for ${sessionKey} at ${hourIso} in ${Date.now() - startTime}ms (fallback)`
+        );
         return { ...result, _meta: { userTurns, assistantTurns, toolCalls, toolCounts } };
       }
       return null;
@@ -361,9 +369,10 @@ Respond with valid JSON matching this schema:
     log.debug(`Summarizer model context: ${contextSizes.description}`);
 
     const maxConversationChars = contextSizes.maxInputChars;
-    const truncatedConversation = conversation.length > maxConversationChars
-      ? conversation.slice(0, maxConversationChars) + "\n\n[truncated]"
-      : conversation;
+    const truncatedConversation =
+      conversation.length > maxConversationChars
+        ? conversation.slice(0, maxConversationChars) + "\n\n[truncated]"
+        : conversation;
 
     const instructions = `You are a conversation summarization system. Summarize the following conversation transcript into 3-5 concise bullet points.
 
@@ -392,7 +401,7 @@ Respond with valid JSON matching this schema:
         maxTokens: contextSizes.maxOutputTokens,
         operation: "hourly_summary",
         priority: "background",
-      },
+      }
     );
 
     if (!response?.content) {
@@ -452,9 +461,7 @@ Respond with valid JSON matching this schema:
       nextHeaderPattern.lastIndex = sectionStart + hourHeader.length;
       const nextHeader = nextHeaderPattern.exec(existingContent);
       const beforeHour = existingContent.slice(0, sectionStart);
-      const afterHour = nextHeader
-        ? existingContent.slice(nextHeader.index + 1)
-        : "";
+      const afterHour = nextHeader ? existingContent.slice(nextHeader.index + 1) : "";
       const newSection = this.formatHourSection(summary, hourHeader);
       existingContent = beforeHour + newSection.trimEnd() + (afterHour ? "\n\n" + afterHour : "\n");
 
@@ -478,13 +485,15 @@ Respond with valid JSON matching this schema:
       await upsertSummarySnapshot(this.config.memoryDir, summary);
     } catch (error) {
       log.warn(
-        `hourly summarizer: failed to update summary snapshot for ${summary.sessionKey} (fail-open): ${String(error)}`,
+        `hourly summarizer: failed to update summary snapshot for ${summary.sessionKey} (fail-open): ${String(error)}`
       );
     }
   }
 
   private formatHourSection(summary: HourlySummary, hourHeader: string): string {
-    const ext = (summary as any)._extended as (HourlySummaryExtendedResult & { _meta?: HourlySummaryExtendedMeta }) | undefined;
+    const ext = (summary as any)._extended as
+      | (HourlySummaryExtendedResult & { _meta?: HourlySummaryExtendedMeta })
+      | undefined;
     const meta = (summary as any)._extendedMeta as HourlySummaryExtendedMeta | undefined;
     const lines: string[] = [hourHeader, ""];
 
@@ -556,24 +565,18 @@ Respond with valid JSON matching this schema:
       }
 
       const sortedSummaries = Array.from(byHour.values()).sort(
-        (a, b) => new Date(b.hour).getTime() - new Date(a.hour).getTime(),
+        (a, b) => new Date(b.hour).getTime() - new Date(a.hour).getTime()
       );
 
       // Filter to recent hours while materializing the full parsed history.
-      const recent = sortedSummaries.filter(
-        (s) => new Date(s.hour).getTime() >= cutoffTime,
-      );
+      const recent = sortedSummaries.filter((s) => new Date(s.hour).getTime() >= cutoffTime);
 
       if (sortedSummaries.length > 0) {
         try {
-          await writeSummarySnapshot(
-            this.config.memoryDir,
-            sessionKey,
-            sortedSummaries,
-          );
+          await writeSummarySnapshot(this.config.memoryDir, sessionKey, sortedSummaries);
         } catch (error) {
           log.warn(
-            `hourly summarizer: failed to materialize summary snapshot for ${sessionKey} (fail-open): ${String(error)}`,
+            `hourly summarizer: failed to materialize summary snapshot for ${sessionKey} (fail-open): ${String(error)}`
           );
         }
       }
@@ -585,10 +588,7 @@ Respond with valid JSON matching this schema:
     }
   }
 
-  private async readSummaryDir(
-    sessionDir: string,
-    sessionKey: string,
-  ): Promise<HourlySummary[]> {
+  private async readSummaryDir(sessionDir: string, sessionKey: string): Promise<HourlySummary[]> {
     let files: string[];
     try {
       files = await readdir(sessionDir);
@@ -613,11 +613,7 @@ Respond with valid JSON matching this schema:
     return summaries;
   }
 
-  private parseSummaryFile(
-    content: string,
-    sessionKey: string,
-    filename: string
-  ): HourlySummary[] {
+  private parseSummaryFile(content: string, sessionKey: string, filename: string): HourlySummary[] {
     const summaries: HourlySummary[] = [];
 
     // Extract date from filename (YYYY-MM-DD.md)
@@ -672,10 +668,6 @@ Respond with valid JSON matching this schema:
     return summaries;
   }
 
-  // Newest transcript entry timestamp seen by the last getActiveSessions
-  // scan (issue #2783 starvation signal).
-  private newestTranscriptTimestamp: string | null = null;
-
   // Format summaries for recall injection
   formatForRecall(summaries: HourlySummary[], maxCount: number): string {
     if (summaries.length === 0) return "";
@@ -697,9 +689,11 @@ Respond with valid JSON matching this schema:
   async runHourly(): Promise<HourlySummarizerRunStats> {
     log.debug("running hourly summary generation");
 
-    // Get active sessions from transcript
-    this.newestTranscriptTimestamp = null;
-    const sessions = await this.getActiveSessions();
+    // Get active sessions from transcript. The scan outcome is kept LOCAL to
+    // this invocation (review round 2): shared instance state would let two
+    // concurrent runHourly calls cross-report each other's timestamps.
+    const scan = await this.getActiveSessions();
+    const sessions = scan.sessionKeys;
     let sessionsWithEntries = 0;
     let summariesWritten = 0;
 
@@ -735,22 +729,56 @@ Respond with valid JSON matching this schema:
       // Staleness signal (issue #2783): newest entry across the whole
       // store, from the same scan getActiveSessions already performs.
       staleStore:
-        this.newestTranscriptTimestamp !== null &&
-        Date.now() - new Date(this.newestTranscriptTimestamp).getTime() > STALE_STORE_MS,
-      newestEntryTimestamp: this.newestTranscriptTimestamp,
+        scan.newestEntryTimestamp !== null &&
+        Date.now() - new Date(scan.newestEntryTimestamp).getTime() > STALE_STORE_MS,
+      newestEntryTimestamp: scan.newestEntryTimestamp,
+      scanFailed: scan.scanFailed,
     };
   }
 
-  // Get list of active sessions from transcript directory
-  private async getActiveSessions(): Promise<string[]> {
-    const transcriptDir = await resolveSafeStoragePath(
-      this.config.memoryDir,
-      "transcripts",
-    ).catch(() => null);
-    if (transcriptDir === null) return [];
+  // Get list of active sessions from the transcript directory, plus the
+  // scan bookkeeping runHourly reports: newest entry timestamp (staleness
+  // signal) and whether the scan itself FAILED. A failed scan must not be
+  // reported as an empty store — those are different incidents (review
+  // round 2).
+  private async getActiveSessions(): Promise<{
+    sessionKeys: string[];
+    newestEntryTimestamp: string | null;
+    scanFailed: boolean;
+  }> {
+    const transcriptDir = await resolveSafeStoragePath(this.config.memoryDir, "transcripts").catch(() => null);
+    if (transcriptDir === null) {
+      return { sessionKeys: [], newestEntryTimestamp: null, scanFailed: false };
+    }
+
+    const sessionKeys = new Set<string>();
+    let newestEntryTimestamp: string | null = null;
+    const collect = async (transcriptPath: string): Promise<void> => {
+      try {
+        const raw = await readFile(transcriptPath, "utf-8");
+        for (const line of raw.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const entry = JSON.parse(line) as TranscriptEntry;
+            if (typeof entry.sessionKey === "string" && entry.sessionKey.length > 0) {
+              sessionKeys.add(entry.sessionKey);
+            }
+            if (
+              typeof entry.timestamp === "string" &&
+              (newestEntryTimestamp === null || entry.timestamp > newestEntryTimestamp)
+            ) {
+              newestEntryTimestamp = entry.timestamp;
+            }
+          } catch {
+            // ignore malformed transcript lines
+          }
+        }
+      } catch {
+        // ignore unreadable transcript files
+      }
+    };
 
     try {
-      const sessionKeys = new Set<string>();
       const typeEntries = await readdir(transcriptDir, { withFileTypes: true });
       for (const typeEnt of typeEntries) {
         if (!typeEnt.isDirectory()) continue;
@@ -765,51 +793,29 @@ Respond with valid JSON matching this schema:
           for (const file of files) {
             const transcriptPath = await resolveSafeStoragePath(chanDir, file).catch(() => null);
             if (transcriptPath === null) continue;
-            await this.collectTranscriptSessionKeys(transcriptPath, sessionKeys);
+            await collect(transcriptPath);
           }
         }
       }
-      return Array.from(sessionKeys);
-    } catch {
-      return [];
-    }
-  }
-
-  private async collectTranscriptSessionKeys(
-    transcriptPath: string,
-    sessionKeys: Set<string>,
-  ): Promise<void> {
-    try {
-      const raw = await readFile(transcriptPath, "utf-8");
-      for (const line of raw.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const entry = JSON.parse(line) as TranscriptEntry;
-          if (typeof entry.sessionKey === "string" && entry.sessionKey.length > 0) {
-            sessionKeys.add(entry.sessionKey);
-          }
-          if (
-            typeof entry.timestamp === "string" &&
-            (this.newestTranscriptTimestamp === null ||
-              entry.timestamp > this.newestTranscriptTimestamp)
-          ) {
-            this.newestTranscriptTimestamp = entry.timestamp;
-          }
-        } catch {
-          // ignore malformed transcript lines
-        }
+      return {
+        sessionKeys: Array.from(sessionKeys),
+        newestEntryTimestamp,
+        scanFailed: false,
+      };
+    } catch (err) {
+      // ENOENT on the root is a never-written store — an EMPTY store, not a
+      // scan failure (those are different incidents).
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT") {
+        return { sessionKeys: [], newestEntryTimestamp: null, scanFailed: false };
       }
-    } catch {
-      // ignore unreadable transcript files
+      log.warn(`transcript scan failed: ${err}`);
+      return { sessionKeys: [], newestEntryTimestamp: null, scanFailed: true };
     }
   }
 
   // Get transcript entries for a session within a time range
-  private async getTranscriptEntries(
-    sessionKey: string,
-    startTime: Date,
-    endTime: Date
-  ): Promise<TranscriptEntry[]> {
+  private async getTranscriptEntries(sessionKey: string, startTime: Date, endTime: Date): Promise<TranscriptEntry[]> {
     // Shared session-identity layer (issue #1496, rule #22). Arbitrary keys
     // route to `session/<hash>`; legacy `agent:<id>:...` keep their paths. The
     // shared helper also supplies the read-back-only candidate dirs (mirrors
@@ -821,8 +827,8 @@ Respond with valid JSON matching this schema:
       const transcriptRoot = path.join(this.config.memoryDir, "transcripts");
       const candidateDirs = new Set(
         [paths.dir, paths.alternateDir, paths.legacyDir, ...paths.readbackDirs].filter(
-          (dir): dir is string => typeof dir === "string" && dir.length > 0,
-        ),
+          (dir): dir is string => typeof dir === "string" && dir.length > 0
+        )
       );
       const entries: TranscriptEntry[] = [];
       // Dedup identical raw rows that a partially-applied migration may have

@@ -26,7 +26,10 @@ interface StubOrchestrator {
   _codingContextBySession: Map<string, CodingContext>;
 }
 
-function makeService(memoryDir: string, transcriptEnabled: boolean): { service: EngramAccessService; orchestrator: StubOrchestrator } {
+function makeService(
+  memoryDir: string,
+  transcriptEnabled: boolean
+): { service: EngramAccessService; orchestrator: StubOrchestrator } {
   const config = {
     memoryDir,
     transcriptEnabled,
@@ -196,4 +199,19 @@ test("memory_summarize_hourly warns distinctly when the store is stale and the h
     assert.equal(result.staleStore, true);
     assert.equal(result.warning, "no transcript entries for the target hour and no new entries recently");
   });
+});
+
+test("observeTranscriptSessionKey scopes transcripts to the effective write namespace (#2783 review)", async () => {
+  const { observeTranscriptSessionKey } = await import("./access-observe-transcript.js");
+  const config = { defaultNamespace: "generalist" } as { defaultNamespace: string };
+  // Same client-controlled sessionKey from two principals in different
+  // namespaces must not share one transcript identity.
+  const a = observeTranscriptSessionKey("agent:shared-key:s1", "project-origin-aaa", config);
+  const b = observeTranscriptSessionKey("agent:shared-key:s1", "project-origin-bbb", config);
+  assert.notEqual(a, b);
+  assert.ok(a.includes("project-origin-aaa"));
+  assert.ok(b.includes("project-origin-bbb"));
+  // A default-store write keeps the raw key (single-store deployments
+  // unchanged, mirroring the LCM archive key rules).
+  assert.equal(observeTranscriptSessionKey("agent:shared-key:s1", "generalist", config), "agent:shared-key:s1");
 });
