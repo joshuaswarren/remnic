@@ -61,8 +61,10 @@ export interface PublishVaultNoteInput {
   dryRun?: boolean;
 }
 
-const START_MARKER_RE = /^<!--\s*remnic:([^:]+?):start\s*-->$/;
-const END_MARKER_RE = /^<!--\s*remnic:([^:]+?):end\s*-->$/;
+// Bounded whitespace runs: an unbounded `\s*` chain around a lazy capture is the
+// CodeQL js/polynomial-redos shape `check:regex-safety` rejects (issue #2439).
+const START_MARKER_RE = /^<!--\s{0,8}remnic:([^:]+?):start\s{0,8}-->$/;
+const END_MARKER_RE = /^<!--\s{0,8}remnic:([^:]+?):end\s{0,8}-->$/;
 
 type SectionOutcome =
   | { ok: true; text: string }
