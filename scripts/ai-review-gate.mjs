@@ -198,12 +198,24 @@ export function evaluateAiReviewGate({
   const positiveCheckRunTimesByAlias = new Map();
   const blockers = [];
   const configuredAliases = new Set(groups.flat());
+  /**
+   * Configured reviewers that produced ANY current-head activity, regardless of
+   * verdict — an APPROVED review, a CHANGES_REQUESTED, a bare COMMENTED review,
+   * a comment with no recognized verdict phrase, or a check run.
+   *
+   * The waiver path in the workflow is only for heads where no required
+   * reviewer participated at all. Without this signal it also fired when a bot
+   * posted a non-positive COMMENTED review, converting real reviewer output
+   * into a waived gate.
+   */
+  const participatedAliases = new Set();
 
   const latestReviews = new Map();
   for (const review of reviews) {
     const login = normalizeLogin(review.user?.login);
     if (!login || !configuredAliases.has(login)) continue;
     if (!isCurrentActivity(review, headSha, headCommittedAt)) continue;
+    participatedAliases.add(login);
     const previous = latestReviews.get(login);
     if (!previous || activityTime(review) >= activityTime(previous)) {
       latestReviews.set(login, review);
@@ -222,8 +234,10 @@ export function evaluateAiReviewGate({
 
   for (const comment of [...issueComments, ...reviewComments]) {
     const login = normalizeLogin(comment.user?.login);
-    if (!login || !configuredAliases.has(login) || !bodyHasPositiveVerdict(comment.body)) continue;
+    if (!login || !configuredAliases.has(login)) continue;
     if (!isCurrentActivity(comment, headSha, headCommittedAt)) continue;
+    participatedAliases.add(login);
+    if (!bodyHasPositiveVerdict(comment.body)) continue;
     positiveByAlias.set(login, { alias: login, kind: "comment", state: "POSITIVE_COMMENT" });
   }
 
@@ -246,6 +260,7 @@ export function evaluateAiReviewGate({
   for (const checkRun of latestCheckRuns.values()) {
     const conclusion = normalizeLogin(checkRun.conclusion);
     const alias = checkRun.alias;
+    participatedAliases.add(alias);
     const checkTime = checkRunTime(checkRun);
     if (BAD_CHECK_CONCLUSIONS.has(conclusion)) {
       blockers.push({ alias, kind: "check_run", state: conclusion || "unknown" });
@@ -283,6 +298,7 @@ export function evaluateAiReviewGate({
       present,
       missing,
       blockers: effectiveBlockers,
+      participated: [...participatedAliases].sort(),
     };
   }
 
@@ -293,6 +309,7 @@ export function evaluateAiReviewGate({
       present,
       missing,
       blockers: effectiveBlockers,
+      participated: [...participatedAliases].sort(),
     };
   }
 
@@ -302,6 +319,7 @@ export function evaluateAiReviewGate({
     present,
     missing,
     blockers: effectiveBlockers,
+    participated: [...participatedAliases].sort(),
   };
 }
 

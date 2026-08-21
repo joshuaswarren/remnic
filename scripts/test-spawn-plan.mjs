@@ -21,24 +21,40 @@ export function resolveTsxCliPath(repoRoot) {
 /**
  * Build the spawn plan for the root test runner.
  *
- * win32: spawn node directly against the tsx JS entry with `shell: false` —
- * a shell would wrap the `.cmd` shim, break `testProcess.kill` signal
- * forwarding, and concatenate args unquoted.
- * POSIX: keep spawning the `tsx` bin (resolved from the workspace `.bin`
- * via PATH), also without a shell.
+ * Both platforms spawn node directly against the tsx JS entry with
+ * `shell: false`. On win32 a shell would wrap the `.cmd` shim, break
+ * `testProcess.kill` signal forwarding, and concatenate args unquoted.
+ *
+ * POSIX used to spawn the bare `tsx` bin and rely on PATH. That failed with
+ * an opaque `spawn tsx ENOENT` in any worktree whose root `node_modules/.bin`
+ * was absent or incomplete — the error named neither the missing package nor
+ * the fix. Resolving the entry explicitly turns that into either a working
+ * run or the actionable message below.
+ *
+ * `tsxCliPath` stays an accepted override so callers (and the unit tests) can
+ * pin a path; when omitted it is resolved from `repoRoot`.
  */
-export function buildTestSpawnPlan({ platform, execPath, tsxCliPath, runnerArgs, files }) {
+export function buildTestSpawnPlan({ platform, execPath, tsxCliPath, repoRoot, runnerArgs, files }) {
   const args = ["--test", ...runnerArgs, ...files];
-  if (platform === "win32") {
-    return {
-      command: execPath,
-      args: [tsxCliPath, ...args],
-      shell: false,
-    };
+  let cliPath = tsxCliPath;
+  if (!cliPath) {
+    if (!repoRoot) {
+      throw new Error("buildTestSpawnPlan requires tsxCliPath or repoRoot to locate the tsx CLI");
+    }
+    try {
+      cliPath = resolveTsxCliPath(repoRoot);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `cannot locate the tsx CLI from ${repoRoot}: ${reason}\n` +
+          "Install workspace dependencies first (node scripts/pnpm.mjs install), " +
+          "or create the worktree with scripts/dev-worktree.sh, which installs them.",
+      );
+    }
   }
   return {
-    command: "tsx",
-    args,
+    command: execPath,
+    args: [cliPath, ...args],
     shell: false,
   };
 }

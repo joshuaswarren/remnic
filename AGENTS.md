@@ -197,6 +197,22 @@ These rules are the default workflow for all agents and contributors.
 
 4. Run the local hardening gate before claiming review-clean.
    - Always run `npm run preflight:quick`.
+   - **Before every push, run `npm run check:pre-push`** (~1 min). It is the
+     subset of CI's `checks` job that needs no build, type-check, or test run:
+     structural ratchets, regex safety, the envelope belt, the config contract
+     (including parsed-keys snapshot drift), and lifecycle-matrix coverage. It
+     adds no policy — CI already enforces every one of them — it just makes the
+     cheap half runnable in seconds. This exists because a parallel batch where
+     each implementer ran only its focused test produced one red CI run per
+     branch, each for a DIFFERENT cheap check nobody had run. `preflight:quick`
+     remains the gate before requesting review; this is the gate before `git push`.
+   - A file **exactly at** its `fileSizeGrandfather` ceiling fails the moment you
+     add a line — and CI measures the MERGE commit, so merging `main` can push it
+     over on its own even when your branch tip is clean. `check-ratchets` now ends
+     with an explicit `WARNING` block naming the at-ceiling files you touched
+     (scoped by `REMNIC_RATCHET_CHANGED_FILES_PATH`, which `check:pre-push` and CI
+     both set). If your branch is behind `main`, merge it before trusting a green
+     local ratchet run.
    - If you touch `orchestrator.ts`, `storage.ts`, `intent.ts`, `memory-cache.ts`,
      `entity-retrieval.ts`, `config.ts`, or any file under `storage/` or `orchestration/`
      in `src/` or `packages/remnic-core/src/`, also run `npm run test:entity-hardening`.
@@ -328,6 +344,14 @@ remain. Work with this, not against it:
    run as a product defect.
 5. A positive CodeRabbit review on the current head satisfies
    `ai-reviewers` when Cursor never starts. Cursor remains accepted.
+   When NO required reviewer posts anything at all on a head, the gate now
+   concludes `success` with the title `Reviewers never posted — gate waived`
+   instead of `neutral`. That is deliberate: the ruleset requires this context
+   and does not accept `neutral`, so the old escape hatch left such PRs blocked
+   and the only way forward was an admin merge — which bypasses EVERY required
+   check at once. Waiving this one gate explicitly keeps `checks`, the test
+   shards, and `unresolved-review-threads` enforced. A posted
+   `CHANGES_REQUESTED` still fails the gate; only reviewer *absence* is waived.
 6. Rulesets evaluate the LATEST check-run per required context, not the best
    one. A `neutral` check-run posted after a `success` on the same head keeps
    `mergeable_state: blocked` indefinitely — the gate reads red even though a

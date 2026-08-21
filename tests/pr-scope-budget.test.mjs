@@ -186,6 +186,46 @@ test("issue references are extracted, deduped, boundary-checked, and code-stripp
   assert.deepEqual([...filtered], [42]);
 });
 
+test("a closing keyword behind a determiner is description, not a claim (this-run #2774)", () => {
+  // Verbatim shape of a real single-issue PR body that this gate reported as
+  // spanning two issues: it cited the predecessor issue in prose, and the
+  // touched file's own docstring referenced it too.
+  const issues = extractIssueRefs(
+    "Fixes #2712\n\nFollow-up to the closed #2448 / #2488, which made `status` honor the env var but left the daemon verbs local."
+  );
+  assert.deepEqual([...issues], [2712], "only the claimed issue counts");
+
+  // Only ARTICLES form the descriptive noun phrase.
+  for (const article of ["the", "a", "an"]) {
+    assert.equal(
+      extractIssueRefs(`Follow-up to ${article} closed #999.`).size,
+      0,
+      `"${article} closed #999" must not count as a claim`
+    );
+  }
+
+  // Real claims still count, including mid-sentence and multi-ref forms.
+  assert.deepEqual([...extractIssueRefs("Closes #5 and #6")].sort((a, b) => a - b), [5, 6]);
+  assert.deepEqual([...extractIssueRefs("This reverts behavior; Fixes #78")], [78]);
+
+  // Present-tense keywords behind a demonstrative are ordinary claims.
+  assert.deepEqual([...extractIssueRefs("This fixes #123")], [123]);
+  assert.deepEqual([...extractIssueRefs("That resolves #456")], [456]);
+  assert.deepEqual([...extractIssueRefs("This closes #7 and #8")].sort((a, b) => a - b), [7, 8]);
+
+  // So are PAST-tense keywords whose lead is the grammatical subject rather
+  // than an article — suppressing these undercounted a real multi-issue PR.
+  assert.deepEqual([...extractIssueRefs("This closed #123 and #456")].sort((a, b) => a - b), [123, 456]);
+  assert.deepEqual([...extractIssueRefs("That fixed #7")], [7]);
+  assert.deepEqual([...extractIssueRefs("Already resolved #9")], [9]);
+
+  assert.deepEqual(
+    [...extractIssueRefs("This fixes #10. Follow-up to the closed #11.")],
+    [10],
+    "the claim counts while the article-led historical reference beside it does not"
+  );
+});
+
 test("extractIssueRefs ignores see/part-of/pull URLs (this-run #2550)", () => {
   const issues = extractIssueRefs(
     "Fixes #2387.\nSupport-passport recovery from https://github.com/joshuaswarren/remnic/pull/2360. See #12, part of #34."

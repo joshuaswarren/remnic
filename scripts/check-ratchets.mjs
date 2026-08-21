@@ -660,6 +660,11 @@ function main() {
   const current = collectMetrics(threshold);
   const failures = [];
   const improvements = [];
+  // Touched files at or near a ceiling are a WARNING, not an "improvement".
+  // They were previously reported in the improvements list, where a reader
+  // scanning ~10 lines of baseline chatter reliably missed them and only
+  // learned about the ceiling from a red CI run (issue #2774).
+  const warnings = [];
 
   // The baseline and the script's WATCHLIST must describe the same set of
   // files; a silent mismatch would leave a watchlist file unchecked (or make
@@ -753,10 +758,16 @@ function main() {
       } else if (lines < ceiling) {
         improvements.push(`file-size ceiling ${file}: ${ceiling} -> ${lines} lines`);
         if (inScope(file) && ceiling - lines < 20) {
-          improvements.push(`${file} has ${ceiling - lines} LOC of grandfather headroom (${lines}/${ceiling})`);
+          warnings.push(
+            `${file} has only ${ceiling - lines} LOC of headroom (${lines}/${ceiling}) — ` +
+              "put additions in a sibling module",
+          );
         }
       } else if (inScope(file) && lines === ceiling) {
-        improvements.push(`${file} is at its grandfather ceiling ${ceiling} — extract before adding lines`);
+        warnings.push(
+          `${file} is EXACTLY at its ceiling ${ceiling} — any added line fails this gate; ` +
+            "extract instead, and note that CI measures the merge commit, so merging main can push it over on its own",
+        );
       }
     }
     for (const file of Object.keys(baselineCeilings).sort()) {
@@ -828,6 +839,18 @@ function main() {
     for (const improvement of improvements) {
       console.log(`[ratchet]   - ${improvement}`);
     }
+  }
+  // Printed last so it is the final thing a reader sees before OK. Only shown
+  // when a changed-file scope is known (PR CI, or REMNIC_RATCHET_CHANGED_FILES_PATH
+  // locally): without one, every watchlist file is "in scope" and the block
+  // would be noise rather than a warning about what you just touched.
+  if (warnings.length > 0 && readChangedFileScope() !== null) {
+    console.log("");
+    console.log("[ratchet] WARNING — you are editing files with no room to grow:");
+    for (const warning of warnings) {
+      console.log(`[ratchet]   ! ${warning}`);
+    }
+    console.log("");
   }
   console.log("[ratchet] OK");
 }
