@@ -74,7 +74,7 @@ import {
 } from "../behavior-signals.js";
 import { buildProcedurePersistBody } from "../procedural/procedure-types.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
-import { evaluateSubjectGuard, isSharedPromotionTarget, resolveWriteSubject } from "../memory-subject.js";
+import { resolveWriteSubject } from "../memory-subject.js";
 import { LocalLlmClient } from "../local-llm.js";
 import type { ExtractionEngine } from "../extraction.js";
 import {
@@ -104,8 +104,10 @@ import type {
 import {
   createBatchPromotedCopyProbe,
   flushDeferredFactHashOnFailure,
+  makeSubjectGuardAllows,
   profileAutoPromotionAllows,
   readActiveMemoriesBothTiers,
+  promotionWithholdsToolScope,
   shouldPromoteToShared,
 } from "./extraction-persist-promotion.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
@@ -346,17 +348,7 @@ export class ExtractionPersistCoordinator {
     const sourceConnector = sourceContext?.sourceConnector; const origin = classifyExtractionOrigin(sourceContext);
     // Subject guard (issue #2372): the ONE gate shared by every extraction-side
     // promotion path so behavior matches the spaces surface (§27).
-    const subjectGuardAllows = (subject: MemorySubject | undefined, target: string, label: string): boolean => {
-      const decision = evaluateSubjectGuard({
-        subject,
-        sharedTarget: isSharedPromotionTarget(target),
-        mode: this.deps.config.subjectGuard,
-      });
-      if (decision.action !== "allow") {
-        log.warn(`subject-guard(${decision.action}) ${label}: ${decision.reason}`);
-      }
-      return decision.action !== "reject";
-    };
+    const subjectGuardAllows = makeSubjectGuardAllows(this.deps.config);
     const promoteMemoryToProfileTargets = async (options: {
       sourceStorage: StorageManager;
       category: string;
@@ -587,6 +579,8 @@ export class ExtractionPersistCoordinator {
       source: string;
       origin?: string;
       sourceConnector?: string;
+      /** Committed-record tool-scope marker — see {@link promotionWithholdsToolScope}. */
+      toolScoped?: true;
       procedureSteps?: ReadonlyArray<{ toolCall?: { kind?: string } }>;
       /** Claim-level provenance spans (issue #1575 PR 2). */
       sources?: ProvenanceSource[];
@@ -597,7 +591,7 @@ export class ExtractionPersistCoordinator {
         "memoryId"
       >;
     }): Promise<void> => {
-      const toolScoped = withholdToolScopedFromSharedNamespace(options);
+      const toolScoped = promotionWithholdsToolScope(options);
       await promoteMemoryToProfileTargets({
         ...options,
         ...(toolScoped ? { toolScoped: true as const } : {}),
@@ -2553,6 +2547,7 @@ export class ExtractionPersistCoordinator {
       const semanticMerge = await applySemanticMergeAtPersist(this.deps, {
         storage: targetStorage, content: fact.content, category: writeCategory, sources: fact.sources, sourceConnector: extractionSourceConnector,
         incomingMetadata: { tags: [...fact.tags, ...injectionScreenTags], entityRef: fact.entityRef, structuredAttributes: fact.structuredAttributes, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, biTemporal: biTemporal !== undefined, importanceScore: importance.score, confidence: fact.confidence, provenanceStrength: fact.provenance, toolScoped: factToolScoped, subject: factSubject, origin, faithfulness: faithfulnessFm }, skip: contradictionDetected || faithfulnessEnforceStatus === "pending_review" || batchBackendUnavailable || novelty.decision === "add",
+        incomingLinks: links.length > 0 ? links : undefined,
         targetHasPromotedCopies: (targetId) => promotedCopyProbe.check(targetStorage, targetId),
       });
       if (semanticMerge.action === "created" && semanticMerge.reason === "backend_unavailable") batchBackendUnavailable = true; // arms the batch short circuit for the remaining facts

@@ -52,6 +52,7 @@ import type {
   MemoryCategory,
   MemoryFile,
   MemoryFrontmatter,
+  MemoryLink,
   MemorySubject,
   ProvenanceSource,
 } from "../types.js";
@@ -80,7 +81,10 @@ export type SemanticMergeCreateReason =
  * origin. Absent optional fields stay absent: a target without temporal
  * bounds or attributes promotes a copy without them. The record's
  * confidence is the downgraded min(incoming, target) value the merge
- * patch stamped (final round A), so the copy stamps that same value.
+ * patch stamped (final round A), so the copy stamps that same value. The
+ * tool-scope marker and owning connector ride along (finding A) so the
+ * promotion's withhold gate evaluates the record's committed scope, not a
+ * fresh content-heuristic guess over the merged body.
  */
 export interface MergedTargetPromotionPayload {
   category: string;
@@ -106,6 +110,14 @@ export interface MergedTargetPromotionPayload {
   subject?: MemorySubject;
   /** The committed target's own write provenance label. */
   source: string;
+  /** Committed tool-scope marker + owning connector (finding A): the copy must
+   * stay withheld from the shared namespace exactly like the record it copies.
+   * Re-running the content heuristics over the merged body is not equivalent —
+   * the judge-composed text can drop the tool references that earned the
+   * target its marker at write time, and without the connector the heuristic
+   * returns false outright. */
+  toolScoped?: true;
+  sourceConnector?: string;
 }
 
 /**
@@ -161,6 +173,8 @@ export async function buildMergedTargetPromotionPayload(
       : {}),
     ...(fm.provenance !== undefined ? { provenance: fm.provenance } : {}),
     ...(fm.subject !== undefined ? { subject: fm.subject } : {}),
+    ...(fm.toolScoped === true ? { toolScoped: true as const } : {}),
+    ...(fm.sourceConnector !== undefined ? { sourceConnector: fm.sourceConnector } : {}),
   };
 }
 
@@ -263,6 +277,15 @@ export interface ApplySemanticMergeOptions {
      */
     faithfulness?: FaithfulnessFrontmatter;
   };
+  /**
+   * Navigation links the caller suggested for the incoming fact (finding B).
+   * The create path stamps these on the fact it writes; a merge that dropped
+   * them would permanently lose the relationships, so a successful merge
+   * attaches them to the TARGET record in the same conditional frontmatter
+   * patch that stamps provenance — deduped on (targetId, linkType), the key
+   * `StorageManager.addLinksToMemory` uses.
+   */
+  incomingLinks?: readonly MemoryLink[];
   /**
    * Finding C: async probe run after a merge verdict but before any
    * mutation. True when the would-be target already has promoted
@@ -530,6 +553,27 @@ async function revertMergedContent(
   }
 }
 
+/**
+ * Finding B — union the incoming fact's suggested navigation links into the
+ * target's committed links, deduping on (targetId, linkType): the same key
+ * `StorageManager.addLinksToMemory` uses. Returns undefined when there is
+ * nothing to attach so the patch carries no `links` key at all (an empty
+ * array would ERASE committed links).
+ */
+export function mergeMemoryLinks(
+  existing: readonly MemoryLink[] | undefined,
+  incoming: readonly MemoryLink[] | undefined,
+): MemoryLink[] | undefined {
+  if (!incoming || incoming.length === 0) return undefined;
+  const merged = [...(existing ?? [])];
+  for (const link of incoming) {
+    if (!merged.some((l) => l.targetId === link.targetId && l.linkType === link.linkType)) {
+      merged.push({ ...link });
+    }
+  }
+  return merged;
+}
+
 export async function applySemanticMergeAtPersist(
   deps: ExtractionPersistDeps,
   options: ApplySemanticMergeOptions,
@@ -732,6 +776,10 @@ export async function applySemanticMergeAtPersist(
       options.category === "fact"
         ? ContentHashIndex.computeHash(sanitizeMemoryContent(decision.mergedContent).text)
         : undefined;
+    // Finding B — the incoming fact's suggested navigation links attach to
+    // the target here, in the same conditional patch (the fact is never
+    // created on this path, so the create path's `links` carrier cannot run).
+    const mergedLinks = mergeMemoryLinks(merged.frontmatter.links, options.incomingLinks);
     const patched = await options.storage.writeMemoryFrontmatterIfUnchanged(
       merged,
       {
@@ -757,6 +805,7 @@ export async function applySemanticMergeAtPersist(
               confidenceTier: confidenceTier(parity.confidenceFloor),
             }
           : {}),
+        ...(mergedLinks !== undefined ? { links: mergedLinks } : {}),
       },
       { actor: "semantic-merge" },
     );

@@ -1167,7 +1167,7 @@ See [compounding.md](compounding.md).
 | `semanticMerge.enabled` | `false` | Judge-mediated merge-on-write (issue #2330). Master gate; with it off there is no lookup and no judge call — byte-identical behavior to before the feature. |
 | `semanticMerge.minSimilarity` | `0.8` | Lower bound of the merge band `[minSimilarity, semanticDedupThreshold)`. Must be **strictly below** `semanticDedupThreshold` (which owns the near-duplicate skip path above it); an equal or higher value is rejected at config parse time whenever merging is enabled or this key is set explicitly. A pre-existing config that lowered `semanticDedupThreshold` to at or below `0.8` and never configured `semanticMerge` keeps starting — the disabled feature performs no band lookup. |
 | `semanticMerge.maxCandidates` | `3` | Maximum in-band neighbors offered to the merge judge. Must be an **integer ≥ 0** — non-integer values (`0.5`, `3.7`) are rejected at parse time rather than floored. **Set to `0` to disable merging entirely** — the short-circuit happens before any embedding lookup. |
-| `semanticMerge.categories` | `["fact","preference","decision","relationship","skill"]` | Memory categories eligible for merging; must be an array of non-empty category names (anything else is rejected at parse time, never silently replaced with the defaults). The episodic and immutable categories (procedure, reasoning trace, moment, correction) never merge regardless of this list. |
+| `semanticMerge.categories` | `["fact","preference","decision","relationship","skill"]` | Memory categories eligible for merging; must be an array of mergeable category names — every entry must be one of `fact, preference, entity, decision, relationship, principle, commitment, skill, rule`. Anything else (a malformed array, an unknown entry such as `facts`, or an episodic/immutable category) is rejected at parse time with the valid list, never silently replaced with the defaults — an unknown entry would silently disable merging for every category because no extracted memory can match it. The episodic and immutable categories (procedure, reasoning trace, moment, correction) never merge regardless of this list and cannot be listed. |
 | `semanticMerge.shadowMode` | `false` | Decision-only rollout mode: run the lookup and judge, log the would-merge verdict, then always create. Never mutates an existing memory. |
 | `noveltyGateEnabled` | `false` | Write-path embedding-density novelty gate (issue #1953). Off = unchanged persist path. |
 | `noveltyAddThreshold` | `0.55` | Novelty score ≥ this value is ADD (skip semantic/LLM dedup). |
@@ -1266,11 +1266,20 @@ into a create-or-update decision:
    confidence, tags, entity ref, structured attributes, importance, intent
    fields, memory kind, bi-temporal bounds (`validAt`, `invalidAt`,
    `observedAt`, `eventTimeSource`), provenance strength, claim spans,
-   subject, and write-provenance label — so no field on the promotion path
-   reads the incoming extraction, and a copy is authority-fenced exactly like
-   the source its `sourceMemoryId` names (an unstamped legacy target promotes
+   subject, write-provenance label, and the tool-scope marker with its owning
+   `sourceConnector` — so no field on the promotion path reads the incoming
+   extraction, and a copy is authority-fenced exactly like the
+   source its `sourceMemoryId` names (an unstamped legacy target promotes
    as `unknown`, the fence's least-privilege default; a target whose temporal
-   bounds or attributes the incoming fact omits keeps them on the copy).
+   bounds or attributes the incoming fact omits keeps them on the copy; a
+   `toolScoped: true` target's copy stays withheld from the shared
+   namespace even when the merged body no longer matches the content
+   heuristics that earned the marker). When memory linking is on and the
+   caller suggested navigation links for the incoming fact, a successful
+   merge attaches them to the target's committed `links` (deduped on
+   target+type) in the same conditional frontmatter patch, so the
+   relationships the create path would have stamped on the new fact stay
+   traversable from the target instead of being lost.
    Promotion eligibility gates on the committed target's own confidence —
    the downgraded `min(incoming, target)` value where a lower incoming
    confidence merged in. A target that cannot ground the promotion after

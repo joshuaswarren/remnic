@@ -13,10 +13,12 @@
  */
 
 import { coerceBool, coerceNumber } from "../connectors/coerce.js";
+import { MEMORY_CATEGORIES } from "../correction/correction-contract.js";
 import type { SemanticMergeConfig } from "../types.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { semanticDedupThresholdFrom } from "./novelty-gate.js";
 import { parseMinMergeScore } from "./merge-min-score.js";
+import { REFUSED_MERGE_CATEGORIES } from "./merge-on-write.js";
 import { checkMergedContent } from "./merge-content.js";
 import type { SemanticDedupHit, SemanticDedupLookup } from "./semantic.js";
 import { normalizeConnectorScope } from "./connector-scope.js";
@@ -225,6 +227,17 @@ export const DEFAULT_SEMANTIC_MERGE_CATEGORIES = [
   "skill",
 ] as const;
 
+/**
+ * The categories `semanticMerge.categories` may name: every known memory
+ * category except the episodic/immutable ones `REFUSED_MERGE_CATEGORIES`
+ * excludes at runtime — listing a refused category configures a gate that
+ * can never fire, and an unknown string (a typo like "facts") silently
+ * disables merging for every category, so both are rejected at parse time.
+ */
+export const MERGEABLE_MEMORY_CATEGORIES: readonly string[] = MEMORY_CATEGORIES.filter(
+  (category) => !(REFUSED_MERGE_CATEGORIES as readonly string[]).includes(category),
+);
+
 export const DEFAULT_SEMANTIC_MERGE_MIN = 0.8;
 export const DEFAULT_SEMANTIC_MERGE_CANDIDATES = 3;
 
@@ -299,6 +312,14 @@ export function parseSemanticMergeConfig(
   ) {
     throw new Error(
       `semanticMerge.categories must be an array of non-empty category names (got ${describeValue(rawCategories)}).`,
+    );
+  }
+  const invalidCategory = (rawCategories as string[] | undefined)?.find(
+    (c) => !MERGEABLE_MEMORY_CATEGORIES.includes(c),
+  );
+  if (invalidCategory !== undefined) {
+    throw new Error(
+      `semanticMerge.categories contains an unknown or never-mergeable category: ${describeValue(invalidCategory)}. Valid categories: ${MERGEABLE_MEMORY_CATEGORIES.join(", ")}. The episodic and immutable categories (${REFUSED_MERGE_CATEGORIES.join(", ")}) never merge and cannot be listed.`,
     );
   }
   const categories =

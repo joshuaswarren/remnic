@@ -12,7 +12,9 @@
 
 import { StorageManager } from "../index.js";
 import { log } from "../logger.js";
-import { confidenceTier } from "../types.js";
+import { withholdToolScopedFromSharedNamespace } from "../tool-scoped-memory.js";
+import { evaluateSubjectGuard, isSharedPromotionTarget } from "../memory-subject.js";
+import { confidenceTier, type MemorySubject } from "../types.js";
 import {
   resolveNamespaceCapabilities,
   resolveRecallEnhancementCapabilities,
@@ -131,6 +133,49 @@ export async function flushDeferredFactHashOnFailure(
   await saveContentHashIndexes().catch((err) =>
     log.warn(`content-hash flush after post-write failure failed: ${err}`),
   );
+}
+
+/**
+ * Merged-target promotion scope gate (PR #2771 finding A). A committed
+ * record stamped `toolScoped: true` must keep its promoted copy withheld
+ * from the shared namespace even when the merged body no longer matches
+ * the content heuristics that earned the target its marker at write time —
+ * the merge judge composes new text, and without the incoming connector
+ * the heuristic returns false outright. The committed marker is
+ * authoritative; the heuristics only ever ADD withholding. Not a
+ * parsed-config surface: the field is the frontmatter literal `true` or
+ * absent.
+ */
+export function promotionWithholdsToolScope(options: {
+  toolScoped?: true;
+  content: string;
+  sourceConnector?: string;
+  procedureSteps?: ReadonlyArray<{ toolCall?: { kind?: string } }>;
+}): boolean {
+  return (
+    options.toolScoped === true || withholdToolScopedFromSharedNamespace(options)
+  );
+}
+
+/**
+ * Subject guard (issue #2372), extracted verbatim from the coordinator
+ * closure: the ONE gate shared by every extraction-side promotion path so
+ * behavior matches the spaces surface (§27).
+ */
+export function makeSubjectGuardAllows(
+  config: PluginConfig,
+): (subject: MemorySubject | undefined, target: string, label: string) => boolean {
+  return (subject, target, label) => {
+    const decision = evaluateSubjectGuard({
+      subject,
+      sharedTarget: isSharedPromotionTarget(target),
+      mode: config.subjectGuard,
+    });
+    if (decision.action !== "allow") {
+      log.warn(`subject-guard(${decision.action}) ${label}: ${decision.reason}`);
+    }
+    return decision.action !== "reject";
+  };
 }
 
 /**

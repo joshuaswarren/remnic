@@ -1636,6 +1636,7 @@
     "semanticDedupEnabled.trim",
     "semanticDedupThreshold.trim",
     "semanticMerge.categories.every",
+    "semanticMerge.categories.find",
     "semanticMerge.enabled.trim",
     "semanticMerge.maxCandidates.trim",
     "semanticMerge.shadowMode.trim",

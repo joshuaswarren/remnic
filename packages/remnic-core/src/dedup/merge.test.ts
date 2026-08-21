@@ -11,6 +11,8 @@ import {
   buildMergedTargetPromotionPayload,
   type ApplySemanticMergeOptions,
 } from "../orchestration/semantic-merge-persist.js";
+import { promotionWithholdsToolScope } from "../orchestration/extraction-persist-promotion.js";
+import { withholdToolScopedFromSharedNamespace } from "../tool-scoped-memory.js";
 import type { ExtractionPersistDeps } from "../orchestration/extraction-persist-deps.js";
 import { StorageManager } from "../index.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
@@ -34,6 +36,7 @@ import {
   DEFAULT_SEMANTIC_MERGE_CANDIDATES,
   DEFAULT_SEMANTIC_MERGE_MIN,
   decideSemanticMerge,
+  MERGEABLE_MEMORY_CATEGORIES,
   parseSemanticMergeConfig,
   type MergeCandidate,
   type MergeJudgeRawVerdict,
@@ -1596,4 +1599,172 @@ test("buildMergedTargetPromotionPayload: never promotes from an inactive committ
   });
   assert.ok(payload);
   assert.equal(payload.content, MERGED);
+});
+
+function realStorageDeps(
+  dir: string,
+  createdId: string,
+  hitConnector?: string,
+): ExtractionPersistDeps {
+  return {
+    config: parseConfig({
+      memoryDir: dir,
+      versioningEnabled: true,
+      semanticMerge: { enabled: true },
+    }),
+    getLocalLlm: () => null,
+    semanticDedupLookup: async () => [
+      { id: createdId, score: 0.85, ...(hitConnector ? { sourceConnector: hitConnector } : {}) },
+    ],
+    indexPersistedMemory: async () => {},
+  } as unknown as ExtractionPersistDeps;
+}
+
+test("buildMergedTargetPromotionPayload: carries the committed tool-scope marker and connector (finding A)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-scope-"));
+  const storage = new StorageManager(dir);
+  await storage.ensureDirectories();
+  const created = await storage.writeMemory("fact", EXISTING, {
+    source: "test",
+    sourceConnector: "connector-a",
+    toolScoped: true,
+  });
+  // Same-connector incoming fact that is NOT independently tool-scoped: the
+  // parity gate keeps the target's narrower scope and lets the merge run.
+  const outcome = await applySemanticMergeAtPersist(
+    realStorageDeps(dir, created.id, "connector-a"),
+    {
+      storage,
+      content: INCOMING,
+      category: "fact",
+      sources: [INCOMING_SOURCE],
+      sourceConnector: "connector-a",
+      judgeCall: (options) => acceptingJudge(options),
+    },
+  );
+  assert.equal(outcome.action, "merged");
+  const payload = await buildMergedTargetPromotionPayload(storage, {
+    targetId: created.id,
+    mergedContent: MERGED,
+  });
+  assert.ok(payload);
+  // The content heuristics alone would NOT withhold the merged body — only
+  // the committed marker keeps the promoted copy out of the shared namespace.
+  assert.equal(
+    withholdToolScopedFromSharedNamespace({
+      content: payload.content,
+      sourceConnector: payload.sourceConnector,
+    }),
+    false,
+  );
+  assert.equal(payload.toolScoped, true);
+  assert.equal(payload.sourceConnector, "connector-a");
+  // The exact gate promoteMemoryToShared runs over the spread payload.
+  assert.equal(promotionWithholdsToolScope(payload), true);
+});
+
+test("buildMergedTargetPromotionPayload: an unscoped target promotes a payload without scope fields (finding A)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-plain-"));
+  const storage = new StorageManager(dir);
+  await storage.ensureDirectories();
+  const created = await storage.writeMemory("fact", EXISTING, { source: "test" });
+  const outcome = await applySemanticMergeAtPersist(realStorageDeps(dir, created.id), {
+    storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  const payload = await buildMergedTargetPromotionPayload(storage, {
+    targetId: created.id,
+    mergedContent: MERGED,
+  });
+  assert.ok(payload);
+  assert.equal("toolScoped" in payload, false);
+  assert.equal("sourceConnector" in payload, false);
+  assert.equal(promotionWithholdsToolScope(payload), false);
+});
+
+test("applySemanticMergeAtPersist: suggested links attach to the merged target and stay traversable (finding B)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-links-"));
+  const storage = new StorageManager(dir);
+  await storage.ensureDirectories();
+  const created = await storage.writeMemory("fact", EXISTING, { source: "test" });
+  const neighbor = await storage.writeMemory(
+    "fact",
+    "Releases are cut after the deploy window closes.",
+    { source: "test" },
+  );
+  const linked = await storage.writeMemory(
+    "fact",
+    "The on-call rotation follows the release train.",
+    { source: "test" },
+  );
+  await storage.addLinksToMemory(created.id, [
+    { targetId: linked.id, linkType: "supports", strength: 0.9 },
+  ]);
+  const outcome = await applySemanticMergeAtPersist(realStorageDeps(dir, created.id), {
+    storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingLinks: [
+      { targetId: neighbor.id, linkType: "related", strength: 0.8, reason: "same cadence" },
+      { targetId: linked.id, linkType: "supports", strength: 0.5 },
+    ],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  // Traversal surfaces (dependency propagation, recall-navigate) read
+  // frontmatter.links off the committed record — so the round-tripped
+  // record IS the navigation contract.
+  const committed = await storage.getMemoryByIdIncludingArchived(created.id);
+  assert.ok(committed);
+  const links = committed.frontmatter.links ?? [];
+  assert.equal(links.length, 2, JSON.stringify(links));
+  assert.ok(
+    links.some((l) => l.targetId === neighbor.id && l.linkType === "related"),
+    "the suggested link must be attached to the target",
+  );
+  assert.ok(
+    links.some(
+      (l) => l.targetId === linked.id && l.linkType === "supports" && l.strength === 0.9,
+    ),
+    "the committed link is deduped against, not replaced by, the incoming duplicate",
+  );
+});
+
+test("applySemanticMergeAtPersist: no suggested links leaves the target's committed links untouched (finding B)", async () => {
+  const h = await harness();
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  // An empty links patch would ERASE committed links — the key must be absent.
+  assert.equal("links" in (h.calls.frontmatterPatches[0]?.patch ?? {}), false);
+});
+
+test("parseSemanticMergeConfig: unknown or never-mergeable categories are rejected with the valid list (finding C)", () => {
+  for (const bad of [["facts"], ["fact", "procedue"], ["procedure"], ["reasoning_trace"], ["moment"], ["correction"]]) {
+    assert.throws(
+      () => parseSemanticMergeConfig({ semanticMerge: { categories: bad } }),
+      /Valid categories: fact, preference, entity, decision, relationship, principle, commitment, skill, rule/,
+      JSON.stringify(bad),
+    );
+  }
+  assert.throws(
+    () => parseSemanticMergeConfig({ semanticMerge: { categories: ["facts"] } }),
+    /The episodic and immutable categories \(procedure, reasoning_trace, moment, correction\) never merge/,
+  );
+  assert.deepEqual(
+    parseSemanticMergeConfig({
+      semanticMerge: { categories: [...MERGEABLE_MEMORY_CATEGORIES, "rule"] },
+    }).semanticMerge.categories,
+    [...MERGEABLE_MEMORY_CATEGORIES, "rule"],
+  );
 });
