@@ -16,6 +16,7 @@ import {
 import { log } from "./logger.js";
 import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
 import { executeMemoryPromote } from "./memory-promote.js";
+import { requireOpenClawToolWriteOrigin } from "./tool-write-origin.js";
 import { WorkStorage } from "@remnic/core/work/storage";
 import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "@remnic/core/work/board";
 import { wrapWorkLayerContext } from "@remnic/core/work/boundary";
@@ -271,7 +272,7 @@ function formatContinuityLoopSummary(loop: ContinuityImprovementLoop): string {
   return lines.join("\n");
 }
 
-export function registerTools(api: ToolApi, orchestrator: Orchestrator): void {
+export function registerTools(api: ToolApi, orchestrator: Orchestrator, hostRuntimeAgentId?: string): void {
   const useDedicatedOpenClawMemoryTools =
     orchestrator.config.openclawToolsEnabled !== false;
   const actionTypes: MemoryActionType[] = [
@@ -2872,9 +2873,9 @@ Best for:
       description:
         "Write an agent work product into the shared-context directory (v4.0). Other agents can read these files to coordinate without explicit message passing.",
       parameters: Type.Object({
-        // Provenance is server-derived: a configured runtime principal wins
-        // over whatever the model passes here, and a mismatch is rejected.
-        agentId: Type.String({ description: "Agent ID producing this output; must match the configured runtime principal when one is set." }),
+        // Provenance is server-derived from the host runtime agent; a
+        // mismatching value here is rejected, never used as the origin.
+        agentId: Type.String({ description: "Agent ID producing this output; must match this host's runtime agent id." }),
         title: Type.String({ description: "Short title for the output." }),
         content: Type.String({ description: "Markdown content to write." }),
       }),
@@ -2890,9 +2891,7 @@ Best for:
             agentId,
             title,
             content,
-            // Provenance is server-derived: the configured runtime principal
-            // wins over whatever the model passed as agentId.
-            authenticatedIdentity: orchestrator.config.agentAccessHttp?.principal,
+            authenticatedIdentity: requireOpenClawToolWriteOrigin(hostRuntimeAgentId),
           });
           return toolResult(`Wrote shared agent output: ${fp}`);
         } catch (err) {
