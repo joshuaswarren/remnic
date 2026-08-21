@@ -175,7 +175,7 @@ import {
 import { callDeepRecallPolicyLlm } from "./deep-recall-policy-llm.js";
 import { createDeepRecallSeedSearch } from "./deep-recall-seeds.js";
 import { renderDeepRecallResult } from "./deep-recall-renderer.js";
-import { readAbstractionNodes, readCueAnchors } from "./harmonic-retrieval.js";
+import { readProjectedHarmonicGraph } from "./harmonic-retrieval.js";
 import { stripAttributesSuffix } from "./structured-attributes.js";
 import {
   type GraphSnapshotNodeMetadata,
@@ -2772,16 +2772,18 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
           storage,
           router: this.orchestrator,
         }),
-        loadGraph: async () => ({
-          nodes: await readAbstractionNodes({
+        // Nodes and anchors are projected against the namespace's CURRENT
+        // active memories through the SAME helper searchHarmonicRetrieval
+        // uses. A raw read still carries the stored title, summary, and
+        // anchor value of a memory that was later rejected or quarantined,
+        // and the deep-recall state prompt hands those to the policy LLM long
+        // before `loadMemory(...).active` can exclude the memory itself.
+        loadGraph: async () =>
+          readProjectedHarmonicGraph({
             memoryDir: storage.dir,
             abstractionNodeStoreDir: graphStoreDir,
+            anchorsEnabled: true,
           }),
-          anchors: await readCueAnchors({
-            memoryDir: storage.dir,
-            abstractionNodeStoreDir: graphStoreDir,
-          }),
-        }),
         loadMemory: async (memoryId) => {
           const memory = await storage.getMemoryById(memoryId);
           if (!memory) return null;

@@ -10,6 +10,10 @@
  *    and cue-anchor store, never the default namespace's configured override.
  * 4. Degradation: an unavailable namespace index is a `backend_unavailable`
  *    failure, never a healthy empty result.
+ * 5. Principal: authorization derives from the presenting authenticated
+ *    principal, never from the client-supplied `sessionKey`.
+ * 6. Governance: graph nodes and anchors are projected against the current
+ *    active memories BEFORE anything reaches the policy LLM's state prompt.
  *
  * All paths are synthetic temp dirs; no operator data.
  */
@@ -29,7 +33,227 @@ import { DEEP_RECALL_CONFIG_DEFAULTS } from "./deep-recall-config.js";
 import { createDeepRecallSeedSearch } from "./deep-recall-seeds.js";
 import { runBudgetedDeepRecall } from "./deep-recall.js";
 import { NamespaceSearchRouter, namespaceCollectionName } from "./namespaces/search.js";
+import { StorageManager } from "./storage.js";
 import type { SearchBackend } from "./search/port.js";
+
+test("HTTP deep recall authorizes with the presenting principal, not the client's sessionKey (issue #2332 review)", async () => {
+  // The route dropped `scope.authenticatedPrincipal`, so the service fell back
+  // to deriving the principal from the client-supplied `sessionKey`. Both
+  // directions broke: a crafted key matching another principal's rule read
+  // that principal's namespace, and a legitimate namespace-enabled request
+  // carrying no session key was refused as unauthenticated.
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-principal-"));
+  try {
+    const namespaceDir = path.join(memoryDir, "namespaces", "ns_alice");
+    await mkdir(namespaceDir, { recursive: true });
+    const config = parseConfig({
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      qmdCollection: "remnic-test",
+      deepRecall: { enabled: true, maxSteps: 0 },
+      principalFromSessionKeyMode: "map",
+      principalFromSessionKeyRules: [{ match: "crafted-alice-key", principal: "alice" }],
+      namespacePolicies: [{ name: "ns_alice", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+    });
+    const storageCalls: string[] = [];
+    const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
+    // Test double: deepRecall touches only these orchestrator members, and the
+    // real Orchestrator cannot be constructed without a live backend.
+    const host = service as unknown as { orchestrator: unknown };
+    host.orchestrator = {
+      config,
+      async getStorage(namespace: string) {
+        storageCalls.push(namespace);
+        return {
+          dir: namespaceDir,
+          async readMemoryByPath() {
+            return null;
+          },
+          async getMemoryById() {
+            return null;
+          },
+        };
+      },
+      async searchAcrossNamespaces() {
+        return [];
+      },
+      localLlm: null,
+      fastGatewayLlm: null,
+    };
+    const server = new EngramAccessHttpServer({
+      service,
+      port: 0,
+      trustPrincipalHeader: true,
+      adminConsoleEnabled: false,
+      authTokenEntriesGetter: () => [{ token: "operator-token", capabilities: { version: 1 } }],
+    });
+    const status = await server.start();
+    const postDeep = (principal: string, body: Record<string, unknown>) =>
+      fetch(`http://127.0.0.1:${status.port}/engram/v1/recall/deep`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer operator-token",
+          "x-engram-principal": principal,
+        },
+        body: JSON.stringify({ query: "who owns the routing decision", ...body }),
+      });
+    try {
+      // The escalation this fix closes: principal `bob` presents a session key
+      // whose configured rule names `alice`, and asks for alice's namespace.
+      const escalation = await postDeep("bob", {
+        namespace: "ns_alice",
+        sessionKey: "crafted-alice-key",
+      });
+      assert.notEqual(
+        escalation.status,
+        200,
+        "a crafted sessionKey must not buy another principal's namespace",
+      );
+      assert.deepEqual(storageCalls, [], "the denied namespace must never be opened");
+
+      // The other direction: an authenticated principal with NO session key is
+      // authenticated, and must not be refused for lack of one.
+      const legitimate = await postDeep("alice", { namespace: "ns_alice" });
+      assert.equal(
+        legitimate.status,
+        200,
+        "a namespace-enabled request from an authenticated principal needs no sessionKey",
+      );
+      const body: unknown = await legitimate.json();
+      assert.ok(body && typeof body === "object" && "ok" in body && body.ok === true);
+      assert.deepEqual(
+        storageCalls,
+        ["ns_alice"],
+        "the presenting principal's namespace is the one opened",
+      );
+    } finally {
+      await server.stop();
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("deep recall projects graph nodes against active memories before the policy prompt (issue #2332 review)", async () => {
+  // `loadGraph` read nodes and anchors raw, so a node built from a memory that
+  // was later rejected still carried its stored title and its anchor value.
+  // Both reached the policy LLM through the frontier in the state prompt, long
+  // before `loadMemory(...).active` could drop the memory from the entries:
+  // governed metadata left the store anyway. The graph now flows through the
+  // SAME active-source projection `searchHarmonicRetrieval` uses.
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-governed-"));
+  try {
+    const config = parseConfig({
+      memoryDir,
+      qmdEnabled: false,
+      qmdCollection: "remnic-test",
+      deepRecall: { enabled: true, maxSteps: 1 },
+    });
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const seed = await storage.writeMemory("fact", "Alpha holds the payments routing decision.", {
+      tags: ["payments"],
+    });
+    const governed = await storage.writeMemory(
+      "fact",
+      "GOVERNED-CONTENT names the fallback processor contract.",
+      { tags: ["payments"] },
+    );
+    assert.equal(seed.tombstoneBlocked, false, "the seed fixture must actually persist");
+    assert.equal(governed.tombstoneBlocked, false, "the governed fixture must actually persist");
+    assert.ok(
+      await storage.updateMemoryFrontmatter(governed.id, { status: "rejected" }),
+      "the governed source memory is moved out of the active set",
+    );
+
+    const recordedAt = "2026-08-01T00:00:00.000Z";
+    const node = (nodeId: string, title: string, sourceMemoryIds: string[]) => ({
+      schemaVersion: 1 as const,
+      nodeId,
+      recordedAt,
+      sessionKey: "test-session",
+      kind: "topic" as const,
+      abstractionLevel: "meso" as const,
+      title,
+      summary: `Synthetic ${nodeId} summary`,
+      sourceMemoryIds,
+    });
+    await recordAbstractionNode({
+      memoryDir,
+      node: node("node-seed", "Seeded payments routing topic", [seed.id]),
+    });
+    await recordAbstractionNode({
+      memoryDir,
+      node: node("node-governed", "GOVERNED-TITLE rejected fallback topic", [governed.id]),
+    });
+    await recordCueAnchor({
+      memoryDir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "anchor-shared",
+        anchorType: "entity",
+        anchorValue: "GOVERNED-ANCHOR+payments",
+        normalizedCue: "governed anchor payments",
+        recordedAt,
+        sessionKey: "test-session",
+        nodeRefs: ["node-seed", "node-governed"],
+      },
+    });
+
+    const prompts: string[] = [];
+    const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
+    // Test double: the real Orchestrator needs a live backend, but the graph
+    // and the source memories below are read from the REAL store on disk.
+    const host = service as unknown as { orchestrator: unknown };
+    host.orchestrator = {
+      config,
+      async getStorage() {
+        return storage;
+      },
+      async searchAcrossNamespaces() {
+        return [{ docid: seed.id, path: seed.memory.path, score: 0.9, snippet: "" }];
+      },
+      localLlm: {
+        async chatCompletion(messages: Array<{ content: string }>) {
+          prompts.push(messages.map((message) => message.content).join("\n"));
+          return { content: JSON.stringify({ action: "STOP", reason: "sufficient" }) };
+        },
+      },
+      fastGatewayLlm: null,
+    };
+
+    const result = await service.deepRecall({ query: "acme payments routing decision" });
+
+    assert.equal(result.ok, true);
+    assert.ok(prompts.length > 0, "the policy loop must actually have rendered a state prompt");
+    const rendered = prompts.join("\n");
+    assert.ok(
+      rendered.includes("Alpha holds the payments routing decision"),
+      "the active seed really is in the state prompt (the assertions below are not vacuous)",
+    );
+    assert.ok(
+      !rendered.includes("GOVERNED-TITLE"),
+      "a node whose only source memory was rejected must not reach the policy prompt",
+    );
+    assert.ok(
+      !rendered.includes("GOVERNED-ANCHOR"),
+      "the anchor value attributed through a rejected source must not reach the policy prompt",
+    );
+    assert.ok(
+      !rendered.includes("node-governed"),
+      "the governed node must not be offered as a frontier candidate",
+    );
+    assert.deepEqual(
+      result.entries.map((entry) => entry.memoryId),
+      [seed.id],
+      "only the active memory survives to the entries",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 
 test("HTTP deep recall gates the body namespace, not just the query string (issue #2332 review)", async () => {
   // The route used to resolve the scope from `?namespace=` only and then let
@@ -188,6 +412,30 @@ test("deep recall reads the graph from the resolved namespace, not the default s
       namespacePolicies: [{ name: namespace, readPrincipals: ["operator"], writePrincipals: ["operator"] }],
     });
 
+    // Real source memories in the tenant's store: the graph projection every
+    // reader shares resolves node sources against the CURRENT active memories,
+    // so a node whose sources are not really there is not eligible at all.
+    const storage = new StorageManager(namespaceDir);
+    await storage.ensureDirectories();
+    const seed = await storage.writeMemory("fact", "Alpha holds the payments routing decision.", {
+      tags: ["payments"],
+    });
+    const nsOnly = await storage.writeMemory(
+      "fact",
+      "The tenant's own anchor-linked fallback contract.",
+      { tags: ["payments"] },
+    );
+    // Reachable ONLY through the default namespace's graph: routing the graph
+    // read to that store is what would surface it.
+    const defaultLeak = await storage.writeMemory(
+      "fact",
+      "Metadata reachable only through the default namespace's graph.",
+      { tags: ["payments"] },
+    );
+    for (const written of [seed, nsOnly, defaultLeak]) {
+      assert.equal(written.tombstoneBlocked, false, "every fixture memory must actually persist");
+    }
+
     const recordedAt = "2026-08-01T00:00:00.000Z";
     const node = (nodeId: string, sourceMemoryIds: string[]) => ({
       schemaVersion: 1 as const,
@@ -210,9 +458,9 @@ test("deep recall reads the graph from the resolved namespace, not the default s
       sessionKey: "test-session",
       nodeRefs,
     });
-    // The namespace's own store: mem-alpha's node shares an anchor with the
-    // node holding mem-ns-b-only.
-    for (const own of [node("node-ns-b-seed", ["mem-alpha"]), node("node-ns-b-linked", ["mem-ns-b-only"])]) {
+    // The namespace's own store: the seed's node shares an anchor with the
+    // node holding the tenant-only memory.
+    for (const own of [node("node-ns-b-seed", [seed.id]), node("node-ns-b-linked", [nsOnly.id])]) {
       await recordAbstractionNode({ memoryDir: namespaceDir, node: own });
     }
     await recordCueAnchor({
@@ -220,8 +468,8 @@ test("deep recall reads the graph from the resolved namespace, not the default s
       anchor: anchor("anchor-ns-b", ["node-ns-b-seed", "node-ns-b-linked"]),
     });
     // The DEFAULT namespace's store, reached only through the override. It
-    // collides on mem-alpha and links to foreign metadata.
-    for (const foreign of [node("node-default-seed", ["mem-alpha"]), node("node-default-linked", ["mem-default-leak"])]) {
+    // collides on the seed memory and links to the default-only metadata.
+    for (const foreign of [node("node-default-seed", [seed.id]), node("node-default-linked", [defaultLeak.id])]) {
       await recordAbstractionNode({ memoryDir, abstractionNodeStoreDir: defaultStoreOverride, node: foreign });
     }
     await recordCueAnchor({
@@ -230,12 +478,7 @@ test("deep recall reads the graph from the resolved namespace, not the default s
       anchor: anchor("anchor-default", ["node-default-seed", "node-default-linked"]),
     });
 
-    const contentById: Record<string, string> = {
-      "mem-alpha": "Alpha holds the payments routing decision.",
-      "mem-ns-b-only": "The tenant's own anchor-linked fallback contract.",
-      "mem-default-leak": "Default-namespace metadata that must never leak.",
-    };
-    const seedPath = path.join(namespaceDir, "facts", "2026-08-01", "mem-alpha.md");
+    const seedPath = seed.memory.path;
     const policyScript = [
       JSON.stringify({ action: "EXPAND", expandNodeIds: ["node-ns-b-linked"], reason: "follow the tenant anchor" }),
       JSON.stringify({ action: "STOP", reason: "sufficient" }),
@@ -247,24 +490,10 @@ test("deep recall reads the graph from the resolved namespace, not the default s
     host.orchestrator = {
       config,
       async getStorage() {
-        return {
-          dir: namespaceDir,
-          async readMemoryByPath(filePath: string) {
-            return filePath === seedPath ? { frontmatter: { id: "mem-alpha" } } : null;
-          },
-          async getMemoryById(memoryId: string) {
-            const content = contentById[memoryId];
-            if (content === undefined) return null;
-            return {
-              frontmatter: { id: memoryId, status: "active" },
-              content,
-              path: path.join(namespaceDir, "facts", "2026-08-01", `${memoryId}.md`),
-            };
-          },
-        };
+        return storage;
       },
       async searchAcrossNamespaces() {
-        return [{ docid: "mem-alpha", path: seedPath, score: 0.9, snippet: "" }];
+        return [{ docid: seed.id, path: seedPath, score: 0.9, snippet: "" }];
       },
       localLlm: {
         async chatCompletion() {
@@ -284,12 +513,12 @@ test("deep recall reads the graph from the resolved namespace, not the default s
     const ids = result.entries.map((entry) => entry.memoryId).sort();
     assert.deepEqual(
       ids,
-      ["mem-alpha", "mem-ns-b-only"],
+      [seed.id, nsOnly.id].sort(),
       "the namespace's own anchor expansion is reachable and no default-namespace memory is",
     );
     assert.equal(result.trace[0]?.action, "EXPAND", "the tenant's frontier node was a valid selection");
     assert.ok(
-      !JSON.stringify(result).includes("mem-default-leak"),
+      !JSON.stringify(result).includes(defaultLeak.id),
       "default-namespace graph metadata must never reach a non-default caller",
     );
   } finally {

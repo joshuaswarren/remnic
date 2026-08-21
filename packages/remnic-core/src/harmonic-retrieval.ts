@@ -267,27 +267,46 @@ export async function readCueAnchors(options: {
   return anchors;
 }
 
-export async function searchHarmonicRetrieval(options: {
+export interface ProjectedHarmonicGraph {
+  nodes: AbstractionNode[];
+  anchors: CueAnchor[];
+}
+
+/**
+ * Read nodes + anchors and project BOTH against the namespace's current active
+ * memories. This is the single projection every graph reader shares: a raw
+ * `readAbstractionNodes` / `readCueAnchors` pair still carries the stored title,
+ * summary, tags, and anchor attribution of a memory that was later rejected,
+ * quarantined, or otherwise moved out of the active set, so a second reader
+ * that skipped the projection could leak governed metadata even when the
+ * memory itself is excluded from the final results.
+ *
+ * - A node whose every source memory left the active set is dropped.
+ * - A surviving node's title/summary/tags/entityRefs are rebuilt from its
+ *   active sources only.
+ * - An anchor keeps a node reference only while its attribution runs through
+ *   one of that node's surviving active sources, and is dropped once no
+ *   reference survives.
+ */
+export async function readProjectedHarmonicGraph(options: {
   memoryDir: string;
   abstractionNodeStoreDir?: string;
-  query: string;
-  maxResults: number;
-  sessionKey?: string;
   anchorsEnabled: boolean;
   abortSignal?: AbortSignal;
   temporalExpiredInInjection?: boolean;
-}): Promise<HarmonicRetrievalResult[]> {
+  nowMs?: number;
+}): Promise<ProjectedHarmonicGraph> {
   throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
-  const queryTokens = new Set(normalizeRecallTokens(options.query, ["what", "which"]));
-  if (queryTokens.size === 0 || options.maxResults <= 0) return [];
-
   const nodes = await readAbstractionNodes(options);
-  const sourceBackedNodes = nodes.filter((node) => (node.sourceMemoryIds?.length ?? 0) > 0);
-  const sourceMemories: SourceMemoryMap =
-    sourceBackedNodes.length > 0 ? await readSourceMemories(options) : new Map<string, MemoryFile>();
+  const sourceBacked = nodes.some((node) => (node.sourceMemoryIds?.length ?? 0) > 0);
+  const sourceMemories: SourceMemoryMap = sourceBacked
+    ? await readSourceMemories(options)
+    : new Map<string, MemoryFile>();
+  const nowMs = options.nowMs ?? Date.now();
+  // A node whose full stored source set survived projection keeps legacy
+  // anchor attribution (an anchor written before per-node source ids existed).
   const legacyCompatibleNodeRefs = new Set<string>();
-  const nowMs = Date.now();
-  const eligibleNodes = nodes.flatMap((node) => {
+  const projectedNodes = nodes.flatMap((node) => {
     const projected = projectSourceBackedNode(
       node,
       sourceMemories,
@@ -304,6 +323,40 @@ export async function searchHarmonicRetrieval(options: {
     }
     return projected ? [projected] : [];
   });
+  if (!options.anchorsEnabled) return { nodes: projectedNodes, anchors: [] };
+  throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
+  const nodeIndex = new Map(projectedNodes.map((node) => [node.nodeId, node]));
+  const anchors = (await readCueAnchors(options)).flatMap((anchor) => {
+    throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
+    const nodeRefs = anchor.nodeRefs.filter((nodeRef) => {
+      const node = nodeIndex.get(nodeRef);
+      return (
+        node !== undefined &&
+        anchorMatchesProjectedNode(anchor, nodeRef, node, legacyCompatibleNodeRefs.has(nodeRef))
+      );
+    });
+    return nodeRefs.length > 0 ? [{ ...anchor, nodeRefs }] : [];
+  });
+  return { nodes: projectedNodes, anchors };
+}
+
+export async function searchHarmonicRetrieval(options: {
+  memoryDir: string;
+  abstractionNodeStoreDir?: string;
+  query: string;
+  maxResults: number;
+  sessionKey?: string;
+  anchorsEnabled: boolean;
+  abortSignal?: AbortSignal;
+  temporalExpiredInInjection?: boolean;
+}): Promise<HarmonicRetrievalResult[]> {
+  throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
+  const queryTokens = new Set(normalizeRecallTokens(options.query, ["what", "which"]));
+  if (queryTokens.size === 0 || options.maxResults <= 0) return [];
+
+  // One projection for every graph reader: nodes and anchors both arrive
+  // already narrowed to the namespace's current active memories.
+  const { nodes: eligibleNodes, anchors } = await readProjectedHarmonicGraph(options);
   const candidates = new Map<string, HarmonicCandidate>();
 
   for (const node of eligibleNodes) {
@@ -321,19 +374,13 @@ export async function searchHarmonicRetrieval(options: {
 
   if (options.anchorsEnabled) {
     throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
-    const anchors = await readCueAnchors(options);
     const nodeIndex = new Map(eligibleNodes.map((node) => [node.nodeId, node]));
     for (const anchor of anchors) {
       throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
- const eligibleNodeRefs = anchor.nodeRefs.filter((nodeRef) => {
- const node = nodeIndex.get(nodeRef);
- return (
- node !== undefined &&
- anchorMatchesProjectedNode(anchor, nodeRef, node, legacyCompatibleNodeRefs.has(nodeRef))
- );
- });
- const eligibleNodeTags = new Set(eligibleNodeRefs.flatMap((nodeRef) => nodeIndex.get(nodeRef)?.tags ?? []));
- const eligibleAnchorTags = anchor.tags?.filter((tag) => eligibleNodeTags.has(tag)) ?? [];
+      // `nodeRefs` are the projection's surviving references already.
+      const eligibleNodeRefs = anchor.nodeRefs;
+      const eligibleNodeTags = new Set(eligibleNodeRefs.flatMap((nodeRef) => nodeIndex.get(nodeRef)?.tags ?? []));
+      const eligibleAnchorTags = anchor.tags?.filter((tag) => eligibleNodeTags.has(tag)) ?? [];
       const { score, matchedFields } = scoreAnchor(anchor, queryTokens, eligibleAnchorTags);
       if (score <= 0) continue;
       for (const nodeRef of eligibleNodeRefs) {

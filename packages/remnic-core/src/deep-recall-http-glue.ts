@@ -40,8 +40,18 @@ export async function respondDeepRecall(
    * otherwise read another tenant. access-http supplies the gate and applies
    * the query-string fallback, so this module never selects a namespace of
    * its own. Throws 403 when the effective namespace is not permitted.
+   *
+   * `authenticatedPrincipal` is the identity the transport authenticated, and
+   * it MUST reach the service: authorization and the audit trail derive from
+   * the presenting principal, never from the client-supplied `sessionKey`.
+   * Dropping it let a crafted key matching another principal rule read that
+   * principal's namespaces, and made a legitimate namespace-enabled request
+   * with no session key fail as unauthenticated.
    */
-  scopeFor: (bodyNamespace?: string, bodySessionKey?: string) => { namespace?: string; sessionKey?: string },
+  scopeFor: (
+    bodyNamespace?: string,
+    bodySessionKey?: string,
+  ) => { namespace?: string; sessionKey?: string; authenticatedPrincipal?: string },
 ): Promise<void> {
   const parsed = deepRecallRequestSchema.safeParse(await readJsonBody(req));
   if (!parsed.success) {
@@ -59,6 +69,7 @@ export async function respondDeepRecall(
     ...(maxSteps !== undefined ? { maxSteps } : {}),
     namespace: scope.namespace,
     sessionKey: scope.sessionKey,
+    authenticatedPrincipal: scope.authenticatedPrincipal,
   });
   respondJson(res, 200, result);
 }
