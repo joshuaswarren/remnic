@@ -12,8 +12,15 @@
  * - With a remote origin set, `status`, `query`, `xray`, the `doctor`
  *   daemon check, and the `oauth` commands target that origin with
  *   `Authorization: Bearer <token>` (token precedence identical to
- *   `resolveOperatorToken`). No local daemon is spawned or probed;
- *   `remnic daemon start|install` stays local by design.
+ *   `resolveOperatorToken`). No local daemon is spawned or probed.
+ * - Hosted-only mode (issue #2712): a NON-LOOPBACK remote origin makes
+ *   `remnic daemon start|install|restart` refuse, naming that origin, so
+ *   the CLI never spawns a local remnic-server beside the hosted one.
+ *   `daemon stop|uninstall` stay allowed — they are the cleanup path for
+ *   a leftover local daemon. Loopback origins keep local behavior: the
+ *   whole `127.0.0.0/8` range, `localhost`, `::1`, and the IPv4-mapped
+ *   loopback range `::ffff:127.0.0.0/104`. A host that does not parse
+ *   confidently as loopback is treated as remote — the safe direction.
  * - Without a remote origin, `resolveDaemonBaseUrl()` keeps the previous
  *   `http://host:port` behavior, env overrides included, so it matches
  *   the endpoint `startServer()` actually binds.
