@@ -301,8 +301,9 @@ function applySection(
 
 /**
  * Refuse any note whose `remnic:<name>:{start,end}` markers are not a flat
- * sequence of correctly named pairs. Every UNFENCED line is scanned — a
- * fenced pair is sample text, invisible to this scan and to replacement —
+ * sequence of correctly named pairs. Every line outside a code block is
+ * scanned — a fenced or indented pair is sample text, invisible to this
+ * scan and to replacement —
  * because `applyManagedRegion` pairs a start with the next end of the SAME
  * name and would otherwise span a malformed region and delete every byte
  * in between. Four shapes are malformed:

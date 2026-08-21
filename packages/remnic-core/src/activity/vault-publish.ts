@@ -29,9 +29,10 @@ export function applyManagedRegion(
 
   const startMarker = `<!-- remnic:${opts.name}:start -->`;
   const endMarker = `<!-- remnic:${opts.name}:end -->`;
-  // Markers are owned only outside a fenced code block: a complete pair
-  // inside a ``` example is sample text the user wrote, and replacing
-  // between it would overwrite their bytes (issue #1985).
+  // Markers are owned only outside a code block — fenced or indented: a
+  // complete pair inside a ``` or four-space-indented example is sample
+  // text the user wrote, and replacing between it would overwrite their
+  // bytes (issue #1985).
   const rows = fileLines(fileText);
   let startRow: FileLine | undefined;
   let endRow: FileLine | undefined;
@@ -104,15 +105,33 @@ export interface FileLine {
   start: number;
   next: number;
   number: number;
-  /** True inside a fenced code block, delimiter lines included. */
+  /** True inside a fenced or indented code block, delimiter lines included. */
   fenced: boolean;
 }
 
 /**
- * The one shared fence-aware line scanner (issue #1985): marker
- * replacement, heading replacement, and marker insertion all classify
- * lines through it, so fenced code examples are invisible to every
- * discovery and replacement scan.
+ * The one shared code-aware line scanner (issue #1985): marker discovery,
+ * marker replacement, mismatch scanning, and heading insertion all classify
+ * lines through it, so code examples are invisible to every scan.
+ *
+ * A line is code when a fence is open, or when its own indentation reaches
+ * four columns (CommonMark indented code block; one tab covers all four).
+ * Classification reads the RAW line — no consumer trims first — so the
+ * indentation cannot be erased before it is seen.
+ *
+ * Two deliberate simplifications, both resolving toward "code" (skip):
+ *   - CommonMark lets an indented line lazily continue an open paragraph
+ *     instead of opening a code block; we still call it code.
+ *   - CommonMark measures indentation relative to the containing block, so
+ *     a marker indented under a list item can be live content; we call it
+ *     code. Distinguishing either case needs full block tracking.
+ * Skipping a line refuses a publish; mis-reading one as live overwrites the
+ * user's bytes. The refusal is recoverable, the overwrite is not.
+ *
+ * A fence delimiter run is only live at indent < 4: deeper, the run is
+ * literal text inside an indented code block (and inside an open fence a
+ * 4+-indented closing run is content, not a closer), so `fenceRun` never
+ * sees an indented line.
  */
 export function fileLines(fileText: string): FileLine[] {
   const rows: FileLine[] = [];
@@ -128,7 +147,8 @@ export function fileLines(fileText: string): FileLine[] {
     else next = fileText.length;
     const line = fileText.slice(start, i);
 
-    const run = fenceRun(line);
+    const indentedCode = indentColumn(line) >= 4;
+    const run = indentedCode ? null : fenceRun(line);
     let fenced: boolean;
     if (fence === null) {
       // A backtick fence's info string may not contain a backtick, so a
@@ -136,7 +156,7 @@ export function fileLines(fileText: string): FileLine[] {
       if (run !== null && !(run.char === "`" && run.info.includes("`"))) {
         fence = { char: run.char, len: run.len };
       }
-      fenced = fence !== null;
+      fenced = fence !== null || indentedCode;
     } else {
       fenced = true;
       if (run !== null && run.char === fence.char && run.len >= fence.len && run.info.length === 0) {
@@ -149,6 +169,21 @@ export function fileLines(fileText: string): FileLine[] {
     start = next;
   }
   return rows;
+}
+
+/**
+ * The column a line's first non-whitespace character sits at: spaces count
+ * one, a tab advances to the next multiple of four (CommonMark tab handling).
+ */
+function indentColumn(line: string): number {
+  let col = 0;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (ch === " ") col += 1;
+    else if (ch === "\t") col += 4 - (col % 4);
+    else break;
+  }
+  return col;
 }
 
 /**

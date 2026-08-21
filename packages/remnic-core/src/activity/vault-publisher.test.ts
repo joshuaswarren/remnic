@@ -514,6 +514,116 @@ test("marker strategy ignores a marker pair inside a fenced code block", () => {
   assert.ok(after.includes("- card-a: code review (42m)"));
 });
 
+test("marker strategy ignores a marker pair inside a four-space-indented code block", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  // The indented example carries a complete `timeline` pair BEFORE the real
+  // region. A scanner that trims a row before classifying it erases the
+  // indentation, pairs the example's markers first, and replaces the
+  // example's contents while reporting a successful publish (issue #1985).
+  const indentedExample = [
+    "    <!-- remnic:timeline:start -->",
+    "    replace this sample text to see it work",
+    "    <!-- remnic:timeline:end -->",
+  ].join("\n");
+  const note = [
+    "---",
+    "title: daily",
+    "---",
+    "",
+    "Example from the docs:",
+    "",
+    indentedExample,
+    "",
+    "Real region:",
+    "",
+    "<!-- remnic:timeline:start -->",
+    "stale recap",
+    "<!-- remnic:timeline:end -->",
+    "",
+  ].join("\n");
+  writeFileSync(notePath, note, "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "- card-a: code review (42m)" }],
+  });
+
+  assert.equal(status.results[0]?.outcome, "updated");
+  const after = readFileSync(notePath, "utf8");
+  assert.ok(after.includes(indentedExample), "the indented example is byte-identical");
+  assert.ok(!after.includes("stale recap"), "the real region was replaced");
+  assert.ok(after.includes("- card-a: code review (42m)"));
+});
+
+test("marker strategy ignores a marker pair inside a tab-indented code block", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  // One tab is a full four-column indent (CommonMark tab handling), so the
+  // tab-indented example is code exactly like the four-space variant.
+  const indentedExample = [
+    "\t<!-- remnic:timeline:start -->",
+    "\treplace this sample text to see it work",
+    "\t<!-- remnic:timeline:end -->",
+  ].join("\n");
+  const note = [
+    "Example from the docs:",
+    "",
+    indentedExample,
+    "",
+    "<!-- remnic:timeline:start -->",
+    "stale recap",
+    "<!-- remnic:timeline:end -->",
+    "",
+  ].join("\n");
+  writeFileSync(notePath, note, "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "- card-a: code review (42m)" }],
+  });
+
+  assert.equal(status.results[0]?.outcome, "updated");
+  const after = readFileSync(notePath, "utf8");
+  assert.ok(after.includes(indentedExample), "the tab-indented example is byte-identical");
+  assert.ok(!after.includes("stale recap"), "the real region was replaced");
+  assert.ok(after.includes("- card-a: code review (42m)"));
+});
+
+test("a marker pair indented under a list item is skipped, not published", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  // CommonMark measures indentation relative to the containing block, so a
+  // marker indented under a list item CAN be live content rather than code.
+  // Distinguishing that needs full list tracking; this fix classifies any
+  // indent >= 4 as code instead. The ambiguity resolves to "skip": a refused
+  // publish is recoverable, an overwritten region is not.
+  const note = [
+    "- morning routine",
+    "",
+    "    <!-- remnic:timeline:start -->",
+    "    stale recap",
+    "    <!-- remnic:timeline:end -->",
+    "",
+  ].join("\n");
+  writeFileSync(notePath, note, "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "- card-a: code review (42m)" }],
+  });
+
+  assert.equal(status.results[0]?.outcome, "skipped");
+  assert.equal(status.results[0]?.reason, "no_marker");
+  assert.equal(readFileSync(notePath, "utf8"), note, "the ambiguous region is left untouched");
+});
+
 test("insertUnderHeading never inserts into a fenced heading", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   const notePath = path.join(vault, `${DATE}.md`);

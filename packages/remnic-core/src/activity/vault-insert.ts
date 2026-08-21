@@ -2,7 +2,8 @@
  * Managed-region marker insertion (issue #1985).
  *
  * Inserts a `<!-- remnic:<name>:start/end -->` pair under a unique ATX
- * heading when the region is absent. Fenced code blocks are invisible to
+ * heading when the region is absent. Code blocks — fenced or indented —
+ * are invisible to
  * the heading scan, so a live region is never inserted into a `## …`
  * example. This helper never replaces (see `vault-publish.ts`), never
  * creates files, and never invents a heading. Pure string-in/string-out.
