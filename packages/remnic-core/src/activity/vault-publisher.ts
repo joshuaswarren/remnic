@@ -63,8 +63,13 @@ export interface PublishVaultNoteInput {
 
 // Bounded whitespace runs: an unbounded `\s*` chain around a lazy capture is the
 // CodeQL js/polynomial-redos shape `check:regex-safety` rejects (issue #2439).
-const START_MARKER_RE = /^<!--\s{0,8}remnic:([^:]+?):start\s{0,8}-->$/;
-const END_MARKER_RE = /^<!--\s{0,8}remnic:([^:]+?):end\s{0,8}-->$/;
+// The name is captured up to the TERMINAL `:start`/`:end` suffix, so a marker
+// carrying a stray colon (`remnic:A:B:start`) is still seen by the scanner
+// instead of being silently invisible to it. `validateRegionName` rejects `:`
+// in a configured name, so such a marker can never be a legitimate pair and
+// always resolves to a refusal below.
+const START_MARKER_RE = /^<!--\s{0,8}remnic:(.+):start\s{0,8}-->$/;
+const END_MARKER_RE = /^<!--\s{0,8}remnic:(.+):end\s{0,8}-->$/;
 
 type SectionOutcome =
   | { ok: true; text: string }
@@ -280,12 +285,15 @@ function applySection(
  * sequence of correctly named pairs. The WHOLE note is scanned, because
  * `applyManagedRegion` pairs a start with the next end of the SAME name and
  * would otherwise span a malformed region and delete every byte in between.
- * Three shapes are malformed:
+ * Four shapes are malformed:
  *   - a crossed pair (`start:A` closed by `end:B`)
  *   - a nested start (`start:A`, `start:B`, `end:A`, `end:B`), where the
  *     inner region's end is the ONLY end left after A closes, so a
  *     replacement spans B's start marker and the user bytes around it
  *   - an orphan end with no open region, which cannot be paired at all
+ *   - a marker line that carries the `remnic:…:start`/`:end` shape but no
+ *     parseable name (empty name, or whitespace past the bounded run), which
+ *     the pairing scan cannot classify at all
  * Ambiguity always resolves to "keep the user's bytes".
  */
 function findMarkerMismatch(text: string): string | null {
@@ -301,7 +309,10 @@ function findMarkerMismatch(text: string): string | null {
       continue;
     }
     const match = END_MARKER_RE.exec(trimmed);
-    if (!match) continue;
+    if (!match) {
+      if (looksLikeRemnicMarkerLine(trimmed)) return `unparsable_marker:${trimmed}`;
+      continue;
+    }
     const end = match[1]!;
     if (begin === null) return `orphan_end:${end}`;
     // A blank marker name cannot be paired at all: refuse rather than let
@@ -311,6 +322,20 @@ function findMarkerMismatch(text: string): string | null {
     begin = null;
   }
   return null;
+}
+
+/**
+ * True for a line shaped like this publisher's own marker — `<!--` … `-->`
+ * wrapping `remnic:` … terminal `:start`/`:end` — that neither marker regex
+ * accepted. Classification only; the caller refuses the file. The exact
+ * trimmed line is inspected, never a normalized rewrite of it, so no
+ * "helpful" transform can widen what counts as parseable.
+ */
+function looksLikeRemnicMarkerLine(trimmed: string): boolean {
+  if (!trimmed.startsWith("<!--") || !trimmed.endsWith("-->")) return false;
+  const inner = trimmed.slice(4, -3).trim();
+  if (!inner.startsWith("remnic:")) return false;
+  return inner.endsWith(":start") || inner.endsWith(":end");
 }
 
 function frontmatterUpdates(

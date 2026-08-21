@@ -65,10 +65,10 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.timeline.vault.weeklyNotePath` | `""` | Weekly-note path template; empty means weekly-note publishing is disabled. Required (non-empty) when any publish target is `"weekly"`. |
 | `activity.timeline.vault.createMissingNotes` | `false` | Create a missing note from `noteTemplate` before publishing. Default is update-existing-only. |
 | `activity.timeline.vault.noteTemplate` | `(required when createMissingNotes)` | Vault-relative template file for note creation; its content passes through the same date-token expansion, then the managed region is inserted. |
-| `activity.timeline.vault.sectionStrategy` | `"markers"` | `"markers"` owns the bytes between an HTML-comment marker pair; `"heading"` owns a uniquely-named heading's body (duplicate headings are refused with both line numbers). |
+| `activity.timeline.vault.sectionStrategy` | `"markers"` | `"markers"` owns the bytes between an HTML-comment marker pair; `"heading"` owns a uniquely-named heading's body (duplicate headings are refused with both line numbers). Headings inside fenced code blocks are ignored, so a fenced `## Timeline` example is never published over. |
 | `activity.timeline.vault.publish.timeline.enabled` | `true` | Gate for the day timeline artifact — the live target, which publishes the persisted day recap. Paired with `activity.timeline.vault.publish.timeline.target` (`"daily"`) and `activity.timeline.vault.publish.timeline.section` (`Timeline`). |
 | `activity.timeline.vault.publish.timeline.target` | `"daily"` | Note file that receives the timeline artifact: `"daily"` or `"weekly"`. |
-| `activity.timeline.vault.publish.timeline.section` | `"Timeline"` | Managed-region (or heading) name for the timeline artifact. Non-empty, trimmed, unique among enabled sections on the same target file. |
+| `activity.timeline.vault.publish.timeline.section` | `"Timeline"` | Managed-region (or heading) name for the timeline artifact. Non-empty, trimmed, unique among enabled sections on the same target file, and free of `:` (the marker grammar's delimiter), a line break, or `-->`. |
 | `activity.timeline.vault.publish.standup.enabled` | `false` | Gate for the standup artifact; the target lights up when the standup renderer lands (timeline phase 3). |
 | `activity.timeline.vault.publish.standup.target` | `"daily"` | Note file that receives the standup artifact. |
 | `activity.timeline.vault.publish.standup.section` | `"Standup"` | Managed-region (or heading) name for the standup artifact. |

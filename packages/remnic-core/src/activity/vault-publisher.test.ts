@@ -278,3 +278,153 @@ test("an orphan end marker with no open region refuses the whole note", () => {
   assert.match(status.results[0]?.reason ?? "", /orphan_end:timeline/);
   assert.equal(readFileSync(notePath, "utf8"), note);
 });
+
+test("colon-bearing marker names cannot delete the user bytes between a malformed pair", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  // Marker order start:Work:Timeline, end:Other:Section, end:Work:Timeline.
+  // A scanner that captures the name with `[^:]+?` sees NO markers here, so
+  // the malformed sequence passes, and `applyManagedRegion` — which pairs by
+  // literal `indexOf` — pairs the start with the LAST end and deletes the
+  // orphan end marker plus every user byte between them.
+  const note = [
+    "<!-- remnic:Work:Timeline:start -->",
+    "stale recap",
+    "<!-- remnic:Other:Section:end -->",
+    "user content that must survive",
+    "<!-- remnic:Work:Timeline:end -->",
+    "",
+  ].join("\n");
+  writeFileSync(notePath, note, "utf8");
+
+  // A colon-bearing section name is refused before the note is opened.
+  assert.throws(
+    () =>
+      publishVaultNote({
+        vaultPath: vault,
+        notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+        date: DATE,
+        sections: [{ name: "Work:Timeline", content: "fresh recap" }],
+      }),
+    /not a valid region name/,
+  );
+  assert.equal(readFileSync(notePath, "utf8"), note, "every byte of the note is preserved");
+
+  // The note's own colon-bearing markers are still parsed and still refuse it,
+  // even when the configured section name is legal.
+  writeFileSync(
+    notePath,
+    `${note}<!-- remnic:timeline:start -->\nstale\n<!-- remnic:timeline:end -->\n`,
+    "utf8",
+  );
+  const mixed = readFileSync(notePath, "utf8");
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "fresh recap" }],
+  });
+
+  assert.equal(status.results[0]?.outcome, "skipped");
+  assert.match(status.results[0]?.reason ?? "", /name_mismatch:Work:Timeline:Other:Section/);
+  const after = readFileSync(notePath, "utf8");
+  assert.equal(after, mixed, "every byte of the note is preserved");
+  assert.ok(after.includes("user content that must survive"), "intervening user bytes survive");
+  assert.ok(after.includes("<!-- remnic:Other:Section:end -->"), "orphan end marker survives");
+  assert.ok(after.includes("stale recap"), "nothing is published over the stale region");
+});
+
+test("a marker line with no parseable name refuses the whole note", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  const note = ["<!-- remnic::start -->", "user bytes", "<!-- remnic:timeline:end -->", ""].join("\n");
+  writeFileSync(notePath, note, "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "fresh recap" }],
+  });
+
+  assert.equal(status.results[0]?.outcome, "skipped");
+  assert.match(status.results[0]?.reason ?? "", /unparsable_marker/);
+  assert.equal(readFileSync(notePath, "utf8"), note);
+});
+
+test("heading strategy ignores a heading inside a fenced code block", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  // The only `## Timeline` line lives inside a fenced example. A scanner
+  // without fence state accepts it as the owned heading and replaces the rest
+  // of the code block plus the human text after it, through EOF.
+  const note = [
+    "# Daily",
+    "",
+    "## Notes",
+    "",
+    "How to publish:",
+    "",
+    "```md",
+    "## Timeline",
+    "- example card inside the fence",
+    "~~~",
+    "```",
+    "",
+    "human paragraph after the fence",
+    "",
+  ].join("\n");
+  writeFileSync(notePath, note, "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    strategy: "heading",
+    sections: [{ name: "Timeline", content: "fresh recap" }],
+  });
+
+  assert.equal(status.results[0]?.outcome, "skipped");
+  assert.equal(status.results[0]?.reason, "no_heading");
+  assert.equal(readFileSync(notePath, "utf8"), note, "every byte of the note is preserved");
+});
+
+test("a fenced heading does not terminate the owned section early", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  // The owned `## Timeline` body contains a fenced `## Notes`, and the real
+  // `## Notes` follows the fence. A scanner without fence state ends the
+  // owned section at the FENCED heading, so the replacement lands mid-fence
+  // and leaves an unterminated code block plus an orphaned fence tail.
+  const note = [
+    "## Timeline",
+    "stale recap",
+    "",
+    "```",
+    "## Notes",
+    "fenced example line",
+    "```",
+    "",
+    "## Notes",
+    "",
+    "human paragraph",
+    "",
+  ].join("\n");
+  writeFileSync(notePath, note, "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    strategy: "heading",
+    sections: [{ name: "Timeline", content: "fresh recap" }],
+  });
+
+  assert.equal(status.results[0]?.outcome, "updated");
+  const after = readFileSync(notePath, "utf8");
+  // The whole fenced block sat inside the region Remnic owns, so it is
+  // replaced as one unit; the human content after the real heading is intact.
+  assert.equal(after, ["## Timeline", "fresh recap", "## Notes", "", "human paragraph", ""].join("\n"));
+  assert.ok(!after.includes("```"), "no unterminated fence is left behind");
+  assert.ok(after.includes("human paragraph"), "content after the real heading survives");
+});

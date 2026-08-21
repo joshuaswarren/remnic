@@ -43,8 +43,10 @@ export function applyManagedRegion(
 
 function applyHeadingRegion(fileText: string, name: string, content: string): ApplyManagedRegionResult {
   const wanted = name.trim();
+  const rows = fileLines(fileText);
   const hits: Array<{ line: number; level: number; next: number }> = [];
-  for (const row of fileLines(fileText)) {
+  for (const row of rows) {
+    if (row.fenced) continue;
     const heading = parseAtxHeading(row.line);
     if (heading && heading.text === wanted) {
       hits.push({ line: row.number, level: heading.level, next: row.next });
@@ -57,8 +59,8 @@ function applyHeadingRegion(fileText: string, name: string, content: string): Ap
 
   const hit = hits[0]!;
   let sectionEnd = fileText.length;
-  for (const row of fileLines(fileText)) {
-    if (row.start < hit.next) continue;
+  for (const row of rows) {
+    if (row.start < hit.next || row.fenced) continue;
     const heading = parseAtxHeading(row.line);
     if (heading && heading.level <= hit.level) {
       sectionEnd = row.start;
@@ -82,10 +84,20 @@ function ownedBody(fileText: string, content: string): { body: string; eol: stri
   return { body, eol };
 }
 
-function fileLines(fileText: string): Array<{ line: string; start: number; next: number; number: number }> {
-  const rows: Array<{ line: string; start: number; next: number; number: number }> = [];
+interface FileLine {
+  line: string;
+  start: number;
+  next: number;
+  number: number;
+  /** True inside a fenced code block, delimiter lines included. */
+  fenced: boolean;
+}
+
+function fileLines(fileText: string): FileLine[] {
+  const rows: FileLine[] = [];
   let start = 0;
   let number = 1;
+  let fence: { char: string; len: number } | null = null;
   while (start < fileText.length) {
     let i = start;
     while (i < fileText.length && fileText[i] !== "\n" && fileText[i] !== "\r") i++;
@@ -93,11 +105,45 @@ function fileLines(fileText: string): Array<{ line: string; start: number; next:
     if (fileText[i] === "\r" && fileText[i + 1] === "\n") next = i + 2;
     else if (fileText[i] === "\n" || fileText[i] === "\r") next = i + 1;
     else next = fileText.length;
-    rows.push({ line: fileText.slice(start, i), start, next, number });
+    const line = fileText.slice(start, i);
+
+    const run = fenceRun(line);
+    let fenced: boolean;
+    if (fence === null) {
+      // A backtick fence's info string may not contain a backtick, so a
+      // ``` ` ``` run with one is not an opening delimiter.
+      if (run !== null && !(run.char === "`" && run.info.includes("`"))) {
+        fence = { char: run.char, len: run.len };
+      }
+      fenced = fence !== null;
+    } else {
+      fenced = true;
+      if (run !== null && run.char === fence.char && run.len >= fence.len && run.info.length === 0) {
+        fence = null;
+      }
+    }
+
+    rows.push({ line, start, next, number, fenced });
     number += 1;
     start = next;
   }
   return rows;
+}
+
+/**
+ * A fence delimiter run: three or more backticks or tildes at the line's
+ * start (leading whitespace allowed), plus the trailing info string. An
+ * unterminated fence therefore keeps every following line fenced, which
+ * makes a malformed note refuse to publish instead of overwriting bytes.
+ */
+function fenceRun(line: string): { char: string; len: number; info: string } | null {
+  const body = line.trimStart();
+  const char = body[0];
+  if (char !== "`" && char !== "~") return null;
+  let len = 0;
+  while (len < body.length && body[len] === char) len++;
+  if (len < 3) return null;
+  return { char, len, info: body.slice(len).trim() };
 }
 
 function parseAtxHeading(line: string): { level: number; text: string } | null {
