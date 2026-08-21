@@ -2337,13 +2337,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig, D
    */
   offlineSyncExcludes: string[];
 }
-export interface SemanticMergeConfig {
-  enabled: boolean;
-  minSimilarity: number;
-  maxCandidates: number;
-  categories: readonly string[];
-  shadowMode: boolean;
-}
+import type { SemanticMergeConfig } from "./semantic-merge-config.js"; export type { SemanticMergeConfig };
 
 /** Runtime configuration for the daily context briefing feature. */
 export interface BriefingConfig {
