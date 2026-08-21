@@ -111,8 +111,12 @@ export function loadThresholds(thresholdsPath) {
 }
 
 /**
- * Words that turn a closing keyword into description rather than a claim.
- * "the closed #123" reports history; "Closes #123" claims the issue.
+ * Words that can turn a closing keyword into description rather than a claim —
+ * but ONLY in front of a past-participle keyword. "the closed #123" reports
+ * history; "This fixes #123" and "That resolves #456" are ordinary
+ * present-tense claims and must still count, or a genuinely multi-issue PR
+ * would be undercounted and could evade this gate (review finding on the
+ * first version of this rule).
  */
 const DESCRIPTIVE_LEAD_WORDS = new Set([
   "the",
@@ -132,6 +136,9 @@ const DESCRIPTIVE_LEAD_WORDS = new Set([
   "recently",
 ]);
 
+/** Past-participle spellings of the closing keywords ("closed", not "closes"). */
+const PAST_PARTICIPLE_KEYWORDS = new Set(["fixed", "closed", "resolved"]);
+
 /**
  * All #<n> issue references in free text, deduped (issue #2067). Non-rendered
  * content is dropped first — HTML comments (template/generated <!-- ... -->
@@ -149,17 +156,23 @@ export function extractIssueRefs(text) {
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`[^`]*`/g, " ");
   for (const match of prose.matchAll(
-    /(\w+\s+)?\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d+)((?:\s*(?:,|and)\s*#\d+)*)/gi,
+    /(\w+\s+)?\b(fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d+)((?:\s*(?:,|and)\s*#\d+)*)/gi,
   )) {
-    // A determiner before the keyword makes it descriptive prose, not a claim:
-    // "follow-up to the closed #2448" names history, while "Closes #2448"
-    // claims the issue. Counting the former inflated the multi-issue signal on
-    // a single-issue PR (issue #2774) — its body cited the predecessor issue
-    // that the file's own docstring also references.
+    // A determiner in front of a PAST-PARTICIPLE keyword is description, not a
+    // claim: "follow-up to the closed #2448" names history, while "Closes
+    // #2448" claims the issue. Counting the former inflated the multi-issue
+    // signal on a single-issue PR (issue #2774), whose body cited the
+    // predecessor issue the file's own docstring also references.
+    //
+    // The tense test is load-bearing: suppressing on the determiner alone also
+    // swallowed "This fixes #123", which would UNDERCOUNT a real multi-issue PR
+    // and let it evade this gate — a strictly worse failure than the false
+    // positive being fixed.
     const lead = (match[1] ?? "").trim().toLowerCase();
-    if (DESCRIPTIVE_LEAD_WORDS.has(lead)) continue;
-    issues.add(Number(match[2]));
-    for (const extra of match[3].matchAll(/#(\d+)/g)) {
+    const keyword = match[2].toLowerCase();
+    if (DESCRIPTIVE_LEAD_WORDS.has(lead) && PAST_PARTICIPLE_KEYWORDS.has(keyword)) continue;
+    issues.add(Number(match[3]));
+    for (const extra of match[4].matchAll(/#(\d+)/g)) {
       issues.add(Number(extra[1]));
     }
   }

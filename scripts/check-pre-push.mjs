@@ -18,11 +18,21 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+/**
+ * Candidate base refs, in the order tried when `REMNIC_PRE_PUSH_BASE_REF` is
+ * unset. This repo has several remotes and `origin/main` is often stale, which
+ * silently widened the diff to include unrelated `main` commits and made the
+ * ratchet warning name files the branch never touched. So rather than assuming
+ * a remote name, take the CLOSEST base: the candidate whose merge-base with
+ * HEAD is furthest from the root.
+ */
+const BASE_REF_CANDIDATES = ["github/main", "origin/main", "upstream/main", "main"];
 
 /**
  * `--conditions=remnic-source` matches how CI and the other scripts resolve
@@ -36,6 +46,73 @@ function nodeOptions() {
     : `${existing ? `${existing} ` : ""}--conditions=remnic-source`;
 }
 
+function git(args) {
+  const result = spawnSync("git", args, { cwd: repoRoot, encoding: "utf8" });
+  return result.status === 0 ? (result.stdout ?? "") : null;
+}
+
+/**
+ * Reproduce the base-derived inputs CI computes for the ratchet and
+ * lifecycle gates. Without them, `check-ratchets` has no changed-file scope
+ * (so the at-ceiling WARNING never prints) and `check-coverage` falls back to
+ * `HEAD~1...HEAD` with no base manifests — meaning this bundle could pass
+ * while the required CI gate fails on the same branch. Both were review
+ * findings against the first version of this script.
+ *
+ * Returns the env additions, or `{}` when the base ref is unavailable (a
+ * detached checkout, or no remote) — in which case the checks still run, just
+ * without base scoping, and we say so.
+ */
+function resolveMergeBase() {
+  const override = process.env.REMNIC_PRE_PUSH_BASE_REF;
+  const candidates = override ? [override] : BASE_REF_CANDIDATES;
+  let best = null;
+  for (const ref of candidates) {
+    const mergeBase = git(["merge-base", ref, "HEAD"])?.trim();
+    if (!mergeBase) continue;
+    const depth = Number.parseInt((git(["rev-list", "--count", mergeBase]) ?? "0").trim(), 10);
+    if (!Number.isFinite(depth)) continue;
+    if (best === null || depth > best.depth) best = { ref, mergeBase, depth };
+  }
+  return best;
+}
+
+function baseScopeEnv() {
+  const base = resolveMergeBase();
+  if (base === null) {
+    console.log(
+      "[pre-push] NOTE: no base ref found, so ratchet/lifecycle checks run without base scoping.",
+    );
+    console.log(
+      `[pre-push]   Fetch one of ${BASE_REF_CANDIDATES.join(", ")} (or set REMNIC_PRE_PUSH_BASE_REF) for the scope CI uses.`,
+    );
+    return {};
+  }
+  const { ref: BASE_REF, mergeBase } = base;
+  console.log(`[pre-push] base: ${BASE_REF} (merge-base ${mergeBase.slice(0, 9)})`);
+  const scratch = mkdtempSync(join(tmpdir(), "remnic-pre-push-"));
+  const changed = git(["-c", "core.quotePath=off", "diff", "--name-only", `${mergeBase}...HEAD`]) ?? "";
+  const changedNameStatus =
+    git(["-c", "core.quotePath=off", "diff", "--name-status", "-z", "-M", `${mergeBase}...HEAD`]) ?? "";
+  const ratchetPath = join(scratch, "ratchet-changed-files.txt");
+  const lifecyclePath = join(scratch, "lifecycle-changed-files.txt");
+  const baseCoveragePath = join(scratch, "lifecycle-base-coverage.json");
+  const baseIgnorePath = join(scratch, "lifecycle-base-ignore.txt");
+  writeFileSync(ratchetPath, changed);
+  writeFileSync(lifecyclePath, changedNameStatus);
+  writeFileSync(baseCoveragePath, git(["show", `${mergeBase}:scripts/lifecycle-matrix/coverage.json`]) ?? "");
+  writeFileSync(baseIgnorePath, git(["show", `${mergeBase}:.github/ai-review-ignore`]) ?? "");
+  return {
+    REMNIC_RATCHET_CHANGED_FILES_PATH: ratchetPath,
+    REMNIC_LIFECYCLE_CHANGED_FILES_PATH: lifecyclePath,
+    LIFECYCLE_BASE_MANIFEST_PATH: baseCoveragePath,
+    LIFECYCLE_BASE_IGNORE_PATH: baseIgnorePath,
+  };
+}
+
+const resolvedBase = resolveMergeBase();
+const baseEnv = baseScopeEnv();
+
 const CHECKS = [
   {
     name: "structural ratchets",
@@ -45,7 +122,12 @@ const CHECKS = [
   {
     name: "regex safety",
     argv: ["node", "scripts/check-regex-safety.mjs"],
-    env: { REMNIC_REGEX_SAFETY_BASE_REF: process.env.REMNIC_REGEX_SAFETY_BASE_REF ?? "origin/main" },
+    // Same base as the ratchet/lifecycle scope — a stale `origin/main` here
+    // silently widens the changed-line set to unrelated main commits.
+    env: {
+      REMNIC_REGEX_SAFETY_BASE_REF:
+        process.env.REMNIC_REGEX_SAFETY_BASE_REF ?? resolvedBase?.ref ?? "origin/main",
+    },
     hint: "A changed line adds a ReDoS-shaped regex. Use bounded quantifiers such as \\s{0,8}, or scan with indexOf.",
   },
   {
@@ -72,7 +154,7 @@ function runCheck(check) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
     stdio: "inherit",
-    env: { ...process.env, ...(check.env ?? {}), NODE_OPTIONS: nodeOptions() },
+    env: { ...process.env, ...baseEnv, ...(check.env ?? {}), NODE_OPTIONS: nodeOptions() },
   });
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
   if (result.error && check.optional && result.error.code === "ENOENT") {

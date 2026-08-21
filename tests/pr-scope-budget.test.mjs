@@ -207,6 +207,18 @@ test("a closing keyword behind a determiner is description, not a claim (this-ru
   // Real claims still count, including mid-sentence and multi-ref forms.
   assert.deepEqual([...extractIssueRefs("Closes #5 and #6")].sort((a, b) => a - b), [5, 6]);
   assert.deepEqual([...extractIssueRefs("This reverts behavior; Fixes #78")], [78]);
+
+  // A determiner in front of a PRESENT-tense keyword is still a claim.
+  // Suppressing on the determiner alone undercounted these, which would let a
+  // real multi-issue PR evade the gate — worse than the false positive above.
+  assert.deepEqual([...extractIssueRefs("This fixes #123")], [123]);
+  assert.deepEqual([...extractIssueRefs("That resolves #456")], [456]);
+  assert.deepEqual([...extractIssueRefs("This closes #7 and #8")].sort((a, b) => a - b), [7, 8]);
+  assert.deepEqual(
+    [...extractIssueRefs("This fixes #10. Follow-up to the closed #11.")],
+    [10],
+    "present-tense claim counts while the historical reference beside it does not"
+  );
 });
 
 test("extractIssueRefs ignores see/part-of/pull URLs (this-run #2550)", () => {
