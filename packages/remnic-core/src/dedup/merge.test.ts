@@ -14,6 +14,12 @@ import type { ExtractionPersistDeps } from "../orchestration/extraction-persist-
 import { StorageManager } from "../index.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
 import { ContentHashIndex } from "../storage/content-hash-index.js";
+import { initLogger, resetLogger, type LoggerBackend } from "../logger.js";
+import {
+  DEFAULT_UNTRUSTED_ORIGINS,
+  renderAuthorityFence,
+} from "../security/origin-authority.js";
+import { renderAuthorityBoundContent } from "../recall-context-composition.js";
 import type {
   MemoryFile,
   MemoryFrontmatter,
@@ -352,9 +358,11 @@ async function harness(
     targetStatus?: MemoryStatus;
     /** Stamp `toolScoped: true` on the target's frontmatter (finding A). */
     targetToolScoped?: boolean;
-    lookupHits?: SemanticDedupHit[];
     /** Stamp `subject` on the target's frontmatter (finding A). */
     targetSubject?: MemorySubject;
+    /** Stamp `origin` on the target's frontmatter (finding A). */
+    targetOrigin?: string;
+    lookupHits?: SemanticDedupHit[];
     mutateOnWrite?: string;
     /**
      * Simulate a concurrent writer replacing the target between the content
@@ -379,6 +387,7 @@ async function harness(
     ...(overrides.targetStatus ? { status: overrides.targetStatus } : {}),
     ...(overrides.targetToolScoped ? { toolScoped: true as const } : {}),
     ...(overrides.targetSubject ? { subject: overrides.targetSubject } : {}),
+    ...(overrides.targetOrigin ? { origin: overrides.targetOrigin } : {}),
     sources: [
       {
         sessionKey: "project/example/2026-08-20T00:00:00.000Z",
@@ -820,7 +829,7 @@ test("applySemanticMergeAtPersist: new metadata the merge cannot carry bypasses 
   const cases: Array<[string, ApplySemanticMergeOptions["incomingMetadata"]]> = [
     ["structuredAttributes", { structuredAttributes: { region: "us-east" } }],
     ["bi-temporal bounds", { biTemporal: true }],
-    ["a subject the target lacks", { subject: "user" }],
+    ["an agent subject the unlabeled target lacks", { subject: "agent" }],
     ["a new validAt", { validAt: "2026-08-21T00:00:00.000Z" }],
     ["a tag the target lacks", { tags: ["deploy"] }],
     ["a higher importance", { importanceScore: 0.9 }],
@@ -1122,4 +1131,129 @@ test("applySemanticMergeAtPersist: a target with promoted copies bypasses the me
   assert.deepEqual(h.calls.frontmatterPatches, []);
   const history = await listVersions(h.target.path, { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" }, h.storage.dir);
   assert.equal(history.versions.length, 0, "the bypass must precede the rollback snapshot");
+});
+
+// ── Final round: origin authority, log privacy, least-privilege subject ──────
+
+test("applySemanticMergeAtPersist: a cross-origin merge into a user-authority target is refused (finding A)", async () => {
+  const h = await harness({ targetOrigin: "user" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingMetadata: { origin: "tool_output" },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+
+  assert.deepEqual(outcome, { action: "created", reason: "metadata_unpreservable" });
+  assert.deepEqual(h.calls.contentUpdates, [], "the user-authority target must keep its body");
+  assert.equal(
+    (await readFile(h.target.path, "utf8")).includes(INCOMING),
+    false,
+    "the target file must not carry the untrusted text",
+  );
+
+  // The rendered-authority contract, not just frontmatter. Under the target's
+  // retained `origin: user` the merged body would reach model context with NO
+  // authority fence — the escalation the refusal prevents:
+  assert.equal(
+    renderAuthorityBoundContent(MERGED, "user", { enabled: true, untrustedOrigins: DEFAULT_UNTRUSTED_ORIGINS }),
+    MERGED,
+    "the would-be merged body renders UNFENCED under the retained user origin",
+  );
+  // Persisted instead through the create path, the incoming body renders
+  // fenced under its own untrusted origin:
+  assert.equal(
+    renderAuthorityBoundContent(INCOMING, "tool_output", { enabled: true, untrustedOrigins: DEFAULT_UNTRUSTED_ORIGINS }),
+    renderAuthorityFence(INCOMING, "tool_output"),
+    "the created fact's body renders inside the authority fence",
+  );
+});
+
+test("applySemanticMergeAtPersist: an identical origin still merges", async () => {
+  const h = await harness({ targetOrigin: "user" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingMetadata: { origin: "user" },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", provenancePatched: true });
+});
+
+test("applySemanticMergeAtPersist: a user-origin fact still merges into a legacy unstamped target", async () => {
+  const h = await harness();
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingMetadata: { origin: "user" },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  // The unstamped target renders as `unknown` (fenced) at recall, so the
+  // merged body is fenced at least as strictly as the incoming fact — no
+  // escalation, and legacy targets keep receiving user-origin facts.
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", provenancePatched: true });
+});
+
+test("applySemanticMergeAtPersist: shadow-mode create telemetry carries no fact content (finding B)", async () => {
+  const entries: Array<{ level: string; message: string }> = [];
+  const backend: LoggerBackend = {
+    info: (msg: string) => entries.push({ level: "info", message: msg }),
+    warn: () => {},
+    error: () => {},
+    debug: () => {},
+  };
+  initLogger(backend, true);
+  try {
+    const h = await harness({ config: { shadowMode: true } });
+    const outcome = await applySemanticMergeAtPersist(h.deps, {
+      storage: h.storage,
+      content: INCOMING,
+      category: "fact",
+      judgeCall: async () => ({
+        decision: "create",
+        targetId: null,
+        mergedContent: null,
+        reason: "distinct underlying concept",
+      }),
+    });
+    assert.deepEqual(outcome, { action: "created", reason: "judge_create" });
+
+    const line = entries.find((e) => e.message.includes("semantic-merge[shadow]: would create"))
+      ?.message;
+    assert.ok(line, "the shadow create line must be logged at info level");
+    assert.ok(line.includes("category=fact"), "category is logged");
+    assert.ok(line.includes(`length=${INCOMING.length}`), "content length is logged");
+    assert.ok(line.includes('reason="judge_create"'), "reason is logged");
+    assert.ok(!line.includes(INCOMING.slice(0, 60)), "no content prefix may appear");
+    for (const token of INCOMING.split(" ")) {
+      if (token.length >= 4) {
+        assert.ok(!line.includes(token), `log must not carry fact content (found "${token}")`);
+      }
+    }
+  } finally {
+    resetLogger();
+  }
+});
+
+test("applySemanticMergeAtPersist: an absent incoming subject never reinforces an agent target (finding C)", async () => {
+  const h = await harness({ targetSubject: "agent" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    // Subject classification disabled: the write path stamps no subject, and
+    // the guard must treat that absent subject as the least-privileged "user".
+    incomingMetadata: {},
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "created", reason: "metadata_unpreservable" });
+  assert.deepEqual(h.calls.contentUpdates, [], "the agent target must keep its body");
+  assert.deepEqual(
+    h.calls.frontmatterPatches,
+    [],
+    "an unclassified fact must not bump reinforcement_count on an agent target",
+  );
 });

@@ -16,6 +16,7 @@
 
 import { readFile } from "node:fs/promises";
 
+import { isUntrustedOrigin, parseOriginClass } from "../security/origin-authority.js";
 import {
   FallbackLlmClient,
   fallbackLlmRuntimeContextFromConfig,
@@ -104,7 +105,9 @@ export interface ApplySemanticMergeOptions {
     biTemporal?: boolean;
     /** Importance score the write path would stamp. */
     importanceScore?: number;
-    /** Provenance strength the write path would stamp. */
+    /**
+     * Provenance strength the write path would stamp.
+     */
     provenanceStrength?: "verified" | "unverified" | "none";
     /**
      * True when the write path would stamp `toolScoped: true` (finding A):
@@ -117,10 +120,17 @@ export interface ApplySemanticMergeOptions {
     /**
      * Subject the write path would stamp when subject classification is
      * enabled (finding A): the merge patch has no carrier for `subject`, so
-     * a fact whose subject differs from the target's must be created rather
-     * than merged into a target that keeps a different label.
+     * a fact whose effective subject differs from the target's must be
+     * created rather than merged into a target that keeps a different label.
      */
     subject?: MemorySubject;
+    /**
+     * Authority origin the write path would stamp (finding A). The merge
+     * patch has no carrier for `origin`, so the merged body would render
+     * under the TARGET's authority at recall; a cross-origin merge is
+     * refused outright (see {@link mergeWouldLoseMetadata}).
+     */
+    origin?: string;
   };
   /**
    * Finding C: async probe run after a merge verdict but before any
@@ -148,11 +158,14 @@ const PROVENANCE_STRENGTH_RANK: Record<string, number> = {
  * merge would silently discard. Fields the target already carries — a tag
  * subset, the same entity ref or validAt, an equal-or-lower importance, an
  * equal-or-weaker provenance — are already preserved, so only genuinely NEW
- * metadata bypasses the merge.
+ * metadata bypasses the merge. Authority fields (`origin`, `subject`) are
+ * compared on their EFFECTIVE values, because the merge patch carries
+ * neither: absent resolves to the least-privileged form each guard applies.
  */
 function mergeWouldLoseMetadata(
   target: MemoryFile,
   md: ApplySemanticMergeOptions["incomingMetadata"],
+  untrustedOrigins: readonly string[],
 ): boolean {
   if (!md) return false;
   if (md.structuredAttributes && Object.keys(md.structuredAttributes).length > 0) return true;
@@ -177,8 +190,29 @@ function mergeWouldLoseMetadata(
   if (md.toolScoped === true && target.frontmatter.toolScoped !== true) {
     return true;
   }
-  // Finding A (subject): the write path stamps `subject`, and the shared
-  if (md.subject !== undefined && md.subject !== target.frontmatter.subject) {
+  // Finding A (subject): the write path stamps `subject`, and the merge
+  // patch has no carrier for it, so a fact whose EFFECTIVE subject differs
+  // from the target's must be created. An absent subject resolves to the
+  // least-privileged `user` — the same default the subject guard applies —
+  // so classification being disabled never lets an unclassified fact merge
+  // into an `agent`-labeled target (finding C).
+  if ((md.subject ?? "user") !== (target.frontmatter.subject ?? "user")) {
+    return true;
+  }
+  // Finding A (origin): the merged body renders under the TARGET's origin at
+  // recall, so an UNTRUSTED incoming origin (per the deployment's
+  // untrustedOrigins) merging into a TRUSTED target would hand injected text
+  // unfenced, user-authority rendering — the escalation the recall fence
+  // exists to prevent. That merge is refused; the fact is created through the
+  // write that stamps its own origin, which the fence then judges on its own
+  // trust value. Mismatches that never reduce fencing (trusted into
+  // untrusted, or equal origins) still merge, so legacy unstamped targets
+  // (`origin` absent → `unknown`, the fence's least-privilege default) keep
+  // receiving user-origin facts as before.
+  if (
+    isUntrustedOrigin(parseOriginClass(md.origin), untrustedOrigins) &&
+    !isUntrustedOrigin(parseOriginClass(target.frontmatter.origin), untrustedOrigins)
+  ) {
     return true;
   }
   return false;
@@ -285,8 +319,11 @@ export async function applySemanticMergeAtPersist(
 
   if (decision.action === "create") {
     if (config.shadowMode) {
+      // Telemetry only — category, length, reason. Never fact content: log
+      // sinks generally have broader access and retention than the memory
+      // store, and extracted facts can hold personal material.
       log.info(
-        `semantic-merge[shadow]: would create "${options.content.slice(0, 60)}…" reason="${decision.reason}"`,
+        `semantic-merge[shadow]: would create category=${options.category} length=${options.content.length} reason="${decision.reason}"`,
       );
     }
     return { action: "created", reason: decision.reason };
@@ -319,7 +356,7 @@ export async function applySemanticMergeAtPersist(
   // has no carrier in the merge patch, so when any of it is NEW relative to
   // the target the merge is bypassed: the fact is created and the write path
   // persists the metadata, instead of the merge silently discarding it.
-  if (mergeWouldLoseMetadata(target, options.incomingMetadata)) {
+  if (mergeWouldLoseMetadata(target, options.incomingMetadata, deps.config.untrustedOrigins)) {
     return { action: "created", reason: "metadata_unpreservable" };
   }
 

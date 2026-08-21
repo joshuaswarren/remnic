@@ -1233,26 +1233,38 @@ into a create-or-update decision:
    that also carries extraction metadata the merge cannot preserve —
    structured attributes, an entity ref, bi-temporal bounds, tags the target
    lacks, a higher importance, stronger provenance, a subject classification
-   the target does not already carry (the merge patch has no carrier for
-   `subject`, so a user fact is never merged into an agent-labeled memory
-   that reinforcement could then promote), or a `toolScoped: true`
-   classification the target lacks (a tool-scoped fact never widens into an
-   unscoped target; an already-scoped target keeps its stricter flag) — is
-   created through the normal write instead, so metadata and access scope are
-   never silently discarded. A would-be target that already has promoted
+   whose effective value (absent = the least-privileged `user`, the same
+   default the subject guard applies) differs from the target's effective
+   subject (so an unclassified fact extracted with classification disabled is
+   never merged into an `agent`-labeled memory that reinforcement could then
+   promote), a `toolScoped: true` classification the target lacks (a
+   tool-scoped fact never widens into an unscoped target; an already-scoped
+   target keeps its stricter flag), or an untrusted authority origin (per
+   `untrustedOrigins`) offered to a trusted-origin target (the merged body
+   renders under the target's origin at recall, so such a merge would hand
+   untrusted text the target's unfenced authority; mismatches that never
+   reduce fencing — equal origins, or trusted content into an untrusted
+   target — still merge, so legacy targets with no `origin` stamp keep
+   receiving user-origin facts) — is created through the normal write
+   instead, so metadata, access scope, and authority are never silently
+   discarded or escalated. A would-be target that already has promoted
    shared/profile copies (memories linked back by `sourceMemoryId`) also
    bypasses the merge: those copies are reconciled only by the normal write's
    promotion step, so merging would strand them at the pre-merge body. The
    copy scan inspects every known promotion layer and the shared namespace
    regardless of current write authorization, so a permission revoked after a
-   copy was promoted cannot hide that copy from the scan. The
+   copy was promoted cannot hide that copy from the scan. A successful merge
+   into a target with no promoted copy yet still runs the shared/profile
+   promotion the create path would have performed, anchored to the merged
+   target id and fail-open like the create path. The
    merge lookup also honors the batch's embedding-outage short circuit (its
    own lookup failures arm it for the remaining facts) and the novelty
    gate's `add` decision: when either bypasses semantic dedup for a fact, no
    merge lookup runs either.
 5. Any doubt — no in-band candidate, fabricated target id, empty or oversized
    merged content, judge error or timeout, inactive target, a target another
-   writer changed after it was judged, a target with promoted copies, failed
+   writer changed after it was judged, a metadata, subject, or authority-origin
+   guard refusal, a target with promoted copies, failed
    snapshot or update — creates the
    new fact exactly as before. The unsafe default is always *create*, and the
    merged entry is recoverable from the page-version snapshot. When a content
