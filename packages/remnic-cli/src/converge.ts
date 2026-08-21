@@ -1014,8 +1014,12 @@ Options:
       i += 1;
     } else if (arg === "--dry-run") {
       dryRun = true;
-    } else if (arg === "--interval" && rest[i + 1]) {
-      const parsed = Number(rest[i + 1]);
+    } else if (arg === "--interval") {
+      // Flag-present-but-value-absent is malformed, not "use the default":
+      // an operator who typed `--interval` alone must hear about it, not
+      // silently get a 300s watch (codex P1 / coderabbit round 2).
+      const raw = rest[i + 1];
+      const parsed = raw === undefined ? Number.NaN : Number(raw);
       if (!Number.isFinite(parsed) || parsed <= 0) {
         process.stderr.write("converge: --interval must be a positive number of seconds.\n");
         process.exitCode = 2;

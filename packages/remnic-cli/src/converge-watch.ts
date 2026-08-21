@@ -87,11 +87,19 @@ export async function convergeWatch(options: ConvergeWatchOptions): Promise<Conv
     try {
       const result = await apply(applyOptions);
       outcome.cycles += 1;
-      // A cycle that stopped on unresolved conflicts or had failed transfers
-      // made no progress — count it as failed so monitoring sees a stuck
-      // pair instead of a string of "applied" successes.
-      if (result.converged) outcome.convergedCycles += 1;
-      else if (result.status === "stopped_unresolved_conflicts" || result.transfers.failed > 0) {
+      // Classify by STATUS, not `converged`: a successful mutation returns
+      // status "applied" WITH converged true (executeConvergeApply sets
+      // converged = transfers.failed === 0), so `result.converged` cannot
+      // distinguish a real apply from a no-op converged plan. A cycle that
+      // stopped on unresolved conflicts or had failed transfers made no
+      // progress — count it as failed so monitoring sees a stuck pair
+      // instead of a string of successes. Dry-run cycles exercised the
+      // apply path without mutating; they count as applied.
+      if (result.status === "converged") outcome.convergedCycles += 1;
+      else if (
+        result.status === "stopped_unresolved_conflicts" ||
+        (result.status === "applied" && result.transfers.failed > 0)
+      ) {
         outcome.failedCycles += 1;
       } else outcome.appliedCycles += 1;
       outcome.lastStatus = result.status;

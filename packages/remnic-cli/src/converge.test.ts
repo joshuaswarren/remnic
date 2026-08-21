@@ -1673,6 +1673,30 @@ test("remnic converge watch: bad --interval is rejected with exit code 2", async
   process.exitCode = undefined;
 });
 
+test("remnic converge watch: --interval with no value is rejected with exit code 2", async () => {
+  process.exitCode = undefined;
+  await cmdConverge("watch", ["--interval"], false);
+  assert.equal(process.exitCode, 2);
+  process.exitCode = undefined;
+});
+
+test("converge watch: a successful mutation cycle (status applied, converged true) counts as applied, not converged", async () => {
+  const outcome = await convergeWatch({
+    intervalMs: 1,
+    maxCycles: 2,
+    apply: async () =>
+      applyResult({
+        converged: true,
+        status: "applied",
+        transfers: { pulled: 3, pushed: 1, conflictsResolved: 0, suppressed: 0, failed: 0 },
+      }),
+  });
+  assert.equal(outcome.cycles, 2);
+  assert.equal(outcome.appliedCycles, 2);
+  assert.equal(outcome.convergedCycles, 0);
+  assert.equal(outcome.failedCycles, 0);
+});
+
 test("converge watch: conflict-stopped and partially-failed cycles count as failed, not applied", async () => {
   let calls = 0;
   const outcome = await convergeWatch({
