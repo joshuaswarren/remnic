@@ -338,6 +338,12 @@ test("a non-loopback remote origin refuses the local daemon lifecycle; loopback 
     "http://[::ffff:127.0.0.1]:4318",
     "http://[::ffff:127.0.0.2]:4318",
     "http://[::ffff:127.255.255.254]:4318",
+    // Special-use localhost spellings the shared core helper already
+    // normalizes: a trailing dot (fully-qualified form) and the reserved
+    // `.localhost` suffix from RFC 6761.
+    "http://localhost.:4318",
+    "http://app.localhost:4318",
+    "http://LOCALHOST:4318",
   ]) {
     process.env.REMNIC_DAEMON_URL = loopback;
     assert.equal(

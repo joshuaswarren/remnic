@@ -31,6 +31,7 @@
  */
 import fs from "node:fs";
 import type { RecallXraySnapshot } from "@remnic/core";
+import { isLoopbackHost } from "@remnic/core/runtime/http-transport.js";
 import type { QueryRenderableResult } from "./index.js";
 
 /** Remote daemon target: normalized base URL plus its bearer token. */
@@ -208,71 +209,18 @@ export interface HostedOnlyDaemonRefusal {
 }
 
 /**
- * Non-IPv4 loopback hostnames that stay local mode for daemon lifecycle
- * purposes. `URL.hostname` keeps the brackets on IPv6 literals, so both
- * spellings are listed. IPv4-mapped loopback is not here — it is a whole
- * range, handled by `isIpv4MappedLoopbackHost`.
- */
-const LOOPBACK_HOSTNAMES: Record<string, true> = {
-  localhost: true,
-  "[::1]": true,
-  "::1": true,
-};
-
-/**
- * True for any host in `127.0.0.0/8`. The WHATWG URL parser already
- * canonicalizes IPv4 shorthand (`127.1`) and hex forms to a dotted quad,
- * so a strict four-octet parse is enough here: each part must be 1-3
- * digits (no sign, no empty part) and 0-255. Anything else — including a
- * lookalike hostname such as `127.0.0.1.example.com` — is not loopback,
- * which keeps an unparseable value on the REMOTE side of this guard.
- */
-function isIpv4LoopbackHost(hostname: string): boolean {
-  const parts = hostname.split(".");
-  if (parts.length !== 4) return false;
-  for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) return false;
-    if (Number(part) > 255) return false;
-  }
-  return Number(parts[0]) === 127;
-}
-
-const IPV4_MAPPED_PREFIX = "::ffff:";
-
-/**
- * True for any host in the IPv4-mapped loopback range
- * `::ffff:127.0.0.0/104`. The WHATWG URL parser canonicalizes a mapped
- * literal to the compressed hex form and keeps the brackets —
- * `[::ffff:127.0.0.2]` becomes `[::ffff:7f00:2]` — so the two trailing
- * groups carry the IPv4 address as 1-4 hex digits each, high group first.
- * Reconstruct the dotted quad and defer to `isIpv4LoopbackHost` so there
- * is exactly one loopback rule. Any other shape — a different group
- * count, non-hex digits, an uncompressed `0:0:0:0:0:ffff:…` spelling — is
- * not confidently a mapped loopback and stays on the REMOTE side.
- */
-function isIpv4MappedLoopbackHost(hostname: string): boolean {
-  const unbracketed =
-    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-  const lower = unbracketed.toLowerCase();
-  if (!lower.startsWith(IPV4_MAPPED_PREFIX)) return false;
-  const groups = lower.slice(IPV4_MAPPED_PREFIX.length).split(":");
-  if (groups.length !== 2) return false;
-  const octets: number[] = [];
-  for (const group of groups) {
-    if (!/^[0-9a-f]{1,4}$/.test(group)) return false;
-    const value = Number.parseInt(group, 16);
-    octets.push(value >>> 8, value & 0xff);
-  }
-  return isIpv4LoopbackHost(octets.join("."));
-}
-
-/**
  * Hosted-only mode (issue #2712): when the resolved remote origin — same
  * precedence as every client verb, via `resolveRemoteDaemonUrl`; there is
  * no second resolver — points at a non-loopback host, `remnic daemon
  * start|install|restart` must refuse instead of spawning a local
  * remnic-server next to the hosted one. Returns the refusal (carrying the
  * remote origin to name in the error) or `undefined` in local mode.
+ *
+ * Loopback classification defers entirely to core's shared
+ * `isLoopbackHost`, which already covers `localhost`, `*.localhost`, a
+ * trailing dot, bracketed IPv6, `::1`, all of `127.0.0.0/8`, and the
+ * IPv4-mapped loopback range. A second notion of "loopback" here is how
+ * this guard drifted from the rest of the codebase.
  */
 export function resolveHostedOnlyDaemonRefusal(
   configPath: string,
@@ -287,8 +235,7 @@ export function resolveHostedOnlyDaemonRefusal(
     // impossible. Keep the local path rather than guessing.
     return undefined;
   }
-  if (LOOPBACK_HOSTNAMES[hostname] || isIpv4LoopbackHost(hostname)) return undefined;
-  if (isIpv4MappedLoopbackHost(hostname)) return undefined;
+  if (isLoopbackHost(hostname)) return undefined;
   return { remoteUrl };
 }
 
