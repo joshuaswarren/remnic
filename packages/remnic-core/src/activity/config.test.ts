@@ -223,3 +223,23 @@ test("an explicitly disabled weekly target loads identically to an omitted one",
     /weeklyNotePath is empty/,
   );
 });
+
+test("an enabled vault rejects relative or whitespace-only vaultPath at config load", () => {
+  // A relative root resolves against the process working directory, so the
+  // same config would update different files depending on how the daemon or
+  // CLI was launched. The contract is absolute or `~`-rooted, enforced at
+  // parse time — not as a publish-time surprise.
+  for (const vaultPath of [".", "vault", "../notes", "   "]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { vault: { enabled: true, vaultPath } } }),
+      /vaultPath must be an absolute or `~`-rooted path/,
+    );
+  }
+  for (const vaultPath of ["/home/user/notes", "~", "~/notes"]) {
+    const ok = parseActivityConfig({ timeline: { vault: { enabled: true, vaultPath } } });
+    assert.equal(ok.timeline.vault.vaultPath, vaultPath);
+  }
+  // A disabled vault may carry any placeholder — nothing resolves it.
+  const inert = parseActivityConfig({ timeline: { vault: { enabled: false, vaultPath: "." } } });
+  assert.equal(inert.timeline.vault.vaultPath, ".");
+});

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, mkdirSync, lstatSync, readFileSync, symlinkSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, lstatSync, readFileSync, symlinkSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -724,4 +724,50 @@ test("a symlinked destination note is refused, not replaced", () => {
   assert.equal(status.results[0]?.reason, "symlinked_note");
   assert.ok(lstatSync(linkPath).isSymbolicLink(), "the symlink still exists");
   assert.equal(readFileSync(targetPath, "utf8"), target, "the target is not left stale");
+});
+
+test("publishing preserves a 0600 note's mode across the atomic replace", () => {
+  const { vault, notePath } = makeVault();
+  chmodSync(notePath, 0o600);
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "Daily Notes/{yyyy}/{MM}/{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "- card-a: code review (42m)" }],
+  });
+
+  assert.equal(status.counts.updated, 1);
+  assert.equal(
+    statSync(notePath).mode & 0o7777,
+    0o600,
+    "the replacement inode inherits the note's mode, not 0666 & ~umask",
+  );
+});
+
+test("a partial publish writes only the applied section's properties and surfaces the skipped one", () => {
+  const { vault, notePath } = makeVault();
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "Daily Notes/{yyyy}/{MM}/{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    propertiesMode: "frontmatter",
+    sections: [
+      { name: "timeline", content: "fresh recap", properties: { focus_minutes: "120" } },
+      // No `remnic:standup` marker pair exists in the fixture note.
+      { name: "standup", content: "standup body", properties: { standup_items: "3" } },
+    ],
+  });
+
+  // The omission is surfaced: the file-level outcome is `updated` for the
+  // applied section AND a `skipped` row names the section that did not land.
+  assert.equal(status.counts.updated, 1);
+  assert.equal(status.counts.skipped, 1);
+  const skippedRow = status.results.find((row) => row.outcome === "skipped");
+  assert.equal(skippedRow?.reason, "no_marker");
+
+  const after = readFileSync(notePath, "utf8");
+  assert.match(after, /remnic_focus_minutes: 120/, "the applied section's properties are written");
+  assert.doesNotMatch(after, /remnic_standup_items/, "the skipped section's properties never reach the file");
+  assert.doesNotMatch(after, /standup body/, "the skipped section's body never reaches the file");
 });

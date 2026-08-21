@@ -13,7 +13,7 @@
  * files, are refused before any write.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { expandTildePath } from "../utils/path.js";
@@ -165,7 +165,7 @@ function publishRelative(
   const original = currentText;
   let text = original;
   const failures: Array<{ outcome: "skipped" | "error"; reason: string }> = [];
-  let applied = 0;
+  const appliedSections: VaultSectionPublish[] = [];
 
   for (const section of input.sections) {
     const prefixed =
@@ -178,13 +178,13 @@ function publishRelative(
     const step = applySection(text, section, content, opts.strategy, input.insertUnderHeading, created);
     if (step.ok) {
       text = step.text;
-      applied += 1;
+      appliedSections.push(section);
     } else {
       failures.push({ outcome: step.outcome, reason: step.reason });
     }
   }
 
-  if (failures.length > 0 && applied === 0) {
+  if (failures.length > 0 && appliedSections.length === 0) {
     const worst = failures.find((f) => f.outcome === "error") ?? failures[0]!;
     return [{ path: relative, outcome: worst.outcome, reason: failures.map((f) => f.reason).join("; ") }];
   }
@@ -192,8 +192,17 @@ function publishRelative(
     return [{ path: relative, outcome: "error", reason: failures.map((f) => f.reason).join("; ") }];
   }
 
+  // Partial publish (issue #1985 review): when some sections applied and
+  // others were skipped, the write covers ONLY the applied sections — their
+  // frontmatter properties, and the reported status. A skipped section's
+  // properties must never reach the file, and the omission must be surfaced
+  // as its own `skipped` row rather than reported as a plain `updated`.
+  const skippedReason = failures.length > 0 ? failures.map((f) => f.reason).join("; ") : undefined;
+  const withSkipped = (rows: VaultPublishResult[]): VaultPublishResult[] =>
+    skippedReason === undefined ? rows : [...rows, { path: relative, outcome: "skipped", reason: skippedReason }];
+
   if (opts.propertiesMode === "frontmatter") {
-    const updates = frontmatterUpdates(input.sections, opts.prefix);
+    const updates = frontmatterUpdates(appliedSections, opts.prefix);
     if (Object.keys(updates).length > 0) {
       const merged = mergeFrontmatterKeys(text, updates);
       if (!merged.ok) {
@@ -206,10 +215,10 @@ function publishRelative(
   const prevHash = createHash("sha256").update(original, "utf8").digest("hex");
   const nextHash = createHash("sha256").update(text, "utf8").digest("hex");
   if (prevHash === nextHash) {
-    return [{ path: relative, outcome: "unchanged" }];
+    return withSkipped([{ path: relative, outcome: "unchanged" }]);
   }
   if (input.dryRun === true) {
-    return [{ path: relative, outcome: "updated" }];
+    return withSkipped([{ path: relative, outcome: "updated" }]);
   }
   if (created) {
     // A brand-new note may live in absent folders (Daily/{yyyy}/{MM}). Make
@@ -227,7 +236,7 @@ function publishRelative(
   if (!writeAtomic(dest, text)) {
     return [{ path: relative, outcome: "error", reason: "rename_failed" }];
   }
-  return [{ path: relative, outcome: "updated" }];
+  return withSkipped([{ path: relative, outcome: "updated" }]);
 }
 
 function refuse(relative: string, outcome: "skipped" | "error", reason: string): VaultPublishResult[] {
@@ -460,10 +469,27 @@ function containedBySymlinks(root: string, dest: string): boolean {
   }
 }
 
-/** Temp file + rename in the note's own directory; one retry on EBUSY/EPERM. */
+/**
+ * Temp file + rename in the note's own directory; one retry on EBUSY/EPERM.
+ *
+ * The replacement inode must inherit the destination's permissions: a fresh
+ * temp file is `0666 & ~umask`, so renaming it over a `0600` note under a
+ * `0022` umask silently widens the note to `0644`. Mode is carried via
+ * chmodSync (not a writeFileSync mode option, which umask would mask);
+ * ownership is carried only as far as the process's privilege allows
+ * (chownSync to another owner fails EPERM for non-root and is ignored).
+ */
 function writeAtomic(dest: string, text: string): boolean {
   const tmpPath = path.join(path.dirname(dest), `.remnic-vault-${randomBytes(8).toString("hex")}.tmp`);
   writeFileSync(tmpPath, text);
+  try {
+    const prev = statSync(dest);
+    chmodSync(tmpPath, prev.mode & 0o7777);
+    chownSync(tmpPath, prev.uid, prev.gid);
+  } catch {
+    // Newly created note (ENOENT) or insufficient privilege (EPERM): the
+    // temp file keeps its default mode/owner.
+  }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       renameSync(tmpPath, dest);

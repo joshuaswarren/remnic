@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { coerceBooleanLike, coerceNumber } from "../connectors/coerce.js";
 import { assertValidTimezone } from "./digest.js";
 import { resolveJournalSource } from "./journal-source.js";
@@ -264,9 +266,16 @@ export function parseTimelineVaultConfig(raw: unknown): ActivityTimelineVaultCon
     throw new RangeError('activity.timeline.vault.sectionStrategy must be one of "markers", "heading"');
   }
 
-  if (enabled && vaultPath.length === 0) {
+  // The documented `vaultPath` contract: absolute on the host platform, or
+  // `~` / `~`-rooted for `expandTildePath`. Everything else — `.`, `vault`,
+  // `../notes`, whitespace — is relative and would resolve against whatever
+  // directory the daemon or CLI happened to launch from, so an enabled vault
+  // rejects it at parse time.
+  const tildeRooted = vaultPath === "~" || vaultPath.startsWith("~/") || vaultPath.startsWith("~\\");
+  if (enabled && (vaultPath.trim().length === 0 || (!tildeRooted && !path.isAbsolute(vaultPath)))) {
     throw new RangeError(
-      "activity.timeline.vault.vaultPath must be a non-empty path when activity.timeline.vault.enabled is true",
+      "activity.timeline.vault.vaultPath must be an absolute or `~`-rooted path when activity.timeline.vault.enabled is true; " +
+        `a relative path resolves against the process working directory (got ${JSON.stringify(vaultPath)})`,
     );
   }
   try {
@@ -508,3 +517,4 @@ function parseTimelineQaConfig(raw: unknown): ActivityTimelineQaConfig {
   }
   return { enabled: enabledValue ?? false, maxRangeDays };
 }
+

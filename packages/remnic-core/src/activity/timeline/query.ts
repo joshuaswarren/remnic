@@ -84,18 +84,22 @@ Commands:
   publish [--date YYYY-MM-DD] [--what timeline] [--dry-run]
 `;
 
-const VALUE_FLAGS: Record<string, true> = {
-  "--from": true,
-  "--to": true,
-  "--format": true,
-  "--categories": true,
-  "--query": true,
-  "--limit": true,
-  "--date": true,
-  "--week": true,
-  "--what": true,
+// Per-subcommand flag allow-lists (issue #1985 review): a shared union table
+// let `timeline publish --from …` parse and then silently discard `--from`,
+// publishing today's note on a query-only flag — and `range --date` likewise.
+// Every subcommand validates its own syntax before dispatch.
+const PUBLISH_FLAGS = {
+  value: { "--date": true, "--week": true, "--what": true } as Record<string, true>,
+  boolean: { "--dry-run": true } as Record<string, true>,
 };
-const BOOLEAN_FLAGS: Record<string, true> = { "--include-distractions": true, "--dry-run": true };
+const RANGE_FLAGS = {
+  value: { "--from": true, "--to": true, "--format": true, "--categories": true } as Record<string, true>,
+  boolean: { "--include-distractions": true } as Record<string, true>,
+};
+const SEARCH_FLAGS = {
+  value: { "--query": true, "--from": true, "--to": true, "--limit": true } as Record<string, true>,
+  boolean: {} as Record<string, true>,
+};
 
 function parseInstant(value: string, label: string): number {
   const ms = parseFlexibleIsoTimestamp(value);
@@ -222,16 +226,19 @@ export function queryTimelineSearch(
   return { ok: true, results: ranked };
 }
 
-function parseFlags(args: string[]): { flags: Map<string, string | true>; positional: string[] } {
+function parseFlags(
+  args: string[],
+  spec: { value: Record<string, true>; boolean: Record<string, true> },
+): { flags: Map<string, string | true>; positional: string[] } {
   const flags = new Map<string, string | true>();
   const positional: string[] = [];
-  for (let i = 0; i < args.length; i++) {
+  for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
     if (!arg.startsWith("--")) {
       positional.push(arg);
       continue;
     }
-    if (VALUE_FLAGS[arg] === true) {
+    if (spec.value[arg] === true) {
       const value = args[i + 1];
       if (value === undefined || value.startsWith("--")) {
         throw new TypeError(`flag ${arg} requires a value`);
@@ -240,11 +247,11 @@ function parseFlags(args: string[]): { flags: Map<string, string | true>; positi
       i += 1;
       continue;
     }
-    if (BOOLEAN_FLAGS[arg] === true) {
+    if (spec.boolean[arg] === true) {
       flags.set(arg, true);
       continue;
     }
-    const known = [...Object.keys(VALUE_FLAGS), ...Object.keys(BOOLEAN_FLAGS)].sort().join(", ");
+    const known = [...Object.keys(spec.value), ...Object.keys(spec.boolean)].sort().join(", ");
     throw new TypeError(`unknown flag ${arg} (valid: ${known})`);
   }
   return { flags, positional };
@@ -268,14 +275,15 @@ export async function runTimelineCliCommand(
       return command === undefined ? 1 : 0;
     }
     // `publish` writes into the user's vault and is not a qa/query surface,
-    // so it dispatches before the qa gate. Its own flags are parsed here to
-    // keep range/search error precedence unchanged.
+    // so it dispatches before the qa gate. Flags are validated against the
+    // publish-only set: `--from`/`--format` are query syntax and must be
+    // rejected here, not silently dropped while today's note is published.
     if (command === "publish") {
       if (deps.config === undefined) {
         io.stderr.write("timeline publish requires the Remnic config — run `remnic doctor`\n");
         return 1;
       }
-      const publishFlags = parseFlags(rest).flags;
+      const publishFlags = parseFlags(rest, PUBLISH_FLAGS).flags;
       return runTimelinePublishCli(
         deps.config,
         {
@@ -291,7 +299,7 @@ export async function runTimelineCliCommand(
       io.stderr.write("timeline qa disabled — set activity.timeline.qa.enabled=true\n");
       return 1;
     }
-    const { flags } = parseFlags(rest);
+    const { flags } = parseFlags(rest, command === "range" ? RANGE_FLAGS : SEARCH_FLAGS);
     if (command === "range") {
       const from = flagString(flags, "--from");
       const to = flagString(flags, "--to");

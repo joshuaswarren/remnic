@@ -125,3 +125,45 @@ test("--what with only separators is rejected with a validation error", async ()
   assert.match(sink.err, /--what must name at least one artifact/);
   assert.equal(readFileSync(notePath, "utf8"), note, "nothing is published");
 });
+
+test("publish rejects query-only flags instead of silently publishing today's note", async () => {
+  const { config, notePath, note } = makeFixture();
+  const sink = capture();
+
+  const code = await runTimelineCliCommand(
+    { cards: null, qa: { enabled: false, maxRangeDays: 31 }, timelineEnabled: true, config },
+    ["publish", "--from", "2026-08-01"],
+    sink.io,
+  );
+
+  assert.equal(code, 1);
+  assert.match(sink.err, /unknown flag --from \(valid: --date, --dry-run, --week, --what\)/);
+  assert.equal(readFileSync(notePath, "utf8"), note, "no note is touched by unsupported syntax");
+});
+
+test("range and search reject publish-only flags instead of ignoring them", async () => {
+  const { config } = makeFixture();
+  const deps = {
+    cards: null,
+    qa: { enabled: true, maxRangeDays: 31 },
+    timelineEnabled: true,
+    config,
+  } as const;
+
+  const rangeSink = capture();
+  const rangeCode = await runTimelineCliCommand(
+    deps,
+    ["range", "--date", DATE, "--from", `${DATE}T00:00:00.000Z`, "--to", `${DATE}T00:00:00.000Z`],
+    rangeSink.io,
+  );
+  assert.equal(rangeCode, 1);
+  assert.match(
+    rangeSink.err,
+    /unknown flag --date \(valid: --categories, --format, --from, --include-distractions, --to\)/,
+  );
+
+  const searchSink = capture();
+  const searchCode = await runTimelineCliCommand(deps, ["search", "--query", "x", "--dry-run"], searchSink.io);
+  assert.equal(searchCode, 1);
+  assert.match(searchSink.err, /unknown flag --dry-run \(valid: --from, --limit, --query, --to\)/);
+});
