@@ -22,7 +22,7 @@ Issues are worked first-come, first-served — by humans and automated agents al
 2. Self-assign the issue (or ask a maintainer to assign you).
 3. A maintainer will apply the `contributor-claimed` label.
 
-A claimed issue is off-limits to everyone else, including this repository's automated maintenance agents; they check labels, assignees, and comments before picking issues and again before opening or merging any PR. If your PR references a claimed issue (`Fixes #<n>`), maintainers will hold it for your review before merging anything else against it.
+If a PR from someone other than the claimant references a claimed issue (`Fixes #<n>`), maintainers must not merge it while the claim is active. The claimant must release the claim, or a maintainer must follow the stale-claim process, before another PR is merged against the issue.
 
 If you stop working on a claimed issue, comment to release it so someone else can pick it up. Stale claims (no activity for ~30 days) may be released by a maintainer after a ping.
 
