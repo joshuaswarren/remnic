@@ -202,7 +202,7 @@
     "packages/remnic-core/src/orchestration/extraction-origin-context.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-run-helpers.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-persist.ts": "extraction-lifecycle",
-    "packages/remnic-core/src/orchestration/semantic-merge-persist.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/orchestration/semantic-merge-persist.ts": "semantic-merge-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-injection-gate.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-anchor-snapshot.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-persist-deps.ts": "extraction-lifecycle",
