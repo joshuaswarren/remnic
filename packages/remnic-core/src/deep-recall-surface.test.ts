@@ -33,8 +33,29 @@ import { DEEP_RECALL_CONFIG_DEFAULTS } from "./deep-recall-config.js";
 import { createDeepRecallSeedSearch } from "./deep-recall-seeds.js";
 import { runBudgetedDeepRecall } from "./deep-recall.js";
 import { NamespaceSearchRouter, namespaceCollectionName } from "./namespaces/search.js";
+import { qmdCollectionNamespaceFromPrefix } from "./orchestration/orchestrator-namespace-scope.js";
+import { QmdResultResolver } from "./orchestration/qmd-result-resolver.js";
 import { StorageManager } from "./storage.js";
+import type { PluginConfig } from "./types.js";
 import type { SearchBackend } from "./search/port.js";
+
+/**
+ * Real QMD result resolver over the test's real on-disk storage — the member
+ * the seed search now reads off the orchestrator. Wires only the lookups
+ * readQmdResultMemory needs; single-namespace fixtures have one storage.
+ */
+function testSeedResultResolver(
+  config: PluginConfig,
+  storage: StorageManager,
+): QmdResultResolver {
+  return new QmdResultResolver({
+    getConfig: () => config,
+    storageFor: async () => storage,
+    storageDirNamespace: () => config.defaultNamespace,
+    qmdCollectionNamespaceFromPrefix: (prefix) => qmdCollectionNamespaceFromPrefix(prefix, config),
+    namespaceFromPath: () => config.defaultNamespace,
+  });
+}
 
 test("HTTP deep recall authorizes with the presenting principal, not the client's sessionKey (issue #2332 review)", async () => {
   // The route dropped `scope.authenticatedPrincipal`, so the service fell back
@@ -221,6 +242,7 @@ test("deep recall projects graph nodes against active memories before the policy
           return { content: JSON.stringify({ action: "STOP", reason: "sufficient" }) };
         },
       },
+      qmdResultResolver: testSeedResultResolver(config, storage),
       fastGatewayLlm: null,
     };
 
@@ -306,6 +328,7 @@ test("deep recall reports private support-passport records as absent, in entries
           return { content: JSON.stringify({ action: "STOP", reason: "sufficient" }) };
         },
       },
+      qmdResultResolver: testSeedResultResolver(config, storage),
       fastGatewayLlm: null,
     };
 
@@ -424,6 +447,7 @@ test("deep recall projects private support-passport sources out of the graph bef
           return { content: JSON.stringify({ action: "STOP", reason: "sufficient" }) };
         },
       },
+      qmdResultResolver: testSeedResultResolver(config, storage),
       fastGatewayLlm: null,
     };
 
@@ -556,14 +580,22 @@ test("deep recall seeds search the resolved namespace's collection, not the base
         }) as unknown as SearchBackend,
     );
 
+    const storage = {
+      dir: namespaceDir,
+      readMemoryByPath: async (filePath: string) =>
+        filePath === hitPath ? { frontmatter: { id: "mem-alpha" } } : null,
+    };
     const searchSeed = createDeepRecallSeedSearch({
       namespace,
-      storage: {
-        dir: namespaceDir,
-        readMemoryByPath: async (filePath) =>
-          filePath === hitPath ? { frontmatter: { id: "mem-alpha" } } : null,
-      },
+      storage,
       router,
+      resolver: new QmdResultResolver({
+        getConfig: () => config,
+        storageFor: async () => storage as unknown as StorageManager,
+        storageDirNamespace: () => namespace,
+        qmdCollectionNamespaceFromPrefix: (prefix) => qmdCollectionNamespaceFromPrefix(prefix, config),
+        namespaceFromPath: () => namespace,
+      }),
     });
     const seeds = await searchSeed("payments routing", 5);
 
@@ -703,6 +735,7 @@ test("deep recall reads the graph from the resolved namespace, not the default s
           return { content: policyScript.shift() ?? JSON.stringify({ action: "STOP", reason: "script spent" }) };
         },
       },
+      qmdResultResolver: testSeedResultResolver(config, storage),
       fastGatewayLlm: null,
     };
 
@@ -762,6 +795,11 @@ test("deep recall reports an unavailable namespace index as backend_unavailable,
       namespace,
       storage: { dir: namespaceDir, readMemoryByPath: async () => null },
       router,
+      resolver: {
+        readQmdResultMemory: async () => {
+          throw new Error("the resolver must not run after a seed backend failure");
+        },
+      },
     });
 
     await assert.rejects(
@@ -785,6 +823,79 @@ test("deep recall reports an unavailable namespace index as backend_unavailable,
     assert.equal(result.ok, false, "an unavailable index is a failure, not a healthy empty index");
     assert.equal(result.error, "backend_unavailable");
     assert.deepEqual(result.entries, []);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("deep recall seeds resolve collection-qualified paths when namespaces are disabled (issue #2332 review)", async () => {
+  // The namespaces-disabled fanout queries the QMD backend directly, so hits
+  // keep the indexer's raw path forms instead of the router-resolved absolute
+  // paths the enabled path produces: `qmd://<collection>/...`,
+  // `<collection>/...`, an empty-hostname `qmd:///...`, and a root-relative
+  // `/...`. A miss falls back to the QMD docid, which no storage lookup
+  // hydrates, so the default standalone deployment answers with no memories.
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-raw-paths-"));
+  try {
+    const config = parseConfig({
+      memoryDir,
+      namespacesEnabled: false,
+      qmdCollection: "remnic-test",
+    });
+    const factPath = path.join(memoryDir, "facts", "2026-08-01", "fact-1.md");
+    const storage = {
+      dir: memoryDir,
+      readMemoryByPath: async (filePath: string) =>
+        path.resolve(filePath) === path.resolve(factPath)
+          ? { frontmatter: { id: "mem-seed-1" } }
+          : null,
+    };
+    const resolver = new QmdResultResolver({
+      getConfig: () => config,
+      storageFor: async () => storage as unknown as StorageManager,
+      storageDirNamespace: () => config.defaultNamespace,
+      qmdCollectionNamespaceFromPrefix: (prefix) => qmdCollectionNamespaceFromPrefix(prefix, config),
+      namespaceFromPath: () => config.defaultNamespace,
+    });
+    const rawPaths = [
+      `qmd://${config.qmdCollection}/facts/2026-08-01/fact-1.md`,
+      `${config.qmdCollection}/facts/2026-08-01/fact-1.md`,
+      "qmd:///facts/2026-08-01/fact-1.md",
+      "/facts/2026-08-01/fact-1.md",
+    ];
+    const router = {
+      searchAcrossNamespaces: async () => [
+        ...rawPaths.map((rawPath, index) => ({
+          docid: `hash-doc-${index}`,
+          path: rawPath,
+          score: 0.5 + index / 10,
+        })),
+        // A foreign-collection hit stays unresolvable: it keeps its docid and
+        // still seeds the working set, but never hydrates into the graph.
+        { docid: "hash-doc-foreign", path: "foreign-coll/facts/2026-08-01/fact-1.md", score: 0.9 },
+      ],
+    };
+    const searchSeed = createDeepRecallSeedSearch({
+      namespace: config.defaultNamespace,
+      storage,
+      router,
+      resolver,
+    });
+    const seeds = await searchSeed("payments routing", rawPaths.length + 1);
+
+    assert.deepEqual(
+      seeds.map((seed) => seed.memoryId),
+      [
+        ...rawPaths.map(() => "mem-seed-1"),
+        "hash-doc-foreign",
+      ],
+      "every collection-qualified raw path form must resolve to the frontmatter id; only a foreign collection keeps its docid",
+    );
+    assert.deepEqual(
+      seeds.map((seed) => seed.score),
+      [0.5, 0.6, 0.7, 0.8, 0.9],
+      "resolution must not disturb the hit scores",
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

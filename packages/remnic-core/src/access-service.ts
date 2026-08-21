@@ -2762,8 +2762,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     // `config.qmdCollection`, which is the DEFAULT namespace's collection):
     // a non-default caller must search its own suffixed collection or deep
     // recall silently misses its corpus and returns foreign doc ids. Hit ->
-    // memory-id resolution is per hit through the shared QMD result resolver,
-    // so no invocation pre-scans the namespace corpus.
+    // memory-id resolution is per hit through the shared QMD result resolver
+    // (which also decodes the raw collection-qualified path forms the
+    // namespaces-disabled fanout returns), so no invocation pre-scans the
+    // namespace corpus.
     const result = await runBudgetedDeepRecall(
       {
         config: effective,
@@ -2771,6 +2773,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
           namespace: resolvedNamespace,
           storage,
           router: this.orchestrator,
+          resolver: this.orchestrator.qmdResultResolver,
         }),
         // Nodes and anchors are projected against the namespace's CURRENT
         // active memories through the SAME helper searchHarmonicRetrieval

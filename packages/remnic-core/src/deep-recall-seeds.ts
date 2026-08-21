@@ -7,10 +7,15 @@
  * through one resolver, never two (§30).
  *
  * Each hit is resolved to a real memory id through the shared QMD result
- * resolver, per hit and bounded by the requested limit, instead of pre-scanning
- * the whole namespace corpus to build a path index. A hit with no path is
- * dropped: its namespace membership cannot be verified, and a bare docid from
- * a foreign collection must never enter the working set.
+ * resolver (`QmdResultResolver.readQmdResultMemory`), per hit and bounded by
+ * the requested limit, instead of pre-scanning the whole namespace corpus to
+ * build a path index. With namespaces disabled the fanout queries the QMD
+ * backend directly, so hits keep the indexer's raw path forms; the resolver
+ * decodes `qmd://<collection>/` URIs and `<collection>/`-prefixed relatives,
+ * and the two forms it cannot decode (`qmd:///`, a leading `/`) are stripped
+ * for one retry. A hit with no path is dropped: its namespace membership
+ * cannot be verified, and a bare docid from a foreign collection must never
+ * enter the working set as a resolved memory.
  *
  * An unavailable namespace backend (or a missing collection) contributes an
  * empty result set and reports itself only through `execution.onDegradation`,
@@ -19,7 +24,6 @@
  * entries instead of the advertised `backend_unavailable` failure.
  */
 
-import { qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
 import type { DeepRecallSeedHit } from "./deep-recall.js";
 import type { SearchDegradation } from "./search/port.js";
 
@@ -39,13 +43,49 @@ export interface DeepRecallSeedStorage {
   readMemoryByPath(filePath: string): Promise<{ frontmatter: { id?: string } } | null>;
 }
 
+/** Full QMD hit -> memory resolver (satisfied by `QmdResultResolver#readQmdResultMemory`). */
+export interface DeepRecallSeedResultResolver {
+  readQmdResultMemory(
+    resultPath: string,
+    fallbackStorage: DeepRecallSeedStorage,
+    recallNamespaces?: readonly string[],
+    preferredNamespace?: string,
+  ): Promise<{ frontmatter: { id?: string } } | null>;
+}
+
+/**
+ * Strip the collection-qualified forms the indexer can emit but
+ * `readQmdResultMemory` cannot decode: the empty-hostname `qmd:///` URI and
+ * the root-relative `/` path both reach its fallback probe still prefixed and
+ * miss. Returns `null` when the path carries no such prefix — including a
+ * decodable `qmd://<collection>/` or `<collection>/` form, which the resolver
+ * owns, and a foreign collection prefix, which must stay a miss.
+ */
+function collectionPrefixStrippedPath(resultPath: string): string | null {
+  const trimmed = resultPath.trim();
+  if (trimmed.startsWith("qmd:///")) {
+    const relative = trimmed.slice("qmd:///".length).replace(/^\/+/, "");
+    return relative.length > 0 ? relative : null;
+  }
+  if (trimmed.startsWith("/")) {
+    const relative = trimmed.replace(/^\/+/, "");
+    return relative.length > 0 ? relative : null;
+  }
+  return null;
+}
+
 async function resolveSeedMemoryId(
+  resolver: DeepRecallSeedResultResolver,
   storage: DeepRecallSeedStorage,
+  namespace: string,
   resultPath: string | undefined,
 ): Promise<string | null> {
   if (typeof resultPath !== "string" || resultPath.length === 0) return null;
-  for (const candidate of qmdResultPathCandidates(storage.dir, resultPath)) {
-    const memory = await storage.readMemoryByPath(candidate);
+  const attempts = [resultPath];
+  const stripped = collectionPrefixStrippedPath(resultPath);
+  if (stripped !== null) attempts.push(stripped);
+  for (const attempt of attempts) {
+    const memory = await resolver.readQmdResultMemory(attempt, storage, [namespace]);
     const id = memory?.frontmatter?.id;
     if (typeof id === "string" && id.length > 0) return id;
   }
@@ -56,6 +96,7 @@ export function createDeepRecallSeedSearch(deps: {
   namespace: string;
   storage: DeepRecallSeedStorage;
   router: DeepRecallSeedRouter;
+  resolver: DeepRecallSeedResultResolver;
 }): (query: string, limit: number) => Promise<DeepRecallSeedHit[]> {
   return async (query, limit) => {
     if (limit <= 0) return [];
@@ -80,7 +121,8 @@ export function createDeepRecallSeedSearch(deps: {
     const seeds: DeepRecallSeedHit[] = [];
     for (const hit of hits) {
       if (typeof hit.path !== "string" || hit.path.length === 0) continue;
-      const memoryId = (await resolveSeedMemoryId(deps.storage, hit.path)) ?? hit.docid;
+      const memoryId =
+        (await resolveSeedMemoryId(deps.resolver, deps.storage, deps.namespace, hit.path)) ?? hit.docid;
       if (typeof memoryId !== "string" || memoryId.length === 0) continue;
       seeds.push({
         memoryId,
