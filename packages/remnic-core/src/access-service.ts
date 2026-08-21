@@ -1045,6 +1045,8 @@ export interface EngramAccessObserveResponse {
   scopeDebug?: EngramAccessScopeDebug;
   lcmArchived: boolean;
   extractionQueued: boolean;
+  /** True when at least one observe-derived turn was appended to the transcript store (issue #2783). False when the transcript capability is off, every message was filtered/deduped, or every append failed. */
+  transcriptPersisted: boolean;
   /** True when replayed from the idempotency cache (issue #1649); lets the HTTP surface skip the write-quota slot, matching memory_store replay semantics. */
   idempotencyReplay?: boolean;
 }
@@ -3820,11 +3822,39 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   async memorySummarizeHourly(): Promise<{
     ok: true;
     message: string;
+    sessionsConsidered: number;
+    sessionsWithEntries: number;
+    summariesWritten: number;
+    staleStore: boolean;
+    newestEntryTimestamp: string | null;
+    warning?: string;
   }> {
-    await this.orchestrator.summarizer.runHourly();
+    // Issue #2783: the daemon-side summarizer must not report success on
+    // empty work. An empty or stale transcript store is the starvation
+    // signature (11 days of silent ok:true in the field report); surface
+    // it as a distinct warning plus counts so monitoring can alert on it.
+    const stats = await this.orchestrator.summarizer.runHourly();
+    if (stats.sessionsConsidered === 0) {
+      return {
+        ok: true,
+        message:
+          "Hourly summarization completed, but the transcript store is empty — no sessions found. If turns are ingested via observe, transcript persistence may be disabled or failing.",
+        ...stats,
+        warning: "transcript store is empty",
+      };
+    }
+    if (stats.sessionsWithEntries === 0 && stats.staleStore) {
+      return {
+        ok: true,
+        message: `Hourly summarization completed with no transcript entries for the target hour, and the store looks stale (newest entry ${stats.newestEntryTimestamp ?? "unknown"}).`,
+        ...stats,
+        warning: "no transcript entries for the target hour and no new entries recently",
+      };
+    }
     return {
       ok: true,
-      message: "Hourly summarization completed. Check the summaries directory for results.",
+      message: `Hourly summarization completed: ${stats.summariesWritten} summar${stats.summariesWritten === 1 ? "y" : "ies"} written across ${stats.sessionsWithEntries} session${stats.sessionsWithEntries === 1 ? "" : "s"} with transcript entries.`,
+      ...stats,
     };
   }
 

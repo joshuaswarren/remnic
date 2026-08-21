@@ -30,11 +30,13 @@ import {
   NamespaceNotWritableError,
 } from "./access-service.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
+import { ObserveTranscriptPersister } from "./access-observe-transcript.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import {
   resolveCompressionCapabilities,
   resolveNamespaceCapabilities,
   resolveObjectiveStateCapabilities,
+  resolvePresentationCapabilities,
 } from "./capabilities.js";
 import { lcmSessionKeyForNamespace } from "./coding/coding-namespace.js";
 import {
@@ -135,6 +137,7 @@ export interface AccessObserveWriteSurfaceDeps {
 export class AccessObserveWriteSurface {
   private quarantineStoreInstance?: WriteQuarantineStore;
   private readonly pendingObserveExtractions = new PendingObserveExtractionTracker();
+  private readonly observeTranscriptPersister = new ObserveTranscriptPersister();
 
   public cancelPendingObservePreparations(sessionKey: string, scopeHint?: string): void {
     this.pendingObserveExtractions.cancelPreparations(sessionKey, scopeHint);
@@ -784,6 +787,17 @@ export class AccessObserveWriteSurface {
       }
     }
 
+    // 5b. Transcript persistence → the per-session transcript store the
+    // hourly summarizer reads (issue #2783). Best-effort like the LCM
+    // enqueue above: a transcript failure must not fail the observe.
+    const transcriptPersisted = resolvePresentationCapabilities(this.deps.orchestrator.config).transcript
+      ? await this.observeTranscriptPersister.persist(
+          this.deps.orchestrator,
+          request.sessionKey,
+          request.messages,
+        )
+      : false;
+
     // 6. Extraction/replay → effective write namespace for STORAGE, ORIGINAL
     //    sessionKey for IDENTITY (provenance + threading).
     let extractionQueued = false;
@@ -876,7 +890,7 @@ export class AccessObserveWriteSurface {
 
 
     log.info(
-      `access-observe namespace=${namespace} effectiveNamespace=${writeNamespace} sessionKey=${request.sessionKey} messages=${request.messages.length} lcm=${lcmArchived} extraction=${extractionQueued}`
+      `access-observe namespace=${namespace} effectiveNamespace=${writeNamespace} sessionKey=${request.sessionKey} messages=${request.messages.length} lcm=${lcmArchived} extraction=${extractionQueued} transcript=${transcriptPersisted}`
     );
 
     return {
@@ -898,6 +912,7 @@ export class AccessObserveWriteSurface {
       },
       lcmArchived,
       extractionQueued,
+      transcriptPersisted,
     };
     } finally {
       observePreparation.release();

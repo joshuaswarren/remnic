@@ -47,6 +47,25 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * Outcome stats of one `runHourly` pass (issue #2783). The summarizer must
+ * not report success on empty work: an empty or stale transcript store is
+ * the delegate-mode starvation signature, and callers surface these counts
+ * and the staleness flag as a distinct warning instead of a bare ok.
+ */
+export interface HourlySummarizerRunStats {
+  sessionsConsidered: number;
+  sessionsWithEntries: number;
+  summariesWritten: number;
+  /** True when the newest transcript entry across the store is older than STALE_STORE_MS. */
+  staleStore: boolean;
+  /** ISO timestamp of the newest transcript entry seen by the scan, when any exist. */
+  newestEntryTimestamp: string | null;
+}
+
+/** A store whose newest entry is older than this is considered stale (starvation signal, issue #2783). */
+const STALE_STORE_MS = 2 * 60 * 60 * 1000;
+
 export class HourlySummarizer {
   private summariesDir: string;
   private config: PluginConfig;
@@ -653,6 +672,10 @@ Respond with valid JSON matching this schema:
     return summaries;
   }
 
+  // Newest transcript entry timestamp seen by the last getActiveSessions
+  // scan (issue #2783 starvation signal).
+  private newestTranscriptTimestamp: string | null = null;
+
   // Format summaries for recall injection
   formatForRecall(summaries: HourlySummary[], maxCount: number): string {
     if (summaries.length === 0) return "";
@@ -671,11 +694,14 @@ Respond with valid JSON matching this schema:
   }
 
   // Main entry point for cron job
-  async runHourly(): Promise<void> {
+  async runHourly(): Promise<HourlySummarizerRunStats> {
     log.debug("running hourly summary generation");
 
     // Get active sessions from transcript
+    this.newestTranscriptTimestamp = null;
     const sessions = await this.getActiveSessions();
+    let sessionsWithEntries = 0;
+    let summariesWritten = 0;
 
     for (const sessionKey of sessions) {
       // Calculate the hour we want to summarize (previous hour)
@@ -691,14 +717,28 @@ Respond with valid JSON matching this schema:
         log.debug(`no transcript entries for ${sessionKey} at ${hourStart.toISOString()}`);
         continue;
       }
+      sessionsWithEntries += 1;
 
       // Generate and save summary
       const summary = await this.generateSummary(sessionKey, hourStart, entries);
       if (summary) {
         await this.saveSummary(summary);
+        summariesWritten += 1;
         log.info(`generated hourly summary for ${sessionKey} (${entries.length} turns)`);
       }
     }
+
+    return {
+      sessionsConsidered: sessions.length,
+      sessionsWithEntries,
+      summariesWritten,
+      // Staleness signal (issue #2783): newest entry across the whole
+      // store, from the same scan getActiveSessions already performs.
+      staleStore:
+        this.newestTranscriptTimestamp !== null &&
+        Date.now() - new Date(this.newestTranscriptTimestamp).getTime() > STALE_STORE_MS,
+      newestEntryTimestamp: this.newestTranscriptTimestamp,
+    };
   }
 
   // Get list of active sessions from transcript directory
@@ -747,6 +787,13 @@ Respond with valid JSON matching this schema:
           const entry = JSON.parse(line) as TranscriptEntry;
           if (typeof entry.sessionKey === "string" && entry.sessionKey.length > 0) {
             sessionKeys.add(entry.sessionKey);
+          }
+          if (
+            typeof entry.timestamp === "string" &&
+            (this.newestTranscriptTimestamp === null ||
+              entry.timestamp > this.newestTranscriptTimestamp)
+          ) {
+            this.newestTranscriptTimestamp = entry.timestamp;
           }
         } catch {
           // ignore malformed transcript lines

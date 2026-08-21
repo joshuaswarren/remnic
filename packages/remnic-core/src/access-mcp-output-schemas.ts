@@ -408,7 +408,16 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     elapsedMs: T_NUMBER,
     skippedReason: T_STRING,
   }),
-  memory_summarize_hourly: objectSchema({ ok: T_BOOLEAN, message: T_STRING }),
+  memory_summarize_hourly: objectSchema({
+    ok: T_BOOLEAN,
+    message: T_STRING,
+    sessionsConsidered: T_NUMBER,
+    sessionsWithEntries: T_NUMBER,
+    summariesWritten: T_NUMBER,
+    staleStore: T_BOOLEAN,
+    newestEntryTimestamp: T_NULLABLE_STRING,
+    warning: T_STRING,
+  }),
   conversation_index_update: objectSchema({
     enabled: T_BOOLEAN,
     sessions: T_NUMBER,
