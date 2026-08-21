@@ -1412,6 +1412,24 @@ Invalid values are rejected, never silently defaulted: a non-object `driftDetect
 
 Frontmatter written by this job: `driftState` (`stale` | `drifted`) and `lastCorroborated` (ISO 8601). Both are derived provenance stamped after the fact, so — like `mw_success` / `mw_fail` — they are not part of the sealed write envelope.
 
+
+## Deep recall (issue #2332)
+
+Budgeted REFINE/EXPAND/STOP retrieval over the cue-anchor graph built during extraction (issue #2329). An opt-in slow surface for questions that warrant a thorough multi-hop search: each iteration an LLM policy sees the query, the working set, and the anchor-linked frontier, then rewrites the query (REFINE), follows frontier nodes (EXPAND), or stops (STOP). Expect seconds per query — that is the accepted trade, which is why this never runs on the `before_prompt_build` hot path.
+
+Surfaces: MCP `engram.deep_recall` (canonical `remnic.deep_recall`), `POST /engram|remnic/v1/recall/deep`, and `remnic engram deep-recall <query> [--max-steps N] [--json]`. All three call the same `EngramAccessService.deepRecall` implementation and share one renderer. With `enabled` off, every surface returns a typed `error: "disabled"` refusal — an explicit error, not an empty success.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `deepRecall.enabled` | `false` | Master gate for the whole surface. |
+| `deepRecall.maxSteps` | `4` | Policy iterations. **`0` disables the loop** — the invocation returns seed results only, with no LLM calls. |
+| `deepRecall.maxExpandPerStep` | `3` | Per-step cap on frontier nodes pulled into the working set. **`0` honors EXPAND but selects nothing.** |
+| `deepRecall.maxResults` | `12` | Final working-set cap returned to the caller. **`0` returns an empty entry list.** |
+| `deepRecall.stepTimeoutMs` | `10000` | Per policy-call timeout in ms. **`0` = no per-step timeout.** |
+| `deepRecall.totalTimeoutMs` | `45000` | Whole-invocation wall-clock timeout in ms. **`0` = no overall timeout.** |
+
+The `--max-steps` CLI flag and `maxSteps` request field are ceilings under the configured `maxSteps`; a value above the configuration is rejected, never silently clamped. Invalid values (non-object block, unrecognized boolean-like strings, non-integer or negative counts) throw at `parseConfig`. Timeout or budget exhaustion mid-loop returns the partial working set with `ok: true` and a `BUDGET_EXHAUSTED` trace tail; only a seed-search backend failure returns `ok: false` with `error: "backend_unavailable"` (§22: empty and failed are different outcomes).
+
 ## Extraction pipeline liveness (issue #2151)
 
 Surfaces a checkable liveness watermark for the implicit extraction pipeline so a daemon that has not persisted an extraction in a long time is distinguishable from one that simply has nothing to extract (the §22 error-vs-empty principle at the pipeline level). Exposed on the authenticated `/health` payload (the `extraction` object), the `remnic doctor` `extraction_liveness` check, and `remnic stats`. When the pipeline is degraded, a single aggregated WARN is logged per staleness window rather than one line per failed extraction attempt. The `extraction` block reflects the daemon's single extraction pipeline, so `/health` returns the same block for every namespace argument. Its last-successful-extraction watermark is the newest value across the root and every distinct namespace store. If namespace enumeration or any metadata read fails, the watermark reports an explicit unreadable outcome instead of publishing a surviving store's timestamp as fresh. A buffer that cannot be read is likewise reported degraded with a distinct reason.

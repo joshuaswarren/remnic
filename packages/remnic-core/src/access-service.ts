@@ -170,6 +170,15 @@ import {
 } from "./admin/admin-surfaces.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import {
+  type DeepRecallResult,
+  runBudgetedDeepRecall,
+} from "./deep-recall.js";
+import { callDeepRecallPolicyLlm } from "./deep-recall-policy-llm.js";
+import { createDeepRecallSeedSearch } from "./deep-recall-seeds.js";
+import { renderDeepRecallResult } from "./deep-recall-renderer.js";
+import { readProjectedHarmonicGraph } from "./harmonic-retrieval.js";
+import { stripAttributesSuffix } from "./structured-attributes.js";
+import {
   type GraphSnapshotNodeMetadata,
   type GraphSnapshotRequest,
   type GraphSnapshotResponse,
@@ -2683,6 +2692,133 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     })();
 
     return toRecallExplainJson(snapshot);
+  }
+
+  /**
+   * Budgeted REFINE/EXPAND/STOP deep recall (issue #2332). Deep surface
+   * only — never called from the recall hot path. Single implementation
+   * for MCP, HTTP, and CLI (rule 22: one renderer, one service method).
+   */
+  async deepRecall(request: {
+    query: string;
+    namespace?: string;
+    sessionKey?: string;
+    authenticatedPrincipal?: string;
+    maxSteps?: number;
+  }): Promise<DeepRecallResult & { rendered: string }> {
+    const cfg = this.orchestrator.config.deepRecall;
+    if (!cfg.enabled) {
+      return {
+        ok: false,
+        error: "disabled",
+        entries: [],
+        trace: [],
+        rendered: "deep recall is disabled; set deepRecall.enabled",
+      };
+    }
+    const query = typeof request.query === "string" ? request.query.trim() : "";
+    if (query.length === 0) {
+      throw new EngramAccessInputError("deepRecall: query is required");
+    }
+    let effective = cfg;
+    const requestedSteps = request.maxSteps;
+    if (requestedSteps !== undefined) {
+      if (typeof requestedSteps !== "number" || !Number.isInteger(requestedSteps) || requestedSteps < 0) {
+        throw new EngramAccessInputError("deepRecall: maxSteps must be a non-negative integer");
+      }
+      // `deepRecall.maxSteps: 0` is a documented disable value (§33): the
+      // policy loop is off, so ANY positive override is a refusal rather than
+      // a ceiling comparison. The zero case resolves first, so the ceiling
+      // threshold below only runs while the loop is enabled.
+      if (cfg.maxSteps <= 0) {
+        if (requestedSteps > 0) {
+          throw new EngramAccessInputError(
+            "deepRecall: the policy loop is disabled (deepRecall.maxSteps=0); maxSteps must be 0",
+          );
+        }
+      } else if (requestedSteps > cfg.maxSteps) {
+        throw new EngramAccessInputError(
+          `deepRecall: maxSteps ${requestedSteps} exceeds the configured ceiling ${cfg.maxSteps}`,
+        );
+      }
+      effective = { ...cfg, maxSteps: requestedSteps };
+    }
+    const principal =
+      request.authenticatedPrincipal?.trim() || resolvePrincipal(request.sessionKey, this.orchestrator.config);
+    // Read path resolves through the SAME namespace layer as memoryGet (§30):
+    // one resolved namespace, one storage instance, for seeds and expansions.
+    const resolvedNamespace = this.resolveReadableNamespace(request.namespace, principal);
+    const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    const config = this.orchestrator.config;
+    // `abstractionNodeStoreDir` names the DEFAULT namespace's graph store and
+    // takes precedence over `storage.dir` inside the store resolver, so only a
+    // default-namespace read may pass it. This is the rule the harmonic WRITE
+    // path already applies (persistConstructedHarmonicRecords: the override
+    // goes to the base namespace only); passing it here made every non-default
+    // namespace load the DEFAULT namespace's nodes and anchors, missing its own
+    // anchor expansions and exposing foreign graph metadata on an id collision.
+    const graphStoreDir =
+      resolvedNamespace === config.defaultNamespace ? config.abstractionNodeStoreDir : undefined;
+    // Seeds route through the namespace search router (never the base
+    // `config.qmdCollection`, which is the DEFAULT namespace's collection):
+    // a non-default caller must search its own suffixed collection or deep
+    // recall silently misses its corpus and returns foreign doc ids. Hit ->
+    // memory-id resolution is per hit through the shared QMD result resolver
+    // (which also decodes the raw collection-qualified path forms the
+    // namespaces-disabled fanout returns), so no invocation pre-scans the
+    // namespace corpus.
+    const result = await runBudgetedDeepRecall(
+      {
+        config: effective,
+        searchSeed: createDeepRecallSeedSearch({
+          namespace: resolvedNamespace,
+          storage,
+          router: this.orchestrator,
+          resolver: this.orchestrator.qmdResultResolver,
+        }),
+        // Nodes and anchors are projected against the namespace's CURRENT
+        // active memories through the SAME helper searchHarmonicRetrieval
+        // uses. A raw read still carries the stored title, summary, and
+        // anchor value of a memory that was later rejected or quarantined,
+        // and the deep-recall state prompt hands those to the policy LLM long
+        // before `loadMemory(...).active` can exclude the memory itself.
+        loadGraph: async () =>
+          readProjectedHarmonicGraph({
+            memoryDir: storage.dir,
+            abstractionNodeStoreDir: graphStoreDir,
+            anchorsEnabled: true,
+          }),
+        loadMemory: async (memoryId) => {
+          const memory = await storage.getMemoryById(memoryId);
+          // Same private-record exclusion memoryGet applies (#2332): a
+          // support-passport private record is reported as absent (null),
+          // never as content — deep recall must not become the read surface
+          // that answers what every other surface denies.
+          if (!memory || isSupportPassportPrivateMemory(memory)) return null;
+          return {
+            memoryId,
+            content: memory.frontmatter.structuredAttributes
+              ? stripAttributesSuffix(memory.content)
+              : memory.content,
+            // Enumerate the active set — never an exclusion list (§41).
+            active: inferMemoryStatus(
+              memory.frontmatter,
+              toMemoryPathRel(storage.dir, memory.path)
+            ) === "active",
+          };
+        },
+        callPolicy: (statePrompt, timeoutMs) =>
+          callDeepRecallPolicyLlm({
+            statePrompt,
+            config,
+            localLlm: this.orchestrator.localLlm ?? null,
+            fallbackLlm: this.orchestrator.fastGatewayLlm ?? null,
+            timeoutMs,
+          }),
+      },
+      query,
+    );
+    return { ...result, rendered: renderDeepRecallResult(result) };
   }
 
   async recallXray(request: {
