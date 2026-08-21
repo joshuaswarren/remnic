@@ -14,6 +14,7 @@ import { countRecallTokenOverlap, normalizeRecallTokens } from "./recall-tokeniz
 import { stripAttributesSuffix } from "./structured-attributes.js";
 import { isValidityExpiredNow } from "./temporal-validity.js";
 import { isRecord } from "./store-contract.js";
+import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
 import type { MemoryFile } from "./types.js";
 
 type SourceMemoryMap = Map<string, MemoryFile>;
@@ -73,6 +74,11 @@ function projectSourceBackedNode(
     const memory = sourceMemories.get(memoryId);
     return (
       memory !== undefined &&
+      // #2332: a private support-passport record leaves the eligible set the
+      // same way a rejected one does — a node title or anchor attribution
+      // rebuilt from it would leak governed metadata into the deep-recall
+      // frontier (and every other graph reader) before any content check runs.
+      !isSupportPassportPrivateMemory(memory) &&
       inferMemoryStatus(memory.frontmatter, toMemoryPathRel(memoryDir, memory.path)) === "active" &&
       (temporalExpiredInInjection || !isValidityExpiredNow(memory.frontmatter, nowMs))
     );

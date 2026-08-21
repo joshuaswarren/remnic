@@ -2786,7 +2786,11 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
           }),
         loadMemory: async (memoryId) => {
           const memory = await storage.getMemoryById(memoryId);
-          if (!memory) return null;
+          // Same private-record exclusion memoryGet applies (#2332): a
+          // support-passport private record is reported as absent (null),
+          // never as content — deep recall must not become the read surface
+          // that answers what every other surface denies.
+          if (!memory || isSupportPassportPrivateMemory(memory)) return null;
           return {
             memoryId,
             content: memory.frontmatter.structuredAttributes

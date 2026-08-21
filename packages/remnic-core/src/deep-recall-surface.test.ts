@@ -254,6 +254,209 @@ test("deep recall projects graph nodes against active memories before the policy
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("deep recall reports private support-passport records as absent, in entries and the policy prompt (issue #2332)", async () => {
+  // `loadMemory` handed back the memory view for an ACTIVE private record —
+  // the same record memoryGet and the recall pipeline report as absent — so a
+  // QMD hit on a `support-passport-card` tag or a `support-passport-*`
+  // attribute carried owner-private content into the working set, the state
+  // prompt, and the final entries. Private records must behave exactly like
+  // the other read surfaces: absent, never an error and never content.
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-private-"));
+  try {
+    const config = parseConfig({
+      memoryDir,
+      qmdEnabled: false,
+      qmdCollection: "remnic-test",
+      deepRecall: { enabled: true, maxSteps: 1 },
+    });
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const seed = await storage.writeMemory("fact", "Alpha holds the payments routing decision.", {
+      tags: ["payments"],
+    });
+    const card = await storage.writeMemory("fact", "PRIVATE-CARD-CONTENT names the owner card number.", {
+      tags: ["support-passport-card"],
+    });
+    const audit = await storage.writeMemory("fact", "PRIVATE-AUDIT-CONTENT names the audit trail.", {
+      structuredAttributes: { "support-passport-owner": "operator" },
+    });
+    assert.equal(seed.tombstoneBlocked, false, "the seed fixture must actually persist");
+    assert.equal(card.tombstoneBlocked, false, "the tagged card fixture must actually persist");
+    assert.equal(audit.tombstoneBlocked, false, "the attribute-carrying audit fixture must actually persist");
+
+    const prompts: string[] = [];
+    const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
+    const host = service as unknown as { orchestrator: unknown };
+    host.orchestrator = {
+      config,
+      async getStorage() {
+        return storage;
+      },
+      // QMD matches BOTH private variants alongside the public seed.
+      async searchAcrossNamespaces() {
+        return [
+          { docid: seed.id, path: seed.memory.path, score: 0.9, snippet: "" },
+          { docid: card.id, path: card.memory.path, score: 0.8, snippet: "" },
+          { docid: audit.id, path: audit.memory.path, score: 0.7, snippet: "" },
+        ];
+      },
+      localLlm: {
+        async chatCompletion(messages: Array<{ content: string }>) {
+          prompts.push(messages.map((message) => message.content).join("\n"));
+          return { content: JSON.stringify({ action: "STOP", reason: "sufficient" }) };
+        },
+      },
+      fastGatewayLlm: null,
+    };
+
+    const result = await service.deepRecall({ query: "acme payments routing decision" });
+
+    assert.equal(result.ok, true, "a private record is absent, never an invocation error");
+    assert.deepEqual(
+      result.entries.map((entry) => entry.memoryId),
+      [seed.id],
+      "private records must not survive to the entries (tag AND attribute variants)",
+    );
+    assert.ok(
+      result.entries.every((entry) => !/PRIVATE-(CARD|AUDIT)-CONTENT/.test(entry.content)),
+      "no entry content carries private card or audit text",
+    );
+    assert.ok(prompts.length > 0, "the policy loop must actually have rendered a state prompt");
+    const rendered = prompts.join("\n");
+    assert.ok(
+      rendered.includes("Alpha holds the payments routing decision"),
+      "the public seed really is in the state prompt (the assertions below are not vacuous)",
+    );
+    assert.ok(
+      !rendered.includes("PRIVATE-CARD-CONTENT"),
+      "tagged card content must not reach the policy prompt",
+    );
+    assert.ok(
+      !rendered.includes("PRIVATE-AUDIT-CONTENT"),
+      "attribute-carrying audit content must not reach the policy prompt",
+    );
+    assert.ok(
+      !rendered.includes(card.id) && !rendered.includes(audit.id),
+      "a private record's id must not appear in the state prompt",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("deep recall projects private support-passport sources out of the graph before the policy prompt (issue #2332)", async () => {
+  // The active-source projection rebuilt node titles and anchor attribution
+  // from every ACTIVE source, which included private support-passport
+  // records: a node sourced from an active private memory carried its content
+  // into the frontier handed to the policy LLM even when the memory itself
+  // never became a seed hit. The projection must treat a private record the
+  // way it treats a rejected one — as if it left the eligible set.
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-private-graph-"));
+  try {
+    const config = parseConfig({
+      memoryDir,
+      qmdEnabled: false,
+      qmdCollection: "remnic-test",
+      deepRecall: { enabled: true, maxSteps: 1 },
+    });
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const seed = await storage.writeMemory("fact", "Alpha holds the payments routing decision.", {
+      tags: ["payments"],
+    });
+    const audit = await storage.writeMemory("fact", "PRIVATE-AUDIT-CONTENT names the audit trail.", {
+      structuredAttributes: { "support-passport-owner": "operator" },
+    });
+    assert.equal(seed.tombstoneBlocked, false, "the seed fixture must actually persist");
+    assert.equal(audit.tombstoneBlocked, false, "the attribute-carrying audit fixture must actually persist");
+
+    const recordedAt = "2026-08-01T00:00:00.000Z";
+    const node = (nodeId: string, title: string, sourceMemoryIds: string[]) => ({
+      schemaVersion: 1 as const,
+      nodeId,
+      recordedAt,
+      sessionKey: "test-session",
+      kind: "topic" as const,
+      abstractionLevel: "meso" as const,
+      title,
+      summary: `Synthetic ${nodeId} summary`,
+      sourceMemoryIds,
+    });
+    await recordAbstractionNode({
+      memoryDir,
+      node: node("node-seed", "Seeded payments routing topic", [seed.id]),
+    });
+    await recordAbstractionNode({
+      memoryDir,
+      node: node("node-private", "PRIVATE-AUDIT-NODE stored title", [audit.id]),
+    });
+    await recordCueAnchor({
+      memoryDir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "anchor-shared",
+        anchorType: "entity",
+        anchorValue: "PRIVATE-AUDIT-ANCHOR+payments",
+        normalizedCue: "private audit anchor payments",
+        recordedAt,
+        sessionKey: "test-session",
+        nodeRefs: ["node-seed", "node-private"],
+        sourceMemoryIdsByNodeRef: { "node-seed": [seed.id], "node-private": [audit.id] },
+      },
+    });
+
+    const prompts: string[] = [];
+    const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
+    const host = service as unknown as { orchestrator: unknown };
+    host.orchestrator = {
+      config,
+      async getStorage() {
+        return storage;
+      },
+      // QMD matches only the public seed; the private record reaches the
+      // invocation only through the graph.
+      async searchAcrossNamespaces() {
+        return [{ docid: seed.id, path: seed.memory.path, score: 0.9, snippet: "" }];
+      },
+      localLlm: {
+        async chatCompletion(messages: Array<{ content: string }>) {
+          prompts.push(messages.map((message) => message.content).join("\n"));
+          return { content: JSON.stringify({ action: "STOP", reason: "sufficient" }) };
+        },
+      },
+      fastGatewayLlm: null,
+    };
+
+    const result = await service.deepRecall({ query: "acme payments routing decision" });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(
+      result.entries.map((entry) => entry.memoryId),
+      [seed.id],
+      "the private-sourced graph path adds no entry",
+    );
+    assert.ok(prompts.length > 0, "the policy loop must actually have rendered a state prompt");
+    const rendered = prompts.join("\n");
+    assert.ok(
+      rendered.includes("Alpha holds the payments routing decision"),
+      "the public seed really is in the state prompt (the assertions below are not vacuous)",
+    );
+    assert.ok(
+      !rendered.includes("PRIVATE-AUDIT-CONTENT"),
+      "a node title rebuilt from a private source must not reach the policy prompt",
+    );
+    assert.ok(
+      !rendered.includes("node-private"),
+      "a node whose only source is private must not be a frontier candidate",
+    );
+    assert.ok(
+      !rendered.includes("PRIVATE-AUDIT-ANCHOR"),
+      "an anchor attributed through a private source must not reach the policy prompt",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 
 test("HTTP deep recall gates the body namespace, not just the query string (issue #2332 review)", async () => {
   // The route used to resolve the scope from `?namespace=` only and then let
