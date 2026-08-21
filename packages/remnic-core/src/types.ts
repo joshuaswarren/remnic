@@ -1806,6 +1806,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig, D
   sharedContextEnabled: boolean;
   sharedContextDir?: string;
   sharedContextMaxInjectChars: number;
+  sharedContextAllowBindingAuthority: boolean;
   crossSignalsSemanticEnabled: boolean;
   crossSignalsSemanticTimeoutMs: number;
   sharedCrossSignalSemanticEnabled?: boolean;

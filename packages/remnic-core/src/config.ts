@@ -3026,6 +3026,7 @@ export function parseConfig(
 
     // v4.0 shared-context (default off)
     sharedContextEnabled: cfg.sharedContextEnabled === true,
+    sharedContextAllowBindingAuthority: cfg.sharedContextAllowBindingAuthority === true,
     sharedContextDir:
       typeof cfg.sharedContextDir === "string" && cfg.sharedContextDir.length > 0 ? cfg.sharedContextDir : undefined,
     sharedContextMaxInjectChars:

@@ -25,6 +25,24 @@ Shared context is a file-based coordination layer that multiple agents read and 
 - `cross-signals/<YYYY-MM-DD>.md`: human-readable recurring themes, risks, and promotion candidates with provenance
 - `cross-signals/<YYYY-MM-DD>.json`: deterministic overlap report (topics/entities) across daily outputs + feedback totals
 
+## Authority envelope
+
+Every agent output carries a governance envelope in its frontmatter (issue #1957):
+
+```yaml
+sharedBy: "agent-id"    # origin: the acting agent that wrote the item
+authority: "informational"  # informational | advisory | binding
+expiresAt: "2099-01-01T00:00:00.000Z"  # optional
+supersedes: "item-id"   # optional
+```
+
+Rules:
+
+- Default authority is `informational`. A missing, unrecognized, or malformed value never resolves above `informational` (least privilege).
+- `binding` requires two things: the writer explicitly requests it, and the operator sets `sharedContextAllowBindingAuthority: true` (default `false`). A binding write without the flag is rejected; a stored `binding` item read without the flag downgrades to `advisory`.
+- Legacy items without an envelope keep working unchanged: they read as `informational` with origin falling back to the frontmatter `agent` field.
+- Cross-signals reports (JSON and markdown) and the daily roundtable annotate every source with its resolved authority and origin, so consumers can weigh items accordingly.
+
 ## Tools
 
 - `shared_context_write_output`

@@ -1113,6 +1113,7 @@ See [shared-context.md](shared-context.md).
 
 | Setting | Default | Description |
 |---------|---------|-------------|
+| `sharedContextAllowBindingAuthority` | `false` | Allow shared-context items to carry binding authority (writers must still request it explicitly) |
 | `sharedContextEnabled` | `false` | Enable shared cross-agent context |
 | `sharedContextDir` | `(unset)` | Directory for shared context files |
 | `sharedContextMaxInjectChars` | `4000` | Max chars injected from shared context |
@@ -1928,6 +1929,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `autoPromoteMinConfidenceTier` | `explicit` | `implied` (recommended) |
 | `routingRulesEnabled` | `false` | `false` |
 | `routingRulesStateFile` | `state/routing-rules.json` | `state/routing-rules.json` |
+| `sharedContextAllowBindingAuthority` | `false` | `false` unless agents need to publish binding-authority shared items |
 | `sharedContextEnabled` | `false` | `false` unless you are actively using cross-agent memory sharing |
 | `sharedContextDir` | (unset) | (unset) |
 | `sharedContextMaxInjectChars` | `4000` | `4000` |

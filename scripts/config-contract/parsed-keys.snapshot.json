@@ -980,6 +980,7 @@
     "sessionObserverDebounceMs",
     "sessionObserverEnabled",
     "sessionTogglesEnabled",
+    "sharedContextAllowBindingAuthority",
     "sharedContextDir",
     "sharedContextEnabled",
     "sharedContextMaxInjectChars",
