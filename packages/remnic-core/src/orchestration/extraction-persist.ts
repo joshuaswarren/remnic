@@ -118,7 +118,7 @@ import {
 } from "../orchestrator.js";
 import type { HarmonicConstructionInput } from "../harmonic-construction.js";
 import { persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
-import { applySemanticMergeAtPersist, writeMergedVerbatimArtifact } from "./semantic-merge-persist.js";
+import { applySemanticMergeAtPersist, buildMergedTargetPromotionPayload, writeMergedVerbatimArtifact } from "./semantic-merge-persist.js";
 import { ExtractionAnchorSnapshot } from "./extraction-anchor-snapshot.js";
 
 export class ExtractionPersistCoordinator {
@@ -2561,9 +2561,9 @@ export class ExtractionPersistCoordinator {
         await anchorSnapshots.replace(targetStorage, semanticMerge.targetId, writeCategory, memoryPathById);
         // B: the create path stores a verbatim artifact for qualifying writes; the merge must not drop it.
         await writeMergedVerbatimArtifact(this.deps, targetStorage, semanticMerge.targetId, { category: writeCategory, citedContent: citedFactContent, confidence: fact.confidence, tags: fact.tags, intent: inferredIntent ?? undefined, sourceConnector: extractionSourceConnector, origin, toolScoped: factToolScoped });
-        // D: the probe above only bypasses targets that already have copies; with none, the create path's promotion must still run — anchored to the merged target, fail-open (the merge stands).
-        // Promoted-copy authority (final round): stamp the COMMITTED target's trust fields (origin, tags, entityRef, memoryKind, provenance, spans) — never the incoming extraction's; confidence/importance/intent stay extraction-sourced (eligibility parity, monotone caps). See MergedTargetPromotionMetadata.
-        try { await promoteMemoryToShared({ sourceStorage: targetStorage, category: writeCategory, content: semanticMerge.mergedContent, origin: semanticMerge.retainedTargetMetadata.origin, confidence: fact.confidence, subject: factSubject, tags: semanticMerge.retainedTargetMetadata.tags ?? fact.tags, entityRef: semanticMerge.retainedTargetMetadata.entityRef, structuredAttributes: fact.structuredAttributes, sourceMemoryId: semanticMerge.targetId, importance, intentGoal: inferredIntent?.goal, intentActionType: inferredIntent?.actionType, intentEntityTypes: inferredIntent?.entityTypes, memoryKind: semanticMerge.retainedTargetMetadata.memoryKind ?? memoryKind, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}), ...(semanticMerge.retainedTargetMetadata.provenance ? { provenance: semanticMerge.retainedTargetMetadata.provenance } : {}), ...(semanticMerge.retainedTargetMetadata.sources && semanticMerge.retainedTargetMetadata.sources.length > 0 ? { sources: semanticMerge.retainedTargetMetadata.sources } : {}), source: extractionWriteSource, ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}) }); promotedCopyProbe.invalidate(); } catch (err) {
+        // D + final round (A): with no promoted copies the create path's promotion must still run — fail-open, the merge stands — and its payload is derived SOLELY from the re-read committed record: no field reads the incoming extraction (see buildMergedTargetPromotionPayload; null = target replaced mid-flight, skip promotion).
+        const mergedPromotion = await buildMergedTargetPromotionPayload(targetStorage, semanticMerge);
+        if (mergedPromotion) try { await promoteMemoryToShared({ sourceStorage: targetStorage, ...mergedPromotion }); promotedCopyProbe.invalidate(); } catch (err) {
           log.warn(`persistExtraction: merged-target promotion failed open for ${semanticMerge.targetId}: ${err}`);
         }
         continue;

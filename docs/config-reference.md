@@ -1256,13 +1256,20 @@ into a create-or-update decision:
    copy was promoted cannot hide that copy from the scan. A successful merge
    into a target with no promoted copy yet still runs the shared/profile
    promotion the create path would have performed, anchored to the merged
-   target id and fail-open like the create path. The promoted copy stamps the
-   committed target's promotion metadata — retained authority `origin` (an
-   unstamped legacy target reads `unknown`, the fence's least-privilege
-   default), tags, entity ref, memory kind, and the merge patch's committed
-   provenance strength and claim spans — so a copy is authority-fenced exactly
-   like the source its `sourceMemoryId` names; its `confidence` stays the
-   incoming extraction's, the eligibility tier the create path gates on. The
+   target id and fail-open like the create path. The promotion payload is
+   derived solely from the re-read committed record — body, category,
+   confidence, tags, entity ref, structured attributes, importance, intent
+   fields, memory kind, bi-temporal bounds (`validAt`, `invalidAt`,
+   `observedAt`, `eventTimeSource`), provenance strength, claim spans,
+   subject, and write-provenance label — so no field on the promotion path
+   reads the incoming extraction, and a copy is authority-fenced exactly like
+   the source its `sourceMemoryId` names (an unstamped legacy target promotes
+   as `unknown`, the fence's least-privilege default; a target whose temporal
+   bounds or attributes the incoming fact omits keeps them on the copy).
+   Promotion eligibility gates on the committed target's own confidence. A
+   target that cannot be re-read after the merge commits (deleted, or its body
+   replaced by another writer) skips the promotion fail-open — the merge
+   itself stands. The
    merge lookup also honors the batch's embedding-outage short circuit (its
    own lookup failures arm it for the remaining facts) and the novelty
    gate's `add` decision: when either bypasses semantic dedup for a fact, no

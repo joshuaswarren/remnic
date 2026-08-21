@@ -473,7 +473,10 @@ async function seedMergeTarget(
       "created: 2026-08-01T00:00:00.000Z",
       "updated: 2026-08-01T00:00:00.000Z",
       "source: extraction",
-      "confidence: 0.9",
+      // Final round (A): promotion eligibility gates on the COMMITTED
+      // target's confidence now, so the seed must itself sit in the
+      // "explicit" tier (>= 0.95) the default auto-promote floor requires.
+      "confidence: 0.95",
       "confidenceTier: explicit",
       "status: active",
       "importanceScore: 0.9",
@@ -744,6 +747,110 @@ test("semantic merge: the promoted shared copy serves the committed merged body 
     mergedTargetBody,
     "the promoted copy must serve the committed merged body, not the incoming fact",
   );
+});
+
+test("semantic merge: the promoted copy carries the committed target's structured attributes and temporal bounds (final round A)", async () => {
+  installCapturingLogger();
+  // The target carries structuredAttributes AND bi-temporal bounds the
+  // incoming fact omits — the parity gate's exact merge-permitted shape.
+  // Pre-final-round, the promotion forwarded the incoming fact's absence,
+  // so the shared copy lost attribute-based retrieval and temporal
+  // supersession that the source memory kept.
+  const TARGET = "The inventory service restocks after an audit sign-off.";
+  const INCOMING = "The inventory service restocks every first Monday at 06:00.";
+  const { orchestrator, storage, memoryDir } = await makeOrchestrator({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    autoPromoteToSharedEnabled: true,
+    semanticMerge: { enabled: true },
+    versioningEnabled: true,
+  });
+  const targetId = "fact-promote-metadata-target";
+  // Seed with the metadata the incoming fact omits (extends seedMergeTarget).
+  const dir = path.join(memoryDir, "facts", "2026-08-01");
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    path.join(dir, `${targetId}.md`),
+    [
+      "---",
+      `id: ${targetId}`,
+      "category: fact",
+      "created: 2026-08-01T00:00:00.000Z",
+      "updated: 2026-08-01T00:00:00.000Z",
+      "source: extraction",
+      "confidence: 0.95",
+      "confidenceTier: explicit",
+      "status: active",
+      "importanceScore: 0.9",
+      "importanceLevel: high",
+      // Storage persists attributes as single-line JSON (storage.ts §450).
+      'structuredAttributes: {"restock_window":"first Monday"}',
+      "validAt: 2026-07-01T00:00:00.000Z",
+      "invalidAt: 2026-09-01T00:00:00.000Z",
+      "observedAt: 2026-07-01T12:00:00.000Z",
+      "eventTimeSource: extracted",
+      "---",
+      "",
+      TARGET,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const judge = { calls: 0 };
+  installMergingJudge(orchestrator, judge);
+  orchestrator.embeddingFallback = {
+    async isAvailable() {
+      return true;
+    },
+    async search(query: string): Promise<Array<{ id: string; score: number; path: string }>> {
+      return query === INCOMING ? [{ id: targetId, score: 0.85, path: "" }] : [];
+    },
+    async indexFile() {
+      /* noop */
+    },
+    async removeFromIndex() {
+      /* noop */
+    },
+  };
+
+  const result: ExtractionResult = {
+    facts: [{ content: INCOMING, category: "fact", tags: [], confidence: 0.95 }],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  } as ExtractionResult;
+  const { persistedIds } = await orchestrator.persistExtraction(result, storage, null);
+
+  assert.equal(judge.calls, 1, "the merge judge must have run");
+  assert.equal(persistedIds.length, 0, "the fact merged into the target, no new fragment");
+  const committed = await storage.getMemoryByIdIncludingArchived(targetId);
+  assert.ok(committed, "the merged target must be readable");
+  // Fixture sanity: the committed record really carries the metadata.
+  assert.deepEqual(committed!.frontmatter.structuredAttributes, {
+    restock_window: "first Monday",
+  });
+  assert.equal(committed!.frontmatter.valid_at, "2026-07-01T00:00:00.000Z");
+  assert.equal(committed!.frontmatter.invalid_at, "2026-09-01T00:00:00.000Z");
+  assert.equal(committed!.frontmatter.observedAt, "2026-07-01T12:00:00.000Z");
+  assert.equal(committed!.frontmatter.eventTimeSource, "extracted");
+  const sharedStorage = await orchestrator.getStorage("shared");
+  const copy = (await sharedStorage.readAllMemories()).find(
+    (m: { frontmatter: { sourceMemoryId?: string } }) =>
+      m.frontmatter.sourceMemoryId === targetId,
+  );
+  assert.ok(copy, "the merged extraction must be promoted to shared");
+  // The promoted copy carries the committed target's values — not the
+  // incoming fact's absence of them.
+  assert.deepEqual(
+    copy!.frontmatter.structuredAttributes,
+    committed!.frontmatter.structuredAttributes,
+  );
+  assert.equal(copy!.frontmatter.valid_at, "2026-07-01T00:00:00.000Z");
+  assert.equal(copy!.frontmatter.invalid_at, "2026-09-01T00:00:00.000Z");
+  assert.equal(copy!.frontmatter.observedAt, "2026-07-01T12:00:00.000Z");
+  assert.equal(copy!.frontmatter.eventTimeSource, "extracted");
 });
 
 test("semantic merge: the promoted shared copy is authority-fenced exactly like its source (origin parity)", async () => {
