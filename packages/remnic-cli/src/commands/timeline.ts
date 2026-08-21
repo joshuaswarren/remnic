@@ -1,8 +1,9 @@
 /**
  * `remnic timeline` binary command (issue #1983 PR1) — extracted from index.ts
- * so the entrypoint stays under its structural ceiling. Range/search live in
- * @remnic/core's shared runner. Tests inject in-memory cards; this host path
- * loads config only and passes `cards: null` when no fixture is supplied.
+ * so the entrypoint stays under its structural ceiling. Range/search/publish
+ * all live in @remnic/core's shared runner, so the binary dispatches the same
+ * implementation as the host CLI tree. Tests inject in-memory cards; this host
+ * path loads config only and passes `cards: null` when no fixture is supplied.
  */
 import fs from "node:fs";
 import {
@@ -10,6 +11,7 @@ import {
   resolveRemnicConfigRecord,
   runTimelineCliCommand,
 } from "@remnic/core";
+import type { PluginConfig } from "@remnic/core";
 import { resolveConfigPath } from "../index.js";
 
 export async function runTimelineBinaryCommand(rest: string[]): Promise<void> {
@@ -20,12 +22,13 @@ export async function runTimelineBinaryCommand(rest: string[]): Promise<void> {
   try {
     let qa = { enabled: false, maxRangeDays: 31 };
     let timelineEnabled = false;
+    let config: PluginConfig | undefined;
     try {
       const configPath = resolveConfigPath();
       const raw = fs.existsSync(configPath)
         ? JSON.parse(fs.readFileSync(configPath, "utf8"))
         : {};
-      const config = parseConfig(resolveRemnicConfigRecord(raw));
+      config = parseConfig(resolveRemnicConfigRecord(raw));
       timelineEnabled = config.activity.timeline.enabled;
       qa = config.activity.timeline.qa;
     } catch {
@@ -36,7 +39,7 @@ export async function runTimelineBinaryCommand(rest: string[]): Promise<void> {
       return;
     }
     const code = await runTimelineCliCommand(
-      { cards: null, qa, timelineEnabled },
+      { cards: null, qa, timelineEnabled, config },
       timelineArgs,
       { stdout: process.stdout, stderr: process.stderr },
     );

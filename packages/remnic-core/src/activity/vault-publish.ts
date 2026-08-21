@@ -29,22 +29,40 @@ export function applyManagedRegion(
 
   const startMarker = `<!-- remnic:${opts.name}:start -->`;
   const endMarker = `<!-- remnic:${opts.name}:end -->`;
-  const startIdx = fileText.indexOf(startMarker);
-  if (startIdx === -1) return { ok: false, reason: "no_marker", text: fileText };
-  const endIdx = fileText.indexOf(endMarker, startIdx + startMarker.length);
-  if (endIdx === -1) return { ok: false, reason: "no_marker", text: fileText };
+  // Markers are owned only outside a code block — fenced or indented: a
+  // complete pair inside a ``` or four-space-indented example is sample
+  // text the user wrote, and replacing between it would overwrite their
+  // bytes (issue #1985).
+  const rows = fileLines(fileText);
+  let startRow: FileLine | undefined;
+  let endRow: FileLine | undefined;
+  for (const row of rows) {
+    if (row.fenced) continue;
+    const trimmed = row.line.trim();
+    if (startRow === undefined) {
+      if (trimmed === startMarker) startRow = row;
+    } else if (endRow === undefined && trimmed === endMarker) {
+      endRow = row;
+      break;
+    }
+  }
+  if (startRow === undefined || endRow === undefined) {
+    return { ok: false, reason: "no_marker", text: fileText };
+  }
 
   const { body, eol } = ownedBody(fileText, opts.content);
   return {
     ok: true,
-    text: `${fileText.slice(0, startIdx + startMarker.length)}${eol}${body}${eol}${fileText.slice(endIdx)}`,
+    text: `${fileText.slice(0, startRow.start + startRow.line.length)}${eol}${body}${eol}${fileText.slice(endRow.start)}`,
   };
 }
 
 function applyHeadingRegion(fileText: string, name: string, content: string): ApplyManagedRegionResult {
   const wanted = name.trim();
+  const rows = fileLines(fileText);
   const hits: Array<{ line: number; level: number; next: number }> = [];
-  for (const row of fileLines(fileText)) {
+  for (const row of rows) {
+    if (row.fenced) continue;
     const heading = parseAtxHeading(row.line);
     if (heading && heading.text === wanted) {
       hits.push({ line: row.number, level: heading.level, next: row.next });
@@ -57,8 +75,8 @@ function applyHeadingRegion(fileText: string, name: string, content: string): Ap
 
   const hit = hits[0]!;
   let sectionEnd = fileText.length;
-  for (const row of fileLines(fileText)) {
-    if (row.start < hit.next) continue;
+  for (const row of rows) {
+    if (row.start < hit.next || row.fenced) continue;
     const heading = parseAtxHeading(row.line);
     if (heading && heading.level <= hit.level) {
       sectionEnd = row.start;
@@ -66,12 +84,38 @@ function applyHeadingRegion(fileText: string, name: string, content: string): Ap
     }
   }
 
-  const { body, eol } = ownedBody(fileText, content);
+  const { body, eol } = ownedBody(fileText, demoteOwnedHeadings(content, hit.level));
   const prefix =
     hit.next === fileText.length && !fileText.endsWith("\n") && !fileText.endsWith("\r")
       ? `${fileText}${eol}`
       : fileText.slice(0, hit.next);
   return { ok: true, text: `${prefix}${body}${eol}${fileText.slice(sectionEnd)}` };
+}
+
+/**
+ * Re-level every ATX heading in the owned content so it sits strictly
+ * below the owning heading (issue #1985 review). A published recap that
+ * itself starts with `#`/`##` headings would otherwise terminate its own
+ * managed region on the NEXT publish — the new copy lands before the old
+ * heading and each republish leaves a stale duplicate behind. New level is
+ * owning + original, clamped at six. A level-6 owning heading has no
+ * deeper ATX level, so its owned headings flatten to bold text — still
+ * rendered, never a terminator. Headings inside fenced or indented code
+ * are content, not structure, and pass through untouched.
+ */
+function demoteOwnedHeadings(content: string, owningLevel: number): string {
+  const rows = fileLines(content);
+  let out = "";
+  let cursor = 0;
+  for (const row of rows) {
+    const heading = row.fenced ? null : parseAtxHeading(row.line);
+    if (heading === null) continue;
+    const level = Math.min(owningLevel + heading.level, 6);
+    const replacement = level > owningLevel ? `${"#".repeat(level)} ${heading.text}` : `**${heading.text}**`;
+    out += content.slice(cursor, row.start) + replacement;
+    cursor = row.start + row.line.length;
+  }
+  return out + content.slice(cursor);
 }
 
 function ownedBody(fileText: string, content: string): { body: string; eol: string } {
@@ -82,10 +126,44 @@ function ownedBody(fileText: string, content: string): { body: string; eol: stri
   return { body, eol };
 }
 
-function fileLines(fileText: string): Array<{ line: string; start: number; next: number; number: number }> {
-  const rows: Array<{ line: string; start: number; next: number; number: number }> = [];
+export interface FileLine {
+  line: string;
+  start: number;
+  next: number;
+  number: number;
+  /** True inside a fenced or indented code block, delimiter lines included. */
+  fenced: boolean;
+}
+
+/**
+ * The one shared code-aware line scanner (issue #1985): marker discovery,
+ * marker replacement, mismatch scanning, and heading insertion all classify
+ * lines through it, so code examples are invisible to every scan.
+ *
+ * A line is code when a fence is open, or when its own indentation reaches
+ * four columns (CommonMark indented code block; one tab covers all four).
+ * Classification reads the RAW line — no consumer trims first — so the
+ * indentation cannot be erased before it is seen.
+ *
+ * Two deliberate simplifications, both resolving toward "code" (skip):
+ *   - CommonMark lets an indented line lazily continue an open paragraph
+ *     instead of opening a code block; we still call it code.
+ *   - CommonMark measures indentation relative to the containing block, so
+ *     a marker indented under a list item can be live content; we call it
+ *     code. Distinguishing either case needs full block tracking.
+ * Skipping a line refuses a publish; mis-reading one as live overwrites the
+ * user's bytes. The refusal is recoverable, the overwrite is not.
+ *
+ * A fence delimiter run is only live at indent < 4: deeper, the run is
+ * literal text inside an indented code block (and inside an open fence a
+ * 4+-indented closing run is content, not a closer), so `fenceRun` never
+ * sees an indented line.
+ */
+export function fileLines(fileText: string): FileLine[] {
+  const rows: FileLine[] = [];
   let start = 0;
   let number = 1;
+  let fence: { char: string; len: number } | null = null;
   while (start < fileText.length) {
     let i = start;
     while (i < fileText.length && fileText[i] !== "\n" && fileText[i] !== "\r") i++;
@@ -93,28 +171,90 @@ function fileLines(fileText: string): Array<{ line: string; start: number; next:
     if (fileText[i] === "\r" && fileText[i + 1] === "\n") next = i + 2;
     else if (fileText[i] === "\n" || fileText[i] === "\r") next = i + 1;
     else next = fileText.length;
-    rows.push({ line: fileText.slice(start, i), start, next, number });
+    const line = fileText.slice(start, i);
+
+    const indentedCode = indentColumn(line) >= 4;
+    const run = indentedCode ? null : fenceRun(line);
+    let fenced: boolean;
+    if (fence === null) {
+      // A backtick fence's info string may not contain a backtick, so a
+      // ``` ` ``` run with one is not an opening delimiter.
+      if (run !== null && !(run.char === "`" && run.info.includes("`"))) {
+        fence = { char: run.char, len: run.len };
+      }
+      fenced = fence !== null || indentedCode;
+    } else {
+      fenced = true;
+      if (run !== null && run.char === fence.char && run.len >= fence.len && run.info.length === 0) {
+        fence = null;
+      }
+    }
+
+    rows.push({ line, start, next, number, fenced });
     number += 1;
     start = next;
   }
   return rows;
 }
 
-function parseAtxHeading(line: string): { level: number; text: string } | null {
+/**
+ * The column a line's first non-whitespace character sits at: spaces count
+ * one, a tab advances to the next multiple of four (CommonMark tab handling).
+ */
+function indentColumn(line: string): number {
+  let col = 0;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (ch === " ") col += 1;
+    else if (ch === "\t") col += 4 - (col % 4);
+    else break;
+  }
+  return col;
+}
+
+/**
+ * A fence delimiter run: three or more backticks or tildes at the line's
+ * start (leading whitespace allowed), plus the trailing info string. An
+ * unterminated fence therefore keeps every following line fenced, which
+ * makes a malformed note refuse to publish instead of overwriting bytes.
+ */
+function fenceRun(line: string): { char: string; len: number; info: string } | null {
+  const body = line.trimStart();
+  const char = body[0];
+  if (char !== "`" && char !== "~") return null;
+  let len = 0;
+  while (len < body.length && body[len] === char) len++;
+  if (len < 3) return null;
+  return { char, len, info: body.slice(len).trim() };
+}
+
+export function parseAtxHeading(line: string): { level: number; text: string } | null {
+  // CommonMark permits up to three columns of indentation before the
+  // hashes; the fourth column is an indented code block, which
+  // `fileLines` already classifies as fenced (a tab advances to the
+  // next multiple of four, matching `indentColumn`). Replacement and
+  // insertion both scan headings through this one parser.
+  let at = 0;
+  let indent = 0;
+  while (at < line.length && (line[at] === " " || line[at] === "\t")) {
+    indent += line[at] === " " ? 1 : 4 - (indent % 4);
+    if (indent >= 4) return null;
+    at += 1;
+  }
   let level = 0;
-  while (level < line.length && level < 6 && line[level] === "#") level++;
+  while (level < 6 && line[at + level] === "#") level++;
   if (level === 0) return null;
-  const after = line[level];
+  const after = line[at + level];
   if (after !== " " && after !== "\t") return null;
 
-  let start = level + 1;
+  let start = at + level + 1;
   let end = line.length;
   while (start < end && (line[start] === " " || line[start] === "\t")) start++;
   while (end > start && (line[end - 1] === " " || line[end - 1] === "\t")) end--;
 
   let hashEnd = end;
   while (hashEnd > start && line[hashEnd - 1] === "#") hashEnd--;
-  if (hashEnd < end && hashEnd > start && (line[hashEnd - 1] === " " || line[hashEnd - 1] === "\t")) {
+  if (hashEnd < end && hashEnd > start && (line[hashEnd - 1] === " " || line[end - 1] === "\t")) {
     end = hashEnd;
     while (end > start && (line[end - 1] === " " || line[end - 1] === "\t")) end--;
   }

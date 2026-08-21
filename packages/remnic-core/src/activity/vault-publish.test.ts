@@ -266,3 +266,54 @@ test("applyManagedRegion heading refuses duplicate headings and lists line numbe
   });
   assert.deepEqual(result, { ok: false, reason: "duplicate_heading", lines: [3, 6], text: fileText });
 });
+
+test("applyManagedRegion heading demotes owned headings below the owning heading, clamped at six", () => {
+  const first = applyManagedRegion("## Timeline\nold\n\n## Notes\nkeep\n", {
+    strategy: "heading",
+    name: "Timeline",
+    content: "# Journal\n\n## Cards\n\n- a",
+  });
+  assert.equal(first.ok, true);
+  if (!first.ok) return;
+  assert.equal(first.text, "## Timeline\n### Journal\n\n#### Cards\n\n- a\n## Notes\nkeep\n");
+
+  const second = applyManagedRegion(first.text, {
+    strategy: "heading",
+    name: "Timeline",
+    content: "# Journal\n\n## Cards\n\n- a",
+  });
+  assert.equal(second.ok, true);
+  if (!second.ok) return;
+  assert.equal(second.text, first.text);
+
+  // A recap heading already at six stays six — still strictly deeper than
+  // a level-2 owning heading, so it cannot terminate the region either.
+  const clamped = applyManagedRegion("## Timeline\nold\n", {
+    strategy: "heading",
+    name: "Timeline",
+    content: "###### deep",
+  });
+  assert.equal(clamped.ok, true);
+  if (!clamped.ok) return;
+  assert.equal(clamped.text, "## Timeline\n###### deep\n");
+});
+
+test("applyManagedRegion heading under a level-6 owner flattens owned headings to bold text", () => {
+  const first = applyManagedRegion("###### Timeline\nold\n", {
+    strategy: "heading",
+    name: "Timeline",
+    content: "# Journal\nbody",
+  });
+  assert.equal(first.ok, true);
+  if (!first.ok) return;
+  assert.equal(first.text, "###### Timeline\n**Journal**\nbody\n");
+
+  const second = applyManagedRegion(first.text, {
+    strategy: "heading",
+    name: "Timeline",
+    content: "# Journal\nbody",
+  });
+  assert.equal(second.ok, true);
+  if (!second.ok) return;
+  assert.equal(second.text, first.text);
+});

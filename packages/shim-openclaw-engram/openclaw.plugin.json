@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.69.11",
+  "version": "9.69.12",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -6419,6 +6419,220 @@
                     "maximum": 366,
                     "default": 31,
                     "description": "Maximum timeline_range span in days. Integer 1..366."
+                  }
+                }
+              },
+              "vault": {
+                "type": "object",
+                "additionalProperties": false,
+                "default": {},
+                "description": "Markdown-vault publisher (issue #1985): write timeline artifacts into daily/weekly vault notes through strictly-bounded managed regions. Default off; enabled=false performs no vault reads or writes.",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master gate for vault publishing. Default false."
+                  },
+                  "vaultPath": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Vault root, absolute or ~ path. Required and non-empty when enabled. A symlinked root is rejected."
+                  },
+                  "dailyNotePath": {
+                    "type": "string",
+                    "default": "{yyyy}-{MM}-{dd}.md",
+                    "description": "Vault-relative daily-note path template. Tokens: {yyyy} {yy} {M} {MM} {d} {dd} {ww} {MMM} {MMMM} {ddd} {dddd} (English names). Unknown tokens are rejected at config load naming the token and the full valid set."
+                  },
+                  "weeklyNotePath": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Vault-relative weekly-note path template. Empty means weekly-note publishing is disabled."
+                  },
+                  "createMissingNotes": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Create a missing note from noteTemplate before publishing. Default false (update-existing only)."
+                  },
+                  "noteTemplate": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Vault-relative template file used only when createMissingNotes creates a note; its content passes through the same date-token expansion. Required when createMissingNotes is true."
+                  },
+                  "sectionStrategy": {
+                    "type": "string",
+                    "enum": [
+                      "markers",
+                      "heading"
+                    ],
+                    "default": "markers",
+                    "description": "How Remnic owns a section: HTML-comment marker pairs, or a uniquely-named heading's body."
+                  },
+                  "publish": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "default": {},
+                    "description": "Per-artifact publish targets. Section names must be non-empty, trimmed, and unique per target file.",
+                    "properties": {
+                      "timeline": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "default": {},
+                        "description": "Day timeline artifact. Live target: publishes the persisted day recap.",
+                        "properties": {
+                          "enabled": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Gate for publishing the timeline artifact."
+                          },
+                          "target": {
+                            "type": "string",
+                            "enum": [
+                              "daily",
+                              "weekly"
+                            ],
+                            "default": "daily",
+                            "description": "Which note file receives the artifact."
+                          },
+                          "section": {
+                            "type": "string",
+                            "default": "Timeline",
+                            "description": "Managed-region (or heading) name for this artifact."
+                          }
+                        }
+                      },
+                      "standup": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "default": {},
+                        "description": "Standup artifact; lights up when timeline phase 3 lands.",
+                        "properties": {
+                          "enabled": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Gate for publishing the standup artifact."
+                          },
+                          "target": {
+                            "type": "string",
+                            "enum": [
+                              "daily",
+                              "weekly"
+                            ],
+                            "default": "daily",
+                            "description": "Which note file receives the artifact."
+                          },
+                          "section": {
+                            "type": "string",
+                            "default": "Standup",
+                            "description": "Managed-region (or heading) name for this artifact."
+                          }
+                        }
+                      },
+                      "weekly": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "default": {},
+                        "description": "Weekly review artifact; lights up when timeline phase 4 lands. Requires weeklyNotePath.",
+                        "properties": {
+                          "enabled": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Gate for publishing the weekly artifact."
+                          },
+                          "target": {
+                            "type": "string",
+                            "enum": [
+                              "daily",
+                              "weekly"
+                            ],
+                            "default": "weekly",
+                            "description": "Which note file receives the artifact."
+                          },
+                          "section": {
+                            "type": "string",
+                            "default": "Weekly Review",
+                            "description": "Managed-region (or heading) name for this artifact."
+                          }
+                        }
+                      },
+                      "locations": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "default": {},
+                        "description": "Location day line; lights up with the location day renderer.",
+                        "properties": {
+                          "enabled": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Gate for publishing the locations artifact."
+                          },
+                          "target": {
+                            "type": "string",
+                            "enum": [
+                              "daily",
+                              "weekly"
+                            ],
+                            "default": "daily",
+                            "description": "Which note file receives the artifact."
+                          },
+                          "section": {
+                            "type": "string",
+                            "default": "Locations",
+                            "description": "Managed-region (or heading) name for this artifact."
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "insertUnderHeading": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Markers strategy: heading under which missing marker pairs are inserted. Empty means never insert; unmarked notes are skipped with reason 'no marker'."
+                  },
+                  "wikilinks": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "default": {},
+                    "description": "Obsidian wikilink decoration. Applies when the locations target lights up.",
+                    "properties": {
+                      "places": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Render place names as wikilinks."
+                      },
+                      "placesFolder": {
+                        "type": "string",
+                        "default": "Places",
+                        "description": "Vault folder used for place wikilink targets."
+                      }
+                    }
+                  },
+                  "properties": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "default": {},
+                    "description": "Where artifact stats are written. 'off' writes none; 'frontmatter' adds/updates only prefix-owned keys via targeted line edits; 'dataview-inline' appends inline fields inside the managed region.",
+                    "properties": {
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "off",
+                          "frontmatter",
+                          "dataview-inline"
+                        ],
+                        "default": "off",
+                        "description": "Property output mode."
+                      },
+                      "prefix": {
+                        "type": "string",
+                        "default": "remnic_",
+                        "description": "Frontmatter/inline property key prefix."
+                      }
+                    }
+                  },
+                  "autoPublish": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Publish after each successful artifact generation, once those hooks land. The CLI is always available."
                   }
                 }
               }

@@ -17,7 +17,30 @@ test("parseActivityConfig defaults to an inert, search-only configuration", () =
     minConfidence: 0.7,
     minImportance: "normal",
     maxMemoriesPerDay: 0,
-    timeline: { enabled: false, journal: { enabled: false, source: "file" }, qa: { enabled: false, maxRangeDays: 31 } },
+    timeline: {
+      enabled: false,
+      journal: { enabled: false, source: "file" },
+      qa: { enabled: false, maxRangeDays: 31 },
+      vault: {
+        enabled: false,
+        vaultPath: "",
+        dailyNotePath: "{yyyy}-{MM}-{dd}.md",
+        weeklyNotePath: "",
+        createMissingNotes: false,
+        noteTemplate: "",
+        sectionStrategy: "markers",
+        publish: {
+          timeline: { enabled: true, target: "daily", section: "Timeline" },
+          standup: { enabled: false, target: "daily", section: "Standup" },
+          weekly: { enabled: false, target: "weekly", section: "Weekly Review" },
+          locations: { enabled: false, target: "daily", section: "Locations" },
+        },
+        insertUnderHeading: "",
+        wikilinks: { places: false, placesFolder: "Places" },
+        properties: { mode: "off", prefix: "remnic_" },
+        autoPublish: true,
+      },
+    },
   });
   assert.deepEqual(parseActivityConfig(undefined), defaultActivityConfig());
 });
@@ -149,4 +172,74 @@ test("activity config rejects a null extractionMode instead of silently defaulti
 
 test("activity config rejects a null maxMemoriesPerDay instead of silently uncapping", () => {
   assert.throws(() => parseActivityConfig({ maxMemoriesPerDay: null }), /maxMemoriesPerDay/);
+});
+
+test("vault publish section names are rejected at config load when the publisher would reject them", () => {
+  // `Timeline-->` and an embedded newline both pass a trimmed-string check
+  // but break the `<!-- remnic:<name>:start -->` marker, so `publishVaultNote`
+  // throws. The accepted config domain must equal the publisher's.
+  for (const section of ["Timeline-->", "Time\nline"]) {
+    assert.throws(
+      () =>
+        parseActivityConfig({
+          timeline: { vault: { publish: { timeline: { section } } } },
+        }),
+      /publish\.timeline\.section must not contain a line break or "-->"/,
+    );
+  }
+  const ok = parseActivityConfig({
+    timeline: { vault: { publish: { timeline: { section: "Timeline" } } } },
+  });
+  assert.equal(ok.timeline.vault.publish.timeline.section, "Timeline");
+});
+
+test("noteTemplate path shape is validated at config load when createMissingNotes is true", () => {
+  // The field is documented vault-relative; an absolute or `..`-bearing
+  // value would only fail later as a publish-time `template_escape`.
+  for (const noteTemplate of ["/vault/daily.md", "../daily.md", "Daily/../daily.md"]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { vault: { createMissingNotes: true, noteTemplate } } }),
+      /activity\.timeline\.vault\.noteTemplate:/,
+    );
+  }
+  const ok = parseActivityConfig({
+    timeline: { vault: { createMissingNotes: true, noteTemplate: "Templates/daily.md" } },
+  });
+  assert.equal(ok.timeline.vault.noteTemplate, "Templates/daily.md");
+});
+
+test("an explicitly disabled weekly target loads identically to an omitted one", () => {
+  // Tools that serialize schema defaults write `publish.weekly.enabled: false`;
+  // that must behave exactly like leaving the object out, not demand a
+  // weeklyNotePath the disabled target never uses.
+  const explicit = parseActivityConfig({
+    timeline: { vault: { publish: { weekly: { enabled: false } } } },
+  });
+  const omitted = parseActivityConfig({ timeline: { vault: {} } });
+  assert.deepEqual(explicit.timeline.vault, omitted.timeline.vault);
+
+  assert.throws(
+    () => parseActivityConfig({ timeline: { vault: { publish: { weekly: { enabled: true } } } } }),
+    /weeklyNotePath is empty/,
+  );
+});
+
+test("an enabled vault rejects relative or whitespace-only vaultPath at config load", () => {
+  // A relative root resolves against the process working directory, so the
+  // same config would update different files depending on how the daemon or
+  // CLI was launched. The contract is absolute or `~`-rooted, enforced at
+  // parse time — not as a publish-time surprise.
+  for (const vaultPath of [".", "vault", "../notes", "   "]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { vault: { enabled: true, vaultPath } } }),
+      /vaultPath must be an absolute or `~`-rooted path/,
+    );
+  }
+  for (const vaultPath of ["/home/user/notes", "~", "~/notes"]) {
+    const ok = parseActivityConfig({ timeline: { vault: { enabled: true, vaultPath } } });
+    assert.equal(ok.timeline.vault.vaultPath, vaultPath);
+  }
+  // A disabled vault may carry any placeholder — nothing resolves it.
+  const inert = parseActivityConfig({ timeline: { vault: { enabled: false, vaultPath: "." } } });
+  assert.equal(inert.timeline.vault.vaultPath, ".");
 });
