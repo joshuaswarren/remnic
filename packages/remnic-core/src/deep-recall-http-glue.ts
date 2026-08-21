@@ -31,7 +31,17 @@ export async function respondDeepRecall(
   respondJson: RespondJson,
   readJsonBody: ReadJsonBody,
   service: EngramAccessService,
-  scope: { namespace?: string; sessionKey?: string } = {}
+  /**
+   * Resolve the caller scope for a body-supplied namespace/sessionKey. The
+   * body `namespace` is user-controlled, so it MUST flow through the SAME
+   * effective-namespace allow-list gate as the query-string value (issue
+   * #1850 finding 2 / #2332 review): a scoped bearer that passes an allowed
+   * `?namespace=` while setting a different `namespace` in the body would
+   * otherwise read another tenant. access-http supplies the gate and applies
+   * the query-string fallback, so this module never selects a namespace of
+   * its own. Throws 403 when the effective namespace is not permitted.
+   */
+  scopeFor: (bodyNamespace?: string, bodySessionKey?: string) => { namespace?: string; sessionKey?: string },
 ): Promise<void> {
   const parsed = deepRecallRequestSchema.safeParse(await readJsonBody(req));
   if (!parsed.success) {
@@ -43,11 +53,12 @@ export async function respondDeepRecall(
     return;
   }
   const maxSteps = coerceMaxSteps(parsed.data.maxSteps);
+  const scope = scopeFor(parsed.data.namespace, parsed.data.sessionKey);
   const result = await service.deepRecall({
     query: parsed.data.query,
     ...(maxSteps !== undefined ? { maxSteps } : {}),
-    namespace: parsed.data.namespace ?? scope.namespace,
-    sessionKey: parsed.data.sessionKey ?? scope.sessionKey,
+    namespace: scope.namespace,
+    sessionKey: scope.sessionKey,
   });
   respondJson(res, 200, result);
 }

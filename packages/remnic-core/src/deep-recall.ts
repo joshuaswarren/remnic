@@ -113,6 +113,39 @@ const EXPAND_SCORE_INHERITANCE = 0.8;
 const STATE_WORKING_SET_ENTRIES = 12;
 const STATE_ENTRY_SNIPPET_CHARS = 200;
 
+/** Thrown when the shared whole-invocation deadline expires mid-await. */
+class DeepRecallDeadlineExceeded extends Error {
+  constructor() {
+    super("deep recall total timeout reached");
+  }
+}
+
+/**
+ * Race one dependency call against the SHARED whole-invocation deadline.
+ *
+ * `deadlineMs` is an absolute instant computed once per invocation, so every
+ * await subtracts elapsed time instead of restarting the budget, and a stalled
+ * seed search, graph load, or memory read can no longer outlive the documented
+ * `totalTimeoutMs` just because the deadline is only *checked* between steps.
+ * An infinite deadline (`totalTimeoutMs: 0`, a documented disable value) passes
+ * the work through untouched — no timer, no wrapper.
+ */
+async function withDeadline<T>(work: Promise<T>, deadlineMs: number, now: () => number): Promise<T> {
+  if (!Number.isFinite(deadlineMs)) return await work;
+  const remaining = deadlineMs - now();
+  if (remaining <= 0) throw new DeepRecallDeadlineExceeded();
+  // The timer stays REFERENCED: it is the only thing keeping the loop alive
+  // when the awaited dependency never settles, which is precisely the case the
+  // deadline exists for. It is always cleared in the `finally`.
+  const expiry = Promise.withResolvers<never>();
+  const timer = setTimeout(() => expiry.reject(new DeepRecallDeadlineExceeded()), remaining);
+  try {
+    return await Promise.race([work, expiry.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function parsePolicyOutput(raw: string | null): PolicyAction | null {
   if (raw === null) return null;
   const candidates = [stripCodeFences(raw), ...extractJsonCandidates(raw)];
@@ -187,6 +220,18 @@ function buildFrontierIndex(graph: DeepRecallGraphSnapshot): FrontierIndex {
 }
 
 /**
+ * A candidate node adds nothing when every source memory the EXPAND path would
+ * load is already in the working set (or when it has none): offering it as an
+ * unretrieved candidate lets the policy burn steps re-expanding a node that can
+ * only re-add what is already present.
+ */
+function nodeAddsNothing(node: AbstractionNode, workingSet: ReadonlyMap<string, WorkingEntry>): boolean {
+  return (node.sourceMemoryIds ?? [])
+    .slice(0, MAX_SOURCE_MEMORY_IDS_PER_NODE)
+    .every((memoryId) => workingSet.has(memoryId));
+}
+
+/**
  * Frontier refresh (after every working-set change): for each working-set
  * memory, anchors whose nodeRefs include a node listing that memory make
  * every OTHER referenced node a frontier candidate. Ranked by the shared
@@ -212,7 +257,8 @@ function refreshFrontier(
         if (!anchor) continue;
         for (const otherNodeRef of anchor.nodeRefs) {
           if (otherNodeRef === nodeId) continue;
-          if (!index.nodeIdToNode.has(otherNodeRef)) continue;
+          const otherNode = index.nodeIdToNode.get(otherNodeRef);
+          if (!otherNode || nodeAddsNothing(otherNode, workingSet)) continue;
           const current = byNodeId.get(otherNodeRef);
           if (current === undefined || entry.score > current.parentScore) {
             byNodeId.set(otherNodeRef, {
@@ -311,34 +357,40 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
   const deadlineMs = cfg.totalTimeoutMs > 0 ? startedMs + cfg.totalTimeoutMs : Number.POSITIVE_INFINITY;
 
   const trace: DeepRecallTraceStep[] = [];
-  let seedHits: DeepRecallSeedHit[];
-  try {
-    seedHits = await deps.searchSeed(query, cfg.maxResults);
-  } catch {
-    // Seed backend failure is the only ok:false path (§22: an empty index
-    // proceeds; a thrown search does not).
-    return { ok: false, error: "backend_unavailable", entries: [], trace: [] };
-  }
-
-  const graphSnapshot = await deps.loadGraph();
-  const graph: FrontierGraph = { index: buildFrontierIndex(graphSnapshot) };
-
   const contentCache = new Map<string, string>();
-  const contentFor = (memoryId: string): string => {
-    const cached = contentCache.get(memoryId);
-    if (cached !== undefined) return cached;
-    return "";
-  };
-
+  const contentFor = (memoryId: string): string => contentCache.get(memoryId) ?? "";
   const workingSet = new Map<string, WorkingEntry>();
-  mergeIntoWorkingSet(workingSet, seedHits, "seed", contentFor);
-  // Best-effort content hydration for seeds (missing memories stay empty).
-  for (const memoryId of [...workingSet.keys()]) {
-    const memory = await deps.loadMemory(memoryId);
-    if (memory) {
-      contentCache.set(memoryId, memory.content);
-      const entry = workingSet.get(memoryId);
-      if (entry) entry.content = memory.content;
+  let graph: FrontierGraph = { index: buildFrontierIndex({ nodes: [], anchors: [] }) };
+  // Pre-policy work (seed search, graph load, seed hydration) is bounded by the
+  // SAME deadline as the policy calls; exhausting it here yields the partial
+  // working set rather than blocking the later check from ever running.
+  let exhaustedDetail: string | null = null;
+  try {
+    const seedHits = await withDeadline(deps.searchSeed(query, cfg.maxResults), deadlineMs, now);
+    mergeIntoWorkingSet(workingSet, seedHits, "seed", contentFor);
+  } catch (err) {
+    if (!(err instanceof DeepRecallDeadlineExceeded)) {
+      // Seed backend failure is the only ok:false path (§22: an empty index
+      // proceeds; a thrown search does not).
+      return { ok: false, error: "backend_unavailable", entries: [], trace: [] };
+    }
+    exhaustedDetail = "total timeout reached during seed search";
+  }
+  if (exhaustedDetail === null) {
+    try {
+      graph = { index: buildFrontierIndex(await withDeadline(deps.loadGraph(), deadlineMs, now)) };
+      // Best-effort content hydration for seeds (missing memories stay empty).
+      for (const memoryId of [...workingSet.keys()]) {
+        const memory = await withDeadline(deps.loadMemory(memoryId), deadlineMs, now);
+        if (memory) {
+          contentCache.set(memoryId, memory.content);
+          const entry = workingSet.get(memoryId);
+          if (entry) entry.content = memory.content;
+        }
+      }
+    } catch (err) {
+      if (!(err instanceof DeepRecallDeadlineExceeded)) throw err;
+      exhaustedDetail = "total timeout reached loading the graph or hydrating seeds";
     }
   }
 
@@ -357,106 +409,131 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
     });
   };
 
-  // `maxSteps: 0` is a documented disable value (§33): seed-only retrieval,
-  // with no policy call at all. The zero check dominates the step threshold
-  // instead of relying on the loop condition falling through.
-  if (cfg.maxSteps <= 0) {
+  if (exhaustedDetail !== null) {
+    // Pre-policy work already spent the whole-invocation budget: report the
+    // partial working set (ok:true, §22) instead of starting a policy call
+    // that cannot finish inside the deadline.
+    pushStep(0, "BUDGET_EXHAUSTED", exhaustedDetail, startedMs);
+  } else if (cfg.maxSteps <= 0) {
+    // `maxSteps: 0` is a documented disable value (§33): seed-only retrieval,
+    // with no policy call at all. The zero check dominates the step threshold
+    // instead of relying on the loop condition falling through.
     pushStep(0, "STOP", "policy loop disabled (maxSteps=0)", startedMs);
   }
   let step = 0;
-  while (cfg.maxSteps > 0 && step < cfg.maxSteps) {
-    const stepStartMs = now();
-    if (now() >= deadlineMs) {
-      pushStep(step, "BUDGET_EXHAUSTED", "total timeout reached before policy call", stepStartMs);
-      break;
-    }
-    const remainingMs = deadlineMs === Number.POSITIVE_INFINITY ? cfg.stepTimeoutMs : Math.min(cfg.stepTimeoutMs, deadlineMs - now());
-    const timeoutMs = cfg.stepTimeoutMs > 0 ? Math.max(1, remainingMs) : 0;
-    const raw = await deps.callPolicy(
-      renderStatePrompt({ query: currentQuery, workingSet, frontier, stepsRemaining: cfg.maxSteps - step }),
-      timeoutMs
-    );
-    const parsed = parsePolicyOutput(raw);
-    if (parsed === null) {
-      pushStep(step, "STOP", "invalid_policy_output", stepStartMs);
-      break;
-    }
-    if (parsed.action === "STOP") {
-      pushStep(step, "STOP", parsed.reason || "policy stop", stepStartMs);
-      break;
-    }
-    if (parsed.action === "REFINE") {
-      const rewrite = validateRefineRewrite({
-        currentQuery,
-        refinedQuery: parsed.refinedQuery ?? null,
-        refinesUsed,
-      });
-      if (!rewrite.ok) {
-        pushStep(step, "STOP", rewrite.reason, stepStartMs);
+  try {
+    while (exhaustedDetail === null && cfg.maxSteps > 0 && step < cfg.maxSteps) {
+      const stepStartMs = now();
+      if (now() >= deadlineMs) {
+        pushStep(step, "BUDGET_EXHAUSTED", "total timeout reached before policy call", stepStartMs);
         break;
       }
-      currentQuery = rewrite.refinedQuery;
-      refinesUsed += 1;
-      try {
-        const refinedHits = await deps.searchSeed(currentQuery, cfg.maxResults);
-        mergeIntoWorkingSet(workingSet, refinedHits, "refine", contentFor);
-        for (const hit of refinedHits) {
-          if (workingSet.has(hit.memoryId) && !contentCache.has(hit.memoryId)) {
-            const memory = await deps.loadMemory(hit.memoryId);
-            if (memory) {
-              contentCache.set(hit.memoryId, memory.content);
-              const entry = workingSet.get(hit.memoryId);
-              if (entry) entry.content = memory.content;
+      // Two independent axes bound the policy call: its own per-step timeout and
+      // whatever is left of the shared deadline. `stepTimeoutMs: 0` disables only
+      // its own axis (§33) — a finite total budget still applies, so the call can
+      // never outlive `totalTimeoutMs`. `timeoutMs: 0` reaches the policy only
+      // when BOTH axes are disabled.
+      const stepBudgetMs = cfg.stepTimeoutMs > 0 ? cfg.stepTimeoutMs : Number.POSITIVE_INFINITY;
+      const effectiveBudgetMs = Math.min(stepBudgetMs, deadlineMs - now());
+      const timeoutMs = Number.isFinite(effectiveBudgetMs) ? Math.max(1, effectiveBudgetMs) : 0;
+      const raw = await withDeadline(
+        deps.callPolicy(
+          renderStatePrompt({ query: currentQuery, workingSet, frontier, stepsRemaining: cfg.maxSteps - step }),
+          timeoutMs
+        ),
+        deadlineMs,
+        now
+      );
+      const parsed = parsePolicyOutput(raw);
+      if (parsed === null) {
+        pushStep(step, "STOP", "invalid_policy_output", stepStartMs);
+        break;
+      }
+      if (parsed.action === "STOP") {
+        pushStep(step, "STOP", parsed.reason || "policy stop", stepStartMs);
+        break;
+      }
+      if (parsed.action === "REFINE") {
+        const rewrite = validateRefineRewrite({
+          currentQuery,
+          refinedQuery: parsed.refinedQuery ?? null,
+          refinesUsed,
+        });
+        if (!rewrite.ok) {
+          pushStep(step, "STOP", rewrite.reason, stepStartMs);
+          break;
+        }
+        currentQuery = rewrite.refinedQuery;
+        refinesUsed += 1;
+        try {
+          const refinedHits = await withDeadline(deps.searchSeed(currentQuery, cfg.maxResults), deadlineMs, now);
+          mergeIntoWorkingSet(workingSet, refinedHits, "refine", contentFor);
+          for (const hit of refinedHits) {
+            if (workingSet.has(hit.memoryId) && !contentCache.has(hit.memoryId)) {
+              const memory = await withDeadline(deps.loadMemory(hit.memoryId), deadlineMs, now);
+              if (memory) {
+                contentCache.set(hit.memoryId, memory.content);
+                const entry = workingSet.get(hit.memoryId);
+                if (entry) entry.content = memory.content;
+              }
             }
           }
+        } catch (err) {
+          // Re-search failure mid-loop is partial, not fatal (§22): the loop
+          // keeps what it has and the policy decides the next move. Deadline
+          // expiry is NOT a partial failure — it ends the invocation.
+          if (err instanceof DeepRecallDeadlineExceeded) throw err;
         }
-      } catch {
-        // Re-search failure mid-loop is partial, not fatal (§22): the loop
-        // keeps what it has and the policy decides the next move.
+        frontier = refreshFrontier(workingSet, graph);
+        pushStep(step, "REFINE", currentQuery, stepStartMs);
+        step += 1;
+        continue;
+      }
+      // EXPAND. A configured ceiling of 0 is a documented no-op limit (§33):
+      // the action is honored but selects nothing.
+      const selection =
+        cfg.maxExpandPerStep <= 0
+          ? { ok: true as const, nodeIds: [] as string[], truncated: false }
+          : selectExpandNodeIds({
+              frontierIds: frontier.map((item) => item.nodeId),
+              requestedIds: parsed.expandNodeIds ?? [],
+              maxExpandPerStep: cfg.maxExpandPerStep,
+            });
+      if (!selection.ok) {
+        pushStep(step, "STOP", "invalid_policy_output", stepStartMs);
+        break;
+      }
+      const chosen = new Map(frontier.map((item) => [item.nodeId, item]));
+      for (const nodeId of selection.nodeIds) {
+        const item = chosen.get(nodeId);
+        const node = graph.index.nodeIdToNode.get(nodeId);
+        if (!item || !node) continue;
+        for (const memoryId of (node.sourceMemoryIds ?? []).slice(0, MAX_SOURCE_MEMORY_IDS_PER_NODE)) {
+          if (workingSet.has(memoryId)) continue;
+          const memory = await withDeadline(deps.loadMemory(memoryId), deadlineMs, now);
+          // Only active memories enter the working set (§41); a null read
+          // (foreign namespace, §30) skips the same way.
+          if (!memory || !memory.active) continue;
+          workingSet.set(memoryId, {
+            memoryId,
+            content: memory.content,
+            score: item.parentScore * EXPAND_SCORE_INHERITANCE,
+            origin: "expand",
+            viaAnchor: item.anchorValue,
+          });
+          contentCache.set(memoryId, memory.content);
+        }
       }
       frontier = refreshFrontier(workingSet, graph);
-      pushStep(step, "REFINE", currentQuery, stepStartMs);
+      pushStep(step, "EXPAND", selection.nodeIds.join(", "), stepStartMs);
       step += 1;
-      continue;
     }
-    // EXPAND. A configured ceiling of 0 is a documented no-op limit (§33):
-    // the action is honored but selects nothing.
-    const selection =
-      cfg.maxExpandPerStep <= 0
-        ? { ok: true as const, nodeIds: [] as string[], truncated: false }
-        : selectExpandNodeIds({
-            frontierIds: frontier.map((item) => item.nodeId),
-            requestedIds: parsed.expandNodeIds ?? [],
-            maxExpandPerStep: cfg.maxExpandPerStep,
-          });
-    if (!selection.ok) {
-      pushStep(step, "STOP", "invalid_policy_output", stepStartMs);
-      break;
-    }
-    const chosen = new Map(frontier.map((item) => [item.nodeId, item]));
-    for (const nodeId of selection.nodeIds) {
-      const item = chosen.get(nodeId);
-      const node = graph.index.nodeIdToNode.get(nodeId);
-      if (!item || !node) continue;
-      for (const memoryId of (node.sourceMemoryIds ?? []).slice(0, MAX_SOURCE_MEMORY_IDS_PER_NODE)) {
-        if (workingSet.has(memoryId)) continue;
-        const memory = await deps.loadMemory(memoryId);
-        // Only active memories enter the working set (§41); a null read
-        // (foreign namespace, §30) skips the same way.
-        if (!memory || !memory.active) continue;
-        workingSet.set(memoryId, {
-          memoryId,
-          content: memory.content,
-          score: item.parentScore * EXPAND_SCORE_INHERITANCE,
-          origin: "expand",
-          viaAnchor: item.anchorValue,
-        });
-        contentCache.set(memoryId, memory.content);
-      }
-    }
-    frontier = refreshFrontier(workingSet, graph);
-    pushStep(step, "EXPAND", selection.nodeIds.join(", "), stepStartMs);
-    step += 1;
+  } catch (err) {
+    if (!(err instanceof DeepRecallDeadlineExceeded)) throw err;
+    // A dependency call inside a step outran the shared deadline: the per-step
+    // timeout is not the wall clock, so record exhaustion and keep the partial
+    // working set. durationMs spans the whole invocation.
+    pushStep(step, "BUDGET_EXHAUSTED", "total timeout reached mid-step", startedMs);
   }
 
   if (cfg.maxSteps > 0 && step >= cfg.maxSteps && trace[trace.length - 1]?.action !== "STOP") {

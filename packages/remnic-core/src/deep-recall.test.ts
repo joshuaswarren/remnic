@@ -150,3 +150,72 @@ test("deep recall distinguishes a seed backend failure from an empty store", asy
   assert.equal(empty.ok, true, "empty stores are ok:true with empty entries");
   assert.deepEqual(empty.entries, []);
 });
+
+test("deep recall enforces the total timeout on pre-policy work, not only before policy calls", async () => {
+  // A seed search that never settles used to block the loop forever: the
+  // deadline was merely CHECKED before the first policy call, so the check
+  // never ran. The invocation must end inside totalTimeoutMs with the partial
+  // (here empty) working set and a BUDGET_EXHAUSTED tail.
+  const startedMs = Date.now();
+  const result = await runBudgetedDeepRecall(
+    {
+      config: makeConfig({ totalTimeoutMs: 25 }),
+      searchSeed: () => Promise.withResolvers<never>().promise,
+      loadGraph: async () => ({ nodes: [], anchors: [] }),
+      loadMemory: async () => null,
+      callPolicy: async () => {
+        throw new Error("the policy must never be called after the deadline expires");
+      },
+    },
+    "a query whose seed search stalls",
+  );
+  assert.equal(result.ok, true, "a timeout is partial, not a backend failure");
+  assert.deepEqual(result.entries, []);
+  assert.equal(result.trace.at(-1)?.action, "BUDGET_EXHAUSTED");
+  assert.ok(
+    Date.now() - startedMs < 5000,
+    "the invocation returns on the deadline instead of awaiting a stalled dependency",
+  );
+});
+
+test("deep recall keeps the overall deadline when the per-step timeout is disabled", async () => {
+  // stepTimeoutMs: 0 disables only its own axis (§33). A finite totalTimeoutMs
+  // must still reach the policy call, otherwise a slow call runs unbounded.
+  const budgets: number[] = [];
+  const withTotalOnly = await runBudgetedDeepRecall(
+    {
+      config: makeConfig({ maxSteps: 1, stepTimeoutMs: 0, totalTimeoutMs: 5000 }),
+      searchSeed: async () => [],
+      loadGraph: async () => ({ nodes: [], anchors: [] }),
+      loadMemory: async () => null,
+      callPolicy: async (_prompt, timeoutMs) => {
+        budgets.push(timeoutMs);
+        return JSON.stringify({ action: "STOP", reason: "done" });
+      },
+    },
+    "a query with only a total budget",
+  );
+  assert.equal(withTotalOnly.ok, true);
+  assert.equal(budgets.length, 1);
+  assert.ok(
+    (budgets[0] ?? 0) > 0 && (budgets[0] ?? 0) <= 5000,
+    `the remaining total budget must reach the policy call, got ${budgets[0]}`,
+  );
+
+  // Both axes disabled is the only "no timeout" case.
+  budgets.length = 0;
+  await runBudgetedDeepRecall(
+    {
+      config: makeConfig({ maxSteps: 1, stepTimeoutMs: 0, totalTimeoutMs: 0 }),
+      searchSeed: async () => [],
+      loadGraph: async () => ({ nodes: [], anchors: [] }),
+      loadMemory: async () => null,
+      callPolicy: async (_prompt, timeoutMs) => {
+        budgets.push(timeoutMs);
+        return JSON.stringify({ action: "STOP", reason: "done" });
+      },
+    },
+    "a query with no budget at all",
+  );
+  assert.equal(budgets[0], 0, "both axes disabled means no timeout");
+});

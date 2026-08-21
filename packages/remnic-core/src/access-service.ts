@@ -173,6 +173,7 @@ import {
   runBudgetedDeepRecall,
 } from "./deep-recall.js";
 import { callDeepRecallPolicyLlm } from "./deep-recall-policy-llm.js";
+import { createDeepRecallSeedSearch } from "./deep-recall-seeds.js";
 import { renderDeepRecallResult } from "./deep-recall-renderer.js";
 import { readAbstractionNodes, readCueAnchors } from "./harmonic-retrieval.js";
 import { stripAttributesSuffix } from "./structured-attributes.js";
@@ -2748,32 +2749,20 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     const resolvedNamespace = this.resolveReadableNamespace(request.namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const config = this.orchestrator.config;
-    // Seed QMD hits carry the indexer's docid; resolving each hit's path
-    // against the namespace storage maps it to the real memory id that the
-    // anchor graph joins on. Unresolvable hits keep their docid and simply
-    // never join the graph.
-    const seedPathIndex = new Map<string, string>();
-    for (const memory of await storage.readAllMemories()) {
-      const rel = toMemoryPathRel(storage.dir, memory.path).split(nodePath.sep).join("/");
-      seedPathIndex.set(rel, memory.frontmatter.id);
-      seedPathIndex.set(memory.path.split(nodePath.sep).join("/"), memory.frontmatter.id);
-    }
+    // Seeds route through the namespace search router (never the base
+    // `config.qmdCollection`, which is the DEFAULT namespace's collection):
+    // a non-default caller must search its own suffixed collection or deep
+    // recall silently misses its corpus and returns foreign doc ids. Hit ->
+    // memory-id resolution is per hit through the shared QMD result resolver,
+    // so no invocation pre-scans the namespace corpus.
     const result = await runBudgetedDeepRecall(
       {
         config: effective,
-        searchSeed: async (seedQuery, limit) => {
-          const hits = await this.orchestrator.qmd.search(seedQuery, config.qmdCollection, limit);
-          return hits
-            .filter((hit) => typeof hit.path === "string" && hit.path.length > 0)
-            .map((hit) => {
-              const normalizedPath = hit.path.split(nodePath.sep).join("/");
-              const memoryId =
-                seedPathIndex.get(normalizedPath) ??
-                seedPathIndex.get(normalizedPath.replace(/^.\//, "")) ??
-                hit.docid;
-              return { memoryId, score: typeof hit.score === "number" && Number.isFinite(hit.score) ? hit.score : 0 };
-            });
-        },
+        searchSeed: createDeepRecallSeedSearch({
+          namespace: resolvedNamespace,
+          storage,
+          router: this.orchestrator,
+        }),
         loadGraph: async () => ({
           nodes: await readAbstractionNodes({
             memoryDir: storage.dir,
