@@ -58,6 +58,29 @@ function optionalEnvelopeId(supersedes: string | undefined): string | undefined 
 }
 
 /**
+ * Resolve the acting agent identity for a shared-context write.
+ *
+ * Provenance is server-derived, never model-chosen: when the surface
+ * resolved an authenticated identity, that identity IS the write's agent
+ * (and therefore the envelope origin), and a caller-supplied `agentId`
+ * claiming a different agent is REJECTED rather than silently overridden,
+ * so a caller can never publish an item attributed to another agent.
+ * Surfaces with no resolvable identity (in-process callers, an
+ * unauthenticated local CLI) keep using the supplied agent id.
+ */
+export function resolveWriteOrigin(input: { agentId: string; authenticatedIdentity?: string }): string {
+  const identity = input.authenticatedIdentity?.trim() ?? "";
+  if (identity.length === 0) return input.agentId;
+  const requested = input.agentId.trim();
+  if (requested.length > 0 && requested !== identity) {
+    throw new Error(
+      `shared-context write origin mismatch: authenticated identity ${JSON.stringify(identity)} cannot publish as ${JSON.stringify(requested)}`,
+    );
+  }
+  return identity;
+}
+
+/**
  * Validate and compose the envelope for a shared-context write.
  * `sharedBy` is stamped from the acting agent id — provenance is derived
  * by the manager, never injected through item content.

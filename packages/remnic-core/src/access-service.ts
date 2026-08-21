@@ -4430,15 +4430,29 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     agentId: string;
     title: string;
     content: string;
+    /** Authenticated principal resolved by the surface, never client-supplied. */
+    principal?: string;
   }): Promise<unknown> {
     if (!this.orchestrator.sharedContext) {
       return { enabled: false, reason: "Shared context is disabled. Enable `sharedContextEnabled: true`." };
     }
-    const fp = await this.orchestrator.sharedContext.writeAgentOutput({
-      agentId: request.agentId,
-      title: request.title,
-      content: request.content,
-    });
+    let fp: string;
+    try {
+      fp = await this.orchestrator.sharedContext.writeAgentOutput({
+        agentId: request.agentId,
+        title: request.title,
+        content: request.content,
+        // Governance origin comes from the authenticated principal, so a
+        // caller cannot publish an item attributed to another agent.
+        authenticatedIdentity: request.principal,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("shared-context write origin mismatch")) {
+        throw new EngramAccessInputError(message);
+      }
+      throw error;
+    }
     return { written: true, path: fp };
   }
 

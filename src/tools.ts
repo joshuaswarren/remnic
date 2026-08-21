@@ -2872,7 +2872,9 @@ Best for:
       description:
         "Write an agent work product into the shared-context directory (v4.0). Other agents can read these files to coordinate without explicit message passing.",
       parameters: Type.Object({
-        agentId: Type.String({ description: "Agent ID producing this output (e.g., generalist, oracle, flash)." }),
+        // Provenance is server-derived: a configured runtime principal wins
+        // over whatever the model passes here, and a mismatch is rejected.
+        agentId: Type.String({ description: "Agent ID producing this output; must match the configured runtime principal when one is set." }),
         title: Type.String({ description: "Short title for the output." }),
         content: Type.String({ description: "Markdown content to write." }),
       }),
@@ -2883,8 +2885,19 @@ Best for:
             "Shared context is disabled. Enable `sharedContextEnabled: true` to use shared-context tools.",
           );
         }
-        const fp = await orchestrator.sharedContext.writeAgentOutput({ agentId, title, content });
-        return toolResult(`Wrote shared agent output: ${fp}`);
+        try {
+          const fp = await orchestrator.sharedContext.writeAgentOutput({
+            agentId,
+            title,
+            content,
+            // Provenance is server-derived: the configured runtime principal
+            // wins over whatever the model passed as agentId.
+            authenticatedIdentity: orchestrator.config.agentAccessHttp?.principal,
+          });
+          return toolResult(`Wrote shared agent output: ${fp}`);
+        } catch (err) {
+          return toolResult(`shared_context_write_output error: ${err instanceof Error ? err.message : String(err)}`);
+        }
       },
     },
     { name: "shared_context_write_output" },

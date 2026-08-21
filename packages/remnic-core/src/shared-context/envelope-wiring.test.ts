@@ -151,3 +151,43 @@ test("binding authority requires the config opt-in at write and on read", async 
   const source = openSignals.report.sources.find((s) => s.path === fp);
   assert.equal(source?.authority, "binding");
 });
+
+test("a whitespace-padded stored authority stays informational even with binding enabled", async (t) => {
+  // Regression (issue #1957 review): the stored token is validated EXACTLY.
+  // Trimming first would let `" binding "` resolve as binding when the opt-in
+  // is on, and as advisory when it is off — both above informational.
+  const date = today();
+  for (const allowBinding of [false, true]) {
+    const { manager, dir } = await makeManager({ sharedContextAllowBindingAuthority: allowBinding });
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const paddedDir = path.join(dir, "agent-outputs", "agent-padded", date);
+    await mkdir(paddedDir, { recursive: true });
+    const paddedPath = path.join(paddedDir, "140000-padded.md");
+    await writeFile(
+      paddedPath,
+      '---\nkind: agent_output\nagent: "agent-padded"\ntitle: "Padded"\nsharedBy: "agent-padded"\nauthority: " binding "\n---\n\nPadded item.\n',
+      "utf-8",
+    );
+    const signals = await manager.synthesizeCrossSignals({ date });
+    const padded = signals.report.sources.find((s) => s.path === paddedPath);
+    assert.equal(
+      padded?.authority,
+      "informational",
+      `padded authority must stay informational (allowBinding=${allowBinding})`,
+    );
+  }
+
+  // The same exactness holds at the write boundary: padded is rejected, not
+  // normalized into a privileged class.
+  const open = await makeManager({ sharedContextAllowBindingAuthority: true });
+  t.after(() => rm(open.dir, { recursive: true, force: true }));
+  await assert.rejects(
+    open.manager.writeAgentOutput({
+      agentId: "agent-padded",
+      title: "Padded",
+      content: "x",
+      authority: " binding ",
+    }),
+    /authority must be informational, advisory, or binding/,
+  );
+});

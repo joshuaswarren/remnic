@@ -42,6 +42,22 @@ Rules:
 - `binding` requires two things: the writer explicitly requests it, and the operator sets `sharedContextAllowBindingAuthority: true` (default `false`). A binding write without the flag is rejected; a stored `binding` item read without the flag downgrades to `advisory`.
 - Legacy items without an envelope keep working unchanged: they read as `informational` with origin falling back to the frontmatter `agent` field.
 - Cross-signals reports (JSON and markdown) and the daily roundtable annotate every source with its resolved authority and origin, so consumers can weigh items accordingly.
+- Origin is server-derived, never caller-chosen. When a write crosses an access surface that resolved an authenticated principal (or the OpenClaw host runs with a configured runtime principal), that identity is stamped as `sharedBy`, and an `agentId` parameter naming a different agent is rejected. Only surfaces with no resolvable identity (an in-process caller, an unauthenticated local CLI) fall back to the supplied `agentId`.
+
+### What the tool surfaces can set today
+
+In this slice, `authority`, `expiresAt`, and `supersedes` are settable only by
+in-process callers of `SharedContextManager.writeAgentOutput` (for example the
+curator and other core code paths). Both documented tool surfaces — the MCP
+`engram.shared_context_write_output` operation and the OpenClaw
+`shared_context_write_output` tool — accept only `agentId`, `title`, and
+`content`, reject extra properties, and therefore always write
+`authority: informational` with no expiry and no supersession. Exposing the
+envelope fields on those surfaces (with the authority allow-list and the
+`sharedContextAllowBindingAuthority` gate enforced at the boundary) is
+deliberate follow-up work, not a capability you can reach from a tool call
+today. The read side is already live everywhere: stored `advisory`/`binding`
+items written in-process resolve and annotate exactly as described above.
 
 ## Tools
 

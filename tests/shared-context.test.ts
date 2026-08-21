@@ -265,6 +265,8 @@ test("shared context output writes do not overwrite same-second same-title files
     'agent: "generalist"',
     "createdAt: 2026-05-19T10:11:12.000Z",
     'title: "Same Title"',
+    'sharedBy: "generalist"',
+    'authority: "informational"',
     "---",
     "",
     "first",
