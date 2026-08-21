@@ -480,6 +480,40 @@ test("heading strategy republish is idempotent when the recap has its own headin
   assert.ok(first.includes("## Notes\n\nhuman paragraph"), "the next real section survives");
 });
 
+test("a 1-3 space indented heading is a real boundary and survives byte-for-byte", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  // CommonMark permits 1-3 columns before the hashes, so `   ## Human Notes`
+  // terminates the owned section; a fourth column is an indented code block,
+  // which is owned content of the recap and replaced with it.
+  const note = [
+    "## Timeline",
+    "stale recap",
+    "",
+    "    ## Not a heading (code)",
+    "",
+    "   ## Human Notes",
+    "",
+    "human paragraph",
+    "",
+  ].join("\n");
+  writeFileSync(notePath, note, "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    strategy: "heading",
+    sections: [{ name: "Timeline", content: "fresh recap" }],
+  });
+
+  assert.equal(status.results[0]?.outcome, "updated");
+  assert.equal(
+    readFileSync(notePath, "utf8"),
+    ["## Timeline", "fresh recap", "   ## Human Notes", "", "human paragraph", ""].join("\n"),
+  );
+});
+
 test("createMissingNotes creates the confined nested parent hierarchy for a new note", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   writeFileSync(path.join(vault, "daily.md"), "# {yyyy}-{MM}-{dd}\n", "utf8");
@@ -498,6 +532,37 @@ test("createMissingNotes creates the confined nested parent hierarchy for a new 
   const text = readFileSync(notePath, "utf8");
   assert.match(text, /- card-a: review \(42m\)/);
   assert.match(text, /remnic:timeline:start/);
+});
+
+test("a `..`-prefixed in-vault name publishes; real parent traversal still refuses", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  // `..notes` is a literal directory name, not the parent directory.
+  const notesDir = path.join(vault, "..notes");
+  mkdirSync(notesDir);
+  const notePath = path.join(notesDir, `${DATE}.md`);
+  writeFileSync(notePath, "<!-- remnic:timeline:start -->\nstale\n<!-- remnic:timeline:end -->\n", "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "..notes/{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "- card-a: review (42m)" }],
+  });
+  assert.equal(status.results[0]?.outcome, "updated");
+  assert.match(readFileSync(notePath, "utf8"), /- card-a: review \(42m\)/);
+
+  writeFileSync(path.join(vault, "tpl.md"), "# {yyyy}-{MM}-{dd}\n", "utf8");
+  const refused = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "..notes/{yyyy}-{MM}-{dd}-new.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "- card-a: review (42m)" }],
+    createMissingNotes: true,
+    noteTemplate: "../tpl.md",
+  });
+  assert.equal(refused.results[0]?.outcome, "error");
+  assert.equal(refused.results[0]?.reason, "template_escape");
+  assert.equal(existsSync(path.join(notesDir, `${DATE}-new.md`)), false, "no note created from an escaping template");
 });
 
 test("an escaping noteTemplate refuses and creates no directories", () => {

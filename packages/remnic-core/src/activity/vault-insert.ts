@@ -8,7 +8,7 @@
  * example. This helper never replaces (see `vault-publish.ts`), never
  * creates files, and never invents a heading. Pure string-in/string-out.
  */
-import { fileLines } from "./vault-publish.js";
+import { fileLines, parseAtxHeading } from "./vault-publish.js";
 
 export type InsertVaultRegionResult =
   | { ok: true; text: string; inserted: true }
@@ -65,9 +65,3 @@ export function insertMarkersUnderHeading(
   return { ok: true, text, inserted: true };
 }
 
-function parseAtxHeading(line: string): { level: number; text: string } | null {
-  let level = 0;
-  while (level < line.length && level < 6 && line[level] === "#") level++;
-  if (level === 0 || line[level] !== " ") return null;
-  return { level, text: line.slice(level + 1) };
-}

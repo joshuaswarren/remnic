@@ -228,21 +228,33 @@ function fenceRun(line: string): { char: string; len: number; info: string } | n
   return { char, len, info: body.slice(len).trim() };
 }
 
-function parseAtxHeading(line: string): { level: number; text: string } | null {
+export function parseAtxHeading(line: string): { level: number; text: string } | null {
+  // CommonMark permits up to three columns of indentation before the
+  // hashes; the fourth column is an indented code block, which
+  // `fileLines` already classifies as fenced (a tab advances to the
+  // next multiple of four, matching `indentColumn`). Replacement and
+  // insertion both scan headings through this one parser.
+  let at = 0;
+  let indent = 0;
+  while (at < line.length && (line[at] === " " || line[at] === "\t")) {
+    indent += line[at] === " " ? 1 : 4 - (indent % 4);
+    if (indent >= 4) return null;
+    at += 1;
+  }
   let level = 0;
-  while (level < line.length && level < 6 && line[level] === "#") level++;
+  while (level < 6 && line[at + level] === "#") level++;
   if (level === 0) return null;
-  const after = line[level];
+  const after = line[at + level];
   if (after !== " " && after !== "\t") return null;
 
-  let start = level + 1;
+  let start = at + level + 1;
   let end = line.length;
   while (start < end && (line[start] === " " || line[start] === "\t")) start++;
   while (end > start && (line[end - 1] === " " || line[end - 1] === "\t")) end--;
 
   let hashEnd = end;
   while (hashEnd > start && line[hashEnd - 1] === "#") hashEnd--;
-  if (hashEnd < end && hashEnd > start && (line[hashEnd - 1] === " " || line[hashEnd - 1] === "\t")) {
+  if (hashEnd < end && hashEnd > start && (line[hashEnd - 1] === " " || line[end - 1] === "\t")) {
     end = hashEnd;
     while (end > start && (line[end - 1] === " " || line[end - 1] === "\t")) end--;
   }

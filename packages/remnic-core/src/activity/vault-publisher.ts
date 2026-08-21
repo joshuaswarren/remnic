@@ -118,13 +118,14 @@ function publishRelative(
   const root = path.resolve(vault);
   const dest = path.resolve(root, relative);
   const lexical = path.relative(root, dest);
-  if (lexical.length === 0 || lexical.startsWith("..") || path.isAbsolute(lexical)) {
+  // `..notes/x.md` is an in-vault name, not parent traversal: only `..`
+  // exactly or a `..${path.sep}` prefix escapes.
+  if (lexical.length === 0 || lexical === ".." || lexical.startsWith(`..${path.sep}`) || path.isAbsolute(lexical)) {
     return refuse(relative, "error", "path_escape");
   }
   if (!containedBySymlinks(root, dest)) {
     return refuse(relative, "error", "symlink_escape");
   }
-
   let currentText: string | null = null;
   try {
     // A symlinked note is refused even when its target lives inside the
@@ -146,7 +147,7 @@ function publishRelative(
     if (input.createMissingNotes === true && typeof input.noteTemplate === "string" && input.noteTemplate.length > 0) {
       const templatePath = path.resolve(root, input.noteTemplate);
       const templateRel = path.relative(root, templatePath);
-      if (templateRel.startsWith("..") || path.isAbsolute(templateRel) || templateRel.length === 0 || !containedBySymlinks(root, templatePath)) {
+      if (templateRel === ".." || templateRel.startsWith(`..${path.sep}`) || path.isAbsolute(templateRel) || templateRel.length === 0 || !containedBySymlinks(root, templatePath)) {
         return refuse(relative, "error", "template_escape");
       }
       try {
