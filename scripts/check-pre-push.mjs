@@ -23,6 +23,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { resolveTsxCliPath } from "./test-spawn-plan.mjs";
+
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 /**
  * Candidate base refs, in the order tried when `REMNIC_PRE_PUSH_BASE_REF` is
@@ -137,7 +139,12 @@ const CHECKS = [
   },
   {
     name: "config contract",
-    argv: ["npx", "tsx", "scripts/validate-config-contract.ts"],
+    // `process.execPath` + the resolved tsx entry, never a bare `npx`: on
+    // Windows npm exposes it as `npx.cmd`, which `spawnSync` with the default
+    // `shell: false` cannot execute, so the whole bundle died with ENOENT
+    // before this gate ran. Same failure class as the `spawn tsx ENOENT` this
+    // PR fixes in the test runner.
+    argv: [process.execPath, resolveTsxCliPath(repoRoot), "scripts/validate-config-contract.ts"],
     // CI's Config contract step uses the real PR base; defaulting to
     // `origin/main` here fails closed on a missing ref, or treats entries
     // already accepted on the true base as newly grandfathered.
