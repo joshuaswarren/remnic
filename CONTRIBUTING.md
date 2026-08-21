@@ -14,6 +14,18 @@ Thanks for contributing. Issues and pull requests are welcome from humans and AI
 2. For non-trivial changes, open an issue first and propose the approach and scope.
 3. Keep PRs narrow: one subsystem group per PR. If work spans schema/surface contracts, storage/serialization, and retrieval behavior, split it before review.
 
+## Claiming an issue
+
+Issues are worked first-come, first-served — by humans and automated agents alike. To reserve an issue:
+
+1. Comment on the issue stating you are taking it.
+2. Self-assign the issue (or ask a maintainer to assign you).
+3. A maintainer will apply the `contributor-claimed` label.
+
+If a PR from someone other than the claimant references a claimed issue (`Fixes #<n>`), maintainers must not merge it while the claim is active. The claimant must release the claim, or a maintainer must follow the stale-claim process, before another PR is merged against the issue.
+
+If you stop working on a claimed issue, comment to release it so someone else can pick it up. Stale claims (no activity for ~30 days) may be released by a maintainer after a ping.
+
 ## Development setup
 
 Requires Node.js `>=22.12.0` and [pnpm](https://pnpm.io/).
