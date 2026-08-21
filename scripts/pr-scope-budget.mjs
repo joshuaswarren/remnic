@@ -111,6 +111,28 @@ export function loadThresholds(thresholdsPath) {
 }
 
 /**
+ * Words that turn a closing keyword into description rather than a claim.
+ * "the closed #123" reports history; "Closes #123" claims the issue.
+ */
+const DESCRIPTIVE_LEAD_WORDS = new Set([
+  "the",
+  "a",
+  "an",
+  "this",
+  "that",
+  "these",
+  "those",
+  "already",
+  "now",
+  "was",
+  "were",
+  "is",
+  "are",
+  "been",
+  "recently",
+]);
+
+/**
  * All #<n> issue references in free text, deduped (issue #2067). Non-rendered
  * content is dropped first — HTML comments (template/generated <!-- ... -->
  * blocks) and fenced + inline code spans — so a hidden `<!-- related #2 -->`
@@ -127,10 +149,17 @@ export function extractIssueRefs(text) {
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`[^`]*`/g, " ");
   for (const match of prose.matchAll(
-    /\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d+)((?:\s*(?:,|and)\s*#\d+)*)/gi,
+    /(\w+\s+)?\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d+)((?:\s*(?:,|and)\s*#\d+)*)/gi,
   )) {
-    issues.add(Number(match[1]));
-    for (const extra of match[2].matchAll(/#(\d+)/g)) {
+    // A determiner before the keyword makes it descriptive prose, not a claim:
+    // "follow-up to the closed #2448" names history, while "Closes #2448"
+    // claims the issue. Counting the former inflated the multi-issue signal on
+    // a single-issue PR (issue #2774) — its body cited the predecessor issue
+    // that the file's own docstring also references.
+    const lead = (match[1] ?? "").trim().toLowerCase();
+    if (DESCRIPTIVE_LEAD_WORDS.has(lead)) continue;
+    issues.add(Number(match[2]));
+    for (const extra of match[3].matchAll(/#(\d+)/g)) {
       issues.add(Number(extra[1]));
     }
   }

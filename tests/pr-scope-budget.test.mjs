@@ -186,6 +186,29 @@ test("issue references are extracted, deduped, boundary-checked, and code-stripp
   assert.deepEqual([...filtered], [42]);
 });
 
+test("a closing keyword behind a determiner is description, not a claim (this-run #2774)", () => {
+  // Verbatim shape of a real single-issue PR body that this gate reported as
+  // spanning two issues: it cited the predecessor issue in prose, and the
+  // touched file's own docstring referenced it too.
+  const issues = extractIssueRefs(
+    "Fixes #2712\n\nFollow-up to the closed #2448 / #2488, which made `status` honor the env var but left the daemon verbs local."
+  );
+  assert.deepEqual([...issues], [2712], "only the claimed issue counts");
+
+  // Every determiner form stays descriptive.
+  for (const lead of ["the", "this", "that", "already", "was", "recently"]) {
+    assert.equal(
+      extractIssueRefs(`Follow-up to ${lead} closed #999.`).size,
+      0,
+      `"${lead} closed #999" must not count as a claim`
+    );
+  }
+
+  // Real claims still count, including mid-sentence and multi-ref forms.
+  assert.deepEqual([...extractIssueRefs("Closes #5 and #6")].sort((a, b) => a - b), [5, 6]);
+  assert.deepEqual([...extractIssueRefs("This reverts behavior; Fixes #78")], [78]);
+});
+
 test("extractIssueRefs ignores see/part-of/pull URLs (this-run #2550)", () => {
   const issues = extractIssueRefs(
     "Fixes #2387.\nSupport-passport recovery from https://github.com/joshuaswarren/remnic/pull/2360. See #12, part of #34."
