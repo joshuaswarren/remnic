@@ -192,6 +192,64 @@ export function resolveRemoteDaemon(configPath: string): RemoteDaemon | undefine
   return token ? { baseUrl, token } : { baseUrl };
 }
 
+// ── Hosted-only mode (issue #2712) ───────────────────────────────────────────
+
+/** Hosted-only refusal for a local-daemon lifecycle verb. */
+export interface HostedOnlyDaemonRefusal {
+  /** Non-loopback remote origin that triggered hosted-only mode. */
+  remoteUrl: string;
+}
+
+/**
+ * Hostnames that stay local mode for daemon lifecycle purposes. A remote
+ * origin on one of these is the same machine, so `daemon start` keeps its
+ * meaning. `URL.hostname` keeps the brackets on IPv6 literals.
+ */
+const LOOPBACK_HOSTNAMES: Record<string, true> = {
+  localhost: true,
+  "127.0.0.1": true,
+  "[::1]": true,
+  "::1": true,
+};
+
+/**
+ * Hosted-only mode (issue #2712): when the resolved remote origin — same
+ * precedence as every client verb, via `resolveRemoteDaemonUrl`; there is
+ * no second resolver — points at a non-loopback host, `remnic daemon
+ * start|install|restart` must refuse instead of spawning a local
+ * remnic-server next to the hosted one. Returns the refusal (carrying the
+ * remote origin to name in the error) or `undefined` in local mode.
+ */
+export function resolveHostedOnlyDaemonRefusal(
+  configPath: string,
+): HostedOnlyDaemonRefusal | undefined {
+  const remoteUrl = resolveRemoteDaemonUrl(configPath);
+  if (!remoteUrl) return undefined;
+  let hostname: string;
+  try {
+    hostname = new URL(remoteUrl).hostname;
+  } catch {
+    // resolveRemoteDaemonUrl already validated the URL; reaching here is
+    // impossible. Keep the local path rather than guessing.
+    return undefined;
+  }
+  if (LOOPBACK_HOSTNAMES[hostname]) return undefined;
+  return { remoteUrl };
+}
+
+/**
+ * Operator-facing refusal text for `daemon start|install|restart` in
+ * hosted-only mode. Loud and actionable: names the remote origin, points
+ * health checks at `remnic status`, and says how to get local mode back.
+ */
+export function hostedOnlyDaemonRefusalMessage(remoteUrl: string, action: string): string {
+  return [
+    `Error: refusing to ${action} a local remnic-server: REMNIC_DAEMON_URL / server.url is set to the remote origin ${remoteUrl} (hosted-only mode).`,
+    "  Check the hosted daemon instead: remnic status",
+    "  To manage a local daemon, unset REMNIC_DAEMON_URL / ENGRAM_DAEMON_URL and remove server.url from the config.",
+  ].join("\n");
+}
+
 function isTransportError(err: unknown): boolean {
   return err instanceof Error && (
     err.message.includes("ECONNREFUSED") ||

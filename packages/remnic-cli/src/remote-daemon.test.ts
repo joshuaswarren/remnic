@@ -14,11 +14,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  hostedOnlyDaemonRefusalMessage,
   probeDaemonHealth,
   printHealthCheck,
   remoteRecall,
   remoteRecallXray,
   resolveDaemonBaseUrl,
+  resolveHostedOnlyDaemonRefusal,
   resolveOperatorToken,
   resolveRemoteDaemon,
   resolveRemoteDaemonUrl,
@@ -293,4 +295,35 @@ test("remoteRecallXray reports snapshotFound false when no snapshot was captured
   } finally {
     restore();
   }
+});
+
+// ── hosted-only mode (issue #2712) ────────────────────────────────────────────
+
+test("a non-loopback remote origin refuses the local daemon lifecycle; loopback or none stays local", () => {
+  // Env-configured remote origin: refused, and the message is actionable —
+  // names the origin and the verb, points health checks at `remnic status`,
+  // and says how to get local mode back.
+  process.env.REMNIC_DAEMON_URL = "https://remnic.example.com";
+  const refused = resolveHostedOnlyDaemonRefusal("/nonexistent/remnic.config.json");
+  assert.ok(refused, "non-loopback REMNIC_DAEMON_URL must refuse the local daemon");
+  assert.equal(refused.remoteUrl, "https://remnic.example.com");
+  const message = hostedOnlyDaemonRefusalMessage(refused.remoteUrl, "start");
+  assert.match(message, /refusing to start a local remnic-server/);
+  assert.match(message, /https:\/\/remnic\.example\.com/);
+  assert.match(message, /remnic status/);
+
+  // Config-file server.url is refused too — same resolver, same precedence.
+  delete process.env.REMNIC_DAEMON_URL;
+  const configPath = writeConfig({ server: { url: "https://config.example.com" } });
+  const refusedFromConfig = resolveHostedOnlyDaemonRefusal(configPath);
+  assert.ok(refusedFromConfig, "non-loopback server.url must refuse the local daemon");
+  assert.equal(refusedFromConfig.remoteUrl, "https://config.example.com");
+
+  // Loopback origins and no remote URL keep the local lifecycle allowed.
+  process.env.REMNIC_DAEMON_URL = "http://127.0.0.1:4318";
+  assert.equal(resolveHostedOnlyDaemonRefusal("/nonexistent/remnic.config.json"), undefined);
+  process.env.REMNIC_DAEMON_URL = "http://localhost:4318";
+  assert.equal(resolveHostedOnlyDaemonRefusal("/nonexistent/remnic.config.json"), undefined);
+  delete process.env.REMNIC_DAEMON_URL;
+  assert.equal(resolveHostedOnlyDaemonRefusal("/nonexistent/remnic.config.json"), undefined);
 });
