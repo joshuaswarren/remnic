@@ -377,6 +377,8 @@ export class ExtractionPersistCoordinator {
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
       source: string;
+      /** Origin override: the COMMITTED target's retained origin (merged-target promotion). */
+      origin?: string;
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
       toolScoped?: true;
@@ -420,7 +422,7 @@ export class ExtractionPersistCoordinator {
             {
               content: citedContent,
               category: options.category as MemoryCategory,
-              origin, confidence: options.confidence,
+              origin: options.origin ?? origin, confidence: options.confidence,
               tags: withReservedMarkerTag(options.tags, `${target.target}-promotion`),
               entityRef: options.entityRef,
               structuredAttributes: options.structuredAttributes,
@@ -583,6 +585,7 @@ export class ExtractionPersistCoordinator {
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
       source: string;
+      origin?: string;
       sourceConnector?: string;
       procedureSteps?: ReadonlyArray<{ toolCall?: { kind?: string } }>;
       /** Claim-level provenance spans (issue #1575 PR 2). */
@@ -617,14 +620,10 @@ export class ExtractionPersistCoordinator {
         const sharedStorage = await this.deps.getStorageRouter().storageFor(
           this.deps.config.sharedNamespace,
         );
-        // Dedup gate: canonicalize content before hashing. Strip any
-        // pre-existing citation FIRST (applyInlineCitation appends a
-        // timestamped marker, so hashing cited content defeats dedup and
-        // call sites may pass already-cited content), then sanitize the base
-        // and build the attribute-enriched body with normalizeAttributePairs
-        // — the same canonicalization writeMemory applies — so the hash
-        // lookup uses the exact body writeMemory stores (#369/#401, #402
-        // round-6 fixes; PRRT_kwDORJXyws56VHZc / VHth).
+        // Dedup gate: strip any pre-existing citation, sanitize, and build
+        // the attribute-enriched body with normalizeAttributePairs — the
+        // same canonicalization writeMemory applies — so the hash lookup
+        // uses the exact body writeMemory stores (#369/#401, #402 round-6).
         const rawContent =
           citationEnabled &&
           hasCitationForTemplate(options.content, citationTemplate)
@@ -640,7 +639,7 @@ export class ExtractionPersistCoordinator {
           {
             content: citedContent,
             category: options.category as MemoryCategory,
-            origin, confidence: options.confidence,
+            origin: options.origin ?? origin, confidence: options.confidence,
             tags: withReservedMarkerTag(options.tags, "shared-promotion"),
             entityRef: options.entityRef,
             structuredAttributes: options.structuredAttributes,
@@ -2563,7 +2562,8 @@ export class ExtractionPersistCoordinator {
         // B: the create path stores a verbatim artifact for qualifying writes; the merge must not drop it.
         await writeMergedVerbatimArtifact(this.deps, targetStorage, semanticMerge.targetId, { category: writeCategory, citedContent: citedFactContent, confidence: fact.confidence, tags: fact.tags, intent: inferredIntent ?? undefined, sourceConnector: extractionSourceConnector, origin, toolScoped: factToolScoped });
         // D: the probe above only bypasses targets that already have copies; with none, the create path's promotion must still run — anchored to the merged target, fail-open (the merge stands).
-        try { await promoteMemoryToShared({ sourceStorage: targetStorage, category: writeCategory, content: semanticMerge.mergedContent, confidence: fact.confidence, subject: factSubject, tags: fact.tags, entityRef: typeof fact.entityRef === "string" ? fact.entityRef : undefined, structuredAttributes: fact.structuredAttributes, sourceMemoryId: semanticMerge.targetId, importance, intentGoal: inferredIntent?.goal, intentActionType: inferredIntent?.actionType, intentEntityTypes: inferredIntent?.entityTypes, memoryKind, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}), source: extractionWriteSource, ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}) }); promotedCopyProbe.invalidate(); } catch (err) {
+        // Promoted-copy authority (final round): stamp the COMMITTED target's trust fields (origin, tags, entityRef, memoryKind, provenance, spans) — never the incoming extraction's; confidence/importance/intent stay extraction-sourced (eligibility parity, monotone caps). See MergedTargetPromotionMetadata.
+        try { await promoteMemoryToShared({ sourceStorage: targetStorage, category: writeCategory, content: semanticMerge.mergedContent, origin: semanticMerge.retainedTargetMetadata.origin, confidence: fact.confidence, subject: factSubject, tags: semanticMerge.retainedTargetMetadata.tags ?? fact.tags, entityRef: semanticMerge.retainedTargetMetadata.entityRef, structuredAttributes: fact.structuredAttributes, sourceMemoryId: semanticMerge.targetId, importance, intentGoal: inferredIntent?.goal, intentActionType: inferredIntent?.actionType, intentEntityTypes: inferredIntent?.entityTypes, memoryKind: semanticMerge.retainedTargetMetadata.memoryKind ?? memoryKind, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}), ...(semanticMerge.retainedTargetMetadata.provenance ? { provenance: semanticMerge.retainedTargetMetadata.provenance } : {}), ...(semanticMerge.retainedTargetMetadata.sources && semanticMerge.retainedTargetMetadata.sources.length > 0 ? { sources: semanticMerge.retainedTargetMetadata.sources } : {}), source: extractionWriteSource, ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}) }); promotedCopyProbe.invalidate(); } catch (err) {
           log.warn(`persistExtraction: merged-target promotion failed open for ${semanticMerge.targetId}: ${err}`);
         }
         continue;

@@ -16,7 +16,7 @@
 
 import { readFile } from "node:fs/promises";
 
-import { isUntrustedOrigin, parseOriginClass } from "../security/origin-authority.js";
+import { isUntrustedOrigin, parseOriginClass, type OriginClass } from "../security/origin-authority.js";
 import {
   FallbackLlmClient,
   fallbackLlmRuntimeContextFromConfig,
@@ -27,6 +27,7 @@ import { ContentHashIndex } from "../storage/content-hash-index.js";
 import { createVersion, type VersioningConfig } from "../page-versioning.js";
 import {
   buildMergeFrontmatterUpdate,
+  type MergeFrontmatterUpdate,
   type MergeProvenanceSource,
 } from "../dedup/merge-provenance.js";
 import {
@@ -48,6 +49,7 @@ import type {
   FaithfulnessFrontmatter,
   MemoryCategory,
   MemoryFile,
+  MemoryFrontmatter,
   MemorySubject,
   ProvenanceSource,
 } from "../types.js";
@@ -65,6 +67,28 @@ export type SemanticMergeCreateReason =
   | "snapshot_failed"
   | "update_failed"
   | "shadow_would_merge";
+
+/**
+ * Promotion metadata of the COMMITTED merge target (final round:
+ * promoted-copy authority). The merged-target promotion in
+ * `extraction-persist.ts` stamps its shared/profile copies from THESE
+ * values — never the incoming extraction's — so a copy is authority-fenced
+ * exactly like the source its `sourceMemoryId` names. The parity gate
+ * deliberately lets a trusted extraction merge into an untrusted or legacy
+ * target; a copy stamped with the extraction's origin would render the
+ * target's previously untrusted claims unfenced.
+ */
+export interface MergedTargetPromotionMetadata {
+  /** Retained authority origin, normalized; an unstamped target reads `unknown`. */
+  origin: OriginClass;
+  tags?: string[];
+  entityRef?: string;
+  /** Committed provenance strength — the patch's floor when one applied. */
+  provenance?: "verified" | "unverified" | "none";
+  /** Committed claim spans — the patch's appended list. */
+  sources?: ProvenanceSource[];
+  memoryKind?: MemoryFrontmatter["memoryKind"];
+}
 
 export type SemanticMergePersistOutcome =
   | {
@@ -85,6 +109,13 @@ export type SemanticMergePersistOutcome =
        * the fact again; the pre-merge snapshot is named in the error log.
        */
       provenancePatched: boolean;
+      /**
+       * Committed target frontmatter the caller's promotion must stamp
+       * (promoted-copy authority, final round). Describes the merged target
+       * as it stands on disk — retained origin plus the patch's committed
+       * provenance values — never the incoming extraction.
+       */
+      retainedTargetMetadata: MergedTargetPromotionMetadata;
     }
   | { action: "created"; reason: SemanticMergeCreateReason };
 
@@ -229,6 +260,29 @@ function effectiveFaithfulness(
 ): FaithfulnessFrontmatter["verdict"] | undefined {
   if (verdict === undefined) return undefined;
   return verdict === "skipped_no_span" ? "unchecked" : verdict;
+}
+/**
+ * Retained promotion metadata read off a committed frontmatter snapshot.
+ * Absent optional fields stay absent so `deepEqual` assertions (and the
+ * envelope composer) see exactly what the committed target carries.
+ * `confidence` is deliberately NOT carried: it is the promotion-eligibility
+ * tier input, and the merged-target promotion keeps gating on the incoming
+ * fact's confidence so a merge never promotes LESS than the create path
+ * would have (finding D parity).
+ */
+function retainedPromotionMetadata(
+  frontmatter: MemoryFrontmatter,
+): MergedTargetPromotionMetadata {
+  return {
+    origin: parseOriginClass(frontmatter.origin),
+    ...(frontmatter.tags && frontmatter.tags.length > 0 ? { tags: [...frontmatter.tags] } : {}),
+    ...(frontmatter.entityRef !== undefined ? { entityRef: frontmatter.entityRef } : {}),
+    ...(frontmatter.provenance !== undefined ? { provenance: frontmatter.provenance } : {}),
+    ...(frontmatter.sources && frontmatter.sources.length > 0
+      ? { sources: frontmatter.sources.map((source) => ({ ...source })) }
+      : {}),
+    ...(frontmatter.memoryKind !== undefined ? { memoryKind: frontmatter.memoryKind } : {}),
+  };
 }
 
 export function createPathMergeParity(input: {
@@ -557,8 +611,11 @@ export async function applySemanticMergeAtPersist(
   // above makes a tombstone block structurally impossible here.
   const nowIso = (options.now ? options.now() : new Date()).toISOString();
   let contentCommitted = false;
+  // Captured so the success return can describe the COMMITTED frontmatter
+  // (the patch's appended sources) without widening the try's scope.
+  let mergePatch: MergeFrontmatterUpdate | undefined;
   try {
-    const frontmatter = buildMergeFrontmatterUpdate({
+    mergePatch = buildMergeFrontmatterUpdate({
       targetSources: (target.frontmatter.sources ?? []) as MergeProvenanceSource[],
       incomingSources: (options.sources ?? []) as MergeProvenanceSource[],
       targetReinforcementCount: target.frontmatter.reinforcement_count,
@@ -591,10 +648,10 @@ export async function applySemanticMergeAtPersist(
     const patched = await options.storage.writeMemoryFrontmatterIfUnchanged(
       merged,
       {
-        updated: frontmatter.updated,
-        derived_via: frontmatter.derived_via,
-        reinforcement_count: frontmatter.reinforcement_count,
-        sources: frontmatter.sources,
+        updated: mergePatch.updated,
+        derived_via: mergePatch.derived_via,
+        reinforcement_count: mergePatch.reinforcement_count,
+        sources: mergePatch.sources,
         ...(mergedFactHash !== undefined ? { contentHash: mergedFactHash } : {}),
         // Finding B — a weaker incoming provenance retags the combined body
         // to the least-trusted value instead of letting unverified new
@@ -628,6 +685,9 @@ export async function applySemanticMergeAtPersist(
         targetId: decision.targetId,
         mergedContent: decision.mergedContent,
         provenancePatched: false,
+        // Degraded branch: the frontmatter patch never landed, so the
+        // committed metadata is the target's own pre-merge frontmatter.
+        retainedTargetMetadata: retainedPromotionMetadata(target.frontmatter),
       };
     }
     log.warn(
@@ -647,6 +707,17 @@ export async function applySemanticMergeAtPersist(
     targetId: decision.targetId,
     mergedContent: decision.mergedContent,
     provenancePatched: true,
+    retainedTargetMetadata: {
+      ...retainedPromotionMetadata(target.frontmatter),
+      // The patch committed these two: the appended span list and, when a
+      // weaker incoming provenance forced it, the floored strength.
+      ...(mergePatch && mergePatch.sources.length > 0
+        ? { sources: mergePatch.sources.map((source) => ({ ...source })) }
+        : {}),
+      ...(parity.ok && parity.provenanceFloor !== undefined
+        ? { provenance: parity.provenanceFloor }
+        : {}),
+    },
   };
 }
 

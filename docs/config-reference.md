@@ -1256,7 +1256,13 @@ into a create-or-update decision:
    copy was promoted cannot hide that copy from the scan. A successful merge
    into a target with no promoted copy yet still runs the shared/profile
    promotion the create path would have performed, anchored to the merged
-   target id and fail-open like the create path. The
+   target id and fail-open like the create path. The promoted copy stamps the
+   committed target's promotion metadata — retained authority `origin` (an
+   unstamped legacy target reads `unknown`, the fence's least-privilege
+   default), tags, entity ref, memory kind, and the merge patch's committed
+   provenance strength and claim spans — so a copy is authority-fenced exactly
+   like the source its `sourceMemoryId` names; its `confidence` stays the
+   incoming extraction's, the eligibility tier the create path gates on. The
    merge lookup also honors the batch's embedding-outage short circuit (its
    own lookup failures arm it for the remaining facts) and the novelty
    gate's `add` decision: when either bypasses semantic dedup for a fact, no

@@ -7,6 +7,12 @@ import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { parseConfig } from "@remnic/core/config";
 import { initLogger, type LoggerBackend } from "@remnic/core/logger";
 import { Orchestrator } from "@remnic/core/orchestrator";
+import {
+  DEFAULT_UNTRUSTED_ORIGINS,
+  parseOriginClass,
+  renderAuthorityBoundContent,
+  renderAuthorityFence,
+} from "@remnic/core";
 import type { ExtractionResult } from "@remnic/core/types";
 
 // ---------------------------------------------------------------------------
@@ -448,7 +454,13 @@ function installMergingJudge(orchestrator: unknown, judge: { calls: number }): v
   };
 }
 
-async function seedMergeTarget(memoryDir: string, id: string, content: string): Promise<string> {
+async function seedMergeTarget(
+  memoryDir: string,
+  id: string,
+  content: string,
+  /** Authority origin stamped on the seed (absent = legacy unstamped target). */
+  origin?: string,
+): Promise<string> {
   const dir = path.join(memoryDir, "facts", "2026-08-01");
   await mkdir(dir, { recursive: true });
   const file = path.join(dir, `${id}.md`);
@@ -466,6 +478,7 @@ async function seedMergeTarget(memoryDir: string, id: string, content: string): 
       "status: active",
       "importanceScore: 0.9",
       "importanceLevel: high",
+      ...(origin ? [`origin: ${origin}`] : []),
       "---",
       "",
       content,
@@ -731,4 +744,102 @@ test("semantic merge: the promoted shared copy serves the committed merged body 
     mergedTargetBody,
     "the promoted copy must serve the committed merged body, not the incoming fact",
   );
+});
+
+test("semantic merge: the promoted shared copy is authority-fenced exactly like its source (origin parity)", async () => {
+  installCapturingLogger();
+  // The parity gate lets a TRUSTED extraction merge into an untrusted or
+  // legacy target (the target keeps its origin, so the merged body stays
+  // fenced). The promotion must not undo that: the shared copy is stamped
+  // from the COMMITTED target's frontmatter, never the incoming
+  // extraction's origin — a copy carrying the extraction's trusted origin
+  // would render the target's previously untrusted claims unfenced.
+  const TARGET = "The shipping service cutover window is approved by ops.";
+  const INCOMING = "The shipping service cutover window opens Saturdays at 08:00.";
+  const variants: Array<{ label: string; seededOrigin?: string; expectedOrigin: string }> = [
+    { label: "untrusted target", seededOrigin: "tool_output", expectedOrigin: "tool_output" },
+    { label: "legacy unstamped target", expectedOrigin: "unknown" },
+  ];
+  for (const variant of variants) {
+    const { orchestrator, storage, memoryDir } = await makeOrchestrator({
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      autoPromoteToSharedEnabled: true,
+      semanticMerge: { enabled: true },
+      versioningEnabled: true,
+    });
+    const targetId = `fact-promote-origin-${variant.label.includes("legacy") ? "legacy" : "untrusted"}`;
+    await seedMergeTarget(memoryDir, targetId, TARGET, variant.seededOrigin);
+    const judge = { calls: 0 };
+    installMergingJudge(orchestrator, judge);
+    orchestrator.embeddingFallback = {
+      async isAvailable() {
+        return true;
+      },
+      async search(query: string): Promise<Array<{ id: string; score: number; path: string }>> {
+        return query === INCOMING ? [{ id: targetId, score: 0.85, path: "" }] : [];
+      },
+      async indexFile() {
+        /* noop */
+      },
+      async removeFromIndex() {
+        /* noop */
+      },
+    };
+
+    const result: ExtractionResult = {
+      facts: [{ content: INCOMING, category: "fact", tags: [], confidence: 0.95 }],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    } as ExtractionResult;
+    // turnRole "user" makes the incoming extraction's own origin TRUSTED —
+    // the exact shape the authority-fence bypass needs to reproduce.
+    const { persistedIds } = await orchestrator.persistExtraction(result, storage, null, {
+      turnRole: "user",
+    });
+
+    assert.equal(judge.calls, 1, `${variant.label}: the merge judge must have run`);
+    assert.equal(persistedIds.length, 0, `${variant.label}: the fact merged, no new fragment`);
+    const merged = await storage.getMemoryByIdIncludingArchived(targetId);
+    assert.ok(merged, `${variant.label}: the merged target must be readable`);
+    const sourceOrigin = parseOriginClass(merged.frontmatter.origin);
+    assert.equal(
+      sourceOrigin,
+      variant.expectedOrigin,
+      `${variant.label}: the source keeps its retained (untrusted) origin`,
+    );
+    const fencePolicy = { enabled: true, untrustedOrigins: DEFAULT_UNTRUSTED_ORIGINS };
+    assert.equal(
+      renderAuthorityBoundContent(merged.content, merged.frontmatter.origin, fencePolicy),
+      renderAuthorityFence(merged.content, sourceOrigin),
+      `${variant.label}: the source renders inside the authority fence`,
+    );
+
+    const sharedStorage = await orchestrator.getStorage("shared");
+    const copy = (await sharedStorage.readAllMemories()).find(
+      (m: { frontmatter: { sourceMemoryId?: string } }) =>
+        m.frontmatter.sourceMemoryId === targetId,
+    );
+    assert.ok(copy, `${variant.label}: the merged extraction must be promoted to shared`);
+    assert.equal(
+      parseOriginClass(copy.frontmatter.origin),
+      sourceOrigin,
+      `${variant.label}: the promoted copy stamps the committed target's retained origin`,
+    );
+    // The rendered-authority contract, not just frontmatter: the copy's body
+    // reaches model context inside the same fence its source renders in.
+    assert.equal(
+      renderAuthorityBoundContent(copy.content, copy.frontmatter.origin, fencePolicy),
+      renderAuthorityFence(copy.content, sourceOrigin),
+      `${variant.label}: the promoted copy renders inside the authority fence exactly like its source`,
+    );
+    assert.notEqual(
+      renderAuthorityBoundContent(copy.content, copy.frontmatter.origin, fencePolicy),
+      copy.content,
+      `${variant.label}: the promoted copy must not render unfenced`,
+    );
+  }
 });

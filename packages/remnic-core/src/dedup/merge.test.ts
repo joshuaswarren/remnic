@@ -345,6 +345,12 @@ interface MergeHarness {
   };
 }
 
+const TARGET_SOURCE: ProvenanceSource = {
+  sessionKey: "project/example/2026-08-20T00:00:00.000Z",
+  observedAt: "2026-08-20T00:00:00.000Z",
+  quote: "deploys happen on Tuesdays",
+};
+
 const INCOMING_SOURCE: ProvenanceSource = {
   sessionKey: "project/example/2026-08-21T00:00:00.000Z",
   observedAt: "2026-08-21T00:00:00.000Z",
@@ -397,13 +403,7 @@ async function harness(
     ...(overrides.targetProvenance ? { provenance: overrides.targetProvenance } : {}),
     ...(overrides.targetFaithfulness ? { faithfulness: overrides.targetFaithfulness } : {}),
     ...(overrides.targetSourceConnector ? { sourceConnector: overrides.targetSourceConnector } : {}),
-    sources: [
-      {
-        sessionKey: "project/example/2026-08-20T00:00:00.000Z",
-        observedAt: "2026-08-20T00:00:00.000Z",
-        quote: "deploys happen on Tuesdays",
-      },
-    ],
+    sources: [TARGET_SOURCE],
   } as unknown as MemoryFrontmatter;
   await writeFile(targetPath, `---\nid: fact-target\ncategory: fact\n---\n\n${EXISTING}\n`, "utf8");
   const target: MemoryFile = { path: targetPath, frontmatter, content: EXISTING };
@@ -532,7 +532,7 @@ test("applySemanticMergeAtPersist: merges in place with snapshot, provenance, ha
     judgeCall: (options) => acceptingJudge(options),
   });
 
-  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true, retainedTargetMetadata: { origin: "unknown", sources: [TARGET_SOURCE, INCOMING_SOURCE] } });
   // Same id, same file path — an update, never a new fragment.
   assert.deepEqual(h.calls.contentUpdates, [
     { id: "fact-target", content: MERGED, actor: "semantic-merge" },
@@ -823,6 +823,7 @@ test("applySemanticMergeAtPersist: an unrollbackable patch failure reports merge
     targetId: "fact-target",
     mergedContent: MERGED,
     provenancePatched: false,
+    retainedTargetMetadata: { origin: "unknown", sources: [TARGET_SOURCE] },
   });
   assert.equal(await readFile(h.target.path, "utf8").then((t) => t.includes(MERGED)), true);
   // Item C — the degraded success still repairs the indexes before returning:
@@ -880,7 +881,7 @@ test("applySemanticMergeAtPersist: metadata the target already carries still mer
     // write path would persist is lost, so the merge runs.
     incomingMetadata: { tags: [], importanceScore: 0, provenanceStrength: "none" },
   });
-  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true, retainedTargetMetadata: { origin: "unknown", sources: [TARGET_SOURCE, INCOMING_SOURCE] } });
   assert.deepEqual(h.calls.contentUpdates, [
     { id: "fact-target", content: MERGED, actor: "semantic-merge" },
   ]);
@@ -942,7 +943,7 @@ test("applySemanticMergeAtPersist: real storage registers the merged body in the
     sources: [INCOMING_SOURCE],
     judgeCall: (options) => acceptingJudge(options),
   });
-  assert.deepEqual(outcome, { action: "merged", targetId: created.id, mergedContent: MERGED, provenancePatched: true });
+  assert.deepEqual(outcome, { action: "merged", targetId: created.id, mergedContent: MERGED, provenancePatched: true, retainedTargetMetadata: { origin: "unknown", sources: [INCOMING_SOURCE] } });
   // The merged body is registered in the exact-dedup index under the same
   // canonical form the write path hashes; the pre-merge identity is gone.
   assert.equal(await storage.hasFactContentHash(MERGED), true);
@@ -1073,7 +1074,7 @@ test("applySemanticMergeAtPersist: a tool-scoped target keeps its stricter scope
     incomingMetadata: { toolScoped: true },
     judgeCall: (options) => acceptingJudge(options),
   });
-  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true, retainedTargetMetadata: { origin: "unknown", sources: [TARGET_SOURCE, INCOMING_SOURCE] } });
   // The merge patch carries no `toolScoped` key at all — the stricter flag
   // survives because the patch never touches it, never because it is rewritten.
   assert.equal(h.calls.frontmatterPatches.length, 1);
@@ -1115,7 +1116,7 @@ test("applySemanticMergeAtPersist: an identical subject still merges", async () 
     incomingMetadata: { subject: "agent" },
     judgeCall: (options) => acceptingJudge(options),
   });
-  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true, retainedTargetMetadata: { origin: "unknown", sources: [TARGET_SOURCE, INCOMING_SOURCE] } });
 });
 
 // ── Finding C: promoted copies are reconciled only by the create path ────────
@@ -1189,7 +1190,7 @@ test("applySemanticMergeAtPersist: an identical origin still merges", async () =
     incomingMetadata: { origin: "user" },
     judgeCall: (options) => acceptingJudge(options),
   });
-  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true, retainedTargetMetadata: { origin: "user", sources: [TARGET_SOURCE] } });
 });
 
 test("applySemanticMergeAtPersist: a user-origin fact still merges into a legacy unstamped target", async () => {
@@ -1204,7 +1205,7 @@ test("applySemanticMergeAtPersist: a user-origin fact still merges into a legacy
   // The unstamped target renders as `unknown` (fenced) at recall, so the
   // merged body is fenced at least as strictly as the incoming fact — no
   // escalation, and legacy targets keep receiving user-origin facts.
-  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true, retainedTargetMetadata: { origin: "unknown", sources: [TARGET_SOURCE] } });
 });
 
 test("applySemanticMergeAtPersist: shadow-mode create telemetry carries no fact content (finding B)", async () => {
@@ -1306,6 +1307,11 @@ test("applySemanticMergeAtPersist: a weaker incoming provenance retags the merge
     targetId: "fact-target",
     mergedContent: MERGED,
     provenancePatched: true,
+    retainedTargetMetadata: {
+      origin: "unknown",
+      provenance: "unverified",
+      sources: [TARGET_SOURCE, INCOMING_SOURCE],
+    },
   });
   // trust-score.ts maps `verified` to the maximum provenance contribution;
   // the combined body now holds unverified claims, so the tag must drop.
