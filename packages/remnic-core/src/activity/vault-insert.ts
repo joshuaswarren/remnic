@@ -2,10 +2,12 @@
  * Managed-region marker insertion (issue #1985).
  *
  * Inserts a `<!-- remnic:<name>:start/end -->` pair under a unique ATX
- * heading when the region is absent. This helper never replaces (see
- * `vault-publish.ts`), never creates files, and never invents a heading.
- * Pure string-in/string-out.
+ * heading when the region is absent. Fenced code blocks are invisible to
+ * the heading scan, so a live region is never inserted into a `## …`
+ * example. This helper never replaces (see `vault-publish.ts`), never
+ * creates files, and never invents a heading. Pure string-in/string-out.
  */
+import { fileLines } from "./vault-publish.js";
 
 export type InsertVaultRegionResult =
   | { ok: true; text: string; inserted: true }
@@ -26,13 +28,17 @@ export function insertMarkersUnderHeading(
 
   const startMarker = `<!-- remnic:${opts.name}:start -->`;
   const endMarker = `<!-- remnic:${opts.name}:end -->`;
-  if (fileText.includes(startMarker) && fileText.includes(endMarker)) {
-    return { ok: true, text: fileText, inserted: false };
-  }
-
   const rows = fileLines(fileText);
+  // A fenced example pair is sample text, not a live region (issue #1985):
+  // only markers outside a code block count as "already present".
+  const present =
+    rows.some((row) => !row.fenced && row.line.includes(startMarker)) &&
+    rows.some((row) => !row.fenced && row.line.includes(endMarker));
+  if (present) return { ok: true, text: fileText, inserted: false };
+
   const hits: Array<{ row: (typeof rows)[number]; level: number }> = [];
   for (const row of rows) {
+    if (row.fenced) continue;
     const heading = parseAtxHeading(row.line);
     if (heading && heading.text === opts.heading) {
       hits.push({ row, level: heading.level });
@@ -56,26 +62,6 @@ export function insertMarkersUnderHeading(
 
   const text = `${prefix}${startMarker}${eol}${content}${endMarker}${eol}${fileText.slice(hit.row.next)}`;
   return { ok: true, text, inserted: true };
-}
-
-type FileLine = { line: string; start: number; next: number; number: number };
-
-function fileLines(fileText: string): FileLine[] {
-  const rows: FileLine[] = [];
-  let start = 0;
-  let number = 1;
-  while (start < fileText.length) {
-    let i = start;
-    while (i < fileText.length && fileText[i] !== "\n" && fileText[i] !== "\r") i++;
-    let next = i;
-    if (fileText[i] === "\r" && fileText[i + 1] === "\n") next = i + 2;
-    else if (fileText[i] === "\n" || fileText[i] === "\r") next = i + 1;
-    else next = fileText.length;
-    rows.push({ line: fileText.slice(start, i), start, next, number });
-    number += 1;
-    start = next;
-  }
-  return rows;
 }
 
 function parseAtxHeading(line: string): { level: number; text: string } | null {

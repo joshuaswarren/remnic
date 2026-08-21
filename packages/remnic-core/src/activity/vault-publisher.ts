@@ -9,15 +9,15 @@
  * mode, everything except `prefix`-owned keys) is byte-identical after
  * publish; unchanged content produces no write; all writes are temp-file +
  * rename in the note's own directory; dry-run performs zero writes;
- * symlinked paths that resolve outside the vault are refused before any
- * read or write.
+ * symlinked paths that resolve outside the vault, and symlinked note
+ * files, are refused before any write.
  */
 import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { expandTildePath } from "../utils/path.js";
-import { applyManagedRegion } from "./vault-publish.js";
+import { applyManagedRegion, fileLines } from "./vault-publish.js";
 import { insertMarkersUnderHeading } from "./vault-insert.js";
 import { validateRegionName } from "./vault-region.js";
 import { assertBeginEndPair } from "./vault-region-pair.js";
@@ -127,6 +127,13 @@ function publishRelative(
 
   let currentText: string | null = null;
   try {
+    // A symlinked note is refused even when its target lives inside the
+    // vault (issue #1985): writeAtomic renames over the link itself, which
+    // would destroy the symlink and leave the target stale while the
+    // status still says `updated`.
+    if (lstatSync(dest).isSymbolicLink()) {
+      return refuse(relative, "error", "symlinked_note");
+    }
     const st = statSync(dest);
     if (st.isFile()) currentText = readFileSync(dest, "utf8");
     else return refuse(relative, "error", "not_a_file");
@@ -294,10 +301,11 @@ function applySection(
 
 /**
  * Refuse any note whose `remnic:<name>:{start,end}` markers are not a flat
- * sequence of correctly named pairs. The WHOLE note is scanned, because
- * `applyManagedRegion` pairs a start with the next end of the SAME name and
- * would otherwise span a malformed region and delete every byte in between.
- * Four shapes are malformed:
+ * sequence of correctly named pairs. Every UNFENCED line is scanned — a
+ * fenced pair is sample text, invisible to this scan and to replacement —
+ * because `applyManagedRegion` pairs a start with the next end of the SAME
+ * name and would otherwise span a malformed region and delete every byte
+ * in between. Four shapes are malformed:
  *   - a crossed pair (`start:A` closed by `end:B`)
  *   - a nested start (`start:A`, `start:B`, `end:A`, `end:B`), where the
  *     inner region's end is the ONLY end left after A closes, so a
@@ -309,10 +317,10 @@ function applySection(
  * Ambiguity always resolves to "keep the user's bytes".
  */
 function findMarkerMismatch(text: string): string | null {
-  const lines = text.split(/(?<=\n)/);
   let begin: string | null = null;
-  for (const line of lines) {
-    const trimmed = line.trim();
+  for (const row of fileLines(text)) {
+    if (row.fenced) continue;
+    const trimmed = row.line.trim();
     const start = START_MARKER_RE.exec(trimmed);
     if (start) {
       const name = start[1]!;

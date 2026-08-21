@@ -29,15 +29,30 @@ export function applyManagedRegion(
 
   const startMarker = `<!-- remnic:${opts.name}:start -->`;
   const endMarker = `<!-- remnic:${opts.name}:end -->`;
-  const startIdx = fileText.indexOf(startMarker);
-  if (startIdx === -1) return { ok: false, reason: "no_marker", text: fileText };
-  const endIdx = fileText.indexOf(endMarker, startIdx + startMarker.length);
-  if (endIdx === -1) return { ok: false, reason: "no_marker", text: fileText };
+  // Markers are owned only outside a fenced code block: a complete pair
+  // inside a ``` example is sample text the user wrote, and replacing
+  // between it would overwrite their bytes (issue #1985).
+  const rows = fileLines(fileText);
+  let startRow: FileLine | undefined;
+  let endRow: FileLine | undefined;
+  for (const row of rows) {
+    if (row.fenced) continue;
+    const trimmed = row.line.trim();
+    if (startRow === undefined) {
+      if (trimmed === startMarker) startRow = row;
+    } else if (endRow === undefined && trimmed === endMarker) {
+      endRow = row;
+      break;
+    }
+  }
+  if (startRow === undefined || endRow === undefined) {
+    return { ok: false, reason: "no_marker", text: fileText };
+  }
 
   const { body, eol } = ownedBody(fileText, opts.content);
   return {
     ok: true,
-    text: `${fileText.slice(0, startIdx + startMarker.length)}${eol}${body}${eol}${fileText.slice(endIdx)}`,
+    text: `${fileText.slice(0, startRow.start + startRow.line.length)}${eol}${body}${eol}${fileText.slice(endRow.start)}`,
   };
 }
 
@@ -84,7 +99,7 @@ function ownedBody(fileText: string, content: string): { body: string; eol: stri
   return { body, eol };
 }
 
-interface FileLine {
+export interface FileLine {
   line: string;
   start: number;
   next: number;
@@ -93,7 +108,13 @@ interface FileLine {
   fenced: boolean;
 }
 
-function fileLines(fileText: string): FileLine[] {
+/**
+ * The one shared fence-aware line scanner (issue #1985): marker
+ * replacement, heading replacement, and marker insertion all classify
+ * lines through it, so fenced code examples are invisible to every
+ * discovery and replacement scan.
+ */
+export function fileLines(fileText: string): FileLine[] {
   const rows: FileLine[] = [];
   let start = 0;
   let number = 1;

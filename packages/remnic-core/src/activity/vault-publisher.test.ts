@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, lstatSync, readFileSync, symlinkSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -465,4 +465,102 @@ test("an escaping noteTemplate refuses and creates no directories", () => {
   assert.equal(status.results[0]?.reason, "template_escape");
   assert.ok(!existsSync(path.join(vault, "Daily")), "no parent directory was created");
   assert.ok(!existsSync(path.join(vault, "Daily", "2026", "08", "21.md")));
+});
+
+
+test("marker strategy ignores a marker pair inside a fenced code block", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  // The fenced example carries a complete `timeline` pair BEFORE the real
+  // region. A scanner without fence state pairs the fenced markers first
+  // and replaces the example's contents while reporting a successful publish.
+  const fencedExample = [
+    "```markdown",
+    "## How to publish",
+    "<!-- remnic:timeline:start -->",
+    "replace this sample text to see it work",
+    "<!-- remnic:timeline:end -->",
+    "```",
+  ].join("\n");
+  const note = [
+    "---",
+    "title: daily",
+    "---",
+    "",
+    "Example from the docs:",
+    "",
+    fencedExample,
+    "",
+    "Real region:",
+    "",
+    "<!-- remnic:timeline:start -->",
+    "stale recap",
+    "<!-- remnic:timeline:end -->",
+    "",
+  ].join("\n");
+  writeFileSync(notePath, note, "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "- card-a: code review (42m)" }],
+  });
+
+  assert.equal(status.results[0]?.outcome, "updated");
+  const after = readFileSync(notePath, "utf8");
+  assert.ok(after.includes(fencedExample), "the fenced example is byte-identical");
+  assert.ok(!after.includes("stale recap"), "the real region was replaced");
+  assert.ok(after.includes("- card-a: code review (42m)"));
+});
+
+test("insertUnderHeading never inserts into a fenced heading", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  // The only `## Timeline` heading lives inside a fenced example. An
+  // insertion scanner without fence state treats it as the target and
+  // writes a live managed region into the user's code block.
+  const note = [
+    "# Daily",
+    "",
+    "```markdown",
+    "## Timeline",
+    "- sample entry inside the fence",
+    "```",
+    "",
+  ].join("\n");
+  writeFileSync(notePath, note, "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "- card-a: code review (42m)" }],
+    insertUnderHeading: "Timeline",
+  });
+
+  assert.equal(status.results[0]?.outcome, "skipped");
+  assert.equal(status.results[0]?.reason, "no_marker");
+  assert.equal(readFileSync(notePath, "utf8"), note, "nothing is inserted into the fence");
+});
+
+test("a symlinked destination note is refused, not replaced", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const target = ["<!-- remnic:timeline:start -->", "stale recap", "<!-- remnic:timeline:end -->", ""].join("\n");
+  const targetPath = path.join(vault, "real-note.md");
+  const linkPath = path.join(vault, "link-note.md");
+  writeFileSync(targetPath, target, "utf8");
+  symlinkSync(targetPath, linkPath);
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "link-note.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "- card-a: code review (42m)" }],
+  });
+
+  assert.equal(status.results[0]?.outcome, "error");
+  assert.equal(status.results[0]?.reason, "symlinked_note");
+  assert.ok(lstatSync(linkPath).isSymbolicLink(), "the symlink still exists");
+  assert.equal(readFileSync(targetPath, "utf8"), target, "the target is not left stale");
 });
