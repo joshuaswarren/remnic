@@ -202,16 +202,14 @@ export interface HostedOnlyDaemonRefusal {
 
 /**
  * Non-IPv4 loopback hostnames that stay local mode for daemon lifecycle
- * purposes. `URL.hostname` keeps the brackets on IPv6 literals and
- * compresses the IPv4-mapped loopback (`::ffff:127.0.0.1`) to
- * `[::ffff:7f00:1]`, so both spellings are listed.
+ * purposes. `URL.hostname` keeps the brackets on IPv6 literals, so both
+ * spellings are listed. IPv4-mapped loopback is not here — it is a whole
+ * range, handled by `isIpv4MappedLoopbackHost`.
  */
 const LOOPBACK_HOSTNAMES: Record<string, true> = {
   localhost: true,
   "[::1]": true,
   "::1": true,
-  "[::ffff:7f00:1]": true,
-  "::ffff:7f00:1": true,
 };
 
 /**
@@ -230,6 +228,35 @@ function isIpv4LoopbackHost(hostname: string): boolean {
     if (Number(part) > 255) return false;
   }
   return Number(parts[0]) === 127;
+}
+
+const IPV4_MAPPED_PREFIX = "::ffff:";
+
+/**
+ * True for any host in the IPv4-mapped loopback range
+ * `::ffff:127.0.0.0/104`. The WHATWG URL parser canonicalizes a mapped
+ * literal to the compressed hex form and keeps the brackets —
+ * `[::ffff:127.0.0.2]` becomes `[::ffff:7f00:2]` — so the two trailing
+ * groups carry the IPv4 address as 1-4 hex digits each, high group first.
+ * Reconstruct the dotted quad and defer to `isIpv4LoopbackHost` so there
+ * is exactly one loopback rule. Any other shape — a different group
+ * count, non-hex digits, an uncompressed `0:0:0:0:0:ffff:…` spelling — is
+ * not confidently a mapped loopback and stays on the REMOTE side.
+ */
+function isIpv4MappedLoopbackHost(hostname: string): boolean {
+  const unbracketed =
+    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  const lower = unbracketed.toLowerCase();
+  if (!lower.startsWith(IPV4_MAPPED_PREFIX)) return false;
+  const groups = lower.slice(IPV4_MAPPED_PREFIX.length).split(":");
+  if (groups.length !== 2) return false;
+  const octets: number[] = [];
+  for (const group of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(group)) return false;
+    const value = Number.parseInt(group, 16);
+    octets.push(value >>> 8, value & 0xff);
+  }
+  return isIpv4LoopbackHost(octets.join("."));
 }
 
 /**
@@ -254,6 +281,7 @@ export function resolveHostedOnlyDaemonRefusal(
     return undefined;
   }
   if (LOOPBACK_HOSTNAMES[hostname] || isIpv4LoopbackHost(hostname)) return undefined;
+  if (isIpv4MappedLoopbackHost(hostname)) return undefined;
   return { remoteUrl };
 }
 
