@@ -12,6 +12,7 @@ import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 export type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
 export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 import type { DriftDetectionSettings, MemoryDriftProvenance, RecallDriftAnnotation } from "./preferences/drift-types.js";
+import type { DeepRecallSettings } from "./deep-recall-config.js";
 import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
 import type { SkillProjectionConfig } from "./procedural/skill-projection.js";
 import type { ActionGateConfig } from "./coding/action-gate.js";
@@ -682,7 +683,7 @@ export interface SemanticChunkingConfigShape {
   fallbackToRecursive: boolean;
 }
 
-export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig, DriftDetectionSettings, ActiveContextConfigFields {
+export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig, DriftDetectionSettings, ActiveContextConfigFields, DeepRecallSettings {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
   model: string;
@@ -1806,6 +1807,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig, D
   sharedContextEnabled: boolean;
   sharedContextDir?: string;
   sharedContextMaxInjectChars: number;
+  sharedContextAllowBindingAuthority: boolean;
   crossSignalsSemanticEnabled: boolean;
   crossSignalsSemanticTimeoutMs: number;
   sharedCrossSignalSemanticEnabled?: boolean;

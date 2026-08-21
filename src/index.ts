@@ -5078,6 +5078,8 @@ const pluginDefinition = {
     registerTools(
       api as unknown as Parameters<typeof registerTools>[0],
       orchestrator,
+      // Host-native, model-inaccessible origin for shared-context tool writes.
+      getOpenClawRuntimeAgentId(api),
     );
     // Register LCM tools when enabled
     if (orchestrator.lcmEngine?.enabled) {

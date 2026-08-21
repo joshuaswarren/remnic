@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.69.9",
+  "version": "9.69.11",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -35,6 +35,16 @@
       "types": "./dist/abort-error.d.ts",
       "remnic-source": "./src/abort-error.ts",
       "import": "./dist/abort-error.js"
+    },
+    "./runtime/http-transport": {
+      "types": "./dist/runtime/http-transport.d.ts",
+      "remnic-source": "./src/runtime/http-transport.ts",
+      "import": "./dist/runtime/http-transport.js"
+    },
+    "./runtime/http-transport.js": {
+      "types": "./dist/runtime/http-transport.d.ts",
+      "remnic-source": "./src/runtime/http-transport.ts",
+      "import": "./dist/runtime/http-transport.js"
     },
     "./abstraction-nodes": {
       "types": "./dist/abstraction-nodes.d.ts",
@@ -3224,7 +3234,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^9.69.9"
+    "@remnic/coding-graph": "^9.69.11"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {

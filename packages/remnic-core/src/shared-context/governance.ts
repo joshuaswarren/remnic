@@ -1,8 +1,9 @@
 /**
  * Shared-item authority envelope (issue #1957).
  *
- * First slice: parse + default + expiry only. Write-path wiring and
- * curation come later. Binding is never inferred.
+ * Pure parse/default/expiry helpers over the authority classes. Binding is
+ * never inferred, and the authority token is validated exactly as supplied
+ * or stored — a padded value never resolves to a privileged class.
  */
 
 export const SHARED_AUTHORITIES = ["informational", "advisory", "binding"] as const;
@@ -36,6 +37,24 @@ function optionalString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+type AuthorityToken =
+  | { kind: "absent" }
+  | { kind: "invalid"; raw: string }
+  | { kind: "valid"; authority: SharedAuthority };
+
+/**
+ * Read the authority token EXACTLY as supplied or stored. A padded value
+ * such as `" binding "` is malformed data, never a normalized match for a
+ * privileged class: trimming first would let stored whitespace resolve as
+ * binding/advisory (AGENTS.md rule 45). Only the empty string counts as
+ * "unspecified"; whitespace-only is invalid.
+ */
+function readExactAuthority(value: unknown): AuthorityToken {
+  if (typeof value !== "string" || value.length === 0) return { kind: "absent" };
+  if (!isSharedAuthority(value)) return { kind: "invalid", raw: value };
+  return { kind: "valid", authority: value };
+}
+
 function withOptionalFields(
   authority: SharedAuthority,
   source: { sharedBy?: unknown; expiresAt?: unknown; supersedes?: unknown },
@@ -54,16 +73,16 @@ export function applyDefaultEnvelope(
   input: SharedEnvelopeInput = {},
   options: ApplyDefaultEnvelopeOptions = {},
 ): SharedEnvelope {
-  const requested = optionalString(input.authority);
-  if (requested !== undefined && !isSharedAuthority(requested)) {
+  const requested = readExactAuthority(input.authority);
+  if (requested.kind === "invalid") {
     throw new Error(
-      `applyDefaultEnvelope: authority must be informational, advisory, or binding; got ${JSON.stringify(requested)}`,
+      `applyDefaultEnvelope: authority must be informational, advisory, or binding; got ${JSON.stringify(requested.raw)}`,
     );
   }
-  if (requested === "binding" && options.binding !== true) {
+  if (requested.kind === "valid" && requested.authority === "binding" && options.binding !== true) {
     throw new Error("applyDefaultEnvelope: authority \"binding\" requires an explicit binding flag");
   }
-  return withOptionalFields(requested ?? "informational", input);
+  return withOptionalFields(requested.kind === "valid" ? requested.authority : "informational", input);
 }
 
 export function parseSharedEnvelope(raw: unknown): SharedEnvelope {
@@ -71,8 +90,8 @@ export function parseSharedEnvelope(raw: unknown): SharedEnvelope {
     return { authority: "informational" };
   }
   const record = raw as Record<string, unknown>;
-  const requested = optionalString(record.authority);
-  const authority = requested !== undefined && isSharedAuthority(requested) ? requested : "informational";
+  const requested = readExactAuthority(record.authority);
+  const authority = requested.kind === "valid" ? requested.authority : "informational";
   return withOptionalFields(authority, record);
 }
 

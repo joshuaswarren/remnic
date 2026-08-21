@@ -53,9 +53,7 @@ export async function runCodegraphBinaryCommand(rest: string[]): Promise<void> {
       // text as sensitive once a credential is parsed out of it, and a
       // malformed file repeatedly let a value be read as a key). The only
       // amount of config-derived logging that is safe is none.
-      console.error(
-        `codegraph export-okf: failed to load config at ${configPath} (${err instanceof Error ? err.name : "unknown error"})`,
-      );
+      console.error(`codegraph export-okf: failed to load config at ${configPath}`);
       console.error("  config values are never printed; inspect the file directly");
       process.exitCode = 1;
       return;
@@ -78,8 +76,8 @@ export async function runCodegraphBinaryCommand(rest: string[]): Promise<void> {
       `OKF codegraph export: ${result.moduleConcepts} modules, ${result.decisions} decisions` +
         (result.truncated ? " (truncated)" : ""),
     );
-  } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+  } catch (_err) {
+    console.error("codegraph export-okf: command failed");
     process.exitCode = 1;
   } finally {
     orchestrator?.abortDeferredInit();

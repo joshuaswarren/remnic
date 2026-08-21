@@ -1113,6 +1113,7 @@ See [shared-context.md](shared-context.md).
 
 | Setting | Default | Description |
 |---------|---------|-------------|
+| `sharedContextAllowBindingAuthority` | `false` | Allow shared-context items to carry binding authority. In-process writers must still request it explicitly; the MCP and OpenClaw tool surfaces cannot request it yet, so tool writes stay `informational` |
 | `sharedContextEnabled` | `false` | Enable shared cross-agent context |
 | `sharedContextDir` | `(unset)` | Directory for shared context files |
 | `sharedContextMaxInjectChars` | `4000` | Max chars injected from shared context |
@@ -1484,6 +1485,24 @@ Surfaces: `remnic drift scan [--apply]`, MCP `remnic.preference_drift_scan` (ali
 Invalid values are rejected, never silently defaulted: a non-object `driftDetection`, an unrecognized boolean-like string, a non-integer day count, or a `stalePenalty` outside `(0, 1]` all throw at `parseConfig`.
 
 Frontmatter written by this job: `driftState` (`stale` | `drifted`) and `lastCorroborated` (ISO 8601). Both are derived provenance stamped after the fact, so — like `mw_success` / `mw_fail` — they are not part of the sealed write envelope.
+
+
+## Deep recall (issue #2332)
+
+Budgeted REFINE/EXPAND/STOP retrieval over the cue-anchor graph built during extraction (issue #2329). An opt-in slow surface for questions that warrant a thorough multi-hop search: each iteration an LLM policy sees the query, the working set, and the anchor-linked frontier, then rewrites the query (REFINE), follows frontier nodes (EXPAND), or stops (STOP). Expect seconds per query — that is the accepted trade, which is why this never runs on the `before_prompt_build` hot path.
+
+Surfaces: MCP `engram.deep_recall` (canonical `remnic.deep_recall`), `POST /engram|remnic/v1/recall/deep`, and `remnic engram deep-recall <query> [--max-steps N] [--json]`. All three call the same `EngramAccessService.deepRecall` implementation and share one renderer. With `enabled` off, every surface returns a typed `error: "disabled"` refusal — an explicit error, not an empty success.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `deepRecall.enabled` | `false` | Master gate for the whole surface. |
+| `deepRecall.maxSteps` | `4` | Policy iterations. **`0` disables the loop** — the invocation returns seed results only, with no LLM calls. |
+| `deepRecall.maxExpandPerStep` | `3` | Per-step cap on frontier nodes pulled into the working set. **`0` honors EXPAND but selects nothing.** |
+| `deepRecall.maxResults` | `12` | Final working-set cap returned to the caller. **`0` returns an empty entry list.** |
+| `deepRecall.stepTimeoutMs` | `10000` | Per policy-call timeout in ms. **`0` = no per-step timeout.** |
+| `deepRecall.totalTimeoutMs` | `45000` | Whole-invocation wall-clock timeout in ms. **`0` = no overall timeout.** |
+
+The `--max-steps` CLI flag and `maxSteps` request field are ceilings under the configured `maxSteps`; a value above the configuration is rejected, never silently clamped. Invalid values (non-object block, unrecognized boolean-like strings, non-integer or negative counts) throw at `parseConfig`. Timeout or budget exhaustion mid-loop returns the partial working set with `ok: true` and a `BUDGET_EXHAUSTED` trace tail; only a seed-search backend failure returns `ok: false` with `error: "backend_unavailable"` (§22: empty and failed are different outcomes).
 
 ## Extraction pipeline liveness (issue #2151)
 
@@ -2002,6 +2021,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `autoPromoteMinConfidenceTier` | `explicit` | `implied` (recommended) |
 | `routingRulesEnabled` | `false` | `false` |
 | `routingRulesStateFile` | `state/routing-rules.json` | `state/routing-rules.json` |
+| `sharedContextAllowBindingAuthority` | `false` | `false` unless in-process writers need to publish binding-authority shared items (tool surfaces cannot request it yet) |
 | `sharedContextEnabled` | `false` | `false` unless you are actively using cross-agent memory sharing |
 | `sharedContextDir` | (unset) | (unset) |
 | `sharedContextMaxInjectChars` | `4000` | `4000` |

@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.69.9",
+  "version": "9.69.11",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -4303,6 +4303,49 @@
           }
         }
       },
+      "deepRecall": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Budgeted deep-recall surface (issue #2332): REFINE/EXPAND/STOP retrieval over the cue-anchor graph, exposed only on the deep surfaces (MCP deep_recall tool, POST /engram|remnic/v1/recall/deep, remnic engram deep-recall CLI). Never runs on the recall hot path.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master switch for the deep-recall surface. Default off."
+          },
+          "maxSteps": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 4,
+            "description": "Policy iterations; 0 disables the loop (seed-only retrieval)."
+          },
+          "maxExpandPerStep": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 3,
+            "description": "Per-step cap on frontier nodes pulled into the working set. 0 honors EXPAND but selects nothing."
+          },
+          "maxResults": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 12,
+            "description": "Final working-set cap returned to the caller. 0 returns an empty entry list."
+          },
+          "stepTimeoutMs": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 10000,
+            "description": "Per policy-call timeout in ms; 0 = none."
+          },
+          "totalTimeoutMs": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 45000,
+            "description": "Whole-invocation wall-clock timeout in ms; 0 = none."
+          }
+        }
+      },
       "extractionLiveness": {
         "type": "object",
         "additionalProperties": false,
@@ -5643,6 +5686,11 @@
         "type": "boolean",
         "default": true,
         "description": "Enable per-session recall toggle state for OpenClaw runtime surfaces."
+      },
+      "sharedContextAllowBindingAuthority": {
+        "type": "boolean",
+        "default": false,
+        "description": "Allow shared-context items to carry binding authority. Writers must still explicitly request binding; without this flag binding writes are rejected and stored binding reads as advisory. Default off."
       },
       "sharedContextDir": {
         "type": "string",
