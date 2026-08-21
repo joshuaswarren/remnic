@@ -12,8 +12,15 @@
  * - With a remote origin set, `status`, `query`, `xray`, the `doctor`
  *   daemon check, and the `oauth` commands target that origin with
  *   `Authorization: Bearer <token>` (token precedence identical to
- *   `resolveOperatorToken`). No local daemon is spawned or probed;
- *   `remnic daemon start|install` stays local by design.
+ *   `resolveOperatorToken`). No local daemon is spawned or probed.
+ * - Hosted-only mode (issue #2712): a NON-LOOPBACK remote origin makes
+ *   `remnic daemon start|install|restart` refuse, naming that origin, so
+ *   the CLI never spawns a local remnic-server beside the hosted one.
+ *   `daemon stop|uninstall` stay allowed — they are the cleanup path for
+ *   a leftover local daemon. Loopback origins keep local behavior: the
+ *   whole `127.0.0.0/8` range, `localhost`, `::1`, and the IPv4-mapped
+ *   loopback range `::ffff:127.0.0.0/104`. A host that does not parse
+ *   confidently as loopback is treated as remote — the safe direction.
  * - Without a remote origin, `resolveDaemonBaseUrl()` keeps the previous
  *   `http://host:port` behavior, env overrides included, so it matches
  *   the endpoint `startServer()` actually binds.
@@ -24,6 +31,7 @@
  */
 import fs from "node:fs";
 import type { RecallXraySnapshot } from "@remnic/core";
+import { isLoopbackHost } from "@remnic/core/runtime/http-transport.js";
 import type { QueryRenderableResult } from "./index.js";
 
 /** Remote daemon target: normalized base URL plus its bearer token. */
@@ -190,6 +198,58 @@ export function resolveRemoteDaemon(configPath: string): RemoteDaemon | undefine
   if (!baseUrl) return undefined;
   const token = resolveOperatorToken(configPath);
   return token ? { baseUrl, token } : { baseUrl };
+}
+
+// ── Hosted-only mode (issue #2712) ───────────────────────────────────────────
+
+/** Hosted-only refusal for a local-daemon lifecycle verb. */
+export interface HostedOnlyDaemonRefusal {
+  /** Non-loopback remote origin that triggered hosted-only mode. */
+  remoteUrl: string;
+}
+
+/**
+ * Hosted-only mode (issue #2712): when the resolved remote origin — same
+ * precedence as every client verb, via `resolveRemoteDaemonUrl`; there is
+ * no second resolver — points at a non-loopback host, `remnic daemon
+ * start|install|restart` must refuse instead of spawning a local
+ * remnic-server next to the hosted one. Returns the refusal (carrying the
+ * remote origin to name in the error) or `undefined` in local mode.
+ *
+ * Loopback classification defers entirely to core's shared
+ * `isLoopbackHost`, which already covers `localhost`, `*.localhost`, a
+ * trailing dot, bracketed IPv6, `::1`, all of `127.0.0.0/8`, and the
+ * IPv4-mapped loopback range. A second notion of "loopback" here is how
+ * this guard drifted from the rest of the codebase.
+ */
+export function resolveHostedOnlyDaemonRefusal(
+  configPath: string,
+): HostedOnlyDaemonRefusal | undefined {
+  const remoteUrl = resolveRemoteDaemonUrl(configPath);
+  if (!remoteUrl) return undefined;
+  let hostname: string;
+  try {
+    hostname = new URL(remoteUrl).hostname;
+  } catch {
+    // resolveRemoteDaemonUrl already validated the URL; reaching here is
+    // impossible. Keep the local path rather than guessing.
+    return undefined;
+  }
+  if (isLoopbackHost(hostname)) return undefined;
+  return { remoteUrl };
+}
+
+/**
+ * Operator-facing refusal text for `daemon start|install|restart` in
+ * hosted-only mode. Loud and actionable: names the remote origin, points
+ * health checks at `remnic status`, and says how to get local mode back.
+ */
+export function hostedOnlyDaemonRefusalMessage(remoteUrl: string, action: string): string {
+  return [
+    `Error: refusing to ${action} a local remnic-server: REMNIC_DAEMON_URL / server.url is set to the remote origin ${remoteUrl} (hosted-only mode).`,
+    "  Check the hosted daemon instead: remnic status",
+    "  To manage a local daemon, unset REMNIC_DAEMON_URL / ENGRAM_DAEMON_URL and remove server.url from the config.",
+  ].join("\n");
 }
 
 function isTransportError(err: unknown): boolean {

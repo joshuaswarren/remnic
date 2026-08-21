@@ -292,12 +292,14 @@ import {
 } from "./openclaw-managed-upgrade-loader.js";
 import { expandTilde, resolveHomeDir } from "./path-utils.js";
 import {
+  hostedOnlyDaemonRefusalMessage,
   probeDaemonHealth,
   printHealthCheck,
   readCompatEnv,
   remoteRecall,
   remoteRecallXray,
   resolveDaemonBaseUrl,
+  resolveHostedOnlyDaemonRefusal,
   resolveOperatorToken,
   resolveRemoteDaemon,
   type RemoteRecallResult,
@@ -11099,6 +11101,24 @@ function isServiceRunning(): { running: boolean; pid?: number } {
 }
 
 async function daemonStatus(): Promise<void> {
+  const hostedOnly = resolveHostedOnlyDaemonRefusal(resolveConfigPath());
+  if (hostedOnly) {
+    // Hosted-only mode (issue #2712): report the remote origin, not a
+    // leftover local PID on 4318. `daemon stop|uninstall` remain the
+    // cleanup path for such a leftover.
+    const probe = await probeDaemonHealth(
+      hostedOnly.remoteUrl,
+      resolveOperatorToken(resolveConfigPath()),
+    );
+    const remoteState = probe.ok
+      ? "reachable"
+      : `unreachable${probe.status ? ` (HTTP ${probe.status})` : probe.error ? ` (${probe.error})` : ""}`;
+    console.log(`Remnic daemon status:`);
+    console.log(`  Mode:      hosted-only (remote origin ${hostedOnly.remoteUrl})`);
+    console.log(`  Remote:    ${remoteState}`);
+    console.log(`  Local:     disabled — \`daemon start|install\` refuse while the remote origin is set`);
+    return;
+  }
   const { running, pid } = isServiceRunning();
   const port = inferPort();
   const serviceInstalled = isMacOS()
@@ -11134,6 +11154,20 @@ async function daemonStatus(): Promise<void> {
     }
   } catch {
     console.log(`  Memory extensions: unknown (config error)`);
+  }
+}
+
+/**
+ * Hosted-only mode (issue #2712): with a non-loopback REMNIC_DAEMON_URL /
+ * server.url, the local daemon lifecycle refuses instead of spawning a
+ * remnic-server next to the hosted one. Stop and uninstall stay allowed —
+ * they are the cleanup path for a leftover local daemon.
+ */
+function refuseLocalDaemonIfHostedOnly(action: DaemonAction): void {
+  const refusal = resolveHostedOnlyDaemonRefusal(resolveConfigPath());
+  if (refusal) {
+    console.error(hostedOnlyDaemonRefusalMessage(refusal.remoteUrl, action));
+    process.exit(1);
   }
 }
 
@@ -12735,6 +12769,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
     case "daemon": {
       const action = rest[0] as DaemonAction;
+      if (action === "start" || action === "install" || action === "restart") {
+        refuseLocalDaemonIfHostedOnly(action);
+      }
       switch (action) {
         case "start":
           daemonStart();
