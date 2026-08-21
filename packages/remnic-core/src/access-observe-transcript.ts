@@ -44,7 +44,7 @@ export class ObserveTranscriptPersister {
         role: message.role as TranscriptEntry["role"],
         content: message.content,
         sessionKey,
-        turnId: crypto.randomUUID(),
+        turnId: randomUUID(),
       };
       try {
         await orchestrator.transcript.append(entry);
