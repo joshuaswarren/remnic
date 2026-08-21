@@ -13,7 +13,7 @@ import type { CliCommand } from "../cli.js";
 import { journalPath } from "../activity/journal.js";
 import { publishVaultNote } from "../activity/vault-publisher.js";
 import type { VaultSectionPublish } from "../activity/vault-publisher.js";
-import { isValidActivityDate } from "../activity/digest.js";
+import { activityDateInTimezone, isValidActivityDate } from "../activity/digest.js";
 
 const AVAILABLE_KINDS = ["timeline"] as const;
 const KNOWN_KINDS = ["timeline", "standup", "weekly", "locations"] as const;
@@ -60,7 +60,13 @@ async function runTimelinePublish(
     return 1;
   }
 
-  const date = typeof options.date === "string" && options.date.length > 0 ? options.date : localToday();
+  // Timeline artifacts are grouped on the configured activity timezone's
+  // calendar day, so "today" must be derived there — the host-local day
+  // drifts by one near either timezone's midnight.
+  const date =
+    typeof options.date === "string" && options.date.length > 0
+      ? options.date
+      : activityDateInTimezone(new Date(), config.activity?.timezone ?? "UTC");
   if (!isValidActivityDate(date)) {
     process.stderr.write(`Invalid --date "${date}"; expected YYYY-MM-DD.\n`);
     return 1;
@@ -73,6 +79,7 @@ async function runTimelinePublish(
   }
   const kinds = requested === "" ? [] : requested.split(",");
   const sections: VaultSectionPublish[] = [];
+  let notePathTemplate = vault.dailyNotePath;
 
   for (const kind of kinds) {
     if ((AVAILABLE_KINDS as readonly string[]).indexOf(kind) === -1) {
@@ -84,6 +91,9 @@ async function runTimelinePublish(
       process.stderr.write(`--what ${kind} is disabled: enable activity.timeline.vault.publish.${kind}.enabled.\n`);
       return 1;
     }
+    // Honor the target's configured note file; config parsing already
+    // rejects target="weekly" with an empty weeklyNotePath.
+    notePathTemplate = target.target === "weekly" ? vault.weeklyNotePath : vault.dailyNotePath;
     const source = journalPath(config.memoryDir, date);
     if (!existsSync(source)) {
       process.stderr.write(`No timeline artifact for ${date}: run the journal recap generation first (${kind} target reads the persisted day recap).\n`);
@@ -94,7 +104,7 @@ async function runTimelinePublish(
 
   const status = publishVaultNote({
     vaultPath: vault.vaultPath,
-    notePathTemplate: vault.dailyNotePath,
+    notePathTemplate,
     date,
     sections,
     strategy: vault.sectionStrategy,
@@ -115,12 +125,6 @@ async function runTimelinePublish(
     `updated=${status.counts.updated} unchanged=${status.counts.unchanged} skipped=${status.counts.skipped} error=${status.counts.error}\n`,
   );
   return status.hasError ? 1 : 0;
-}
-
-function localToday(): string {
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
 function parseKinds(raw: string): string | { error: string } {

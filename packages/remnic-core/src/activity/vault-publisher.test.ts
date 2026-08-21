@@ -150,3 +150,74 @@ test("a symlink inside the vault pointing outside is refused before any write", 
   assert.equal(status.results[0]?.reason, "symlink_escape");
   assert.equal(readFileSync(outsideNote, "utf8"), NOTE);
 });
+
+test("a crossed pair AFTER a valid pair still refuses the whole note", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  // The valid standup pair comes first, so a scan that stops at the first
+  // closed region never sees the crossed timeline/weekly pair below it.
+  // `applyManagedRegion` would then pair the timeline start with the LAST
+  // timeline end and delete every byte in between.
+  const note = [
+    "<!-- remnic:standup:start -->",
+    "standup body",
+    "<!-- remnic:standup:end -->",
+    "",
+    "user content that must survive",
+    "",
+    "<!-- remnic:timeline:start -->",
+    "stale recap",
+    "<!-- remnic:weekly:end -->",
+    "more user content",
+    "<!-- remnic:timeline:end -->",
+    "",
+  ].join("\n");
+  writeFileSync(notePath, note, "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "fresh recap" }],
+  });
+
+  assert.equal(status.results[0]?.outcome, "skipped");
+  assert.match(status.results[0]?.reason ?? "", /name_mismatch:timeline:weekly/);
+  const after = readFileSync(notePath, "utf8");
+  assert.equal(after, note, "every byte of the note is preserved");
+  assert.ok(after.includes("user content that must survive"));
+  assert.ok(after.includes("more user content"));
+  assert.ok(after.includes("<!-- remnic:weekly:end -->"));
+});
+
+test("frontmatter updates only match top-level keys, never nested user metadata", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  const note = [
+    "---",
+    "tags: daily-notes",
+    "custom:",
+    "  remnic_focus: old",
+    "---",
+    "<!-- remnic:timeline:start -->",
+    "stale recap",
+    "<!-- remnic:timeline:end -->",
+    "",
+  ].join("\n");
+  writeFileSync(notePath, note, "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "fresh recap", properties: { focus: "new" } }],
+    propertiesMode: "frontmatter",
+  });
+
+  assert.equal(status.results[0]?.outcome, "updated");
+  const after = readFileSync(notePath, "utf8");
+  assert.ok(after.includes("  remnic_focus: old"), "nested user key is untouched");
+  assert.ok(after.includes("\nremnic_focus: new"), "top-level key is inserted");
+  assert.ok(after.includes("custom:"));
+  assert.ok(after.includes("tags: daily-notes"));
+});

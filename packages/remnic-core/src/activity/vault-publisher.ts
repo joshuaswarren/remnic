@@ -276,24 +276,30 @@ function applySection(
 /**
  * A begin marker whose next end marker names a different region is a
  * malformed pair; replacing inside it could clobber another section's
- * bytes. Detected through the shared `assertBeginEndPair` groundwork, and
- * any ambiguity resolves to "keep the file untouched".
+ * bytes. The WHOLE note is scanned: a valid pair only closes the current
+ * region and the scan continues, because `applyManagedRegion` pairs a
+ * start with the next end of the SAME name, which can span a malformed
+ * region and delete every byte in between. A mismatch anywhere refuses the
+ * file — ambiguity always resolves to "keep the user's bytes".
  */
 function findCrossedPair(text: string): { begin: string; end: string } | null {
   const lines = text.split(/(?<=\n)/);
   let begin: string | null = null;
   for (const line of lines) {
+    const trimmed = line.trim();
     if (begin === null) {
-      const match = START_MARKER_RE.exec(line.trim());
-      if (match) begin = match[1]!;
+      const start = START_MARKER_RE.exec(trimmed);
+      if (start) begin = start[1]!;
       continue;
     }
-    const match = END_MARKER_RE.exec(line.trim());
-    if (match) {
-      const pair = assertBeginEndPair({ beginName: begin, endName: match[1]! });
-      if (pair.ok) return null;
-      return { begin, end: match[1]! };
-    }
+    const match = END_MARKER_RE.exec(trimmed);
+    if (!match) continue;
+    const end = match[1]!;
+    // A blank marker name cannot be paired at all: refuse rather than let
+    // assertBeginEndPair throw out of the publisher.
+    if (begin.trim().length === 0 || end.trim().length === 0) return { begin, end };
+    if (!assertBeginEndPair({ beginName: begin, endName: end }).ok) return { begin, end };
+    begin = null;
   }
   return null;
 }
@@ -356,10 +362,16 @@ export function mergeFrontmatterKeys(
     const line = lines[i]!;
     const idx = line.indexOf(":");
     if (idx === -1) continue;
-    if (pending.has(line.slice(0, idx).trim())) {
-      lines[i] = `${line.slice(0, idx)}: ${pending.get(line.slice(0, idx).trim())}`;
-      pending.delete(line.slice(0, idx).trim());
-    }
+    const rawKey = line.slice(0, idx);
+    // Leading whitespace is exactly the signal that this is a nested,
+    // user-owned child key (`custom:` / `  remnic_focus: old`). Only an
+    // unindented top-level mapping may satisfy a pending update, so the
+    // key is NOT trimmed before that decision.
+    if (rawKey !== rawKey.trimStart()) continue;
+    const key = rawKey.trimEnd();
+    if (!pending.has(key)) continue;
+    lines[i] = `${rawKey}: ${pending.get(key)}`;
+    pending.delete(key);
   }
   const insertAt = closeIdx;
   const added: string[] = [];
