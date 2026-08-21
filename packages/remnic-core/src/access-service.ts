@@ -2749,6 +2749,15 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     const resolvedNamespace = this.resolveReadableNamespace(request.namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const config = this.orchestrator.config;
+    // `abstractionNodeStoreDir` names the DEFAULT namespace's graph store and
+    // takes precedence over `storage.dir` inside the store resolver, so only a
+    // default-namespace read may pass it. This is the rule the harmonic WRITE
+    // path already applies (persistConstructedHarmonicRecords: the override
+    // goes to the base namespace only); passing it here made every non-default
+    // namespace load the DEFAULT namespace's nodes and anchors, missing its own
+    // anchor expansions and exposing foreign graph metadata on an id collision.
+    const graphStoreDir =
+      resolvedNamespace === config.defaultNamespace ? config.abstractionNodeStoreDir : undefined;
     // Seeds route through the namespace search router (never the base
     // `config.qmdCollection`, which is the DEFAULT namespace's collection):
     // a non-default caller must search its own suffixed collection or deep
@@ -2766,11 +2775,11 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
         loadGraph: async () => ({
           nodes: await readAbstractionNodes({
             memoryDir: storage.dir,
-            abstractionNodeStoreDir: config.abstractionNodeStoreDir,
+            abstractionNodeStoreDir: graphStoreDir,
           }),
           anchors: await readCueAnchors({
             memoryDir: storage.dir,
-            abstractionNodeStoreDir: config.abstractionNodeStoreDir,
+            abstractionNodeStoreDir: graphStoreDir,
           }),
         }),
         loadMemory: async (memoryId) => {

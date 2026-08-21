@@ -219,3 +219,130 @@ test("deep recall keeps the overall deadline when the per-step timeout is disabl
   );
   assert.equal(budgets[0], 0, "both axes disabled means no timeout");
 });
+
+test("deep recall drops a seed whose memory is missing or no longer active", async () => {
+  // QMD keeps indexing a memory whose governance status left the ACTIVE set
+  // (pending_review, rejected, quarantined, …). `loadMemory` reports
+  // `active: false`; hydration used to keep the entry and only overwrite its
+  // content, so the final result surfaced memory governance had excluded.
+  const loaded: string[] = [];
+  const result = await runBudgetedDeepRecall(
+    {
+      config: makeConfig({ maxSteps: 0 }),
+      searchSeed: async () => [
+        { memoryId: "mem-active", score: 0.9 },
+        { memoryId: "mem-quarantined", score: 0.8 },
+        { memoryId: "mem-deleted", score: 0.7 },
+      ],
+      loadGraph: async () => ({ nodes: [], anchors: [] }),
+      loadMemory: async (memoryId) => {
+        loaded.push(memoryId);
+        if (memoryId === "mem-active") {
+          return { memoryId, content: "Active payments routing decision.", active: true };
+        }
+        if (memoryId === "mem-quarantined") {
+          return { memoryId, content: "Quarantined content that must never surface.", active: false };
+        }
+        return null;
+      },
+      callPolicy: async () => {
+        throw new Error("maxSteps 0 must not call the policy");
+      },
+    },
+    "payments routing",
+  );
+
+  assert.equal(result.ok, true, "governance pruning is not a backend failure");
+  assert.deepEqual(loaded.sort(), ["mem-active", "mem-deleted", "mem-quarantined"]);
+  assert.deepEqual(
+    result.entries.map((entry) => entry.memoryId),
+    ["mem-active"],
+    "only the active seed survives hydration",
+  );
+  assert.ok(
+    !JSON.stringify(result.entries).includes("Quarantined content"),
+    "excluded content must not reach the caller",
+  );
+  assert.equal(
+    result.trace[0]?.workingSetSize,
+    1,
+    "the trace reports the pruned working set, not the raw QMD hit count",
+  );
+});
+
+test("deep recall retires an expanded node from the frontier", async () => {
+  // EXPAND skips source memories that are inactive or unreadable, so
+  // `nodeAddsNothing` never became true for node-beta and the refreshed
+  // frontier re-offered it through the same shared anchor: the policy could
+  // spend every remaining step re-expanding a node that adds nothing.
+  const graph: DeepRecallGraphSnapshot = {
+    nodes: [
+      {
+        schemaVersion: 1,
+        nodeId: "node-alpha",
+        recordedAt: "2026-08-01T00:00:00.000Z",
+        sessionKey: "test-session",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "Alpha topic seeded by query",
+        summary: "Synthetic alpha summary",
+        sourceMemoryIds: ["mem-alpha"],
+      },
+      {
+        schemaVersion: 1,
+        nodeId: "node-beta",
+        recordedAt: "2026-08-01T00:00:00.000Z",
+        sessionKey: "test-session",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "Beta topic whose only source memory is inactive",
+        summary: "Synthetic beta summary",
+        sourceMemoryIds: ["mem-beta-inactive"],
+      },
+    ],
+    anchors: [
+      {
+        schemaVersion: 1,
+        anchorId: "anchor-shared",
+        anchorType: "entity",
+        anchorValue: "acme+payments",
+        normalizedCue: "acme payments",
+        recordedAt: "2026-08-01T00:00:00.000Z",
+        sessionKey: "test-session",
+        nodeRefs: ["node-alpha", "node-beta"],
+      },
+    ],
+  };
+  const expand = JSON.stringify({
+    action: "EXPAND",
+    expandNodeIds: ["node-beta"],
+    reason: "follow the shared anchor",
+  });
+  const result = await runBudgetedDeepRecall(
+    {
+      config: makeConfig({ maxSteps: 4 }),
+      searchSeed: async () => [{ memoryId: "mem-alpha", score: 0.9 }],
+      loadGraph: async () => graph,
+      loadMemory: async (memoryId) =>
+        memoryId === "mem-alpha"
+          ? { memoryId, content: "Alpha holds the payments routing decision.", active: true }
+          : { memoryId, content: "Beta is quarantined.", active: false },
+      callPolicy: async () => expand,
+    },
+    "acme payments routing",
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.trace[0]?.action, "EXPAND", "the first EXPAND is honored");
+  assert.equal(
+    result.trace[0]?.frontierSize,
+    0,
+    "an expanded node leaves the frontier even when it contributed nothing",
+  );
+  assert.equal(
+    result.trace[1]?.detail,
+    "invalid_policy_output",
+    "re-expanding a retired node is refused instead of burning every step",
+  );
+  assert.equal(result.trace.length, 2, "the loop stops rather than looping on the same node");
+});

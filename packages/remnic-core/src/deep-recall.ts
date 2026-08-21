@@ -236,10 +236,17 @@ function nodeAddsNothing(node: AbstractionNode, workingSet: ReadonlyMap<string, 
  * memory, anchors whose nodeRefs include a node listing that memory make
  * every OTHER referenced node a frontier candidate. Ranked by the shared
  * pure helper (shared-anchor count desc, nodeId asc — total comparator).
+ *
+ * Nodes in `expandedNodeIds` are dropped: a node EXPAND already followed is
+ * not an unretrieved candidate, even when some of its source memories never
+ * entered the working set (an inactive or foreign read is skipped), so
+ * re-offering it would let the policy spend every remaining step adding
+ * nothing.
  */
 function refreshFrontier(
   workingSet: ReadonlyMap<string, WorkingEntry>,
-  graph: FrontierGraph
+  graph: FrontierGraph,
+  expandedNodeIds: ReadonlySet<string>
 ): DeepRecallFrontierItem[] {
   const index = graph.index;
   interface Candidate {
@@ -257,6 +264,7 @@ function refreshFrontier(
         if (!anchor) continue;
         for (const otherNodeRef of anchor.nodeRefs) {
           if (otherNodeRef === nodeId) continue;
+          if (expandedNodeIds.has(otherNodeRef)) continue;
           const otherNode = index.nodeIdToNode.get(otherNodeRef);
           if (!otherNode || nodeAddsNothing(otherNode, workingSet)) continue;
           const current = byNodeId.get(otherNodeRef);
@@ -361,6 +369,25 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
   const contentFor = (memoryId: string): string => contentCache.get(memoryId) ?? "";
   const workingSet = new Map<string, WorkingEntry>();
   let graph: FrontierGraph = { index: buildFrontierIndex({ nodes: [], anchors: [] }) };
+  // Nodes already followed by EXPAND leave the frontier for good.
+  const expandedNodeIds = new Set<string>();
+  /**
+   * Hydrate one working-set entry from `loadMemory`, DROPPING it when the read
+   * is missing or reports a non-active memory: QMD can still index a memory
+   * whose governance status moved out of the active set, and hydrating it
+   * would surface content the active-set check excluded.
+   */
+  const hydrateOrDrop = async (memoryId: string): Promise<void> => {
+    const memory = await withDeadline(deps.loadMemory(memoryId), deadlineMs, now);
+    if (!memory || !memory.active) {
+      workingSet.delete(memoryId);
+      contentCache.delete(memoryId);
+      return;
+    }
+    contentCache.set(memoryId, memory.content);
+    const entry = workingSet.get(memoryId);
+    if (entry) entry.content = memory.content;
+  };
   // Pre-policy work (seed search, graph load, seed hydration) is bounded by the
   // SAME deadline as the policy calls; exhausting it here yields the partial
   // working set rather than blocking the later check from ever running.
@@ -379,14 +406,10 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
   if (exhaustedDetail === null) {
     try {
       graph = { index: buildFrontierIndex(await withDeadline(deps.loadGraph(), deadlineMs, now)) };
-      // Best-effort content hydration for seeds (missing memories stay empty).
+      // Seed hydration also enforces the active set: a stale or non-active
+      // QMD hit leaves the working set instead of being hydrated in place.
       for (const memoryId of [...workingSet.keys()]) {
-        const memory = await withDeadline(deps.loadMemory(memoryId), deadlineMs, now);
-        if (memory) {
-          contentCache.set(memoryId, memory.content);
-          const entry = workingSet.get(memoryId);
-          if (entry) entry.content = memory.content;
-        }
+        await hydrateOrDrop(memoryId);
       }
     } catch (err) {
       if (!(err instanceof DeepRecallDeadlineExceeded)) throw err;
@@ -394,7 +417,7 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
     }
   }
 
-  let frontier = refreshFrontier(workingSet, graph);
+  let frontier = refreshFrontier(workingSet, graph, expandedNodeIds);
   let currentQuery = query;
   let refinesUsed = 0;
 
@@ -470,12 +493,7 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
           mergeIntoWorkingSet(workingSet, refinedHits, "refine", contentFor);
           for (const hit of refinedHits) {
             if (workingSet.has(hit.memoryId) && !contentCache.has(hit.memoryId)) {
-              const memory = await withDeadline(deps.loadMemory(hit.memoryId), deadlineMs, now);
-              if (memory) {
-                contentCache.set(hit.memoryId, memory.content);
-                const entry = workingSet.get(hit.memoryId);
-                if (entry) entry.content = memory.content;
-              }
+              await hydrateOrDrop(hit.memoryId);
             }
           }
         } catch (err) {
@@ -484,7 +502,7 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
           // expiry is NOT a partial failure — it ends the invocation.
           if (err instanceof DeepRecallDeadlineExceeded) throw err;
         }
-        frontier = refreshFrontier(workingSet, graph);
+        frontier = refreshFrontier(workingSet, graph, expandedNodeIds);
         pushStep(step, "REFINE", currentQuery, stepStartMs);
         step += 1;
         continue;
@@ -523,8 +541,9 @@ export async function runBudgetedDeepRecall(deps: DeepRecallDeps, query: string)
           });
           contentCache.set(memoryId, memory.content);
         }
+        expandedNodeIds.add(nodeId);
       }
-      frontier = refreshFrontier(workingSet, graph);
+      frontier = refreshFrontier(workingSet, graph, expandedNodeIds);
       pushStep(step, "EXPAND", selection.nodeIds.join(", "), stepStartMs);
       step += 1;
     }

@@ -11,10 +11,17 @@
  * the whole namespace corpus to build a path index. A hit with no path is
  * dropped: its namespace membership cannot be verified, and a bare docid from
  * a foreign collection must never enter the working set.
+ *
+ * An unavailable namespace backend (or a missing collection) contributes an
+ * empty result set and reports itself only through `execution.onDegradation`,
+ * so the observer is REQUIRED here: without it a dead index is indistinguishable
+ * from a healthy empty one and deep recall would answer `ok: true` with zero
+ * entries instead of the advertised `backend_unavailable` failure.
  */
 
 import { qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
 import type { DeepRecallSeedHit } from "./deep-recall.js";
+import type { SearchDegradation } from "./search/port.js";
 
 /** Namespace-scoped search entrypoint (satisfied by `Orchestrator.searchAcrossNamespaces`). */
 export interface DeepRecallSeedRouter {
@@ -22,6 +29,7 @@ export interface DeepRecallSeedRouter {
     query: string;
     namespaces: string[];
     maxResults?: number;
+    execution?: { onDegradation?: (degradation: SearchDegradation) => void };
   }): Promise<ReadonlyArray<{ path?: string; docid?: string; score?: number }>>;
 }
 
@@ -51,11 +59,24 @@ export function createDeepRecallSeedSearch(deps: {
 }): (query: string, limit: number) => Promise<DeepRecallSeedHit[]> {
   return async (query, limit) => {
     if (limit <= 0) return [];
+    const unavailable: SearchDegradation[] = [];
     const hits = await deps.router.searchAcrossNamespaces({
       query,
       namespaces: [deps.namespace],
       maxResults: limit,
+      execution: {
+        onDegradation: (degradation) => {
+          if (degradation.code === "backend_unavailable") unavailable.push(degradation);
+        },
+      },
     });
+    // The requested namespace has no usable index: a seed-search failure, which
+    // is the one condition deep recall reports as `backend_unavailable`.
+    if (unavailable.length > 0) {
+      throw new Error(
+        `deep recall seed search unavailable: ${unavailable.map((d) => d.detail ?? d.code).join("; ")}`,
+      );
+    }
     const seeds: DeepRecallSeedHit[] = [];
     for (const hit of hits) {
       if (typeof hit.path !== "string" || hit.path.length === 0) continue;
