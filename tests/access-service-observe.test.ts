@@ -37,6 +37,7 @@ test("EngramAccessObserveResponse shape matches contract", () => {
     },
     lcmArchived: true,
     extractionQueued: true,
+    transcriptPersisted: true,
   };
   assert.equal(response.accepted, 2);
   assert.equal(response.sessionKey, "test-session");
@@ -45,6 +46,8 @@ test("EngramAccessObserveResponse shape matches contract", () => {
   assert.equal(response.scopeDebug?.codingOverlayApplied, true);
   assert.equal(response.lcmArchived, true);
   assert.equal(response.extractionQueued, true);
+  // #2783: observe reports whether transcript persistence appended turns.
+  assert.equal(response.transcriptPersisted, true);
 });
 
 test("EngramAccessObserveRequest with skipExtraction matches contract", () => {
