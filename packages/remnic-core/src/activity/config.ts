@@ -281,10 +281,17 @@ export function parseTimelineVaultConfig(raw: unknown): ActivityTimelineVaultCon
       throw new RangeError(`activity.timeline.vault.weeklyNotePath: ${(err as Error).message}`);
     }
   }
-  if (createMissingNotes && noteTemplate.length === 0) {
-    throw new RangeError(
-      "activity.timeline.vault.noteTemplate must name a vault-relative template file when activity.timeline.vault.createMissingNotes is true",
-    );
+  if (createMissingNotes) {
+    if (noteTemplate.length === 0) {
+      throw new RangeError(
+        "activity.timeline.vault.noteTemplate must name a vault-relative template file when activity.timeline.vault.createMissingNotes is true",
+      );
+    }
+    try {
+      validateVaultNoteTemplate(noteTemplate);
+    } catch (err) {
+      throw new RangeError(`activity.timeline.vault.noteTemplate: ${(err as Error).message}`);
+    }
   }
 
   const publish = parseVaultPublishBlock(vault.publish, weeklyNotePath);
@@ -413,7 +420,10 @@ function parseVaultTarget(
       `activity.timeline.vault.publish.${kind}.section must not contain a line break or "-->"`,
     );
   }
-  if (target === "weekly" && weeklyNotePath.length === 0) {
+  // The path is required only by an entry that will actually publish to the
+  // weekly file; a disabled entry must load the same whether its object is
+  // explicit (serialized schema default) or omitted entirely.
+  if (enabled && target === "weekly" && weeklyNotePath.length === 0) {
     throw new RangeError(
       `activity.timeline.vault.publish.${kind}.target is "weekly" but activity.timeline.vault.weeklyNotePath is empty; configure weeklyNotePath first`,
     );

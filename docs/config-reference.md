@@ -62,9 +62,9 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.timeline.vault.enabled` | `false` | Master gate for the markdown-vault publisher (issue #1985). When false, no vault reads or writes ever occur. |
 | `activity.timeline.vault.vaultPath` | `(required when enabled)` | Vault root, absolute or `~` path. Must exist and be a directory; a symlinked root is rejected. |
 | `activity.timeline.vault.dailyNotePath` | `"{yyyy}-{MM}-{dd}.md"` | Vault-relative daily-note path template. Tokens: `{yyyy} {yy} {M} {MM} {d} {dd} {ww} {MMM} {MMMM} {ddd} {dddd}` (English month/weekday names). Unknown tokens are rejected at config load naming the token and the full valid set; `..` segments and absolute templates are rejected. |
-| `activity.timeline.vault.weeklyNotePath` | `""` | Weekly-note path template; empty means weekly-note publishing is disabled. Required (non-empty) when any publish target is `"weekly"`. |
-| `activity.timeline.vault.createMissingNotes` | `false` | Create a missing note from `noteTemplate` before publishing. Default is update-existing-only. |
-| `activity.timeline.vault.noteTemplate` | `(required when createMissingNotes)` | Vault-relative template file for note creation; its content passes through the same date-token expansion, then the managed region is inserted. |
+| `activity.timeline.vault.weeklyNotePath` | `""` | Weekly-note path template; empty means weekly-note publishing is disabled. Required (non-empty) when any enabled publish target is `"weekly"`. |
+| `activity.timeline.vault.createMissingNotes` | `false` | Create a missing note from `noteTemplate` before publishing, creating any missing parent directories inside the vault. Default is update-existing-only. |
+| `activity.timeline.vault.noteTemplate` | `(required when createMissingNotes)` | Vault-relative template file for note creation; absolute and `..`-bearing values are rejected at config load. Its content passes through the same date-token expansion, then the managed region is inserted. |
 | `activity.timeline.vault.sectionStrategy` | `"markers"` | `"markers"` owns the bytes between an HTML-comment marker pair; `"heading"` owns a uniquely-named heading's body (duplicate headings are refused with both line numbers). Headings inside fenced code blocks are ignored, so a fenced `## Timeline` example is never published over. |
 | `activity.timeline.vault.publish.timeline.enabled` | `true` | Gate for the day timeline artifact — the live target, which publishes the persisted day recap. Paired with `activity.timeline.vault.publish.timeline.target` (`"daily"`) and `activity.timeline.vault.publish.timeline.section` (`Timeline`). |
 | `activity.timeline.vault.publish.timeline.target` | `"daily"` | Note file that receives the timeline artifact: `"daily"` or `"weekly"`. |
@@ -73,7 +73,7 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.timeline.vault.publish.standup.target` | `"daily"` | Note file that receives the standup artifact. |
 | `activity.timeline.vault.publish.standup.section` | `"Standup"` | Managed-region (or heading) name for the standup artifact. |
 | `activity.timeline.vault.publish.weekly.enabled` | `false` | Gate for the weekly review artifact; lights up when the weekly renderer lands (timeline phase 4). |
-| `activity.timeline.vault.publish.weekly.target` | `"weekly"` | Note file that receives the weekly review. A `"weekly"` target requires a non-empty `weeklyNotePath`, else config load fails naming it. |
+| `activity.timeline.vault.publish.weekly.target` | `"weekly"` | Note file that receives the weekly review. An enabled `"weekly"` target requires a non-empty `weeklyNotePath`, else config load fails naming it; a disabled one never does. |
 | `activity.timeline.vault.publish.weekly.section` | `"Weekly Review"` | Managed-region (or heading) name for the weekly review. |
 | `activity.timeline.vault.publish.locations.enabled` | `false` | Gate for the location day line; lights up with the location day renderer. |
 | `activity.timeline.vault.publish.locations.target` | `"daily"` | Note file that receives the location day line. |

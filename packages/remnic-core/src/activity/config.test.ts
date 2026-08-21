@@ -192,3 +192,34 @@ test("vault publish section names are rejected at config load when the publisher
   });
   assert.equal(ok.timeline.vault.publish.timeline.section, "Timeline");
 });
+
+test("noteTemplate path shape is validated at config load when createMissingNotes is true", () => {
+  // The field is documented vault-relative; an absolute or `..`-bearing
+  // value would only fail later as a publish-time `template_escape`.
+  for (const noteTemplate of ["/vault/daily.md", "../daily.md", "Daily/../daily.md"]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { vault: { createMissingNotes: true, noteTemplate } } }),
+      /activity\.timeline\.vault\.noteTemplate:/,
+    );
+  }
+  const ok = parseActivityConfig({
+    timeline: { vault: { createMissingNotes: true, noteTemplate: "Templates/daily.md" } },
+  });
+  assert.equal(ok.timeline.vault.noteTemplate, "Templates/daily.md");
+});
+
+test("an explicitly disabled weekly target loads identically to an omitted one", () => {
+  // Tools that serialize schema defaults write `publish.weekly.enabled: false`;
+  // that must behave exactly like leaving the object out, not demand a
+  // weeklyNotePath the disabled target never uses.
+  const explicit = parseActivityConfig({
+    timeline: { vault: { publish: { weekly: { enabled: false } } } },
+  });
+  const omitted = parseActivityConfig({ timeline: { vault: {} } });
+  assert.deepEqual(explicit.timeline.vault, omitted.timeline.vault);
+
+  assert.throws(
+    () => parseActivityConfig({ timeline: { vault: { publish: { weekly: { enabled: true } } } } }),
+    /weeklyNotePath is empty/,
+  );
+});

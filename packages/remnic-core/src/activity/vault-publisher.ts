@@ -13,7 +13,7 @@
  * read or write.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { expandTildePath } from "../utils/path.js";
@@ -203,6 +203,18 @@ function publishRelative(
   }
   if (input.dryRun === true) {
     return [{ path: relative, outcome: "updated" }];
+  }
+  if (created) {
+    // A brand-new note may live in absent folders (Daily/{yyyy}/{MM}). Make
+    // the parent chain only here, after every refusal above has passed: the
+    // lexical path check and `containedBySymlinks` already proved the deepest
+    // existing ancestor is a real directory inside the vault, so every segment
+    // `mkdirSync` adds lands beneath that contained ancestor.
+    try {
+      mkdirSync(path.dirname(dest), { recursive: true });
+    } catch {
+      return refuse(relative, "error", "mkdir_failed");
+    }
   }
 
   if (!writeAtomic(dest, text)) {

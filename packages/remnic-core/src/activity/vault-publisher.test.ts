@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -427,4 +427,42 @@ test("a fenced heading does not terminate the owned section early", () => {
   assert.equal(after, ["## Timeline", "fresh recap", "## Notes", "", "human paragraph", ""].join("\n"));
   assert.ok(!after.includes("```"), "no unterminated fence is left behind");
   assert.ok(after.includes("human paragraph"), "content after the real heading survives");
+});
+
+test("createMissingNotes creates the confined nested parent hierarchy for a new note", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  writeFileSync(path.join(vault, "daily.md"), "# {yyyy}-{MM}-{dd}\n", "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "Daily/{yyyy}/{MM}/{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "- card-a: review (42m)" }],
+    createMissingNotes: true,
+    noteTemplate: "daily.md",
+  });
+
+  assert.equal(status.results[0]?.outcome, "updated");
+  const notePath = path.join(vault, "Daily", "2026", "08", "21.md");
+  const text = readFileSync(notePath, "utf8");
+  assert.match(text, /- card-a: review \(42m\)/);
+  assert.match(text, /remnic:timeline:start/);
+});
+
+test("an escaping noteTemplate refuses and creates no directories", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "Daily/{yyyy}/{MM}/{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "must not land" }],
+    createMissingNotes: true,
+    noteTemplate: "../outside-vault.md",
+  });
+
+  assert.equal(status.results[0]?.outcome, "error");
+  assert.equal(status.results[0]?.reason, "template_escape");
+  assert.ok(!existsSync(path.join(vault, "Daily")), "no parent directory was created");
+  assert.ok(!existsSync(path.join(vault, "Daily", "2026", "08", "21.md")));
 });
