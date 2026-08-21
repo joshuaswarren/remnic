@@ -1137,10 +1137,11 @@ See [compounding.md](compounding.md).
 | `semanticDedupEnabled` | `true` | Write-time semantic similarity guard (issue #373) — embeds each candidate fact, queries the top-K nearest neighbors, and skips the write when cosine similarity ≥ `semanticDedupThreshold`. Fails open when the embedding backend is unavailable. |
 | `semanticDedupThreshold` | `0.92` | Cosine similarity threshold in `[0, 1]` above which a candidate fact is treated as a near-duplicate and skipped. |
 | `semanticDedupCandidates` | `5` | Number of nearest-neighbor candidates to compare against during the write-time semantic dedup check. |
+| `semanticMerge` | — | Must be an object when present; a present non-object value (`semanticMerge: true`, `"enabled"`, an array, `null`) is rejected at parse time. Only an absent block falls back to the defaults below. |
 | `semanticMerge.enabled` | `false` | Judge-mediated merge-on-write (issue #2330). Master gate; with it off there is no lookup and no judge call — byte-identical behavior to before the feature. |
 | `semanticMerge.minSimilarity` | `0.8` | Lower bound of the merge band `[minSimilarity, semanticDedupThreshold)`. Must be **strictly below** `semanticDedupThreshold` (which owns the near-duplicate skip path above it); an equal or higher value is rejected at config parse time whenever merging is enabled or this key is set explicitly. A pre-existing config that lowered `semanticDedupThreshold` to at or below `0.8` and never configured `semanticMerge` keeps starting — the disabled feature performs no band lookup. |
-| `semanticMerge.maxCandidates` | `3` | Maximum in-band neighbors offered to the merge judge. **Set to `0` to disable merging entirely** — the short-circuit happens before any embedding lookup. |
-| `semanticMerge.categories` | `["fact","preference","decision","relationship","skill"]` | Memory categories eligible for merging. The episodic and immutable categories (procedure, reasoning trace, moment, correction) never merge regardless of this list. |
+| `semanticMerge.maxCandidates` | `3` | Maximum in-band neighbors offered to the merge judge. Must be an **integer ≥ 0** — non-integer values (`0.5`, `3.7`) are rejected at parse time rather than floored. **Set to `0` to disable merging entirely** — the short-circuit happens before any embedding lookup. |
+| `semanticMerge.categories` | `["fact","preference","decision","relationship","skill"]` | Memory categories eligible for merging; must be an array of non-empty category names (anything else is rejected at parse time, never silently replaced with the defaults). The episodic and immutable categories (procedure, reasoning trace, moment, correction) never merge regardless of this list. |
 | `semanticMerge.shadowMode` | `false` | Decision-only rollout mode: run the lookup and judge, log the would-merge verdict, then always create. Never mutates an existing memory. |
 | `noveltyGateEnabled` | `false` | Write-path embedding-density novelty gate (issue #1953). Off = unchanged persist path. |
 | `noveltyAddThreshold` | `0.55` | Novelty score ≥ this value is ADD (skip semantic/LLM dedup). |
@@ -1190,12 +1191,22 @@ into a create-or-update decision:
    set, snapshot the target as a page version with trigger `semantic-merge`,
    then update the memory **in place** (same id and path) with a
    compare-and-swap against the exact body the judge was shown, then stamp
-   `derived_via: merge`, bump `reinforcement_count`, and append the incoming
-   fact's provenance `sources` through the conditional frontmatter API — a
-   second compare-and-swap, so provenance can only ever land on the merged
-   body this run committed — and resync the fact-content hash index and
-   reindex.
-4. Any doubt — no in-band candidate, fabricated target id, empty or oversized
+   `derived_via: merge`, bump `reinforcement_count`, restamp `contentHash`
+   from the same canonical (sanitized raw pre-citation) form the normal write
+   path hashes, and append the incoming fact's provenance `sources` through
+   the conditional frontmatter API — a second compare-and-swap, so provenance
+   can only ever land on the merged body this run committed — and resync the
+   fact-content hash index and reindex.
+4. A merge carries only content, category, sources, and connector. A fact
+   that also carries extraction metadata the merge cannot preserve —
+   structured attributes, an entity ref, bi-temporal bounds, tags the target
+   lacks, a higher importance, or stronger provenance — is created through
+   the normal write instead, so metadata is never silently discarded. The
+   merge lookup also honors the batch's embedding-outage short circuit (its
+   own lookup failures arm it for the remaining facts) and the novelty
+   gate's `add` decision: when either bypasses semantic dedup for a fact, no
+   merge lookup runs either.
+5. Any doubt — no in-band candidate, fabricated target id, empty or oversized
    merged content, judge error or timeout, inactive target, a target another
    writer changed after it was judged, failed snapshot or update — creates the
    new fact exactly as before. The unsafe default is always *create*, and the
@@ -1209,7 +1220,8 @@ into a create-or-update decision:
    present and cannot be restored, or the target cannot be read at all, is the
    outcome reported as a merge rather than a create, so the fact is still never
    written twice; the target then holds merged text without the incoming
-   provenance and reinforcement metadata, and the error log names the page
+   provenance and reinforcement metadata, the hash-index resync and reindex
+   still run before that outcome is reported, and the error log names the page
    version to recover from.
 
 Merging requires page versioning (`versioningEnabled`): without it there is no

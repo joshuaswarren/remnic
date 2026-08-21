@@ -241,6 +241,10 @@ function describeValue(value: unknown): string {
  * string coercion for numbers ("0" is zero, never coerced upward), and
  * parse-time rejection of an empty merge band (`minSimilarity` must be
  * strictly below the semantic-dedup threshold that owns the band's top).
+ * Invalid input is rejected, never silently defaulted or reinterpreted: a
+ * present block that is not an object, a non-integer `maxCandidates`, or a
+ * malformed `categories` array each throw (only an absent block means
+ * "use the defaults").
  *
  * The band check applies only when it can describe a real misconfiguration:
  * merging is enabled, or `minSimilarity` was set explicitly. A deployment
@@ -252,10 +256,16 @@ function describeValue(value: unknown): string {
 export function parseSemanticMergeConfig(
   cfg: Record<string, unknown>,
 ): { semanticMerge: SemanticMergeConfig } {
-  const raw =
-    cfg.semanticMerge && typeof cfg.semanticMerge === "object" && !Array.isArray(cfg.semanticMerge)
-      ? (cfg.semanticMerge as Record<string, unknown>)
-      : {};
+  const block = cfg.semanticMerge;
+  if (
+    block !== undefined &&
+    (typeof block !== "object" || block === null || Array.isArray(block))
+  ) {
+    throw new Error(
+      `semanticMerge must be an object when present (got ${describeValue(block)}). Remove the block to fall back to the defaults.`,
+    );
+  }
+  const raw = (block ?? {}) as Record<string, unknown>;
   const parseGate = (key: string, fallback: boolean): boolean => {
     const value = raw[key];
     if (value === undefined) return fallback;
@@ -272,17 +282,27 @@ export function parseSemanticMergeConfig(
       ? DEFAULT_SEMANTIC_MERGE_MIN
       : parseMinMergeScore(raw.minSimilarity);
   const rawCandidates = coerceNumber(raw.maxCandidates, "semanticMerge.maxCandidates");
-  if (rawCandidates !== undefined && (!Number.isFinite(rawCandidates) || rawCandidates < 0)) {
+  if (rawCandidates !== undefined && (!Number.isInteger(rawCandidates) || rawCandidates < 0)) {
     throw new Error(
-      `semanticMerge.maxCandidates must be a finite number >= 0 (got ${describeValue(raw.maxCandidates)}). Set 0 to disable merging entirely.`,
+      `semanticMerge.maxCandidates must be an integer >= 0 (got ${describeValue(raw.maxCandidates)}). Set 0 to disable merging entirely.`,
     );
   }
   const maxCandidates =
-    rawCandidates === undefined ? DEFAULT_SEMANTIC_MERGE_CANDIDATES : Math.floor(rawCandidates);
+    rawCandidates === undefined ? DEFAULT_SEMANTIC_MERGE_CANDIDATES : rawCandidates;
+  const rawCategories = raw.categories;
+  if (
+    rawCategories !== undefined &&
+    (!Array.isArray(rawCategories) ||
+      !rawCategories.every((c) => typeof c === "string" && c.length > 0))
+  ) {
+    throw new Error(
+      `semanticMerge.categories must be an array of non-empty category names (got ${describeValue(rawCategories)}).`,
+    );
+  }
   const categories =
-    Array.isArray(raw.categories) && raw.categories.every((c) => typeof c === "string" && c.length > 0)
-      ? [...(raw.categories as string[])]
-      : [...DEFAULT_SEMANTIC_MERGE_CATEGORIES];
+    rawCategories === undefined
+      ? [...DEFAULT_SEMANTIC_MERGE_CATEGORIES]
+      : [...(rawCategories as string[])];
   const enabled = parseGate("enabled", false);
   const dedupThreshold = semanticDedupThresholdFrom(cfg);
   if ((enabled || raw.minSimilarity !== undefined) && minSimilarity >= dedupThreshold) {

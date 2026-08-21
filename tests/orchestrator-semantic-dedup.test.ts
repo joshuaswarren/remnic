@@ -341,3 +341,53 @@ test("semantic dedup: unavailable backend falls open (fact is persisted)", async
   const { persistedIds: ids } = await orchestrator.persistExtraction(result, storage, null);
   assert.equal(ids.length, 1, "unavailable backend must not block writes");
 });
+
+test("semantic merge: merge lookup honors the batch backend-outage short circuit (issue #2330)", async () => {
+  installCapturingLogger();
+  const { orchestrator, storage } = await makeOrchestrator({
+    semanticMerge: { enabled: true },
+  });
+
+  // Call 1 is fact 1's semantic-dedup lookup (returns no neighbors → keep).
+  // Call 2 is fact 1's merge lookup — it fails, which must arm the batch
+  // flag. Facts 2 and 3 must then perform NO further lookup: both the
+  // semantic-dedup path and the merge gate bypass after the flag is set, or
+  // every remaining fact pays another full backend timeout (finding D).
+  let searchCalls = 0;
+  orchestrator.embeddingFallback = {
+    async isAvailable() {
+      return true;
+    },
+    async search(): Promise<Array<{ id: string; score: number; path: string }>> {
+      searchCalls++;
+      if (searchCalls >= 2) throw new Error("embedding backend down");
+      return [];
+    },
+    async indexFile() {
+      /* noop */
+    },
+    async removeFromIndex() {
+      /* noop */
+    },
+  };
+
+  const result: ExtractionResult = {
+    facts: [
+      fact("The billing service deploys on Tuesdays at 09:00 UTC."),
+      fact("The audit service deploys on Wednesdays at 10:00 UTC."),
+      fact("The search service deploys on Thursdays at 11:00 UTC."),
+    ],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  } as ExtractionResult;
+
+  const { persistedIds } = await orchestrator.persistExtraction(result, storage, null);
+  assert.equal(persistedIds.length, 3, "backend outage must fail open: all facts written");
+  assert.equal(
+    searchCalls,
+    2,
+    `expected exactly 2 embedding searches (dedup + merge for fact 1); got ${searchCalls} — facts 2–3 must bypass both lookups after the outage signal`,
+  );
+});

@@ -21,6 +21,8 @@ import {
   fallbackLlmRuntimeContextFromConfig,
 } from "../fallback-llm.js";
 import { log } from "../logger.js";
+import { sanitizeMemoryContent } from "../sanitize.js";
+import { ContentHashIndex } from "../storage/content-hash-index.js";
 import { createVersion, type VersioningConfig } from "../page-versioning.js";
 import {
   buildMergeFrontmatterUpdate,
@@ -46,6 +48,7 @@ export type SemanticMergeCreateReason =
   | MergeCreateReason
   | "target_inactive"
   | "target_changed"
+  | "metadata_unpreservable"
   | "snapshot_unavailable"
   | "snapshot_failed"
   | "update_failed"
@@ -81,6 +84,25 @@ export interface ApplySemanticMergeOptions {
    * novelty and semantic-dedup gates apply).
    */
   sourceConnector?: string;
+  /**
+   * Extraction metadata the normal write path persists but a merge cannot
+   * carry onto the target (item A). A merge forwards only content, category,
+   * sources, and connector; when any entry here is NEW information relative
+   * to the target, merging is bypassed so nothing is silently discarded.
+   */
+  incomingMetadata?: {
+    tags?: readonly string[];
+    entityRef?: string;
+    structuredAttributes?: Record<string, string>;
+    /** Effective `validAt` the write path would persist (bi-temporal or source). */
+    validAt?: string;
+    /** True when bi-temporal bounds (validFrom/validUntil/observedAt/eventTimeSource) apply. */
+    biTemporal?: boolean;
+    /** Importance score the write path would stamp. */
+    importanceScore?: number;
+    /** Provenance strength the write path would stamp. */
+    provenanceStrength?: "verified" | "unverified" | "none";
+  };
   /** Caller-side bypass: contradiction detected or pending_review routing. */
   skip?: boolean;
   /** Injection seam for tests. */
@@ -88,6 +110,45 @@ export interface ApplySemanticMergeOptions {
   judgeCall?: (options: MergeJudgeCallOptions) => Promise<MergeJudgeRawVerdict | null>;
 }
 
+const PROVENANCE_STRENGTH_RANK: Record<string, number> = {
+  none: 0,
+  unverified: 1,
+  verified: 2,
+};
+
+/**
+ * Item A: true when the incoming fact carries extraction metadata that a
+ * merge would silently discard. Fields the target already carries — a tag
+ * subset, the same entity ref or validAt, an equal-or-lower importance, an
+ * equal-or-weaker provenance — are already preserved, so only genuinely NEW
+ * metadata bypasses the merge.
+ */
+function mergeWouldLoseMetadata(
+  target: MemoryFile,
+  md: ApplySemanticMergeOptions["incomingMetadata"],
+): boolean {
+  if (!md) return false;
+  if (md.structuredAttributes && Object.keys(md.structuredAttributes).length > 0) return true;
+  if (md.biTemporal === true) return true;
+  if (md.entityRef !== undefined && md.entityRef !== target.frontmatter.entityRef) return true;
+  if (md.validAt !== undefined && md.validAt !== target.frontmatter.valid_at) return true;
+  const targetTags = new Set(target.frontmatter.tags ?? []);
+  if ((md.tags ?? []).some((tag) => !targetTags.has(tag))) return true;
+  if (
+    md.importanceScore !== undefined &&
+    md.importanceScore > (target.frontmatter.importance?.score ?? 0)
+  ) {
+    return true;
+  }
+  if (
+    md.provenanceStrength !== undefined &&
+    (PROVENANCE_STRENGTH_RANK[md.provenanceStrength] ?? 0) >
+      (PROVENANCE_STRENGTH_RANK[target.frontmatter.provenance ?? "none"] ?? 0)
+  ) {
+    return true;
+  }
+  return false;
+}
 function versioningConfigFrom(deps: ExtractionPersistDeps): VersioningConfig {
   return {
     enabled: resolveRecallAuxiliaryCapabilities(deps.config).versioning,
@@ -218,6 +279,16 @@ export async function applySemanticMergeAtPersist(
     return { action: "created", reason: "target_changed" };
   }
 
+  // Item A — a merge forwards only content, category, sources, and connector.
+  // Extraction metadata the normal write would persist (structured attributes,
+  // entity refs, bi-temporal bounds, tags, importance, provenance strength)
+  // has no carrier in the merge patch, so when any of it is NEW relative to
+  // the target the merge is bypassed: the fact is created and the write path
+  // persists the metadata, instead of the merge silently discarding it.
+  if (mergeWouldLoseMetadata(target, options.incomingMetadata)) {
+    return { action: "created", reason: "metadata_unpreservable" };
+  }
+
   // Step 2 — rollback data BEFORE any mutation (checklist #14). A failed
   // snapshot must leave the target untouched. Versioning disabled means no
   // rollback story exists at all, so merge refuses to run.
@@ -244,6 +315,35 @@ export async function applySemanticMergeAtPersist(
     );
     return { action: "created", reason: "snapshot_failed" };
   }
+
+  // Steps 4+5 as a closure: the degraded success below (merged body committed,
+  // provenance patch failed, rollback failed) still needs the post-commit
+  // index repair, or QMD serves the old text and the fact-hash index holds a
+  // stale identity until restart or unrelated maintenance (item C).
+  const repairIndexes = async (): Promise<void> => {
+    // Hash index: remove the old form, add the new form, in the same
+    // corpus-registered identity the write path uses. Both helpers are
+    // fact-category no-ops, mirroring `contentHashSource` on the write path.
+    // The index rebuilds from the corpus on restart, so a failure here is
+    // logged, not fatal.
+    try {
+      await options.storage.removeFactContentHashesForMemories([target]);
+      await options.storage.restoreFactHashAfterApproval(decision.targetId);
+    } catch (err) {
+      log.warn(
+        `semantic-merge: hash-index sync failed for ${decision.targetId} (non-fatal; index rebuilds from corpus): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    // Reindex the merged target or its new content stays undiscoverable until
+    // unrelated maintenance runs (checklist #31).
+    try {
+      await deps.indexPersistedMemory(options.storage, decision.targetId);
+    } catch (err) {
+      log.warn(
+        `semantic-merge: reindex failed for ${decision.targetId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
 
   // Step 3 — update in place, preserving the id, via compare-and-swap on the
   // snapshot just read: a writer landing between the read and the write must
@@ -273,6 +373,15 @@ export async function applySemanticMergeAtPersist(
     if (!merged || merged.content !== decision.mergedContent) {
       throw new Error("target replaced before the provenance patch");
     }
+    // Item B — `updateMemoryIfUnchanged` keeps the target's old
+    // `frontmatter.contentHash`, so the patch must restamp the identity the
+    // write path would register: the hash of the SAME canonical form normal
+    // persistence hashes (sanitized raw pre-citation content), never a cited
+    // variant. Facts only, mirroring `contentHashSource` on the write path.
+    const mergedFactHash =
+      options.category === "fact"
+        ? ContentHashIndex.computeHash(sanitizeMemoryContent(decision.mergedContent).text)
+        : undefined;
     const patched = await options.storage.writeMemoryFrontmatterIfUnchanged(
       merged,
       {
@@ -280,6 +389,7 @@ export async function applySemanticMergeAtPersist(
         derived_via: frontmatter.derived_via,
         reinforcement_count: frontmatter.reinforcement_count,
         sources: frontmatter.sources,
+        ...(mergedFactHash !== undefined ? { contentHash: mergedFactHash } : {}),
       },
       { actor: "semantic-merge" },
     );
@@ -298,6 +408,9 @@ export async function applySemanticMergeAtPersist(
       log.error(
         `semantic-merge: ${decision.targetId} holds merged content without provenance metadata and the rollback failed (${detail}); snapshot ${versionId} holds the pre-merge state — recover with revertToVersion. Not creating a duplicate fact.`,
       );
+      // Item C — the merged body IS committed; repair the indexes before
+      // reporting the degraded success.
+      await repairIndexes();
       return { action: "merged", targetId: decision.targetId, provenancePatched: false };
     }
     log.warn(
@@ -306,29 +419,8 @@ export async function applySemanticMergeAtPersist(
     return { action: "created", reason: "update_failed" };
   }
 
-  // Step 4 — hash index: remove the old form, add the new form, in the
-  // same corpus-registered identity the write path uses. Both helpers are
-  // fact-category no-ops, mirroring `contentHashSource` on the write path.
-  // The index rebuilds from the corpus on restart, so a failure here is
-  // logged, not fatal.
-  try {
-    await options.storage.removeFactContentHashesForMemories([target]);
-    await options.storage.restoreFactHashAfterApproval(decision.targetId);
-  } catch (err) {
-    log.warn(
-      `semantic-merge: hash-index sync failed for ${decision.targetId} (non-fatal; index rebuilds from corpus): ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-
-  // Step 5 — reindex the merged target or its new content stays
-  // undiscoverable until unrelated maintenance runs (checklist #31).
-  try {
-    await deps.indexPersistedMemory(options.storage, decision.targetId);
-  } catch (err) {
-    log.warn(
-      `semantic-merge: reindex failed for ${decision.targetId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
+  // Steps 4+5 — hash-index resync and reindex (see repairIndexes above).
+  await repairIndexes();
 
   log.info(
     `semantic-merge: merged fact into ${decision.targetId} (version ${versionId})`,

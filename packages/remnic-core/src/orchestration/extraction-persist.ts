@@ -2553,8 +2553,11 @@ export class ExtractionPersistCoordinator {
       // existing memory in place instead of writing a new fragment.
       const semanticMerge = await applySemanticMergeAtPersist(this.deps, {
         storage: targetStorage, content: fact.content, category: writeCategory, sources: fact.sources, sourceConnector: extractionSourceConnector,
-        skip: contradictionDetected || faithfulnessEnforceStatus === "pending_review",
+        // A: metadata the merge cannot carry bypasses the merge. D/E: the batch backend-outage short circuit and the novelty add decision own the merge lookup too.
+        incomingMetadata: { tags: [...fact.tags, ...injectionScreenTags], entityRef: fact.entityRef, structuredAttributes: fact.structuredAttributes, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, biTemporal: biTemporal !== undefined, importanceScore: importance.score, provenanceStrength: fact.provenance }, skip: contradictionDetected || faithfulnessEnforceStatus === "pending_review" || batchBackendUnavailable || novelty.decision === "add",
       });
+      // D: a failed merge lookup arms the batch short circuit for the remaining facts.
+      if (semanticMerge.action === "created" && semanticMerge.reason === "backend_unavailable") batchBackendUnavailable = true;
       if (semanticMerge.action === "merged") {
         semanticMergedCount++;
         await anchorSnapshots.replace(targetStorage, semanticMerge.targetId, writeCategory, memoryPathById);
@@ -2571,10 +2574,7 @@ export class ExtractionPersistCoordinator {
           category: writeCategory,
           origin, confidence: fact.confidence,
           tags: [...fact.tags, ...injectionScreenTags],
-          entityRef:
-            typeof (fact as any).entityRef === "string"
-              ? (fact as any).entityRef
-              : undefined,
+          entityRef: typeof fact.entityRef === "string" ? fact.entityRef : undefined,
           structuredAttributes: fact.structuredAttributes,
           validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
           ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),

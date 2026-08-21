@@ -6,9 +6,14 @@ import { test } from "node:test";
 
 import { parseConfig } from "../config.js";
 import { listVersions, type VersionTrigger } from "../page-versioning.js";
-import { applySemanticMergeAtPersist } from "../orchestration/semantic-merge-persist.js";
+import {
+  applySemanticMergeAtPersist,
+  type ApplySemanticMergeOptions,
+} from "../orchestration/semantic-merge-persist.js";
 import type { ExtractionPersistDeps } from "../orchestration/extraction-persist-deps.js";
-import type { StorageManager } from "../index.js";
+import { StorageManager } from "../index.js";
+import { sanitizeMemoryContent } from "../sanitize.js";
+import { ContentHashIndex } from "../storage/content-hash-index.js";
 import type {
   MemoryFile,
   MemoryFrontmatter,
@@ -264,7 +269,54 @@ test("parseSemanticMergeConfig: an empty or inverted band is rejected", () => {
   );
   assert.throws(
     () => parseSemanticMergeConfig({ semanticMerge: { maxCandidates: -1 } }),
-    /maxCandidates must be a finite number/,
+    /maxCandidates must be an integer/,
+  );
+});
+
+test("parseSemanticMergeConfig: non-integer maxCandidates is rejected, not floored", () => {
+  for (const bad of [0.5, 3.7, "2.5"]) {
+    assert.throws(
+      () => parseSemanticMergeConfig({ semanticMerge: { maxCandidates: bad } }),
+      /maxCandidates must be an integer/,
+      String(bad),
+    );
+  }
+  // 0 stays the documented disable value, CLI string form included.
+  assert.equal(
+    parseSemanticMergeConfig({ semanticMerge: { maxCandidates: 0 } }).semanticMerge.maxCandidates,
+    0,
+  );
+  assert.equal(
+    parseSemanticMergeConfig({ semanticMerge: { maxCandidates: "0" } }).semanticMerge.maxCandidates,
+    0,
+  );
+});
+
+test("parseSemanticMergeConfig: a present non-object block is rejected; only absent means defaults", () => {
+  for (const bad of [true, "enabled", null, 1, ["fact"]]) {
+    assert.throws(
+      () => parseSemanticMergeConfig({ semanticMerge: bad }),
+      /semanticMerge must be an object/,
+      JSON.stringify(bad),
+    );
+  }
+  const defaults = parseSemanticMergeConfig({});
+  assert.equal(defaults.semanticMerge.enabled, false);
+  assert.equal(defaults.semanticMerge.maxCandidates, DEFAULT_SEMANTIC_MERGE_CANDIDATES);
+});
+
+test("parseSemanticMergeConfig: malformed categories are rejected, not silently defaulted", () => {
+  for (const bad of ["fact", ["fact", 7], ["fact", ""], {}]) {
+    assert.throws(
+      () => parseSemanticMergeConfig({ semanticMerge: { categories: bad } }),
+      /categories must be an array/,
+      JSON.stringify(bad),
+    );
+  }
+  assert.deepEqual(
+    parseSemanticMergeConfig({ semanticMerge: { categories: ["preference"] } }).semanticMerge
+      .categories,
+    ["preference"],
   );
 });
 
@@ -295,6 +347,7 @@ const INCOMING_SOURCE: ProvenanceSource = {
 async function harness(
   overrides: {
     config?: Partial<Record<string, unknown>>;
+    targetCategory?: string;
     targetStatus?: MemoryStatus;
     lookupHits?: SemanticDedupHit[];
     verdict?: MergeJudgeRawVerdict;
@@ -316,9 +369,10 @@ async function harness(
   const factsDir = path.join(dir, "facts", "2026-08-20");
   await mkdir(factsDir, { recursive: true });
   const targetPath = path.join(factsDir, "fact-target.md");
+  const targetCategory = overrides.targetCategory ?? "fact";
   const frontmatter = {
     id: "fact-target",
-    category: "fact",
+    category: targetCategory,
     ...(overrides.targetStatus ? { status: overrides.targetStatus } : {}),
     sources: [
       {
@@ -737,6 +791,128 @@ test("applySemanticMergeAtPersist: an unrollbackable patch failure reports merge
     provenancePatched: false,
   });
   assert.equal(await readFile(h.target.path, "utf8").then((t) => t.includes(MERGED)), true);
+  // Item C — the degraded success still repairs the indexes before returning:
+  // hash resync and reindex run, so QMD and the fact-hash index do not hold
+  // the pre-merge identity until unrelated maintenance.
+  assert.deepEqual(h.calls.hashRemovals, [EXISTING]);
+  assert.deepEqual(h.calls.hashAdds, ["fact-target"]);
+  assert.deepEqual(h.calls.reindexed, ["fact-target"]);
+});
+
+// ── Item A: extraction metadata a merge cannot carry ─────────────────────────
+
+test("applySemanticMergeAtPersist: new metadata the merge cannot carry bypasses merging", async () => {
+  const cases: Array<[string, ApplySemanticMergeOptions["incomingMetadata"]]> = [
+    ["structuredAttributes", { structuredAttributes: { region: "us-east" } }],
+    ["bi-temporal bounds", { biTemporal: true }],
+    ["a new entityRef", { entityRef: "billing-service" }],
+    ["a new validAt", { validAt: "2026-08-21T00:00:00.000Z" }],
+    ["a tag the target lacks", { tags: ["deploy"] }],
+    ["a higher importance", { importanceScore: 0.9 }],
+    ["a stronger provenance", { provenanceStrength: "verified" }],
+  ];
+  for (const [label, incomingMetadata] of cases) {
+    const h = await harness();
+    const outcome = await applySemanticMergeAtPersist(h.deps, {
+      storage: h.storage,
+      content: INCOMING,
+      category: "fact",
+      judgeCall: (options) => acceptingJudge(options),
+      incomingMetadata,
+    });
+    assert.deepEqual(
+      outcome,
+      { action: "created", reason: "metadata_unpreservable" },
+      label,
+    );
+    assert.deepEqual(h.calls.contentUpdates, [], label);
+    assert.equal(
+      await readFile(h.target.path, "utf8").then((t) => t.includes(MERGED)),
+      false,
+      label,
+    );
+  }
+});
+
+test("applySemanticMergeAtPersist: metadata the target already carries still merges", async () => {
+  const h = await harness();
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+    // No new tag, no higher importance, no stronger provenance: nothing the
+    // write path would persist is lost, so the merge runs.
+    incomingMetadata: { tags: [], importanceScore: 0, provenanceStrength: "none" },
+  });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", provenancePatched: true });
+  assert.deepEqual(h.calls.contentUpdates, [
+    { id: "fact-target", content: MERGED, actor: "semantic-merge" },
+  ]);
+});
+
+// ── Item B: the merged body registers under the write path's identity ────────
+
+test("applySemanticMergeAtPersist: the merged fact restamps contentHash off the canonical raw form", async () => {
+  const h = await harness();
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  const patch = h.calls.frontmatterPatches[0].patch;
+  // The SAME canonical form normal persistence hashes: sanitized raw
+  // pre-citation content — never a cited variant of the merged body.
+  assert.equal(
+    patch.contentHash,
+    ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text),
+  );
+});
+
+test("applySemanticMergeAtPersist: a non-fact merge stamps no contentHash", async () => {
+  const h = await harness({ targetCategory: "preference" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "preference",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  assert.equal(h.calls.frontmatterPatches[0].patch.contentHash, undefined);
+});
+
+test("applySemanticMergeAtPersist: real storage registers the merged body in the fact-hash index", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-hash-"));
+  const storage = new StorageManager(dir);
+  await storage.ensureDirectories();
+  const created = await storage.writeMemory("fact", EXISTING, { source: "test" });
+  const deps = {
+    config: parseConfig({
+      memoryDir: dir,
+      versioningEnabled: true,
+      semanticMerge: { enabled: true },
+    }),
+    getLocalLlm: () => null,
+    semanticDedupLookup: async () => [{ id: created.id, score: 0.85 }],
+    indexPersistedMemory: async () => {},
+  } as unknown as ExtractionPersistDeps;
+  const outcome = await applySemanticMergeAtPersist(deps, {
+    storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "merged", targetId: created.id, provenancePatched: true });
+  // The merged body is registered in the exact-dedup index under the same
+  // canonical form the write path hashes; the pre-merge identity is gone.
+  assert.equal(await storage.hasFactContentHash(MERGED), true);
+  assert.equal(await storage.hasFactContentHash(EXISTING), false);
 });
 
 // ── Finding 4: a disabled feature never invalidates a legacy config ──────────
