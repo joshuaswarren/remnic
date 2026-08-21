@@ -8,12 +8,14 @@
  * Guarantees: everything outside the managed region (and, in frontmatter
  * mode, everything except `prefix`-owned keys) is byte-identical after
  * publish; unchanged content produces no write; all writes are temp-file +
- * rename in the note's own directory; dry-run performs zero writes;
- * symlinked paths that resolve outside the vault, and symlinked note
- * files, are refused before any write.
+ * rename in the note's own directory; dry-run performs zero writes; a
+ * destination that changed after it was read aborts with `concurrent_write`
+ * instead of clobbering an editor's concurrent save; symlinked paths that
+ * resolve outside the vault, and symlinked note files, are refused before
+ * any write.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, chownSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import path from "node:path";
 
 import { expandTildePath } from "../utils/path.js";
@@ -127,6 +129,7 @@ function publishRelative(
     return refuse(relative, "error", "symlink_escape");
   }
   let currentText: string | null = null;
+  let expected: DestExpectation | null = null;
   try {
     // A symlinked note is refused even when its target lives inside the
     // vault (issue #1985): writeAtomic renames over the link itself, which
@@ -136,8 +139,15 @@ function publishRelative(
       return refuse(relative, "error", "symlinked_note");
     }
     const st = statSync(dest);
-    if (st.isFile()) currentText = readFileSync(dest, "utf8");
-    else return refuse(relative, "error", "not_a_file");
+    if (st.isFile()) {
+      currentText = readFileSync(dest, "utf8");
+      expected = {
+        ino: st.ino,
+        mtimeMs: st.mtimeMs,
+        size: st.size,
+        sha256: createHash("sha256").update(currentText, "utf8").digest("hex"),
+      };
+    } else return refuse(relative, "error", "not_a_file");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
@@ -234,7 +244,13 @@ function publishRelative(
     }
   }
 
-  if (!writeAtomic(dest, text)) {
+  const write = writeAtomic(dest, text, expected);
+  if (write === "concurrent") {
+    // The note changed after it was read (editor autosave): keep the user's
+    // bytes and surface the abort — never a silent overwrite, never `updated`.
+    return [{ path: relative, outcome: "error", reason: "concurrent_write" }];
+  }
+  if (write !== "written") {
     return [{ path: relative, outcome: "error", reason: "rename_failed" }];
   }
   return withSkipped([{ path: relative, outcome: "updated" }]);
@@ -471,6 +487,34 @@ function containedBySymlinks(root: string, dest: string): boolean {
 }
 
 /**
+ * Destination identity captured when the note was read for this publish:
+ * inode + mtime + size + content hash. Any drift by replace time is a
+ * concurrent write (an editor that saves in place changes mtimeMs/size/
+ * bytes; one that saves atomically changes the inode) and aborts the
+ * replace. `null` means the destination did not exist at read time.
+ */
+interface DestExpectation {
+  ino: number;
+  mtimeMs: number;
+  size: number;
+  sha256: string;
+}
+
+/** Test-only injection point (issue #1985 review): runs after the note was
+ *  read and rendered but before the pre-replace verification, so tests can
+ *  simulate a concurrent editor save landing inside that window. Never set
+ *  in production code. */
+export interface VaultPublisherTestHooks {
+  beforeReplaceVerify?: (dest: string) => void;
+}
+
+let vaultPublisherTestHooks: VaultPublisherTestHooks | null = null;
+
+export function setVaultPublisherTestHooks(hooks: VaultPublisherTestHooks | null): void {
+  vaultPublisherTestHooks = hooks;
+}
+
+/**
  * Temp file + rename in the note's own directory; one retry on EBUSY/EPERM.
  *
  * The replacement inode must inherit the destination's permissions: a fresh
@@ -479,22 +523,63 @@ function containedBySymlinks(root: string, dest: string): boolean {
  * chmodSync (not a writeFileSync mode option, which umask would mask);
  * ownership is carried only as far as the process's privilege allows
  * (chownSync to another owner fails EPERM for non-root and is ignored).
+ *
+ * Concurrent-write guard (issue #1985 final review): `text` is derived from
+ * the snapshot in `expect`; if the destination no longer matches that
+ * snapshot — different inode, mtime, size, bytes, or existence — the rename
+ * is refused (`"concurrent"`) and the user's bytes are kept. Deliberately
+ * abort-only, no re-read/re-render retry: the refusal direction is the
+ * contract, and the next scheduled publish converges against fresh content.
  */
-function writeAtomic(dest: string, text: string): boolean {
+function writeAtomic(dest: string, text: string, expect: DestExpectation | null): "written" | "concurrent" | "failed" {
   const tmpPath = path.join(path.dirname(dest), `.remnic-vault-${randomBytes(8).toString("hex")}.tmp`);
   writeFileSync(tmpPath, text);
+  let prev: Stats | null = null;
   try {
-    const prev = statSync(dest);
-    chmodSync(tmpPath, prev.mode & 0o7777);
-    chownSync(tmpPath, prev.uid, prev.gid);
+    prev = statSync(dest);
   } catch {
-    // Newly created note (ENOENT) or insufficient privilege (EPERM): the
-    // temp file keeps its default mode/owner.
+    prev = null; // destination absent (new note) — not an error yet
+  }
+  if (prev !== null) {
+    try {
+      chmodSync(tmpPath, prev.mode & 0o7777);
+      chownSync(tmpPath, prev.uid, prev.gid);
+    } catch {
+      // Insufficient privilege (EPERM): the temp file keeps its default
+      // mode/owner.
+    }
+  }
+  vaultPublisherTestHooks?.beforeReplaceVerify?.(dest);
+  try {
+    const concurrent =
+      expect === null
+        ? prev !== null // someone created the note after we planned to
+        : prev === null || // the note vanished since it was read
+          prev.ino !== expect.ino ||
+          prev.mtimeMs !== expect.mtimeMs ||
+          prev.size !== expect.size ||
+          createHash("sha256").update(readFileSync(dest, "utf8"), "utf8").digest("hex") !== expect.sha256;
+    if (concurrent) {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        // best-effort cleanup
+      }
+      return "concurrent";
+    }
+  } catch {
+    // Destination unreadable at verify time: refuse to replace.
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // best-effort cleanup
+    }
+    return "concurrent";
   }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       renameSync(tmpPath, dest);
-      return true;
+      return "written";
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (attempt === 1 || (code !== "EBUSY" && code !== "EPERM")) {
@@ -503,10 +588,10 @@ function writeAtomic(dest: string, text: string): boolean {
         } catch {
           // best-effort cleanup
         }
-        if (code === "EBUSY" || code === "EPERM") return false;
+        if (code === "EBUSY" || code === "EPERM") return "failed";
         throw err;
       }
     }
   }
-  return false;
+  return "failed";
 }

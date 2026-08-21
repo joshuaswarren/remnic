@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, lstatSync, readFileSync, symlinkSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, lstatSync, readdirSync, readFileSync, symlinkSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { publishVaultNote } from "./vault-publisher.js";
+import { publishVaultNote, setVaultPublisherTestHooks } from "./vault-publisher.js";
 
 const DATE = "2026-08-21";
 
@@ -835,4 +835,47 @@ test("a partial publish writes only the applied section's properties and surface
   assert.match(after, /remnic_focus_minutes: 120/, "the applied section's properties are written");
   assert.doesNotMatch(after, /remnic_standup_items/, "the skipped section's properties never reach the file");
   assert.doesNotMatch(after, /standup body/, "the skipped section's body never reaches the file");
+});
+
+test("a concurrent editor save between read and rename aborts the publish and keeps the user's bytes", () => {
+  const { vault, notePath } = makeVault();
+  // The editor's autosave touches only human text OUTSIDE the managed region.
+  const editorSaved = NOTE.replace("trailing human text", "trailing human text (editor autosave)");
+
+  // Simulate Obsidian's autosave landing inside the publish's read→render→
+  // replace window: the hook runs after the note was read and rendered but
+  // before the pre-replace verification inside writeAtomic.
+  setVaultPublisherTestHooks({
+    beforeReplaceVerify: (dest) => {
+      if (path.resolve(dest) === path.resolve(notePath)) {
+        writeFileSync(notePath, editorSaved, "utf8");
+      }
+    },
+  });
+  try {
+    const status = publishVaultNote({
+      vaultPath: vault,
+      notePathTemplate: "Daily Notes/{yyyy}/{MM}/{yyyy}-{MM}-{dd}.md",
+      date: DATE,
+      sections: [{ name: "timeline", content: "- card-a: code review (42m)" }],
+    });
+
+    assert.equal(status.results[0]?.outcome, "error", "must not report `updated`");
+    assert.equal(status.results[0]?.reason, "concurrent_write");
+    assert.equal(status.counts.updated, 0);
+    assert.equal(status.counts.error, 1);
+
+    // The concurrent edit survives byte-for-byte — including the stale
+    // managed region: refusal keeps the user's bytes, it does not merge.
+    const after = readFileSync(notePath, "utf8");
+    assert.equal(after, editorSaved);
+    assert.match(after, /editor autosave/);
+    assert.doesNotMatch(after, /card-a/);
+
+    // The aborted replace leaves no temp litter next to the note.
+    const litter = readdirSync(path.dirname(notePath)).filter((name) => name.includes(".remnic-vault-"));
+    assert.deepEqual(litter, []);
+  } finally {
+    setVaultPublisherTestHooks(null);
+  }
 });
