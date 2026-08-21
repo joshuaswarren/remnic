@@ -132,3 +132,62 @@ export async function flushDeferredFactHashOnFailure(
     log.warn(`content-hash flush after post-write failure failed: ${err}`),
   );
 }
+
+/**
+ * Finding C (issue #2330 review): a successful semantic merge mutates only
+ * the source namespace, but the create path's promotion step owns the
+ * shared/profile copies linked back by `sourceMemoryId`. Merging a target
+ * that already has promoted copies would leave those copies serving the
+ * pre-merge body while the source serves the merged claims, so such a
+ * target must bypass the merge and let the normal write run.
+ *
+ * Target resolution mirrors `backfillTemporalBoundsOnPromotionCopies`: ALL
+ * authorized auto-promote targets plus the shared namespace (gated only by
+ * shared-write authorization), never the current confidence — a promoted
+ * copy may exist from an earlier extraction with a higher confidence or
+ * older auto-promote settings. An unreadable promotion namespace is treated
+ * as "copies may exist": the conservative create path runs rather than risk
+ * cross-namespace divergence.
+ */
+export async function mergeTargetHasPromotedCopies(args: {
+  config: PluginConfig;
+  getStorageRouter: () => {
+    storageFor: (namespace: string) => Promise<StorageManager>;
+  };
+  scopeProfileWritePlan: ResolvedScopeProfilePlan | null | undefined;
+  profileAllowsSharedWrites: boolean;
+  sourceStorage: StorageManager;
+  targetMemoryId: string;
+}): Promise<boolean> {
+  const namespaces: string[] = [];
+  if (args.scopeProfileWritePlan) {
+    const autoTargets = new Set(args.scopeProfileWritePlan.profile.autoPromote.targets);
+    for (const target of args.scopeProfileWritePlan.promotionTargets) {
+      if (
+        target.target !== "serverShared" &&
+        autoTargets.has(target.target) &&
+        target.authorized &&
+        target.namespace
+      ) {
+        namespaces.push(target.namespace);
+      }
+    }
+  }
+  if (args.profileAllowsSharedWrites) namespaces.push(args.config.sharedNamespace);
+  for (const namespace of namespaces) {
+    try {
+      const storage = await args.getStorageRouter().storageFor(namespace);
+      if (storage.dir === args.sourceStorage.dir) continue;
+      const active = await readActiveMemoriesBothTiers(storage);
+      if (active.some((m) => m.frontmatter.sourceMemoryId === args.targetMemoryId)) {
+        return true;
+      }
+    } catch (err) {
+      log.warn(
+        `semantic-merge guard: promotion namespace "${namespace}" unreadable; bypassing the merge (finding C): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return true;
+    }
+  }
+  return false;
+}

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 
 import { parseConfig } from "@remnic/core/config";
 import { initLogger, type LoggerBackend } from "@remnic/core/logger";
@@ -390,4 +390,221 @@ test("semantic merge: merge lookup honors the batch backend-outage short circuit
     2,
     `expected exactly 2 embedding searches (dedup + merge for fact 1); got ${searchCalls} — facts 2–3 must bypass both lookups after the outage signal`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Merge-on-write vs the write path's own side effects (issue #2330 findings
+// B and C). Both drive the REAL persistExtraction path with a deterministic
+// neighbor index and merge judge.
+// ---------------------------------------------------------------------------
+
+interface LocalLlmSeam {
+  localLlm: {
+    chatCompletion: (
+      messages: Array<{ role: string; content: string }>,
+    ) => Promise<{ content: string } | null>;
+  };
+}
+
+/** The local-llm seam the production merge-judge call routes through. */
+function installMergingJudge(orchestrator: unknown, judge: { calls: number }): void {
+  (orchestrator as LocalLlmSeam).localLlm = {
+    chatCompletion: async (messages) => {
+      if (
+        messages[0]?.role !== "system" ||
+        !messages[0].content.startsWith("You maintain a long-term memory store")
+      ) {
+        return null;
+      }
+      judge.calls++;
+      const input = JSON.parse(messages[1]?.content ?? "{}") as {
+        new?: { content?: string };
+        existing?: Array<{ id?: string; content?: string }>;
+      };
+      const target = input.existing?.[0];
+      if (
+        !target?.id ||
+        typeof target.content !== "string" ||
+        typeof input.new?.content !== "string"
+      ) {
+        return {
+          content: JSON.stringify({
+            decision: "create",
+            targetId: null,
+            mergedContent: null,
+            reason: "no candidate",
+          }),
+        };
+      }
+      return {
+        content: JSON.stringify({
+          decision: "merge",
+          targetId: target.id,
+          mergedContent: `${target.content} ${input.new.content}`.trim(),
+          reason: "deterministic regression judge",
+        }),
+      };
+    },
+  };
+}
+
+async function seedMergeTarget(memoryDir: string, id: string, content: string): Promise<string> {
+  const dir = path.join(memoryDir, "facts", "2026-08-01");
+  await mkdir(dir, { recursive: true });
+  const file = path.join(dir, `${id}.md`);
+  await writeFile(
+    file,
+    [
+      "---",
+      `id: ${id}`,
+      "category: fact",
+      "created: 2026-08-01T00:00:00.000Z",
+      "updated: 2026-08-01T00:00:00.000Z",
+      "source: extraction",
+      "confidence: 0.9",
+      "confidenceTier: explicit",
+      "status: active",
+      "importanceScore: 0.9",
+      "importanceLevel: high",
+      "---",
+      "",
+      content,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  return file;
+}
+
+async function readdirRecursive(root: string): Promise<string[]> {
+  const entries = await readdir(root, { recursive: true, encoding: "utf8" }).catch(() => []);
+  return entries.map((entry) => path.join(root, entry));
+}
+
+test("semantic merge: a merged write still stores the verbatim artifact (finding B)", async () => {
+  installCapturingLogger();
+  const TARGET = "The billing service deploys on Tuesdays.";
+  const INCOMING = "The billing service deploys each Tuesday morning.";
+  const { orchestrator, storage, memoryDir } = await makeOrchestrator({
+    semanticMerge: { enabled: true },
+    versioningEnabled: true,
+    verbatimArtifactsEnabled: true,
+    verbatimArtifactCategories: ["fact"],
+    verbatimArtifactsMinConfidence: 0.5,
+  });
+  const targetFile = await seedMergeTarget(memoryDir, "fact-e2e-target", TARGET);
+  const judge = { calls: 0 };
+  installMergingJudge(orchestrator, judge);
+  orchestrator.embeddingFallback = {
+    async isAvailable() {
+      return true;
+    },
+    async search(query: string): Promise<Array<{ id: string; score: number; path: string }>> {
+      return query === INCOMING ? [{ id: "fact-e2e-target", score: 0.85, path: "" }] : [];
+    },
+    async indexFile() {
+      /* noop */
+    },
+    async removeFromIndex() {
+      /* noop */
+    },
+  };
+
+  const result: ExtractionResult = {
+    facts: [{ content: INCOMING, category: "fact", tags: [], confidence: 0.9 }],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  } as ExtractionResult;
+  const { persistedIds } = await orchestrator.persistExtraction(result, storage, null);
+
+  assert.equal(judge.calls, 1, "the judge must have been consulted exactly once");
+  assert.equal(persistedIds.length, 0, "a merged fact creates no new fragment");
+  const merged = await readFile(targetFile, "utf8");
+  assert.ok(merged.includes(INCOMING), "the target must hold the merged body");
+  assert.ok(merged.includes("derived_via:"), "the target must carry merge provenance");
+
+  // Finding B: the same extraction's verbatim anchor must exist, anchored to
+  // the MERGED target id — not dropped by the merge's early exit.
+  const artifactDir = path.join(memoryDir, "artifacts");
+  const artifactFiles = (await readdirRecursive(artifactDir)).filter((f) => f.endsWith(".md"));
+  assert.ok(artifactFiles.length > 0, "a verbatim artifact must be stored for the merged write");
+  const anchors = await Promise.all(artifactFiles.map((f) => readFile(f, "utf8")));
+  assert.ok(
+    anchors.some((a) => a.includes("sourceMemoryId: fact-e2e-target") && a.includes(INCOMING)),
+    "the artifact must be anchored to the merged target and carry the incoming text",
+  );
+});
+
+test("semantic merge: a target with a promoted shared copy bypasses the merge (finding C)", async () => {
+  installCapturingLogger();
+  const FIRST = "The audit service tracks quarterly access reviews.";
+  const PARAPHRASE = "The audit service also logs quarterly access reviews.";
+  const { orchestrator, storage } = await makeOrchestrator({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    autoPromoteToSharedEnabled: true,
+    semanticMerge: { enabled: true },
+    versioningEnabled: true,
+  });
+  const judge = { calls: 0 };
+  installMergingJudge(orchestrator, judge);
+  let firstFactId: string | null = null;
+  orchestrator.embeddingFallback = {
+    async isAvailable() {
+      return true;
+    },
+    async search(query: string): Promise<Array<{ id: string; score: number; path: string }>> {
+      if (query === PARAPHRASE && firstFactId) {
+        return [{ id: firstFactId, score: 0.85, path: "" }];
+      }
+      return [];
+    },
+    async indexFile() {
+      /* noop */
+    },
+    async removeFromIndex() {
+      /* noop */
+    },
+  };
+
+  const oneFact = (content: string): ExtractionResult =>
+    ({
+      facts: [{ content, category: "fact", tags: [], confidence: 0.95 }],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    }) as ExtractionResult;
+
+  // Extraction 1 creates the fact and auto-promotes a shared copy linked by
+  // sourceMemoryId — the state whose reconciliation only the create path owns.
+  const first = await orchestrator.persistExtraction(oneFact(FIRST), storage, null);
+  assert.equal(first.persistedIds.length, 1);
+  firstFactId = first.persistedIds[0];
+  const sharedStorage = await orchestrator.getStorage("shared");
+  const sharedBefore = await sharedStorage.readAllMemories();
+  const promotedCopy = sharedBefore.find(
+    (m: { frontmatter: { sourceMemoryId?: string } }) =>
+      m.frontmatter.sourceMemoryId === firstFactId,
+  );
+  assert.ok(promotedCopy, "extraction 1 must have promoted a shared copy (test precondition)");
+  const bodyBefore = (await storage.getMemoryByIdIncludingArchived(firstFactId))?.content;
+
+  // Extraction 2 lands in the merge band for the promoted target: the merge
+  // would strand the shared copy at the pre-merge body, so it must bypass.
+  const second = await orchestrator.persistExtraction(oneFact(PARAPHRASE), storage, null);
+  assert.equal(judge.calls, 1, "the merge judge must have run for the in-band paraphrase");
+  assert.equal(second.persistedIds.length, 1, "the paraphrase must be created, not merged");
+  const bodyAfter = (await storage.getMemoryByIdIncludingArchived(firstFactId))?.content;
+  assert.equal(bodyAfter, bodyBefore, "the promoted target must keep its pre-merge body");
+  const sharedAfter = await sharedStorage.readAllMemories();
+  const copyAfter = sharedAfter.find(
+    (m: { frontmatter: { sourceMemoryId?: string } }) =>
+      m.frontmatter.sourceMemoryId === firstFactId,
+  );
+  assert.ok(copyAfter, "the promoted shared copy must survive the bypass");
+  assert.equal(copyAfter.content, promotedCopy.content, "the shared copy must be untouched");
 });

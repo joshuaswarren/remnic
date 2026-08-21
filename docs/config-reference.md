@@ -1195,20 +1195,30 @@ into a create-or-update decision:
    from the same canonical (sanitized raw pre-citation) form the normal write
    path hashes, and append the incoming fact's provenance `sources` through
    the conditional frontmatter API — a second compare-and-swap, so provenance
-   can only ever land on the merged body this run committed — and resync the
-   fact-content hash index and reindex.
+   can only ever land on the merged body this run committed — resync the
+   fact-content hash index, reindex, and, when verbatim artifacts are enabled
+   and the fact's category and confidence qualify, store the incoming
+   extraction's text as a verbatim artifact anchored to the merged target —
+   the same anchor the normal write would have stored.
 4. A merge carries only content, category, sources, and connector. A fact
    that also carries extraction metadata the merge cannot preserve —
    structured attributes, an entity ref, bi-temporal bounds, tags the target
-   lacks, a higher importance, or stronger provenance — is created through
-   the normal write instead, so metadata is never silently discarded. The
+   lacks, a higher importance, stronger provenance, or a `toolScoped: true`
+   classification the target lacks (a tool-scoped fact never widens into an
+   unscoped target; an already-scoped target keeps its stricter flag) — is
+   created through the normal write instead, so metadata and access scope are
+   never silently discarded. A would-be target that already has promoted
+   shared/profile copies (memories linked back by `sourceMemoryId`) also
+   bypasses the merge: those copies are reconciled only by the normal write's
+   promotion step, so merging would strand them at the pre-merge body. The
    merge lookup also honors the batch's embedding-outage short circuit (its
    own lookup failures arm it for the remaining facts) and the novelty
    gate's `add` decision: when either bypasses semantic dedup for a fact, no
    merge lookup runs either.
 5. Any doubt — no in-band candidate, fabricated target id, empty or oversized
    merged content, judge error or timeout, inactive target, a target another
-   writer changed after it was judged, failed snapshot or update — creates the
+   writer changed after it was judged, a target with promoted copies, failed
+   snapshot or update — creates the
    new fact exactly as before. The unsafe default is always *create*, and the
    merged entry is recoverable from the page-version snapshot. When a content
    update commits but its provenance patch fails, storage is re-read before

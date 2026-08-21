@@ -349,6 +349,8 @@ async function harness(
     config?: Partial<Record<string, unknown>>;
     targetCategory?: string;
     targetStatus?: MemoryStatus;
+    /** Stamp `toolScoped: true` on the target's frontmatter (finding A). */
+    targetToolScoped?: boolean;
     lookupHits?: SemanticDedupHit[];
     verdict?: MergeJudgeRawVerdict;
     /** Simulate a concurrent writer landing between the CAS read and write. */
@@ -374,6 +376,7 @@ async function harness(
     id: "fact-target",
     category: targetCategory,
     ...(overrides.targetStatus ? { status: overrides.targetStatus } : {}),
+    ...(overrides.targetToolScoped ? { toolScoped: true as const } : {}),
     sources: [
       {
         sessionKey: "project/example/2026-08-20T00:00:00.000Z",
@@ -1005,4 +1008,69 @@ test("parseSemanticMergeConfig: a low dedup threshold with no semanticMerge bloc
       }),
     /strictly below semanticDedupThreshold/,
   );
+});
+
+// ── Finding A: a merge must never widen a tool-scoped fact's recall scope ────
+
+test("applySemanticMergeAtPersist: a tool-scoped incoming fact never merges into an unscoped target", async () => {
+  const h = await harness();
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { toolScoped: true },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+
+  // The unscoped target would serve the tool-specific claims to every
+  // connector; the write path (which stamps `toolScoped: true`) must run.
+  assert.deepEqual(outcome, { action: "created", reason: "metadata_unpreservable" });
+  assert.deepEqual(h.calls.contentUpdates, []);
+  assert.deepEqual(h.calls.frontmatterPatches, []);
+  const history = await listVersions(h.target.path, { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" }, h.storage.dir);
+  assert.equal(history.versions.length, 0, "a bypassed merge must leave no snapshot");
+});
+
+test("applySemanticMergeAtPersist: a tool-scoped target keeps its stricter scope through a merge", async () => {
+  const h = await harness({ targetToolScoped: true });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { toolScoped: true },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", provenancePatched: true });
+  // The merge patch carries no `toolScoped` key at all — the stricter flag
+  // survives because the patch never touches it, never because it is rewritten.
+  assert.equal(h.calls.frontmatterPatches.length, 1);
+  assert.equal("toolScoped" in h.calls.frontmatterPatches[0].patch, false);
+});
+
+// ── Finding C: promoted copies are reconciled only by the create path ────────
+
+test("applySemanticMergeAtPersist: a target with promoted copies bypasses the merge before any mutation", async () => {
+  const h = await harness();
+  const probedIds: string[] = [];
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    targetHasPromotedCopies: async (targetId) => {
+      probedIds.push(targetId);
+      return true;
+    },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+
+  assert.deepEqual(outcome, { action: "created", reason: "promoted_copy_present" });
+  assert.deepEqual(probedIds, ["fact-target"], "the probe runs for the judged target only");
+  assert.deepEqual(h.calls.contentUpdates, []);
+  assert.deepEqual(h.calls.frontmatterPatches, []);
+  const history = await listVersions(h.target.path, { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" }, h.storage.dir);
+  assert.equal(history.versions.length, 0, "the bypass must precede the rollback snapshot");
 });

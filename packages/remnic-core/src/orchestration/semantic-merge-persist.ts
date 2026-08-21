@@ -39,9 +39,12 @@ import {
 } from "../dedup/merge.js";
 import { REFUSED_MERGE_CATEGORIES } from "../dedup/merge-on-write.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
-import { resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
+import {
+  resolvePresentationCapabilities,
+  resolveRecallAuxiliaryCapabilities,
+} from "../capabilities.js";
+import type { MemoryCategory, MemoryFile, ProvenanceSource } from "../types.js";
 import type { StorageManager } from "../index.js";
-import type { MemoryFile, ProvenanceSource } from "../types.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
 
 export type SemanticMergeCreateReason =
@@ -49,6 +52,7 @@ export type SemanticMergeCreateReason =
   | "target_inactive"
   | "target_changed"
   | "metadata_unpreservable"
+  | "promoted_copy_present"
   | "snapshot_unavailable"
   | "snapshot_failed"
   | "update_failed"
@@ -102,7 +106,23 @@ export interface ApplySemanticMergeOptions {
     importanceScore?: number;
     /** Provenance strength the write path would stamp. */
     provenanceStrength?: "verified" | "unverified" | "none";
+    /**
+     * True when the write path would stamp `toolScoped: true` (finding A):
+     * connector-scoped claims must never widen into an unscoped target, so
+     * such a fact is created through the write that stamps the flag. A
+     * target that already carries `toolScoped: true` keeps its stricter
+     * scope — the merge patch never touches that field.
+     */
+    toolScoped?: boolean;
   };
+  /**
+   * Finding C: async probe run after a merge verdict but before any
+   * mutation. True when the would-be target already has promoted
+   * shared/profile copies the merge cannot reconcile — the fact is created
+   * through the normal write (whose promotion step owns those copies)
+   * instead of merged.
+   */
+  targetHasPromotedCopies?: (targetId: string) => Promise<boolean>;
   /** Caller-side bypass: contradiction detected or pending_review routing. */
   skip?: boolean;
   /** Injection seam for tests. */
@@ -145,6 +165,14 @@ function mergeWouldLoseMetadata(
     (PROVENANCE_STRENGTH_RANK[md.provenanceStrength] ?? 0) >
       (PROVENANCE_STRENGTH_RANK[target.frontmatter.provenance ?? "none"] ?? 0)
   ) {
+    return true;
+  }
+  // Finding A: a tool-scoped incoming fact must never widen into an
+  // unscoped target — the merge patch has no carrier for `toolScoped`, and
+  // cross-connector recall is exactly what the write path's flag blocks. A
+  // target already carrying the stricter flag keeps it (the patch never
+  // touches that field), so only the widening direction bypasses.
+  if (md.toolScoped === true && target.frontmatter.toolScoped !== true) {
     return true;
   }
   return false;
@@ -289,6 +317,18 @@ export async function applySemanticMergeAtPersist(
     return { action: "created", reason: "metadata_unpreservable" };
   }
 
+  // Finding C — the create path's promotion step owns shared/profile copies
+  // linked by `sourceMemoryId`; a merge mutates only this storage, so those
+  // copies would keep serving the pre-merge body. When any promoted copy
+  // exists, bypass the merge so the normal write (with its own promotion
+  // reconciliation) runs instead. Probed before any mutation, so a bypass
+  // leaves the target — and its page-version history — untouched.
+  if (
+    options.targetHasPromotedCopies &&
+    (await options.targetHasPromotedCopies(decision.targetId))
+  ) {
+    return { action: "created", reason: "promoted_copy_present" };
+  }
   // Step 2 — rollback data BEFORE any mutation (checklist #14). A failed
   // snapshot must leave the target untouched. Versioning disabled means no
   // rollback story exists at all, so merge refuses to run.
@@ -426,4 +466,51 @@ export async function applySemanticMergeAtPersist(
     `semantic-merge: merged fact into ${decision.targetId} (version ${versionId})`,
   );
   return { action: "merged", targetId: decision.targetId, provenancePatched: true };
+}
+
+/**
+ * Finding B: for a qualifying write the create path stores the incoming
+ * extraction's text as a verbatim artifact anchored to the memory it just
+ * wrote. A merge that skipped that step would permanently drop the anchor
+ * the same extraction would have stored, so a successful merge persists the
+ * artifact against the MERGED target — same gates as the write path
+ * (verbatim artifacts enabled, category qualifies, confidence at or above
+ * the threshold). A merge target is always active and a pending_review fact
+ * never reaches the merge, so the write path's post-write guards cannot
+ * apply here. Failures propagate exactly like the write path's artifact
+ * step: the durable write stands, the error surfaces to the caller.
+ */
+export async function writeMergedVerbatimArtifact(
+  deps: ExtractionPersistDeps,
+  storage: StorageManager,
+  targetId: string,
+  input: {
+    category: string;
+    /** Incoming fact body, cited exactly once for this write by the caller. */
+    citedContent: string;
+    confidence: number;
+    tags: readonly string[];
+    intent?: { goal?: string; actionType?: string; entityTypes?: string[] };
+    sourceConnector?: string;
+    origin?: string;
+    toolScoped?: boolean;
+  },
+): Promise<void> {
+  if (!resolvePresentationCapabilities(deps.config).verbatimArtifacts) return;
+  if (!deps.config.verbatimArtifactCategories.includes(input.category as MemoryCategory)) {
+    return;
+  }
+  if (!(input.confidence >= deps.config.verbatimArtifactsMinConfidence)) return;
+  await storage.writeArtifact(input.citedContent, {
+    confidence: input.confidence,
+    tags: [...input.tags, "artifact"],
+    artifactType: deps.artifactTypeForCategory(input.category),
+    sourceMemoryId: targetId,
+    intentGoal: input.intent?.goal,
+    intentActionType: input.intent?.actionType,
+    intentEntityTypes: input.intent?.entityTypes,
+    ...(input.sourceConnector ? { sourceConnector: input.sourceConnector } : {}),
+    ...(input.origin ? { origin: input.origin } : {}),
+    ...(input.toolScoped ? { toolScoped: true as const } : {}),
+  });
 }

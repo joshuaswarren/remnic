@@ -103,6 +103,7 @@ import type {
 } from "../types.js";
 import {
   flushDeferredFactHashOnFailure,
+  mergeTargetHasPromotedCopies,
   profileAutoPromotionAllows,
   readActiveMemoriesBothTiers,
   shouldPromoteToShared,
@@ -117,7 +118,7 @@ import {
 } from "../orchestrator.js";
 import type { HarmonicConstructionInput } from "../harmonic-construction.js";
 import { persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
-import { applySemanticMergeAtPersist } from "./semantic-merge-persist.js";
+import { applySemanticMergeAtPersist, writeMergedVerbatimArtifact } from "./semantic-merge-persist.js";
 import { ExtractionAnchorSnapshot } from "./extraction-anchor-snapshot.js";
 
 export class ExtractionPersistCoordinator {
@@ -2546,28 +2547,27 @@ export class ExtractionPersistCoordinator {
             ? classifyMemoryKind(fact.content, fact.tags ?? [], writeCategory)
             : undefined;
 
-      // Normal write (no chunking)
-      // Cite once so memory and artifact copies share one timestamp; hash the RAW
-      // pre-citation text for facts (a per-write marker would defeat dedup).
-      // Merge-on-write (issue #2330): a judge-approved in-band match updates the
-      // existing memory in place instead of writing a new fragment.
+      // Normal write (no chunking). Cite once so memory and artifact copies share
+      // one timestamp; hash the RAW pre-citation text (a marker would defeat dedup).
+      // Merge-on-write (#2330): a judge-approved in-band match updates in place;
+      // A: uncarryable metadata and C: a target with promoted copies bypass to
+      // this write; D/E: backend outage and the novelty add decision skip it too.
+      const rawPersistBody = writeCategory === "procedure" ? buildProcedurePersistBody(fact.content, fact.procedureSteps) : fact.content;
+      const citedFactContent = applyInlineCitation(rawPersistBody);
       const semanticMerge = await applySemanticMergeAtPersist(this.deps, {
         storage: targetStorage, content: fact.content, category: writeCategory, sources: fact.sources, sourceConnector: extractionSourceConnector,
-        // A: metadata the merge cannot carry bypasses the merge. D/E: the batch backend-outage short circuit and the novelty add decision own the merge lookup too.
-        incomingMetadata: { tags: [...fact.tags, ...injectionScreenTags], entityRef: fact.entityRef, structuredAttributes: fact.structuredAttributes, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, biTemporal: biTemporal !== undefined, importanceScore: importance.score, provenanceStrength: fact.provenance }, skip: contradictionDetected || faithfulnessEnforceStatus === "pending_review" || batchBackendUnavailable || novelty.decision === "add",
+        incomingMetadata: { tags: [...fact.tags, ...injectionScreenTags], entityRef: fact.entityRef, structuredAttributes: fact.structuredAttributes, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, biTemporal: biTemporal !== undefined, importanceScore: importance.score, provenanceStrength: fact.provenance, toolScoped: factToolScoped }, skip: contradictionDetected || faithfulnessEnforceStatus === "pending_review" || batchBackendUnavailable || novelty.decision === "add",
+        targetHasPromotedCopies: (targetId) => mergeTargetHasPromotedCopies({ config: this.deps.config, getStorageRouter: this.deps.getStorageRouter, scopeProfileWritePlan, profileAllowsSharedWrites, sourceStorage: targetStorage, targetMemoryId: targetId }),
       });
       // D: a failed merge lookup arms the batch short circuit for the remaining facts.
       if (semanticMerge.action === "created" && semanticMerge.reason === "backend_unavailable") batchBackendUnavailable = true;
       if (semanticMerge.action === "merged") {
         semanticMergedCount++;
         await anchorSnapshots.replace(targetStorage, semanticMerge.targetId, writeCategory, memoryPathById);
+        // B: the create path stores a verbatim artifact for qualifying writes; the merge must not drop it.
+        await writeMergedVerbatimArtifact(this.deps, targetStorage, semanticMerge.targetId, { category: writeCategory, citedContent: citedFactContent, confidence: fact.confidence, tags: fact.tags, intent: inferredIntent ?? undefined, sourceConnector: extractionSourceConnector, origin, toolScoped: factToolScoped });
         continue;
       }
-      const rawPersistBody =
-        writeCategory === "procedure"
-          ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
-          : fact.content;
-      const citedFactContent = applyInlineCitation(rawPersistBody);
       const factWriteEnvelope = composeSalvagedExtractionEnvelope(
         {
           content: citedFactContent,
