@@ -50,6 +50,41 @@ const RECALL_PRODUCING_TOOL_NAMES: Record<string, true> = {
   "remnic.recall_xray": true,
 };
 
+/**
+ * Match an MCP tool name against the recognized Remnic namespace and derive the
+ * Pi-safe registered name. Two catalog shapes are supported:
+ *
+ * - legacy dotted form:  `remnic.recall`      -> pi: `remnic_recall`
+ * - current underscore:  `remnic_recall`      -> pi: `remnic_recall`
+ *
+ * Only names starting with the exact `remnic.` or `remnic_` prefix and a
+ * nonempty alphanumeric/underscore suffix are accepted. The server-side name
+ * is echoed verbatim in tools/call so the request is accepted by whichever
+ * server shape produced the catalog.
+ */
+export function matchRemnicMcpToolName(name: unknown): { serverToolName: string; piToolName: string } | null {
+  if (typeof name !== "string") return null;
+  let rest: string | null = null;
+  if (name.startsWith("remnic.")) {
+    rest = name.slice("remnic.".length);
+  } else if (name.startsWith("remnic_")) {
+    rest = name.slice("remnic_".length);
+  }
+  if (rest === null || !/^[a-zA-Z0-9_]+$/.test(rest)) return null;
+  return {
+    serverToolName: name,
+    piToolName: `remnic_${rest}`,
+  };
+}
+
+/** Breaker lookup tolerant of both catalog shapes (`remnic_recall` <-> `remnic.recall`). */
+function isRecallProducingToolName(serverToolName: string): boolean {
+  return (
+    RECALL_PRODUCING_TOOL_NAMES[serverToolName] === true ||
+    RECALL_PRODUCING_TOOL_NAMES[serverToolName.replace(/^remnic_/, "remnic.")] === true
+  );
+}
+
 type PiSessionState = {
   observedHashes: Set<string>;
   liveObservedReplayKeys: Map<string, number>;
@@ -382,12 +417,19 @@ async function registerMcpTools(
   } catch {
     return;
   }
+  let registeredCount = 0;
+  const seenPiToolNames = new Set<string>();
   for (const tool of tools) {
-    if (!tool.name.startsWith("remnic.")) continue;
-    const piToolName = tool.name.replace(/^remnic\./, "remnic_").replace(/[^a-zA-Z0-9_]/g, "_");
+    const match = matchRemnicMcpToolName(tool.name);
+    if (!match) continue;
+    // A catalog that mixes shapes could map two names onto one Pi-safe name;
+    // register the first occurrence only.
+    if (seenPiToolNames.has(match.piToolName)) continue;
+    seenPiToolNames.add(match.piToolName);
+    registeredCount++;
     pi.registerTool({
-      name: piToolName,
-      label: tool.name,
+      name: match.piToolName,
+      label: match.serverToolName,
       description: tool.description ?? `Call ${tool.name}`,
       parameters: toPiToolParametersSchema(tool.inputSchema),
       async execute(_toolCallId: string, params: Record<string, unknown>, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
@@ -398,7 +440,7 @@ async function registerMcpTools(
             details: { skipped: true, reason: "stale_context" },
           };
         }
-        if (recallTimeoutBreaker.isTripped() && RECALL_PRODUCING_TOOL_NAMES[tool.name] === true) {
+        if (recallTimeoutBreaker.isTripped() && isRecallProducingToolName(tool.name)) {
           const message = notifyRecallDisabled(session);
           return {
             content: [{ type: "text", text: message }],
@@ -412,10 +454,10 @@ async function registerMcpTools(
           namespace: config.namespace,
           cwd: session.cwd,
         };
-        const result = RECALL_PRODUCING_TOOL_NAMES[tool.name] === true
+        const result = isRecallProducingToolName(tool.name)
           ? await executeRecallWithBreaker(
               (breakerSignal) =>
-                client.mcpTool(tool.name, toolArguments, {
+                client.mcpTool(match.serverToolName, toolArguments, {
                   signal: signal ? AbortSignal.any([signal, breakerSignal]) : breakerSignal,
                 }),
               recallTimeoutBreaker,
@@ -423,12 +465,27 @@ async function registerMcpTools(
               session,
               config,
             )
-          : await client.mcpTool(tool.name, toolArguments, { signal });
+          : await client.mcpTool(match.serverToolName, toolArguments, { signal });
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
           details: result,
         };
       },
+    });
+  }
+  if (tools.length > 0 && registeredCount === 0) {
+    const observedNames = tools.map((tool) => tool.name).filter(isString);
+    const observed = observedNames.slice(0, 10).join(", ");
+    const message =
+      `Remnic MCP tools/list returned ${tools.length} tool(s) but none matched the Remnic namespace` +
+      ` ("remnic." or "remnic_" prefix); no Remnic MCP tools were registered. Observed: ${observed}` +
+      `${observedNames.length > 10 ? ", …" : ""}. Check Remnic server/plugin version compatibility.`;
+    console.warn(`[remnic] ${message}`);
+    pi.appendEntry(STATE_CUSTOM_TYPE, {
+      level: "warning",
+      code: "MCP_TOOLS_FILTERED",
+      message,
+      observedToolNames: observedNames,
     });
   }
 }
