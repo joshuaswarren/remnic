@@ -1,0 +1,153 @@
+/**
+ * Observe-derived transcript persistence (issue #2783).
+ *
+ * Delegate-mode gateways POST every turn to `/observe`; without a transcript
+ * append in the daemon's observe path the transcript store never grows and
+ * the hourly summarizer starves silently while every run reports ok. This
+ * module is that append: it mirrors the embedded runtime's `agent_end`
+ * handler (src/index.ts) — same `TranscriptManager`, same entry shape, same
+ * `transcriptEnabled` presentation gate, same 10-char noise floor.
+ *
+ * Turns are deduped against a bounded process-lifetime (session, role,
+ * content) fingerprint — the daemon-side equivalent of the embedded
+ * runtime's `observedInboundContentFingerprints`, extended to both roles
+ * because an un-keyed client re-POST always carries the whole turn — so a
+ * retry cannot double-write it.
+ */
+
+import { createHash, randomUUID } from "node:crypto";
+import { lcmSessionKeyForNamespace } from "./coding/coding-namespace.js";
+import type { PluginConfig } from "./types.js";
+import { log } from "./logger.js";
+import type { Orchestrator } from "./orchestrator.js";
+import type { TranscriptEntry } from "./types.js";
+
+const OBSERVE_TRANSCRIPT_DEDUPE_MAX_ENTRIES = 8192;
+const OBSERVE_TRANSCRIPT_MIN_CONTENT_CHARS = 10;
+/**
+ * A fingerprint only suppresses re-POSTs inside this window. A client retry
+ * lands seconds later; a session LEGITIMATELY repeating the same >10-char
+ * turn usually does so minutes or hours later, and that repeat is a real
+ * conversation event the transcripts must keep (review: preserve legitimate
+ * repeated turns).
+ */
+const OBSERVE_TRANSCRIPT_DEDUPE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * The transcript-side session identity for an observe payload (issue #2783
+ * review: namespace scoping). Two authenticated principals can submit the
+ * same client-controlled sessionKey while resolving to different effective
+ * write namespaces; persisting through the raw key would let one
+ * principal's transcript-derived summaries surface under the other's
+ * session. Mirror the LCM archive's answer (rule 42 parity): prefix the
+ * key with the effective write namespace whenever it diverges from the
+ * default store. The summarizer lists sessions from the store itself, so
+ * reads self-consistently follow the same prefixed keys.
+ */
+export function observeTranscriptSessionKey(
+  sessionKey: string,
+  writeNamespace: string,
+  config: Pick<PluginConfig, "defaultNamespace">
+): string {
+  return lcmSessionKeyForNamespace(writeNamespace, sessionKey, config.defaultNamespace) ?? sessionKey;
+}
+
+/** Bounded FIFO of seen fingerprints; insertion order is the eviction order. */
+export class ObserveTranscriptPersister {
+  private readonly seenFingerprintsAt = new Map<string, number>();
+  /** In-flight appends by fingerprint: an overlapping identical observe waits for the first append instead of double-writing. */
+  private readonly inflightAppends = new Map<string, Promise<void>>();
+
+  /**
+   * Append every eligible message of an observe payload to the per-session
+   * transcript store. Best-effort: a failing append logs and does not fail
+   * the observe. Returns true when at least one turn was appended.
+   */
+  async persist(
+    orchestrator: Orchestrator,
+    sessionKey: string,
+    messages: ReadonlyArray<{ role: string; content: string }>,
+    rawSessionKey?: string
+  ): Promise<boolean> {
+    let persisted = false;
+    // TranscriptManager.append silently no-ops for skip-listed channel types
+    // (cron by default) — check BEFORE appending so the response's
+    // transcriptPersisted stays truthful (review: report skipped appends).
+    // The channel identity must derive from the RAW session key: the legacy
+    // parser requires the key to start with "agent:", so a namespace-prefixed
+    // transcript identity would always classify as "session" and the skip
+    // list would silently not apply to namespaced cron sessions (review r4).
+    const { channelType } = orchestrator.transcript.getTranscriptPath(rawSessionKey ?? sessionKey);
+    if (orchestrator.config.transcriptSkipChannelTypes.includes(channelType)) {
+      return false;
+    }
+    for (const message of messages) {
+      if (message.content.length < OBSERVE_TRANSCRIPT_MIN_CONTENT_CHARS) continue;
+      // Fixed-size digest, never the raw content: 8192 retained entries of
+      // full turn text is an avoidable heap-exhaustion surface on a daemon
+      // that accepts arbitrary observe payloads (review round 2).
+      const fingerprint = createHash("sha256")
+        .update(`${sessionKey}\0${message.role}\0${message.content}`)
+        .digest("hex");
+      // Two identical observes can overlap before either records its
+      // fingerprint; both would then append and the transcript would carry
+      // the turn twice. The attempt loop serializes per fingerprint: a caller
+      // that finds an in-flight append awaits it and RE-RUNS BOTH checks — on
+      // success the completed-set check skips the message; on failure (no
+      // fingerprint recorded) exactly ONE waiter proceeds to retry, because
+      // the check-then-register sequence has no await between its steps and
+      // is therefore atomic on the event loop (review r4).
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const seenAt = this.seenFingerprintsAt.get(fingerprint);
+        if (seenAt !== undefined && Date.now() - seenAt < OBSERVE_TRANSCRIPT_DEDUPE_TTL_MS) {
+          break; // duplicate within the retry window — skip the message
+        }
+        const inflight = this.inflightAppends.get(fingerprint);
+        if (inflight) {
+          await inflight;
+          continue; // re-run both checks with the append's outcome visible
+        }
+        const entry: TranscriptEntry = {
+          timestamp: new Date().toISOString(),
+          role: message.role as TranscriptEntry["role"],
+          content: message.content,
+          sessionKey,
+          turnId: randomUUID(),
+        };
+        const appendPromise = orchestrator.transcript
+          .append(entry)
+          .then(() => {
+            // Remember only after a successful append: a transient failure
+            // must not permanently swallow the turn — the client's retry has
+            // to be able to re-append it (review round 2).
+            this.remember(fingerprint);
+            persisted = true;
+          })
+          .catch((err) => {
+            // Same policy as the LCM enqueue in the observe path: transcript
+            // persistence must never fail the observe itself.
+            log.error(`access-observe transcript append failed: ${err}`);
+          })
+          .finally(() => {
+            this.inflightAppends.delete(fingerprint);
+          });
+        this.inflightAppends.set(fingerprint, appendPromise);
+        await appendPromise;
+        break;
+      }
+    }
+    return persisted;
+  }
+
+  private remember(fingerprint: string): void {
+    // Map.set keeps an existing key at its ORIGINAL insertion position, so a
+    // TTL-refreshed fingerprint could still be the FIFO-oldest and get
+    // evicted immediately — delete first to move it to the end (review r4).
+    this.seenFingerprintsAt.delete(fingerprint);
+    this.seenFingerprintsAt.set(fingerprint, Date.now());
+    if (this.seenFingerprintsAt.size > OBSERVE_TRANSCRIPT_DEDUPE_MAX_ENTRIES) {
+      const oldest = this.seenFingerprintsAt.keys().next().value;
+      if (typeof oldest === "string") this.seenFingerprintsAt.delete(oldest);
+    }
+  }
+}
