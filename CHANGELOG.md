@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.17] — 2026-08-22
+
 ### Fixed
 
 - The daemon's observe path now persists observe-derived turns to the transcript store (with bounded re-POST dedupe), and `memory_summarize_hourly` reports counts plus an explicit warning when the store is empty or stale instead of an unconditional bare ok — delegate-mode gateways no longer silently starve the hourly summarizer (`#2783`).
