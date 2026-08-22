@@ -1009,8 +1009,10 @@ export async function applySemanticMergeAtPersist(
  * (verbatim artifacts enabled, category qualifies, confidence at or above
  * the threshold). A merge target is always active and a pending_review fact
  * never reaches the merge, so the write path's post-write guards cannot
- * apply here. Failures propagate exactly like the write path's artifact
- * step: the durable write stands, the error surfaces to the caller.
+ * apply here. Round N+17 (B): this write is the merge path's LAST durable
+ * effect (create-path ordering), and a rejection is isolated inside to a
+ * logged warning — the committed target stays discoverable; failures never
+ * abort the merge batch.
  */
 export async function writeMergedVerbatimArtifact(
   deps: ExtractionPersistDeps,
@@ -1033,18 +1035,26 @@ export async function writeMergedVerbatimArtifact(
     return;
   }
   if (!(input.confidence >= deps.config.verbatimArtifactsMinConfidence)) return;
-  await storage.writeArtifact(input.citedContent, {
-    confidence: input.confidence,
-    tags: [...input.tags, "artifact"],
-    artifactType: deps.artifactTypeForCategory(input.category),
-    sourceMemoryId: targetId,
-    intentGoal: input.intent?.goal,
-    intentActionType: input.intent?.actionType,
-    intentEntityTypes: input.intent?.entityTypes,
-    ...(input.sourceConnector ? { sourceConnector: input.sourceConnector } : {}),
-    ...(input.origin ? { origin: input.origin } : {}),
-    ...(input.toolScoped ? { toolScoped: true as const } : {}),
-  });
+  try {
+    await storage.writeArtifact(input.citedContent, {
+      confidence: input.confidence,
+      tags: [...input.tags, "artifact"],
+      artifactType: deps.artifactTypeForCategory(input.category),
+      sourceMemoryId: targetId,
+      intentGoal: input.intent?.goal,
+      intentActionType: input.intent?.actionType,
+      intentEntityTypes: input.intent?.entityTypes,
+      ...(input.sourceConnector ? { sourceConnector: input.sourceConnector } : {}),
+      ...(input.origin ? { origin: input.origin } : {}),
+      ...(input.toolScoped ? { toolScoped: true as const } : {}),
+    });
+  } catch (err) {
+    // Round N+17 (B): the caller runs this LAST, after every durable merge
+    // effect — log and skip; the committed target stays discoverable.
+    log.warn(
+      `semantic-merge: verbatim artifact write failed for ${targetId} (non-fatal; the committed target remains discoverable): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /**

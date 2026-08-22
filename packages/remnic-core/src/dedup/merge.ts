@@ -129,9 +129,17 @@ export async function decideSemanticMerge(
   if (!trimmed) return { action: "create", reason: "no_candidates" };
 
   // Lookup throws = backend down (distinct from an empty index, #22).
+  // Round N+17 (A): the fetch deliberately OVERSHOOTS maxCandidates. The
+  // eligibility predicates below (band, connector scope, category, active
+  // status) run after the lookup, so fetching exactly maxCandidates let
+  // ineligible hits — a foreign connector or category, an inactive row —
+  // occupy the whole fetch window and crowd out a valid target ranked
+  // immediately beneath them; the write then created another fragment.
+  // maxCandidates still bounds what reaches the JUDGE (the slice below is
+  // the only truncation point).
   let hits: SemanticDedupHit[];
   try {
-    hits = await options.lookup(trimmed, config.maxCandidates);
+    hits = await options.lookup(trimmed, config.maxCandidates * CANDIDATE_OVERFETCH_FACTOR);
   } catch {
     return { action: "create", reason: "backend_unavailable" };
   }
@@ -178,6 +186,8 @@ export async function decideSemanticMerge(
   if (candidates.length === 0) return { action: "create", reason: "no_candidates" };
 
   candidates.sort(compareMergeCandidates);
+  // Eligible-first truncation (round N+17 A): the judge sees up to
+  // maxCandidates ELIGIBLE neighbors — never the raw top-of-index hits.
   const limited = candidates.slice(0, config.maxCandidates);
 
   let verdict: MergeJudgeRawVerdict;
@@ -240,6 +250,15 @@ export const MERGEABLE_MEMORY_CATEGORIES: readonly string[] = MEMORY_CATEGORIES.
 
 export const DEFAULT_SEMANTIC_MERGE_MIN = 0.8;
 export const DEFAULT_SEMANTIC_MERGE_CANDIDATES = 3;
+
+/**
+ * Round N+17 (A): the neighbor fetch overshoots `maxCandidates` by this
+ * factor so eligibility filtering happens BEFORE truncation. Bounded
+ * ceiling: a corpus holding more than this many consecutive ineligible
+ * neighbors above the valid target still crowds it out; raise only with
+ * evidence of that corpus shape.
+ */
+const CANDIDATE_OVERFETCH_FACTOR = 4;
 
 function describeValue(value: unknown): string {
   try {

@@ -2551,8 +2551,6 @@ export class ExtractionPersistCoordinator {
       if (semanticMerge.action === "merged") {
         semanticMergedCount++;
         await anchorSnapshots.replace(targetStorage, semanticMerge.targetId, writeCategory, memoryPathById);
-        // B: the create path stores a verbatim artifact for qualifying writes; the merge must not drop it.
-        await writeMergedVerbatimArtifact(this.deps, targetStorage, semanticMerge.targetId, { category: writeCategory, citedContent: citedFactContent, confidence: fact.confidence, tags: fact.tags, intent: inferredIntent ?? undefined, sourceConnector: extractionSourceConnector, origin, toolScoped: factToolScoped });
         // D + final round (A/B): with no promoted copies the create path's promotion must still run — fail-open, the merge stands — and its payload is derived SOLELY from the re-read committed record: no field reads the incoming extraction (see buildMergedTargetPromotionPayload; null = target replaced mid-flight or retired by a concurrent lifecycle operation, skip promotion). Promotion eligibility gates on the committed record's tier — the downgraded min(incoming, target) confidence where a lower incoming fact merged in.
         // Round N+7 (A): the payload builder refuses a degraded merge (provenancePatched=false) — no promotion off unpatched trust metadata. (B): after the current copy lands, any concurrently promoted PRE-merge copy is superseded (promotion dedups by content, so without this both stay active).
         const mergedPromotion = await buildMergedTargetPromotionPayload(targetStorage, semanticMerge);
@@ -2573,6 +2571,8 @@ export class ExtractionPersistCoordinator {
           graphContext: await ensureGraphContext(targetStorage),
           threadIdForEdge: threadIdForExtraction ?? undefined, threadEpisodeIdsForGraph,
         }));
+        // Round N+17 (B): artifact write LAST; the helper isolates its own failure.
+        await writeMergedVerbatimArtifact(this.deps, targetStorage, semanticMerge.targetId, { category: writeCategory, citedContent: citedFactContent, confidence: fact.confidence, tags: fact.tags, intent: inferredIntent ?? undefined, sourceConnector: extractionSourceConnector, origin, toolScoped: factToolScoped });
         continue;
       }
       const factWriteEnvelope = composeSalvagedExtractionEnvelope(

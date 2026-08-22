@@ -243,6 +243,55 @@ test("decideSemanticMerge: highest-similarity candidate wins with a stable tiebr
   assert.equal(decision.action === "merge" && decision.targetId, "mem-a");
 });
 
+// Round N+17 (A): eligible-first candidate truncation.
+test("decideSemanticMerge: ineligible hits ranked above a valid target never crowd it out", async () => {
+  // The index truncates at the requested limit, exactly like the real
+  // embedding backend. maxCandidates=1 with the raw top-of-index hits being
+  // ineligible (inactive, foreign connector, off-category): pre-fix, the
+  // fetch asked for maxCandidates hits, the filters removed them all, and
+  // the valid target ranked immediately below never reached the judge.
+  const ALL_HITS: SemanticDedupHit[] = [
+    { id: "stale-target", score: 0.9 },
+    { id: "foreign-connector-target", score: 0.89, sourceConnector: "connector-a" },
+    { id: "off-category-target", score: 0.88 },
+    { id: "valid-target", score: 0.85 },
+  ];
+  const offered: string[] = [];
+  let lookupLimit = 0;
+  const decision = await decideSemanticMerge({
+    content: INCOMING,
+    category: "fact",
+    config: { ...MERGE_CONFIG, maxCandidates: 1 },
+    dedupThreshold: 0.92,
+    lookup: async (_content, limit) => {
+      lookupLimit = limit;
+      return ALL_HITS.slice(0, limit);
+    },
+    resolveCandidate: async (memoryId) => ({
+      content: `${EXISTING} (${memoryId})`,
+      category: memoryId === "off-category-target" ? "preference" : "fact",
+      status: memoryId === "stale-target" ? "superseded" : "active",
+    }),
+    judge: async (input) => {
+      offered.push(...input.candidates.map((c) => c.memoryId));
+      return {
+        decision: "merge",
+        targetId: input.candidates[0]?.memoryId ?? null,
+        mergedContent: MERGED,
+        reason: "same deploy cadence",
+      };
+    },
+  });
+  assert.ok(lookupLimit > 1, "the fetch must overshoot maxCandidates so filtering precedes truncation");
+  assert.deepEqual(
+    offered,
+    ["valid-target"],
+    "the judge must receive the first ELIGIBLE neighbor, not the raw top-of-index hit",
+  );
+  assert.equal(decision.action, "merge");
+  assert.equal(decision.action === "merge" && decision.targetId, "valid-target");
+});
+
 // ── Config parsing ───────────────────────────────────────────────────────────
 
 test("parseSemanticMergeConfig: defaults are off with a valid band", () => {

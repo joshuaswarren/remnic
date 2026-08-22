@@ -1236,7 +1236,9 @@ into a create-or-update decision:
    fact-content hash index, reindex, and, when verbatim artifacts are enabled
    and the fact's category and confidence qualify, store the incoming
    extraction's text as a verbatim artifact anchored to the merged target —
-   the same anchor the normal write would have stored — and commits the
+   the same anchor the normal write would have stored; this artifact write is
+   the merge's FINAL durable effect, so a failing artifact write is logged
+   and skipped (the committed target stays fully discoverable) — and commits
    merged body WITH the incoming extraction's citation marker appended
    (lifted from the same cited string the artifact stores, so memory and
    artifact share one timestamp), so incoming claims stay attributed even

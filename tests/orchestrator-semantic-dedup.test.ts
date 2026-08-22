@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { setTimeout as sleep } from "node:timers/promises";
+import { queryTemporalTimelineAsync } from "@remnic/core/temporal-index";
 
 import { parseConfig } from "@remnic/core/config";
 import { initLogger, type LoggerBackend } from "@remnic/core/logger";
@@ -460,8 +462,12 @@ async function seedMergeTarget(
   content: string,
   /** Authority origin stamped on the seed (absent = legacy unstamped target). */
   origin?: string,
+  /** Extra frontmatter lines stamped between `status` and `importanceScore`. */
+  extraFrontmatter?: string[],
+  /** Category (and its directory) for the target; default `fact`/`facts`. */
+  category?: "fact" | "preference",
 ): Promise<string> {
-  const dir = path.join(memoryDir, "facts", "2026-08-01");
+  const dir = path.join(memoryDir, category === "preference" ? "preferences" : "facts", "2026-08-01");
   await mkdir(dir, { recursive: true });
   const file = path.join(dir, `${id}.md`);
   await writeFile(
@@ -469,7 +475,7 @@ async function seedMergeTarget(
     [
       "---",
       `id: ${id}`,
-      "category: fact",
+      `category: ${category ?? "fact"}`,
       "created: 2026-08-01T00:00:00.000Z",
       "updated: 2026-08-01T00:00:00.000Z",
       "source: extraction",
@@ -479,6 +485,7 @@ async function seedMergeTarget(
       "confidence: 0.95",
       "confidenceTier: explicit",
       "status: active",
+      ...(extraFrontmatter ?? []),
       "importanceScore: 0.9",
       "importanceLevel: high",
       ...(origin ? [`origin: ${origin}`] : []),
@@ -550,6 +557,143 @@ test("semantic merge: a merged write still stores the verbatim artifact (finding
   assert.ok(
     anchors.some((a) => a.includes("sourceMemoryId: fact-e2e-target") && a.includes(INCOMING)),
     "the artifact must be anchored to the merged target and carry the incoming text",
+  );
+});
+
+test("semantic merge: an artifact I/O failure never strands the committed target's durable effects (round N+17 B)", async () => {
+  installCapturingLogger();
+  // Preference category: the behavior-signal ledger records preference
+  // affinity events (fact-category writes emit none, on the create path
+  // too), and preferences are in the default mergeable category set.
+  const TARGET = "Commit messages favor terse subject lines.";
+  const INCOMING = "Commit messages favor imperative mood subjects.";
+  const { orchestrator, storage, memoryDir } = await makeOrchestrator({
+    semanticMerge: { enabled: true },
+    versioningEnabled: true,
+    verbatimArtifactsEnabled: true,
+    verbatimArtifactCategories: ["fact", "preference"],
+    verbatimArtifactsMinConfidence: 0.5,
+    harmonicRetrievalEnabled: true,
+    // Effect-1 gate: the post-batch temporal/tag index refresh only runs
+    // when a consumer of index_time.json is enabled.
+    eventOrderRecallEnabled: true,
+    multiGraphMemoryEnabled: true,
+    threadingEnabled: true,
+  });
+  const targetId = "pref-e2e-effects";
+  const targetFile = await seedMergeTarget(
+    memoryDir,
+    targetId,
+    TARGET,
+    undefined,
+    ["entityRef: entity-commit-style"],
+    "preference",
+  );
+  await seedMergeTarget(
+    memoryDir,
+    "pref-e2e-effects-sibling",
+    "Commit messages favor short body paragraphs.",
+    undefined,
+    ["entityRef: entity-commit-style"],
+    "preference",
+  );
+  const judge = { calls: 0 };
+  installMergingJudge(orchestrator, judge);
+  orchestrator.embeddingFallback = {
+    async isAvailable() {
+      return true;
+    },
+    async search(query: string): Promise<Array<{ id: string; score: number; path: string }>> {
+      return query === INCOMING ? [{ id: targetId, score: 0.85, path: "" }] : [];
+    },
+    async indexFile() {
+      /* noop */
+    },
+    async removeFromIndex() {
+      /* noop */
+    },
+  };
+  // Durable thread for the thread-episode effect; seeded empty so the merge
+  // is what appends the target.
+  const threading = orchestrator.threading;
+  const nowIso = new Date().toISOString();
+  await threading.saveThread({
+    id: "thread-effects-b",
+    title: "Synthetic thread",
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    sessionKey: "session-effects-b",
+    episodeIds: [],
+    linkedThreadIds: [],
+  });
+  // Forced artifact I/O failure — the ONLY failing operation in the batch.
+  let artifactAttempts = 0;
+  storage.writeArtifact = async () => {
+    artifactAttempts++;
+    throw new Error("artifact I/O error (simulated disk failure)");
+  };
+
+  const result: ExtractionResult = {
+    facts: [{ content: INCOMING, category: "preference", tags: [], confidence: 0.9 }],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  } as ExtractionResult;
+  const { persistedIds } = await orchestrator.persistExtraction(
+    result,
+    storage,
+    "thread-effects-b",
+    // The harmonic pass skips batches without a session key.
+    { sessionKey: "session-effects-b" },
+  );
+  assert.equal(judge.calls, 1, "the judge must have been consulted exactly once");
+  assert.equal(persistedIds.length, 0, "a merged fact creates no new fragment");
+  const merged = await readFile(targetFile, "utf8");
+  assert.ok(merged.includes(INCOMING), "the target must hold the merged body");
+  assert.equal(artifactAttempts, 1, "the artifact write must still run (and fail) once");
+
+  // Effect 1 — temporal/tag index refresh. The refresh is fire-and-forget
+  // and exposes no deterministic completion signal, so poll the durable
+  // index (lifecycle-subject pattern).
+  let timelineServed = false;
+  for (let i = 0; i < 40 && !timelineServed; i++) {
+    const events =
+      (await queryTemporalTimelineAsync(memoryDir, { query: "imperative", limit: 10 })) ?? [];
+    timelineServed = events.some((event) => event.path.endsWith(`${targetId}.md`));
+    if (!timelineServed) await sleep(250);
+  }
+  assert.ok(timelineServed, "the merged target must serve event-order queries");
+
+  // Effect 2 — durable thread history.
+  const thread = await threading.loadThread("thread-effects-b");
+  assert.ok(
+    thread?.episodeIds.includes(targetId),
+    "the merged target must be persisted into the thread's durable episode set",
+  );
+
+  // Effect 3 — harmonic construction.
+  const nodeFiles = (await readdirRecursive(path.join(memoryDir, "state", "abstraction-nodes")))
+    .filter((f) => f.endsWith(".json"));
+  const nodeBodies = await Promise.all(nodeFiles.map((f) => readFile(f, "utf8")));
+  assert.ok(
+    nodeBodies.some((body) => body.includes(`"${targetId}"`)),
+    "a harmonic/abstraction node must reference the merged target",
+  );
+
+  // Effect 4 — graph rebuild.
+  const graphFile = path.join(memoryDir, "state", "graphs", "entity.jsonl");
+  const graphRows = (await readFile(graphFile, "utf8").catch(() => "")).split("\n");
+  assert.ok(
+    graphRows.some((row) => row.includes(`${targetId}.md`)),
+    "the merged target's entity graph edges must be rebuilt",
+  );
+
+  // Effect 5 — behavior-signal ledger.
+  const signals = await storage.readBehaviorSignals();
+  assert.ok(
+    signals.some((event) => event.memoryId === targetId),
+    "the behavior ledger must record the merge event for the target",
   );
 });
 
