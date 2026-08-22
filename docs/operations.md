@@ -85,6 +85,7 @@ openclaw engram migrate rechunk                # Rebuild chunk files from curren
 openclaw engram migrate reextract --model gpt-5-mini  # Queue bounded re-extraction requests
 remnic converge plan --peer https://peer.example.com    # Build a non-mutating convergence plan
 remnic converge apply --peer https://peer.example.com   # Apply a convergence plan
+remnic converge watch --peer https://peer.example.com   # Apply on a cadence (scheduled replication)
 ```
 
 Compatibility diagnostics:
@@ -308,6 +309,31 @@ For the safest workflow, run `plan`, inspect its conflicts and actions, then run
 with the same peer, token, and policy. Run `apply` without `--dry-run` only after that output is
 acceptable. `manual` adds a fail-closed guard: unresolved conflicts prevent all mutation even
 without `--dry-run`.
+
+### Scheduled failover replication (`converge watch`)
+
+`apply` is one-shot: an active/backup pair only converges when an operator runs it. `watch` turns
+the same apply into a schedule, so a failover replica converges continuously instead of only after
+someone remembers to run a command:
+
+```text
+remnic converge watch --peer <url> [--token <token>] [--conflict-policy <policy>] [--interval <seconds>] [--json]
+```
+
+- `--interval <seconds>` sets the cadence (default 300, mirroring `replicaPeers.pollIntervalMs`;
+  values below 1 second are clamped to 1 second).
+- Each cycle runs the same apply as the one-shot command and prints one status line. With `--json`
+  the final summary is a machine-readable `ConvergeWatchOutcome`.
+- A failed cycle (peer unreachable, transient network error) is reported and does NOT stop the
+  watch — a peer being unreachable is exactly when the surviving side most needs to keep the
+  schedule. Unresolved conflicts under `manual` likewise stop mutation for that cycle only.
+- `SIGINT`/`SIGTERM` stop the watch after the current cycle completes.
+
+Run it as a supervised long-running process on ONE side of the pair (typically the side you want
+pulling from the primary), e.g. a systemd unit or launchd agent. Combine it with
+`replicaPeers` divergence detection: the daemon's `/health` corpus watermarks tell you the
+replication lag, and a divergence alert that persists across watch cycles means the converge
+transport itself needs attention.
 
 ## Compression Guideline Optimizer Tool
 
