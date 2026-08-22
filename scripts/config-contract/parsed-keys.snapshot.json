@@ -291,6 +291,7 @@
     "contradictionSimilarityThreshold",
     "converge",
     "converge.conflictPolicy",
+    "converge.peerRequestTimeoutMs",
     "conversationIndexBackend",
     "conversationIndexEmbedOnUpdate",
     "conversationIndexEnabled",
