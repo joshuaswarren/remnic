@@ -30,11 +30,13 @@ import {
   NamespaceNotWritableError,
 } from "./access-service.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
+import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import {
   resolveCompressionCapabilities,
   resolveNamespaceCapabilities,
   resolveObjectiveStateCapabilities,
+  resolvePresentationCapabilities,
 } from "./capabilities.js";
 import { lcmSessionKeyForNamespace } from "./coding/coding-namespace.js";
 import {
@@ -110,15 +112,12 @@ export interface AccessObserveWriteSurfaceDeps {
       authenticatedPrincipal?: string;
     }
   ): Promise<MemoryScopePlan>;
-  cancelPendingObservePreparations?(
-    sessionKey: string,
-    scopeHint?: string,
-  ): void;
+  cancelPendingObservePreparations?(sessionKey: string, scopeHint?: string): void;
   cancelPendingObserveExtractions?(
     sessionKey: string,
     principal?: string,
     namespace?: string,
-    scopeHint?: string,
+    scopeHint?: string
   ): void;
   resolveReadableNamespace(namespace: string | undefined, principal?: string): string;
   validateWriteCandidate(
@@ -135,6 +134,7 @@ export interface AccessObserveWriteSurfaceDeps {
 export class AccessObserveWriteSurface {
   private quarantineStoreInstance?: WriteQuarantineStore;
   private readonly pendingObserveExtractions = new PendingObserveExtractionTracker();
+  private readonly observeTranscriptPersister = new ObserveTranscriptPersister();
 
   public cancelPendingObservePreparations(sessionKey: string, scopeHint?: string): void {
     this.pendingObserveExtractions.cancelPreparations(sessionKey, scopeHint);
@@ -144,7 +144,7 @@ export class AccessObserveWriteSurface {
     sessionKey: string,
     principal?: string,
     namespace?: string,
-    scopeHint?: string,
+    scopeHint?: string
   ): void {
     this.pendingObserveExtractions.cancel(sessionKey, principal, namespace, scopeHint);
   }
@@ -152,9 +152,7 @@ export class AccessObserveWriteSurface {
 
   private quarantineStore(): WriteQuarantineStore {
     if (!this.quarantineStoreInstance) {
-      this.quarantineStoreInstance = new WriteQuarantineStore(
-        this.deps.orchestrator.config.memoryDir,
-      );
+      this.quarantineStoreInstance = new WriteQuarantineStore(this.deps.orchestrator.config.memoryDir);
     }
     return this.quarantineStoreInstance;
   }
@@ -167,11 +165,7 @@ export class AccessObserveWriteSurface {
    * the caller re-throws. The ACL placement is unchanged; the payload simply
    * stops being destroyed.
    */
-  private async parkRejectedWrite(
-    err: unknown,
-    operation: QuarantineOperation,
-    payload: unknown,
-  ): Promise<void> {
+  private async parkRejectedWrite(err: unknown, operation: QuarantineOperation, payload: unknown): Promise<void> {
     if (!(err instanceof NamespaceNotWritableError)) return;
     try {
       await this.quarantineStore().quarantine({
@@ -181,11 +175,11 @@ export class AccessObserveWriteSurface {
         payload,
       });
       log.warn(
-        `quarantine: parked rejected ${operation} write for principal=${err.principal ?? "-"} attemptedNamespace=${err.attemptedNamespace} (namespace not writable); replay after fixing config`,
+        `quarantine: parked rejected ${operation} write for principal=${err.principal ?? "-"} attemptedNamespace=${err.attemptedNamespace} (namespace not writable); replay after fixing config`
       );
     } catch (quarantineErr) {
       log.warn(
-        `quarantine: failed to park rejected ${operation} write: ${quarantineErr instanceof Error ? quarantineErr.message : String(quarantineErr)}`,
+        `quarantine: failed to park rejected ${operation} write: ${quarantineErr instanceof Error ? quarantineErr.message : String(quarantineErr)}`
       );
     }
   }
@@ -272,14 +266,20 @@ export class AccessObserveWriteSurface {
     if (typeof (qmd as { status?: unknown }).status === "function") {
       try {
         const statusReport = await Promise.race([
-          (qmd as unknown as { status: () => Promise<{ pendingEmbeddings: number | null; oldestPendingAgeMs: number | null }> }).status(),
+          (
+            qmd as unknown as {
+              status: () => Promise<{ pendingEmbeddings: number | null; oldestPendingAgeMs: number | null }>;
+            }
+          ).status(),
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000).unref?.()),
         ]);
         if (statusReport) {
           pendingEmbeddings = statusReport.pendingEmbeddings;
           oldestPendingAgeMs = statusReport.oldestPendingAgeMs;
         }
-      } catch { /* status probe failed — non-fatal */ }
+      } catch {
+        /* status probe failed — non-fatal */
+      }
     }
     if (threshold > 0 && pendingEmbeddings !== null && pendingEmbeddings > threshold) {
       degraded = true;
@@ -682,230 +682,240 @@ export class AccessObserveWriteSurface {
     //    session mutation.
     const observePreparation = this.pendingObserveExtractions.reserve(
       request.sessionKey,
-      pendingObserveScopeHint(request),
+      pendingObserveScopeHint(request)
     );
     try {
-
-    let scope: MemoryScopePlan;
-    try {
-      scope = await this.deps.resolveMemoryScopePlan(request);
-    } catch (err) {
-      // A replay re-submit sets suppressQuarantine so a still-unwritable target
-      // propagates instead of re-parking (#1888); observe has no dryRun path.
-      if (request.suppressQuarantine !== true) {
-        await this.parkRejectedWrite(err, "observe", request);
-      }
-      throw err;
-    }
-    const writeNamespace = scope.writeNamespace;
-    observePreparation.setScope(scope.principal, writeNamespace);
-
-    // Backward-compatible BASE writable namespace (pre-#1495 response semantics)
-    // for the legacy `namespace` response field. DERIVED from the already-resolved
-    // scope plan — NOT a second writable-namespace resolution call
-    // call (#1505 thread jvO). The fresh call re-authorized `undefined ⇒
-    // config.defaultNamespace` a SECOND time; under a restrictive default-namespace
-    // write policy that re-auth could REJECT an otherwise valid project-scoped
-    // observe whose effective self/project write target the scope plan already
-    // authorized (the same target memory_store/suggestion_submit accept). Worse,
-    // that post-plan rejection fired AFTER `resolveMemoryScopePlan` may have seeded
-    // the coding context, leaving an orphaned session binding behind. The plan is
-    // the single authorization point (rule 22 / 39); the legacy field must reuse it
-    // and never re-authorize. Pre-#1495 semantics were exactly
-    // the writable-namespace resolver (overlay-agnostic): the explicit
-    // namespace when supplied, else `config.defaultNamespace` for user-project
-    // coding overlays. Hosted scope-profile layers such as `teamProject` report
-    // their effective profile write namespace because there is no legacy
-    // overlay-compatible base namespace for those writes.
-    const namespace = this.deps.legacyResponseNamespaceForScope(scope);
-    const shouldWriteObjectiveState =
-      resolveObjectiveStateCapabilities(this.deps.orchestrator.config).objectiveStateMemory === true &&
-      resolveObjectiveStateCapabilities(this.deps.orchestrator.config).objectiveStateSnapshotWrites === true;
-
-    // 2. Auto-resolve coding context from cwd/projectTag so a LATER bare recall
-    //    on the same session is project-scoped (rule 42: same namespace layer as
-    //    recall). Done AFTER the scope plan authorized the write, so a rejected
-    //    request never leaves orphaned context on the session.
-    await this.deps.maybeAttachCodingContext(request.sessionKey, {
-      cwd: request.cwd,
-      projectTag: request.projectTag,
-    });
-
-    // Prefix sessionKey with the EFFECTIVE write namespace for LCM archival so
-    // observed turns are scoped to the same namespace project-scoped recall
-    // reads. The SAME `lcmSessionKeyForNamespace` helper is used by the
-    // orchestrator recall readers and by compaction flush/record, so the LCM
-    // write key and every read/flush key agree (#1495, rule 42). Only prefixes
-    // when the namespace diverges from the default store; a single-store
-    // deployment keeps the raw sessionKey unchanged.
-    const lcmSessionKey =
-      lcmSessionKeyForNamespace(writeNamespace, request.sessionKey, this.deps.orchestrator.config.defaultNamespace) ??
-      request.sessionKey;
-
-    // 4. Objective-state snapshots → the scope plan's objective-state namespace.
-    //    For explicit-namespace and coding-overlay writes this equals
-    //    writeNamespace; for an IMPLICIT write it is the principal SELF base
-    //    (#928 contract, already auth-checked inside the scope plan), not the
-    //    general default-store write namespace.
-    if (shouldWriteObjectiveState) {
+      let scope: MemoryScopePlan;
       try {
-        const objectiveStateLocation = await this.deps.objectiveStateStoreLocationForNamespace(
-          scope.objectiveStateNamespace
-        );
-        await recordObjectiveStateSnapshotsFromObservedMessages({
-          memoryDir: objectiveStateLocation.memoryDir,
-          objectiveStateStoreDir: objectiveStateLocation.objectiveStateStoreDir,
-          objectiveStateMemoryEnabled: resolveObjectiveStateCapabilities(this.deps.orchestrator.config)
-            .objectiveStateMemory,
-          objectiveStateSnapshotWritesEnabled: resolveObjectiveStateCapabilities(this.deps.orchestrator.config)
-            .objectiveStateSnapshotWrites,
+        scope = await this.deps.resolveMemoryScopePlan(request);
+      } catch (err) {
+        // A replay re-submit sets suppressQuarantine so a still-unwritable target
+        // propagates instead of re-parking (#1888); observe has no dryRun path.
+        if (request.suppressQuarantine !== true) {
+          await this.parkRejectedWrite(err, "observe", request);
+        }
+        throw err;
+      }
+      const writeNamespace = scope.writeNamespace;
+      observePreparation.setScope(scope.principal, writeNamespace);
+
+      // Backward-compatible BASE writable namespace (pre-#1495 response semantics)
+      // for the legacy `namespace` response field. DERIVED from the already-resolved
+      // scope plan — NOT a second writable-namespace resolution call
+      // call (#1505 thread jvO). The fresh call re-authorized `undefined ⇒
+      // config.defaultNamespace` a SECOND time; under a restrictive default-namespace
+      // write policy that re-auth could REJECT an otherwise valid project-scoped
+      // observe whose effective self/project write target the scope plan already
+      // authorized (the same target memory_store/suggestion_submit accept). Worse,
+      // that post-plan rejection fired AFTER `resolveMemoryScopePlan` may have seeded
+      // the coding context, leaving an orphaned session binding behind. The plan is
+      // the single authorization point (rule 22 / 39); the legacy field must reuse it
+      // and never re-authorize. Pre-#1495 semantics were exactly
+      // the writable-namespace resolver (overlay-agnostic): the explicit
+      // namespace when supplied, else `config.defaultNamespace` for user-project
+      // coding overlays. Hosted scope-profile layers such as `teamProject` report
+      // their effective profile write namespace because there is no legacy
+      // overlay-compatible base namespace for those writes.
+      const namespace = this.deps.legacyResponseNamespaceForScope(scope);
+      const shouldWriteObjectiveState =
+        resolveObjectiveStateCapabilities(this.deps.orchestrator.config).objectiveStateMemory === true &&
+        resolveObjectiveStateCapabilities(this.deps.orchestrator.config).objectiveStateSnapshotWrites === true;
+
+      // 2. Auto-resolve coding context from cwd/projectTag so a LATER bare recall
+      //    on the same session is project-scoped (rule 42: same namespace layer as
+      //    recall). Done AFTER the scope plan authorized the write, so a rejected
+      //    request never leaves orphaned context on the session.
+      await this.deps.maybeAttachCodingContext(request.sessionKey, {
+        cwd: request.cwd,
+        projectTag: request.projectTag,
+      });
+
+      // Prefix sessionKey with the EFFECTIVE write namespace for LCM archival so
+      // observed turns are scoped to the same namespace project-scoped recall
+      // reads. The SAME `lcmSessionKeyForNamespace` helper is used by the
+      // orchestrator recall readers and by compaction flush/record, so the LCM
+      // write key and every read/flush key agree (#1495, rule 42). Only prefixes
+      // when the namespace diverges from the default store; a single-store
+      // deployment keeps the raw sessionKey unchanged.
+      const lcmSessionKey =
+        lcmSessionKeyForNamespace(writeNamespace, request.sessionKey, this.deps.orchestrator.config.defaultNamespace) ??
+        request.sessionKey;
+
+      // 4. Objective-state snapshots → the scope plan's objective-state namespace.
+      //    For explicit-namespace and coding-overlay writes this equals
+      //    writeNamespace; for an IMPLICIT write it is the principal SELF base
+      //    (#928 contract, already auth-checked inside the scope plan), not the
+      //    general default-store write namespace.
+      if (shouldWriteObjectiveState) {
+        try {
+          const objectiveStateLocation = await this.deps.objectiveStateStoreLocationForNamespace(
+            scope.objectiveStateNamespace
+          );
+          await recordObjectiveStateSnapshotsFromObservedMessages({
+            memoryDir: objectiveStateLocation.memoryDir,
+            objectiveStateStoreDir: objectiveStateLocation.objectiveStateStoreDir,
+            objectiveStateMemoryEnabled: resolveObjectiveStateCapabilities(this.deps.orchestrator.config)
+              .objectiveStateMemory,
+            objectiveStateSnapshotWritesEnabled: resolveObjectiveStateCapabilities(this.deps.orchestrator.config)
+              .objectiveStateSnapshotWrites,
+            sessionKey: request.sessionKey,
+            recordedAt: new Date().toISOString(),
+            messages: request.messages,
+          });
+        } catch (err) {
+          log.error(`access-observe objective-state snapshot write failed: ${err}`);
+        }
+      }
+
+      // 5. LCM archival → effective write namespace.
+      // lcmArchived in the response means "LCM archival was queued" (not
+      // "completed"), matching extractionQueued semantics.  Both run async.
+      let lcmArchived = false;
+      if (this.deps.orchestrator.lcmEngine && this.deps.orchestrator.lcmEngine.enabled) {
+        // Fire-and-forget: LCM archival writes to SQLite and builds summary
+        // DAGs, which can take tens of seconds for large sessions.  Don't
+        // block the HTTP response — the caller only needs acknowledgment.
+        try {
+          this.deps.orchestrator.lcmEngine.enqueueObserveMessages(lcmSessionKey, request.messages);
+          lcmArchived = true;
+        } catch (err) {
+          log.error(`access-observe LCM enqueue failed: ${err}`);
+        }
+      }
+
+      // 5b. Transcript persistence → the per-session transcript store the
+      // hourly summarizer reads (issue #2783). Best-effort like the LCM
+      // enqueue above: a transcript failure must not fail the observe.
+      const transcriptPersisted = resolvePresentationCapabilities(this.deps.orchestrator.config).transcript
+        ? await this.observeTranscriptPersister.persist(
+            this.deps.orchestrator,
+            observeTranscriptSessionKey(request.sessionKey, writeNamespace, this.deps.orchestrator.config),
+            request.messages,
+            request.sessionKey
+          )
+        : false;
+
+      // 6. Extraction/replay → effective write namespace for STORAGE, ORIGINAL
+      //    sessionKey for IDENTITY (provenance + threading).
+      let extractionQueued = false;
+      if (request.skipExtraction !== true) {
+        const turns = request.messages.map((m) => ({
+          source: "openclaw" as const,
+          // Identity-vs-routing separation (#1505 thread 1, cursor): extraction
+          // derives the provenance principal via `resolvePrincipal(turn.sessionKey)`
+          // and threads `turn.sessionKey` into conversation threading. Feeding the
+          // namespace-PREFIXED `lcmSessionKey` here mis-derived the principal to
+          // `default` (a `<ns>:<key>` string matches no prefix/map rule and fails
+          // the `agent:` heuristic). Pass the ORIGINAL sessionKey so identity is
+          // correct; storage routing is pinned separately via
+          // writeNamespaceOverride below, and the authenticated principal is pinned
+          // via principalOverride.
           sessionKey: request.sessionKey,
-          recordedAt: new Date().toISOString(),
-          messages: request.messages,
-        });
-      } catch (err) {
-        log.error(`access-observe objective-state snapshot write failed: ${err}`);
+          role: m.role,
+          content: m.content,
+          parts: m.parts,
+          rawContent: m.rawContent,
+          sourceFormat: m.sourceFormat,
+          timestamp: new Date().toISOString(),
+          ...(request.sourceConnector ? { sourceConnector: request.sourceConnector } : {}),
+        }));
+        // Pin extraction STORAGE to the effective namespace rather than letting the
+        // orchestrator re-derive one from the session key + coding overlay — that
+        // re-derivation would have to reparse identity and could miss the overlay
+        // (the #1495 drift). Passing writeNamespaceOverride makes the extraction
+        // target deterministic and identical to LCM/objective-state (rule 39).
+        //
+        // Pin WHENEVER namespaces are enabled, not only when writeNamespace differs
+        // from the default store (#1505 round 3, codex "Pin default-store extraction
+        // writes too"). For an unqualified/no-overlay observe by a principal that
+        // HAS a self namespace, writeNamespace is `config.defaultNamespace` but an
+        // unpinned `runExtraction` would fall back to
+        // `defaultNamespaceForPrincipal(principal)` = the SELF namespace — diverging
+        // from where LCM/objective-state/response wrote (`default`). Pinning the
+        // resolved writeNamespace forces all side effects onto the one scope-plan
+        // namespace. When namespaces are DISABLED the router collapses every
+        // namespace to one store, so leaving the override undefined preserves the
+        // existing single-store routing byte-for-byte.
+        const writeNamespaceOverride =
+          resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true ? writeNamespace : undefined;
+        // Pin provenance PRINCIPAL to the scope plan's resolved principal (#1505
+        // thread 1). The scope plan already applied auth precedence
+        // (authenticatedPrincipal/principalOverride > resolvePrincipal(original
+        // sessionKey)), so this is the same identity the surface authorized — never
+        // a `default` fallback parsed from a prefixed key. Omitted when no principal
+        // resolved (namespaces-disabled / unauthenticated single-store), preserving
+        // existing behavior.
+        const principalOverride =
+          typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined;
+        // Fire-and-forget: queue extraction in the background so the HTTP
+        // response returns immediately. LCM archival (above) is also
+        // enqueue-only; extraction involves LLM calls that can take
+        // minutes under load and should not block the caller.
+        //
+        // Backpressure: the orchestrator's own extraction queue already
+        // limits concurrency (one extraction at a time per session via
+        // queueBufferedExtraction). Fire-and-forget here just decouples
+        // the HTTP response from the queue drain.
+        if (!observePreparation.isCancelled()) {
+          try {
+            const observeAbortController = new AbortController();
+            const extractionPromise = this.deps.orchestrator.ingestReplayBatch(turns, {
+              archiveLcm: false,
+              writeNamespaceOverride,
+              principalOverride,
+              abortSignal: observeAbortController.signal,
+              ...(typeof request.authenticatedPrincipal === "string" && request.authenticatedPrincipal.trim().length > 0
+                ? { sessionOwnerPrincipal: request.authenticatedPrincipal.trim() }
+                : {}),
+            });
+            extractionPromise.catch((err) => {
+              log.error(`access-observe background extraction failed: ${err}`);
+            });
+            this.pendingObserveExtractions.track(
+              this.pendingObserveExtractions.key(request.sessionKey, scope.principal, writeNamespace),
+              extractionPromise,
+              observeAbortController
+            );
+            extractionQueued = true;
+          } catch (err) {
+            // Synchronous enqueue failure (e.g. orchestrator disposed)
+            log.error(`access-observe extraction enqueue failed: ${err}`);
+          }
+        }
       }
-    }
 
-    // 5. LCM archival → effective write namespace.
-    // lcmArchived in the response means "LCM archival was queued" (not
-    // "completed"), matching extractionQueued semantics.  Both run async.
-    let lcmArchived = false;
-    if (this.deps.orchestrator.lcmEngine && this.deps.orchestrator.lcmEngine.enabled) {
-      // Fire-and-forget: LCM archival writes to SQLite and builds summary
-      // DAGs, which can take tens of seconds for large sessions.  Don't
-      // block the HTTP response — the caller only needs acknowledgment.
-      try {
-        this.deps.orchestrator.lcmEngine.enqueueObserveMessages(lcmSessionKey, request.messages);
-        lcmArchived = true;
-      } catch (err) {
-        log.error(`access-observe LCM enqueue failed: ${err}`);
-      }
-    }
+      log.info(
+        `access-observe namespace=${namespace} effectiveNamespace=${writeNamespace} sessionKey=${request.sessionKey} messages=${request.messages.length} lcm=${lcmArchived} extraction=${extractionQueued} transcript=${transcriptPersisted}`
+      );
 
-    // 6. Extraction/replay → effective write namespace for STORAGE, ORIGINAL
-    //    sessionKey for IDENTITY (provenance + threading).
-    let extractionQueued = false;
-    if (request.skipExtraction !== true) {
-      const turns = request.messages.map((m) => ({
-        source: "openclaw" as const,
-        // Identity-vs-routing separation (#1505 thread 1, cursor): extraction
-        // derives the provenance principal via `resolvePrincipal(turn.sessionKey)`
-        // and threads `turn.sessionKey` into conversation threading. Feeding the
-        // namespace-PREFIXED `lcmSessionKey` here mis-derived the principal to
-        // `default` (a `<ns>:<key>` string matches no prefix/map rule and fails
-        // the `agent:` heuristic). Pass the ORIGINAL sessionKey so identity is
-        // correct; storage routing is pinned separately via
-        // writeNamespaceOverride below, and the authenticated principal is pinned
-        // via principalOverride.
+      return {
+        accepted: request.messages.length,
         sessionKey: request.sessionKey,
-        role: m.role,
-        content: m.content,
-        parts: m.parts,
-        rawContent: m.rawContent,
-        sourceFormat: m.sourceFormat,
-        timestamp: new Date().toISOString(),
-        ...(request.sourceConnector ? { sourceConnector: request.sourceConnector } : {}),
-      }));
-      // Pin extraction STORAGE to the effective namespace rather than letting the
-      // orchestrator re-derive one from the session key + coding overlay — that
-      // re-derivation would have to reparse identity and could miss the overlay
-      // (the #1495 drift). Passing writeNamespaceOverride makes the extraction
-      // target deterministic and identical to LCM/objective-state (rule 39).
-      //
-      // Pin WHENEVER namespaces are enabled, not only when writeNamespace differs
-      // from the default store (#1505 round 3, codex "Pin default-store extraction
-      // writes too"). For an unqualified/no-overlay observe by a principal that
-      // HAS a self namespace, writeNamespace is `config.defaultNamespace` but an
-      // unpinned `runExtraction` would fall back to
-      // `defaultNamespaceForPrincipal(principal)` = the SELF namespace — diverging
-      // from where LCM/objective-state/response wrote (`default`). Pinning the
-      // resolved writeNamespace forces all side effects onto the one scope-plan
-      // namespace. When namespaces are DISABLED the router collapses every
-      // namespace to one store, so leaving the override undefined preserves the
-      // existing single-store routing byte-for-byte.
-      const writeNamespaceOverride =
-        resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true ? writeNamespace : undefined;
-      // Pin provenance PRINCIPAL to the scope plan's resolved principal (#1505
-      // thread 1). The scope plan already applied auth precedence
-      // (authenticatedPrincipal/principalOverride > resolvePrincipal(original
-      // sessionKey)), so this is the same identity the surface authorized — never
-      // a `default` fallback parsed from a prefixed key. Omitted when no principal
-      // resolved (namespaces-disabled / unauthenticated single-store), preserving
-      // existing behavior.
-      const principalOverride =
-        typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined;
-      // Fire-and-forget: queue extraction in the background so the HTTP
-      // response returns immediately. LCM archival (above) is also
-      // enqueue-only; extraction involves LLM calls that can take
-      // minutes under load and should not block the caller.
-      //
-      // Backpressure: the orchestrator's own extraction queue already
-      // limits concurrency (one extraction at a time per session via
-      // queueBufferedExtraction). Fire-and-forget here just decouples
-      // the HTTP response from the queue drain.
-      if (!observePreparation.isCancelled()) {
-
-      try {
-        const observeAbortController = new AbortController();
-        const extractionPromise = this.deps.orchestrator.ingestReplayBatch(turns, {
-          archiveLcm: false,
-          writeNamespaceOverride,
-          principalOverride,
-          abortSignal: observeAbortController.signal,
-          ...(typeof request.authenticatedPrincipal === "string" && request.authenticatedPrincipal.trim().length > 0
-            ? { sessionOwnerPrincipal: request.authenticatedPrincipal.trim() }
-            : {}),
-        });
-        extractionPromise.catch((err) => {
-          log.error(`access-observe background extraction failed: ${err}`);
-        });
-        this.pendingObserveExtractions.track(
-          this.pendingObserveExtractions.key(request.sessionKey, scope.principal, writeNamespace),
-          extractionPromise,
-          observeAbortController,
-        );
-        extractionQueued = true;
-      } catch (err) {
-        // Synchronous enqueue failure (e.g. orchestrator disposed)
-        log.error(`access-observe extraction enqueue failed: ${err}`);
-      }
-    }
-      }
-
-
-    log.info(
-      `access-observe namespace=${namespace} effectiveNamespace=${writeNamespace} sessionKey=${request.sessionKey} messages=${request.messages.length} lcm=${lcmArchived} extraction=${extractionQueued}`
-    );
-
-    return {
-      accepted: request.messages.length,
-      sessionKey: request.sessionKey,
-      namespace,
-      effectiveNamespace: writeNamespace,
-      scopeDebug: {
-        principal: scope.principal,
-        explicitNamespace: scope.explicitNamespace,
-        baseNamespace: scope.baseNamespace,
-        writeNamespace: scope.writeNamespace,
-        codingOverlayApplied: scope.codingOverlayApplied,
-        readNamespaces: scope.readNamespaces,
-        scopeProfile: scope.scopeProfile,
-        writeLayer: scope.writeLayer,
-        layers: scope.layers,
-        promotionTargets: scope.promotionTargets,
-      },
-      lcmArchived,
-      extractionQueued,
-    };
+        namespace,
+        effectiveNamespace: writeNamespace,
+        scopeDebug: {
+          principal: scope.principal,
+          explicitNamespace: scope.explicitNamespace,
+          baseNamespace: scope.baseNamespace,
+          writeNamespace: scope.writeNamespace,
+          codingOverlayApplied: scope.codingOverlayApplied,
+          readNamespaces: scope.readNamespaces,
+          scopeProfile: scope.scopeProfile,
+          writeLayer: scope.writeLayer,
+          layers: scope.layers,
+          promotionTargets: scope.promotionTargets,
+        },
+        lcmArchived,
+        extractionQueued,
+        transcriptPersisted,
+      };
     } finally {
       observePreparation.release();
-  }
+    }
   }
 
   async extractionForceFlush(
-    request: EngramAccessExtractionForceFlushRequest,
+    request: EngramAccessExtractionForceFlushRequest
   ): Promise<EngramAccessExtractionForceFlushResponse> {
     return extractionForceFlush(
       this.deps,
@@ -917,8 +927,8 @@ export class AccessObserveWriteSurface {
           namespace,
           abortSignal,
           registerCancellation,
-          scopeHint,
-        ),
+          scopeHint
+        )
     );
   }
   async workTask(request: {

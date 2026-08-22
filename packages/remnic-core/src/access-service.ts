@@ -4,6 +4,7 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import * as nodeFs from "node:fs/promises";
 import { ZodError } from "zod";
+import { summarizeHourlyStatus } from "./summarizer.js";
 import { decodeCitationNamespace } from "./access-citation-namespace.js";
 import {
   type CitationUsageRequest,
@@ -169,10 +170,7 @@ import {
   redactSensitive,
 } from "./admin/admin-surfaces.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
-import {
-  type DeepRecallResult,
-  runBudgetedDeepRecall,
-} from "./deep-recall.js";
+import { type DeepRecallResult, runBudgetedDeepRecall } from "./deep-recall.js";
 import { callDeepRecallPolicyLlm } from "./deep-recall-policy-llm.js";
 import { createDeepRecallSeedSearch } from "./deep-recall-seeds.js";
 import { renderDeepRecallResult } from "./deep-recall-renderer.js";
@@ -319,7 +317,13 @@ import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
 import { toRecallExplainJson } from "./recall-explain-renderer.js";
 import { type TagMatchMode, applyTagFilter, normalizeTags, parseTagMatch } from "./recall-tag-filter.js";
 import { type RecallXraySnapshot, estimateRecallTokens } from "./recall-xray.js";
-import { computeWhoKnows, loadWhoKnowsEntities, validateWhoKnowsInput, WHO_KNOWS_DEFAULT_LIMIT, type WhoKnowsResult } from "./who-knows.js";
+import {
+  computeWhoKnows,
+  loadWhoKnowsEntities,
+  validateWhoKnowsInput,
+  WHO_KNOWS_DEFAULT_LIMIT,
+  type WhoKnowsResult,
+} from "./who-knows.js";
 import { computePromotionCandidates, type PromotionCandidatesResult } from "./memory-subject.js";
 import { SupportPassportAccessServiceBase } from "./support-passport/access-service-base.js";
 import {
@@ -992,9 +996,7 @@ export interface EngramAccessObserveMessage {
  * consumes the transport-cleaned message form (the wire schema tolerates
  * nullable `parts`/`sourceFormat`, the service maps them to `undefined`).
  */
-export interface EngramAccessObserveRequest
-  extends Omit<ObserveRequest, "messages">,
-    SourceConnectorProvenance {
+export interface EngramAccessObserveRequest extends Omit<ObserveRequest, "messages">, SourceConnectorProvenance {
   messages: EngramAccessObserveMessage[];
   authenticatedPrincipal?: string;
   readonly suppressQuarantine?: boolean; // #1888: replay re-submit skips dead-lettering.
@@ -1045,6 +1047,8 @@ export interface EngramAccessObserveResponse {
   scopeDebug?: EngramAccessScopeDebug;
   lcmArchived: boolean;
   extractionQueued: boolean;
+  /** True when at least one observe-derived turn was appended to the transcript store (issue #2783). False when the transcript capability is off, every message was filtered/deduped, or every append failed. */
+  transcriptPersisted: boolean;
   /** True when replayed from the idempotency cache (issue #1649); lets the HTTP surface skip the write-quota slot, matching memory_store replay semantics. */
   idempotencyReplay?: boolean;
 }
@@ -2733,12 +2737,12 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       if (cfg.maxSteps <= 0) {
         if (requestedSteps > 0) {
           throw new EngramAccessInputError(
-            "deepRecall: the policy loop is disabled (deepRecall.maxSteps=0); maxSteps must be 0",
+            "deepRecall: the policy loop is disabled (deepRecall.maxSteps=0); maxSteps must be 0"
           );
         }
       } else if (requestedSteps > cfg.maxSteps) {
         throw new EngramAccessInputError(
-          `deepRecall: maxSteps ${requestedSteps} exceeds the configured ceiling ${cfg.maxSteps}`,
+          `deepRecall: maxSteps ${requestedSteps} exceeds the configured ceiling ${cfg.maxSteps}`
         );
       }
       effective = { ...cfg, maxSteps: requestedSteps };
@@ -2757,8 +2761,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     // goes to the base namespace only); passing it here made every non-default
     // namespace load the DEFAULT namespace's nodes and anchors, missing its own
     // anchor expansions and exposing foreign graph metadata on an id collision.
-    const graphStoreDir =
-      resolvedNamespace === config.defaultNamespace ? config.abstractionNodeStoreDir : undefined;
+    const graphStoreDir = resolvedNamespace === config.defaultNamespace ? config.abstractionNodeStoreDir : undefined;
     // Seeds route through the namespace search router (never the base
     // `config.qmdCollection`, which is the DEFAULT namespace's collection):
     // a non-default caller must search its own suffixed collection or deep
@@ -2797,14 +2800,9 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
           if (!memory || isSupportPassportPrivateMemory(memory)) return null;
           return {
             memoryId,
-            content: memory.frontmatter.structuredAttributes
-              ? stripAttributesSuffix(memory.content)
-              : memory.content,
+            content: memory.frontmatter.structuredAttributes ? stripAttributesSuffix(memory.content) : memory.content,
             // Enumerate the active set — never an exclusion list (§41).
-            active: inferMemoryStatus(
-              memory.frontmatter,
-              toMemoryPathRel(storage.dir, memory.path)
-            ) === "active",
+            active: inferMemoryStatus(memory.frontmatter, toMemoryPathRel(storage.dir, memory.path)) === "active",
           };
         },
         callPolicy: (statePrompt, timeoutMs) =>
@@ -2816,7 +2814,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
             timeoutMs,
           }),
       },
-      query,
+      query
     );
     return { ...result, rendered: renderDeepRecallResult(result) };
   }
@@ -2910,13 +2908,13 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     const limit = request.limit ?? 20;
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       throw new EngramAccessInputError(
-        `promotion_candidates: limit expects an integer in [1, 100] (got ${String(request.limit)})`,
+        `promotion_candidates: limit expects an integer in [1, 100] (got ${String(request.limit)})`
       );
     }
     const resolvedNamespace = this.resolveReadableNamespace(request.namespace, request.authenticatedPrincipal);
     const resolvedTarget = this.resolveReadableNamespace(
       request.targetNamespace ?? this.orchestrator.config.sharedNamespace,
-      request.authenticatedPrincipal,
+      request.authenticatedPrincipal
     );
     const minAccessCount = this.orchestrator.config.promotionCandidates.minAccessCount;
     const [memories, targetMemories] = await Promise.all([
@@ -3464,7 +3462,8 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     const resolvedNamespace = this.resolveReadableNamespace(namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const memory = await storage.getMemoryByIdIncludingArchived(memoryId);
-    if (!memory || isSupportPassportPrivateMemory(memory)) return { found: false, namespace: resolvedNamespace, count: 0, timeline: [] };
+    if (!memory || isSupportPassportPrivateMemory(memory))
+      return { found: false, namespace: resolvedNamespace, count: 0, timeline: [] };
     const timeline = await storage.getMemoryTimeline(memoryId, limit);
     return {
       found: timeline.length > 0,
@@ -3820,12 +3819,18 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   async memorySummarizeHourly(): Promise<{
     ok: true;
     message: string;
+    sessionsConsidered: number;
+    sessionsWithEntries: number;
+    summariesWritten: number;
+    staleStore: boolean;
+    newestEntryTimestamp: string | null;
+    scanFailed: boolean;
+    warning?: string;
   }> {
-    await this.orchestrator.summarizer.runHourly();
-    return {
-      ok: true,
-      message: "Hourly summarization completed. Check the summaries directory for results.",
-    };
+    // Issue #2783: the summarizer must not report success on empty work.
+    // Stats interpretation lives with the stats (summarizeHourlyStatus).
+    const stats = await this.orchestrator.summarizer.runHourly();
+    return { ok: true, ...stats, ...summarizeHourlyStatus(stats) };
   }
 
   async conversationIndexUpdate(
