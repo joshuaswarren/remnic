@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -15,25 +14,6 @@ async function writeConfig(content: string): Promise<{ filePath: string; cleanup
   return { filePath, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
-function getFreePort(): Promise<number> {
-  const { promise, resolve, reject } = Promise.withResolvers<number>();
-  const server = net.createServer();
-  server.unref();
-  server.once("error", reject);
-  server.listen(0, "127.0.0.1", () => {
-    const address = server.address();
-    server.close((error) => {
-      if (error) {
-        reject(error);
-      } else if (!address || typeof address === "string") {
-        reject(new Error("Failed to allocate a free TCP port"));
-      } else {
-        resolve(address.port);
-      }
-    });
-  });
-  return promise;
-}
 
 test("server config merge preserves openaiApiKey=false over OPENAI_API_KEY env override", () => {
   const merged = mergeRemnicConfigForServer(
@@ -234,7 +214,6 @@ test("server config parser rejects invalid trustPrincipalHeader values", () => {
 test("standalone startServer forwards a trusted request principal", async () => {
   const { filePath, cleanup } = await writeConfig("{}");
   const memoryDir = path.join(path.dirname(filePath), "memory");
-  const port = await getFreePort();
   await writeFile(
     filePath,
     JSON.stringify({
@@ -256,7 +235,9 @@ test("standalone startServer forwards a trusted request principal", async () => 
       },
       server: {
         host: "127.0.0.1",
-        port,
+        // Port 0 lets the OS assign a free port atomically at bind time;
+        // startServer reports the bound port via result.port.
+        port: 0,
         authToken: "test-token",
         trustPrincipalHeader: true,
       },
