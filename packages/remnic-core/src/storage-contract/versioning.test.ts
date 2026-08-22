@@ -25,8 +25,11 @@ import {
   getVersion,
   pruneVersions,
   removeVersion,
+  recordStrandedCommit,
+  sidecarKey,
   type VersioningConfig,
 } from "../page-versioning.js";
+import { finalizeMergedVersionPrune } from "../orchestration/semantic-merge-commit-effects.js";
 import { StorageManager } from "../storage.js";
 import { resetStaticCaches } from "./harness.js";
 
@@ -199,6 +202,153 @@ test("versioning: a final prune counts only COMMITTED snapshots — a staged wri
     assert.deepEqual(
       after.versions.map((version) => version.versionId),
       ["2", "3", stagedA.versionId],
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("versioning: a failed finalization is reconciled by the next successful one — history stays within maxVersionsPerPage (round N+22)", async () => {
+  // A finalization whose merge had ALREADY committed can fail transiently
+  // (manifest lock timeout, unreadable manifest). Pre-fix, the catch only
+  // logged: the staged entry stayed `pending` forever, pruneExcessVersions
+  // excludes pending entries, and every such failure stranded one
+  // unprunable snapshot beyond the cap. The next successful finalization
+  // must reconcile the stranded entry so the prune bounds history again.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-ver-strand-"));
+  try {
+    const pagePath = path.join(dir, "facts", "strand-notes.md");
+    await mkdir(path.dirname(pagePath), { recursive: true });
+    const config: VersioningConfig = {
+      enabled: true,
+      maxVersionsPerPage: 3,
+      sidecarDir: ".versions",
+    };
+    for (let index = 1; index <= 3; index += 1) {
+      await writeFile(pagePath, `body v${index}`, "utf8");
+      await createVersion(pagePath, `body v${index}`, "write", config, undefined, undefined, dir);
+    }
+
+    // Merge 1: stage the rollback snapshot, commit the merged body, then the
+    // finalizing prune FAILS — here via a transiently unreadable manifest
+    // (the lock-timeout production shape: pruneVersions throws, the catch is
+    // best-effort, the entry stays pending).
+    const staged1 = await createVersion(
+      pagePath,
+      "body v3",
+      "semantic-merge",
+      config,
+      undefined,
+      undefined,
+      dir,
+      { deferPrune: true },
+    );
+    await writeFile(pagePath, "body merged 1", "utf8");
+    const manifestFile = path.join(
+      dir,
+      ".versions",
+      sidecarKey(path.relative(dir, pagePath)),
+      "manifest.json",
+    );
+    const goodManifest = await readFile(manifestFile, "utf-8");
+    await writeFile(manifestFile, "{ transiently not json", "utf-8");
+    await finalizeMergedVersionPrune(pagePath, config, dir, "fact-strand", staged1.versionId);
+    await writeFile(manifestFile, goodManifest, "utf-8");
+
+    const stranded = await listVersions(pagePath, config, dir);
+    assert.equal(
+      stranded.versions.find((version) => version.versionId === staged1.versionId)?.pending,
+      true,
+      "the failed finalization left the committed merge's snapshot pending",
+    );
+
+    // Merge 2: stage, commit, and finalize SUCCESSFULLY. It must clear its
+    // own flag AND reconcile merge 1's stranded entry, so the committed set
+    // {v1, v2, v3, staged1, staged2} prunes back to the cap.
+    const staged2 = await createVersion(
+      pagePath,
+      "body merged 1",
+      "semantic-merge",
+      config,
+      undefined,
+      undefined,
+      dir,
+      { deferPrune: true },
+    );
+    await writeFile(pagePath, "body merged 2", "utf8");
+    await finalizeMergedVersionPrune(pagePath, config, dir, "fact-strand", staged2.versionId);
+
+    const history = await listVersions(pagePath, config, dir);
+    assert.ok(
+      history.versions.length <= config.maxVersionsPerPage,
+      `total snapshot count must stay within maxVersionsPerPage=${config.maxVersionsPerPage} (got ${history.versions.length}: ${history.versions.map((v) => v.versionId).join(",")})`,
+    );
+    assert.deepEqual(
+      history.versions.map((version) => version.versionId),
+      ["3", staged1.versionId, staged2.versionId],
+      "the two oldest committed rollback points are pruned; both merged snapshots stay",
+    );
+    assert.equal(
+      history.versions.filter((version) => version.pending === true).length,
+      0,
+      "no entry remains pending after the reconciling finalization",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("versioning: stale stranded-commit ids — gone or already-committed entries — are no-ops (round N+22)", async () => {
+  // The marker is append-only and never rewritten, so it accumulates ids
+  // whose entry was later removed (aborted writer's id reused path) or
+  // already cleared by an earlier reconciliation. Reading them must neither
+  // throw, clear a still-pending concurrent writer's entry, nor remove any
+  // extra committed snapshot.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-ver-stale-"));
+  try {
+    const pagePath = path.join(dir, "facts", "stale-notes.md");
+    await mkdir(path.dirname(pagePath), { recursive: true });
+    const config: VersioningConfig = {
+      enabled: true,
+      maxVersionsPerPage: 3,
+      sidecarDir: ".versions",
+    };
+    for (let index = 1; index <= 3; index += 1) {
+      await writeFile(pagePath, `body v${index}`, "utf8");
+      await createVersion(pagePath, `body v${index}`, "write", config, undefined, undefined, dir);
+    }
+    // A still-pending concurrent writer plus stale marker ids: one for an
+    // entry that does not exist (999) and one for an already-committed
+    // entry ("1"). Neither resolves to a clearable pending entry, and the
+    // still-pending writer's entry has NO marker record — only a writer's
+    // OWN failed finalization can record its id — so reconciliation must
+    // leave it pending and touch nothing else.
+    const pendingWriter = await createVersion(
+      pagePath,
+      "body v3",
+      "semantic-merge",
+      config,
+      undefined,
+      undefined,
+      dir,
+      { deferPrune: true },
+    );
+    await recordStrandedCommit(pagePath, config, "999", undefined, dir);
+    await recordStrandedCommit(pagePath, config, "1", undefined, dir);
+    await recordStrandedCommit(pagePath, config, "999", undefined, dir);
+
+    await pruneVersions(pagePath, config, undefined, dir);
+
+    const history = await listVersions(pagePath, config, dir);
+    assert.equal(
+      history.versions.find((version) => version.versionId === pendingWriter.versionId)?.pending,
+      true,
+      "a still-pending writer's entry is never cleared by marker reconciliation — its id can only be recorded by its OWN failed finalization, never by a stale line",
+    );
+    assert.deepEqual(
+      history.versions.map((version) => version.versionId),
+      ["1", "2", "3", pendingWriter.versionId],
+      "committed history is untouched by unresolvable marker ids",
     );
   } finally {
     await rm(dir, { recursive: true, force: true });

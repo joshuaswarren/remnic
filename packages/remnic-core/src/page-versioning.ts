@@ -20,6 +20,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import {
   access,
+  appendFile,
   mkdir,
   readFile,
   writeFile,
@@ -52,7 +53,10 @@ export interface PageVersion {
    * compare-and-swap may still fail, so trading it for an older rollback
    * point would leave history short of the cap once that writer aborts
    * (removeVersion). The staging writer clears the flag when its write
-   * commits (pruneVersions `committedVersionId`) or drops the entry.
+   * commits (pruneVersions `committedVersionId`) or drops the entry; a
+   * finalization that FAILS after the commit records the id via
+   * recordStrandedCommit, and the next pruneVersions clears it (round
+   * N+22).
    */
   pending?: boolean;
 }
@@ -246,6 +250,30 @@ async function writeManifest(
   await writeFile(mp, JSON.stringify(history, null, 2) + "\n", "utf-8");
 }
 
+// Round N+22: stranded-commit marker. A finalization whose merge had
+// ALREADY committed can still fail (manifest lock timeout, transient I/O),
+// leaving its staged entry `pending` forever — pruneExcessVersions excludes
+// pending entries, so every such failure stranded one unprunable snapshot
+// and repeated failures grew history past maxVersionsPerPage. The failed
+// finalization appends the (known-committed) version id to this marker (a
+// sibling `<manifest>.stranded` file, one id per line); the next
+// pruneVersions for the page reconciles those ids under the manifest lock.
+// Append-only by design: a one-line O_APPEND write is atomic, and a
+// clear-side rewrite could clobber an id appended by a finalization that
+// just failed against the very lock the clear holds. Ids whose entry is gone
+// or already committed are read-side no-ops, so stale lines cost one skipped
+// lookup each and the file is bounded by finalization failures (one small
+// line each). A writer that CRASHES mid-attempt records nothing — that case
+// stays covered by the pending-exclusion itself.
+async function readStrandedCommits(markerPath: string): Promise<string[]> {
+  try {
+    const raw = await readFile(markerPath, "utf-8");
+    return raw.split("\n").filter((line) => /^\d+$/.test(line.trim()));
+  } catch {
+    return [];
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -336,8 +364,11 @@ async function pruneExcessVersions(
   // than the cap requires, and that writer's abort (removeVersion) then
   // leaves history SHORT of the cap. Pending entries are skipped entirely —
   // never counted, never removed. (ponytail: a writer that dies mid-attempt
-  // leaves its entry pending forever — bounded by one entry per crash; age-
-  // based expiry if crash loops ever make that matter.)
+  // leaves its entry pending forever — bounded by one entry per crash;
+  // age-based expiry if crash loops ever make that matter. A finalization
+  // that fails AFTER its merge committed no longer strands its entry —
+  // pruneVersions reconciles those from the stranded-commit marker, round
+  // N+22.)
   const excess =
     history.versions.filter((version) => version.pending !== true).length -
     maxVersionsPerPage;
@@ -368,6 +399,12 @@ async function pruneExcessVersions(
  * under the SAME page lock as the prune (round N+15 B): the entry becomes
  * countable exactly when — and only when — its writer's write has committed,
  * so a concurrent still-pending writer's entry is never counted or removed.
+ *
+ * Round N+22: each call also reconciles entries stranded by an EARLIER
+ * finalization that failed after its merge committed (see
+ * {@link recordStrandedCommit}) — their `pending` flags clear here, under
+ * the same lock, so a transient finalization failure cannot permanently
+ * exclude a committed snapshot from the prune bound.
  */
 export async function pruneVersions(
   pagePath: string,
@@ -378,7 +415,8 @@ export async function pruneVersions(
 ): Promise<void> {
   const resolvedMemoryDir = memoryDir ?? resolveMemoryDir(pagePath);
   const rel = relPath(pagePath, resolvedMemoryDir);
-  await withManifestLock(manifestPath(resolvedMemoryDir, config.sidecarDir, rel), async () => {
+  const mPath = manifestPath(resolvedMemoryDir, config.sidecarDir, rel);
+  await withManifestLock(mPath, async () => {
     const history = await readManifest(resolvedMemoryDir, config.sidecarDir, rel);
     const before = history.versions.length;
     let committedCleared = false;
@@ -392,6 +430,19 @@ export async function pruneVersions(
         committedCleared = true;
       }
     }
+    // Marker ids are known-COMMITTED by construction: only a finalization
+    // failure for an already-committed merge records one, so clearing them
+    // here can never trade away a concurrent still-pending writer's entry.
+    let strandedCleared = 0;
+    for (const id of await readStrandedCommits(`${mPath}.stranded`)) {
+      const stranded = history.versions.find(
+        (version) => version.versionId === id && version.pending === true,
+      );
+      if (stranded) {
+        delete stranded.pending;
+        strandedCleared += 1;
+      }
+    }
     await pruneExcessVersions(
       history,
       config.maxVersionsPerPage,
@@ -399,10 +450,45 @@ export async function pruneVersions(
       path.extname(pagePath) || ".md",
       log,
     );
-    if (history.versions.length !== before || committedCleared) {
+    if (history.versions.length !== before || committedCleared || strandedCleared > 0) {
       await writeManifest(resolvedMemoryDir, config.sidecarDir, rel, history);
     }
+    if (strandedCleared > 0) {
+      log.debug(
+        `page-versioning: reconciled ${strandedCleared} stranded committed snapshot(s) for ${pagePath}`,
+      );
+    }
   });
+}
+
+/**
+ * Record that the guarded write behind `versionId` COMMITTED but its
+ * finalizing prune failed (round N+22) — the entry's `pending` flag could
+ * not be cleared, so without this record the snapshot stayed excluded from
+ * pruning forever. The next {@link pruneVersions} for the page reconciles
+ * the id from the marker. Best-effort: a marker-write failure is logged and
+ * never thrown (the caller is already on an error path).
+ */
+export async function recordStrandedCommit(
+  pagePath: string,
+  config: VersioningConfig,
+  versionId: string,
+  log: VersioningLogger = NOOP_LOGGER,
+  memoryDir?: string,
+): Promise<void> {
+  const resolvedMemoryDir = memoryDir ?? resolveMemoryDir(pagePath);
+  const rel = relPath(pagePath, resolvedMemoryDir);
+  try {
+    await appendFile(
+      `${manifestPath(resolvedMemoryDir, config.sidecarDir, rel)}.stranded`,
+      `${versionId}\n`,
+      "utf-8",
+    );
+  } catch (err) {
+    log.warn(
+      `page-versioning: could not record stranded commit ${versionId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /**

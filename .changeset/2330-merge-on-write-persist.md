@@ -314,3 +314,17 @@ and snapshot directory at `maxVersionsPerPage` again — repeated
 degraded merges no longer grow history without bound, and later
 successful merges can prune those recovery points like any other
 committed version.
+
+Round N+22: a finalization that fails AFTER its merge already committed no
+longer strands its staged snapshot. The catch in the finalizing prune now
+appends the committed version id to an append-only sidecar marker (a sibling
+`<manifest>.stranded` file, one id per line), and every subsequent
+`pruneVersions` for that page reconciles those ids under the same manifest
+lock as its own prune — clearing their `pending` flags so the committed-count
+bound applies again. Marker ids are known-committed by construction (only a
+failed finalization for an already-committed merge records one), so
+reconciliation can never trade away a concurrent still-pending writer's
+entry; ids whose entry is gone or already committed are no-ops. Repeated
+transient finalization failures — manifest lock timeouts, transient I/O —
+no longer grow history past `maxVersionsPerPage`, and a later successful
+merge prunes the recovered rollback points like any other committed version.

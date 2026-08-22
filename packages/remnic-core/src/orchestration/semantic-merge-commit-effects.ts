@@ -27,7 +27,7 @@ import { ContentHashIndex } from "../storage/content-hash-index.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
 
 import { log } from "../logger.js";
-import { createVersion, pruneVersions, removeVersion, type VersioningConfig } from "../page-versioning.js";
+import { createVersion, pruneVersions, recordStrandedCommit, removeVersion, type VersioningConfig } from "../page-versioning.js";
 import type { ThreadingManager } from "../threading.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import type { StorageManager } from "../index.js";
@@ -67,7 +67,11 @@ export async function stageMergedTargetSnapshot(
  * `pending` flag clears under the same page lock as the prune, round N+15 B),
  * and the prune then counts only committed snapshots, so a concurrent
  * still-pending writer's staged entry is never traded away. Best-effort: a
- * prune failure is logged and never fails the committed merge.
+ * prune failure records the staged id as a stranded commit (round N+22) so
+ * the NEXT successful finalization for the page reconciles its `pending`
+ * flag and the prune bound applies again — without it, every transient
+ * failure (manifest lock timeout, I/O error) stranded one unprunable
+ * snapshot beyond maxVersionsPerPage. Never fails the committed merge.
  */
 export async function finalizeMergedVersionPrune(
   targetPath: string,
@@ -78,11 +82,16 @@ export async function finalizeMergedVersionPrune(
 ): Promise<void> {
   await pruneVersions(targetPath, versioning, log, memoryDir, {
     committedVersionId: versionId,
-  }).catch((err) =>
+  }).catch(async (err) => {
     log.warn(
       `semantic-merge: version prune finalization failed for ${targetId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-    ),
-  );
+    );
+    // The merge HAS committed — the staged snapshot is a real rollback
+    // point whose `pending` flag never cleared. Record it so the next
+    // successful finalization reconciles the flag and pruning bounds
+    // history again.
+    await recordStrandedCommit(targetPath, versioning, versionId, log, memoryDir);
+  });
 }
 
 /**
