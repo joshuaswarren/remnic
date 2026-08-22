@@ -31,6 +31,9 @@ import {
   readEdgeConfidence,
   type DecayOptions,
 } from "../graph-edge-reinforcement.js";
+import { writeGraphJsonlAtomic } from "../graph-jsonl.js";
+import { log } from "../logger.js";
+import { assertGraphLockHeld, yieldForLockHeartbeat } from "../graph-write-lock.js";
 import {
   graphFilePath,
   graphsDir,
@@ -94,17 +97,6 @@ export function graphEdgeDecayStatusPath(memoryDir: string): string {
   return path.join(memoryDir, "state", "graph-edge-decay-status.json");
 }
 
-/** Write a JSONL file atomically using temp+rename (CLAUDE.md gotcha #54). */
-async function writeJsonlAtomic(filePath: string, edges: GraphEdge[]): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const body = edges.length === 0 ? "" : edges.map((e) => JSON.stringify(e)).join("\n") + "\n";
-  // Codex P2 / gotcha #54: write to temp then rename. Never rmSync(target)
-  // before the rename succeeds; rename is atomic on the same filesystem.
-  // Include pid + monotonic-ish suffix so concurrent runs cannot collide.
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
-  await writeFile(tempPath, body, "utf-8");
-  await rename(tempPath, filePath);
-}
 
 /**
  * Run a single decay pass over every edge type.
@@ -160,7 +152,7 @@ export async function runGraphEdgeDecayMaintenance(
       typeDecayed,
       typeBelow,
       typeTotal,
-    } = await withGraphWriteLock(filePath, async () => {
+    } = await withGraphWriteLock(filePath, async (lock) => {
       const edges = await readEdgesStrict(memoryDir, type);
       const updated: GraphEdge[] = new Array(edges.length);
 
@@ -169,6 +161,10 @@ export async function runGraphEdgeDecayMaintenance(
       let localChangedAny = false;
 
       for (let i = 0; i < edges.length; i += 1) {
+        // Round N+19 A: the per-edge decay pass is CPU-bound; yield
+        // periodically so the lock's mtime heartbeat timer can fire and a
+        // peer does not judge the lock stale mid-run.
+        if (i > 0 && i % 5_000 === 0) await yieldForLockHeartbeat();
         const edge = edges[i];
         const before = readEdgeConfidence(edge);
         const decayed = decayEdgeConfidence(edge, ranAt, { windowMs, perWindow, floor });
@@ -209,7 +205,22 @@ export async function runGraphEdgeDecayMaintenance(
       }
 
       if (!dryRun && localChangedAny && edges.length > 0) {
-        await writeJsonlAtomic(filePath, updated);
+        // Round N+19 A: revalidate ownership before the rename-backed
+        // replace — a peer that stale-broke this lock during the (yielding)
+        // decay pass owns the file now. Leave it untouched; the next run
+        // re-decays from whatever the peer published. The pass reports zero
+        // decayed edges for this type so the telemetry never claims a
+        // rewrite that did not land (per-label drop totals may still include
+        // the skipped pass — the warning names it).
+        try {
+          await assertGraphLockHeld(filePath, lock);
+        } catch (err) {
+          log.warn(
+            `graph decay: skipped the ${type} rewrite — ${err instanceof Error ? err.message : String(err)}; per-label drop totals may include this skipped pass`,
+          );
+          return { typeDecayed: 0, typeBelow: localBelow, typeTotal: edges.length };
+        }
+        await writeGraphJsonlAtomic(filePath, updated, lock);
       }
 
       return {

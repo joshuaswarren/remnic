@@ -360,7 +360,7 @@ import {
   extractTagsFromPrompt,
   resolvePromptTagPrefilterAsync,
 } from "./temporal-index.js";
-import { GraphIndex } from "./graph.js";
+import { GraphIndex, type GraphEdge } from "./graph.js";
 import {
   searchCausalTrajectories,
   type CausalTrajectorySearchResult,
@@ -3241,7 +3241,7 @@ export class Orchestrator {
     threadEpisodeIdsForGraph: string[] | undefined,
     fallbackCausalPredecessor: string | undefined,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
-  ): Promise<void> {
+  ): Promise<GraphEdge[]> {
     return this.persistenceIndexCoordinator.buildGraphEdge(
       storage,
       memoryRelPath,

@@ -62,7 +62,12 @@ export class ExtractionAnchorSnapshot {
       if (!cached) return;
       const snapshot = await cached;
       const relativePath = resolvePersistedMemoryRelativePath({ memoryId, pathById, category });
-      const memory = await storage.readMemoryByPath(path.join(storage.dir, relativePath));
+      let memory = await storage.readMemoryByPath(path.join(storage.dir, relativePath));
+      // Final round (B): a pre-existing target (e.g. cold-tier) has no
+      // pathById entry, so the derived hot path misses and the read returns
+      // null — leaving the cached pre-merge body in place. Fall back to the
+      // same cold-aware id lookup the merge itself uses.
+      if (!memory) memory = await storage.getMemoryByIdIncludingArchived(memoryId);
       if (!memory) return;
       const existingIndex = snapshot.findIndex((entry) => entry.frontmatter.id === memoryId);
       if (existingIndex >= 0) snapshot.splice(existingIndex, 1);

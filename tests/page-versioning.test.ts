@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { spawn } from "node:child_process";
 import {
   createVersion,
   listVersions,
   getVersion,
   revertToVersion,
   diffVersions,
+  removeVersion,
   type VersioningConfig,
 } from "../packages/remnic-core/src/page-versioning.js";
 import { withEntityCanonicalMutationLock } from "../packages/remnic-core/src/storage/entity-canonical-id-lock.js";
@@ -476,6 +478,133 @@ test("entity page reverts wait for the canonical mutation lock", async () => {
     assert.equal(await fs.readFile(entityPath, "utf8"), "original entity");
   } finally {
     await revertPromise?.catch(() => undefined);
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Cross-process manifest serialization (issue #2330 round N+16 B)
+// ---------------------------------------------------------------------------
+
+test("#2330 N+16 B: two processes staging snapshots never share a version id — a CAS loser's removeVersion cannot delete the winner's entry", async () => {
+  const tmp = await makeTmpDir();
+  const factsDir = path.join(tmp, "facts");
+  await fs.mkdir(factsDir, { recursive: true });
+  const pagePath = path.join(factsDir, "page.md");
+  await fs.writeFile(pagePath, "seed body", "utf8");
+  const cfg = config(tmp, { maxVersionsPerPage: 1000 });
+  const moduleUrl = new URL("../packages/remnic-core/src/page-versioning.ts", import.meta.url).href;
+  const perWorker = 10;
+
+  // Worker source: plain JS, no nested template literals (tombstones.test.ts
+  // pattern). Each child imports the REAL page-versioning module — a separate
+  // Remnic process sharing the memory directory — waits on a ready/go barrier
+  // so both enter their staging loops SIMULTANEOUSLY (boot jitter would
+  // otherwise serialize them and hide the race), then stages `count` deferred
+  // snapshots in a tight loop, printing its staged {versionId, content} pairs.
+  const workerSource = [
+    "(async () => {",
+    "const { createVersion } = await import(process.argv[1]);",
+    "const fsp = await import(\"node:fs/promises\");",
+    "const path = await import(\"node:path\");",
+    "const dir = process.argv[2];",
+    "const workerId = Number(process.argv[3]);",
+    "const count = Number(process.argv[4]);",
+    "const pagePath = path.join(dir, \"facts\", \"page.md\");",
+    "const cfg = { enabled: true, maxVersionsPerPage: 1000, sidecarDir: \".versions\" };",
+    "await fsp.writeFile(path.join(dir, \"ready-\" + workerId), \"x\");",
+    "for (;;) {",
+    "  try { await fsp.access(path.join(dir, \"go\")); break; } catch (e) {}",
+    "  await new Promise((r) => setTimeout(r, 2));",
+    "}",
+    "const staged = [];",
+    "for (let i = 0; i < count; i += 1) {",
+    "  const body = \"body-w\" + workerId + \"-\" + i;",
+    "  const v = await createVersion(pagePath, body, \"semantic-merge\", cfg, undefined, undefined, dir, { deferPrune: true });",
+    "  staged.push({ versionId: String(v.versionId), content: body });",
+    "}",
+    "process.stdout.write(JSON.stringify(staged));",
+    "})();",
+  ].join("\n");
+
+  const runWorker = (workerId: number): Promise<Array<{ versionId: string; content: string }>> => {
+    const { promise, resolve, reject } = Promise.withResolvers<Array<{ versionId: string; content: string }>>();
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", "-e", workerSource, moduleUrl, tmp, String(workerId), String(perWorker)],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`worker ${workerId} exited ${code}: ${stderr}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout) as Array<{ versionId: string; content: string }>);
+      } catch {
+        reject(new Error(`worker ${workerId} printed unparseable output: ${stdout}`));
+      }
+    });
+    return promise;
+  };
+
+  try {
+    // Launch both processes, hold them at the barrier, then release together
+    // so both contend on the manifest from the first stage onward.
+    const worker0 = runWorker(0);
+    const worker1 = runWorker(1);
+    for (const ready of ["ready-0", "ready-1"]) {
+      for (let attempts = 0; ; attempts += 1) {
+        try {
+          await fs.access(path.join(tmp, ready));
+          break;
+        } catch {
+          if (attempts > 500) throw new Error(`worker never signaled ${ready}`);
+          await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        }
+      }
+    }
+    await fs.writeFile(path.join(tmp, "go"), "x");
+    const [winner, loser] = await Promise.all([worker0, worker1]);
+    const all = [...winner, ...loser];
+    // THE fix: staging is serialized across processes, so every staged entry
+    // owns a UNIQUE version id. Pre-fix both processes read the manifest and
+    // staged the SAME next id — one shared snapshot file, two manifest rows.
+    const ids = all.map((entry) => entry.versionId);
+    assert.equal(
+      new Set(ids).size,
+      perWorker * 2,
+      `every staged snapshot must own a unique version id (got ${JSON.stringify(ids)})`,
+    );
+    const history = await listVersions(pagePath, cfg, tmp);
+    assert.equal(history.versions.length, perWorker * 2);
+    // Every staged pair maps to its OWN snapshot file with its OWN content.
+    for (const entry of all) {
+      assert.equal(await getVersion(pagePath, entry.versionId, cfg, tmp), entry.content);
+    }
+    // The CAS-loser rollback: the losing merge removes ITS OWN staged entry.
+    await removeVersion(pagePath, loser[0].versionId, cfg, undefined, tmp);
+    const after = await listVersions(pagePath, cfg, tmp);
+    assert.equal(after.versions.length, perWorker * 2 - 1, "exactly the loser's entry goes");
+    for (const entry of winner) {
+      assert.ok(
+        after.versions.some((v) => v.versionId === entry.versionId),
+        `the winner's committed rollback point ${entry.versionId} must survive the loser's removeVersion`,
+      );
+      assert.equal(await getVersion(pagePath, entry.versionId, cfg, tmp), entry.content);
+    }
+    // The manifest lock is released — no lingering lock file in the sidecar.
+    const sidecar = path.join(tmp, ".versions", "facts__page");
+    const residue = (await fs.readdir(sidecar)).filter((name) => name.endsWith(".lock"));
+    assert.deepEqual(residue, [], "no lingering manifest lock after the run");
+  } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });

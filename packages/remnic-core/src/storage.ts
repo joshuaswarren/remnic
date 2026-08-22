@@ -4038,50 +4038,54 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.corpusRegisteredHashes(memory);
   }
 
-  private async addActiveFactContentHash(memory: MemoryFile): Promise<void> {
+  /** Publish `hashes` for an ACTIVE fact through the SAME locked reconcile the write path uses. */
+  private async publishActiveFactHashes(memory: MemoryFile, hashes: readonly string[]): Promise<void> {
     if (memory.frontmatter.category !== "fact") return;
     if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") return;
-    const hashes = this.factContentHashesForRemoval(memory);
-    if (hashes.length === 0) return;
 
     await this.ensureFactHashIndexAuthoritative();
     const factHashIndex = await this.getFactHashIndex();
     for (const hash of hashes) {
       factHashIndex.addFactByHash(hash);
     }
-    // PR #2016 thread SDzOP: flush through the SAME cross-process locked
-    // reconcile the write/batch/rebuild paths use, never the unlocked whole-file
-    // save() — an unlocked overwrite drops a concurrent extraction's appended
-    // hash and can be clobbered by a peer's locked publish. saveMergingWithDisk
-    // republishes only OUR delta ((on-disk \ removed) ∪ added) under the lock.
     await factHashIndex.saveMergingWithDisk();
-    // A locked reconcile that times out defers to an unref'd background retry
-    // and returns WITHOUT publishing (dirty retained). The reactivation path is
-    // a lifecycle boundary just like writeMemory (PR #2016 thread
-    // PRRT_kwDORJXyws6SEHvh): a short-lived caller must not observe the deferral
-    // as durable. Drain the deferred retry inline so the reintroduced hash lands
-    // on disk (or exhausts its bounded attempts, falling back to the
-    // corpus-rebuild safety net) before returning. No-op — no duplicated retry
-    // work — when the save already published (not dirty).
     await factHashIndex.flushReconcileRetry();
   }
 
   /**
+   * Register an EXPLICITLY computed content hash for an active fact (issue
+   * #2330 round N+16 C): the degraded merge repair indexes the COMMITTED
+   * body while the persisted `frontmatter.contentHash` is the stale
+   * PRE-merge identity. Round N+20 (B): body-coupled (`expectedContent`) —
+   * repair), so no obsolete hash lands on a newer record. No-op otherwise.
+   */
+  async registerFactContentHash(memoryId: string, contentHash: string, expectedContent: string): Promise<void> {
+    if (!contentHash) return;
+    const memory = await this.getMemoryByIdIncludingArchived(memoryId);
+    if (!memory || memory.content !== expectedContent) return;
+    await this.publishActiveFactHashes(memory, [contentHash]);
+  }
+
+  private async addActiveFactContentHash(memory: MemoryFile): Promise<void> {
+    const hashes = this.factContentHashesForRemoval(memory);
+    if (hashes.length === 0) return;
+    await this.publishActiveFactHashes(memory, hashes);
+  }
+
+  /**
    * Re-register a fact's contentHash in the dedup index after a tombstone
-   * block is lifted on approval (issue #1579 thread ObnTy). `writeMemory`
-   * skips hash-index registration for tombstone-blocked facts (rule 44); when
-   * the review queue later promotes such a fact back to `status: active`, the
-   * hash must enter the index or the next extraction of the same content
-   * creates a second active fact. Reads the memory by id so the caller (the
-   * review CLI) does not need to re-parse the file. No-op for non-facts or
-   * facts that are not active.
+   * block is lifted on approval (issue #1579 thread ObnTy): `writeMemory`
+   * skips registration for tombstone-blocked facts (rule 44), so a promoted
+   * fact must re-enter the index or the next extraction of the same content
+   * creates a second active fact. No-op for non-facts or inactive facts.
    */
   async restoreFactHashAfterApproval(memoryId: string): Promise<void> {
-    const all = await this.readAllMemories();
-    const memory = all.find((m) => m.frontmatter.id === memoryId);
+    // Cold-aware (issue #2330 round N+13 C): hot-only scans missed cold/ targets.
+    const memory = await this.getMemoryByIdIncludingArchived(memoryId);
     if (!memory) return;
     await this.addActiveFactContentHash(memory);
   }
+
 
   private async syncFactHashIndexAfterRewrite(before: MemoryFile, after: MemoryFile): Promise<void> {
     if (before.frontmatter.category !== "fact" && after.frontmatter.category !== "fact") return;
@@ -4090,11 +4094,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const afterHashes = this.factContentHashesForRemoval(after);
     const beforeStatus = inferMemoryStatus(before.frontmatter, before.path);
     const afterStatus = inferMemoryStatus(after.frontmatter, after.path);
-    const hashesChanged =
-      beforeHashes.length !== afterHashes.length ||
-      beforeHashes.some((hash, index) => hash !== afterHashes[index]);
-    if (!hashesChanged && beforeStatus === afterStatus) return;
-
+    const hashesChanged = beforeHashes.length !== afterHashes.length || beforeHashes.some((h, i) => h !== afterHashes[i]);
     if (beforeStatus === "active" && beforeHashes.length > 0 && (hashesChanged || afterStatus !== "active")) {
       await this.removeFactContentHashesForMemories([before]);
     }

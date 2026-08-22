@@ -1950,6 +1950,7 @@ export interface PluginConfig
   semanticDedupEnabled: boolean;
   semanticDedupThreshold: number;
   semanticDedupCandidates: number;
+  semanticMerge: SemanticMergeConfig; // judge-mediated merge-on-write (#2330); default off
   noveltyGateEnabled: boolean;
   noveltyAddThreshold: number;
   noveltyNoopThreshold: number;
@@ -2342,6 +2343,7 @@ export interface PluginConfig
    */
   offlineSyncExcludes: string[];
 }
+import type { SemanticMergeConfig } from "./semantic-merge-config.js"; export type { SemanticMergeConfig };
 
 /** Runtime configuration for the daily context briefing feature. */
 export interface BriefingConfig {

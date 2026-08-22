@@ -45,13 +45,17 @@ const orchestratorSource = readFileSync(
 // threadEpisodeIdsForGraph with the same structural-assertion technique.
 
 test("#1645 TV6: profile-target promotion skips indexing/tracking when tombstone-blocked", () => {
+  // Round N+8 moved `writtenCopyIds.push(promotedId)` INSIDE the gate —
+  // correct: a blocked promotion is pending_review and must not be reported
+  // as a written copy. `[^{}]*` keeps the scan linear (no ReDoS-shaped
+  // quantifier chains, issue #2439) while still pinning statement order
+  // inside the gated block.
   assert.match(
     orchestratorSource,
-    /if \(\s*!targetPromotion\.tombstoneBlocked\s*\)\s*\{\s*trackPersistedId\(targetStorage,\s*promotedId,\s*\{\s*includeReturnedIds:\s*false,\s*category:\s*options\.category as MemoryCategory,[\s\S]*?\}\);\s*await this\.deps\.indexPersistedMemory\(targetStorage,\s*promotedId\);\s*trackBehaviorSignals\(\s*targetStorage,[\s\S]*?namespace:\s*target\.namespace,[\s\S]*?\);\s*\}/m,
+    /if \(!targetPromotion\.tombstoneBlocked\) \{[^{}]*writtenCopyIds\.push\(promotedId\);[^{}]*trackPersistedId\(targetStorage, promotedId, \{[^{}]*\}\);[^{}]*await this\.deps\.indexPersistedMemory\(targetStorage, promotedId\);[^{}]*trackBehaviorSignals\([^;]*namespace: target\.namespace,/m,
     "profile-target promotion must gate catalog/index/behavior behind !targetPromotion.tombstoneBlocked",
   );
 });
-
 test("#1645 TV6: shared promotion skips indexing/tracking when tombstone-blocked", () => {
   assert.match(
     orchestratorSource,

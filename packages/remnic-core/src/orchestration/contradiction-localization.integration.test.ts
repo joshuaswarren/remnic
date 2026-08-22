@@ -431,6 +431,41 @@ test("anchor snapshot prefers an active cold copy over a path-archived hot dupli
   assert.deepEqual(await snapshots.get(storage, "person:alice"), [cold]);
 });
 
+test("replace refreshes a cold-tier target via the cold-aware id lookup (final round B)", async () => {
+  const storageDir = "/tmp/remnic-anchor-snapshot-cold-replace";
+  const coldPath = path.join(storageDir, "cold", "2026-08-01", "fact-cold-target.md");
+  const preMerge = {
+    path: coldPath,
+    content: "pre-merge body",
+    frontmatter: {
+      id: "fact-cold-target",
+      category: "fact",
+      entityRef: "person:alice",
+      status: "active",
+    },
+  } as unknown as MemoryFile;
+  const merged = { ...preMerge, content: "merged body" } as unknown as MemoryFile;
+  const storage = {
+    dir: storageDir,
+    readAllMemories: async () => [],
+    readAllColdMemories: async () => [preMerge],
+    // A pre-existing cold target has no pathById entry, so replace() derives
+    // the hot fallback path (facts/fact-cold-target.md) — this stub answers
+    // ONLY the real cold path, mirroring the miss that left the stale body.
+    readMemoryByPath: async (p: string) => (p === coldPath ? merged : null),
+    getMemoryByIdIncludingArchived: async (id: string) =>
+      id === "fact-cold-target" ? merged : null,
+  } as unknown as StorageManager;
+  const snapshots = new ExtractionAnchorSnapshot();
+
+  // A first same-entity fact warms the cache with the pre-merge cold body.
+  assert.deepEqual(await snapshots.get(storage, "person:alice"), [preMerge]);
+  await snapshots.replace(storage, "fact-cold-target", "fact", new Map());
+  // A later same-entity fact in the same extraction localizes against this
+  // cache; it must see the merged body, not the stale pre-merge one.
+  assert.deepEqual(await snapshots.get(storage, "person:alice"), [merged]);
+});
+
 test("isolates anchor snapshot failures per storage", async () => {
   const snapshots = new ExtractionAnchorSnapshot();
   const failedStorage = {
