@@ -15,6 +15,8 @@ import {
 import { GraphIndex } from "../graph.js";
 import { PersistenceIndexCoordinator } from "../orchestration/persistence-index.js";
 import { createBatchPromotedCopyProbe, promotionWithholdsToolScope } from "../orchestration/extraction-persist-promotion.js";
+import { persistMergedTargetThreadEpisode } from "../orchestration/semantic-merge-commit-effects.js";
+import { ThreadingManager } from "../threading.js";
 import { withholdToolScopedFromSharedNamespace } from "../tool-scoped-memory.js";
 import type { ExtractionPersistDeps } from "../orchestration/extraction-persist-deps.js";
 import { StorageManager } from "../index.js";
@@ -1485,6 +1487,36 @@ test("applySemanticMergeAtPersist: a committed merge still finalizes the prune b
   assert.equal(after.versions.at(-1)?.trigger, "semantic-merge");
 });
 
+// ── Round N+12 (A): a rejected frontmatter patch must leave version history
+// untouched — pruning finalizes only after BOTH compare-and-swaps commit. ────
+
+test("applySemanticMergeAtPersist: a rejected frontmatter patch at a full version history keeps the oldest rollback point (round N+12 A)", async () => {
+  const h = await harness({ frontmatterFails: true, topLevelConfig: { versioningMaxPerPage: 3 } });
+  const versioning = { enabled: true, maxVersionsPerPage: 3, sidecarDir: ".versions" };
+  for (let i = 1; i <= 3; i++) {
+    await createVersion(h.target.path, `${EXISTING} (history fill ${i})`, "write", versioning, undefined, undefined, h.storage.dir);
+  }
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "created", reason: "update_failed" });
+
+  const after = await listVersions(h.target.path, versioning, h.storage.dir);
+  assert.ok(
+    after.versions.some((v) => v.versionId === "1"),
+    `the oldest rollback point must survive the unsuccessful attempt (got ${JSON.stringify(after.versions.map((v) => v.versionId))})`,
+  );
+  assert.equal(
+    await readFile(h.target.path, "utf8").then((raw) => raw.includes(EXISTING)),
+    true,
+    "the rolled-back target body is the pre-merge text",
+  );
+});
+
 // ── Final round: origin authority, log privacy, least-privilege subject ──────
 
 test("applySemanticMergeAtPersist: a cross-origin merge into a user-authority target is refused (finding A)", async () => {
@@ -2777,4 +2809,93 @@ test("runMergedTargetPostEffects: a re-merge records the target as the LATEST th
     threadEpisodeIdsForGraph: episodes,
   });
   assert.deepEqual(episodes, ["mem-earlier", "fact-target"]);
+});
+
+// ── Round N+12 (C): the remove-and-rebuild stays guarded against a later
+// writer committing a NEWER merge between the committed-body check and the
+// final edge install. Writer A must not clobber writer B's edges. ────────────
+
+test("runMergedTargetPostEffects: a writer committing mid-rebuild keeps its edges — the stale writer restores, not installs (round N+12 C)", async () => {
+  const h = await postEffectsHarness();
+  const OTHER = "facts/2026-08-19/other.md";
+  // B's committed state: B already rebuilt the target's entity edge with the
+  // NEWER body's label. A's rebuild derives from the OLDER body.
+  const newerEntity = { from: h.targetRelPath, to: OTHER, type: "entity", weight: 1, label: "entity-billing-service-v2", ts: "2026-08-22T00:00:00.000Z" };
+  await seedGraphFile(h.dir, "entity", [newerEntity]);
+  const NEWER_BODY = "Billing service deploys run on Tuesdays at 09:00 UTC with payments.";
+  // A passes its committed-body check against A's body, then B commits AFTER
+  // the check: every read from the build onward observes B's newer body.
+  let buildGraphEdgeCalls = 0;
+  const storage = {
+    dir: h.dir,
+    getMemoryByIdIncludingArchived: async (id: string) =>
+      id === "fact-target"
+        ? {
+            path: path.join(h.dir, h.targetRelPath),
+            frontmatter: { id, category: "fact", entityRef: "entity-billing-service" },
+            // The flip: the initial check sees A's body; anything after the
+            // rebuild began sees B's committed body.
+            content: buildGraphEdgeCalls > 0 ? NEWER_BODY : MERGED,
+          }
+        : null,
+  } as unknown as StorageManager;
+  const deps = {
+    ...h.deps,
+    buildGraphEdge: async () => {
+      buildGraphEdgeCalls++;
+    },
+  } as unknown as ExtractionPersistDeps;
+  const previousPersisted = { current: "facts/2026-08-18/prev.md" };
+  await runMergedTargetPostEffects(
+    deps,
+    storage,
+    { targetId: "fact-target", mergedContent: MERGED },
+    {
+      category: "fact",
+      incomingContent: INCOMING,
+      incomingConfidence: 0.9,
+      namespace: "default",
+      graphCaps: ALL_GRAPH_CAPS,
+      graphContext: { allMemsForGraph: [], memoryPathById: new Map(), previousPersistedRelPath: previousPersisted.current },
+      threadIdForEdge: undefined,
+      threadEpisodeIdsForGraph: undefined,
+    },
+  );
+  assert.deepEqual(
+    await readGraphFile(h.dir, "entity"),
+    [newerEntity],
+    "writer A must restore B's newer edges, never install edges derived from A's older body",
+  );
+  assert.equal(
+    previousPersisted.current,
+    "facts/2026-08-18/prev.md",
+    "a superseded rebuild must not advance the batch's adjacency chain",
+  );
+});
+
+test("persistMergedTargetThreadEpisode: a re-merge moves an existing earlier target to the durable thread tail (round N+12 D)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-thread-"));
+  try {
+    const threading = new ThreadingManager(path.join(dir, "threads"), 90);
+    const threadId = "thread-1";
+    await threading.saveThread({
+      id: threadId,
+      title: "Billing deploys",
+      createdAt: "2026-08-20T00:00:00.000Z",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+      episodeIds: ["fact-target", "mem-earlier"],
+      linkedThreadIds: [],
+    });
+    await persistMergedTargetThreadEpisode(threading, threadId, "fact-target");
+    // The next extraction reloads the thread from disk — the reloaded order
+    // is what resolveRecentThreadMemoryPaths(...).slice(-3) will see.
+    const reloaded = await threading.loadThread(threadId);
+    assert.deepEqual(
+      reloaded?.episodeIds,
+      ["mem-earlier", "fact-target"],
+      "a re-merged target must sit at the durable thread tail after reload",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

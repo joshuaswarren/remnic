@@ -1217,10 +1217,12 @@ into a create-or-update decision:
    normal write, leaving contradiction detection and temporal supersession
    untouched.
 3. On a `merge` verdict, validate the returned target id against the candidate
-   set, snapshot the target as a page version with trigger `semantic-merge`
+   snapshot the target as a page version with trigger `semantic-merge`
    — staged WITHOUT pruning the version history; the cap-based prune runs
-   only after the compare-and-swap commits, so an attempt that loses the CAS
-   race never discards the oldest rollback point —
+   only after the COMPLETE content-and-metadata transaction commits (both
+   compare-and-swaps), so an attempt that loses either CAS race — or whose
+   frontmatter patch is rejected and rolled back — never discards the
+   oldest rollback point —
    then update the memory **in place** (same id and path) with a
    compare-and-swap against the exact body the judge was shown, then stamp
    `derived_via: merge`, bump `reinforcement_count`, restamp `contentHash`
@@ -1272,14 +1274,18 @@ into a create-or-update decision:
    edges in EVERY enabled graph type — entity from-side, time and causal
    inbound — instead of re-appending them (one shared routine; if the
    replacement build fails, the removed edges are restored, so failure
-   leaves either the old or the new complete set), and enrolling the target
+   leaves either the old or the new complete set; the whole
+   remove-and-rebuild is revision-guarded, so a writer committing a newer
+   body mid-rebuild aborts the stale install instead of clobbering the
+   newer merge's edges), and enrolling the target
    at the END of the batch's thread episode list — deduped first when
    already present, so the merge is the thread's latest event — so later
    facts in the same extraction chain time/causal adjacency through it.
-   The target is ALSO appended to the thread's durable episode-set file
-   through the same unique-append storage path the create path uses, so a
-   target that entered the thread only through a merge is still there when
-   the next extraction reloads the thread — without widening the public
+   The target is ALSO persisted in the thread's durable episode-set file
+   MOVE-TO-END — a target already earlier in the durable list moves to the
+   tail, matching the batch-local ordering — so a target that entered the
+   thread only through a merge, or merged again later, is still at the tail
+   when the next extraction reloads the thread — without widening the public
    `persistedIds` contract, which stays new-fragment-only. All of it is
    fail-open like the create path's graph block; and a `preference`-category
    merge records its

@@ -188,14 +188,16 @@ export function makeSubjectGuardAllows(
  * pre-merge body while the source serves the merged claims, so such a
  * target must bypass the merge and let the normal write run.
  *
- * Finding E (final round): the scan covers ALL resolved promotion layers —
- * NEVER filtered by today's `autoPromote.targets` selection or by current
- * write authorization. A copy created while a layer was listed stays linked
- * by `sourceMemoryId` after the operator removes that layer; detection
- * scans history while policy governs writes (the authorization-change
- * lesson applied to selection). An unreadable promotion namespace is
- * treated as "copies may exist": the conservative create path runs rather
- * than risk cross-namespace divergence.
+ * Finding E (final round) + round N+12 (B): the scan covers ALL resolved
+ * layers — NEVER filtered by today's `autoPromote.targets` selection, by
+ * current write authorization, or by today's `promotionTargets` list. A copy
+ * created while a layer was listed stays linked by `sourceMemoryId` after
+ * the operator removes that layer from the promotion selection while it
+ * remains resolvable through readOrder/layers; detection scans history while
+ * policy governs writes (the authorization-change lesson applied to
+ * selection). An unreadable promotion namespace is treated as "copies may
+ * exist": the conservative create path runs rather than risk
+ * cross-namespace divergence.
  */
 export function promotionScanNamespaces(
   config: PluginConfig,
@@ -206,6 +208,18 @@ export function promotionScanNamespaces(
     for (const target of scopeProfileWritePlan.promotionTargets) {
       if (target.target !== "serverShared" && target.namespace) {
         namespaces.push(target.namespace);
+      }
+    }
+    // Round N+12 (B): enumerate EVERY resolvable layer, not only today's
+    // promotionTargets. A namespace that received promoted copies while its
+    // layer was selected keeps serving them after the operator removes the
+    // layer from the selection — the layer stays resolvable through
+    // readOrder/layers, and the documented guarantee is that historical
+    // copies remain detectable after selection changes. The shared namespace
+    // joins below from config (the authoritative value).
+    for (const layer of scopeProfileWritePlan.layers ?? []) {
+      if (layer.id !== "serverShared" && layer.namespace) {
+        namespaces.push(layer.namespace);
       }
     }
   }

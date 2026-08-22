@@ -108,14 +108,28 @@ lifecycle-active predicate, so a namespace holding nothing but a superseded
 copy linked by `sourceMemoryId` no longer makes `targetHasPromotedCopies`
 reject every later judge-approved merge (the updates accumulated as new
 fragments instead). A committed merge also persists the surviving target
-into the thread's durable episode-set file through the same unique-append
-path the create path's `appendPersistedThreadEpisodes` uses — the
-batch-local adjacency list died with the batch, so a target that entered a
-thread only through a merge vanished again at the next extraction; the
-public `persistedIds` return stays new-fragment-only. And the merge's page
-version snapshot is staged WITHOUT pruning: the cap-based prune now runs
-only after the compare-and-swap commits, so a failed merge attempt at a
-full version history can no longer discard the oldest rollback point.
+into the thread's durable episode-set file, and the merge's page version
+snapshot is staged WITHOUT pruning.
+
+Round N+12: the cap-based prune finalizes only after the COMPLETE
+content-and-metadata transaction commits — both compare-and-swaps, not the
+content one — so a rejected frontmatter patch (or its successful rollback)
+leaves version history untouched; a degraded success deliberately keeps the
+full history for the recovery path. The promoted-copy probe and the
+post-merge reconciliation enumerate EVERY resolvable profile layer
+(`readOrder`/resolved `layers`), not only today's `promotionTargets`: a
+namespace that received copies while its layer was selected keeps serving
+them after the operator deselects the layer, and those historical copies
+stay detectable and get reconciled. The merged-target graph rebuild is
+revision-guarded end to end: a writer committing a newer body between the
+committed-body check and the final edge install aborts the stale writer's
+install — its built rows are removed and the observed (newer) edges
+restored — instead of clobbering the newer merge's edges with edges derived
+from the older body. And the durable thread-episode persist is
+move-to-end: a re-merged target already earlier in the thread moves to the
+tail, matching the batch-local ordering, so after the next extraction
+reloads the thread the target stays inside the recent-episode window
+(the public `persistedIds` return stays new-fragment only).
 
 A merge carries content, category, provenance sources, and connector — a fact that also carries structured attributes, an entity ref, bi-temporal bounds, effective validity bounds the incoming fact does not carry identically (the merged body inherits the target's `valid_at`/`invalid_at`, so a target with `invalid_at` never merges and a target with `valid_at` merges only with an incoming fact carrying the same bound — a fresh unbounded claim must not inherit an expired bound), tags the target lacks, a higher importance, stronger provenance, a faithfulness verdict (shadow mode included — a contradicted or unsupported fact carries the verdict without pending_review status) whose effective value is not also the target's — one-sided verdicts included, because the gate ran on only one side: the trust stage maps `entailed` to the maximum contribution, so claims the gate never checked must not inherit an entailment rendered over the other side's claims alone — and as of round N+9 not even an EQUAL verdict survives: the target's `entailed` was rendered over its pre-merge body, never over the judge's merged text, so any merge whose committed record would keep an effective `entailed` bypasses too (both sides absent, or both present and effectively `unchecked` — no entailment signal — still merge), a subject classification whose effective value (absent = the least-privileged `user`, the same default the subject guard applies) differs from the target's effective subject (so an unclassified fact extracted with classification disabled is never merged into an `agent`-labeled memory that reinforcement could then promote), a computed episode/note `memoryKind` that differs from the target's committed kind (the merged record keeps the target's kind — the classification that drives episode-cache membership and the episode-only verification and promotion paths — so a time-specific fact is never filed as a note and a stable note never rides the episode-only paths; a fact extracted with classification disabled carries no kind and still merges), a `toolScoped: true` classification the target lacks (a tool-scoped fact must never widen into an unscoped target; an already-scoped target keeps its stricter flag), or an untrusted authority origin (per `untrustedOrigins`) offered to a trusted-origin target (the merged body would render under the target's origin at recall, so such a merge would hand untrusted text the target's unfenced authority; mismatches that never reduce fencing — equal origins, or trusted content into an untrusted target — still merge, so legacy targets with no `origin` stamp keep receiving user-origin facts) is created through the normal write instead of merged, so extraction metadata, access scope, and authority are never silently discarded or escalated. A would-be target that already has promoted shared/profile copies (linked by `sourceMemoryId`, still ACTIVE — a superseded or archived copy serves no body and does not block) also bypasses the merge — those copies are reconciled only by the normal write's promotion step, so merging would strand them at the pre-merge body; the copy scan inspects every known promotion layer and the shared namespace regardless of current write authorization or today's auto-promotion selection, so revoked permissions or a deselected layer cannot hide an existing copy. A weaker incoming provenance never rides the target's stronger tag: the merged body is retagged to the least-trusted side, because the trust stage maps the memory-level tag straight to a provenance contribution. A lower incoming confidence downgrades the merged record the same way: it keeps min(incoming, target) confidence with the tier that score maps to (an unreadable value bypasses the merge), so a low-confidence extraction can never leave a merged record — or a copy promoted from it — scoring above what the create path would have stored for that fact alone. A target with no promoted copy yet does not bypass: a successful merge runs the same shared/profile promotion the create path would have performed, anchored to the merged target id and copying the committed merged body — the exact text that `sourceMemoryId` points at — fail-open like the create path. Shadow-mode telemetry logs category, content length, and the decision reason only — never fact content, since log sinks commonly have broader access and retention than the memory store.
 

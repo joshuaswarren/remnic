@@ -106,6 +106,11 @@ function mergeLifecycleConfig(memoryDir: string, overrides: Record<string, unkno
     semanticMerge: { enabled: true },
     embeddingFallbackEnabled: true,
     versioningEnabled: true,
+    // Round N+12 (CI-0): the commit-effects sibling (snapshot staging, prune
+    // finalization, durable thread-episode persist) runs on this subject's
+    // merge path — threading ON gives the thread-episode helper a real
+    // thread id so every exported function of that module executes here.
+    threadingEnabled: true,
     ...overrides,
   });
 }

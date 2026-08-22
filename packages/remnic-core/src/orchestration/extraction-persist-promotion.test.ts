@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { StorageManager } from "../index.js";
 import { parseConfig } from "../config.js";
-import { createBatchPromotedCopyProbe, mergeTargetHasPromotedCopies } from "./extraction-persist-promotion.js";
+import { createBatchPromotedCopyProbe, mergeTargetHasPromotedCopies, retireStaleMergedTargetPromotionCopies } from "./extraction-persist-promotion.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 
 // Synthetic fixtures only — no real paths, hosts, or memory content.
@@ -270,4 +270,67 @@ test("retireStaleMergedTargetPromotionCopies: a concurrent promotion of the pre-
   assert.equal(staleRow?.frontmatter.supersededBy, current.id);
   const currentRow = await s.shared.getMemoryByIdIncludingArchived(current.id);
   assert.equal(currentRow?.frontmatter.status ?? "active", "active");
+});
+
+test("former promotion layers still resolvable are scanned: a copy on a layer removed from promotionTargets is detected and reconciled (round N+12 B)", async () => {
+  // The namespace received promoted copies while "userGlobal" was listed in
+  // profile.promotionTargets. The operator has since removed the layer from
+  // the promotion selection, but it remains resolvable through the plan's
+  // layers (readOrder). Historical copies there must stay detectable — and
+  // reconcilable — or that namespace keeps serving the stale pre-merge body.
+  const source = new StorageManager(await mkdtemp(path.join(os.tmpdir(), "remnic-mc-src-")));
+  const global = new StorageManager(await mkdtemp(path.join(os.tmpdir(), "remnic-mc-global-")));
+  const shared = new StorageManager(await mkdtemp(path.join(os.tmpdir(), "remnic-mc-shared-")));
+  await source.ensureDirectories();
+  await global.ensureDirectories();
+  await shared.ensureDirectories();
+  const PRE_MERGE_BODY = "Billing service deploys happen on Tuesdays.";
+  const MERGED_BODY = "Billing service deploys happen on Tuesdays at 09:00 UTC.";
+  const stale = await global.writeMemory("fact", PRE_MERGE_BODY, {
+    source: "test",
+    sourceMemoryId: "fact-target",
+  });
+  const router = {
+    storageFor: async (namespace: string): Promise<StorageManager> => {
+      if (namespace === "global" || namespace === "shared") {
+        return namespace === "global" ? global : shared;
+      }
+      throw new Error(`unexpected namespace "${namespace}"`);
+    },
+  };
+  const plan = {
+    profileId: "synthetic",
+    profile: { autoPromote: { targets: [] } },
+    // The layer is GONE from today's promotion targets...
+    promotionTargets: [],
+    // ...but still resolvable through the plan's resolved layers.
+    layers: [{ id: "userGlobal", namespace: "global" }],
+  } as unknown as ResolvedScopeProfilePlan;
+  const config = parseConfig({ memoryDir: source.dir, sharedNamespace: "shared" });
+  // Detection: the probe must still find the historical copy there.
+  assert.equal(
+    await mergeTargetHasPromotedCopies({
+      config,
+      getStorageRouter: () => router,
+      scopeProfileWritePlan: plan,
+      sourceStorage: source,
+      targetMemoryId: "fact-target",
+    }),
+    true,
+    "a copy on a former-but-still-resolvable promotion layer must block the merge",
+  );
+  // Reconciliation: after a merge, the stale copy there is superseded.
+  const retired = await retireStaleMergedTargetPromotionCopies({
+    config,
+    getStorageRouter: () => router,
+    scopeProfileWritePlan: plan,
+    sourceStorage: source,
+    sourceMemoryId: "fact-target",
+    promotedContent: MERGED_BODY,
+    normalize: (content: string) => content,
+  });
+  assert.equal(retired, 1, "the stale copy on the former layer is retired");
+  const staleRow = await global.getMemoryByIdIncludingArchived(stale.id);
+  assert.equal(staleRow?.frontmatter.status, "superseded");
+  assert.equal(staleRow?.frontmatter.supersededBy, "fact-target");
 });

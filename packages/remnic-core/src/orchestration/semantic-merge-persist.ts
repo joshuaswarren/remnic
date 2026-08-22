@@ -29,6 +29,7 @@ import { ContentHashIndex } from "../storage/content-hash-index.js";
 import type { VersioningConfig } from "../page-versioning.js";
 import {
   finalizeMergedVersionPrune,
+  rewriteMergedTargetGraphEdges,
   stageMergedTargetSnapshot,
 } from "./semantic-merge-commit-effects.js";
 import {
@@ -61,7 +62,6 @@ import {
   resolveRecallAuxiliaryCapabilities,
   type GraphConstructionCapabilitySet,
 } from "../capabilities.js";
-import { removeNodeEdgesForRewrite, rollbackNodeEdgeRewrite } from "../graph-jsonl.js";
 import type { GraphType } from "../graph.js";
 import type {
   BehaviorSignalEvent,
@@ -886,7 +886,6 @@ export async function applySemanticMergeAtPersist(
     });
     if (!updated) return { action: "created", reason: "target_changed" };
     contentCommitted = true;
-    await finalizeMergedVersionPrune(target.path, versioning, options.storage.dir, decision.targetId);
     // The provenance patch must land on OUR merged body. An id-keyed patch
     // re-reads and stamps whatever the latest row holds, so a writer landing
     // after the content commit would receive this merge's provenance while
@@ -997,6 +996,10 @@ export async function applySemanticMergeAtPersist(
     );
     return { action: "created", reason: "update_failed" };
   }
+  // Round N+12 (A): the prune finalizes only after BOTH compare-and-swaps
+  // commit — full rationale on finalizeMergedVersionPrune. A degraded
+  // success keeps the whole history for the recovery path.
+  await finalizeMergedVersionPrune(target.path, versioning, options.storage.dir, decision.targetId);
 
   // Steps 4+5 — hash-index resync and reindex (see repairIndexes above).
   await repairIndexes();
@@ -1150,7 +1153,7 @@ export async function runMergedTargetPostEffects(
       const entry = all.find((m) => path.relative(storage.dir, m.path) === memoryRelPath);
       if (entry) entry.content = rawBody;
     }
-    // N+6 B + round N+7 (E/G) + round N+10 (C): onMemoryWritten is
+    // N+6 B + round N+7 (E/G) + round N+10 (C) + round N+12 (C): onMemoryWritten is
     // append-only, so a re-merge must first drop the target's prior
     // generated edges in EVERY enabled graph type — entity from-side,
     // time/causal inbound — or each later merge re-appends them and
@@ -1165,28 +1168,31 @@ export async function runMergedTargetPostEffects(
     if (input.graphCaps.entityGraph) rewriteTypes.push("entity");
     if (input.graphCaps.timeGraph) rewriteTypes.push("time");
     if (input.graphCaps.causalGraph) rewriteTypes.push("causal");
-    const removedEdges = await removeNodeEdgesForRewrite(storage.dir, memoryRelPath, rewriteTypes);
-    try {
-      await deps.buildGraphEdge(
-        storage,
-        memoryRelPath,
-        entityRef,
-        merge.targetId,
-        rawBody,
-        all,
-        input.graphContext.memoryPathById,
-        input.threadIdForEdge,
-        input.threadEpisodeIdsForGraph,
-        input.graphContext.previousPersistedRelPath,
-        input.graphCaps,
-      );
-      input.graphContext.previousPersistedRelPath = memoryRelPath;
-    } catch (buildErr) {
-      // Round N+10 (C): the failed build may have appended SOME of the node's
-      // new edges — roll them back BEFORE restoring the prior set.
-      await rollbackNodeEdgeRewrite(storage.dir, memoryRelPath, rewriteTypes, removedEdges, merge.targetId);
-      throw buildErr;
-    }
+    // Round N+12 (C): the remove-and-rebuild is revision-guarded end to end
+    // (see rewriteMergedTargetGraphEdges) — a writer committing a newer body
+    // mid-rebuild aborts this install instead of clobbering its edges.
+    const installed = await rewriteMergedTargetGraphEdges(storage, {
+      targetId: merge.targetId,
+      memoryRelPath,
+      mergedContent: merge.mergedContent,
+      revisionChecked: committed.frontmatter.updated,
+      rewriteTypes,
+      build: () =>
+        deps.buildGraphEdge(
+          storage,
+          memoryRelPath,
+          entityRef,
+          merge.targetId,
+          rawBody,
+          all,
+          input.graphContext.memoryPathById,
+          input.threadIdForEdge,
+          input.threadEpisodeIdsForGraph,
+          input.graphContext.previousPersistedRelPath,
+          input.graphCaps,
+        ),
+    });
+    if (installed) input.graphContext.previousPersistedRelPath = memoryRelPath;
   } catch {
     /* fail-open: the committed merge stands; the create path's graph block fails open too */
   }
