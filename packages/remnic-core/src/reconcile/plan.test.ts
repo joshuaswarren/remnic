@@ -1033,3 +1033,20 @@ test("POSIX-origin colon paths are rejected when the PEER platform is win32", ()
     "a push to a Windows peer must not plan a colon path"
   );
 });
+
+test("entry accumulation survives a boot-scale namespace (spread-push regression)", () => {
+  // V8's spread-argument limit sits near 125k; a namespace planning more
+  // entries than that previously died with RangeError: Maximum call stack
+  // size exceeded inside entries.push(...nsEntries).
+  const files: ReconcileFileState[] = [];
+  for (let i = 0; i < 130_000; i++) {
+    files.push({ path: `facts/boot-scale/f-${i}.md`, sha256: digest(`peer-${i}`), mtimeMs: 1000 });
+  }
+  const entries = planNamespaceReconciliation({
+    namespace: "default",
+    local: [],
+    peer: files,
+  });
+  assert.equal(entries.length, 130_000);
+  assert.ok(entries.every((entry) => entry.action === "pull"));
+});

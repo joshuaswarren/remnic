@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `planReconciliation` spread-pushed each namespace's entries (`entries.push(...nsEntries)`); a boot-scale namespace (~100k entries) exceeds the call-stack argument limit and the plan dies with `RangeError: Maximum call stack size exceeded`. Entries are pushed per element now.
+
 ## [v9.69.18] — 2026-08-22
 
 ### Fixed

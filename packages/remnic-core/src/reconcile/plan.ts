@@ -867,7 +867,12 @@ export function planReconciliation(
       );
     }
     seenNamespaces.add(name);
-    entries.push(...planNamespaceReconciliation(namespace, options));
+    // Spread-push over a boot-scale namespace (~100k entries) exceeds the
+    // call-stack argument limit (RangeError: Maximum call stack size exceeded)
+    // — push per entry instead.
+    for (const entry of planNamespaceReconciliation(namespace, options)) {
+      entries.push(entry);
+    }
   }
   entries.sort(compareReconcilePlanEntries);
   return {
