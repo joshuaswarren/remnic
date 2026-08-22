@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+
+### Added
+
+- `POST /engram/v1/briefing` exposes the daily briefing over the access HTTP boundary: the same registered `briefing` operation the MCP tool dispatches (schema validation, namespace gating, principal propagation), so thin HTTP clients — a Linux desktop panel client, health dashboards — can render a briefing without shelling out to the CLI. Pure read: no write-quota accounting. The response carries both renderings (`markdown` and `json` sections) in one payload regardless of the requested `format`.
+
 ## [v9.69.20] — 2026-08-22
 
 ### Fixed
