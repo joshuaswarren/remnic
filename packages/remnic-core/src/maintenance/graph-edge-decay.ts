@@ -32,6 +32,8 @@ import {
   type DecayOptions,
 } from "../graph-edge-reinforcement.js";
 import { writeGraphJsonlAtomic } from "../graph-jsonl.js";
+import { log } from "../logger.js";
+import { assertGraphLockHeld, yieldForLockHeartbeat } from "../graph-write-lock.js";
 import {
   graphFilePath,
   graphsDir,
@@ -150,7 +152,7 @@ export async function runGraphEdgeDecayMaintenance(
       typeDecayed,
       typeBelow,
       typeTotal,
-    } = await withGraphWriteLock(filePath, async () => {
+    } = await withGraphWriteLock(filePath, async (lock) => {
       const edges = await readEdgesStrict(memoryDir, type);
       const updated: GraphEdge[] = new Array(edges.length);
 
@@ -159,6 +161,10 @@ export async function runGraphEdgeDecayMaintenance(
       let localChangedAny = false;
 
       for (let i = 0; i < edges.length; i += 1) {
+        // Round N+19 A: the per-edge decay pass is CPU-bound; yield
+        // periodically so the lock's mtime heartbeat timer can fire and a
+        // peer does not judge the lock stale mid-run.
+        if (i > 0 && i % 5_000 === 0) await yieldForLockHeartbeat();
         const edge = edges[i];
         const before = readEdgeConfidence(edge);
         const decayed = decayEdgeConfidence(edge, ranAt, { windowMs, perWindow, floor });
@@ -199,6 +205,21 @@ export async function runGraphEdgeDecayMaintenance(
       }
 
       if (!dryRun && localChangedAny && edges.length > 0) {
+        // Round N+19 A: revalidate ownership before the rename-backed
+        // replace — a peer that stale-broke this lock during the (yielding)
+        // decay pass owns the file now. Leave it untouched; the next run
+        // re-decays from whatever the peer published. The pass reports zero
+        // decayed edges for this type so the telemetry never claims a
+        // rewrite that did not land (per-label drop totals may still include
+        // the skipped pass — the warning names it).
+        try {
+          await assertGraphLockHeld(filePath, lock);
+        } catch (err) {
+          log.warn(
+            `graph decay: skipped the ${type} rewrite — ${err instanceof Error ? err.message : String(err)}; per-label drop totals may include this skipped pass`,
+          );
+          return { typeDecayed: 0, typeBelow: localBelow, typeTotal: edges.length };
+        }
         await writeGraphJsonlAtomic(filePath, updated);
       }
 

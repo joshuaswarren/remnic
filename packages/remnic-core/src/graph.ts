@@ -24,7 +24,12 @@ import {
   type ActivationPredecessor,
 } from "./graph-path-reconstruction.js";
 export { reconstructActivationPath, type ActivationPredecessor };
-import { withGraphWriteLock } from "./graph-write-lock.js";
+import {
+  assertGraphLockHeld,
+  GraphLockLostError,
+  withGraphWriteLock,
+  yieldForLockHeartbeat,
+} from "./graph-write-lock.js";
 
 export type GraphType = "entity" | "time" | "causal";
 
@@ -115,13 +120,15 @@ export async function ensureGraphsDir(memoryDir: string): Promise<void> {
 // in-process chain plus the cross-process advisory lock, issue #2330 round
 // N+18 A). Re-exported here because `@remnic/core/graph` is a public
 // subpath export whose consumers import `withGraphWriteLock` from it.
-export { withGraphWriteLock };
+export { withGraphWriteLock, GraphLockLostError };
 
 export async function appendEdge(memoryDir: string, edge: GraphEdge): Promise<void> {
   await ensureGraphsDir(memoryDir);
   const filePath = graphFilePath(memoryDir, edge.type);
   const line = `${JSON.stringify(edge)}\n`;
-  await withGraphWriteLock(filePath, async () => {
+  await withGraphWriteLock(filePath, async (lock) => {
+    // Round N+19 A: never append into a file a peer that broke this lock may rename over.
+    await assertGraphLockHeld(filePath, lock);
     await appendFile(filePath, line, "utf8");
   });
   // Emit edge-added event for SSE subscribers (issue #691 PR 5/5).
@@ -157,6 +164,23 @@ function parseEdgesJsonl(raw: string, expectedType: GraphType): GraphEdge[] {
   return edges;
 }
 
+/** Parse batch size at which locked-section parsing yields to the event loop
+ * so the graph lock's heartbeat timer can fire (round N+19 A). */
+const EDGE_PARSE_YIELD_BATCH = 5_000;
+
+/** Chunked {@link parseEdgesJsonl} yielding between batches; used by
+ * {@link readEdgesStrict} (the locked-section reader) — the hot recall path
+ * (`readEdges`) keeps the synchronous parse. */
+async function parseEdgesJsonlYielding(raw: string, expectedType: GraphType): Promise<GraphEdge[]> {
+  const lines = raw.split("\n");
+  const edges: GraphEdge[] = [];
+  for (let i = 0; i < lines.length; i += EDGE_PARSE_YIELD_BATCH) {
+    if (i > 0) await yieldForLockHeartbeat();
+    edges.push(...parseEdgesJsonl(lines.slice(i, i + EDGE_PARSE_YIELD_BATCH).join("\n"), expectedType));
+  }
+  return edges;
+}
+
 /**
  * Read all edges of a given type from the JSONL file.
  * Returns [] if the file doesn't exist or any read error occurs (fail-open).
@@ -187,7 +211,7 @@ export async function readEdgesStrict(memoryDir: string, type: GraphType): Promi
   const filePath = graphFilePath(memoryDir, type);
   try {
     const raw = await readFile(filePath, "utf8");
-    return parseEdgesJsonl(raw, type);
+    return await parseEdgesJsonlYielding(raw, type);
   } catch (err) {
     if (isNodeError(err) && err.code === "ENOENT") {
       return [];

@@ -31,6 +31,7 @@ import {
   committedMergedFactHash,
   discardMergedTargetSnapshot,
   finalizeMergedVersionPrune,
+  persistRepairedContentHash,
   rawPreCitationMergedBody,
   readTargetSnapshot,
   revertMergedContent,
@@ -674,6 +675,18 @@ export async function applySemanticMergeAtPersist(
       await options.storage.removeFactContentHashesForMemories([target]);
       if (committedFactHash !== undefined) {
         await options.storage.registerFactContentHash(decision.targetId, committedFactHash);
+        // Round N+19 (B): also persist the repaired identity in the
+        // frontmatter — the index registration is process-local state over
+        // a persisted stale `contentHash`, and a restart's corpus rebuild
+        // prefers the persisted value, which would discard this repair.
+        // CAS-guarded and non-fatal: a concurrent writer that already
+        // replaced the record keeps its own (correct) identity.
+        await persistRepairedContentHash(
+          options.storage,
+          decision.targetId,
+          committedContent,
+          committedFactHash,
+        );
       } else {
         await options.storage.restoreFactHashAfterApproval(decision.targetId);
       }

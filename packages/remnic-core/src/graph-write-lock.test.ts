@@ -10,11 +10,19 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { graphFilePath } from "./graph.js";
+import {
+  assertGraphLockHeld,
+  GraphLockLostError,
+  withGraphWriteLock,
+} from "./graph-write-lock.js";
+import { removeNodeEdgesForRewrite } from "./graph-jsonl.js";
 
 test("withGraphWriteLock: a peer append between read and rewrite is never discarded (round N+18 A)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-xproc-"));
@@ -95,4 +103,91 @@ test("withGraphWriteLock: a peer append between read and rewrite is never discar
     APPENDS,
     `every peer-appended edge must survive the concurrent rewrites (found ${peerAppended.length} of ${APPENDS})`,
   );
+});
+
+// ── Round N+19 (A): the lock's mtime heartbeat is a timer; it cannot fire
+// while a synchronous parse/serialize blocks the event loop, so a peer can
+// stale-break the lock past the 30s window and publish its own write. A
+// section about to publish must revalidate ownership and abort on loss.
+
+test("withGraphWriteLock: refresh reports a peer-replaced lock and the guarded publish refuses (round N+19 A)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-locklost-"));
+  const filePath = graphFilePath(dir, "entity");
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const PEER_ROW = `${JSON.stringify({
+    from: "facts/peer.md",
+    to: "facts/peer-target.md",
+    type: "entity",
+    weight: 1,
+    label: "peer",
+    ts: "2026-08-22T00:00:00.000Z",
+  })}\n`;
+  await writeFile(filePath, PEER_ROW, "utf8");
+
+  await withGraphWriteLock(filePath, async (lock) => {
+    assert.equal(await lock.refresh(), true, "an unbroken lock refreshes");
+    // Simulate the stalled-section consequence: a peer stale-broke our lock
+    // and published its own (the row above is its write).
+    const lockPath = `${filePath}.lock`;
+    await unlink(lockPath).catch(() => undefined);
+    await writeFile(lockPath, `${process.pid} peer-${randomUUID()} ${new Date().toISOString()}\n`, "utf8");
+    assert.equal(await lock.refresh(), false, "ownership was lost to the peer");
+    await assert.rejects(assertGraphLockHeld(filePath, lock), GraphLockLostError);
+    assert.equal(await readFile(filePath, "utf8"), PEER_ROW, "the refused publish left the peer's write intact");
+  });
+});
+
+test("removeNodeEdgesForRewrite: a stale-broken lock aborts the rewrite instead of clobbering the peer (round N+19 A)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-abort-"));
+  const filePath = graphFilePath(dir, "entity");
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const NODE = "facts/mine.md";
+  // A corpus large enough that the section's chunked parse yields to the
+  // event loop many times, giving the simulated peer's break a guaranteed
+  // landing window inside the section (before the publish guard).
+  const rows: string[] = [];
+  for (let i = 0; i < 59_999; i += 1) {
+    rows.push(
+      JSON.stringify({
+        from: "facts/other.md",
+        to: `facts/x-${i}.md`,
+        type: "entity",
+        weight: 1,
+        label: `row${i}`,
+        ts: "2026-08-22T00:00:00.000Z",
+      }),
+    );
+  }
+  rows.push(
+    JSON.stringify({
+      from: NODE,
+      to: "facts/mine-target.md",
+      type: "entity",
+      weight: 1,
+      label: "mine",
+      ts: "2026-08-22T00:00:00.000Z",
+    }),
+  );
+  await writeFile(filePath, `${rows.join("\n")}\n`, "utf8");
+
+  const lockPath = `${filePath}.lock`;
+  const breakAsPeer = (async () => {
+    while (!existsSync(lockPath)) await new Promise<void>((resolve) => setImmediate(resolve));
+    await unlink(lockPath).catch(() => undefined);
+    await writeFile(lockPath, `${process.pid} peer-${randomUUID()} ${new Date().toISOString()}\n`, "utf8");
+  })();
+
+  await assert.rejects(
+    removeNodeEdgesForRewrite(dir, NODE, ["entity"]),
+    (err: unknown) => err instanceof Error && /lost mid-section/.test(err.message),
+    "a rewrite whose lock was stale-broken mid-section must abort, not publish",
+  );
+  await breakAsPeer;
+  const after = await readFile(filePath, "utf8");
+  assert.equal(
+    after.includes(`"from":"${NODE}"`),
+    true,
+    "the aborted rewrite must leave the node's edges untouched (the peer that broke the lock owns the file)",
+  );
+  assert.equal(after.split("\n").filter((line) => line.trim().length > 0).length, 60_000);
 });

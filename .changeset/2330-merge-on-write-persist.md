@@ -266,3 +266,27 @@ builder and its payload type moved to the `semantic-merge-promotion-payload.ts`
 sibling. The CI test-typecheck failure was real: a round-N+17 test addition
 passed an implicitly-any callback, invisible to the root typecheck because
 `tests/**` is only compiled by the tests project.
+
+Round N+19: two review fixes plus a coverage repair. (A) A graph write
+section whose event loop was blocked past the lock's stale window can no
+longer clobber a peer: every locked graph section now receives the lock's
+ownership controller and revalidates it (`refresh`) immediately before
+publishing a replacement or appending — a lock that was stale-broken and
+replaced mid-section aborts the write (`GraphLockLostError`, re-exported
+from `@remnic/core/graph`) instead of overwriting the peer's committed
+rows; the surgical rollback marks such a type as newer-writer residue
+instead of sweeping it, and the decay job leaves the file for its next
+run (reporting zero decayed edges for the skipped type). The large-pass
+CPU work inside locked sections — JSONL parse, serialize, and the decay
+transform — now yields to the event loop every 5,000 rows so the lock's
+mtime heartbeat timer can fire and sections are broken far less often in
+the first place. (B) The degraded merge repair is now durable as well as
+process-local: the record's persisted frontmatter `contentHash` is
+restamped to the committed merged body's hash (CAS-guarded, best-effort)
+right after the index registration, because a restart's first-use index
+rebuild derives hashes from the corpus and the stale persisted identity
+would otherwise discard the repair — exact dedup after a restart now
+finds the merged body. The CI lifecycle-coverage gap that missed the
+new `semantic-merge-promotion-payload.ts` sibling is closed: it maps to
+the `semantic-merge-lifecycle` subject, which exercises the real merge →
+promotion-payload path for all nine matrix rows.

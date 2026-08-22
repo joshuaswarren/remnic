@@ -15,7 +15,7 @@ import { buildMergedTargetPromotionPayload } from "../orchestration/semantic-mer
 import { appendEdge, GraphIndex, type GraphEdge } from "../graph.js";
 import { PersistenceIndexCoordinator } from "../orchestration/persistence-index.js";
 import { createBatchPromotedCopyProbe, promotionWithholdsToolScope } from "../orchestration/extraction-persist-promotion.js";
-import { persistMergedTargetThreadEpisode } from "../orchestration/semantic-merge-commit-effects.js";
+import { persistMergedTargetThreadEpisode, persistRepairedContentHash } from "../orchestration/semantic-merge-commit-effects.js";
 import { ThreadingManager } from "../threading.js";
 import { withholdToolScopedFromSharedNamespace } from "../tool-scoped-memory.js";
 import type { ExtractionPersistDeps } from "../orchestration/extraction-persist-deps.js";
@@ -458,7 +458,7 @@ interface MergeHarness {
   setTargetContent: (content: string) => Promise<void>;
   calls: {
     contentUpdates: Array<{ id: string; content: string; actor?: string }>;
-    frontmatterPatches: Array<{ id: string; patch: Partial<MemoryFrontmatter> }>;
+    frontmatterPatches: Array<{ id: string; patch: Partial<MemoryFrontmatter>; actor?: string }>;
     hashRemovals: string[];
     hashAdds: string[];
     hashRegistrations: Array<{ id: string; hash: string }>;
@@ -627,12 +627,13 @@ async function harness(
     writeMemoryFrontmatterIfUnchanged: async (
       expected: MemoryFile,
       patch: Partial<MemoryFrontmatter>,
+      options?: { actor?: string },
     ) => {
       // A concurrent writer inside the patch window: after the caller's
       // verifying read, before storage takes its own lock.
       if (overrides.mutateAtPatch !== undefined) await commit(overrides.mutateAtPatch);
       if (!(await unchanged(expected))) return false;
-      calls.frontmatterPatches.push({ id: expected.frontmatter.id, patch });
+      calls.frontmatterPatches.push({ id: expected.frontmatter.id, patch, actor: options?.actor });
       return overrides.frontmatterFails !== true;
     },
     removeFactContentHashesForMemories: async (memories: MemoryFile[]) => {
@@ -1201,6 +1202,84 @@ test("registerFactContentHash: exact dedup finds the degraded record's merged bo
       await storage.hasFactContentHash(MERGED),
       true,
       "exact dedup must find the committed merged body's hash",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── Round N+19 (B): the degraded repair must also be DURABLE. The N+16 C
+// registration lives in the process-local fact-hash index while the record's
+// PERSISTED frontmatter still carries the stale pre-merge `contentHash` — and
+// a restart's first-use index rebuild derives hashes from the corpus, where
+// the persisted value wins whenever it disagrees with the current body. The
+// repair must therefore also restamp the persisted identity. ────────────────
+
+test("applySemanticMergeAtPersist: the degraded repair persists the committed body's hash in the frontmatter (round N+19 B)", async () => {
+  const h = await harness({ frontmatterFails: true, rollbackFails: true });
+  const STALE = ContentHashIndex.computeHash(sanitizeMemoryContent(EXISTING).text);
+  h.target.frontmatter.contentHash = STALE;
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  // The provenance patch itself failed (frontmatterFails); the repair must
+  // still attempt a CAS-guarded restamp of ONLY the content identity. The
+  // provenance patch also carries a contentHash, so identify the repair as
+  // the LAST patch — the degraded branch runs after the failed patch.
+  const EXPECTED = ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text);
+  const patches = h.calls.frontmatterPatches;
+  assert.equal(patches.length, 2, "the failed provenance patch, then the durable repair");
+  const repair = patches[1];
+  assert.deepEqual(
+    Object.keys(repair.patch),
+    ["contentHash"],
+    "the repair patch must touch only the content identity — provenance fields stay unpatched on the degraded record",
+  );
+  assert.equal(repair.patch.contentHash, EXPECTED);
+  assert.equal(repair.actor, "semantic-merge");
+});
+
+test("persistRepairedContentHash: the repaired hash survives a restart's corpus rebuild (round N+19 B)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-hash-durable-"));
+  try {
+    const storage = new StorageManager(dir);
+    const { id } = await storage.writeMemory("fact", EXISTING, { source: "extraction" });
+    // Reproduce the degraded state the way the merge creates it: the body is
+    // compare-and-swapped to the merged text while the frontmatter keeps the
+    // old identity (updateMemoryIfUnchanged preserves contentHash).
+    const before = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id)!;
+    assert.equal(await storage.updateMemoryIfUnchanged(before, MERGED, { actor: "semantic-merge" }), true);
+    const mergedHash = ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text);
+    // The N+16 C repair alone (process-local registration).
+    await storage.registerFactContentHash(id, mergedHash);
+    // Simulated restart WITHOUT the durable repair: the fresh instance ALWAYS
+    // rebuilds the index from the durable corpus on first use, and the corpus
+    // reader prefers the stale persisted identity — the pre-fix loss this
+    // regression pins.
+    const lost = new StorageManager(dir);
+    assert.equal(
+      await lost.hasFactContentHash(MERGED),
+      false,
+      "pre-fix behavior: the process-local registration does not survive the corpus rebuild",
+    );
+    // The durable repair restamps the persisted identity (CAS-guarded).
+    await persistRepairedContentHash(storage, id, MERGED, mergedHash);
+    const repaired = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id)!;
+    assert.equal(repaired.frontmatter.contentHash, mergedHash, "the persisted identity is the merged body's hash");
+    const restarted = new StorageManager(dir);
+    assert.equal(
+      await restarted.hasFactContentHash(MERGED),
+      true,
+      "the corpus rebuild must serve the merged-body hash after the durable repair",
+    );
+    assert.equal(
+      await restarted.hasFactContentHash(EXISTING),
+      false,
+      "the stale pre-merge identity must no longer be the record's registered hash",
     );
   } finally {
     await rm(dir, { recursive: true, force: true });

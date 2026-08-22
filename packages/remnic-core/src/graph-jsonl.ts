@@ -10,9 +10,9 @@
 
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import * as path from "node:path";
-
 import { log } from "./logger.js";
 import { graphFilePath, readEdgesStrict, withGraphWriteLock, type GraphEdge, type GraphType } from "./graph.js";
+import { assertGraphLockHeld, yieldForLockHeartbeat } from "./graph-write-lock.js";
 
 /**
  * Write a graph JSONL file atomically using temp+rename (gotcha #54: never
@@ -20,9 +20,25 @@ import { graphFilePath, readEdgesStrict, withGraphWriteLock, type GraphEdge, typ
  * the edge-decay rewrite and node-edge replacement so every JSONL rewrite
  * path serializes on the same lock and the same atomic-write discipline.
  */
+/** Serialize batch size at which body building yields to the event loop
+ * (round N+19 A): one `map+join` over a large corpus blocks the loop past
+ * the lock's heartbeat window. */
+const EDGE_SERIALIZE_YIELD_BATCH = 5_000;
+
 export async function writeGraphJsonlAtomic(filePath: string, edges: GraphEdge[]): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
-  const body = edges.length === 0 ? "" : edges.map((e) => JSON.stringify(e)).join("\n") + "\n";
+  // Chunked with event-loop yields: the caller holds the graph write lock,
+  // and its mtime heartbeat is a timer that cannot fire while a single
+  // synchronous stringify pass over a multi-hundred-thousand-row corpus
+  // blocks the loop (round N+19 A).
+  let body = "";
+  for (let i = 0; i < edges.length; i += EDGE_SERIALIZE_YIELD_BATCH) {
+    if (i > 0) await yieldForLockHeartbeat();
+    const end = Math.min(i + EDGE_SERIALIZE_YIELD_BATCH, edges.length);
+    for (let j = i; j < end; j += 1) {
+      body += `${JSON.stringify(edges[j])}\n`;
+    }
+  }
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
   await writeFile(tempPath, body, "utf-8");
   await rename(tempPath, filePath);
@@ -69,10 +85,15 @@ export async function removeNodeEdgesForRewrite(
     const filePath = graphFilePath(memoryDir, type);
     let removed: GraphEdge[];
     try {
-      removed = await withGraphWriteLock(filePath, async () => {
+      removed = await withGraphWriteLock(filePath, async (lock) => {
         const edges = await readEdgesStrict(memoryDir, type);
         const removedEdges = edges.filter((edge) => isNodeGeneratedEdge(edge, type, memoryPath));
         if (removedEdges.length === 0) return [];
+        // Round N+19 A: a peer may have stale-broken this lock while a large
+        // parse blocked the loop — revalidate ownership before publishing the
+        // replacement; a lost lock aborts (the catch below restores any
+        // earlier committed types, then rethrows).
+        await assertGraphLockHeld(filePath, lock);
         await writeGraphJsonlAtomic(
           filePath,
           edges.filter((edge) => !isNodeGeneratedEdge(edge, type, memoryPath)),
@@ -104,11 +125,16 @@ export async function restoreRemovedNodeEdges(
   removed: RemovedNodeEdges,
 ): Promise<number> {
   if (removed.removed.length === 0) return 0;
-  return withGraphWriteLock(removed.filePath, async () => {
+  return withGraphWriteLock(removed.filePath, async (lock) => {
     const current = await readEdgesStrict(memoryDir, removed.type);
     const present = new Set(current.map((edge) => JSON.stringify(edge)));
     const toRestore = removed.removed.filter((edge) => !present.has(JSON.stringify(edge)));
     if (toRestore.length === 0) return 0;
+    // Round N+19 A: revalidate ownership before restoring over the file —
+    // a peer that broke the lock owns the file now, and restoring our older
+    // snapshot over its write would clobber it. The throw leaves the current
+    // (peer-owned) file intact; callers log the skipped restore.
+    await assertGraphLockHeld(removed.filePath, lock);
     await writeGraphJsonlAtomic(removed.filePath, [...current, ...toRestore]);
     return toRestore.length;
   });
@@ -196,12 +222,23 @@ async function removeAppendedNodeEdges(
   for (const type of types) {
     const filePath = graphFilePath(memoryDir, type);
     const mine = mineByType.get(type) ?? [];
-    await withGraphWriteLock(filePath, async () => {
+    await withGraphWriteLock(filePath, async (lock) => {
       const edges = await readEdgesStrict(memoryDir, type);
       if (mine.length > 0) {
         const identities = new Set(mine);
         const kept = edges.filter((edge) => !identities.has(JSON.stringify(edge)));
         if (kept.length !== edges.length) {
+          // Round N+19 A: lost lock — a peer owns the file. Cleaning it would
+          // clobber the peer's write, so leave it, mark the type as residue,
+          // and let the caller skip restoring its older snapshot over it
+          // (our appended rows may survive as duplicates; graph health
+          // repair reconciles). Never old-plus-partial-new over a peer.
+          try {
+            await assertGraphLockHeld(filePath, lock);
+          } catch {
+            residue.add(type);
+            return;
+          }
           await writeGraphJsonlAtomic(filePath, kept);
         }
       }

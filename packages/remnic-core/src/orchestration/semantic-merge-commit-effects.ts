@@ -21,6 +21,7 @@ import {
   stripCitationForTemplate,
 } from "../source-attribution.js";
 import { resolvePipelineProcessingCapabilities } from "../capabilities.js";
+import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
 import { ContentHashIndex } from "../storage/content-hash-index.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
@@ -28,7 +29,7 @@ import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
 import { log } from "../logger.js";
 import { createVersion, pruneVersions, removeVersion, type VersioningConfig } from "../page-versioning.js";
 import type { ThreadingManager } from "../threading.js";
-import type { MemoryFile } from "../types.js";
+import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import type { StorageManager } from "../index.js";
 
 /**
@@ -297,4 +298,48 @@ export function committedMergedFactHash(
 ): string | undefined {
   if (category !== "fact") return undefined;
   return ContentHashIndex.computeHash(sanitizeMemoryContent(rawPreCitationMergedBody(deps, committedContent)).text);
+}
+
+/**
+ * Round N+19 (B): durably persist the degraded merge's repaired hash. The
+ * round-N+16 C repair registered the committed body's hash in the
+ * process-local fact-hash index, but the record's PERSISTED frontmatter
+ * `contentHash` still carried the stale pre-merge identity — and a restart's
+ * first-use index rebuild derives hashes from the durable corpus, where
+ * `corpusRegisteredHashes` returns the stale persisted value whenever it
+ * disagrees with the current body. The repair was therefore discarded on
+ * restart. This restamps the persisted identity to the committed body's hash
+ * through the same conditional frontmatter API the provenance patch uses: a
+ * writer that replaced the record meanwhile fails the compare and keeps its
+ * own (correct) identity. Best-effort — failures are logged, never fatal to
+ * the degraded merge.
+ */
+export async function persistRepairedContentHash(
+  storage: {
+    getMemoryByIdIncludingArchived: (id: string) => Promise<MemoryFile | null>;
+    writeMemoryFrontmatterIfUnchanged: (
+      expected: MemoryFile,
+      patch: Partial<MemoryFrontmatter>,
+      lifecycle?: { actor?: string },
+    ) => Promise<boolean>;
+  },
+  targetId: string,
+  committedContent: string,
+  contentHash: string,
+): Promise<void> {
+  try {
+    const current = await storage.getMemoryByIdIncludingArchived(targetId);
+    if (!current || current.content !== committedContent) return;
+    if (inferMemoryStatus(current.frontmatter, current.path) !== "active") return;
+    if (current.frontmatter.contentHash === contentHash) return;
+    await storage.writeMemoryFrontmatterIfUnchanged(
+      current,
+      { contentHash },
+      { actor: "semantic-merge" },
+    );
+  } catch (err) {
+    log.warn(
+      `semantic-merge: durable content-hash repair failed for ${targetId} (non-fatal; the in-memory index holds the merged body until restart): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
