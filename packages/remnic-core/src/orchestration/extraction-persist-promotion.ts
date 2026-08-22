@@ -340,6 +340,15 @@ export async function mergeTargetHasPromotedCopies(args: {
  * re-reads the committed record and retires copies predating it, superseding
  * them onto the committed target itself ("none is warranted" below the
  * threshold). Promotion failures stay fail-open — the merge stands.
+ *
+ * Round N+15 (A): the payload is a CACHE of the committed record as of the
+ * builder's read. Between that read and this promotion another writer can
+ * merge the same target again (or a lifecycle operation can retire it), so
+ * the record is re-read and the cache confirmed against the committed
+ * revision AND body immediately before promoting. On any advance — or an
+ * unreadable record, which can never confirm the cache — the promotion AND
+ * its reconciliation are abandoned: the newer writer's copy stands, a cached
+ * body never becomes canonical, and the next merge retries both.
  */
 export async function promoteAndReconcileMergedTarget(args: {
   promote: (payload: MergedTargetPromotionPayload) => Promise<string | undefined>;
@@ -357,8 +366,23 @@ export async function promoteAndReconcileMergedTarget(args: {
 }): Promise<void> {
   let promotedCopyId: string | undefined;
   if (args.mergedPromotion) {
+    const payload = args.mergedPromotion;
+    const current = await args.sourceStorage
+      .getMemoryByIdIncludingArchived(args.sourceMemoryId)
+      .catch(() => null);
+    if (
+      !current ||
+      inferMemoryStatus(current.frontmatter, current.path) !== "active" ||
+      current.content !== payload.content ||
+      (current.frontmatter.updated ?? undefined) !== (payload.committedRevision ?? undefined)
+    ) {
+      log.warn(
+        `persistExtraction: merged-target promotion abandoned for ${args.sourceMemoryId} — the committed record advanced past the cached payload, so the newer writer's copy stands`,
+      );
+      return;
+    }
     try {
-      promotedCopyId = await args.promote(args.mergedPromotion);
+      promotedCopyId = await args.promote(payload);
     } catch (err) {
       log.warn(
         `persistExtraction: merged-target promotion failed open for ${args.sourceMemoryId}: ${err}`,
@@ -397,21 +421,24 @@ export async function promoteAndReconcileMergedTarget(args: {
  * adds the current body — promotion dedups by content, so both copies stay
  * active across namespaces. Detection: an ACTIVE memory in any resolved
  * promotion namespace (never the source's own) whose `sourceMemoryId` names
- * this target, whose id is not the copy just written, and whose normalized
- * body differs from the canonical body. Round N+10 (A) extended this to the
- * NO-promotion path: `promotedContent` may be omitted (the committed source
- * record is re-read and its content is the canonical body, so a copy
- * matching a body a mid-flight replacement wrote is NOT stale and stays),
- * and `promotedMemoryId` may be omitted (below-threshold downgrade or
- * degraded merge) — stale copies then supersede onto the committed source
- * target itself, leaving exactly one current copy or none if none is
- * warranted. Round N+13 (A): an unreadable, missing, or empty canonical
- * body ABORTS the reconciliation — no copy is ever retired off a body that
- * was never confirmed. Replace, not add: each stale copy is superseded with
- * `supersededBy` pointing at the current copy (or the source target).
- * Best-effort and fail-open per namespace — a failed retirement is logged
- * and leaves the pre-fix state, which the next merge retries. Returns the
- * number of stale copies retired.
+ * this target and whose normalized body differs from the canonical body.
+ * Round N+10 (A) extended this to the NO-promotion path:
+ * `promotedContent` may be omitted and `promotedMemoryId` may be omitted
+ * (below-threshold downgrade or degraded merge) — stale copies then
+ * supersede onto the committed source target itself, leaving exactly one
+ * current copy or none if none is warranted. Round N+13 (A): an
+ * unreadable, missing, or empty canonical body ABORTS the reconciliation —
+ * no copy is ever retired off a body that was never confirmed. Round N+15
+ * (A): the canonical body is ALWAYS the re-read committed record, never the
+ * promotion's cached payload — a writer committing a newer merge between
+ * this writer's promotion and its reconciliation would otherwise have its
+ * current copy superseded off the older cached body; when the re-read has
+ * moved past the promoted body, this promotion's own copies are stale too
+ * and supersede onto the SOURCE target. Replace, not add: each stale copy
+ * is superseded with `supersededBy` pointing at the current copy (or the
+ * source target). Best-effort and fail-open per namespace — a failed
+ * retirement is logged and leaves the pre-fix state, which the next merge
+ * retries. Returns the number of stale copies retired.
  */
 export async function retireStaleMergedTargetPromotionCopies(args: {
   config: PluginConfig;
@@ -421,18 +448,17 @@ export async function retireStaleMergedTargetPromotionCopies(args: {
   scopeProfileWritePlan: ResolvedScopeProfilePlan | null | undefined;
   sourceStorage: StorageManager;
   sourceMemoryId: string;
-  /** The body the merged-target promotion wrote (raw committed record content). Omit on the no-promotion path — the committed source record is re-read instead. */
+  /** The body the merged-target promotion wrote (raw committed record content). Omit on the no-promotion path. The canonical body is always re-read from the committed record; this only selects the supersession target. */
   promotedContent?: string;
-  /** The id of the promoted copy just written (supersession target). Omit when no replacement promotion ran — stale copies supersede onto the source target. */
+  /** The id of the promoted copy just written (supersession target while it still carries the canonical body). Omit when no replacement promotion ran — stale copies supersede onto the source target. */
   promotedMemoryId?: string;
   /** The caller's canonical content form (normalizeStoredHashSource). */
   normalize: (content: string) => string;
 }): Promise<number> {
-  const supersessionTarget = args.promotedMemoryId ?? args.sourceMemoryId;
-  const canonicalRecord = args.promotedContent === undefined
-    ? await args.sourceStorage.getMemoryByIdIncludingArchived(args.sourceMemoryId).catch(() => null)
-    : null;
-  const canonicalBody = args.promotedContent ?? canonicalRecord?.content;
+  const canonicalRecord = await args.sourceStorage
+    .getMemoryByIdIncludingArchived(args.sourceMemoryId)
+    .catch(() => null);
+  const canonicalBody = canonicalRecord?.content;
   // Round N+13 (A): the guard's outcomes are "keep copies" and "retire
   // copies", so an unreadable canonical record MUST resolve to keep. A
   // failed re-read degrading to "" made every non-empty active copy compare
@@ -445,7 +471,20 @@ export async function retireStaleMergedTargetPromotionCopies(args: {
     );
     return 0;
   }
-  const promotedForm = args.normalize(canonicalBody);
+  const canonicalForm = args.normalize(canonicalBody);
+  // Round N+15 (A): the just-written copy is the supersession target only
+  // while it still carries the canonical body. When the re-read record has
+  // moved past the promoted body (a newer writer committed mid-flight), the
+  // SOURCE target is the live canonical record and every stale copy — this
+  // promotion's own included — supersedes onto it. The id exclusion the
+  // filter used to carry is subsumed by the body compare: a copy carrying
+  // the canonical body is never stale, whatever its id.
+  const supersessionTarget =
+    args.promotedContent !== undefined &&
+    args.promotedMemoryId !== undefined &&
+    args.normalize(args.promotedContent) === canonicalForm
+      ? args.promotedMemoryId
+      : args.sourceMemoryId;
   let retired = 0;
   for (const namespace of promotionScanNamespaces(args.config, args.scopeProfileWritePlan)) {
     try {
@@ -455,9 +494,8 @@ export async function retireStaleMergedTargetPromotionCopies(args: {
       const stale = active.filter(
         (memory) =>
           memory.frontmatter.sourceMemoryId === args.sourceMemoryId &&
-          memory.frontmatter.id !== args.promotedMemoryId &&
           (memory.frontmatter.status ?? "active") === "active" &&
-          args.normalize(memory.content ?? "") !== promotedForm,
+          args.normalize(memory.content ?? "") !== canonicalForm,
       );
       for (const memory of stale) {
         const superseded = await storage.supersedeMemory(

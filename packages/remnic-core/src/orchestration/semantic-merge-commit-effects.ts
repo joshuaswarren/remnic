@@ -23,10 +23,12 @@ import type { MemoryFile } from "../types.js";
 import type { StorageManager } from "../index.js";
 
 /**
- * Stage the pre-merge rollback snapshot WITHOUT pruning. The CAS that
- * follows can still fail on a concurrent writer; an eager prune at a full
- * history would have already discarded the oldest rollback point for a
- * merge that never happened. Returns the staged version id; throws on a
+ * Stage the pre-merge rollback snapshot WITHOUT pruning, marked `pending`.
+ * The CAS that follows can still fail on a concurrent writer; an eager
+ * prune at a full history would have already discarded the oldest rollback
+ * point for a merge that never happened, and a concurrent writer's
+ * finalizing prune cannot count this entry until its own write commits
+ * (round N+15 B). Returns the staged version id; throws on a
  * failed snapshot (the caller bypasses to the create path).
  */
 export async function stageMergedTargetSnapshot(
@@ -51,17 +53,22 @@ export async function stageMergedTargetSnapshot(
 /**
  * Finalize the deferred prune once the FULL content-and-metadata transaction
  * has committed (round N+12 A: both compare-and-swaps, not just the content
- * one) — the committed merge is the newest snapshot, so it is never the one
- * pruned. Best-effort: a prune failure is logged and never fails the
- * committed merge.
+ * one) — the staged `versionId` becomes a committed rollback point (its
+ * `pending` flag clears under the same page lock as the prune, round N+15 B),
+ * and the prune then counts only committed snapshots, so a concurrent
+ * still-pending writer's staged entry is never traded away. Best-effort: a
+ * prune failure is logged and never fails the committed merge.
  */
 export async function finalizeMergedVersionPrune(
   targetPath: string,
   versioning: VersioningConfig,
   memoryDir: string,
   targetId: string,
+  versionId: string,
 ): Promise<void> {
-  await pruneVersions(targetPath, versioning, log, memoryDir).catch((err) =>
+  await pruneVersions(targetPath, versioning, log, memoryDir, {
+    committedVersionId: versionId,
+  }).catch((err) =>
     log.warn(
       `semantic-merge: version prune finalization failed for ${targetId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
     ),

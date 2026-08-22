@@ -7,7 +7,8 @@ import path from "node:path";
 
 import { StorageManager } from "../index.js";
 import { parseConfig } from "../config.js";
-import { createBatchPromotedCopyProbe, mergeTargetHasPromotedCopies, retireStaleMergedTargetPromotionCopies } from "./extraction-persist-promotion.js";
+import { createBatchPromotedCopyProbe, mergeTargetHasPromotedCopies, promoteAndReconcileMergedTarget, retireStaleMergedTargetPromotionCopies } from "./extraction-persist-promotion.js";
+import { buildMergedTargetPromotionPayload } from "./semantic-merge-persist.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 
 // Synthetic fixtures only — no real paths, hosts, or memory content.
@@ -245,22 +246,28 @@ test("retireStaleMergedTargetPromotionCopies: a concurrent promotion of the pre-
   const s = await makeStorages();
   const PRE_MERGE_BODY = "Billing service deploys happen on Tuesdays.";
   const MERGED_BODY = "Billing service deploys happen on Tuesdays at 09:00 UTC.";
+  // The committed source record holds the merged body — the canonical
+  // record reconciliation re-reads (round N+15 A: always, not only when no
+  // promoted body is supplied).
+  const target = await s.source.writeMemory("fact", MERGED_BODY, {
+    source: "test",
+  });
   // The concurrent writer's copy: same sourceMemoryId, pre-merge body.
   const stale = await s.shared.writeMemory("fact", PRE_MERGE_BODY, {
     source: "test",
-    sourceMemoryId: "fact-target",
+    sourceMemoryId: target.id,
   });
   // The merged-target promotion's copy: same sourceMemoryId, merged body.
   const current = await s.shared.writeMemory("fact", MERGED_BODY, {
     source: "test",
-    sourceMemoryId: "fact-target",
+    sourceMemoryId: target.id,
   });
   const retired = await retireStaleMergedTargetPromotionCopies({
     config: parseConfig({ memoryDir: s.source.dir, sharedNamespace: "shared" }),
     getStorageRouter: () => s.router,
     scopeProfileWritePlan: null,
     sourceStorage: s.source,
-    sourceMemoryId: "fact-target",
+    sourceMemoryId: target.id,
     promotedContent: MERGED_BODY,
     promotedMemoryId: current.id,
     normalize: (content: string) => content,
@@ -346,9 +353,11 @@ test("former promotion layers still resolvable are scanned: a copy on a layer re
   await shared.ensureDirectories();
   const PRE_MERGE_BODY = "Billing service deploys happen on Tuesdays.";
   const MERGED_BODY = "Billing service deploys happen on Tuesdays at 09:00 UTC.";
+  // The committed source record (canonical for reconciliation, N+15 A).
+  const target = await source.writeMemory("fact", MERGED_BODY, { source: "test" });
   const stale = await global.writeMemory("fact", PRE_MERGE_BODY, {
     source: "test",
-    sourceMemoryId: "fact-target",
+    sourceMemoryId: target.id,
   });
   const router = {
     storageFor: async (namespace: string): Promise<StorageManager> => {
@@ -374,7 +383,7 @@ test("former promotion layers still resolvable are scanned: a copy on a layer re
       getStorageRouter: () => router,
       scopeProfileWritePlan: plan,
       sourceStorage: source,
-      targetMemoryId: "fact-target",
+      targetMemoryId: target.id,
     }),
     true,
     "a copy on a former-but-still-resolvable promotion layer must block the merge",
@@ -385,12 +394,141 @@ test("former promotion layers still resolvable are scanned: a copy on a layer re
     getStorageRouter: () => router,
     scopeProfileWritePlan: plan,
     sourceStorage: source,
-    sourceMemoryId: "fact-target",
+    sourceMemoryId: target.id,
     promotedContent: MERGED_BODY,
     normalize: (content: string) => content,
   });
   assert.equal(retired, 1, "the stale copy on the former layer is retired");
   const staleRow = await global.getMemoryByIdIncludingArchived(stale.id);
   assert.equal(staleRow?.frontmatter.status, "superseded");
-  assert.equal(staleRow?.frontmatter.supersededBy, "fact-target");
+  assert.equal(staleRow?.frontmatter.supersededBy, target.id);
+});
+
+// ── Round N+15 (A): multi-writer promotion races ────────────────────────────
+
+const PRE_MERGE_BODY = "Billing service deploys happen on Tuesdays.";
+const A_MERGED_BODY = "Billing service deploys happen on Tuesdays at 09:00 UTC.";
+const B_MERGED_BODY =
+  "Billing service deploys happen on Tuesdays at 09:00 UTC, paging the on-call engineer.";
+
+async function commitWriterMerge(
+  storage: StorageManager,
+  targetId: string,
+  body: string,
+): Promise<void> {
+  const snapshot = await storage.getMemoryByIdIncludingArchived(targetId);
+  assert.ok(snapshot);
+  assert.equal(await storage.updateMemoryIfUnchanged(snapshot, body), true);
+}
+
+test("promoteAndReconcileMergedTarget: abandons the cached promotion when the target advanced past it (round N+15 A)", async () => {
+  // Race: writer A built its promotion payload from the committed record,
+  // then writer B merged the SAME target again and published its copy
+  // before A resumed at the promotion. Promoting A's cached older body
+  // would hand reconciliation a stale canonical body that supersedes B's
+  // current copy. A must abandon the promotion AND its reconciliation —
+  // B's copy stands; the next merge retries both.
+  const s = await makeStorages();
+  const target = await s.source.writeMemory("fact", PRE_MERGE_BODY, {
+    source: "test",
+  });
+  await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
+  const payload = await buildMergedTargetPromotionPayload(s.source, {
+    targetId: target.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.ok(payload);
+  // Writer B merges the same target again and publishes its newer copy.
+  await commitWriterMerge(s.source, target.id, B_MERGED_BODY);
+  const bCopy = await s.shared.writeMemory("fact", B_MERGED_BODY, {
+    source: "writer-b",
+    sourceMemoryId: target.id,
+  });
+
+  let promotions = 0;
+  await promoteAndReconcileMergedTarget({
+    promote: async () => {
+      promotions += 1;
+      return `copy-${promotions}`;
+    },
+    config: parseConfig({ memoryDir: s.source.dir, sharedNamespace: "shared" }),
+    getStorageRouter: () => s.router,
+    scopeProfileWritePlan: null,
+    sourceStorage: s.source,
+    sourceMemoryId: target.id,
+    mergedPromotion: payload,
+    normalize: (content: string) => content,
+  });
+  assert.equal(promotions, 0, "the stale cached payload must never be promoted");
+  const bRow = await s.shared.getMemoryByIdIncludingArchived(bCopy.id);
+  assert.equal(
+    bRow?.frontmatter.status ?? "active",
+    "active",
+    "the newer writer's current copy stands",
+  );
+});
+
+test("promoteAndReconcileMergedTarget: reconciliation canonical is the re-read record, never the cached promoted body (round N+15 A)", async () => {
+  // The residual window: the payload revalidates clean, the promotion
+  // writes, and ONLY THEN does writer B commit a newer merge and publish
+  // its copy — before A's reconciliation runs. A cached-body canonical
+  // would supersede B's current copy; the re-read committed record is the
+  // only body reconciliation may treat as canonical.
+  const s = await makeStorages();
+  const target = await s.source.writeMemory("fact", PRE_MERGE_BODY, {
+    source: "test",
+  });
+  await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
+  const payload = await buildMergedTargetPromotionPayload(s.source, {
+    targetId: target.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.ok(payload);
+
+  let aCopyId = "";
+  let bCopyId = "";
+  await promoteAndReconcileMergedTarget({
+    promote: async (promotionPayload) => {
+      const aCopy = await s.shared.writeMemory("fact", promotionPayload.content, {
+        source: "writer-a",
+        sourceMemoryId: target.id,
+      });
+      aCopyId = aCopy.id;
+      // Writer B's second merge lands HERE — after the promotion wrote,
+      // before reconciliation runs.
+      await commitWriterMerge(s.source, target.id, B_MERGED_BODY);
+      const bCopy = await s.shared.writeMemory("fact", B_MERGED_BODY, {
+        source: "writer-b",
+        sourceMemoryId: target.id,
+      });
+      bCopyId = bCopy.id;
+      return aCopy.id;
+    },
+    config: parseConfig({ memoryDir: s.source.dir, sharedNamespace: "shared" }),
+    getStorageRouter: () => s.router,
+    scopeProfileWritePlan: null,
+    sourceStorage: s.source,
+    sourceMemoryId: target.id,
+    mergedPromotion: payload,
+    normalize: (content: string) => content,
+  });
+  const bRow = await s.shared.getMemoryByIdIncludingArchived(bCopyId);
+  assert.equal(
+    bRow?.frontmatter.status ?? "active",
+    "active",
+    "B's current copy is never superseded off A's cached body",
+  );
+  const aRow = await s.shared.getMemoryByIdIncludingArchived(aCopyId);
+  assert.equal(
+    aRow?.frontmatter.status,
+    "superseded",
+    "A's raced copy retires once the committed record moved past its body",
+  );
+  assert.equal(
+    aRow?.frontmatter.supersededBy,
+    target.id,
+    "the supersession lands on the source target — the live canonical record",
+  );
 });

@@ -139,6 +139,14 @@ export interface MergedTargetPromotionPayload {
    * returns false outright. */
   toolScoped?: true;
   sourceConnector?: string;
+  /**
+   * The committed record's `updated` revision at payload-build time (round
+   * N+15 A). The payload is a CACHE: before promoting it, the caller re-reads
+   * the record and confirms the revision AND body still match — a writer that
+   * merged the same target again in between makes this payload stale, and a
+   * stale body must never be promoted or become the reconciliation canon.
+   */
+  committedRevision?: string;
 }
 
 /**
@@ -208,6 +216,7 @@ export async function buildMergedTargetPromotionPayload(
     ...(fm.subject !== undefined ? { subject: fm.subject } : {}),
     ...(fm.toolScoped === true ? { toolScoped: true as const } : {}),
     ...(fm.sourceConnector !== undefined ? { sourceConnector: fm.sourceConnector } : {}),
+    ...(fm.updated !== undefined ? { committedRevision: fm.updated } : {}),
   };
 }
 
@@ -984,8 +993,7 @@ export async function applySemanticMergeAtPersist(
   }
   // Round N+12 (A): the prune finalizes only after BOTH compare-and-swaps
   // commit — full rationale on finalizeMergedVersionPrune. A degraded
-  // success keeps the whole history for the recovery path.
-  await finalizeMergedVersionPrune(target.path, versioning, options.storage.dir, decision.targetId);
+  await finalizeMergedVersionPrune(target.path, versioning, options.storage.dir, decision.targetId, versionId);
 
   // Steps 4+5 — hash-index resync and reindex (see repairIndexes above).
   await repairIndexes();

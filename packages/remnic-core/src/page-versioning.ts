@@ -44,6 +44,16 @@ export interface PageVersion {
   sizeBytes: number;
   trigger: VersionTrigger;
   note?: string;
+  /**
+   * True while the snapshot is STAGED by a guarded write that has not yet
+   * committed (issue #2330 round N+15 B). Pruning counts — and removes —
+   * only committed snapshots: a pending entry belongs to a writer whose
+   * compare-and-swap may still fail, so trading it for an older rollback
+   * point would leave history short of the cap once that writer aborts
+   * (removeVersion). The staging writer clears the flag when its write
+   * commits (pruneVersions `committedVersionId`) or drops the entry.
+   */
+  pending?: boolean;
 }
 
 /**
@@ -169,7 +179,8 @@ async function readManifest(
         typeof version.contentHash !== "string" ||
         typeof version.sizeBytes !== "number" ||
         !Number.isFinite(version.sizeBytes) ||
-        !(VERSION_TRIGGERS as readonly string[]).includes(String(version.trigger))
+        !(VERSION_TRIGGERS as readonly string[]).includes(String(version.trigger)) ||
+        (version.pending !== undefined && typeof version.pending !== "boolean")
       ) {
         throw new Error(`manifest version ${index} has invalid shape`);
       }
@@ -213,7 +224,10 @@ async function writeManifest(
  * `options.deferPrune` to stage the snapshot WITHOUT pruning and finalize
  * with {@link pruneVersions} once the guarded write that staged it commits —
  * a failed attempt then leaves the history untouched instead of discarding
- * the oldest rollback point (issue #2330 round N+11 C).
+ * the oldest rollback point (issue #2330 round N+11 C). A deferred snapshot
+ * is recorded `pending` until its writer commits (round N+15 B); pruning
+ * counts only committed snapshots, so no prune can trade another writer's
+ * staged entry for an older rollback point.
  */
 export async function createVersion(
   pagePath: string,
@@ -243,6 +257,7 @@ export async function createVersion(
       sizeBytes: Buffer.byteLength(content, "utf8"),
       trigger,
       ...(note !== undefined ? { note } : {}),
+      ...(options?.deferPrune === true ? { pending: true } : {}),
     };
 
     // Write snapshot file
@@ -276,8 +291,25 @@ async function pruneExcessVersions(
   ext: string,
   log: VersioningLogger,
 ): Promise<void> {
-  if (!(maxVersionsPerPage > 0) || history.versions.length <= maxVersionsPerPage) return;
-  const toRemove = history.versions.splice(0, history.versions.length - maxVersionsPerPage);
+  if (!(maxVersionsPerPage > 0)) return;
+  // Round N+15 (B): count only COMMITTED snapshots. Two concurrent merges
+  // can both stage (deferPrune) before either commits; a prune that counted
+  // the other writer's pending entry would drop one more rollback point
+  // than the cap requires, and that writer's abort (removeVersion) then
+  // leaves history SHORT of the cap. Pending entries are skipped entirely —
+  // never counted, never removed. (ponytail: a writer that dies mid-attempt
+  // leaves its entry pending forever — bounded by one entry per crash; age-
+  // based expiry if crash loops ever make that matter.)
+  const excess =
+    history.versions.filter((version) => version.pending !== true).length -
+    maxVersionsPerPage;
+  if (excess <= 0) return;
+  const toRemove = new Set<PageVersion>();
+  for (const version of history.versions) {
+    if (toRemove.size >= excess) break;
+    if (version.pending === true) continue;
+    toRemove.add(version);
+  }
   for (const old of toRemove) {
     const oldPath = path.join(dir, `${old.versionId}${ext}`);
     try {
@@ -286,25 +318,42 @@ async function pruneExcessVersions(
       log.debug(`page-versioning: could not remove old snapshot ${oldPath}`);
     }
   }
+  history.versions = history.versions.filter((version) => !toRemove.has(version));
 }
 
 /**
- * Finalize a deferred prune: drop the oldest snapshots (and their files)
- * until the history is back at `config.maxVersionsPerPage`. Call only after
- * the guarded write that staged the snapshot has committed — a failed
- * attempt never calls this, so it cannot discard rollback points.
+ * Finalize a deferred prune: drop the oldest COMMITTED snapshots (and their
+ * files) until the history is back at `config.maxVersionsPerPage`. Call only
+ * after the guarded write that staged the snapshot has committed — a failed
+ * attempt never calls this, so it cannot discard rollback points. Pass
+ * `options.committedVersionId` to clear the staging writer's `pending` flag
+ * under the SAME page lock as the prune (round N+15 B): the entry becomes
+ * countable exactly when — and only when — its writer's write has committed,
+ * so a concurrent still-pending writer's entry is never counted or removed.
  */
 export async function pruneVersions(
   pagePath: string,
   config: VersioningConfig,
   log: VersioningLogger = NOOP_LOGGER,
   memoryDir?: string,
+  options?: { committedVersionId?: string },
 ): Promise<void> {
   const resolvedMemoryDir = memoryDir ?? resolveMemoryDir(pagePath);
   const rel = relPath(pagePath, resolvedMemoryDir);
   await withPageLock(manifestPath(resolvedMemoryDir, config.sidecarDir, rel), async () => {
     const history = await readManifest(resolvedMemoryDir, config.sidecarDir, rel);
     const before = history.versions.length;
+    let committedCleared = false;
+    if (options?.committedVersionId !== undefined) {
+      const staged = history.versions.find(
+        (version) =>
+          version.versionId === options.committedVersionId && version.pending === true,
+      );
+      if (staged) {
+        delete staged.pending;
+        committedCleared = true;
+      }
+    }
     await pruneExcessVersions(
       history,
       config.maxVersionsPerPage,
@@ -312,7 +361,7 @@ export async function pruneVersions(
       path.extname(pagePath) || ".md",
       log,
     );
-    if (history.versions.length !== before) {
+    if (history.versions.length !== before || committedCleared) {
       await writeManifest(resolvedMemoryDir, config.sidecarDir, rel, history);
     }
   });

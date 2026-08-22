@@ -13,7 +13,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -23,6 +23,8 @@ import {
   listVersions,
   revertToVersion,
   getVersion,
+  pruneVersions,
+  removeVersion,
   type VersioningConfig,
 } from "../page-versioning.js";
 import { StorageManager } from "../storage.js";
@@ -133,6 +135,71 @@ test("versioning: createVersion → revertToVersion round-trip restores content"
 
     const restored = await readFile(filePath, "utf-8");
     assert.equal(restored, "alpha", "revert must restore the version-1 content");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("versioning: a final prune counts only COMMITTED snapshots — a staged writer's entry is never traded away (round N+15 B)", async () => {
+  // Two concurrent merges stage their pre-merge snapshots (deferPrune)
+  // before either compare-and-swap commits. Writer A commits and finalizes
+  // the prune while writer B is still pending: counting B's uncommitted
+  // snapshot would remove one MORE valid rollback point than the cap
+  // requires, and B's later abort would leave history short of the cap.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-ver-pending-"));
+  try {
+    const pagePath = path.join(dir, "facts", "deploy-notes.md");
+    await mkdir(path.dirname(pagePath), { recursive: true });
+    const config: VersioningConfig = {
+      enabled: true,
+      maxVersionsPerPage: 3,
+      sidecarDir: ".versions",
+    };
+    for (let index = 1; index <= 3; index += 1) {
+      await writeFile(pagePath, `body v${index}`, "utf8");
+      await createVersion(pagePath, `body v${index}`, "write", config, undefined, undefined, dir);
+    }
+    const stagedA = await createVersion(pagePath, "body v3", "semantic-merge", config, undefined, undefined, dir, { deferPrune: true });
+    const stagedB = await createVersion(pagePath, "body v3", "semantic-merge", config, undefined, undefined, dir, { deferPrune: true });
+
+    // Writer A's guarded write commits and finalizes; writer B is still pending.
+    await pruneVersions(pagePath, config, undefined, dir, { committedVersionId: stagedA.versionId });
+
+    const history = await listVersions(pagePath, config, dir);
+    assert.deepEqual(
+      history.versions.map((version) => version.versionId),
+      ["2", "3", stagedA.versionId, stagedB.versionId],
+      "exactly ONE committed rollback point (v1) removed; both staged entries stay",
+    );
+    assert.equal(
+      history.versions.find((version) => version.versionId === stagedB.versionId)?.pending,
+      true,
+      "writer B's staged entry is untouched and still pending",
+    );
+    assert.equal(
+      history.versions.find((version) => version.versionId === stagedA.versionId)?.pending,
+      undefined,
+      "writer A's finalize marked its own entry committed",
+    );
+    assert.equal(
+      await getVersion(pagePath, "2", config, dir),
+      "body v2",
+      "v2 survives as a rollback point",
+    );
+    await assert.rejects(
+      getVersion(pagePath, "1", config, dir),
+      /not found/,
+      "v1 is the one rollback point removed",
+    );
+
+    // Writer B's attempt then aborts (lost compare-and-swap): its entry
+    // leaves history without taking any committed rollback point with it.
+    await removeVersion(pagePath, stagedB.versionId, config, undefined, dir);
+    const after = await listVersions(pagePath, config, dir);
+    assert.deepEqual(
+      after.versions.map((version) => version.versionId),
+      ["2", "3", stagedA.versionId],
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
