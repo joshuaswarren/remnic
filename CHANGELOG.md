@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Plain-file offline-sync content chunks now carry the full-file sha256 (`x-remnic-file-sha256`), matching the secure-store branch: peer transports reject chunk responses without it ("response changed during transfer"), so converge plans against real deployments died fetching plain-file tombstone evidence.
 - `remnic converge --timeout <seconds>` converts seconds to milliseconds in the correct order (#2802 round-1 regression: `--timeout 3600` produced a 3.6-second timeout because the raw seconds value was normalized as milliseconds and then divided by 1000).
 - `planReconciliation` spread-pushed each namespace's entries (`entries.push(...nsEntries)`); a boot-scale namespace (~100k entries) exceeds the call-stack argument limit and the plan dies with `RangeError: Maximum call stack size exceeded`. Entries are pushed per element now.
 
