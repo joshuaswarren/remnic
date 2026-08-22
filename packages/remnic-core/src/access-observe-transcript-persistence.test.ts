@@ -231,3 +231,22 @@ test("skip-listed channel types report transcriptPersisted=false, not a silent s
     assert.equal(entries.length, 0);
   });
 });
+
+test("overlapping identical observes do not double-append the same turn (#2783 review)", async () => {
+  await withTempDir(async (dir) => {
+    const { service } = makeService(dir, true);
+    const [a, b] = await Promise.all([
+      service.observe({
+        sessionKey: "agent:overlap:s1",
+        messages: [{ role: "user", content: "the same turn submitted concurrently by a retrying client" }],
+      }),
+      service.observe({
+        sessionKey: "agent:overlap:s1",
+        messages: [{ role: "user", content: "the same turn submitted concurrently by a retrying client" }],
+      }),
+    ]);
+    const entries = await readAllTranscriptLines(dir);
+    assert.equal(entries.length, 1);
+    assert.equal(a.transcriptPersisted !== b.transcriptPersisted, true);
+  });
+});

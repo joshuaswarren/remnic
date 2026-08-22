@@ -62,6 +62,47 @@ export interface HourlySummarizerRunStats {
 /** A store whose newest entry is older than this is considered stale (starvation signal, issue #2783). */
 const STALE_STORE_MS = 2 * 60 * 60 * 1000;
 
+/**
+ * Interpret one {@link HourlySummarizerRunStats} into the operator-facing
+ * message/warning (issue #2783). Every degraded shape — failed scan, empty
+ * store, backend-down, stale store — is DISTINCT from success; monitoring
+ * alerts on `warning`, never on `ok` (ok only means "the run completed").
+ */
+export function summarizeHourlyStatus(stats: HourlySummarizerRunStats): {
+  message: string;
+  warning?: string;
+} {
+  if (stats.scanFailed) {
+    return {
+      message:
+        "Hourly summarization completed, but the transcript store scan FAILED (unreadable directory or I/O error). Investigate the daemon's memoryDir.",
+      warning: "transcript store scan failed",
+    };
+  }
+  if (stats.sessionsConsidered === 0) {
+    return {
+      message:
+        "Hourly summarization completed, but the transcript store is empty — no sessions found. If turns are ingested via observe, transcript persistence may be disabled or failing.",
+      warning: "transcript store is empty",
+    };
+  }
+  if (stats.sessionsWithEntries > 0 && stats.summariesWritten === 0) {
+    return {
+      message: `Hourly summarization found ${stats.sessionsWithEntries} session(s) with transcript entries but wrote no summaries — the summarizer backend may be down.`,
+      warning: "sessions with entries produced no summaries",
+    };
+  }
+  if (stats.sessionsWithEntries === 0 && stats.staleStore) {
+    return {
+      message: `Hourly summarization completed with no transcript entries for the target hour, and the store looks stale (newest entry ${stats.newestEntryTimestamp ?? "unknown"}).`,
+      warning: "no transcript entries for the target hour and no new entries recently",
+    };
+  }
+  return {
+    message: `Hourly summarization completed: ${stats.summariesWritten} summar${stats.summariesWritten === 1 ? "y" : "ies"} written across ${stats.sessionsWithEntries} session${stats.sessionsWithEntries === 1 ? "" : "s"} with transcript entries.`,
+  };
+}
+
 export class HourlySummarizer {
   private summariesDir: string;
   private config: PluginConfig;
@@ -754,6 +795,7 @@ Respond with valid JSON matching this schema:
     const sessionKeys = new Set<string>();
     let newestEntryTimestamp: string | null = null;
     let newestEntryTimeMs = Number.NaN;
+    let fileReadFailed = false;
     const collect = async (transcriptPath: string): Promise<void> => {
       try {
         const raw = await readFile(transcriptPath, "utf-8");
@@ -778,8 +820,14 @@ Respond with valid JSON matching this schema:
             // ignore malformed transcript lines
           }
         }
-      } catch {
-        // ignore unreadable transcript files
+      } catch (err) {
+        // ENOENT is a concurrently-deleted file — ignore. Any other read
+        // failure (permissions, I/O) means the store is partially UNREADABLE:
+        // mark the scan failed so the caller warns instead of reporting an
+        // empty store (review round 3).
+        if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+          fileReadFailed = true;
+        }
       }
     };
 
@@ -805,7 +853,7 @@ Respond with valid JSON matching this schema:
       return {
         sessionKeys: Array.from(sessionKeys),
         newestEntryTimestamp,
-        scanFailed: false,
+        scanFailed: fileReadFailed,
       };
     } catch (err) {
       // ENOENT on the root is a never-written store — an EMPTY store, not a

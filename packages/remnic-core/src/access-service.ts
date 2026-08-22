@@ -4,6 +4,7 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import * as nodeFs from "node:fs/promises";
 import { ZodError } from "zod";
+import { summarizeHourlyStatus } from "./summarizer.js";
 import { decodeCitationNamespace } from "./access-citation-namespace.js";
 import {
   type CitationUsageRequest,
@@ -3826,42 +3827,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     scanFailed: boolean;
     warning?: string;
   }> {
-    // Issue #2783: the daemon-side summarizer must not report success on
-    // empty work. An empty or stale transcript store is the starvation
-    // signature (11 days of silent ok:true in the field report); surface
-    // it as a distinct warning plus counts so monitoring can alert on it.
+    // Issue #2783: the summarizer must not report success on empty work.
+    // Stats interpretation lives with the stats (summarizeHourlyStatus).
     const stats = await this.orchestrator.summarizer.runHourly();
-    if (stats.scanFailed) {
-      // A FAILED scan is an unreadable store (permissions, I/O) — a
-      // different incident from an empty one; never conflate them.
-      return {
-        ok: true,
-        message: "Hourly summarization completed, but the transcript store scan FAILED (unreadable directory or I/O error). Investigate the daemon's memoryDir.",
-        ...stats,
-        warning: "transcript store scan failed",
-      };
-    }
-    if (stats.sessionsConsidered === 0) {
-      return {
-        ok: true,
-        message: "Hourly summarization completed, but the transcript store is empty — no sessions found. If turns are ingested via observe, transcript persistence may be disabled or failing.",
-        ...stats,
-        warning: "transcript store is empty",
-      };
-    }
-    if (stats.sessionsWithEntries === 0 && stats.staleStore) {
-      return {
-        ok: true,
-        message: `Hourly summarization completed with no transcript entries for the target hour, and the store looks stale (newest entry ${stats.newestEntryTimestamp ?? "unknown"}).`,
-        ...stats,
-        warning: "no transcript entries for the target hour and no new entries recently",
-      };
-    }
-    return {
-      ok: true,
-      message: `Hourly summarization completed: ${stats.summariesWritten} summar${stats.summariesWritten === 1 ? "y" : "ies"} written across ${stats.sessionsWithEntries} session${stats.sessionsWithEntries === 1 ? "" : "s"} with transcript entries.`,
-      ...stats,
-    };
+    return { ok: true, ...stats, ...summarizeHourlyStatus(stats) };
   }
 
   async conversationIndexUpdate(

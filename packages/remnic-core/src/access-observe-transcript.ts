@@ -55,6 +55,8 @@ export function observeTranscriptSessionKey(
 /** Bounded FIFO of seen fingerprints; insertion order is the eviction order. */
 export class ObserveTranscriptPersister {
   private readonly seenFingerprintsAt = new Map<string, number>();
+  /** In-flight appends by fingerprint: an overlapping identical observe waits for the first append instead of double-writing. */
+  private readonly inflightAppends = new Map<string, Promise<void>>();
 
   /**
    * Append every eligible message of an observe payload to the per-session
@@ -85,7 +87,18 @@ export class ObserveTranscriptPersister {
       const nowMs = Date.now();
       const seenAt = this.seenFingerprintsAt.get(fingerprint);
       if (seenAt !== undefined && nowMs - seenAt < OBSERVE_TRANSCRIPT_DEDUPE_TTL_MS) continue;
-      this.seenFingerprintsAt.delete(fingerprint);
+      // Two identical observes can overlap before either records its
+      // fingerprint; both would then append and the transcript would carry
+      // the turn twice. Serialize per fingerprint: the second caller waits
+      // for the first append, re-checks the completed set, and skips.
+      const inflight = this.inflightAppends.get(fingerprint);
+      if (inflight) {
+        await inflight;
+        const seenAfter = this.seenFingerprintsAt.get(fingerprint);
+        if (seenAfter !== undefined && Date.now() - seenAfter < OBSERVE_TRANSCRIPT_DEDUPE_TTL_MS) {
+          continue;
+        }
+      }
       const entry: TranscriptEntry = {
         timestamp: new Date().toISOString(),
         role: message.role as TranscriptEntry["role"],
@@ -93,18 +106,28 @@ export class ObserveTranscriptPersister {
         sessionKey,
         turnId: randomUUID(),
       };
-      try {
-        await orchestrator.transcript.append(entry);
-        // Remember only after a successful append: a transient failure must
-        // not permanently swallow the turn — the client's retry has to be
-        // able to re-append it (review round 2).
-        this.remember(fingerprint);
-        persisted = true;
-      } catch (err) {
-        // Same policy as the LCM enqueue in the observe path: transcript
-        // persistence must never fail the observe itself.
-        log.error(`access-observe transcript append failed: ${err}`);
-      }
+      // Register BEFORE awaiting: the check-then-register sequence above has
+      // no await between its steps, so exactly one overlapping caller starts
+      // the append; the others wait on the inflight promise and re-check.
+      const appendPromise = orchestrator.transcript
+        .append(entry)
+        .then(() => {
+          // Remember only after a successful append: a transient failure must
+          // not permanently swallow the turn — the client's retry has to be
+          // able to re-append it (review round 2).
+          this.remember(fingerprint);
+          persisted = true;
+        })
+        .catch((err) => {
+          // Same policy as the LCM enqueue in the observe path: transcript
+          // persistence must never fail the observe itself.
+          log.error(`access-observe transcript append failed: ${err}`);
+        })
+        .finally(() => {
+          this.inflightAppends.delete(fingerprint);
+        });
+      this.inflightAppends.set(fingerprint, appendPromise);
+      await appendPromise;
     }
     return persisted;
   }
