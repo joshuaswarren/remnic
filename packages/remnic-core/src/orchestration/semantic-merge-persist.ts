@@ -28,8 +28,10 @@ import { sanitizeMemoryContent } from "../sanitize.js";
 import { ContentHashIndex } from "../storage/content-hash-index.js";
 import type { VersioningConfig } from "../page-versioning.js";
 import {
+  committedMergedFactHash,
   discardMergedTargetSnapshot,
   finalizeMergedVersionPrune,
+  rawPreCitationMergedBody,
   readTargetSnapshot,
   revertMergedContent,
   rewriteMergedTargetGraphEdges,
@@ -620,26 +622,6 @@ function committedMergedBody(
   if (!marker || mergedContent.endsWith(marker)) return mergedContent;
   return `${mergedContent} ${marker}`;
 }
-/**
- * Round N+2 (C) — the canonical RAW pre-citation merged body for hashing.
- * The judge composes mergedContent from the stored target body, which
- * carries an appended citation marker when inline source attribution is
- * enabled; the ordinary write path hashes `contentHashSource` — the raw
- * fact text BEFORE any citation is attached. Hashing the cited body would
- * give the merged record a different identity than the equivalent raw
- * write (checklist #13), so the configured citation form is stripped
- * first, exactly like the write path's `rawChunkedContent`
- * canonicalization.
- */
-function rawPreCitationMergedBody(deps: ExtractionPersistDeps, mergedContent: string): string {
-  if (resolvePipelineProcessingCapabilities(deps.config).inlineSourceAttribution !== true) {
-    return mergedContent;
-  }
-  const template = deps.config.inlineSourceAttributionFormat;
-  return hasCitationForTemplate(mergedContent, template)
-    ? stripCitationForTemplate(mergedContent, template)
-    : mergedContent;
-}
 
 function versioningConfigFrom(deps: ExtractionPersistDeps): VersioningConfig {
   return {
@@ -803,11 +785,14 @@ export async function applySemanticMergeAtPersist(
     return { action: "created", reason: "snapshot_failed" };
   }
 
-  // Steps 4+5 as a closure: the degraded success below (merged body committed,
-  // provenance patch failed, rollback failed) still needs the post-commit
-  // index repair, or QMD serves the old text and the fact-hash index holds a
-  // stale identity until restart or unrelated maintenance (item C).
-  const repairIndexes = async (): Promise<void> => {
+  // Round N+16 (C): `committedFactHash` — passed ONLY on the degraded path —
+  // registers the hash of what storage actually HOLDS. The default reader
+  // (`restoreFactHashAfterApproval` → `corpusRegisteredHashes`) prefers the
+  // PERSISTED frontmatter `contentHash`, which the degraded record still
+  // carries from BEFORE the merge, so routing the degraded repair through it
+  // re-registered the stale pre-merge identity and left the merged body
+  // unindexed for exact dedup.
+  const repairIndexes = async (committedFactHash?: string): Promise<void> => {
     // Hash index: remove the old form, add the new form, in the same
     // corpus-registered identity the write path uses. Both helpers are
     // fact-category no-ops, mirroring `contentHashSource` on the write path.
@@ -815,7 +800,11 @@ export async function applySemanticMergeAtPersist(
     // logged, not fatal.
     try {
       await options.storage.removeFactContentHashesForMemories([target]);
-      await options.storage.restoreFactHashAfterApproval(decision.targetId);
+      if (committedFactHash !== undefined) {
+        await options.storage.registerFactContentHash(decision.targetId, committedFactHash);
+      } else {
+        await options.storage.restoreFactHashAfterApproval(decision.targetId);
+      }
     } catch (err) {
       log.warn(
         `semantic-merge: hash-index sync failed for ${decision.targetId} (non-fatal; index rebuilds from corpus): ${err instanceof Error ? err.message : String(err)}`,
@@ -962,8 +951,10 @@ export async function applySemanticMergeAtPersist(
         `semantic-merge: ${decision.targetId} holds merged content without provenance metadata and the rollback failed (${detail}); snapshot ${versionId} holds the pre-merge state — recover with revertToVersion. Not creating a duplicate fact.`,
       );
       // Item C — the merged body IS committed; repair the indexes before
-      // reporting the degraded success.
-      await repairIndexes();
+      // reporting the degraded success. N+16 (C): the record's persisted
+      // frontmatter hash is the stale PRE-merge identity, so register the
+      // COMMITTED body's hash instead.
+      await repairIndexes(committedMergedFactHash(deps, options.category, committedContent));
       return {
         action: "merged",
         targetId: decision.targetId,
@@ -1154,8 +1145,10 @@ export async function runMergedTargetPostEffects(
     // spreadingActivation double-counts the duplicates while the JSONLs
     // The removed edges are captured; when the replacement build FAILS or is
     // superseded, the rows THAT build appended — returned by identity from
-    // onMemoryWritten (round N+14) — are removed first, never a node-wide
-    // sweep, so rows a newer writer rebuilt after this removal survive. The
+    // onMemoryWritten (round N+14), or carried on its rejection when it
+    // throws mid-append (round N+16 A) — are removed first, never a
+    // node-wide sweep, so rows a newer writer rebuilt after this removal
+    // survive. The
     // prior edges are then RESTORED per graph type, skipped only where a
     // newer writer's rebuilt rows are live in the file — so failure leaves
     // EXACTLY the old set, and supersession leaves exactly the newer

@@ -32,6 +32,7 @@ import {
   requestEntityCanonicalIdReconcile,
 } from "./storage/entity-canonical-id-references.js";
 import { withRawEntityPageMutation } from "./storage/entity-canonical-id-lock.js";
+import { withHeldFileLock } from "./utils/serialize-mutations.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -106,6 +107,43 @@ function withPageLock<T>(pageKey: string, fn: () => Promise<T>): Promise<T> {
   const next = prev.then(fn, fn); // run fn after previous completes, even if previous failed
   writeLocks.set(pageKey, next.then(() => {}, () => {})); // recover chain per gotcha #40
   return next;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-process manifest lock (issue #2330 round N+16 B)
+// ---------------------------------------------------------------------------
+
+// withPageLock serializes manifest mutations only within ONE Remnic process.
+// Two processes sharing a memory directory could both read a manifest,
+// compute the SAME next version id, and stage colliding snapshots — and a
+// merge whose content CAS then lost called removeVersion on that shared id,
+// deleting the WINNER's committed rollback point (and concurrent
+// non-atomic manifest writes tore the JSON outright). The mutation now also
+// holds a cross-process advisory lock — the established withHeldFileLock
+// primitive, as a sibling `<manifest>.lock` file (the same `<data>.lock`
+// placement tombstones.jsonl and fact-hashes.txt use). A lock that cannot be
+// taken within the bounded wait FAILS the mutation: staging falls back to
+// the create path, and removal/prune callers already treat a throw as
+// non-fatal — no caller ever proceeds unsynchronized into the collision the
+// lock exists to prevent.
+const MANIFEST_LOCK_STALE_MS = 30_000;
+const MANIFEST_LOCK_MAX_WAIT_MS = 10_000;
+
+function withManifestLock<T>(mPath: string, fn: () => Promise<T>): Promise<T> {
+  return withPageLock(mPath, () =>
+    withHeldFileLock(
+      `${mPath}.lock`,
+      { staleMs: MANIFEST_LOCK_STALE_MS, maxWaitMs: MANIFEST_LOCK_MAX_WAIT_MS },
+      async (acquired) => {
+        if (!acquired) {
+          throw new Error(
+            `page-versioning: could not acquire the manifest lock for ${mPath} within ${MANIFEST_LOCK_MAX_WAIT_MS}ms — another process holds it`,
+          );
+        }
+        return fn();
+      },
+    ),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +281,7 @@ export async function createVersion(
   const resolvedMemoryDir = memoryDir ?? resolveMemoryDir(pagePath);
   const mPath = manifestPath(resolvedMemoryDir, sidecar, relPath(pagePath, resolvedMemoryDir));
 
-  return withPageLock(mPath, async () => {
+  return withManifestLock(mPath, async () => {
     const history = await readManifest(resolvedMemoryDir, sidecar, relPath(pagePath, resolvedMemoryDir));
     const nextId = String(history.versions.length > 0
       ? Math.max(...history.versions.map((v) => Number(v.versionId))) + 1
@@ -340,7 +378,7 @@ export async function pruneVersions(
 ): Promise<void> {
   const resolvedMemoryDir = memoryDir ?? resolveMemoryDir(pagePath);
   const rel = relPath(pagePath, resolvedMemoryDir);
-  await withPageLock(manifestPath(resolvedMemoryDir, config.sidecarDir, rel), async () => {
+  await withManifestLock(manifestPath(resolvedMemoryDir, config.sidecarDir, rel), async () => {
     const history = await readManifest(resolvedMemoryDir, config.sidecarDir, rel);
     const before = history.versions.length;
     let committedCleared = false;
@@ -389,7 +427,7 @@ export async function removeVersion(
 ): Promise<void> {
   const resolvedMemoryDir = memoryDir ?? resolveMemoryDir(pagePath);
   const rel = relPath(pagePath, resolvedMemoryDir);
-  await withPageLock(manifestPath(resolvedMemoryDir, config.sidecarDir, rel), async () => {
+  await withManifestLock(manifestPath(resolvedMemoryDir, config.sidecarDir, rel), async () => {
     const history = await readManifest(resolvedMemoryDir, config.sidecarDir, rel);
     const index = history.versions.findIndex((version) => version.versionId === versionId);
     if (index === -1) return;

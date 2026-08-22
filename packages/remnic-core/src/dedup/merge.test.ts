@@ -412,6 +412,7 @@ interface MergeHarness {
     frontmatterPatches: Array<{ id: string; patch: Partial<MemoryFrontmatter> }>;
     hashRemovals: string[];
     hashAdds: string[];
+    hashRegistrations: Array<{ id: string; hash: string }>;
     reindexed: string[];
     lookupStorages: string[];
   };
@@ -516,6 +517,7 @@ async function harness(
     frontmatterPatches: [],
     hashRemovals: [],
     hashAdds: [],
+    hashRegistrations: [],
     reindexed: [],
     lookupStorages: [],
   };
@@ -589,6 +591,9 @@ async function harness(
     },
     restoreFactHashAfterApproval: async (id: string) => {
       calls.hashAdds.push(id);
+    },
+    registerFactContentHash: async (id: string, hash: string) => {
+      calls.hashRegistrations.push({ id, hash });
     },
   } as unknown as StorageManager;
 
@@ -1061,8 +1066,96 @@ test("applySemanticMergeAtPersist: an unrollbackable patch failure reports merge
   // hash resync and reindex run, so QMD and the fact-hash index do not hold
   // the pre-merge identity until unrelated maintenance.
   assert.deepEqual(h.calls.hashRemovals, [EXISTING]);
-  assert.deepEqual(h.calls.hashAdds, ["fact-target"]);
+  // Round N+16 (C): the degraded repair registers the COMMITTED body's hash
+  // (asserted in the N+16 C test below) instead of restoring the persisted
+  // pre-merge identity the old hash-adds route re-registered.
+  assert.deepEqual(h.calls.hashAdds, []);
+  assert.deepEqual(
+    h.calls.hashRegistrations,
+    [{ id: "fact-target", hash: ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text) }],
+  );
   assert.deepEqual(h.calls.reindexed, ["fact-target"]);
+});
+
+// ── Round N+16 (C): the degraded repair must index what storage HOLDS. With
+// the body committed and both the frontmatter patch and its rollback failed,
+// the record holds the MERGED body under the PRE-merge `contentHash`.
+// `restoreFactHashAfterApproval` prefers that persisted value, so the repair
+// used to re-register the stale identity and exact dedup never saw the merged
+// body — a second copy of the same content could be written. ────────────────
+
+test("applySemanticMergeAtPersist: the degraded repair registers the COMMITTED body's hash, not the stale persisted one (round N+16 C)", async () => {
+  const h = await harness({ frontmatterFails: true, rollbackFails: true });
+  // The double failure leaves the frontmatter holding the PRE-merge identity.
+  const STALE = ContentHashIndex.computeHash(sanitizeMemoryContent(EXISTING).text);
+  h.target.frontmatter.contentHash = STALE;
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  assert.equal(outcome.provenancePatched, false);
+  const EXPECTED = ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text);
+  assert.notEqual(EXPECTED, STALE, "fixture sanity: merged and pre-merge bodies must differ");
+  assert.deepEqual(
+    h.calls.hashRegistrations,
+    [{ id: "fact-target", hash: EXPECTED }],
+    "the degraded repair must register the committed merged body's hash — never the stale persisted frontmatter value",
+  );
+  assert.equal(
+    h.calls.hashAdds.length,
+    0,
+    "the degraded path must not route hash restoration through the persisted-frontmatter reader",
+  );
+});
+
+test("registerFactContentHash: exact dedup finds the degraded record's merged body (round N+16 C)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-hash-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", EXISTING, { source: "extraction" });
+    // Reproduce the degraded state the way the merge creates it: the body is
+    // compare-and-swapped to the merged text while the frontmatter keeps the
+    // old identity (updateMemoryIfUnchanged preserves contentHash).
+    const before = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id)!;
+    assert.equal(
+      await storage.updateMemoryIfUnchanged(before, MERGED, { actor: "semantic-merge" }),
+      true,
+    );
+    const degraded = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id)!;
+    const staleHash = degraded.frontmatter.contentHash;
+    const mergedHash = ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text);
+    assert.ok(staleHash, "fixture sanity: the pre-merge identity is persisted");
+    assert.notEqual(staleHash, mergedHash, "fixture sanity: the persisted identity is stale");
+    assert.equal(
+      await storage.hasFactContentHash(MERGED),
+      false,
+      "the degraded record's merged body must not already be indexed",
+    );
+    // The PRE-FIX repair: remove + restore-from-record re-registers the STALE
+    // persisted identity, so the merged body stays invisible to exact dedup.
+    await storage.removeFactContentHashesForMemories([degraded]);
+    await storage.restoreFactHashAfterApproval(id);
+    assert.equal(
+      await storage.hasFactContentHash(MERGED),
+      false,
+      "the persisted-frontmatter reader cannot find the merged body — the N+16 C bug",
+    );
+    assert.equal(await storage.hasFactContentHash(EXISTING), true, "it re-registered the stale pre-merge identity instead");
+    // The FIXED repair: register the hash of what is actually STORED.
+    await storage.removeFactContentHashesForMemories([degraded]);
+    await storage.registerFactContentHash(id, mergedHash);
+    assert.equal(
+      await storage.hasFactContentHash(MERGED),
+      true,
+      "exact dedup must find the committed merged body's hash",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 // ── Item A: extraction metadata a merge cannot carry ─────────────────────────
@@ -3100,6 +3193,90 @@ test("runMergedTargetPostEffects: a stale writer's rollback preserves the newer 
     [bEntity],
     `the graph must hold exactly B's rebuilt edges after the stale writer's rollback — no pre-A rows, no A rows (entity.jsonl: ${JSON.stringify(entityEdges)})`,
   );
+});
+
+// ── Round N+16 (A): the N+14 surgical rollback leaned on build()'s RETURN
+// value. A build that THROWS mid-append (the entity rows landed, a later
+// append failed) loses that return, and the rollback fell back to the
+// node-wide sweep — which also deleted a NEWER writer's rebuild that
+// completed inside this writer's remove→rollback window. The partial row
+// set must be tracked incrementally, BEFORE build returns, and a throw must
+// roll back exactly that partial set. ─────────────────────────────────────
+
+test("runMergedTargetPostEffects: a THROWING build's rollback preserves the newer writer's rebuilt edges (round N+16 A)", async () => {
+  if (process.getuid?.() === 0) {
+    // Root may append to a 0444 file, so the EACCES injection cannot fail.
+    return;
+  }
+  const h = await postEffectsHarness();
+  const OTHER = "facts/2026-08-19/other.md";
+  // A's pre-state: exactly what A's removal sweeps into its snapshot.
+  const priorEntity: GraphEdge = { from: h.targetRelPath, to: OTHER, type: "entity", weight: 1, label: "entity-billing-service", ts: "2026-08-19T00:00:00.000Z" };
+  await seedGraphFile(h.dir, "entity", [priorEntity]);
+  // An unrelated time edge keeps time.jsonl untouched by the removal, so its
+  // read-only mode survives until the append (same injection as round N+10 C).
+  const unrelatedTime = { from: "facts/2026-08-18/earlier.md", to: "facts/2026-08-18/earliest.md", type: "time", weight: 1, label: "thread-0", ts: "2026-08-19T00:00:00.000Z" };
+  await seedGraphFile(h.dir, "time", [unrelatedTime]);
+  // B's completed rebuild, from B's newer body — appended AFTER A's removal
+  // (never in A's restore snapshot), BEFORE A's failing append.
+  const bEntity: GraphEdge = { from: h.targetRelPath, to: OTHER, type: "entity", weight: 1, label: "entity-billing-service-v2", ts: "2026-08-22T01:00:00.000Z" };
+  const timePath = path.join(h.dir, "state", "graphs", "time.jsonl");
+  await chmod(timePath, 0o444);
+  try {
+    const graphConfig = parseConfig({ memoryDir: h.dir });
+    const graphIndex = new GraphIndex(h.dir, graphConfig);
+    const coordinator = new PersistenceIndexCoordinator({
+      config: graphConfig,
+      graphIndexFor: () => graphIndex,
+    } as unknown as ConstructorParameters<typeof PersistenceIndexCoordinator>[0]);
+    const realBuild = coordinator.buildGraphEdge.bind(coordinator);
+    const sibling = {
+      path: path.join(h.dir, OTHER),
+      frontmatter: { id: "mem-sibling", category: "fact", entityRef: "entity-billing-service" },
+      content: "Sibling fact sharing the billing entity.",
+    } as unknown as MemoryFile;
+    const deps = {
+      ...h.deps,
+      // The REAL chain for A's appends: B's completed rebuild lands first,
+      // then A's entity append SUCCEEDS and the time append THROWS (EACCES) —
+      // a build that wrote rows and still rejects.
+      buildGraphEdge: async (...args: Parameters<typeof realBuild>) => {
+        await appendEdge(h.dir, { ...bEntity });
+        return realBuild(...args);
+      },
+    } as unknown as ExtractionPersistDeps;
+    await runMergedTargetPostEffects(
+      deps,
+      h.storage,
+      { targetId: "fact-target", mergedContent: MERGED },
+      {
+        category: "fact",
+        incomingContent: INCOMING,
+        incomingConfidence: 0.9,
+        namespace: "default",
+        graphCaps: ALL_GRAPH_CAPS,
+        graphContext: {
+          allMemsForGraph: [sibling],
+          memoryPathById: new Map([["mem-earlier", OTHER]]),
+        },
+        threadIdForEdge: "thread-1",
+        threadEpisodeIdsForGraph: ["mem-earlier", "fact-target"],
+      },
+    );
+    const entityEdges = await readGraphFile(h.dir, "entity");
+    assert.deepEqual(
+      entityEdges,
+      [bEntity],
+      `the throwing build's rollback must remove only its own partial rows and never sweep the newer writer's rebuild (entity.jsonl: ${JSON.stringify(entityEdges)})`,
+    );
+    assert.deepEqual(
+      await readGraphFile(h.dir, "time"),
+      [unrelatedTime],
+      "the unrelated time edge survives the throwing build untouched",
+    );
+  } finally {
+    await chmod(timePath, 0o644);
+  }
 });
 
 test("persistMergedTargetThreadEpisode: a re-merge moves an existing earlier target to the durable thread tail (round N+12 D)", async () => {

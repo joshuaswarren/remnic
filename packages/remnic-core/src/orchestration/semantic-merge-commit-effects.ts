@@ -11,10 +11,19 @@
  * thread's durable episode set MOVE-TO-END — a re-merged target already
  * earlier in the thread moves to the tail, not a unique-append no-op.
  */
-import { removeNodeEdgesForRewrite, rollbackNodeEdgeRewrite } from "../graph-jsonl.js";
-import type { GraphEdge, GraphType } from "../graph.js";
 
+import { GraphEdgeAppendError } from "../graph-append-error.js";
+import type { GraphEdge, GraphType } from "../graph.js";
 import { readFile } from "node:fs/promises";
+import { removeNodeEdgesForRewrite, rollbackNodeEdgeRewrite } from "../graph-jsonl.js";
+import {
+  hasCitationForTemplate,
+  stripCitationForTemplate,
+} from "../source-attribution.js";
+import { resolvePipelineProcessingCapabilities } from "../capabilities.js";
+import { sanitizeMemoryContent } from "../sanitize.js";
+import { ContentHashIndex } from "../storage/content-hash-index.js";
+import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
 
 import { log } from "../logger.js";
 import { createVersion, pruneVersions, removeVersion, type VersioningConfig } from "../page-versioning.js";
@@ -218,9 +227,12 @@ export async function rewriteMergedTargetGraphEdges(
   },
 ): Promise<boolean> {
   const removedEdges = await removeNodeEdgesForRewrite(storage.dir, input.memoryRelPath, input.rewriteTypes);
-  // Round N+14: the rows THIS writer's build appended, by exact identity. A
-  // throwing build loses its return value (undefined) — the rollback then
-  // falls back to the node-wide sweep, identical outcome absent interleaving.
+  // Round N+14 + N+16 (A): the rows THIS writer's build appended, by exact
+  // identity. A build that THROWS carries its partial row set on the error
+  // (GraphEdgeAppendError — tracked incrementally as each row is written),
+  // so the rollback stays surgical on the throwing path too; only a build
+  // that neither returns rows nor wraps its failure falls back to the
+  // node-wide sweep, identical outcome absent interleaving.
   let appended: readonly GraphEdge[] | undefined;
   try {
     appended = (await input.build()) ?? undefined;
@@ -235,7 +247,54 @@ export async function rewriteMergedTargetGraphEdges(
     }
     return true;
   } catch (buildErr) {
-    await rollbackNodeEdgeRewrite(storage.dir, input.memoryRelPath, input.rewriteTypes, removedEdges, input.targetId, appended);
+    await rollbackNodeEdgeRewrite(
+      storage.dir,
+      input.memoryRelPath,
+      input.rewriteTypes,
+      removedEdges,
+      input.targetId,
+      appended ?? (buildErr instanceof GraphEdgeAppendError ? buildErr.appendedEdges : undefined),
+    );
     throw buildErr;
   }
+}
+
+/**
+ * Round N+2 (C) — the canonical RAW pre-citation merged body for hashing.
+ * The judge composes mergedContent from the stored target body, which
+ * carries an appended citation marker when inline source attribution is
+ * enabled; the ordinary write path hashes `contentHashSource` — the raw
+ * fact text BEFORE any citation is attached. Hashing the cited body would
+ * give the merged record a different identity than the equivalent raw
+ * write (checklist #13), so the configured citation form is stripped
+ * first, exactly like the write path's `rawChunkedContent`
+ * canonicalization. Lives in this sibling (extracted from
+ * semantic-merge-persist.ts) so that file stays within its file-size
+ * ratchet cap.
+ */
+export function rawPreCitationMergedBody(deps: ExtractionPersistDeps, mergedContent: string): string {
+  if (resolvePipelineProcessingCapabilities(deps.config).inlineSourceAttribution !== true) {
+    return mergedContent;
+  }
+  const template = deps.config.inlineSourceAttributionFormat;
+  return hasCitationForTemplate(mergedContent, template)
+    ? stripCitationForTemplate(mergedContent, template)
+    : mergedContent;
+}
+
+/**
+ * Round N+16 (C): the fact-hash identity of the COMMITTED merged body —
+ * the same raw sanitized rule the provenance patch stamps. The degraded
+ * repair registers THIS value (what storage actually holds), never the
+ * record's persisted `frontmatter.contentHash`, which on that path is the
+ * stale PRE-merge identity. Undefined for non-fact categories (hash ops
+ * are fact-category no-ops there).
+ */
+export function committedMergedFactHash(
+  deps: ExtractionPersistDeps,
+  category: string,
+  committedContent: string,
+): string | undefined {
+  if (category !== "fact") return undefined;
+  return ContentHashIndex.computeHash(sanitizeMemoryContent(rawPreCitationMergedBody(deps, committedContent)).text);
 }

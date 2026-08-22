@@ -12,7 +12,7 @@
 
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import * as path from "node:path";
-
+import { GraphEdgeAppendError } from "./graph-append-error.js";
 import { readEdgeConfidence } from "./graph-edge-reinforcement.js";
 import { emitGraphEvent } from "./graph-events.js";
 import type { GraphConstructionCapabilitySet } from "./capabilities.js";
@@ -664,11 +664,11 @@ export class GraphIndex {
       }
     } catch (err) {
       // Log, then rethrow (#2330): the rewrite path's restore step only runs
-      // when this rejection reaches its caller. Callers that want fail-open
-      // catch (the create paths do).
+      // when this rejection reaches its caller (fail-open callers catch). The
+      // error carries the rows already appended (N+16 A) — surgical rollback.
       const { log } = await import("./logger.js");
       log.warn(`[graph] onMemoryWritten error: ${err}`);
-      throw err;
+      throw new GraphEdgeAppendError(err, appended);
     } finally {
       // Edge-cache coherence (issue #1904). Legacy behavior nulled the cache on
       // every write, paying a 2-4 s full re-read + parse on the next traversal.

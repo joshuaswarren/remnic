@@ -120,12 +120,14 @@ export async function restoreRemovedNodeEdges(
  * of the node's new edges. Two duties, both scoped to what THIS writer did:
  *
  * 1. Remove the rows the failed build actually appended. When `appended` is
- *    provided (the build returned its exact rows, N+14) removal is surgical
- *    — by exact JSON row identity, per file, under the same per-file lock —
- *    so rows a NEWER writer appended after this writer's removal (never in
- *    this writer's snapshot) survive. Rows a newer writer already swept are
- *    simply absent and the removal is a no-op. Without `appended` (a
- *    throwing build loses its return) fall back to the node-wide sweep of
+ *    provided the removal is surgical — by exact JSON row identity, per
+ *    file, under the same per-file lock — so rows a NEWER writer appended
+ *    after this writer's removal (never in this writer's snapshot) survive.
+ *    Rows a newer writer already swept are simply absent and the removal is
+ *    a no-op. Since round N+16 (A) a THROWING build carries its partial row
+ *    set on `GraphEdgeAppendError`, so the surgical path holds on the throw
+ *    too; only a build that neither returns rows nor wraps its failure
+ *    falls back to the node-wide sweep of
  *    {@link removeNodeEdgesForRewrite}: identical outcome when no newer
  *    writer interleaved.
  * 2. Restore the snapshot the original removal dropped — but only for graph
