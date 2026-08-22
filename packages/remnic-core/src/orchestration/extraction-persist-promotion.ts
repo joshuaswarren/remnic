@@ -21,6 +21,7 @@ import {
 } from "../capabilities.js";
 import type { MemoryFile, PluginConfig } from "../types.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
+import type { MergedTargetPromotionPayload } from "./semantic-merge-persist.js";
 
 export const confidenceTierOrder = [
   "explicit",
@@ -301,23 +302,88 @@ export async function mergeTargetHasPromotedCopies(args: {
 }
 
 /**
- * Round N+7 (B) + P1-A (#2330 round N+8): reconcile a merged target's
- * promoted copies after the merged-body promotion lands. The pre-mutation
- * probe that guards the merge can race a concurrent writer that is promoting
- * the same target: the probe reports no copies, the other writer publishes
- * the PRE-merge body, and the merged-target promotion then adds the current
- * body — promotion dedups by content, so both copies stay active across
- * namespaces. Detection: an ACTIVE memory in any resolved promotion
- * namespace (never the source's own) whose `sourceMemoryId` names this
- * target, whose id is not the copy just written, and whose normalized body
- * differs from the promoted body (the caller's citation-stripping,
- * sanitizing canonicalization). Replace, not add: each stale copy is
- * superseded with `supersededBy` pointing at the current copy. The anchor is
- * the id of the LAST copy the promotion wrote — the shared copy when shared
- * promotion ran, otherwise a profile copy (profile-only plans reconcile
- * too). Best-effort and fail-open per namespace — a failed retirement is
- * logged and leaves the pre-fix state (both copies), which the next merge
- * retries. Returns the number of stale copies retired.
+ * Round N+10 (A): run the merged target's promotion and its stale-copy
+ * reconciliation as ONE step so reconciliation cannot be skipped on a
+ * no-promotion exit. `promoteMemoryToShared` returns undefined when this
+ * merge's min(incoming, target) downgrade dropped the committed record below
+ * the profile/shared promotion minimum, and `buildMergedTargetPromotionPayload`
+ * returns null for a degraded merge — in both cases no replacement copy is
+ * written, yet a concurrent writer may have published the PRE-merge body
+ * after the caller's initial probe. Reconciliation still runs: with no
+ * promoted body supplied, {@link retireStaleMergedTargetPromotionCopies}
+ * re-reads the committed record and retires copies predating it, superseding
+ * them onto the committed target itself ("none is warranted" below the
+ * threshold). Promotion failures stay fail-open — the merge stands.
+ */
+export async function promoteAndReconcileMergedTarget(args: {
+  promote: (payload: MergedTargetPromotionPayload) => Promise<string | undefined>;
+  config: PluginConfig;
+  getStorageRouter: () => {
+    storageFor: (namespace: string) => Promise<StorageManager>;
+  };
+  scopeProfileWritePlan: ResolvedScopeProfilePlan | null | undefined;
+  sourceStorage: StorageManager;
+  sourceMemoryId: string;
+  /** Null = payload builder refused (degraded merge / target replaced mid-flight). */
+  mergedPromotion: MergedTargetPromotionPayload | null;
+  normalize: (content: string) => string;
+  onReconciled?: () => void;
+}): Promise<void> {
+  let promotedCopyId: string | undefined;
+  if (args.mergedPromotion) {
+    try {
+      promotedCopyId = await args.promote(args.mergedPromotion);
+    } catch (err) {
+      log.warn(
+        `persistExtraction: merged-target promotion failed open for ${args.sourceMemoryId}: ${err}`,
+      );
+    }
+  }
+  try {
+    await retireStaleMergedTargetPromotionCopies({
+      config: args.config,
+      getStorageRouter: args.getStorageRouter,
+      scopeProfileWritePlan: args.scopeProfileWritePlan,
+      sourceStorage: args.sourceStorage,
+      sourceMemoryId: args.sourceMemoryId,
+      ...(args.mergedPromotion
+        ? { promotedContent: args.mergedPromotion.content }
+        : {}),
+      ...(promotedCopyId !== undefined
+        ? { promotedMemoryId: promotedCopyId }
+        : {}),
+      normalize: args.normalize,
+    });
+    args.onReconciled?.();
+  } catch (err) {
+    log.warn(
+      `persistExtraction: merged-target promotion reconciliation failed open for ${args.sourceMemoryId}: ${err}`,
+    );
+  }
+}
+
+/**
+ * Round N+7 (B) + P1-A (#2330 round N+8) + round N+10 (A): reconcile a
+ * merged target's promoted copies after the merged-body promotion lands.
+ * The pre-mutation probe that guards the merge can race a concurrent writer
+ * that is promoting the same target: the probe reports no copies, the other
+ * writer publishes the PRE-merge body, and the merged-target promotion then
+ * adds the current body — promotion dedups by content, so both copies stay
+ * active across namespaces. Detection: an ACTIVE memory in any resolved
+ * promotion namespace (never the source's own) whose `sourceMemoryId` names
+ * this target, whose id is not the copy just written, and whose normalized
+ * body differs from the canonical body. Round N+10 (A) extended this to the
+ * NO-promotion path: `promotedContent` may be omitted (the committed source
+ * record is re-read and its content is the canonical body, so a copy
+ * matching a body a mid-flight replacement wrote is NOT stale and stays),
+ * and `promotedMemoryId` may be omitted (below-threshold downgrade or
+ * degraded merge) — stale copies then supersede onto the committed source
+ * target itself, leaving exactly one current copy or none if none is
+ * warranted. Replace, not add: each stale copy is superseded with
+ * `supersededBy` pointing at the current copy (or the source target).
+ * Best-effort and fail-open per namespace — a failed retirement is logged
+ * and leaves the pre-fix state, which the next merge retries. Returns the
+ * number of stale copies retired.
  */
 export async function retireStaleMergedTargetPromotionCopies(args: {
   config: PluginConfig;
@@ -327,14 +393,20 @@ export async function retireStaleMergedTargetPromotionCopies(args: {
   scopeProfileWritePlan: ResolvedScopeProfilePlan | null | undefined;
   sourceStorage: StorageManager;
   sourceMemoryId: string;
-  /** The body the merged-target promotion wrote (raw committed record content). */
-  promotedContent: string;
-  /** The id of the promoted copy just written (supersession target). */
-  promotedMemoryId: string;
+  /** The body the merged-target promotion wrote (raw committed record content). Omit on the no-promotion path — the committed source record is re-read instead. */
+  promotedContent?: string;
+  /** The id of the promoted copy just written (supersession target). Omit when no replacement promotion ran — stale copies supersede onto the source target. */
+  promotedMemoryId?: string;
   /** The caller's canonical content form (normalizeStoredHashSource). */
   normalize: (content: string) => string;
 }): Promise<number> {
-  const promotedForm = args.normalize(args.promotedContent);
+  const supersessionTarget = args.promotedMemoryId ?? args.sourceMemoryId;
+  const canonicalRecord = args.promotedContent === undefined
+    ? await args.sourceStorage.getMemoryByIdIncludingArchived(args.sourceMemoryId).catch(() => null)
+    : null;
+  const promotedForm = args.normalize(
+    args.promotedContent ?? canonicalRecord?.content ?? "",
+  );
   let retired = 0;
   for (const namespace of promotionScanNamespaces(args.config, args.scopeProfileWritePlan)) {
     try {
@@ -351,13 +423,13 @@ export async function retireStaleMergedTargetPromotionCopies(args: {
       for (const memory of stale) {
         const superseded = await storage.supersedeMemory(
           memory.frontmatter.id as string,
-          args.promotedMemoryId,
+          supersessionTarget,
           "merged-target promotion reconciliation",
         );
         if (superseded) {
           retired++;
           log.warn(
-            `persistExtraction: superseded stale promoted copy ${memory.frontmatter.id} of ${args.sourceMemoryId} — it carried the pre-merge body while ${args.promotedMemoryId} serves the merged body`,
+            `persistExtraction: superseded stale promoted copy ${memory.frontmatter.id} of ${args.sourceMemoryId} — it carried the pre-merge body while ${supersessionTarget} serves the merged body`,
           );
         }
       }

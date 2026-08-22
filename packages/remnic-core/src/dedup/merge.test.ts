@@ -659,6 +659,90 @@ test("applySemanticMergeAtPersist: merges in place with snapshot, provenance, ha
   assert.deepEqual(h.calls.lookupStorages, [h.storage.dir]);
 });
 
+// #2330 round N+10 (B): the merge commits into a target living under
+// `cold/` and then hands the target to indexPersistedMemory for the
+// embedding-fallback refresh. PersistenceIndexCoordinator used to resolve
+// the id with the HOT-only getMemoryById, found nothing, and returned — the
+// fallback index kept serving the pre-merge text. This drives the REAL
+// coordinator against a REAL cold-tier file.
+test("applySemanticMergeAtPersist: a cold-tier target merge refreshes the embedding fallback index (round N+10 B)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-cold-idx-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    // Seed straight into cold/ at the tier layout buildTierMemoryPath uses
+    // (cold/<category>/<created-date>/<id>.md) — a long-lived merge target
+    // that was demoted to the cold tier.
+    const targetPath = path.join(dir, "cold", "facts", "2026-08-20", "fact-target.md");
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await writeFile(
+      targetPath,
+      [
+        "---",
+        "id: fact-target",
+        "category: fact",
+        "created: 2026-08-20T00:00:00.000Z",
+        "updated: 2026-08-20T00:00:00.000Z",
+        "status: active",
+        "---",
+        "",
+        EXISTING,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    assert.ok(
+      await storage.getMemoryByIdIncludingArchived("fact-target"),
+      "the cold-tier target must resolve through the cold-aware lookup",
+    );
+    const indexed: Array<{ id: string; content: string; path: string }> = [];
+    const config = parseConfig({
+      memoryDir: dir,
+      versioningEnabled: true,
+      embeddingFallbackEnabled: true,
+      semanticMerge: { enabled: true },
+    });
+    const coordinator = new PersistenceIndexCoordinator({
+      config,
+      embeddingFallback: {
+        isAvailable: async () => true,
+        indexFile: async (id: string, content: string, p: string) => {
+          indexed.push({ id, content, path: p });
+        },
+        removeFromIndex: async () => {},
+      },
+    } as unknown as ConstructorParameters<typeof PersistenceIndexCoordinator>[0]);
+    const deps = {
+      config,
+      getLocalLlm: () => null,
+      semanticDedupLookup: async () => [{ id: "fact-target", score: 0.85 }],
+      indexPersistedMemory: (s: StorageManager, id: string) =>
+        coordinator.indexPersistedMemory(s, id),
+    } as unknown as ExtractionPersistDeps;
+
+    const outcome = await applySemanticMergeAtPersist(deps, {
+      storage,
+      content: INCOMING,
+      category: "fact",
+      sources: [INCOMING_SOURCE],
+      judgeCall: (options) => acceptingJudge(options),
+    });
+    assert.equal(outcome.action, "merged", `merge outcome: ${JSON.stringify(outcome)}`);
+
+    assert.deepEqual(
+      indexed.map((entry) => ({ id: entry.id, content: entry.content })),
+      [{ id: "fact-target", content: MERGED }],
+      `the fallback index must serve the merged text for the cold-tier target (got ${JSON.stringify(indexed)})`,
+    );
+    assert.ok(
+      indexed[0]?.path.includes(path.join("cold")),
+      `the indexed path must be the target's cold-tier location (got ${indexed[0]?.path})`,
+    );
+  } finally {
+    await StorageManager.clearAllStaticCaches();
+  }
+});
+
 test("applySemanticMergeAtPersist: intent routing recomputes intent fields from the committed merged body", async () => {
   const h = await harness({
     targetIntent: { goal: "close_deal", actionType: "summarize", entityTypes: ["client"] },
@@ -2485,6 +2569,82 @@ test("runMergedTargetPostEffects: a REAL append failure restores prior edges at 
     );
   } finally {
     await chmod(entityPath, 0o644);
+  }
+});
+
+// #2330 round N+10 (C): the failure P2-B models strikes at the FIRST
+// append. Here the ENTITY append SUCCEEDS and the TIME append fails, so the
+// failed build has already written rows for this node. The restore loop used
+// to only add the removed old rows back, leaving old + partial-new edges
+// that spreadingActivation double-counts. Failure must leave EXACTLY the
+// old edge set — the partial new rows are removed before the restore.
+test("runMergedTargetPostEffects: a failure after a successful entity append leaves exactly the old edge set (round N+10 C)", async () => {
+  if (process.getuid?.() === 0) {
+    // Root may append to a 0444 file, so the EACCES injection cannot fail.
+    return;
+  }
+  const h = await postEffectsHarness();
+  const OTHER = "facts/2026-08-19/other.md";
+  // The target's OWN prior entity edge: removal drops it (restoring later).
+  const priorEntity = { from: h.targetRelPath, to: OTHER, type: "entity", weight: 1, label: "entity-billing-service", ts: "2026-08-19T00:00:00.000Z" };
+  // A time edge this node did NOT generate: removal skips rewriting
+  // time.jsonl entirely, so the read-only mode survives until the append.
+  const unrelatedTime = { from: "facts/2026-08-18/earlier.md", to: "facts/2026-08-18/earliest.md", type: "time", weight: 1, label: "thread-0", ts: "2026-08-19T00:00:00.000Z" };
+  await seedGraphFile(h.dir, "entity", [priorEntity]);
+  await seedGraphFile(h.dir, "time", [unrelatedTime]);
+  const timePath = path.join(h.dir, "state", "graphs", "time.jsonl");
+  await chmod(timePath, 0o444);
+  try {
+    const graphConfig = parseConfig({ memoryDir: h.dir });
+    const graphIndex = new GraphIndex(h.dir, graphConfig);
+    const coordinator = new PersistenceIndexCoordinator({
+      config: graphConfig,
+      graphIndexFor: () => graphIndex,
+    } as unknown as ConstructorParameters<typeof PersistenceIndexCoordinator>[0]);
+    const deps = {
+      ...h.deps,
+      // The REAL chain: runMergedTargetPostEffects → coordinator.buildGraphEdge
+      // → GraphIndex.onMemoryWritten → appendEdge. No stubbed seam anywhere.
+      buildGraphEdge: coordinator.buildGraphEdge.bind(coordinator),
+    } as unknown as ExtractionPersistDeps;
+    // A sibling sharing the target's entityRef makes the ENTITY append fire
+    // and succeed; the thread episode list makes the TIME append fire next
+    // and hit the read-only file.
+    const sibling = {
+      path: path.join(h.dir, OTHER),
+      frontmatter: { id: "mem-sibling", category: "fact", entityRef: "entity-billing-service" },
+      content: "Sibling fact sharing the billing entity.",
+    } as unknown as MemoryFile;
+    await runMergedTargetPostEffects(
+      deps,
+      h.storage,
+      { targetId: "fact-target", mergedContent: MERGED },
+      {
+        category: "fact",
+        incomingContent: INCOMING,
+        incomingConfidence: 0.9,
+        namespace: "default",
+        graphCaps: ALL_GRAPH_CAPS,
+        graphContext: {
+          allMemsForGraph: [sibling],
+          memoryPathById: new Map([["mem-earlier", OTHER]]),
+        },
+        threadIdForEdge: "thread-1",
+        threadEpisodeIdsForGraph: ["mem-earlier", "fact-target"],
+      },
+    );
+    assert.deepEqual(
+      await readGraphFile(h.dir, "entity"),
+      [priorEntity],
+      "exactly the old entity edge set may remain — the partially appended new edge must be removed, not left beside the restored old rows",
+    );
+    assert.deepEqual(
+      await readGraphFile(h.dir, "time"),
+      [unrelatedTime],
+      "the unrelated time edge survives untouched",
+    );
+  } finally {
+    await chmod(timePath, 0o644);
   }
 });
 

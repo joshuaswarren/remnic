@@ -108,7 +108,7 @@ import {
   profileAutoPromotionAllows,
   readActiveMemoriesBothTiers,
   promotionWithholdsToolScope,
-  retireStaleMergedTargetPromotionCopies,
+  promoteAndReconcileMergedTarget,
   shouldPromoteToShared,
 } from "./extraction-persist-promotion.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
@@ -2555,9 +2555,8 @@ export class ExtractionPersistCoordinator {
         // D + final round (A/B): with no promoted copies the create path's promotion must still run — fail-open, the merge stands — and its payload is derived SOLELY from the re-read committed record: no field reads the incoming extraction (see buildMergedTargetPromotionPayload; null = target replaced mid-flight or retired by a concurrent lifecycle operation, skip promotion). Promotion eligibility gates on the committed record's tier — the downgraded min(incoming, target) confidence where a lower incoming fact merged in.
         // Round N+7 (A): the payload builder refuses a degraded merge (provenancePatched=false) — no promotion off unpatched trust metadata. (B): after the current copy lands, any concurrently promoted PRE-merge copy is superseded (promotion dedups by content, so without this both stay active).
         const mergedPromotion = await buildMergedTargetPromotionPayload(targetStorage, semanticMerge);
-        if (mergedPromotion) try { const promotedCopyId = await promoteMemoryToShared({ sourceStorage: targetStorage, ...mergedPromotion }); if (promotedCopyId) await retireStaleMergedTargetPromotionCopies({ config: this.deps.config, getStorageRouter: this.deps.getStorageRouter, scopeProfileWritePlan, sourceStorage: targetStorage, sourceMemoryId: semanticMerge.targetId, promotedContent: mergedPromotion.content, promotedMemoryId: promotedCopyId, normalize: normalizeStoredHashSource }); promotedCopyProbe.invalidate(); } catch (err) {
-          log.warn(`persistExtraction: merged-target promotion failed open for ${semanticMerge.targetId}: ${err}`);
-        }
+        // Round N+10 (A): promotion AND reconciliation — including the no-promotion path, where a below-threshold downgrade or a degraded merge writes no replacement copy but a concurrently published PRE-merge copy must still retire. See promoteAndReconcileMergedTarget.
+        await promoteAndReconcileMergedTarget({ promote: (payload) => promoteMemoryToShared({ sourceStorage: targetStorage, ...payload }), config: this.deps.config, getStorageRouter: this.deps.getStorageRouter, scopeProfileWritePlan, sourceStorage: targetStorage, sourceMemoryId: semanticMerge.targetId, mergedPromotion, normalize: normalizeStoredHashSource, onReconciled: () => promotedCopyProbe.invalidate() });
         // Round N+7 (D): the merged body joins the INTERNAL temporal/tag index refresh (id-keyed, incremental); the PUBLIC persistedIds return stays new-fragment only.
         trackPersistedId(targetStorage, semanticMerge.targetId, { includeReturnedIds: false });
         // Finding B (round N+3): enqueue the surviving target so the end-of-batch harmonic pass covers the committed merged claims.

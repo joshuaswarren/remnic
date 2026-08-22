@@ -58,7 +58,7 @@ import {
   resolveRecallAuxiliaryCapabilities,
   type GraphConstructionCapabilitySet,
 } from "../capabilities.js";
-import { removeNodeEdgesForRewrite, restoreRemovedNodeEdges } from "../graph-jsonl.js";
+import { removeNodeEdgesForRewrite, rollbackNodeEdgeRewrite } from "../graph-jsonl.js";
 import type { GraphType } from "../graph.js";
 import type {
   BehaviorSignalEvent,
@@ -1083,8 +1083,9 @@ export async function writeMergedVerbatimArtifact(
  * graph type — entity from-side, time/causal inbound — so a re-merge
  * REPLACES them instead of re-appending duplicates into append-only JSONLs
  * that spreadingActivation would then double-count (N+6 B, N+7 G); if the
- * replacement build fails the removed edges are restored, so failure leaves
- * either the old or the new complete set (N+7 E). The target joins the
+ * replacement build fails, the rows the failed build already appended are
+ * removed and the removed edges restored, so failure leaves EXACTLY the old
+ * set (N+7 E, N+10 C). The target joins the
  * batch's thread episode list at its END — deduped first when already
  * present — so the merge is the thread's latest event and later facts in
  * the same extraction chain their time/causal adjacency through it (N+6 C,
@@ -1155,14 +1156,17 @@ export async function runMergedTargetPostEffects(
       const entry = all.find((m) => path.relative(storage.dir, m.path) === memoryRelPath);
       if (entry) entry.content = rawBody;
     }
-    // N+6 B + round N+7 (E/G): onMemoryWritten is append-only, so a re-merge
-    // must first drop the target's prior generated edges in EVERY enabled
-    // graph type — entity from-side, time/causal inbound — or each later
-    // merge re-appends them and spreadingActivation double-counts the
-    // duplicates while the JSONLs grow without bound. The removed edges are
-    // captured; if the replacement build then FAILS (e.g. an append I/O
-    // error) they are RESTORED, so failure leaves either the old or the new
-    // complete set — never none.
+    // N+6 B + round N+7 (E/G) + round N+10 (C): onMemoryWritten is
+    // append-only, so a re-merge must first drop the target's prior
+    // generated edges in EVERY enabled graph type — entity from-side,
+    // time/causal inbound — or each later merge re-appends them and
+    // spreadingActivation double-counts the duplicates while the JSONLs
+    // grow without bound. The removed edges are captured; if the
+    // replacement build FAILS, the rows the FAILED build already appended
+    // are removed first — everything this node's write generates in the
+    // enabled types is exactly what a fresh removal pass drops — and only
+    // then are the prior edges RESTORED, so failure leaves EXACTLY the old
+    // set — never none, and never old plus partial-new.
     const rewriteTypes: GraphType[] = [];
     if (input.graphCaps.entityGraph) rewriteTypes.push("entity");
     if (input.graphCaps.timeGraph) rewriteTypes.push("time");
@@ -1184,13 +1188,9 @@ export async function runMergedTargetPostEffects(
       );
       input.graphContext.previousPersistedRelPath = memoryRelPath;
     } catch (buildErr) {
-      for (const removed of removedEdges) {
-        await restoreRemovedNodeEdges(storage.dir, removed).catch((restoreErr) =>
-          log.error(
-            `semantic-merge: graph edge restore failed for ${merge.targetId} ${removed.type} graph — the prior edges may be lost; rebuild with graph health repair: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`,
-          ),
-        );
-      }
+      // Round N+10 (C): the failed build may have appended SOME of the node's
+      // new edges — roll them back BEFORE restoring the prior set.
+      await rollbackNodeEdgeRewrite(storage.dir, memoryRelPath, rewriteTypes, removedEdges, merge.targetId);
       throw buildErr;
     }
   } catch {

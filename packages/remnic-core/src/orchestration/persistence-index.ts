@@ -335,7 +335,21 @@ export class PersistenceIndexCoordinator {
   ): Promise<void> {
     if (!resolveMemoryLifecycleCapabilities(this.deps.config).embeddingFallback) return;
     if (!(await this.deps.embeddingFallback.isAvailable())) return;
-    const memory = await storage.getMemoryById(memoryId);
+    // #2330 round N+10 (B): getMemoryById is HOT-tier only, so a semantic
+    // merge's surviving target living under cold/ resolved to null and the
+    // embedding fallback kept serving the pre-merge text. Fall back to the
+    // same cold-aware id lookup the merge path used
+    // (getMemoryByIdIncludingArchived, PR #2771 N+9 B parity for the temporal
+    // refresh); retired records stay out via the active-status gate.
+    let memory = await storage.getMemoryById(memoryId);
+    if (!memory) {
+      const coldAware = await storage
+        .getMemoryByIdIncludingArchived(memoryId)
+        .catch(() => null);
+      if (coldAware && isActiveMemoryStatus(coldAware.frontmatter.status)) {
+        memory = coldAware;
+      }
+    }
     if (!memory) return;
     await this.deps.embeddingFallback.indexFile(
       memoryId,

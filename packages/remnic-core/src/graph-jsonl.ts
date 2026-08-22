@@ -11,6 +11,7 @@
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 
+import { log } from "./logger.js";
 import { graphFilePath, readEdgesStrict, withGraphWriteLock, type GraphEdge, type GraphType } from "./graph.js";
 
 /**
@@ -111,4 +112,37 @@ export async function restoreRemovedNodeEdges(
     await writeGraphJsonlAtomic(removed.filePath, [...current, ...toRestore]);
     return toRestore.length;
   });
+}
+
+/**
+ * Round N+10 (C) companion to {@link removeNodeEdgesForRewrite}: the
+ * replacement build FAILED, possibly after appending SOME of the node's new
+ * edges (the entity append landed, a later time/causal append failed).
+ * Everything a node's own write generates in the enabled types is exactly
+ * what a fresh removal pass drops, so clear that partial new set FIRST, then
+ * restore the prior rows the original pass captured — failure leaves
+ * EXACTLY the old set, never none and never old plus partial-new edges that
+ * spreadingActivation would double-count. Failures are logged, never thrown:
+ * the caller rethrows the build error either way.
+ */
+export async function rollbackNodeEdgeRewrite(
+  memoryDir: string,
+  memoryPath: string,
+  types: readonly GraphType[],
+  removed: RemovedNodeEdges[],
+  nodeId: string,
+): Promise<void> {
+  await removeNodeEdgesForRewrite(memoryDir, memoryPath, types).catch(
+    (cleanErr) =>
+      log.error(
+        `semantic-merge: partial graph edge cleanup failed for ${nodeId} — edges from the failed rebuild remain; rebuild with graph health repair: ${cleanErr instanceof Error ? cleanErr.message : String(cleanErr)}`,
+      ),
+  );
+  for (const entry of removed) {
+    await restoreRemovedNodeEdges(memoryDir, entry).catch((restoreErr) =>
+      log.error(
+        `semantic-merge: graph edge restore failed for ${nodeId} ${entry.type} graph — the prior edges may be lost; rebuild with graph health repair: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`,
+      ),
+    );
+  }
 }
