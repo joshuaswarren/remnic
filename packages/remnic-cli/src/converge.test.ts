@@ -1883,3 +1883,10 @@ test("converge --timeout seconds convert to milliseconds before normalization (#
   assert.equal(convergeTimeoutFlagToMs(7_200), 3_600_000);
   assert.throws(() => convergeTimeoutFlagToMs(Number.NaN), /--timeout/);
 });
+
+test("converge --timeout rounds fractional seconds before integer normalization (#2804 round 1)", async () => {
+  const { convergeTimeoutFlagToMs } = await import("./converge.js");
+  assert.equal(convergeTimeoutFlagToMs(1.001), 1001);
+  // Sub-millisecond values normalize-reject (positive integer required).
+  assert.throws(() => convergeTimeoutFlagToMs(0.0001), /--timeout/);
+});

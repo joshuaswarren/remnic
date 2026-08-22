@@ -1006,7 +1006,9 @@ export function formatConvergeApplyReport(result: ConvergeApplyResult): string {
  * 3.6-second timeout.
  */
 export function convergeTimeoutFlagToMs(seconds: number): number {
-  return normalizeConvergePeerRequestTimeoutMs(seconds * 1000, "--timeout");
+  // Round before normalization: IEEE-754 can turn 1.001 into
+  // 1000.9999999999999, which the integer-only normalizer would reject.
+  return normalizeConvergePeerRequestTimeoutMs(Math.round(seconds * 1000), "--timeout");
 }
 
 export async function cmdConverge(
