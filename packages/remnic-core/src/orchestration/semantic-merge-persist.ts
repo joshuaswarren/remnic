@@ -42,11 +42,13 @@ import {
 import { confidenceTier } from "../types.js";
 import { REFUSED_MERGE_CATEGORIES } from "../dedup/merge-on-write.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
+import { inferIntentFromText } from "../intent.js";
 import {
   hasCitationForTemplate,
   stripCitationForTemplate,
 } from "../source-attribution.js";
 import {
+  resolveConversationContextCapabilities,
   resolvePipelineProcessingCapabilities,
   resolvePresentationCapabilities,
   resolveRecallAuxiliaryCapabilities,
@@ -829,18 +831,31 @@ export async function applySemanticMergeAtPersist(
     if (!merged || merged.content !== decision.mergedContent) {
       throw new Error("target replaced before the provenance patch");
     }
+    const mergedRawBody = rawPreCitationMergedBody(deps, decision.mergedContent);
+    // Finding A (round N+3) — intent parity. With intent routing on, the
+    // create path stamps intentGoal/intentActionType/intentEntityTypes from
+    // the body it persists, and recall-search-pipeline scores intent
+    // compatibility from exactly those fields; a merge that left the
+    // target's stale values would misroute the newly merged claims. The
+    // patch recomputes them with the SAME call the write path runs
+    // (`${category} ${tags} ${content}`) over the committed record — its own
+    // category and tags plus the canonical RAW pre-citation merged body — so
+    // the committed values equal what an ordinary write of the same body
+    // would persist. An empty entityTypes list clears a stale field, exactly
+    // as serialization omits it on a fresh write.
+    const mergedIntent = resolveConversationContextCapabilities(deps.config).intentRouting
+      ? inferIntentFromText(
+          `${merged.frontmatter.category} ${(merged.frontmatter.tags ?? []).join(" ")} ${mergedRawBody}`,
+        )
+      : undefined;
     // Item B — `updateMemoryIfUnchanged` keeps the target's old
     // `frontmatter.contentHash`, so the patch must restamp the identity the
     // write path would register: the hash of the SAME canonical form normal
-    // persistence hashes — the sanitized RAW pre-citation body, with the
-    // configured citation form stripped off the judge-composed merged text
-    // first (round N+2 C). Facts only, mirroring `contentHashSource` on the
-    // write path.
+    // persistence hashes — the sanitized RAW pre-citation body (round N+2 C).
+    // Facts only, mirroring `contentHashSource` on the write path.
     const mergedFactHash =
       options.category === "fact"
-        ? ContentHashIndex.computeHash(
-            sanitizeMemoryContent(rawPreCitationMergedBody(deps, decision.mergedContent)).text,
-          )
+        ? ContentHashIndex.computeHash(sanitizeMemoryContent(mergedRawBody).text)
         : undefined;
     // Finding B — the incoming fact's suggested navigation links attach to
     // the target here, in the same conditional patch (the fact is never
@@ -872,6 +887,13 @@ export async function applySemanticMergeAtPersist(
             }
           : {}),
         ...(mergedLinks !== undefined ? { links: mergedLinks } : {}),
+        ...(mergedIntent !== undefined
+          ? {
+              intentGoal: mergedIntent.goal,
+              intentActionType: mergedIntent.actionType,
+              intentEntityTypes: mergedIntent.entityTypes,
+            }
+          : {}),
       },
       { actor: "semantic-merge" },
     );

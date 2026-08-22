@@ -119,7 +119,7 @@ import {
   resolvePersistedMemoryRelativePath,
 } from "../orchestrator.js";
 import type { HarmonicConstructionInput } from "../harmonic-construction.js";
-import { persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
+import { enqueueMergedTargetForHarmonicConstruction, persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
 import { applySemanticMergeAtPersist, buildMergedTargetPromotionPayload, writeMergedVerbatimArtifact } from "./semantic-merge-persist.js";
 import { ExtractionAnchorSnapshot } from "./extraction-anchor-snapshot.js";
 
@@ -2560,6 +2560,10 @@ export class ExtractionPersistCoordinator {
         const mergedPromotion = await buildMergedTargetPromotionPayload(targetStorage, semanticMerge);
         if (mergedPromotion) try { await promoteMemoryToShared({ sourceStorage: targetStorage, ...mergedPromotion }); promotedCopyProbe.invalidate(); } catch (err) {
           log.warn(`persistExtraction: merged-target promotion failed open for ${semanticMerge.targetId}: ${err}`);
+        }
+        // Finding B (round N+3): enqueue the surviving target so the end-of-batch harmonic pass covers the committed merged claims.
+        if (harmonicConstructionEnabled) {
+          enqueueMergedTargetForHarmonicConstruction(harmonicFactsByStorage, targetStorage, harmonicFact, semanticMerge.targetId, semanticMerge.mergedContent, new Date(harmonicSourceInsertedAtBase + harmonicSourceOrder++).toISOString());
         }
         continue;
       }

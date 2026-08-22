@@ -3,9 +3,9 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-
 import { parseConfig } from "../config.js";
 import { listVersions, type VersionTrigger } from "../page-versioning.js";
+import { inferIntentFromText } from "../intent.js";
 import {
   applySemanticMergeAtPersist,
   buildMergedTargetPromotionPayload,
@@ -387,6 +387,8 @@ async function harness(
     targetInvalidAt?: string;
     /** Stamp `memoryKind` on the target's frontmatter (round N+2 B). */
     targetMemoryKind?: MemoryFrontmatter["memoryKind"];
+    /** Stamp stale intent routing fields on the target's frontmatter (round N+3 A). */
+    targetIntent?: { goal: string; actionType: string; entityTypes: string[] };
     /** Top-level parseConfig overrides (citation enablement, round N+2 C). */
     topLevelConfig?: Record<string, unknown>;
     lookupHits?: SemanticDedupHit[];
@@ -427,6 +429,13 @@ async function harness(
     ...(overrides.targetValidAt ? { valid_at: overrides.targetValidAt } : {}),
     ...(overrides.targetInvalidAt ? { invalid_at: overrides.targetInvalidAt } : {}),
     ...(overrides.targetMemoryKind ? { memoryKind: overrides.targetMemoryKind } : {}),
+    ...(overrides.targetIntent
+      ? {
+          intentGoal: overrides.targetIntent.goal,
+          intentActionType: overrides.targetIntent.actionType,
+          intentEntityTypes: overrides.targetIntent.entityTypes,
+        }
+      : {}),
     sources: [TARGET_SOURCE],
   } as unknown as MemoryFrontmatter;
   await writeFile(targetPath, `---\nid: fact-target\ncategory: fact\n---\n\n${EXISTING}\n`, "utf8");
@@ -583,6 +592,53 @@ test("applySemanticMergeAtPersist: merges in place with snapshot, provenance, ha
   assert.deepEqual(h.calls.reindexed, ["fact-target"]);
   // Candidates come from the write's own namespace-scoped storage.
   assert.deepEqual(h.calls.lookupStorages, [h.storage.dir]);
+});
+
+test("applySemanticMergeAtPersist: intent routing recomputes intent fields from the committed merged body", async () => {
+  const h = await harness({
+    targetIntent: { goal: "close_deal", actionType: "summarize", entityTypes: ["client"] },
+    topLevelConfig: { intentRoutingEnabled: true },
+  });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  const patch = h.calls.frontmatterPatches.at(-1)?.patch;
+  assert.ok(patch, "the merge must land a conditional frontmatter patch");
+  // The recomputation the ordinary write path runs over the same body:
+  // category + tags + RAW pre-citation content of the committed record.
+  const expected = inferIntentFromText(`fact ${""} ${MERGED}`);
+  assert.equal(patch.intentGoal, expected.goal);
+  assert.equal(patch.intentActionType, expected.actionType);
+  assert.deepEqual(patch.intentEntityTypes, expected.entityTypes);
+  // Concretely: the merged body's "deploys" cue routes to release, and the
+  // target's stale client-deal routing is replaced, not retained.
+  assert.equal(patch.intentGoal, "release");
+  assert.equal(patch.intentActionType, "unknown");
+  assert.deepEqual(patch.intentEntityTypes, []);
+});
+
+test("applySemanticMergeAtPersist: intent routing off leaves intent fields untouched", async () => {
+  const h = await harness({
+    targetIntent: { goal: "close_deal", actionType: "summarize", entityTypes: ["client"] },
+  });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  const patch = h.calls.frontmatterPatches.at(-1)?.patch;
+  assert.ok(patch);
+  assert.equal("intentGoal" in patch, false);
+  assert.equal("intentActionType" in patch, false);
+  assert.equal("intentEntityTypes" in patch, false);
 });
 
 test("applySemanticMergeAtPersist: shadow mode decides but never mutates", async () => {

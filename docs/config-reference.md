@@ -1237,6 +1237,18 @@ into a create-or-update decision:
    bypasses the merge), so a low-confidence extraction can never leave a
    merged record — or a copy promoted from it — scoring above what the
    create path would have stored for that fact alone.
+   When intent routing is on, the same patch restamps
+   `intentGoal`/`intentActionType`/`intentEntityTypes` by recomputing them
+   from the committed merged body — the record's own category and tags plus
+   the RAW pre-citation body, the same `inferIntentFromText` call the normal
+   write runs — so the record's intent routing always describes the body it
+   holds instead of the target's stale pre-merge values (an empty entity-type
+   list clears a stale field, exactly as a fresh write would omit it; with
+   routing off the fields are untouched). A successful merge also enqueues
+   the surviving target — committed merged body as content — into the batch's
+   harmonic construction pass, so a merge-only extraction still derives its
+   episode/abstraction nodes and cue anchors; the returned `persistedIds`
+   stay new-fragment only.
 4. A merge carries only content, category, sources, and connector. A fact
    that also carries extraction metadata the merge cannot preserve —
    structured attributes, an entity ref, bi-temporal bounds, effective

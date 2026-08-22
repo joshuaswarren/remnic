@@ -1190,6 +1190,165 @@ test("persistExtraction writes nodes with harmonic retrieval and gates cue ancho
   }
 });
 
+test("persistExtraction enqueues a merged target for harmonic construction (merge-only batch)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-merge-"));
+  const TARGET_ID = "merge-target-main";
+  const SEED = "The billing service deploys on a Tuesday cadence.";
+  const INCOMING = "The billing service deploys at 09:00 UTC sharp.";
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: true,
+      chunkingEnabled: false,
+      harmonicRetrievalEnabled: true,
+      abstractionAnchorsEnabled: true,
+      versioningEnabled: true,
+      semanticMerge: { enabled: true },
+    });
+    const orchestrator = new Orchestrator(config) as unknown as PersistenceHarness & {
+      embeddingFallback: {
+        isAvailable: () => Promise<boolean>;
+        search: (
+          query: string,
+          limit: number,
+          options?: unknown,
+        ) => Promise<Array<{ id: string; score: number; path: string }>>;
+        indexFile: (id: string, content: string, path: string) => Promise<void>;
+        removeFromIndex: (id: string) => Promise<void>;
+      };
+      localLlm: {
+        chatCompletion: (
+          messages: Array<{ role: string; content: string }>,
+        ) => Promise<{ content: string } | null>;
+      };
+    };
+    const storage = await orchestrator.getStorage("default");
+    await storage.ensureDirectories();
+    // Seed a merge target with past timestamps and high importance so the
+    // incoming fact never bypasses as unpreservable metadata.
+    const created = new Date(Date.now() - 3600_000).toISOString();
+    const seededDir = path.join(memoryDir, "facts", created.slice(0, 10));
+    await mkdir(seededDir, { recursive: true });
+    await writeFile(
+      path.join(seededDir, `${TARGET_ID}.md`),
+      [
+        "---",
+        `id: ${TARGET_ID}`,
+        "category: fact",
+        `created: ${created}`,
+        `updated: ${created}`,
+        "source: extraction",
+        "confidence: 0.9",
+        "confidenceTier: explicit",
+        "status: active",
+        "importanceScore: 0.9",
+        "importanceLevel: high",
+        "---",
+        "",
+        SEED,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    // Band neighbor for the incoming fact only ([minSimilarity, threshold)).
+    orchestrator.embeddingFallback = {
+      isAvailable: async () => true,
+      search: async (query: string) =>
+        query === INCOMING ? [{ id: TARGET_ID, score: 0.85, path: "" }] : [],
+      indexFile: async () => {},
+      removeFromIndex: async () => {},
+    };
+    // Deterministic judge: merge into the top candidate's current body.
+    orchestrator.localLlm = {
+      chatCompletion: async (messages) => {
+        if (
+          messages[0]?.role !== "system" ||
+          !messages[0].content.startsWith("You maintain a long-term memory store")
+        ) {
+          return null;
+        }
+        const input = JSON.parse(messages[1]?.content ?? "{}") as {
+          new?: { content?: string };
+          existing?: Array<{ id?: string; content?: string }>;
+        };
+        const target = input.existing?.[0];
+        if (!target?.id || typeof target.content !== "string" || typeof input.new?.content !== "string") {
+          return { content: JSON.stringify({ decision: "create", targetId: null, mergedContent: null, reason: "no candidate" }) };
+        }
+        return {
+          content: JSON.stringify({
+            decision: "merge",
+            targetId: target.id,
+            mergedContent: `${target.content} ${input.new.content}`.trim(),
+            reason: "deterministic judge for merge-only harmonic coverage",
+          }),
+        };
+      },
+    };
+    const result: ExtractionResult = {
+      facts: [
+        {
+          category: "fact",
+          content: INCOMING,
+          confidence: 0.9,
+          tags: [],
+          cueAnchors: [{ type: "tool", value: "billing deploy window" }],
+        },
+      ],
+      entities: [],
+      profileUpdates: [],
+      questions: [],
+      relationships: [],
+      episodeTitle: "Billing deploy cadence",
+    };
+    const { persistedIds } = await orchestrator.persistExtraction(result, storage, null, {
+      sessionKey: "session:harmonic-merge",
+    });
+    // Contract preserved: persistedIds stays new-fragment only — the merged
+    // target is updated in place, never reported as a new fragment.
+    assert.deepEqual(persistedIds, []);
+
+    const nodeStatus = await getAbstractionNodeStoreStatus({
+      memoryDir: storage.dir,
+      enabled: true,
+      anchorsEnabled: true,
+    });
+    assert.equal(
+      nodeStatus.nodes.total,
+      1,
+      "a merge-only batch must still derive an episode node for the committed target",
+    );
+    assert.ok(
+      nodeStatus.latestNode?.sourceMemoryIds?.includes(TARGET_ID),
+      "the episode node must cite the surviving target id",
+    );
+    const anchorStatus = await getCueAnchorStoreStatus({
+      memoryDir: storage.dir,
+      enabled: true,
+      anchorsEnabled: true,
+    });
+    assert.ok(
+      anchorStatus.anchors.total >= 1,
+      "the extracted cue anchors must reach the anchor store for the merged claims",
+    );
+    const searchResults = await searchHarmonicRetrieval({
+      memoryDir: storage.dir,
+      query: "billing deploy cadence",
+      maxResults: 5,
+      anchorsEnabled: true,
+    });
+    assert.ok(
+      searchResults.some((item) => item.node.sourceMemoryIds?.includes(TARGET_ID)),
+      "harmonic retrieval must surface the merged target's episode",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("harmonic anchors stay scoped to projected active sources in a mixed episode", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-anchor-sources-"));
   try {
