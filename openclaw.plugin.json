@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.69.17",
+  "version": "9.69.18",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -1570,10 +1570,10 @@
             "description": "Default conflict policy for convergence. newest-wins selects the newer revision when both sides carry comparable timestamps; manual stops before mutation when conflicts remain."
           },
           "peerRequestTimeoutMs": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "default": 30000,
-                    "description": "Per-request peer HTTP timeout in milliseconds for converge plan/apply/watch. Boot-scale namespaces (~100k files) can take over 30s to serve a manifest; raise this rather than watching manifest fetches time out. Clamped to 3600000 (one hour)."
+            "type": "integer",
+            "minimum": 1,
+            "default": 30000,
+            "description": "Per-request peer HTTP timeout in milliseconds for converge plan/apply/watch. Boot-scale namespaces (~100k files) can take over 30s to serve a manifest; raise this rather than watching manifest fetches time out. Clamped to 3600000 (one hour)."
           }
         }
       },
