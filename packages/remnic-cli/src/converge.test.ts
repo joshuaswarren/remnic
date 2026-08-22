@@ -1818,18 +1818,16 @@ function tombstonePeerFixture(opts: {
   };
 }
 
-test("converge plan: a peer that lists but will not serve tombstones is tolerated, not fatal", async () => {
+test("converge plan: a peer that lists but cannot serve tombstones stays FATAL (retraction evidence is load-bearing)", async () => {
   const fixture = tombstonePeerFixture({ listedBytes: 10, serveBytes: null });
-  const plan = await computeConvergePlan({
-    peerUrl: "http://peer",
-    localFilesByNamespace: fixture.localFilesByNamespace,
-    fetchImpl: fixture.fetchImpl,
-  });
-  // The plan COMPLETES (no fatal): the peer-only tombstone file plans as a
-  // pull, which is correct — the point is the missing file evidence did not
-  // abort the plan.
-  assert.equal(plan.byNamespace[0]?.namespace, "default");
-  assert.ok(plan.entries.some((entry) => entry.path === "state/tombstones.jsonl"));
+  await assert.rejects(
+    computeConvergePlan({
+      peerUrl: "http://peer",
+      localFilesByNamespace: fixture.localFilesByNamespace,
+      fetchImpl: fixture.fetchImpl,
+    }),
+    /failed to read peer tombstone evidence/
+  );
 });
 
 test("converge plan: a tombstone file that grew (append-only race) is accepted via prefix match", async () => {

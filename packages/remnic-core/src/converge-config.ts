@@ -13,20 +13,29 @@ export const DEFAULT_CONVERGE_PEER_REQUEST_TIMEOUT_MS = 30_000;
 /** Ceiling for the configured timeout — a peer that has not answered in an hour
  *  is unreachable, not slow. */
 export const MAX_CONVERGE_PEER_REQUEST_TIMEOUT_MS = 3_600_000;
-/** Last-resort env override, evaluated lazily so tests control time. */
-export function envConvergePeerRequestTimeoutMs(): number | undefined {
-  const raw = process.env.REMNIC_CONVERGE_PEER_TIMEOUT_MS;
-  if (raw === undefined || raw.trim() === "") return undefined;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-function parsePeerRequestTimeoutMs(value: unknown, label: string): number {
-  if (value === undefined) return DEFAULT_CONVERGE_PEER_REQUEST_TIMEOUT_MS;
+/**
+ * ONE normalization policy for every override source (config JSON, env, CLI
+ * flag, programmatic options): malformed values are rejected, valid values
+ * clamped to the one-hour ceiling. Returns the clamped ms value.
+ */
+export function normalizeConvergePeerRequestTimeoutMs(value: unknown, label: string): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new Error(`${label} must be a positive integer number of milliseconds; got ${JSON.stringify(value)}`);
   }
   return Math.min(value, MAX_CONVERGE_PEER_REQUEST_TIMEOUT_MS);
+}
+
+/** Env override, evaluated lazily so tests control time. Junk is rejected. */
+export function envConvergePeerRequestTimeoutMs(): number {
+  const raw = process.env.REMNIC_CONVERGE_PEER_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_CONVERGE_PEER_REQUEST_TIMEOUT_MS;
+  return normalizeConvergePeerRequestTimeoutMs(Number(raw), "REMNIC_CONVERGE_PEER_TIMEOUT_MS");
+}
+
+/** Config-block value: absent -> default, present -> normalized. */
+function parsePeerRequestTimeoutMs(value: unknown, label: string): number {
+  if (value === undefined) return DEFAULT_CONVERGE_PEER_REQUEST_TIMEOUT_MS;
+  return normalizeConvergePeerRequestTimeoutMs(value, label);
 }
 
 export function parseConvergeConfig(block: unknown): ConvergeConfig {

@@ -1017,3 +1017,19 @@ test("a namespace with an unpaired surrogate is rejected", () => {
   // literal U+FFFD namespace are one directory on disk.
   assert.throws(() => planNamespaceReconciliation({ namespace: "\ud800", local: [], peer: [] }), /unpaired surrogate/);
 });
+
+test("POSIX-origin colon paths are rejected when the PEER platform is win32", () => {
+  assert.throws(
+    () =>
+      planNamespaceReconciliation(
+        {
+          namespace: "default",
+          local: [{ path: "facts/a:b.md", sha256: digest("x") }],
+          peer: [],
+        },
+        { peerPlatform: "win32" }
+      ),
+    /character Windows cannot store/,
+    "a push to a Windows peer must not plan a colon path"
+  );
+});

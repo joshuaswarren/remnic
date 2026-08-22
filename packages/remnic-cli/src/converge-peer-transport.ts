@@ -43,6 +43,8 @@ async function fetchPeerRequest(
 export interface PeerSyncCapabilities {
   convergenceFinalization: boolean;
   manifestStream: boolean;
+  /** Peer's process.platform when advertised (older peers omit it). */
+  platform?: string;
 }
 
 export async function fetchPeerSyncCapabilities(
@@ -74,9 +76,11 @@ export async function fetchPeerSyncCapabilities(
     ) {
       throw new Error("peer capability response was malformed");
     }
+    const platform = "platform" in payload && typeof payload.platform === "string" ? payload.platform : undefined;
     return {
       convergenceFinalization: payload.convergenceFinalization,
       manifestStream: payload.manifestStream,
+      ...(platform !== undefined ? { platform } : {}),
     };
   }
   return null;

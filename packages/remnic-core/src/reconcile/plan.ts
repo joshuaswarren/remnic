@@ -186,6 +186,12 @@ export interface ReconcileOptions {
    * the Windows branches stay testable from any platform.
    */
   localPlatform?: NodeJS.Platform;
+  /**
+   * Platform of the PEER participant when known (advertised via the
+   * offline-sync capabilities route). Push entries materialize on the peer,
+   * so Windows path hazards apply when EITHER participant is win32.
+   */
+  peerPlatform?: string;
 }
 
 /**
@@ -216,7 +222,7 @@ function assertCensusRecord(
   file: ReconcileFileState | undefined,
   side: string,
   namespace: string,
-  platform: NodeJS.Platform
+  platforms: readonly (string | undefined)[]
 ): ReconcileFileState {
   const path = file?.path;
   if (typeof path !== "string" || path.length === 0) {
@@ -232,7 +238,7 @@ function assertCensusRecord(
   } catch (err) {
     throw new ReconcilePlanInputError(err instanceof Error ? err.message : String(err));
   }
-  assertPortablePathSegments(path, side, namespace, platform);
+  assertPortablePathSegments(path, side, namespace, platforms);
   return {
     ...file,
     path,
@@ -334,7 +340,7 @@ function assertPortablePathSegments(
   path: string,
   side: string,
   namespace: string,
-  platform: NodeJS.Platform = process.platform
+  platforms: readonly (string | undefined)[]
 ): void {
   // Windows-only hazards (trailing dot/space stripping, invalid characters
   // like `:`, reserved device names) only constrain a plan whose LOCAL
@@ -343,7 +349,7 @@ function assertPortablePathSegments(
   // gates are skipped for non-win32 planners. The lone-surrogate check is
   // UNCONDITIONAL: Node mangles unpaired surrogates identically everywhere,
   // which corrupts cross-platform path comparison itself.
-  const isWindows = platform === "win32";
+  const isWindows = platforms.some((candidate) => candidate === "win32");
   for (const segment of path.split("/")) {
     if (segment.length === 0) continue;
     if (isWindows && (segment.endsWith(".") || segment.endsWith(" "))) {
@@ -431,11 +437,11 @@ function indexByPath(
   files: Iterable<ReconcileFileState>,
   side: string,
   namespace: string,
-  platform: NodeJS.Platform
+  platforms: readonly (string | undefined)[]
 ): Map<string, ReconcileFileState> {
   const index = new Map<string, ReconcileFileState>();
   for (const raw of files) {
-    const file = assertCensusRecord(raw, side, namespace, platform);
+    const file = assertCensusRecord(raw, side, namespace, platforms);
     if (rejectConflictingDuplicate(index.get(file.path), file, file.path, side, namespace)) continue;
     index.set(file.path, file);
   }
@@ -484,11 +490,11 @@ function indexDigestsByPath(
   files: Iterable<ReconcileFileState>,
   side: string,
   namespace: string,
-  platform: NodeJS.Platform
+  platforms: readonly (string | undefined)[]
 ): Map<string, string> {
   const index = new Map<string, string>();
   for (const raw of files) {
-    const file = assertCensusRecord(raw, side, namespace, platform);
+    const file = assertCensusRecord(raw, side, namespace, platforms);
     const existing = index.get(file.path);
     // One map, not a parallel `seen`: the base's own mtimeMs is never a
     // decision input (only the local and peer timestamps order a conflict), so
@@ -556,7 +562,7 @@ function parseDeletionMtimes(
   value: ReadonlyMap<string, number> | undefined,
   side: string,
   namespace: string,
-  platform: NodeJS.Platform
+  platforms: readonly (string | undefined)[]
 ): ReadonlyMap<string, number> {
   if (value === undefined) return new Map();
   if (!(value instanceof Map)) {
@@ -569,7 +575,7 @@ function parseDeletionMtimes(
     } catch (err) {
       throw new ReconcilePlanInputError(err instanceof Error ? err.message : String(err));
     }
-    assertPortablePathSegments(path, side, namespace, platform);
+    assertPortablePathSegments(path, side, namespace, platforms);
     parsed.set(path, assertMtimeMs(mtimeMs, `${side} deletion for namespace ${namespace} entry ${path}`));
   }
   return parsed;
@@ -603,8 +609,8 @@ export function planNamespaceReconciliation(
   // Index the peer census only, then stream the local one against it, removing
   // each match as it is consumed. Peak residency is one index plus the entry
   // list rather than two full censuses (round 2, codex P2).
-  const localPlatform = options.localPlatform ?? process.platform;
-  const peer = indexByPath(assertIterable(input.peer, "peer", namespace), "peer", namespace, localPlatform);
+  const effectivePlatforms = [options.localPlatform ?? process.platform, options.peerPlatform];
+  const peer = indexByPath(assertIterable(input.peer, "peer", namespace), "peer", namespace, effectivePlatforms);
   // Only `base.sha256` is ever read, so the base is compacted to path -> digest
   // instead of a second full record index (round 7, codex P2).
   // Only an ABSENT base means bootstrap. A null/invalid cursor silently read as
@@ -613,11 +619,11 @@ export function planNamespaceReconciliation(
   const base =
     input.base === undefined
       ? null
-      : indexDigestsByPath(assertIterable(input.base, "base", namespace), "base", namespace, localPlatform);
+      : indexDigestsByPath(assertIterable(input.base, "base", namespace), "base", namespace, effectivePlatforms);
   const tombstoned = parseTombstonedDigests(input.tombstonedFileSha256, namespace);
   const peerTombstoned = parseTombstonedDigests(input.peerTombstonedFileSha256, namespace, "peerTombstonedFileSha256");
-  const localDeletionMtimeMs = parseDeletionMtimes(input.localDeletionMtimeMs, "local", namespace, localPlatform);
-  const peerDeletionMtimeMs = parseDeletionMtimes(input.peerDeletionMtimeMs, "peer", namespace, localPlatform);
+  const localDeletionMtimeMs = parseDeletionMtimes(input.localDeletionMtimeMs, "local", namespace, effectivePlatforms);
+  const peerDeletionMtimeMs = parseDeletionMtimes(input.peerDeletionMtimeMs, "peer", namespace, effectivePlatforms);
   const entries: ReconcilePlanEntry[] = [];
 
   // Path -> digest only, never the file objects: enough to make the stream
@@ -632,7 +638,7 @@ export function planNamespaceReconciliation(
   // materializing the second census.
   const seenLocal = new Map<string, { sha256: string; mtimeMs?: number }>();
   for (const rawLocal of localCensus) {
-    const localFile = assertCensusRecord(rawLocal, "local", namespace, options.localPlatform ?? process.platform);
+    const localFile = assertCensusRecord(rawLocal, "local", namespace, effectivePlatforms);
     const path = localFile.path;
     assertNoPathAlias(caseFold, path, namespace);
     const seen = seenLocal.get(path);

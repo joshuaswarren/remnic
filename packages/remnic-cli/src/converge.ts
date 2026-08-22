@@ -7,6 +7,7 @@ import {
   DEFAULT_CONVERGE_CONFLICT_POLICY,
   parseConfig,
   envConvergePeerRequestTimeoutMs,
+  normalizeConvergePeerRequestTimeoutMs,
   type ResolveSecretRefFn,
   buildOfflineSyncSnapshotFromBase,
   applyOfflineSyncFileContentChunk,
@@ -181,6 +182,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   const peerDeletionMtimeMs = new Map<string, ReadonlyMap<string, number>>();
   const localManifests = new Map<string, ReconcileManifest>();
   const peerManifests = new Map<string, ReconcileManifest>();
+  let peerPlatform: string | undefined;
 
   if (options.baseFilesByNamespace) {
     for (const [ns, files] of options.baseFilesByNamespace) {
@@ -330,6 +332,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       envConvergePeerRequestTimeoutMs() ??
       DEFAULT_PEER_REQUEST_TIMEOUT_MS;
     const capabilities = await fetchPeerSyncCapabilities(peerUrl, resolvedToken, fetchFn, timeoutMs);
+    peerPlatform = capabilities?.platform;
     for (const ns of namespacesToPlan) {
       const peerData = await fetchPeerSnapshot(peerUrl, ns, resolvedToken, fetchFn, timeoutMs);
       const streamedManifest = capabilities?.manifestStream
@@ -368,31 +371,28 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
         const state = peerFiles.find((file) => file.path === tombstonePath);
         if (!state) continue;
         const remote = await fetchPeerFileContent(peerUrl, ns, tombstonePath, resolvedToken, fetchFn, timeoutMs);
+        // A transport-level failure here is FATAL on purpose: tombstone
+        // evidence is what stops a plan from pushing a peer-retracted memory
+        // back (resurrection). There is no safe "empty evidence" fallback —
+        // the snapshot response carries no tombstone digest array today.
         if (!remote) {
-          // The peer's snapshot LISTS the file but its file-content route
-          // declines to serve it (state/ paths are not served on every
-          // deployment). An absent file is EMPTY evidence, not a fatal error:
-          // the snapshot's own tombstone digest array still flows in below.
-          process.stderr.write(
-            `converge: peer lists but will not serve ${tombstonePath} for ${ns}; using snapshot tombstone digests only\n`
-          );
-          continue;
+          throw new Error(`failed to read peer tombstone evidence: ${tombstonePath}`);
         }
         if (remote.sha256.toLowerCase() !== state.sha256.toLowerCase()) {
           // A LIVE peer appends tombstones while the plan runs, so the file
           // can legitimately differ from the snapshot listing that scheduled
           // this fetch. Tombstone stores are append-only by design, so the
           // fetch is consistent with the listing exactly when the listed
-          // revision is a prefix of the fetched content: same bytes for the
-          // first `state.bytes` characters. Anything else is a real mismatch.
-          const fetched = remote.content.toString("utf8");
+          // revision is a byte-prefix of the fetched content. The comparison
+          // is BYTES throughout: state.bytes is a byte count and hashing the
+          // buffer directly avoids UTF-16 code-unit slicing on non-ASCII
+          // logs (review round 1).
           const listedBytes = typeof state.bytes === "number" ? state.bytes : -1;
           const prefixMatches =
             listedBytes >= 0 &&
-            fetched.length >= listedBytes &&
-            createHash("sha256")
-              .update(Buffer.from(fetched.slice(0, listedBytes), "utf8"))
-              .digest("hex") === state.sha256.toLowerCase();
+            remote.content.length >= listedBytes &&
+            createHash("sha256").update(remote.content.subarray(0, listedBytes)).digest("hex") ===
+              state.sha256.toLowerCase();
           if (!prefixMatches) {
             throw new Error(`failed to read peer tombstone evidence: ${tombstonePath}`);
           }
@@ -453,7 +453,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   }
 
   const conflictPolicy = options.conflictPolicy ?? config?.converge.conflictPolicy ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
-  const plan = planReconciliation(inputs, { conflictPolicy });
+  const plan = planReconciliation(inputs, { conflictPolicy, peerPlatform });
   return collapseActiveFactDuplicates(plan, localManifests, peerManifests, semanticAgreementMap);
 }
 
@@ -1069,12 +1069,13 @@ Options:
       // Flag-present-but-value-absent is malformed, not "use the default".
       const raw = rest[i + 1];
       const parsed = raw === undefined ? Number.NaN : Number(raw);
-      if (!Number.isFinite(parsed) || parsed <= 0) {
+      try {
+        timeoutSeconds = normalizeConvergePeerRequestTimeoutMs(parsed, "--timeout") / 1000;
+      } catch {
         process.stderr.write("converge: --timeout must be a positive number of seconds.\n");
         process.exitCode = 2;
         return;
       }
-      timeoutSeconds = parsed;
       i += 1;
     } else if (arg === "--conflict-policy") {
       const policy = rest[i + 1];
