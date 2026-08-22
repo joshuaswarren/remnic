@@ -1144,12 +1144,14 @@ export async function runMergedTargetPostEffects(
     // generated edges in EVERY enabled graph type — entity from-side,
     // time/causal inbound — or each later merge re-appends them and
     // spreadingActivation double-counts the duplicates while the JSONLs
-    // grow without bound. The removed edges are captured; if the
-    // replacement build FAILS, the rows the FAILED build already appended
-    // are removed first — everything this node's write generates in the
-    // enabled types is exactly what a fresh removal pass drops — and only
-    // then are the prior edges RESTORED, so failure leaves EXACTLY the old
-    // set — never none, and never old plus partial-new.
+    // The removed edges are captured; when the replacement build FAILS or is
+    // superseded, the rows THAT build appended — returned by identity from
+    // onMemoryWritten (round N+14) — are removed first, never a node-wide
+    // sweep, so rows a newer writer rebuilt after this removal survive. The
+    // prior edges are then RESTORED per graph type, skipped only where a
+    // newer writer's rebuilt rows are live in the file — so failure leaves
+    // EXACTLY the old set, and supersession leaves exactly the newer
+    // writer's set: never none, never old plus partial-new.
     const rewriteTypes: GraphType[] = [];
     if (input.graphCaps.entityGraph) rewriteTypes.push("entity");
     if (input.graphCaps.timeGraph) rewriteTypes.push("time");

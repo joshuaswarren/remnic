@@ -12,7 +12,7 @@
  * earlier in the thread moves to the tail, not a unique-append no-op.
  */
 import { removeNodeEdgesForRewrite, rollbackNodeEdgeRewrite } from "../graph-jsonl.js";
-import type { GraphType } from "../graph.js";
+import type { GraphEdge, GraphType } from "../graph.js";
 
 import { readFile } from "node:fs/promises";
 
@@ -175,19 +175,25 @@ export async function persistMergedTargetThreadEpisode(
 }
 
 /**
- * Round N+12 (C): replace a merged target's generated graph edges with the
- * rebuild's rows, revision-guarded end to end. The caller's committed-body
- * check can pass, writer B can then commit a NEWER merge and finish
- * rebuilding edges for it, and writer A would resume to remove B's edges and
- * install edges derived from A's older body. The revision observed at the
- * check is carried THROUGH the remove-and-rebuild; before the install
+ * Round N+12 (C) + N+14: replace a merged target's generated graph edges
+ * with the rebuild's rows, revision-guarded end to end. The caller's
+ * committed-body check can pass, writer B can then commit a NEWER merge and
+ * finish rebuilding edges for it, and writer A would resume to remove B's
+ * edges and install edges derived from A's older body. The revision observed
+ * at the check is carried THROUGH the remove-and-rebuild; before the install
  * counts as final the target is re-read, and an advanced revision (or a
- * vanished target) aborts the install — the rows A's build appended are
- * removed and the edges observed at A's removal are restored, which include
- * B's. The advancing writer owns the rebuild. Returns whether the install
- * finalized (the caller advances its adjacency chain only then). A build
- * failure rolls back the same way (round N+10 C) and rethrows — fail-open
- * stays the caller's decision.
+ * vanished target) aborts the install. The advancing writer owns the rebuild.
+ * Returns whether the install finalized (the caller advances its adjacency
+ * chain only then). A build failure rolls back the same way (round N+10 C)
+ * and rethrows — fail-open stays the caller's decision.
+ *
+ * Round N+14 makes the ROLLBACK surgical: `build` returns the exact rows it
+ * appended (by identity), and the rollback removes only those — never a
+ * node-wide sweep — so rows a newer writer appended after this writer's
+ * removal survive. The snapshot restore is residue-gated per graph type: a
+ * type whose file still holds node rows the aborting writer cannot account
+ * for belongs to the newer writer and is NOT restored over. See
+ * {@link rollbackNodeEdgeRewrite}.
  */
 export async function rewriteMergedTargetGraphEdges(
   storage: {
@@ -201,24 +207,28 @@ export async function rewriteMergedTargetGraphEdges(
     /** The frontmatter `updated` value the committed-body check validated. */
     revisionChecked: string | undefined;
     rewriteTypes: readonly GraphType[];
-    build: () => Promise<void>;
+    build: () => Promise<GraphEdge[] | void>;
   },
 ): Promise<boolean> {
   const removedEdges = await removeNodeEdgesForRewrite(storage.dir, input.memoryRelPath, input.rewriteTypes);
+  // Round N+14: the rows THIS writer's build appended, by exact identity. A
+  // throwing build loses its return value (undefined) — the rollback then
+  // falls back to the node-wide sweep, identical outcome absent interleaving.
+  let appended: readonly GraphEdge[] | undefined;
   try {
-    await input.build();
+    appended = (await input.build()) ?? undefined;
     const committedNow = await storage.getMemoryByIdIncludingArchived(input.targetId);
     if (
       !committedNow ||
       committedNow.content !== input.mergedContent ||
       committedNow.frontmatter.updated !== input.revisionChecked
     ) {
-      await rollbackNodeEdgeRewrite(storage.dir, input.memoryRelPath, input.rewriteTypes, removedEdges, input.targetId);
+      await rollbackNodeEdgeRewrite(storage.dir, input.memoryRelPath, input.rewriteTypes, removedEdges, input.targetId, appended);
       return false;
     }
     return true;
   } catch (buildErr) {
-    await rollbackNodeEdgeRewrite(storage.dir, input.memoryRelPath, input.rewriteTypes, removedEdges, input.targetId);
+    await rollbackNodeEdgeRewrite(storage.dir, input.memoryRelPath, input.rewriteTypes, removedEdges, input.targetId, appended);
     throw buildErr;
   }
 }

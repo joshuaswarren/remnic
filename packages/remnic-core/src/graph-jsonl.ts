@@ -115,15 +115,26 @@ export async function restoreRemovedNodeEdges(
 }
 
 /**
- * Round N+10 (C) companion to {@link removeNodeEdgesForRewrite}: the
- * replacement build FAILED, possibly after appending SOME of the node's new
- * edges (the entity append landed, a later time/causal append failed).
- * Everything a node's own write generates in the enabled types is exactly
- * what a fresh removal pass drops, so clear that partial new set FIRST, then
- * restore the prior rows the original pass captured — failure leaves
- * EXACTLY the old set, never none and never old plus partial-new edges that
- * spreadingActivation would double-count. Failures are logged, never thrown:
- * the caller rethrows the build error either way.
+ * Round N+10 (C) + N+14 companion to {@link removeNodeEdgesForRewrite}: the
+ * replacement build FAILED or was superseded, possibly after appending SOME
+ * of the node's new edges. Two duties, both scoped to what THIS writer did:
+ *
+ * 1. Remove the rows the failed build actually appended. When `appended` is
+ *    provided (the build returned its exact rows, N+14) removal is surgical
+ *    — by exact JSON row identity, per file, under the same per-file lock —
+ *    so rows a NEWER writer appended after this writer's removal (never in
+ *    this writer's snapshot) survive. Rows a newer writer already swept are
+ *    simply absent and the removal is a no-op. Without `appended` (a
+ *    throwing build loses its return) fall back to the node-wide sweep of
+ *    {@link removeNodeEdgesForRewrite}: identical outcome when no newer
+ *    writer interleaved.
+ * 2. Restore the snapshot the original removal dropped — but only for graph
+ *    types whose file holds NO unexplained node rows after step 1. A type
+ *    that still has node rows this writer cannot account for is owned by the
+ *    newer writer's completed rebuild; restoring the older snapshot over it
+ *    left the memory holding B's body while graph recall reflected the
+ *    pre-A state (the N+14 finding). Types swept clean restore verbatim
+ *    (N+7 E: failure leaves the old or the new complete set, never none).
  */
 export async function rollbackNodeEdgeRewrite(
   memoryDir: string,
@@ -131,18 +142,71 @@ export async function rollbackNodeEdgeRewrite(
   types: readonly GraphType[],
   removed: RemovedNodeEdges[],
   nodeId: string,
+  appended?: readonly GraphEdge[],
 ): Promise<void> {
-  await removeNodeEdgesForRewrite(memoryDir, memoryPath, types).catch(
-    (cleanErr) =>
+  let residue = new Set<GraphType>();
+  const cleanup = appended
+    ? removeAppendedNodeEdges(memoryDir, memoryPath, types, appended)
+    : removeNodeEdgesForRewrite(memoryDir, memoryPath, types).then((): Set<GraphType> => new Set());
+  await cleanup
+    .then((left) => {
+      residue = left;
+    })
+    .catch((cleanErr) =>
       log.error(
         `semantic-merge: partial graph edge cleanup failed for ${nodeId} — edges from the failed rebuild remain; rebuild with graph health repair: ${cleanErr instanceof Error ? cleanErr.message : String(cleanErr)}`,
       ),
-  );
+    );
   for (const entry of removed) {
+    if (residue.has(entry.type)) {
+      log.warn(
+        `semantic-merge: skipped ${entry.type} snapshot restore for ${nodeId} — a newer writer's rebuilt edges are live in that graph`,
+      );
+      continue;
+    }
     await restoreRemovedNodeEdges(memoryDir, entry).catch((restoreErr) =>
       log.error(
         `semantic-merge: graph edge restore failed for ${nodeId} ${entry.type} graph — the prior edges may be lost; rebuild with graph health repair: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`,
       ),
     );
   }
+}
+
+/**
+ * Round N+14: remove exactly the rows a failed/superseded build appended,
+ * then report which of the rewrite types still hold node-generated rows this
+ * writer did NOT append (a newer writer's live rebuild) so the caller can
+ * skip restoring its older snapshot over them.
+ */
+async function removeAppendedNodeEdges(
+  memoryDir: string,
+  memoryPath: string,
+  types: readonly GraphType[],
+  appended: readonly GraphEdge[],
+): Promise<Set<GraphType>> {
+  const mineByType = new Map<GraphType, string[]>();
+  for (const edge of appended) {
+    const list = mineByType.get(edge.type) ?? [];
+    list.push(JSON.stringify(edge));
+    mineByType.set(edge.type, list);
+  }
+  const residue = new Set<GraphType>();
+  for (const type of types) {
+    const filePath = graphFilePath(memoryDir, type);
+    const mine = mineByType.get(type) ?? [];
+    await withGraphWriteLock(filePath, async () => {
+      const edges = await readEdgesStrict(memoryDir, type);
+      if (mine.length > 0) {
+        const identities = new Set(mine);
+        const kept = edges.filter((edge) => !identities.has(JSON.stringify(edge)));
+        if (kept.length !== edges.length) {
+          await writeGraphJsonlAtomic(filePath, kept);
+        }
+      }
+      if (edges.some((edge) => isNodeGeneratedEdge(edge, type, memoryPath) && !mine.includes(JSON.stringify(edge)))) {
+        residue.add(type);
+      }
+    });
+  }
+  return residue;
 }

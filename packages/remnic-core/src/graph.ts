@@ -600,16 +600,15 @@ export class GraphIndex {
       causalGraph: boolean;
       multiGraphMemory: boolean;
     };
-  }): Promise<void> {
+  }): Promise<GraphEdge[]> {
     const g = opts.graphCapsOverride;
     const multiGraphOn = g ? g.multiGraphMemory : this.cfg.multiGraphMemoryEnabled;
-    if (!multiGraphOn) return;
+    if (!multiGraphOn) return [];
     const entityOn = g ? g.entityGraph : this.cfg.entityGraphEnabled;
     const timeOn = g ? g.timeGraph : this.cfg.timeGraphEnabled;
     const causalOn = g ? g.causalGraph : this.cfg.causalGraphEnabled;
     const ts = new Date().toISOString();
-    // Collect the edges appended this call so a coherent single-writer push can
-    // extend the warm edge cache in place instead of nulling it (issue #1904).
+    // Appended this call: warm-cache in-place push (#1904) + surgical rollback rows (N+14).
     const appended: GraphEdge[] = [];
 
     try {
@@ -708,6 +707,7 @@ export class GraphIndex {
         }
       }
     }
+    return appended;
   }
 
   /**

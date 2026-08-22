@@ -12,7 +12,7 @@ import {
   runMergedTargetPostEffects,
   type ApplySemanticMergeOptions,
 } from "../orchestration/semantic-merge-persist.js";
-import { GraphIndex } from "../graph.js";
+import { appendEdge, GraphIndex, type GraphEdge } from "../graph.js";
 import { PersistenceIndexCoordinator } from "../orchestration/persistence-index.js";
 import { createBatchPromotedCopyProbe, promotionWithholdsToolScope } from "../orchestration/extraction-persist-promotion.js";
 import { persistMergedTargetThreadEpisode } from "../orchestration/semantic-merge-commit-effects.js";
@@ -3017,6 +3017,88 @@ test("runMergedTargetPostEffects: a writer committing mid-rebuild keeps its edge
     previousPersisted.current,
     "facts/2026-08-18/prev.md",
     "a superseded rebuild must not advance the batch's adjacency chain",
+  );
+});
+
+// ── Round N+14: a NEWER writer completing its rebuild INSIDE the stale
+// writer's remove→check window. B's rows land after A's removal, so they are
+// NOT in A's restore snapshot; the rollback must remove only the rows A's
+// build appended and must not resurrect the pre-A snapshot over B's live
+// rows. ────────────────────────────────────────────────────────────────────
+
+test("runMergedTargetPostEffects: a stale writer's rollback preserves the newer writer's rebuilt edges (round N+14)", async () => {
+  const h = await postEffectsHarness();
+  const OTHER = "facts/2026-08-19/other.md";
+  // The pre-A edge set: exactly what A's removal sweeps into its snapshot.
+  const priorEntity: GraphEdge = { from: h.targetRelPath, to: OTHER, type: "entity", weight: 1, label: "entity-billing-service", ts: "2026-08-19T00:00:00.000Z" };
+  await seedGraphFile(h.dir, "entity", [priorEntity]);
+  // B's completed rebuild, from B's newer body: a different label and B's own
+  // timestamp, appended DURING A's window — never captured by A's snapshot.
+  const bEntity: GraphEdge = { from: h.targetRelPath, to: OTHER, type: "entity", weight: 1, label: "entity-billing-service-v2", ts: "2026-08-22T01:00:00.000Z" };
+  const NEWER_BODY = "Billing service deploys run on Tuesdays at 09:00 UTC with payments.";
+  let buildStarted = false;
+  const storage = {
+    dir: h.dir,
+    getMemoryByIdIncludingArchived: async (id: string) =>
+      id === "fact-target"
+        ? {
+            path: path.join(h.dir, h.targetRelPath),
+            frontmatter: {
+              id,
+              category: "fact",
+              entityRef: "entity-billing-service",
+              // B's commit flips both the body and the revision once A's
+              // rebuild has begun: the initial committed-body check sees A's
+              // state, everything from the build onward sees B's.
+              ...(buildStarted ? { updated: "2026-08-22T01:00:00.000Z" } : {}),
+            },
+            content: buildStarted ? NEWER_BODY : MERGED,
+          }
+        : null,
+  } as unknown as StorageManager;
+  const graphConfig = parseConfig({ memoryDir: h.dir });
+  const graphIndex = new GraphIndex(h.dir, graphConfig);
+  const coordinator = new PersistenceIndexCoordinator({
+    config: graphConfig,
+    graphIndexFor: () => graphIndex,
+  } as unknown as ConstructorParameters<typeof PersistenceIndexCoordinator>[0]);
+  const realBuild = coordinator.buildGraphEdge.bind(coordinator);
+  const sibling = {
+    path: path.join(h.dir, OTHER),
+    frontmatter: { id: "mem-sibling", category: "fact", entityRef: "entity-billing-service" },
+    content: "Sibling fact sharing the billing entity.",
+  } as unknown as MemoryFile;
+  const deps = {
+    ...h.deps,
+    // The REAL chain for A's appends (so A's rows are exactly tracked), with
+    // B's completed rebuild injected at the start of A's build — after A's
+    // removal, before A's revision check.
+    buildGraphEdge: async (...args: Parameters<typeof realBuild>) => {
+      buildStarted = true;
+      await appendEdge(h.dir, { ...bEntity });
+      return realBuild(...args);
+    },
+  } as unknown as ExtractionPersistDeps;
+  await runMergedTargetPostEffects(
+    deps,
+    storage,
+    { targetId: "fact-target", mergedContent: MERGED },
+    {
+      category: "fact",
+      incomingContent: INCOMING,
+      incomingConfidence: 0.9,
+      namespace: "default",
+      graphCaps: ALL_GRAPH_CAPS,
+      graphContext: { allMemsForGraph: [sibling], memoryPathById: new Map() },
+      threadIdForEdge: undefined,
+      threadEpisodeIdsForGraph: undefined,
+    },
+  );
+  const entityEdges = await readGraphFile(h.dir, "entity");
+  assert.deepEqual(
+    entityEdges,
+    [bEntity],
+    `the graph must hold exactly B's rebuilt edges after the stale writer's rollback — no pre-A rows, no A rows (entity.jsonl: ${JSON.stringify(entityEdges)})`,
   );
 });
 

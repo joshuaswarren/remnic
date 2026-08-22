@@ -18,7 +18,7 @@ import path from "node:path";
 import { type GraphConstructionCapabilitySet, resolveCapabilities, resolveGraphConstructionCapabilities, resolveIndexingCapabilities, resolveMemoryLifecycleCapabilities, resolveNamespaceCapabilities, resolveRecallEnhancementCapabilities } from "../capabilities.js";
 import type { SemanticDedupHit } from "../dedup/semantic.js";
 import { EmbeddingFallback } from "../embedding-fallback.js";
-import { GraphIndex } from "../graph.js";
+import { GraphIndex, type GraphEdge } from "../graph.js";
 import { ContentHashIndex, StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
@@ -375,7 +375,7 @@ export class PersistenceIndexCoordinator {
     threadEpisodeIdsForGraph: string[] | undefined,
     fallbackCausalPredecessor: string | undefined,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.deps.config),
-  ): Promise<void> {
+  ): Promise<GraphEdge[]> {
     // Entity siblings: other memories sharing the same entityRef
     const entitySiblings: string[] = [];
     if (entityRef) {
@@ -419,7 +419,7 @@ export class PersistenceIndexCoordinator {
     }
     const causalPredecessor =
       recentInThread[recentInThread.length - 1] ?? fallbackCausalPredecessor;
-    await this.deps.graphIndexFor(storage).onMemoryWritten({
+    return await this.deps.graphIndexFor(storage).onMemoryWritten({
       memoryPath: memoryRelPath,
       entityRef,
       content: factContent,
