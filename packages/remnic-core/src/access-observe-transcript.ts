@@ -66,13 +66,18 @@ export class ObserveTranscriptPersister {
   async persist(
     orchestrator: Orchestrator,
     sessionKey: string,
-    messages: ReadonlyArray<{ role: string; content: string }>
+    messages: ReadonlyArray<{ role: string; content: string }>,
+    rawSessionKey?: string
   ): Promise<boolean> {
     let persisted = false;
     // TranscriptManager.append silently no-ops for skip-listed channel types
     // (cron by default) — check BEFORE appending so the response's
     // transcriptPersisted stays truthful (review: report skipped appends).
-    const { channelType } = orchestrator.transcript.getTranscriptPath(sessionKey);
+    // The channel identity must derive from the RAW session key: the legacy
+    // parser requires the key to start with "agent:", so a namespace-prefixed
+    // transcript identity would always classify as "session" and the skip
+    // list would silently not apply to namespaced cron sessions (review r4).
+    const { channelType } = orchestrator.transcript.getTranscriptPath(rawSessionKey ?? sessionKey);
     if (orchestrator.config.transcriptSkipChannelTypes.includes(channelType)) {
       return false;
     }
@@ -84,55 +89,61 @@ export class ObserveTranscriptPersister {
       const fingerprint = createHash("sha256")
         .update(`${sessionKey}\0${message.role}\0${message.content}`)
         .digest("hex");
-      const nowMs = Date.now();
-      const seenAt = this.seenFingerprintsAt.get(fingerprint);
-      if (seenAt !== undefined && nowMs - seenAt < OBSERVE_TRANSCRIPT_DEDUPE_TTL_MS) continue;
       // Two identical observes can overlap before either records its
       // fingerprint; both would then append and the transcript would carry
-      // the turn twice. Serialize per fingerprint: the second caller waits
-      // for the first append, re-checks the completed set, and skips.
-      const inflight = this.inflightAppends.get(fingerprint);
-      if (inflight) {
-        await inflight;
-        const seenAfter = this.seenFingerprintsAt.get(fingerprint);
-        if (seenAfter !== undefined && Date.now() - seenAfter < OBSERVE_TRANSCRIPT_DEDUPE_TTL_MS) {
-          continue;
+      // the turn twice. The attempt loop serializes per fingerprint: a caller
+      // that finds an in-flight append awaits it and RE-RUNS BOTH checks — on
+      // success the completed-set check skips the message; on failure (no
+      // fingerprint recorded) exactly ONE waiter proceeds to retry, because
+      // the check-then-register sequence has no await between its steps and
+      // is therefore atomic on the event loop (review r4).
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const seenAt = this.seenFingerprintsAt.get(fingerprint);
+        if (seenAt !== undefined && Date.now() - seenAt < OBSERVE_TRANSCRIPT_DEDUPE_TTL_MS) {
+          break; // duplicate within the retry window — skip the message
         }
+        const inflight = this.inflightAppends.get(fingerprint);
+        if (inflight) {
+          await inflight;
+          continue; // re-run both checks with the append's outcome visible
+        }
+        const entry: TranscriptEntry = {
+          timestamp: new Date().toISOString(),
+          role: message.role as TranscriptEntry["role"],
+          content: message.content,
+          sessionKey,
+          turnId: randomUUID(),
+        };
+        const appendPromise = orchestrator.transcript
+          .append(entry)
+          .then(() => {
+            // Remember only after a successful append: a transient failure
+            // must not permanently swallow the turn — the client's retry has
+            // to be able to re-append it (review round 2).
+            this.remember(fingerprint);
+            persisted = true;
+          })
+          .catch((err) => {
+            // Same policy as the LCM enqueue in the observe path: transcript
+            // persistence must never fail the observe itself.
+            log.error(`access-observe transcript append failed: ${err}`);
+          })
+          .finally(() => {
+            this.inflightAppends.delete(fingerprint);
+          });
+        this.inflightAppends.set(fingerprint, appendPromise);
+        await appendPromise;
+        break;
       }
-      const entry: TranscriptEntry = {
-        timestamp: new Date().toISOString(),
-        role: message.role as TranscriptEntry["role"],
-        content: message.content,
-        sessionKey,
-        turnId: randomUUID(),
-      };
-      // Register BEFORE awaiting: the check-then-register sequence above has
-      // no await between its steps, so exactly one overlapping caller starts
-      // the append; the others wait on the inflight promise and re-check.
-      const appendPromise = orchestrator.transcript
-        .append(entry)
-        .then(() => {
-          // Remember only after a successful append: a transient failure must
-          // not permanently swallow the turn — the client's retry has to be
-          // able to re-append it (review round 2).
-          this.remember(fingerprint);
-          persisted = true;
-        })
-        .catch((err) => {
-          // Same policy as the LCM enqueue in the observe path: transcript
-          // persistence must never fail the observe itself.
-          log.error(`access-observe transcript append failed: ${err}`);
-        })
-        .finally(() => {
-          this.inflightAppends.delete(fingerprint);
-        });
-      this.inflightAppends.set(fingerprint, appendPromise);
-      await appendPromise;
     }
     return persisted;
   }
 
   private remember(fingerprint: string): void {
+    // Map.set keeps an existing key at its ORIGINAL insertion position, so a
+    // TTL-refreshed fingerprint could still be the FIFO-oldest and get
+    // evicted immediately — delete first to move it to the end (review r4).
+    this.seenFingerprintsAt.delete(fingerprint);
     this.seenFingerprintsAt.set(fingerprint, Date.now());
     if (this.seenFingerprintsAt.size > OBSERVE_TRANSCRIPT_DEDUPE_MAX_ENTRIES) {
       const oldest = this.seenFingerprintsAt.keys().next().value;

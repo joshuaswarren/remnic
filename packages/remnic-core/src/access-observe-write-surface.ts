@@ -790,7 +790,8 @@ export class AccessObserveWriteSurface {
         ? await this.observeTranscriptPersister.persist(
             this.deps.orchestrator,
             observeTranscriptSessionKey(request.sessionKey, writeNamespace, this.deps.orchestrator.config),
-            request.messages
+            request.messages,
+            request.sessionKey
           )
         : false;
 
