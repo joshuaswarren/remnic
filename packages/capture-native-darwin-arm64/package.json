@@ -1,6 +1,6 @@
 {
   "name": "@remnic/capture-native-darwin-arm64",
-  "version": "9.69.17",
+  "version": "9.69.18",
   "description": "macOS Apple Silicon native capture helper for Remnic — audio, screen accessibility (AX), and window OCR",
   "type": "module",
   "os": [
