@@ -605,10 +605,11 @@ test("runHourly keeps processing later sessions when snapshot upsert fails after
     },
   ] as any[];
 
-  (summarizer as any).getActiveSessions = async () => [
-    failingSession,
-    succeedingSession,
-  ];
+  (summarizer as any).getActiveSessions = async () => ({
+    sessionKeys: [failingSession, succeedingSession],
+    newestEntryTimestamp: null,
+    scanFailed: false,
+  });
   (summarizer as any).getTranscriptEntries = async () => fakeEntries;
   (summarizer as any).generateSummary = async (
     sessionKey: string,
@@ -680,11 +681,12 @@ test("hourly active session discovery reads every session key in a transcript fi
     "utf-8",
   );
 
-  const sessions = await (summarizer as any).getActiveSessions();
+  const scan = await (summarizer as any).getActiveSessions();
   assert.deepEqual(
-    [...sessions].sort(),
+    [...scan.sessionKeys].sort(),
     ["agent:first:main", "agent:second:main"],
   );
+  assert.equal(scan.scanFailed, false);
 });
 
 test("hourly transcript lookup ignores traversal channel paths", async () => {
