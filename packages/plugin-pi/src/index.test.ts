@@ -1594,6 +1594,8 @@ test("matchRemnicMcpToolName normalizes only the recognized Remnic namespace", (
   assert.equal(matchRemnicMcpToolName(""), null);
   assert.equal(matchRemnicMcpToolName(undefined), null);
   assert.equal(matchRemnicMcpToolName(42), null);
+  assert.equal(matchRemnicMcpToolName("remnic_!"), null);
+  assert.equal(matchRemnicMcpToolName("remnic.recall!"), null);
 });
 
 type RegisteredTool = Record<string, unknown> & {
@@ -1616,45 +1618,57 @@ async function registerToolsFromCatalog(catalogToolNames: string[]): Promise<{
   const registeredTools: RegisteredTool[] = [];
   const calledToolNames: string[] = [];
   const appendedEntries: Array<{ customType: string; data: unknown }> = [];
-  globalThis.fetch = async (_input, init) => {
-    const body = JSON.parse(String(init?.body ?? "{}")) as {
-      method?: string;
-      params?: { name?: string };
+  try {
+    globalThis.fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        method?: string;
+        params?: { name?: string };
+      };
+      if (body.method === "tools/list") {
+        return new Response(JSON.stringify({
+          result: {
+            tools: catalogToolNames.map((name) => ({ name, inputSchema: { type: "object" } })),
+          },
+        }), { status: 200 });
+      }
+      if (body.method === "tools/call") {
+        calledToolNames.push(body.params?.name ?? "");
+        return new Response(JSON.stringify({ result: { ok: true } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ result: {} }), { status: 200 });
     };
-    if (body.method === "tools/list") {
-      return new Response(JSON.stringify({
-        result: {
-          tools: catalogToolNames.map((name) => ({ name, inputSchema: { type: "object" } })),
-        },
-      }), { status: 200 });
-    }
-    if (body.method === "tools/call") {
-      calledToolNames.push(body.params?.name ?? "");
-      return new Response(JSON.stringify({ result: { ok: true } }), { status: 200 });
-    }
-    return new Response(JSON.stringify({ result: {} }), { status: 200 });
-  };
 
-  const extension = createRemnicPiExtension({
-    config: {
-      ...baseConfig(),
-      authToken: "catalog-test-token",
-      namespace: "configured-namespace",
-      recallEnabled: false,
-      observeEnabled: false,
-      compactionEnabled: false,
-      statusEnabled: false,
-      mcpToolsEnabled: true,
-    },
-  });
-  await extension({
-    on: () => undefined,
-    registerCommand: () => undefined,
-    registerTool: (tool: Record<string, unknown>) => registeredTools.push(tool as RegisteredTool),
-    appendEntry: (customType: string, data?: unknown) => appendedEntries.push({ customType, data }),
-  });
+    const extension = createRemnicPiExtension({
+      config: {
+        ...baseConfig(),
+        authToken: "catalog-test-token",
+        namespace: "configured-namespace",
+        recallEnabled: false,
+        observeEnabled: false,
+        compactionEnabled: false,
+        statusEnabled: false,
+        mcpToolsEnabled: true,
+      },
+    });
+    await extension({
+      on: () => undefined,
+      registerCommand: () => undefined,
+      registerTool: (tool: Record<string, unknown>) => registeredTools.push(tool as RegisteredTool),
+      appendEntry: (customType: string, data?: unknown) => appendedEntries.push({ customType, data }),
+    });
 
-  return { registeredTools, calledToolNames, appendedEntries };
+    const firstTool = registeredTools[0];
+    if (firstTool) {
+      await firstTool.execute("call-1", { query: "q" }, undefined, undefined, {
+        cwd: "/tmp/remnic-pi",
+        sessionManager: { getSessionId: () => "catalog-tool" },
+      });
+    }
+
+    return { registeredTools, calledToolNames, appendedEntries };
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 }
 
 test("underscore-form MCP catalogs register Pi-safe tools that call the catalog tool name", async () => {
@@ -1670,10 +1684,6 @@ test("underscore-form MCP catalogs register Pi-safe tools that call the catalog 
   );
   assert.equal(registeredTools[0].label, "remnic_recall");
 
-  await registeredTools[0].execute("call-1", { query: "q" }, undefined, undefined, {
-    cwd: "/tmp/remnic-pi",
-    sessionManager: { getSessionId: () => "catalog-underscore" },
-  });
   assert.deepEqual(calledToolNames, ["remnic_recall"]);
 });
 
@@ -1690,10 +1700,6 @@ test("legacy dotted MCP catalogs keep working and call the dotted server-side na
   );
   assert.equal(registeredTools[0].label, "remnic.recall");
 
-  await registeredTools[0].execute("call-1", { query: "q" }, undefined, undefined, {
-    cwd: "/tmp/remnic-pi",
-    sessionManager: { getSessionId: () => "catalog-dotted" },
-  });
   assert.deepEqual(calledToolNames, ["remnic.recall"]);
 });
 
@@ -1709,8 +1715,10 @@ test("non-Remnic and malformed catalog names are excluded without accidental nor
       "remnic",
       "remnic.",
       "remnic_",
+      "remnic_!",
+      "remnic.recall!",
     ]);
-    assert.deepEqual(registeredTools, []);
+    assert.equal(registeredTools.length, 0);
 
     const diagnostic = appendedEntries.find((entry) =>
       typeof entry.data === "object" && entry.data !== null && "code" in entry.data &&

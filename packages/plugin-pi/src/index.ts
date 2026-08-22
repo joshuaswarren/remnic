@@ -57,10 +57,10 @@ const RECALL_PRODUCING_TOOL_NAMES: Record<string, true> = {
  * - legacy dotted form:  `remnic.recall`      -> pi: `remnic_recall`
  * - current underscore:  `remnic_recall`      -> pi: `remnic_recall`
  *
- * Only names starting with the exact `remnic.` or `remnic_` prefix are
- * normalized; arbitrary names that merely contain "remnic" are rejected.
- * The server-side name is echoed verbatim in tools/call so the request is
- * accepted by whichever server shape produced the catalog.
+ * Only names starting with the exact `remnic.` or `remnic_` prefix and a
+ * nonempty alphanumeric/underscore suffix are accepted. The server-side name
+ * is echoed verbatim in tools/call so the request is accepted by whichever
+ * server shape produced the catalog.
  */
 export function matchRemnicMcpToolName(name: unknown): { serverToolName: string; piToolName: string } | null {
   if (typeof name !== "string") return null;
@@ -70,10 +70,10 @@ export function matchRemnicMcpToolName(name: unknown): { serverToolName: string;
   } else if (name.startsWith("remnic_")) {
     rest = name.slice("remnic_".length);
   }
-  if (rest === null || rest.length === 0) return null;
+  if (rest === null || !/^[a-zA-Z0-9_]+$/.test(rest)) return null;
   return {
     serverToolName: name,
-    piToolName: `remnic_${rest}`.replace(/[^a-zA-Z0-9_]/g, "_"),
+    piToolName: `remnic_${rest}`,
   };
 }
 
