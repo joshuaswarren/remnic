@@ -32,6 +32,7 @@ import {
   shouldExcludeOfflineSyncFile,
   type OfflineSyncExcludeFile,
   type OfflineSyncFileTarget,
+  plainFileDigest,
 } from "./offline-sync-file-io.js";
 import { CENSUS_MAX_MTIME_MS, isCensusMtimeMs, isSha256Hex } from "./census-validation.js";
 export type { OfflineSyncExcludeFile, OfflineSyncFileTarget } from "./offline-sync-file-io.js";
@@ -1200,14 +1201,21 @@ export async function readOfflineSyncFileContentChunk(options: {
     if (offset > st.size) {
       throw new Error(`offset must be <= file size for ${relPath}`);
     }
+    // Plain files need the whole-file sha256 for the response contract
+    // (x-remnic-file-sha256; peer transports reject chunks without it), but
+    // must stay memory-bounded for large files: the digest is computed by a
+    // streamed hash pass (never buffering the file) and cached by
+    // (path, bytes, mtimeMs) so per-chunk requests after the first are O(1).
     const chunk = await readPlainOfflineSyncFileChunk({
       filePath,
       offset,
       length: requestedLength,
       bytes: st.size,
     });
+    const digest = await plainFileDigest(filePath);
     return {
       path: relPath,
+      sha256: digest,
       bytes: st.size,
       mtimeMs: st.mtimeMs,
       offset,

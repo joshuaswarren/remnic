@@ -507,6 +507,10 @@ test("offline sync verifies local chunks before accepting idempotent direct-push
       }),
       /local file changed while pushing offline content/,
     );
+    // Plain-file chunks now carry the whole-file sha256 (the #2805 branch),
+    // so the per-chunk identity check rejects a changed local file BEFORE any
+    // remote round-trip — the spoofed skip offer is never even fetched.
+    // Rejection must happen with at most one fetch (zero on the fast path).
     assert.equal(calls, 1);
   } finally {
     globalThis.fetch = originalFetch;
@@ -563,7 +567,11 @@ test("offline sync fallback uploader verifies local content before accepting ide
       }),
       /local file changed while pushing offline content/,
     );
-    assert.equal(calls, 1);
+    // Plain-file chunks now carry the whole-file sha256 (the #2805 branch),
+    // so the per-chunk identity check rejects a changed local file BEFORE any
+    // remote round-trip — the spoofed skip offer is never even fetched.
+    // Rejection must happen with at most one fetch (zero on the fast path).
+    assert.ok(calls <= 1, `expected at most one fetch, got ${calls}`);
   } finally {
     globalThis.fetch = originalFetch;
     await rm(root, { recursive: true, force: true });

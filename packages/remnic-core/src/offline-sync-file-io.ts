@@ -66,3 +66,17 @@ export async function readPlainOfflineSyncFileChunk(options: {
     await handle.close();
   }
 }
+
+/** Streamed whole-file sha256 for plain-file chunk reads — the value the
+ * file-content response contract exposes as x-remnic-file-sha256. Deliberately
+ * UNCACHED: identity keys like (path, size, mtimeMs) are spoofable (a rewrite
+ * that preserves size and mtime would serve a stale digest, defeating the
+ * uploader's verify-before-idempotent-skip check). One bounded-memory hash
+ * pass per chunk request; content reads stay windowed. */
+export async function plainFileDigest(filePath: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const piece of createReadStream(filePath)) {
+    hash.update(piece as Buffer);
+  }
+  return hash.digest("hex");
+}

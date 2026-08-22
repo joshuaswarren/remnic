@@ -3170,3 +3170,37 @@ test("buildOfflineSyncSnapshotFromBase honors userExcludeRegexps on the fast-bas
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("plain-file content chunks carry the full-file sha256 (file-content response contract)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-plain-sha-"));
+  try {
+    const body = Buffer.from(JSON.stringify({ contentHash: "c".repeat(64) }) + "\n");
+    await mkdir(path.join(root, "state"), { recursive: true });
+    await writeFile(path.join(root, "state", "tombstones.jsonl"), body);
+
+    const first = await readOfflineSyncFileContentChunk({
+      root,
+      path: "state/tombstones.jsonl",
+      offset: 0,
+      length: 4,
+    });
+    assert.equal(
+      first.sha256,
+      createHash("sha256").update(body).digest("hex"),
+      "first chunk must carry the whole-file sha the x-remnic-file-sha256 header exposes"
+    );
+    assert.equal(first.bytes, body.length);
+    assert.equal(first.chunkBytes, 4);
+
+    const tail = await readOfflineSyncFileContentChunk({
+      root,
+      path: "state/tombstones.jsonl",
+      offset: body.length - 2,
+      length: 4,
+    });
+    assert.equal(tail.sha256, first.sha256, "every chunk carries the same whole-file sha");
+    assert.equal(tail.chunkBytes, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
