@@ -45,9 +45,18 @@ export function filterHarmonicEntityMentions(
  * abstraction node, or cue anchors for the committed claims. Enqueue the
  * surviving target — with the COMMITTED merged body as content — into the
  * same batch map the create path feeds, so the end-of-batch
- * {@link persistConstructedHarmonicRecords} pass covers it. Duplicate ids
- * (two facts merging into one target in a batch) are safe: the constructor
- * dedupes sourceMemoryIds and both merges' claims are real batch output.
+ * {@link persistConstructedHarmonicRecords} pass covers it.
+ *
+ * Round N+9 (C): two facts merging into the SAME target in one batch enqueue
+ * twice under one `memoryId`. `deriveHarmonicRecords` dedupes only
+ * `sourceMemoryIds` — `persistedFacts` keeps both entries, so the episode
+ * summary concatenated both cumulative snapshots and the inserted-at
+ * metadata overwrote its duplicate key. Coalesce instead: the entry for a
+ * repeated target is REPLACED by the latest committed body (each merge's
+ * body is cumulative, so the latest carries every claim) while the cue
+ * anchors UNION across merges — anchors are deduped by id downstream, but
+ * the union keeps the earlier merge's anchors alive when the later incoming
+ * fact carried none.
  */
 export function enqueueMergedTargetForHarmonicConstruction(
   entries: Map<
@@ -64,7 +73,21 @@ export function enqueueMergedTargetForHarmonicConstruction(
   insertedAt: string,
 ): void {
   const entry = entries.get(storage.dir) ?? { storage, facts: [] };
-  entry.facts.push({ ...fact, content, memoryId, insertedAt });
+  const prior = entry.facts.findIndex((existing) => existing.memoryId === memoryId);
+  if (prior !== -1) {
+    entry.facts[prior] = {
+      ...fact,
+      content,
+      memoryId,
+      insertedAt,
+      cueAnchors: [
+        ...(entry.facts[prior]!.cueAnchors ?? []),
+        ...(fact.cueAnchors ?? []),
+      ],
+    };
+  } else {
+    entry.facts.push({ ...fact, content, memoryId, insertedAt });
+  }
   entries.set(storage.dir, entry);
 }
 

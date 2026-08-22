@@ -1007,6 +1007,81 @@ test("a merged target's new claims reach the temporal timeline index (round N+7 
   }
 });
 
+test("a cold-tier merged target's new claims reach the temporal timeline index (round N+9 B)", async () => {
+  const memoryDir = await mkTempMemoryDir("semantic-merge-temporal-cold");
+  let orch: Orchestrator | undefined;
+  try {
+    const cfg = mergeLifecycleConfig(memoryDir, { queryAwareIndexingEnabled: true });
+    orch = new Orchestrator(cfg);
+    const judge = { calls: 0 };
+    installJudge(orch, judge);
+    // The target lives under cold/ — invisible to the hot-only
+    // readAllMemories() scan that builds the incremental temporal-index
+    // pool, so only a cold-aware id lookup can refresh its row.
+    const coldFile = await seedMergeTarget(memoryDir, "merge-target-cold-temporal", SEED_A, {
+      tier: "cold",
+    });
+    // Turn 1 bootstraps the index from a hot fact so turn 2 runs the
+    // INCREMENTAL id-filtered update (a re-bootstrap would index the cold
+    // target even without the fix, masking the defect).
+    const FIRST = "The audit service tracks quarterly access reviews.";
+    stubExtraction(orch, () => ({
+      facts: [{ category: "fact", content: FIRST, confidence: 0.9, tags: [] }],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    }));
+    installNeighbors(orch, () => []);
+    await orch.processTurn("user", `Please remember: ${FIRST}`, "session-temporal-cold-1");
+    assert.equal(await orch.waitForExtractionIdle(15_000), true);
+    let bootstrapped = false;
+    for (let attempt = 0; attempt < 40 && !bootstrapped; attempt++) {
+      const events =
+        (await queryTemporalTimelineAsync(memoryDir, { query: "quarterly", limit: 10 })) ?? [];
+      bootstrapped = events.length > 0;
+      if (!bootstrapped) await sleep(250);
+    }
+    assert.ok(bootstrapped, "turn 1's temporal index bootstrap must complete");
+    // Turn 2: the merge commits "09:00 UTC sharp" into the COLD target.
+    stubExtraction(orch, () => ({
+      facts: [{ category: "fact", content: INCOMING_A, confidence: 0.9, tags: [] }],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    }));
+    installNeighbors(orch, (query) =>
+      query === INCOMING_A ? [{ id: "merge-target-cold-temporal", score: BAND_SCORE }] : [],
+    );
+    await orch.processTurn("user", `Please remember: ${INCOMING_A}`, "session-temporal-cold-2");
+    assert.equal(await orch.waitForExtractionIdle(15_000), true);
+    assert.equal(judge.calls, 1);
+    await assertMerged(coldFile, ["Tuesday cadence", "09:00 UTC sharp"], 1);
+    // Same token-hash contract as the hot-tier test above: the merged
+    // token's HASH must sit on the cold target's own row.
+    const sharpToken = crypto.createHash("sha256").update("sharp").digest("hex");
+    let served = false;
+    for (let attempt = 0; attempt < 40 && !served; attempt++) {
+      const events =
+        (await queryTemporalTimelineAsync(memoryDir, { query: "sharp", limit: 10 })) ?? [];
+      served = events.some(
+        (event) =>
+          event.path.endsWith("merge-target-cold-temporal.md") &&
+          (event.searchTokenHashes ?? []).includes(sharpToken),
+      );
+      if (!served) await sleep(250);
+    }
+    assert.ok(
+      served,
+      "event-order queries must find the cold-tier merged target's new tokens",
+    );
+  } finally {
+    await orch?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
 test("repeated merges leave exactly one generated edge per graph type for the target (round N+7 G)", async () => {
   const memoryDir = await mkTempMemoryDir("semantic-merge-graph-parity");
   let orch: Orchestrator | undefined;

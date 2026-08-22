@@ -1252,10 +1252,14 @@ into a create-or-update decision:
    routing off the fields are untouched). A successful merge also enqueues
    the surviving target — committed merged body as content — into the batch's
    harmonic construction pass, so a merge-only extraction still derives its
-   episode/abstraction nodes and cue anchors; the returned `persistedIds`
-   stay new-fragment only, while the surviving target joins the batch's
-   internal temporal/tag index refresh so event-order queries see the merged
-   tokens without a full corpus rebuild.
+   episode/abstraction nodes and cue anchors; two facts merging into the
+   same target in one batch coalesce to a single entry (the latest committed
+   body replaces the earlier cumulative snapshot, cue anchors union across
+   merges). The returned `persistedIds` stay new-fragment only, while the
+   surviving target joins the batch's internal temporal/tag index refresh —
+   resolved through the cold-aware id lookup when the hot-tier scan misses
+   it, so a `cold/` target's row refreshes too — so event-order queries see
+   the merged tokens without a full corpus rebuild.
    When multi-graph memory is enabled, a successful merge also builds the
    surviving target's graph edges — entity, time, and causal — through the
    same `buildGraphEdge` call the create path runs, derived from the

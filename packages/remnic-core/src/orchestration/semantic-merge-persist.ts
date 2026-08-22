@@ -566,6 +566,12 @@ export function createPathMergeParity(input: {
   if (incomingFaithfulness !== targetFaithfulness) {
     return { ok: false, field: "faithfulness" };
   }
+  // Round N+9 (A): an EQUAL verdict cannot survive either — the target's
+  // `entailed` was rendered over its pre-merge body, never the judge's
+  // merged text, so bypass (entailment only; others under-claim / no signal).
+  if (targetFaithfulness === "entailed") {
+    return { ok: false, field: "faithfulness" };
+  }
   return {
     ok: true,
     ...(provenanceFloor !== undefined ? { provenanceFloor } : {}),

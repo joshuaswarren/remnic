@@ -1572,6 +1572,29 @@ test("applySemanticMergeAtPersist: a one-sided faithfulness verdict bypasses the
   assert.deepEqual(h.calls.frontmatterPatches, []);
 });
 
+test("applySemanticMergeAtPersist: even an EQUAL entailed verdict bypasses the merge (round N+9 A)", async () => {
+  // Both sides carry `entailed` — the equality the finding-C gate called
+  // preservable. But the target's verdict was rendered over its PRE-merge
+  // body; the committed record would hold the judge's mergedContent, a body
+  // the faithfulness gate never saw. The trust stage maps `entailed` to its
+  // maximum contribution, so the committed record must not carry it: the
+  // merge bypasses and the create path persists the verdict it computed.
+  // (Re-running the gate inside the compare-and-swap window would need a
+  // per-merge LLM call; bypass is the safe mechanism.)
+  const h = await harness({ targetFaithfulness: { verdict: "entailed" } });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { faithfulness: { verdict: "entailed" } },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "created", reason: "metadata_unpreservable" });
+  assert.deepEqual(h.calls.contentUpdates, []);
+  assert.deepEqual(h.calls.frontmatterPatches, []);
+});
+
 test("applySemanticMergeAtPersist: an unscoped fact never merges into a connector-owned cold target (finding D)", async () => {
   // The lookup hit carries NO sourceConnector — exactly what the hot-only
   // enrichment in persistence-index.ts produces for a cold-tier target or a

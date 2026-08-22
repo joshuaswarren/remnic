@@ -467,12 +467,26 @@ export class PersistenceIndexCoordinator {
           : await storage.readAllMemories();
 
       // Bootstrap: index only active (non-archived, non-superseded) memories.
-      // Incremental: index only the newly persisted IDs.
+      // Incremental: index only the newly persisted IDs. `readAllMemories`
+      // is HOT-tier only, so an id that lives under `cold/` (e.g. a semantic
+      // merge's surviving target — PR #2771 round N+9 B) is missing from the
+      // pool and the index keeps serving the pre-merge row. Fetch each
+      // missing id through the same cold-aware lookup the merge path used
+      // (`getMemoryByIdIncludingArchived`) instead of scanning the whole
+      // cold tier per batch.
       const pool = needsFullRebuild
         ? allMemories.filter((m) => isActiveMemoryStatus(m.frontmatter.status))
-        : (() => {
+        : await (async () => {
             const idSet = new Set(persistedIds);
-            return allMemories.filter((m) => idSet.has(m.frontmatter.id));
+            const hot = allMemories.filter((m) => idSet.has(m.frontmatter.id));
+            for (const id of persistedIds) {
+              if (hot.some((m) => m.frontmatter.id === id)) continue;
+              const cold = await storage
+                .getMemoryByIdIncludingArchived(id)
+                .catch(() => null);
+              if (cold) hot.push(cold);
+            }
+            return hot;
           })();
 
       const entries: Array<{

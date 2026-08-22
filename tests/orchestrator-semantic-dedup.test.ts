@@ -751,13 +751,15 @@ test("semantic merge: the promoted shared copy serves the committed merged body 
 
 test("semantic merge: the promoted copy carries the committed target's structured attributes and temporal bounds (final round A)", async () => {
   installCapturingLogger();
-  // The target carries structuredAttributes AND bi-temporal bounds the
-  // incoming fact omits — the parity gate's exact merge-permitted shape.
-  // Pre-final-round, the promotion forwarded the incoming fact's absence,
-  // so the shared copy lost attribute-based retrieval and temporal
-  // supersession that the source memory kept.
+  // The target carries structuredAttributes AND a valid_at bound the
+  // incoming fact carries IDENTICALLY through its source context — the
+  // parity gate's exact merge-permitted shape (a target with invalid_at
+  // never merges; see the bypass test below). Pre-final-round, the
+  // promotion forwarded the incoming fact's absence, so the shared copy
+  // lost attribute-based retrieval and temporal bounds the source kept.
   const TARGET = "The inventory service restocks after an audit sign-off.";
   const INCOMING = "The inventory service restocks every first Monday at 06:00.";
+  const VALID_AT = "2026-07-01T00:00:00.000Z";
   const { orchestrator, storage, memoryDir } = await makeOrchestrator({
     namespacesEnabled: true,
     defaultNamespace: "default",
@@ -786,8 +788,7 @@ test("semantic merge: the promoted copy carries the committed target's structure
       "importanceLevel: high",
       // Storage persists attributes as single-line JSON (storage.ts §450).
       'structuredAttributes: {"restock_window":"first Monday"}',
-      "validAt: 2026-07-01T00:00:00.000Z",
-      "invalidAt: 2026-09-01T00:00:00.000Z",
+      `validAt: ${VALID_AT}`,
       "observedAt: 2026-07-01T12:00:00.000Z",
       "eventTimeSource: extracted",
       "---",
@@ -821,18 +822,17 @@ test("semantic merge: the promoted copy carries the committed target's structure
     questions: [],
     profileUpdates: [],
   } as ExtractionResult;
-  const { persistedIds } = await orchestrator.persistExtraction(result, storage, null);
-
+  // The incoming fact carries the SAME valid_at bound through its source
+  // context — the only merge-legal way a bounded target still merges (the
+  // parity gate refuses both one-sided bounds and any invalid_at).
+  const { persistedIds } = await orchestrator.persistExtraction(result, storage, null, {
+    validAt: VALID_AT,
+  });
   assert.equal(judge.calls, 1, "the merge judge must have run");
   assert.equal(persistedIds.length, 0, "the fact merged into the target, no new fragment");
   const committed = await storage.getMemoryByIdIncludingArchived(targetId);
   assert.ok(committed, "the merged target must be readable");
-  // Fixture sanity: the committed record really carries the metadata.
-  assert.deepEqual(committed!.frontmatter.structuredAttributes, {
-    restock_window: "first Monday",
-  });
-  assert.equal(committed!.frontmatter.valid_at, "2026-07-01T00:00:00.000Z");
-  assert.equal(committed!.frontmatter.invalid_at, "2026-09-01T00:00:00.000Z");
+  assert.equal(committed!.frontmatter.valid_at, VALID_AT);
   assert.equal(committed!.frontmatter.observedAt, "2026-07-01T12:00:00.000Z");
   assert.equal(committed!.frontmatter.eventTimeSource, "extracted");
   const sharedStorage = await orchestrator.getStorage("shared");
@@ -847,10 +847,83 @@ test("semantic merge: the promoted copy carries the committed target's structure
     copy!.frontmatter.structuredAttributes,
     committed!.frontmatter.structuredAttributes,
   );
-  assert.equal(copy!.frontmatter.valid_at, "2026-07-01T00:00:00.000Z");
-  assert.equal(copy!.frontmatter.invalid_at, "2026-09-01T00:00:00.000Z");
+  assert.equal(copy!.frontmatter.valid_at, VALID_AT);
   assert.equal(copy!.frontmatter.observedAt, "2026-07-01T12:00:00.000Z");
   assert.equal(copy!.frontmatter.eventTimeSource, "extracted");
+});
+
+test("semantic merge: a target carrying invalid_at bypasses the merge (round N+2 A contract)", async () => {
+  installCapturingLogger();
+  // Round N+2 (A) parity: the merged body inherits the target's
+  // valid_at/invalid_at and the patch has no carrier for either, so a
+  // target carrying invalid_at NEVER merges — an unbounded incoming fact
+  // must not inherit an expiry bound its claims never had. The judge still
+  // runs and accepts; the bypass happens at the parity gate afterwards.
+  const TARGET = "The inventory service restocks after an audit sign-off.";
+  const INCOMING = "The inventory service restocks every first Monday at 06:00.";
+  const { orchestrator, storage, memoryDir } = await makeOrchestrator({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    autoPromoteToSharedEnabled: true,
+    semanticMerge: { enabled: true },
+    versioningEnabled: true,
+  });
+  const targetId = "fact-promote-invalid-at-target";
+  const dir = path.join(memoryDir, "facts", "2026-08-01");
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    path.join(dir, `${targetId}.md`),
+    [
+      "---",
+      `id: ${targetId}`,
+      "category: fact",
+      "created: 2026-08-01T00:00:00.000Z",
+      "updated: 2026-08-01T00:00:00.000Z",
+      "source: extraction",
+      "confidence: 0.95",
+      "confidenceTier: explicit",
+      "status: active",
+      "importanceScore: 0.9",
+      "importanceLevel: high",
+      "invalidAt: 2026-09-01T00:00:00.000Z",
+      "---",
+      "",
+      TARGET,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const judge = { calls: 0 };
+  installMergingJudge(orchestrator, judge);
+  orchestrator.embeddingFallback = {
+    async isAvailable() {
+      return true;
+    },
+    async search(query: string): Promise<Array<{ id: string; score: number; path: string }>> {
+      return query === INCOMING ? [{ id: targetId, score: 0.85, path: "" }] : [];
+    },
+    async indexFile() {
+      /* noop */
+    },
+    async removeFromIndex() {
+      /* noop */
+    },
+  };
+  const result: ExtractionResult = {
+    facts: [{ content: INCOMING, category: "fact", tags: [], confidence: 0.95 }],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  } as ExtractionResult;
+  const { persistedIds } = await orchestrator.persistExtraction(result, storage, null);
+  assert.equal(judge.calls, 1, "the merge judge must have run and accepted");
+  assert.equal(persistedIds.length, 1, "the parity gate bypasses: the fact is created, not merged");
+  const target = await storage.getMemoryByIdIncludingArchived(targetId);
+  assert.ok(target, "the bypassed target must be readable");
+  assert.equal(target!.content, TARGET, "the bypassed target keeps its pre-merge body");
+  assert.equal(target!.frontmatter.reinforcement_count, undefined, "no merge metadata landed");
 });
 
 test("semantic merge: the promoted shared copy is authority-fenced exactly like its source (origin parity)", async () => {
