@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, chmod } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -12,6 +12,8 @@ import {
   runMergedTargetPostEffects,
   type ApplySemanticMergeOptions,
 } from "../orchestration/semantic-merge-persist.js";
+import { GraphIndex } from "../graph.js";
+import { PersistenceIndexCoordinator } from "../orchestration/persistence-index.js";
 import { promotionWithholdsToolScope } from "../orchestration/extraction-persist-promotion.js";
 import { withholdToolScopedFromSharedNamespace } from "../tool-scoped-memory.js";
 import type { ExtractionPersistDeps } from "../orchestration/extraction-persist-deps.js";
@@ -303,6 +305,68 @@ test("parseSemanticMergeConfig: non-integer maxCandidates is rejected, not floor
     parseSemanticMergeConfig({ semanticMerge: { maxCandidates: "0" } }).semanticMerge.maxCandidates,
     0,
   );
+});
+// #2330 round N+8 (P2-D, checklist #46): presence is OWN-property presence.
+// A composed programmatic config can carry `semanticMerge: { enabled: undefined }`
+// — present-but-invalid — and an object built with Object.create can satisfy a
+// bracket read through its prototype. Both must be told apart from an absent
+// key: absent defaults, present-but-invalid throws, inherited never applies.
+test("parseSemanticMergeConfig: present-but-undefined keys throw instead of silently defaulting (P2-D)", () => {
+  assert.throws(
+    () => parseSemanticMergeConfig({ semanticMerge: { enabled: undefined } }),
+    /semanticMerge\.enabled/,
+  );
+  assert.throws(
+    () => parseSemanticMergeConfig({ semanticMerge: { shadowMode: undefined } }),
+    /semanticMerge\.shadowMode/,
+  );
+  assert.throws(
+    () => parseSemanticMergeConfig({ semanticMerge: { maxCandidates: undefined } }),
+    /maxCandidates/,
+  );
+  assert.throws(
+    () => parseSemanticMergeConfig({ semanticMerge: { minSimilarity: undefined } }),
+    /minScore/,
+  );
+  assert.throws(
+    () => parseSemanticMergeConfig({ semanticMerge: { categories: undefined } }),
+    /categories must be an array/,
+  );
+  assert.throws(
+    () => parseSemanticMergeConfig({ semanticMerge: undefined }),
+    /semanticMerge must be an object/,
+  );
+});
+
+test("parseSemanticMergeConfig: inherited keys are ignored — own-property presence decides (P2-D)", () => {
+  const inheritedFields = parseSemanticMergeConfig({
+    semanticMerge: Object.create({
+      enabled: true,
+      shadowMode: true,
+      maxCandidates: 9,
+      minSimilarity: 0.9,
+      categories: ["fact"],
+    }),
+  });
+  assert.equal(inheritedFields.semanticMerge.enabled, false);
+  assert.equal(inheritedFields.semanticMerge.shadowMode, false);
+  assert.equal(
+    inheritedFields.semanticMerge.maxCandidates,
+    DEFAULT_SEMANTIC_MERGE_CANDIDATES,
+  );
+  assert.equal(inheritedFields.semanticMerge.minSimilarity, DEFAULT_SEMANTIC_MERGE_MIN);
+  assert.deepEqual(inheritedFields.semanticMerge.categories, [
+    "fact",
+    "preference",
+    "decision",
+    "relationship",
+    "skill",
+  ]);
+  // An inherited semanticMerge BLOCK on the config object is equally absent.
+  const inheritedBlock = parseSemanticMergeConfig(
+    Object.create({ semanticMerge: { enabled: true } }) as Record<string, unknown>,
+  );
+  assert.equal(inheritedBlock.semanticMerge.enabled, false);
 });
 
 test("parseSemanticMergeConfig: a present non-object block is rejected; only absent means defaults", () => {
@@ -2186,6 +2250,47 @@ test("applySemanticMergeAtPersist: the committed merged body preserves the incom
   assert.equal(stamped, ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text));
 });
 
+// #2330 round N+8 (P2-C): a target written under the DEFAULT citation format
+// that later merges under a CUSTOM template carries BOTH markers on the
+// committed body. Canonicalization must strip every recognized form before
+// hashing — the default-only fast path left the custom timestamped marker in
+// the hash input, giving the merged record a different identity than the
+// equivalent raw write.
+test("applySemanticMergeAtPersist: mixed default+custom citation markers hash as the raw body (P2-C)", async () => {
+  const DEFAULT_CIT = "[Source: agent=agent-a, session=proj/s-old, ts=2026-08-19T00:00:00Z]";
+  const CUSTOM_TEMPLATE = "[src:{agent}/{sessionId}@{date}]";
+  const CUSTOM_CIT = "[src:agent-a/proj-s-new@2026-08-21]";
+  const h = await harness({
+    topLevelConfig: {
+      inlineSourceAttributionEnabled: true,
+      inlineSourceAttributionFormat: CUSTOM_TEMPLATE,
+    },
+  });
+  // The target carries the default-format marker from its original write; the
+  // incoming fact was cited with the now-configured custom template.
+  await h.setTargetContent(`${EXISTING} ${DEFAULT_CIT}`);
+  const MERGED_WITH_OLD = `${MERGED} ${DEFAULT_CIT}`;
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingCitedContent: `${INCOMING} ${CUSTOM_CIT}`,
+    judgeCall: async () => ({
+      decision: "merge",
+      targetId: "fact-target",
+      mergedContent: MERGED_WITH_OLD,
+      reason: "same cadence, mixed citation templates",
+    }),
+  } as ApplySemanticMergeOptions);
+  assert.equal(outcome.action, "merged");
+  const committed = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  // BOTH attributions survive on the committed body.
+  assert.equal(committed?.content, `${MERGED_WITH_OLD} ${CUSTOM_CIT}`);
+  // Identity stays on the RAW pre-citation body with BOTH forms stripped.
+  const stamped = h.calls.frontmatterPatches.at(-1)?.patch.contentHash;
+  assert.equal(stamped, ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text));
+});
+
 /** Minimal real-dir harness for the merged-target post-effects executor. */
 async function postEffectsHarness(options: {
   graphEdgeThrows?: boolean;
@@ -2285,6 +2390,79 @@ test("runMergedTargetPostEffects: a failing graph rebuild leaves the prior edges
   assert.deepEqual(await readGraphFile(h.dir, "entity"), [priorEntity]);
   assert.deepEqual(await readGraphFile(h.dir, "time"), [priorTime]);
   assert.deepEqual(await readGraphFile(h.dir, "causal"), [priorCausal]);
+});
+
+// #2330 round N+8 (P2-B): the production append failure must reach the
+// restore path. GraphIndex.onMemoryWritten used to swallow every append
+// error, so the caller's restore catch never ran and the edges
+// removeNodeEdgesForRewrite had dropped were permanently lost. The test
+// above fakes the failure at deps.buildGraphEdge; this one injects it at the
+// REAL seam — appendEdge's appendFile — by making the entity JSONL
+// read-only, and runs the real PersistenceIndexCoordinator → GraphIndex chain.
+test("runMergedTargetPostEffects: a REAL append failure restores prior edges at the GraphIndex seam (P2-B)", async () => {
+  if (process.getuid?.() === 0) {
+    // A root process may open a 0444 file for append, so the EACCES injection
+    // would not fail. CI runners and dev boxes run unprivileged; skip for root.
+    return;
+  }
+  const h = await postEffectsHarness();
+  const OTHER = "facts/2026-08-19/other.md";
+  const priorTime = { from: OTHER, to: h.targetRelPath, type: "time", weight: 1, label: "thread-0", ts: "2026-08-19T00:00:00.000Z" };
+  // An entity edge this node did NOT generate: removal skips writing
+  // entity.jsonl entirely, so the read-only mode survives until the append.
+  const unrelatedEntity = { from: OTHER, to: "facts/2026-08-18/unrelated.md", type: "entity", weight: 1, label: "entity-billing-service", ts: "2026-08-19T00:00:00.000Z" };
+  await seedGraphFile(h.dir, "entity", [unrelatedEntity]);
+  await seedGraphFile(h.dir, "time", [priorTime]);
+  const entityPath = path.join(h.dir, "state", "graphs", "entity.jsonl");
+  await chmod(entityPath, 0o444);
+  try {
+    const graphConfig = parseConfig({ memoryDir: h.dir });
+    const graphIndex = new GraphIndex(h.dir, graphConfig);
+    const coordinator = new PersistenceIndexCoordinator({
+      config: graphConfig,
+      graphIndexFor: () => graphIndex,
+    } as unknown as ConstructorParameters<typeof PersistenceIndexCoordinator>[0]);
+    const deps = {
+      ...h.deps,
+      // The REAL chain: runMergedTargetPostEffects → coordinator.buildGraphEdge
+      // → GraphIndex.onMemoryWritten → appendEdge. No stubbed seam anywhere.
+      buildGraphEdge: coordinator.buildGraphEdge.bind(coordinator),
+    } as unknown as ExtractionPersistDeps;
+    // A sibling sharing the target's entityRef makes the ENTITY append fire —
+    // the coordinator derives siblings from this corpus.
+    const sibling = {
+      path: path.join(h.dir, OTHER),
+      frontmatter: { id: "mem-sibling", category: "fact", entityRef: "entity-billing-service" },
+      content: "Sibling fact sharing the billing entity.",
+    } as unknown as MemoryFile;
+    await runMergedTargetPostEffects(
+      deps,
+      h.storage,
+      { targetId: "fact-target", mergedContent: MERGED },
+      {
+        category: "fact",
+        incomingContent: INCOMING,
+        incomingConfidence: 0.9,
+        namespace: "default",
+        graphCaps: ALL_GRAPH_CAPS,
+        graphContext: { allMemsForGraph: [sibling], memoryPathById: new Map() },
+        threadIdForEdge: undefined,
+        threadEpisodeIdsForGraph: undefined,
+      },
+    );
+    const timeEdges = await readGraphFile(h.dir, "time");
+    assert.ok(
+      timeEdges.some((e) => e.from === OTHER && e.to === h.targetRelPath),
+      `the prior time edges must be restored after the real append failure (time.jsonl: ${JSON.stringify(timeEdges)})`,
+    );
+    assert.deepEqual(
+      await readGraphFile(h.dir, "entity"),
+      [unrelatedEntity],
+      "no entity edge may land when the append fails",
+    );
+  } finally {
+    await chmod(entityPath, 0o644);
+  }
 });
 
 test("runMergedTargetPostEffects: a re-merge records the target as the LATEST thread event (round N+7 F)", async () => {

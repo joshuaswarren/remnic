@@ -257,10 +257,12 @@ function describeValue(value: unknown): string {
  * parse-time rejection of an empty merge band (`minSimilarity` must be
  * strictly below the semantic-dedup threshold that owns the band's top).
  * Invalid input is rejected, never silently defaulted or reinterpreted: a
- * present block that is not an object, an unparseable or non-integer
- * `maxCandidates` ("abc", an object, NaN, or infinity), or a malformed
- * `categories` array each throw (only an absent key means "use the
- * defaults").
+ * present block that is not an object, a present-but-`undefined` or
+ * unparseable field (`enabled`, `shadowMode`, `minSimilarity`,
+ * `maxCandidates` "abc"/an object/NaN/infinity, or a malformed `categories`
+ * array) each throw. Presence is OWN-property presence (checklist #46): a
+ * key inherited through the prototype chain never applies, and only a key
+ * absent from `Object.getOwnPropertyNames` means "use the defaults".
  *
  * The band check applies only when it can describe a real misconfiguration:
  * merging is enabled, or `minSimilarity` was set explicitly. A deployment
@@ -272,7 +274,11 @@ function describeValue(value: unknown): string {
 export function parseSemanticMergeConfig(
   cfg: Record<string, unknown>,
 ): { semanticMerge: SemanticMergeConfig } {
-  const block = cfg.semanticMerge;
+  // Own-property presence (checklist #46): a bracket read follows the
+  // prototype chain, and `=== undefined` folds present-but-invalid into
+  // absent. Gate every presence question on Object.hasOwn.
+  const blockPresent = Object.hasOwn(cfg, "semanticMerge");
+  const block = blockPresent ? cfg.semanticMerge : undefined;
   if (
     block !== undefined &&
     (typeof block !== "object" || block === null || Array.isArray(block))
@@ -281,10 +287,15 @@ export function parseSemanticMergeConfig(
       `semanticMerge must be an object when present (got ${describeValue(block)}). Remove the block to fall back to the defaults.`,
     );
   }
+  if (blockPresent && block === undefined) {
+    throw new Error(
+      `semanticMerge must be an object when present (got ${describeValue(block)}). Remove the key to fall back to the defaults.`,
+    );
+  }
   const raw = (block ?? {}) as Record<string, unknown>;
   const parseGate = (key: string, fallback: boolean): boolean => {
+    if (!Object.hasOwn(raw, key)) return fallback;
     const value = raw[key];
-    if (value === undefined) return fallback;
     const coerced = coerceBool(value, `semanticMerge.${key}`);
     if (coerced === undefined) {
       throw new Error(
@@ -293,55 +304,51 @@ export function parseSemanticMergeConfig(
     }
     return coerced;
   };
-  const minSimilarity =
-    raw.minSimilarity === undefined
-      ? DEFAULT_SEMANTIC_MERGE_MIN
-      : parseMinMergeScore(raw.minSimilarity);
+  const minSimilarityPresent = Object.hasOwn(raw, "minSimilarity");
+  const minSimilarity = minSimilarityPresent
+    ? parseMinMergeScore(raw.minSimilarity)
+    : DEFAULT_SEMANTIC_MERGE_MIN;
   // Round N+2 (D) — distinguish an ABSENT key from a present-but-unparseable
   // value (#1/#39/#45): coerceNumber returns undefined for "abc", objects,
   // NaN, and ±Infinity, and an undefined result here must never fall back to
   // the default — that would silently enable judge lookups under an invalid
-  // config. Only an absent key means "use the default".
-  const rawCandidatesValue = raw.maxCandidates;
-  const rawCandidates =
-    rawCandidatesValue === undefined
-      ? undefined
-      : coerceNumber(rawCandidatesValue, "semanticMerge.maxCandidates");
-  if (
-    rawCandidatesValue !== undefined &&
-    (rawCandidates === undefined || !Number.isInteger(rawCandidates) || rawCandidates < 0)
-  ) {
-    throw new Error(
-      `semanticMerge.maxCandidates must be an integer >= 0 (got ${describeValue(rawCandidatesValue)}). Remove the key to use the default (${DEFAULT_SEMANTIC_MERGE_CANDIDATES}) or set 0 to disable merging entirely.`,
+  // config. Only a key absent from the own-property set means "use the
+  // default"; present-but-`undefined` is invalid like any other bad value.
+  const maxCandidates = (() => {
+    if (!Object.hasOwn(raw, "maxCandidates")) return DEFAULT_SEMANTIC_MERGE_CANDIDATES;
+    const rawCandidatesValue = raw.maxCandidates;
+    const rawCandidates = coerceNumber(rawCandidatesValue, "semanticMerge.maxCandidates");
+    if (rawCandidates === undefined || !Number.isInteger(rawCandidates) || rawCandidates < 0) {
+      throw new Error(
+        `semanticMerge.maxCandidates must be an integer >= 0 (got ${describeValue(rawCandidatesValue)}). Remove the key to use the default (${DEFAULT_SEMANTIC_MERGE_CANDIDATES}) or set 0 to disable merging entirely.`,
+      );
+    }
+    return rawCandidates;
+  })();
+  const categories = (() => {
+    if (!Object.hasOwn(raw, "categories")) return [...DEFAULT_SEMANTIC_MERGE_CATEGORIES];
+    const rawCategories = raw.categories;
+    if (
+      !Array.isArray(rawCategories) ||
+      !rawCategories.every((c) => typeof c === "string" && c.length > 0)
+    ) {
+      throw new Error(
+        `semanticMerge.categories must be an array of non-empty category names (got ${describeValue(rawCategories)}).`,
+      );
+    }
+    const invalidCategory = rawCategories.find(
+      (c) => !MERGEABLE_MEMORY_CATEGORIES.includes(c),
     );
-  }
-  const maxCandidates =
-    rawCandidates === undefined ? DEFAULT_SEMANTIC_MERGE_CANDIDATES : rawCandidates;
-  const rawCategories = raw.categories;
-  if (
-    rawCategories !== undefined &&
-    (!Array.isArray(rawCategories) ||
-      !rawCategories.every((c) => typeof c === "string" && c.length > 0))
-  ) {
-    throw new Error(
-      `semanticMerge.categories must be an array of non-empty category names (got ${describeValue(rawCategories)}).`,
-    );
-  }
-  const invalidCategory = (rawCategories as string[] | undefined)?.find(
-    (c) => !MERGEABLE_MEMORY_CATEGORIES.includes(c),
-  );
-  if (invalidCategory !== undefined) {
-    throw new Error(
-      `semanticMerge.categories contains an unknown or never-mergeable category: ${describeValue(invalidCategory)}. Valid categories: ${MERGEABLE_MEMORY_CATEGORIES.join(", ")}. The episodic and immutable categories (${REFUSED_MERGE_CATEGORIES.join(", ")}) never merge and cannot be listed.`,
-    );
-  }
-  const categories =
-    rawCategories === undefined
-      ? [...DEFAULT_SEMANTIC_MERGE_CATEGORIES]
-      : [...(rawCategories as string[])];
+    if (invalidCategory !== undefined) {
+      throw new Error(
+        `semanticMerge.categories contains an unknown or never-mergeable category: ${describeValue(invalidCategory)}. Valid categories: ${MERGEABLE_MEMORY_CATEGORIES.join(", ")}. The episodic and immutable categories (${REFUSED_MERGE_CATEGORIES.join(", ")}) never merge and cannot be listed.`,
+      );
+    }
+    return [...rawCategories];
+  })();
   const enabled = parseGate("enabled", false);
   const dedupThreshold = semanticDedupThresholdFrom(cfg);
-  if ((enabled || raw.minSimilarity !== undefined) && minSimilarity >= dedupThreshold) {
+  if ((enabled || minSimilarityPresent) && minSimilarity >= dedupThreshold) {
     throw new Error(
       `semanticMerge.minSimilarity (${minSimilarity}) must be strictly below semanticDedupThreshold (${dedupThreshold}) — the near-duplicate skip path owns similarities at or above it.`,
     );

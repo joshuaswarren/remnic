@@ -628,12 +628,14 @@ export function stripCitation(text: string): string {
  * templates that differ from the default `[Source: ...]` pattern.
  *
  * Behaviour:
- *  - If the text has a **default-format** citation, delegates to
- *    {@link stripCitation} (always safe).
- *  - If the text has a **custom-template** citation detected by
+ *  - If the text has a **default-format** citation, strips it first
+ *    (always safe).
+ *  - Then, if the result has a **custom-template** citation detected by
  *    `hasCitationForTemplate`, builds the template regex and removes every
- *    occurrence (citations are appended at the end of the fact body by
- *    {@link attachCitation}).
+ *    occurrence. BOTH passes run when a body carries both forms — a target
+ *    written under the default format can carry the default marker plus a
+ *    custom marker appended after a config change; returning after the
+ *    default pass alone left the custom marker inside hash inputs (#2330).
  *  - All-placeholder templates (no literal prefix/suffix/separator) cannot
  *    produce a reliable matcher. `hasCitationForTemplate` already returns
  *    `false` for such templates, so this function never attempts to strip an
@@ -650,19 +652,18 @@ export function stripCitationForTemplate(
 ): string {
   if (typeof text !== "string" || text.length === 0) return text;
 
-  // Fast path: default-format citation — delegate to the existing stripper.
-  if (hasCitation(text)) return stripCitation(text);
+  // First pass: the default-format marker, if any. A second pass below still
+  // runs — a body can carry the default marker AND the custom template's
+  // marker, and canonicalization must remove every recognized form.
+  const afterDefault = hasCitation(text) ? stripCitation(text) : text;
 
-  // No default citation; check whether the custom template produced one.
-  // hasCitationForTemplate returns false for all-placeholder templates (no
-  // reliable matcher), so those pass through unchanged below.
-  if (!hasCitationForTemplate(text, template)) return text;
+  if (!hasCitationForTemplate(afterDefault, template)) return afterDefault;
 
   // Build the template matcher. hasCitationForTemplate already returned true,
   // which means templateMatcher produced a non-null result. The null branch
-  // here is a defensive fallback only — delegate to stripCitation.
+  // here is a defensive fallback only — the default pass already ran.
   const matcher = templateMatcher(template);
-  if (!matcher) return stripCitation(text);
+  if (!matcher) return afterDefault;
 
   // The matcher regex was built without the global flag; add it for exec loop.
   const globalMatcher = new RegExp(
@@ -673,12 +674,12 @@ export function stripCitationForTemplate(
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = globalMatcher.exec(text)) !== null) {
+  while ((match = globalMatcher.exec(afterDefault)) !== null) {
     const matchEnd = match.index + match[0].length;
-    const enclosure = enclosingDelimiterRange(text, match.index, matchEnd);
+    const enclosure = enclosingDelimiterRange(afterDefault, match.index, matchEnd);
     const removalStart = enclosure?.start ?? match.index;
     const removalEnd = enclosure?.end ?? matchEnd;
-    const before = text.slice(lastIndex, removalStart).replace(/[ \t]+$/, "");
+    const before = afterDefault.slice(lastIndex, removalStart).replace(/[ \t]+$/, "");
     result += before;
     lastIndex = removalEnd;
     // Guard against zero-width matches causing an infinite loop.
@@ -687,7 +688,7 @@ export function stripCitationForTemplate(
     }
   }
 
-  const after = text.slice(lastIndex).replace(/^[ \t]+/, "");
+  const after = afterDefault.slice(lastIndex).replace(/^[ \t]+/, "");
   if (after.length > 0) {
     if (result.length > 0) result += " ";
     result += after;

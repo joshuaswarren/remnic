@@ -301,20 +301,23 @@ export async function mergeTargetHasPromotedCopies(args: {
 }
 
 /**
- * Round N+7 (B): reconcile a merged target's promoted copies after the
- * merged-body promotion lands. The pre-mutation probe that guards the merge
- * can race a concurrent writer that is promoting the same target: the probe
- * reports no copies, the other writer publishes the PRE-merge body, and the
- * merged-target promotion then adds the current body — promotion dedups by
- * content, so both copies stay active across namespaces. Detection: an
- * ACTIVE memory in any resolved promotion namespace (never the source's
- * own) whose `sourceMemoryId` names this target, whose id is not the copy
- * just written, and whose normalized body differs from the promoted body
- * (the caller's citation-stripping, sanitizing canonicalization). Replace,
- * not add: each stale copy is superseded with `supersededBy` pointing at the
- * current copy. Best-effort and fail-open per namespace — a failed
- * retirement is logged and leaves the pre-fix state (both copies), which
- * the next merge retries. Returns the number of stale copies retired.
+ * Round N+7 (B) + P1-A (#2330 round N+8): reconcile a merged target's
+ * promoted copies after the merged-body promotion lands. The pre-mutation
+ * probe that guards the merge can race a concurrent writer that is promoting
+ * the same target: the probe reports no copies, the other writer publishes
+ * the PRE-merge body, and the merged-target promotion then adds the current
+ * body — promotion dedups by content, so both copies stay active across
+ * namespaces. Detection: an ACTIVE memory in any resolved promotion
+ * namespace (never the source's own) whose `sourceMemoryId` names this
+ * target, whose id is not the copy just written, and whose normalized body
+ * differs from the promoted body (the caller's citation-stripping,
+ * sanitizing canonicalization). Replace, not add: each stale copy is
+ * superseded with `supersededBy` pointing at the current copy. The anchor is
+ * the id of the LAST copy the promotion wrote — the shared copy when shared
+ * promotion ran, otherwise a profile copy (profile-only plans reconcile
+ * too). Best-effort and fail-open per namespace — a failed retirement is
+ * logged and leaves the pre-fix state (both copies), which the next merge
+ * retries. Returns the number of stale copies retired.
  */
 export async function retireStaleMergedTargetPromotionCopies(args: {
   config: PluginConfig;

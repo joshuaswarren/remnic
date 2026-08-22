@@ -380,12 +380,12 @@ export class ExtractionPersistCoordinator {
         HarmonicConstructionInput["persistedFacts"][number],
         "memoryId"
       >;
-    }): Promise<void> => {
+    }): Promise<string[]> => {
       if (
         !scopeProfileWritePlan ||
         !profileAutoPromotionAllows(scopeProfileWritePlan, options.category, options.confidence)
       )
-        return;
+        return [];
       const autoTargets = new Set(scopeProfileWritePlan.profile.autoPromote.targets);
       const targets = scopeProfileWritePlan.promotionTargets.filter(
         (target) =>
@@ -394,13 +394,14 @@ export class ExtractionPersistCoordinator {
           target.authorized &&
           target.namespace,
       );
-      if (targets.length === 0) return;
+      if (targets.length === 0) return [];
       const rawContent =
         citationEnabled && hasCitationForTemplate(options.content, citationTemplate)
           ? stripCitationForTemplate(options.content, citationTemplate)
           : options.content;
       const citedContent = applyInlineCitation(rawContent);
       const sanitizedBase = sanitizeMemoryContent(rawContent);
+      const writtenCopyIds: string[] = [];
       for (const target of targets) {
         if (!target.namespace) continue;
         try {
@@ -529,9 +530,9 @@ export class ExtractionPersistCoordinator {
               );
             }
           }
-          // #1645 TV6: a tombstone-blocked promotion is pending_review (no
-          // active copy) — skip catalog/index/behavior like postWriteGuard.
+          // #1645 TV6: tombstone-blocked = pending_review; skip catalog/index/behavior.
           if (!targetPromotion.tombstoneBlocked) {
+            writtenCopyIds.push(promotedId);
             trackPersistedId(targetStorage, promotedId, {
               includeReturnedIds: false,
               category: options.category as MemoryCategory,
@@ -556,6 +557,7 @@ export class ExtractionPersistCoordinator {
           );
         }
       }
+      return writtenCopyIds;
     };
     const promoteMemoryToShared = async (options: {
       sourceStorage: StorageManager;
@@ -593,11 +595,14 @@ export class ExtractionPersistCoordinator {
       >;
     }): Promise<string | undefined> => {
       const toolScoped = promotionWithholdsToolScope(options);
-      await promoteMemoryToProfileTargets({
-        ...options,
-        ...(toolScoped ? { toolScoped: true as const } : {}),
-      });
-      if (lifecycleCaps.extractionScopeClassification && toolScoped) return;
+      // P1-A (#2330 N+8): every exit returns the LAST copy id written, profile copies included.
+      let promotedCopyId = (
+        await promoteMemoryToProfileTargets({
+          ...options,
+          ...(toolScoped ? { toolScoped: true as const } : {}),
+        })
+      ).at(-1);
+      if (lifecycleCaps.extractionScopeClassification && toolScoped) return promotedCopyId;
       if (
         !shouldPromoteToShared(
           this.deps.config,
@@ -609,8 +614,9 @@ export class ExtractionPersistCoordinator {
           options.confidence,
         )
       )
-        return;
-      if (!subjectGuardAllows(options.subject, "serverShared", "shared promotion")) return;
+        return promotedCopyId;
+      if (!subjectGuardAllows(options.subject, "serverShared", "shared promotion"))
+        return promotedCopyId;
       try {
         const sharedStorage = await this.deps.getStorageRouter().storageFor(
           this.deps.config.sharedNamespace,
@@ -626,10 +632,8 @@ export class ExtractionPersistCoordinator {
             : options.content;
         const citedContent = applyInlineCitation(rawContent);
         const sanitizedBase = sanitizeMemoryContent(rawContent);
-        // Compose BEFORE the dedup gate (#2014 round 2): salvage mode may drop
-        // or clamp attributes, and the dedup hash, contentHashSource, and
-        // supersession keys below must all describe the SURVIVING fields that
-        // writeSealedMemory actually persists — never the raw extractor map.
+        // Compose BEFORE the dedup gate (#2014 round 2): the dedup hash, contentHashSource, and
+        // supersession keys must describe the SURVIVING fields writeSealedMemory persists.
         const sharedPromotionEnvelope = composeSalvagedExtractionEnvelope(
           {
             content: citedContent,
@@ -655,12 +659,8 @@ export class ExtractionPersistCoordinator {
           options.category === "fact" &&
           (await sharedStorage.hasFactContentHash(dedupContent))
         ) {
-          // Connector identity gate: only backfill temporal bounds onto a
-          // same-connector fact.  Different connectors with identical content
-          // must not cross-patch each other's temporal fields (codex finding:
-          // temporal backfill occurred before connector mismatch check).
-          // Fail-open: on scan error backfill proceeds (preserving prior
-          // best-effort behaviour).
+          // Connector identity gate: backfill bounds only onto a same-connector fact (no cross-patch).
+          // Fail-open: on scan error backfill proceeds (prior best-effort behaviour).
           let sharedSameConnector = true;
           if (options.invalidAt || options.validAt) {
             try {
@@ -813,7 +813,7 @@ export class ExtractionPersistCoordinator {
                 if (hashDedupSupersession.supersededIds.length > 0) {
                 }
                 // Active matching fact exists — normal short-circuit is safe.
-                return;
+                return promotedCopyId;
               }
               // No active same-entity shared fact found with this content hash.
               // This can happen when the previously-written shared fact has since
@@ -840,7 +840,7 @@ export class ExtractionPersistCoordinator {
                 // A matching active shared fact was confirmed — skip the write to
                 // avoid duplicating content that is already present.  The existing
                 // fact remains active and the supersession failure is logged above.
-                return;
+                return promotedCopyId;
               }
               // Lookup did not complete or no candidate was found — we cannot
               // confirm a duplicate.  Fall through to the write + post-write
@@ -874,7 +874,7 @@ export class ExtractionPersistCoordinator {
               skipSharedPromotion = false;
             }
             if (skipSharedPromotion) {
-              return;
+              return promotedCopyId;
             }
             // No same-connector active shared fact — fall through to write.
           }
@@ -959,12 +959,13 @@ export class ExtractionPersistCoordinator {
             }),
           );
         }
-        // Round N+7 (B): the promoted shared-copy id feeds the merged-target reconciliation.
+        promotedCopyId = promotedId; // feeds the merged-target reconciliation (round N+7 B)
         return promotedId;
       } catch (err) {
         log.warn(
           `persistExtraction: shared promotion failed open for ${options.sourceMemoryId}: ${err}`,
         );
+        return promotedCopyId; // P1-A: profile copies written pre-failure still reconcile
       }
     };
     // #1707 thread 1 — backfill temporal bounds onto promotion copies when the

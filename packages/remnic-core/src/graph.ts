@@ -566,6 +566,12 @@ export class GraphIndex {
   /**
    * Called after a memory is written to disk.
    *
+   * Throws when an edge append fails (after logging): the merged-target rewrite
+   * path depends on the rejection to restore the edges `removeNodeEdgesForRewrite`
+   * dropped — swallowing here left that restore dead and the prior edge set
+   * permanently lost (#2330). Fail-open is the CALLER's decision; the create
+   * paths already catch (see persistence-index.buildGraphEdge).
+   *
    * @param memoryPath - relative path from memoryDir (e.g. "facts/2026-02-22/abc.md")
    * @param entityRef  - entityRef frontmatter field (if any)
    * @param content    - full memory text (for causal detection)
@@ -658,9 +664,12 @@ export class GraphIndex {
         }
       }
     } catch (err) {
-      // Fail-open: graph write errors must never surface to caller
+      // Log, then rethrow (#2330): the rewrite path's restore step only runs
+      // when this rejection reaches its caller. Callers that want fail-open
+      // catch (the create paths do).
       const { log } = await import("./logger.js");
       log.warn(`[graph] onMemoryWritten error: ${err}`);
+      throw err;
     } finally {
       // Edge-cache coherence (issue #1904). Legacy behavior nulled the cache on
       // every write, paying a 2-4 s full re-read + parse on the next traversal.
