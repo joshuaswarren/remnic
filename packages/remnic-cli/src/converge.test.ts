@@ -1872,3 +1872,14 @@ test("reconcile plan: POSIX-origin paths with colons are accepted off-Windows an
   assert.equal(plan.converged, false);
   assert.equal(plan.byNamespace[0]?.pull, 1);
 });
+
+test("converge --timeout seconds convert to milliseconds before normalization (#2802 follow-up)", async () => {
+  const { convergeTimeoutFlagToMs } = await import("./converge.js");
+  // The round-1 form produced 3600 (ms) for `--timeout 3600` — 3.6 seconds.
+  assert.equal(convergeTimeoutFlagToMs(3600), 3_600_000);
+  assert.equal(convergeTimeoutFlagToMs(30), 30_000);
+  assert.equal(convergeTimeoutFlagToMs(0.5), 500);
+  // The one-hour ceiling still clamps.
+  assert.equal(convergeTimeoutFlagToMs(7_200), 3_600_000);
+  assert.throws(() => convergeTimeoutFlagToMs(Number.NaN), /--timeout/);
+});
