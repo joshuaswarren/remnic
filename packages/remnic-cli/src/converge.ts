@@ -998,6 +998,19 @@ export function formatConvergeApplyReport(result: ConvergeApplyResult): string {
   return lines.join("\n");
 }
 
+/**
+ * Convert the `--timeout <seconds>` flag to normalized milliseconds. The
+ * flag is SECONDS and normalization validates/clamps MILLISECONDS — the
+ * conversion must happen BETWEEN them. Normalizing the raw seconds and
+ * dividing by 1000 (the #2802 round-1 form) turned `--timeout 3600` into a
+ * 3.6-second timeout.
+ */
+export function convergeTimeoutFlagToMs(seconds: number): number {
+  // Round before normalization: IEEE-754 can turn 1.001 into
+  // 1000.9999999999999, which the integer-only normalizer would reject.
+  return normalizeConvergePeerRequestTimeoutMs(Math.round(seconds * 1000), "--timeout");
+}
+
 export async function cmdConverge(
   action: string,
   rest: string[],
@@ -1040,7 +1053,7 @@ Options:
   let dryRun = false;
   let conflictPolicy: ConvergeConflictPolicy | undefined;
   let intervalSeconds: number | undefined;
-  let timeoutSeconds: number | undefined;
+  let timeoutMsFlag: number | undefined;
 
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
@@ -1069,13 +1082,12 @@ Options:
       // Flag-present-but-value-absent is malformed, not "use the default".
       const raw = rest[i + 1];
       const parsed = raw === undefined ? Number.NaN : Number(raw);
-      try {
-        timeoutSeconds = normalizeConvergePeerRequestTimeoutMs(parsed, "--timeout") / 1000;
-      } catch {
+      if (!Number.isFinite(parsed) || parsed <= 0) {
         process.stderr.write("converge: --timeout must be a positive number of seconds.\n");
         process.exitCode = 2;
         return;
       }
+      timeoutMsFlag = convergeTimeoutFlagToMs(parsed);
       i += 1;
     } else if (arg === "--conflict-policy") {
       const policy = rest[i + 1];
@@ -1102,7 +1114,7 @@ Options:
         peerToken,
         conflictPolicy,
         intervalMs: intervalSeconds !== undefined ? intervalSeconds * 1000 : undefined,
-        peerRequestTimeoutMs: timeoutSeconds !== undefined ? timeoutSeconds * 1000 : undefined,
+        ...(timeoutMsFlag !== undefined ? { peerRequestTimeoutMs: timeoutMsFlag } : {}),
         signal: controller.signal,
         onCycle: json
           ? undefined
@@ -1144,7 +1156,7 @@ Options:
       peerUrl,
       peerToken,
       conflictPolicy,
-      ...(timeoutSeconds !== undefined ? { peerRequestTimeoutMs: timeoutSeconds * 1000 } : {}),
+      ...(timeoutMsFlag !== undefined ? { peerRequestTimeoutMs: timeoutMsFlag } : {}),
     });
     if (json) {
       console.log(JSON.stringify(plan, null, 2));
@@ -1160,7 +1172,7 @@ Options:
     dryRun,
     conflictPolicy,
     config,
-    ...(timeoutSeconds !== undefined ? { peerRequestTimeoutMs: timeoutSeconds * 1000 } : {}),
+    ...(timeoutMsFlag !== undefined ? { peerRequestTimeoutMs: timeoutMsFlag } : {}),
   });
 
   if (json) {
