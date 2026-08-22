@@ -16,7 +16,7 @@
  *         2.md                           <- version 2 snapshot
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import {
   access,
@@ -24,6 +24,7 @@ import {
   mkdir,
   readFile,
   writeFile,
+  rename,
   unlink,
 } from "node:fs/promises";
 import { ALL_CATEGORY_DIRS, RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
@@ -33,7 +34,7 @@ import {
   requestEntityCanonicalIdReconcile,
 } from "./storage/entity-canonical-id-references.js";
 import { withRawEntityPageMutation } from "./storage/entity-canonical-id-lock.js";
-import { withHeldFileLock } from "./utils/serialize-mutations.js";
+import { withHeldFileLock, type HeldFileLockController } from "./utils/serialize-mutations.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -133,18 +134,54 @@ function withPageLock<T>(pageKey: string, fn: () => Promise<T>): Promise<T> {
 const MANIFEST_LOCK_STALE_MS = 30_000;
 const MANIFEST_LOCK_MAX_WAIT_MS = 10_000;
 
-function withManifestLock<T>(mPath: string, fn: () => Promise<T>): Promise<T> {
+/**
+ * A manifest mutation lost its advisory lock mid-section — a peer stale-broke
+ * and replaced it, and the section must abort rather than publish over the
+ * peer's committed mutation.
+ */
+class ManifestLockLostError extends Error {
+  constructor(mPath: string) {
+    super(
+      `page-versioning: manifest lock for ${mPath} was lost mid-section — a peer stale-broke it; aborting so the peer's mutation survives`,
+    );
+    this.name = "ManifestLockLostError";
+  }
+}
+
+/**
+ * Revalidate lock ownership immediately before a destructive write (final
+ * round B). The lock's mtime heartbeat is a TIMER — it cannot fire while the
+ * process is paused past the stale window (CPU-bound section, suspended
+ * machine), so a peer can break the lock and commit its own newer mutation
+ * while THIS section still believes it holds it. Every mutation calls this
+ * immediately before each destructive write (snapshot writeFile, manifest
+ * rename, snapshot unlink) and aborts on loss — the same pattern the graph
+ * JSONL lock adopted (GraphWriteLockSection / assertGraphLockHeld). A held
+ * result also re-stamps the mtime, so the bounded write that follows cannot
+ * itself be judged stale mid-write.
+ */
+async function assertManifestLockHeld(
+  mPath: string,
+  lock: HeldFileLockController,
+): Promise<void> {
+  if (!(await lock.refresh())) throw new ManifestLockLostError(mPath);
+}
+
+function withManifestLock<T>(
+  mPath: string,
+  fn: (lock: HeldFileLockController) => Promise<T>,
+): Promise<T> {
   return withPageLock(mPath, () =>
     withHeldFileLock(
       `${mPath}.lock`,
       { staleMs: MANIFEST_LOCK_STALE_MS, maxWaitMs: MANIFEST_LOCK_MAX_WAIT_MS },
-      async (acquired) => {
+      async (acquired, lock) => {
         if (!acquired) {
           throw new Error(
             `page-versioning: could not acquire the manifest lock for ${mPath} within ${MANIFEST_LOCK_MAX_WAIT_MS}ms — another process holds it`,
           );
         }
-        return fn();
+        return fn(lock);
       },
     ),
   );
@@ -247,7 +284,19 @@ async function writeManifest(
   const dir = sidecarDir(memoryDir, sidecar, pagePath);
   await mkdir(dir, { recursive: true });
   const mp = manifestPath(memoryDir, sidecar, pagePath);
-  await writeFile(mp, JSON.stringify(history, null, 2) + "\n", "utf-8");
+  // Final round (A): publish atomically — write the temp file, then rename
+  // it over the manifest. A crash or transient failure can no longer leave a
+  // torn or truncated manifest behind, and the publish-before-cleanup
+  // ordering in every mutation guarantees a failed publication never strands
+  // a manifest entry whose snapshot file is already gone.
+  const tmp = `${mp}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmp, JSON.stringify(history, null, 2) + "\n", "utf8");
+    await rename(tmp, mp);
+  } catch (err) {
+    await unlink(tmp).catch(() => undefined);
+    throw err;
+  }
 }
 
 // Round N+22: stranded-commit marker. A finalization whose merge had
@@ -309,7 +358,7 @@ export async function createVersion(
   const resolvedMemoryDir = memoryDir ?? resolveMemoryDir(pagePath);
   const mPath = manifestPath(resolvedMemoryDir, sidecar, relPath(pagePath, resolvedMemoryDir));
 
-  return withManifestLock(mPath, async () => {
+  return withManifestLock(mPath, async (lock) => {
     const history = await readManifest(resolvedMemoryDir, sidecar, relPath(pagePath, resolvedMemoryDir));
     const nextId = String(history.versions.length > 0
       ? Math.max(...history.versions.map((v) => Number(v.versionId))) + 1
@@ -326,38 +375,50 @@ export async function createVersion(
       ...(options?.deferPrune === true ? { pending: true } : {}),
     };
 
-    // Write snapshot file
     const dir = sidecarDir(resolvedMemoryDir, sidecar, relPath(pagePath, resolvedMemoryDir));
     await mkdir(dir, { recursive: true });
     const ext = path.extname(pagePath) || ".md";
     const snapshotPath = path.join(dir, `${nextId}${ext}`);
+    // Final round (B): revalidate ownership immediately before the staged
+    // snapshot write — a peer that stale-broke the lock may have committed a
+    // mutation reusing this id, and overwriting its file would corrupt the
+    // peer's published rollback point.
+    await assertManifestLockHeld(mPath, lock);
     await writeFile(snapshotPath, content, "utf8");
 
     history.versions.push(version);
     history.currentVersion = nextId;
 
-    // Prune old versions if exceeding max, unless the caller deferred the
-    // prune until its guarded write commits (issue #2330 round N+11 C).
-    if (options?.deferPrune !== true) {
-      await pruneExcessVersions(history, maxVersionsPerPage, dir, ext, log);
-    }
-
+    // Final round (A): the prune only COMPUTES the removal here; the
+    // manifest publishes it (atomic rename), and only then are the pruned
+    // snapshot files unlinked — a publication failure leaves the manifest
+    // and the files exactly as they were, never a dangling reference.
+    // The prune is skipped when the caller deferred it until its guarded
+    // write commits (issue #2330 round N+11 C).
+    const pruned = options?.deferPrune === true
+      ? []
+      : pruneExcessVersions(history, maxVersionsPerPage);
+    await assertManifestLockHeld(mPath, lock);
     await writeManifest(resolvedMemoryDir, sidecar, relPath(pagePath, resolvedMemoryDir), history);
+    await unlinkPublishedSnapshots(mPath, lock, dir, ext, pruned, log);
     log.debug(`page-versioning: created version ${nextId} for ${pagePath} (trigger=${trigger})`);
 
     return version;
   });
 }
 
-/** Prune the oldest snapshots in place. The caller holds the page lock. */
-async function pruneExcessVersions(
+/**
+ * Compute the excess COMMITTED snapshots and drop them from `history`,
+ * returning the pruned entries WITHOUT touching any file — the caller
+ * publishes the manifest first and unlinks the files only afterwards
+ * ({@link unlinkPublishedSnapshots}, final round A). The caller holds the
+ * manifest lock.
+ */
+function pruneExcessVersions(
   history: VersionHistory,
   maxVersionsPerPage: number,
-  dir: string,
-  ext: string,
-  log: VersioningLogger,
-): Promise<void> {
-  if (!(maxVersionsPerPage > 0)) return;
+): PageVersion[] {
+  if (!(maxVersionsPerPage > 0)) return [];
   // Round N+15 (B): count only COMMITTED snapshots. Two concurrent merges
   // can both stage (deferPrune) before either commits; a prune that counted
   // the other writer's pending entry would drop one more rollback point
@@ -372,14 +433,37 @@ async function pruneExcessVersions(
   const excess =
     history.versions.filter((version) => version.pending !== true).length -
     maxVersionsPerPage;
-  if (excess <= 0) return;
+  if (excess <= 0) return [];
   const toRemove = new Set<PageVersion>();
   for (const version of history.versions) {
     if (toRemove.size >= excess) break;
     if (version.pending === true) continue;
     toRemove.add(version);
   }
-  for (const old of toRemove) {
+  history.versions = history.versions.filter((version) => !toRemove.has(version));
+  return [...toRemove];
+}
+
+/**
+ * Best-effort removal of snapshot files whose removal the manifest has
+ * ALREADY published (final round A). Ownership is revalidated first: after a
+ * lock loss, a peer's fresh mutation may have reused a removed id, and
+ * unlinking its file would leave the PEER's manifest with a dangling
+ * reference — so a lost lock aborts the cleanup (the caller surfaces the
+ * error; the already-published manifest stays consistent, and the skipped
+ * files are unreferenced orphans, never dangling references).
+ */
+async function unlinkPublishedSnapshots(
+  mPath: string,
+  lock: HeldFileLockController,
+  dir: string,
+  ext: string,
+  pruned: PageVersion[],
+  log: VersioningLogger,
+): Promise<void> {
+  if (pruned.length === 0) return;
+  await assertManifestLockHeld(mPath, lock);
+  for (const old of pruned) {
     const oldPath = path.join(dir, `${old.versionId}${ext}`);
     try {
       await unlink(oldPath);
@@ -387,7 +471,6 @@ async function pruneExcessVersions(
       log.debug(`page-versioning: could not remove old snapshot ${oldPath}`);
     }
   }
-  history.versions = history.versions.filter((version) => !toRemove.has(version));
 }
 
 /**
@@ -416,7 +499,7 @@ export async function pruneVersions(
   const resolvedMemoryDir = memoryDir ?? resolveMemoryDir(pagePath);
   const rel = relPath(pagePath, resolvedMemoryDir);
   const mPath = manifestPath(resolvedMemoryDir, config.sidecarDir, rel);
-  await withManifestLock(mPath, async () => {
+  await withManifestLock(mPath, async (lock) => {
     const history = await readManifest(resolvedMemoryDir, config.sidecarDir, rel);
     const before = history.versions.length;
     let committedCleared = false;
@@ -443,16 +526,22 @@ export async function pruneVersions(
         strandedCleared += 1;
       }
     }
-    await pruneExcessVersions(
-      history,
-      config.maxVersionsPerPage,
-      sidecarDir(resolvedMemoryDir, config.sidecarDir, rel),
-      path.extname(pagePath) || ".md",
-      log,
-    );
+    // Final round (A): compute the prune, PUBLISH the manifest (atomic
+    // rename), and only then unlink the pruned snapshot files best-effort —
+    // a publication failure leaves manifest and files mutually consistent.
+    const pruned = pruneExcessVersions(history, config.maxVersionsPerPage);
     if (history.versions.length !== before || committedCleared || strandedCleared > 0) {
+      await assertManifestLockHeld(mPath, lock);
       await writeManifest(resolvedMemoryDir, config.sidecarDir, rel, history);
     }
+    await unlinkPublishedSnapshots(
+      mPath,
+      lock,
+      sidecarDir(resolvedMemoryDir, config.sidecarDir, rel),
+      path.extname(pagePath) || ".md",
+      pruned,
+      log,
+    );
     if (strandedCleared > 0) {
       log.debug(
         `page-versioning: reconciled ${strandedCleared} stranded committed snapshot(s) for ${pagePath}`,
@@ -513,22 +602,33 @@ export async function removeVersion(
 ): Promise<void> {
   const resolvedMemoryDir = memoryDir ?? resolveMemoryDir(pagePath);
   const rel = relPath(pagePath, resolvedMemoryDir);
-  await withManifestLock(manifestPath(resolvedMemoryDir, config.sidecarDir, rel), async () => {
+  const mPath = manifestPath(resolvedMemoryDir, config.sidecarDir, rel);
+  await withManifestLock(mPath, async (lock) => {
     const history = await readManifest(resolvedMemoryDir, config.sidecarDir, rel);
     const index = history.versions.findIndex((version) => version.versionId === versionId);
     if (index === -1) return;
+    const removed = history.versions[index];
     history.versions.splice(index, 1);
-    const dir = sidecarDir(resolvedMemoryDir, config.sidecarDir, rel);
-    const ext = path.extname(pagePath) || ".md";
-    try {
-      await unlink(path.join(dir, `${versionId}${ext}`));
-    } catch {
-      log.debug(`page-versioning: could not remove snapshot file for ${pagePath} version ${versionId}`);
-    }
     history.currentVersion = history.versions.length > 0
       ? String(Math.max(...history.versions.map((version) => Number(version.versionId))))
       : "0";
+    // Final round (A): PUBLISH the manifest (atomic rename) BEFORE touching
+    // the snapshot file. The old order unlinked first — a publication
+    // failure (transient I/O, full disk) then left the on-disk manifest
+    // referencing a now-missing snapshot: an unusable rollback entry that
+    // getVersion/revert fail on and prune never cleans. Publish-first means
+    // a failed publication leaves manifest AND file untouched; the unlink
+    // only runs once the removal is durably published.
+    await assertManifestLockHeld(mPath, lock);
     await writeManifest(resolvedMemoryDir, config.sidecarDir, rel, history);
+    await unlinkPublishedSnapshots(
+      mPath,
+      lock,
+      sidecarDir(resolvedMemoryDir, config.sidecarDir, rel),
+      path.extname(pagePath) || ".md",
+      [removed],
+      log,
+    );
     log.debug(`page-versioning: removed version ${versionId} for ${pagePath}`);
   });
 }

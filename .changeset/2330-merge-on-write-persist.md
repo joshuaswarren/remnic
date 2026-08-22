@@ -328,3 +328,23 @@ entry; ids whose entry is gone or already committed are no-ops. Repeated
 transient finalization failures — manifest lock timeouts, transient I/O —
 no longer grow history past `maxVersionsPerPage`, and a later successful
 merge prunes the recovered rollback points like any other committed version.
+Final round: two P2 fixes in the same page-versioning lock family. (A) The
+manifest is now published BEFORE any snapshot file cleanup, and publication
+itself is atomic (temp file + rename). `removeVersion` used to unlink the
+snapshot first — when the manifest write then failed (transient I/O, full
+disk), the on-disk manifest kept referencing a now-missing snapshot: an
+unusable rollback entry that `getVersion`/revert failed on and prune never
+cleaned. Every mutation now computes its removal, publishes the manifest
+atomically, and only then unlinks the orphaned snapshot files best-effort —
+a failed publication leaves manifest and files exactly as they were, never
+a dangling reference. (B) Every manifest mutation section now receives the
+manifest lock's ownership controller and revalidates it (`refresh`)
+immediately before EACH destructive write — the staged snapshot `writeFile`,
+the manifest rename, and the post-publication snapshot unlinks — and aborts
+on loss. The lock's mtime heartbeat is a timer: a process paused past the
+30-second stale window cannot heartbeat, so a peer could break the lock and
+commit a newer mutation while this section still believed it held the lock;
+the paused writer now aborts instead of clobbering the peer's committed
+manifest (the same pattern the graph JSONL lock adopted), and the skipped
+unlink leaves at most an unreferenced orphan file, never a dangling
+reference.
