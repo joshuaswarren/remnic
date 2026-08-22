@@ -108,6 +108,7 @@ import {
   profileAutoPromotionAllows,
   readActiveMemoriesBothTiers,
   promotionWithholdsToolScope,
+  retireStaleMergedTargetPromotionCopies,
   shouldPromoteToShared,
 } from "./extraction-persist-promotion.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
@@ -590,7 +591,7 @@ export class ExtractionPersistCoordinator {
         HarmonicConstructionInput["persistedFacts"][number],
         "memoryId"
       >;
-    }): Promise<void> => {
+    }): Promise<string | undefined> => {
       const toolScoped = promotionWithholdsToolScope(options);
       await promoteMemoryToProfileTargets({
         ...options,
@@ -958,6 +959,8 @@ export class ExtractionPersistCoordinator {
             }),
           );
         }
+        // Round N+7 (B): the promoted shared-copy id feeds the merged-target reconciliation.
+        return promotedId;
       } catch (err) {
         log.warn(
           `persistExtraction: shared promotion failed open for ${options.sourceMemoryId}: ${err}`,
@@ -2539,7 +2542,7 @@ export class ExtractionPersistCoordinator {
       const semanticMerge = await applySemanticMergeAtPersist(this.deps, {
         storage: targetStorage, content: fact.content, category: writeCategory, sources: fact.sources, sourceConnector: extractionSourceConnector,
         incomingMetadata: { tags: [...fact.tags, ...injectionScreenTags], entityRef: fact.entityRef, structuredAttributes: fact.structuredAttributes, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, biTemporal: biTemporal !== undefined, importanceScore: importance.score, confidence: fact.confidence, provenanceStrength: fact.provenance, toolScoped: factToolScoped, subject: factSubject, origin, faithfulness: faithfulnessFm, memoryKind }, skip: contradictionDetected || faithfulnessEnforceStatus === "pending_review" || batchBackendUnavailable || novelty.decision === "add",
-        incomingLinks: links.length > 0 ? links : undefined,
+        incomingLinks: links.length > 0 ? links : undefined, incomingCitedContent: citedFactContent,
         targetHasPromotedCopies: (targetId) => promotedCopyProbe.check(targetStorage, targetId),
       });
       if (semanticMerge.action === "created" && semanticMerge.reason === "backend_unavailable") batchBackendUnavailable = true; // arms the batch short circuit for the remaining facts
@@ -2549,10 +2552,13 @@ export class ExtractionPersistCoordinator {
         // B: the create path stores a verbatim artifact for qualifying writes; the merge must not drop it.
         await writeMergedVerbatimArtifact(this.deps, targetStorage, semanticMerge.targetId, { category: writeCategory, citedContent: citedFactContent, confidence: fact.confidence, tags: fact.tags, intent: inferredIntent ?? undefined, sourceConnector: extractionSourceConnector, origin, toolScoped: factToolScoped });
         // D + final round (A/B): with no promoted copies the create path's promotion must still run — fail-open, the merge stands — and its payload is derived SOLELY from the re-read committed record: no field reads the incoming extraction (see buildMergedTargetPromotionPayload; null = target replaced mid-flight or retired by a concurrent lifecycle operation, skip promotion). Promotion eligibility gates on the committed record's tier — the downgraded min(incoming, target) confidence where a lower incoming fact merged in.
+        // Round N+7 (A): the payload builder refuses a degraded merge (provenancePatched=false) — no promotion off unpatched trust metadata. (B): after the current copy lands, any concurrently promoted PRE-merge copy is superseded (promotion dedups by content, so without this both stay active).
         const mergedPromotion = await buildMergedTargetPromotionPayload(targetStorage, semanticMerge);
-        if (mergedPromotion) try { await promoteMemoryToShared({ sourceStorage: targetStorage, ...mergedPromotion }); promotedCopyProbe.invalidate(); } catch (err) {
+        if (mergedPromotion) try { const promotedCopyId = await promoteMemoryToShared({ sourceStorage: targetStorage, ...mergedPromotion }); if (promotedCopyId) await retireStaleMergedTargetPromotionCopies({ config: this.deps.config, getStorageRouter: this.deps.getStorageRouter, scopeProfileWritePlan, sourceStorage: targetStorage, sourceMemoryId: semanticMerge.targetId, promotedContent: mergedPromotion.content, promotedMemoryId: promotedCopyId, normalize: normalizeStoredHashSource }); promotedCopyProbe.invalidate(); } catch (err) {
           log.warn(`persistExtraction: merged-target promotion failed open for ${semanticMerge.targetId}: ${err}`);
         }
+        // Round N+7 (D): the merged body joins the INTERNAL temporal/tag index refresh (id-keyed, incremental); the PUBLIC persistedIds return stays new-fragment only.
+        trackPersistedId(targetStorage, semanticMerge.targetId, { includeReturnedIds: false });
         // Finding B (round N+3): enqueue the surviving target so the end-of-batch harmonic pass covers the committed merged claims.
         if (harmonicConstructionEnabled) {
           enqueueMergedTargetForHarmonicConstruction(harmonicFactsByStorage, targetStorage, harmonicFact, semanticMerge.targetId, semanticMerge.mergedContent, new Date(harmonicSourceInsertedAtBase + harmonicSourceOrder++).toISOString());

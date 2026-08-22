@@ -224,3 +224,50 @@ test("createBatchPromotedCopyProbe: one scan per namespace per batch, not per fa
   assert.equal(await probe.check(source, "fact-target"), true);
   assert.equal(storageForCalls, 3, "invalidation drops the cache; the next fact rescans");
 });
+
+test("retireStaleMergedTargetPromotionCopies: a concurrent promotion of the pre-merge body is reconciled to the current copy (round N+7 B)", async () => {
+  // Race being modeled: the pre-mutation promoted-copy probe reported none,
+  // another writer promoted the PRE-merge body, and only then did the merge
+  // commit and promote the current body. Promotion dedups by content, so
+  // without reconciliation both copies stay active across namespaces. The
+  // helper is imported dynamically so the PRE-fix run fails this test alone
+  // (the reconciliation being absent) instead of failing the whole file at
+  // import time.
+  const { retireStaleMergedTargetPromotionCopies } = await import(
+    "./extraction-persist-promotion.js"
+  );
+  assert.equal(
+    typeof retireStaleMergedTargetPromotionCopies,
+    "function",
+    "the merged-target promotion reconciliation must exist",
+  );
+  const s = await makeStorages();
+  const PRE_MERGE_BODY = "Billing service deploys happen on Tuesdays.";
+  const MERGED_BODY = "Billing service deploys happen on Tuesdays at 09:00 UTC.";
+  // The concurrent writer's copy: same sourceMemoryId, pre-merge body.
+  const stale = await s.shared.writeMemory("fact", PRE_MERGE_BODY, {
+    source: "test",
+    sourceMemoryId: "fact-target",
+  });
+  // The merged-target promotion's copy: same sourceMemoryId, merged body.
+  const current = await s.shared.writeMemory("fact", MERGED_BODY, {
+    source: "test",
+    sourceMemoryId: "fact-target",
+  });
+  const retired = await retireStaleMergedTargetPromotionCopies({
+    config: parseConfig({ memoryDir: s.source.dir, sharedNamespace: "shared" }),
+    getStorageRouter: () => s.router,
+    scopeProfileWritePlan: null,
+    sourceStorage: s.source,
+    sourceMemoryId: "fact-target",
+    promotedContent: MERGED_BODY,
+    promotedMemoryId: current.id,
+    normalize: (content: string) => content,
+  });
+  assert.equal(retired, 1, "exactly the pre-merge copy is retired");
+  const staleRow = await s.shared.getMemoryByIdIncludingArchived(stale.id);
+  assert.equal(staleRow?.frontmatter.status, "superseded");
+  assert.equal(staleRow?.frontmatter.supersededBy, current.id);
+  const currentRow = await s.shared.getMemoryByIdIncludingArchived(current.id);
+  assert.equal(currentRow?.frontmatter.status ?? "active", "active");
+});

@@ -195,7 +195,7 @@ export function makeSubjectGuardAllows(
  * treated as "copies may exist": the conservative create path runs rather
  * than risk cross-namespace divergence.
  */
-function promotionScanNamespaces(
+export function promotionScanNamespaces(
   config: PluginConfig,
   scopeProfileWritePlan: ResolvedScopeProfilePlan | null | undefined,
 ): string[] {
@@ -298,4 +298,71 @@ export async function mergeTargetHasPromotedCopies(args: {
     args.getStorageRouter,
     args.scopeProfileWritePlan,
   ).check(args.sourceStorage, args.targetMemoryId);
+}
+
+/**
+ * Round N+7 (B): reconcile a merged target's promoted copies after the
+ * merged-body promotion lands. The pre-mutation probe that guards the merge
+ * can race a concurrent writer that is promoting the same target: the probe
+ * reports no copies, the other writer publishes the PRE-merge body, and the
+ * merged-target promotion then adds the current body — promotion dedups by
+ * content, so both copies stay active across namespaces. Detection: an
+ * ACTIVE memory in any resolved promotion namespace (never the source's
+ * own) whose `sourceMemoryId` names this target, whose id is not the copy
+ * just written, and whose normalized body differs from the promoted body
+ * (the caller's citation-stripping, sanitizing canonicalization). Replace,
+ * not add: each stale copy is superseded with `supersededBy` pointing at the
+ * current copy. Best-effort and fail-open per namespace — a failed
+ * retirement is logged and leaves the pre-fix state (both copies), which
+ * the next merge retries. Returns the number of stale copies retired.
+ */
+export async function retireStaleMergedTargetPromotionCopies(args: {
+  config: PluginConfig;
+  getStorageRouter: () => {
+    storageFor: (namespace: string) => Promise<StorageManager>;
+  };
+  scopeProfileWritePlan: ResolvedScopeProfilePlan | null | undefined;
+  sourceStorage: StorageManager;
+  sourceMemoryId: string;
+  /** The body the merged-target promotion wrote (raw committed record content). */
+  promotedContent: string;
+  /** The id of the promoted copy just written (supersession target). */
+  promotedMemoryId: string;
+  /** The caller's canonical content form (normalizeStoredHashSource). */
+  normalize: (content: string) => string;
+}): Promise<number> {
+  const promotedForm = args.normalize(args.promotedContent);
+  let retired = 0;
+  for (const namespace of promotionScanNamespaces(args.config, args.scopeProfileWritePlan)) {
+    try {
+      const storage = await args.getStorageRouter().storageFor(namespace);
+      if (storage.dir === args.sourceStorage.dir) continue;
+      const active = await readActiveMemoriesBothTiers(storage);
+      const stale = active.filter(
+        (memory) =>
+          memory.frontmatter.sourceMemoryId === args.sourceMemoryId &&
+          memory.frontmatter.id !== args.promotedMemoryId &&
+          (memory.frontmatter.status ?? "active") === "active" &&
+          args.normalize(memory.content ?? "") !== promotedForm,
+      );
+      for (const memory of stale) {
+        const superseded = await storage.supersedeMemory(
+          memory.frontmatter.id as string,
+          args.promotedMemoryId,
+          "merged-target promotion reconciliation",
+        );
+        if (superseded) {
+          retired++;
+          log.warn(
+            `persistExtraction: superseded stale promoted copy ${memory.frontmatter.id} of ${args.sourceMemoryId} — it carried the pre-merge body while ${args.promotedMemoryId} serves the merged body`,
+          );
+        }
+      }
+    } catch (err) {
+      log.warn(
+        `persistExtraction: merged-target promotion reconciliation failed open for namespace "${namespace}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  return retired;
 }

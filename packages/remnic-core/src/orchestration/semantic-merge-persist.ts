@@ -48,6 +48,7 @@ import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { inferIntentFromText } from "../intent.js";
 import {
   hasCitationForTemplate,
+  lastCitationMarkerForTemplate,
   stripCitationForTemplate,
 } from "../source-attribution.js";
 import {
@@ -57,7 +58,8 @@ import {
   resolveRecallAuxiliaryCapabilities,
   type GraphConstructionCapabilitySet,
 } from "../capabilities.js";
-import { removeEntityEdgesFromNode } from "../graph-jsonl.js";
+import { removeNodeEdgesForRewrite, restoreRemovedNodeEdges } from "../graph-jsonl.js";
+import type { GraphType } from "../graph.js";
 import type {
   BehaviorSignalEvent,
   FaithfulnessFrontmatter,
@@ -140,13 +142,25 @@ export interface MergedTargetPromotionPayload {
  * promotion (deleted, its body was replaced after the merge committed, or a
  * concurrent lifecycle operation archived/superseded it between the merge
  * commit and this reread — promoting from a retired record would resurrect
- * content that operation retired, final round B); callers then skip the
- * promotion fail-open — the merge itself stands.
+ * content that operation retired, final round B), and null for a degraded
+ * merge whose provenance patch never landed (round N+7 A) — the gate every
+ * trust-elevating consumer routes through; callers then skip the promotion
+ * fail-open — the merge itself stands.
  */
 export async function buildMergedTargetPromotionPayload(
   storage: StorageManager,
-  merge: { targetId: string; mergedContent: string },
+  merge: { targetId: string; mergedContent: string; provenancePatched: boolean },
 ): Promise<MergedTargetPromotionPayload | null> {
+  // Round N+7 (A): a degraded merge's record still holds its pre-merge
+  // confidence, provenance, sources, and hash — a copy built off it would
+  // publish incoming claims under that stronger metadata. No promotion may
+  // be constructed from an unpatched provenance record.
+  if (!merge.provenancePatched) {
+    log.warn(
+      `semantic-merge: skipping merged-target promotion for ${merge.targetId} — provenance patch did not land; the record still holds pre-merge trust metadata`,
+    );
+    return null;
+  }
   const committed = await storage.getMemoryByIdIncludingArchived(merge.targetId);
   if (!committed || committed.content !== merge.mergedContent) return null;
   // Final round (B): the including-archived lookup still returns a retired
@@ -311,6 +325,15 @@ export interface ApplySemanticMergeOptions {
    * `StorageManager.addLinksToMemory` uses.
    */
   incomingLinks?: readonly MemoryLink[];
+  /**
+   * Round N+7 (C): the caller's single cited body for this write — the raw
+   * fact content with this write's citation marker attached (the same
+   * string the verbatim artifact stores). The committed merged body reuses
+   * that exact marker so the incoming claims stay attributed alongside the
+   * target's older citation, and memory and artifact share one timestamp.
+   * Absent (or citation-free) commits the judge's merged body unchanged.
+   */
+  incomingCitedContent?: string;
   /**
    * Finding C: async probe run after a merge verdict but before any
    * mutation. True when the would-be target already has promoted
@@ -549,6 +572,33 @@ export function createPathMergeParity(input: {
     ...(confidenceFloor !== undefined ? { confidenceFloor } : {}),
   };
 }
+
+/**
+ * Round N+7 (C): the committed merged body carries the incoming extraction's
+ * citation marker (lifted from the caller's cited body for this write)
+ * appended after the judge's merged text, so incoming claims stay attributed
+ * even when the merged text embeds the target's older citation — quoted
+ * excerpts travel without frontmatter, so `sources` alone is not enough.
+ * Idempotent; a no-op when attribution is off or no marker exists.
+ */
+function committedMergedBody(
+  deps: ExtractionPersistDeps,
+  mergedContent: string,
+  incomingCitedContent: string | undefined,
+): string {
+  if (
+    resolvePipelineProcessingCapabilities(deps.config).inlineSourceAttribution !== true ||
+    incomingCitedContent === undefined
+  ) {
+    return mergedContent;
+  }
+  const marker = lastCitationMarkerForTemplate(
+    incomingCitedContent,
+    deps.config.inlineSourceAttributionFormat,
+  );
+  if (!marker || mergedContent.endsWith(marker)) return mergedContent;
+  return `${mergedContent} ${marker}`;
+}
 /**
  * Round N+2 (C) — the canonical RAW pre-citation merged body for hashing.
  * The judge composes mergedContent from the stored target body, which
@@ -729,6 +779,10 @@ export async function applySemanticMergeAtPersist(
   if (target.content !== decision.targetContent) {
     return { action: "created", reason: "target_changed" };
   }
+  // Round N+7 (C): every mutation below commits THIS body — the judge's
+  // merged text plus the incoming citation marker — and the outcome reports
+  // it, so caller comparisons describe what storage actually holds.
+  const committedContent = committedMergedBody(deps, decision.mergedContent, options.incomingCitedContent);
 
   // Create-path parity gate (final round) — ONE place enumerates every
   // trust/scope/verdict field the normal write stamps and bypasses the
@@ -828,7 +882,7 @@ export async function applySemanticMergeAtPersist(
       targetReinforcementCount: target.frontmatter.reinforcement_count,
       nowIso,
     });
-    const updated = await options.storage.updateMemoryIfUnchanged(target, decision.mergedContent, {
+    const updated = await options.storage.updateMemoryIfUnchanged(target, committedContent, {
       actor: "semantic-merge",
     });
     if (!updated) return { action: "created", reason: "target_changed" };
@@ -840,10 +894,10 @@ export async function applySemanticMergeAtPersist(
     // Verify the snapshot, then patch it through the conditional API so the
     // window between the verify and the patch is closed by storage itself.
     const merged = await readTargetSnapshot(options.storage, target);
-    if (!merged || merged.content !== decision.mergedContent) {
+    if (!merged || merged.content !== committedContent) {
       throw new Error("target replaced before the provenance patch");
     }
-    const mergedRawBody = rawPreCitationMergedBody(deps, decision.mergedContent);
+    const mergedRawBody = rawPreCitationMergedBody(deps, committedContent);
     // Finding A (round N+3) — intent parity. With intent routing on, the
     // create path stamps intentGoal/intentActionType/intentEntityTypes from
     // the body it persists, and recall-search-pipeline scores intent
@@ -923,7 +977,7 @@ export async function applySemanticMergeAtPersist(
     // longer holds this merge's unprovenanced body.
     if (
       contentCommitted &&
-      !(await revertMergedContent(options.storage, target, decision.mergedContent))
+      !(await revertMergedContent(options.storage, target, committedContent))
     ) {
       log.error(
         `semantic-merge: ${decision.targetId} holds merged content without provenance metadata and the rollback failed (${detail}); snapshot ${versionId} holds the pre-merge state — recover with revertToVersion. Not creating a duplicate fact.`,
@@ -934,7 +988,7 @@ export async function applySemanticMergeAtPersist(
       return {
         action: "merged",
         targetId: decision.targetId,
-        mergedContent: decision.mergedContent,
+        mergedContent: committedContent,
         provenancePatched: false,
       };
     }
@@ -953,7 +1007,7 @@ export async function applySemanticMergeAtPersist(
   return {
     action: "merged",
     targetId: decision.targetId,
-    mergedContent: decision.mergedContent,
+    mergedContent: committedContent,
     provenancePatched: true,
   };
 }
@@ -1019,15 +1073,18 @@ export async function writeMergedVerbatimArtifact(
  * scan, so a cold-tier target is absent from it and only `committed.path`
  * carries the true location (N+6 A). The graph content is the canonical RAW
  * pre-citation form — the same body the create path hands `buildGraphEdge`.
- * The target's prior from-side entity edges are removed first so a re-merge
- * REPLACES them instead of re-appending duplicates into an append-only
- * JSONL that spreadingActivation would then double-count (N+6 B). The
- * target joins the batch's thread episode list — mirroring the normal write
- * path's push — so later facts in the same extraction chain their
- * time/causal adjacency through the merge (N+6 C). Graph failures are
- * fail-open (the committed merge stands, matching the create path's
- * try/catch); the caller owns the ledger flush, so the behavior events are
- * RETURNED for its storage.
+ * The target's prior generated edges are removed first in EVERY enabled
+ * graph type — entity from-side, time/causal inbound — so a re-merge
+ * REPLACES them instead of re-appending duplicates into append-only JSONLs
+ * that spreadingActivation would then double-count (N+6 B, N+7 G); if the
+ * replacement build fails the removed edges are restored, so failure leaves
+ * either the old or the new complete set (N+7 E). The target joins the
+ * batch's thread episode list at its END — deduped first when already
+ * present — so the merge is the thread's latest event and later facts in
+ * the same extraction chain their time/causal adjacency through it (N+6 C,
+ * N+7 F). Graph failures are fail-open (the committed merge stands,
+ * matching the create path's try/catch); the caller owns the ledger flush,
+ * so the behavior events are RETURNED for its storage.
  */
 export async function runMergedTargetPostEffects(
   deps: ExtractionPersistDeps,
@@ -1057,17 +1114,19 @@ export async function runMergedTargetPostEffects(
     confidence: input.incomingConfidence,
     source: "extraction",
   });
-  // N+6 C: the normal write path pushes every freshly persisted memory onto
-  // the thread episode list (extraction-persist.ts post-write block); the
-  // merge must too, or the next fact in the same batch resolves its
-  // recent-in-thread list without the merge that immediately preceded it —
-  // the fallback predecessor is ignored once the list resolves ANY older
-  // episode, so the merge is skipped in time/causal adjacency.
-  if (
-    input.threadEpisodeIdsForGraph &&
-    !input.threadEpisodeIdsForGraph.includes(merge.targetId)
-  ) {
-    input.threadEpisodeIdsForGraph.push(merge.targetId);
+  // N+6 C + round N+7 (F): the normal write path pushes every freshly
+  // persisted memory onto the thread episode list (extraction-persist.ts
+  // post-write block); the merge must record the target as the thread's
+  // LATEST event. A target already in the list (created in this thread
+  // earlier, or pushed by a previous merge in this batch) must MOVE to the
+  // end: leaving it at its old position makes the NEXT fact's
+  // recent-in-thread resolution chain through an older episode instead of
+  // the merge that just happened.
+  if (input.threadEpisodeIdsForGraph) {
+    const episodes = input.threadEpisodeIdsForGraph;
+    const existing = episodes.lastIndexOf(merge.targetId);
+    if (existing !== -1) episodes.splice(existing, 1);
+    episodes.push(merge.targetId);
   }
   if (!input.graphCaps.multiGraphMemory) return signals;
   try {
@@ -1090,28 +1149,44 @@ export async function runMergedTargetPostEffects(
       const entry = all.find((m) => path.relative(storage.dir, m.path) === memoryRelPath);
       if (entry) entry.content = rawBody;
     }
-    // N+6 B: onMemoryWritten is append-only; without removing the target's
-    // prior from-side entity edges every later merge re-appends them —
-    // duplicate edges that spreadingActivation sums into candidate scores
-    // while entity.jsonl grows without bound. No entityRef means no entity
-    // edges can exist for this node, so the rewrite is skipped.
-    if (entityRef) {
-      await removeEntityEdgesFromNode(storage.dir, memoryRelPath);
+    // N+6 B + round N+7 (E/G): onMemoryWritten is append-only, so a re-merge
+    // must first drop the target's prior generated edges in EVERY enabled
+    // graph type — entity from-side, time/causal inbound — or each later
+    // merge re-appends them and spreadingActivation double-counts the
+    // duplicates while the JSONLs grow without bound. The removed edges are
+    // captured; if the replacement build then FAILS (e.g. an append I/O
+    // error) they are RESTORED, so failure leaves either the old or the new
+    // complete set — never none.
+    const rewriteTypes: GraphType[] = [];
+    if (input.graphCaps.entityGraph) rewriteTypes.push("entity");
+    if (input.graphCaps.timeGraph) rewriteTypes.push("time");
+    if (input.graphCaps.causalGraph) rewriteTypes.push("causal");
+    const removedEdges = await removeNodeEdgesForRewrite(storage.dir, memoryRelPath, rewriteTypes);
+    try {
+      await deps.buildGraphEdge(
+        storage,
+        memoryRelPath,
+        entityRef,
+        merge.targetId,
+        rawBody,
+        all,
+        input.graphContext.memoryPathById,
+        input.threadIdForEdge,
+        input.threadEpisodeIdsForGraph,
+        input.graphContext.previousPersistedRelPath,
+        input.graphCaps,
+      );
+      input.graphContext.previousPersistedRelPath = memoryRelPath;
+    } catch (buildErr) {
+      for (const removed of removedEdges) {
+        await restoreRemovedNodeEdges(storage.dir, removed).catch((restoreErr) =>
+          log.error(
+            `semantic-merge: graph edge restore failed for ${merge.targetId} ${removed.type} graph — the prior edges may be lost; rebuild with graph health repair: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`,
+          ),
+        );
+      }
+      throw buildErr;
     }
-    await deps.buildGraphEdge(
-      storage,
-      memoryRelPath,
-      entityRef,
-      merge.targetId,
-      rawBody,
-      all,
-      input.graphContext.memoryPathById,
-      input.threadIdForEdge,
-      input.threadEpisodeIdsForGraph,
-      input.graphContext.previousPersistedRelPath,
-      input.graphCaps,
-    );
-    input.graphContext.previousPersistedRelPath = memoryRelPath;
   } catch {
     /* fail-open: the committed merge stands; the create path's graph block fails open too */
   }

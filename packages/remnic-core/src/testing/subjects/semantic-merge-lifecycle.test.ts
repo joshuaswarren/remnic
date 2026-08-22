@@ -22,9 +22,9 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import crypto from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-
 import { Orchestrator } from "../../orchestrator.js";
 import { resolveNamespaceStorageRoot } from "../../namespaces/storage.js";
 import type { BufferTurn, PluginConfig } from "../../types.js";
@@ -40,8 +40,10 @@ import {
   mkTempMemoryDir,
   pastIso,
   singleFactResult,
+  sleep,
   stubExtraction,
 } from "../orchestrator-lite.js";
+import { queryTemporalTimelineAsync } from "../../temporal-index.js";
 
 // ── Fixtures (synthetic; no real paths, hosts, or memory content) ─────────────
 
@@ -926,5 +928,168 @@ const subject: LifecycleSubject<SemanticMergeLifecycleState> = {
     await cleanupDir(state.memoryDir);
   },
 };
+
+test("a merged target's new claims reach the temporal timeline index (round N+7 D)", async () => {
+  const memoryDir = await mkTempMemoryDir("semantic-merge-temporal");
+  let orch: Orchestrator | undefined;
+  try {
+    const cfg = mergeLifecycleConfig(memoryDir, { queryAwareIndexingEnabled: true });
+    orch = new Orchestrator(cfg);
+    const judge = { calls: 0 };
+    installJudge(orch, judge);
+    const targetFile = await seedMergeTarget(memoryDir, "merge-target-temporal", SEED_A);
+    // Turn 1: an unrelated created fact bootstraps the temporal index, so the
+    // seeded target is indexed with its PRE-merge text (which has no
+    // "sharp") and turn 2 runs the INCREMENTAL, id-filtered update.
+    const FIRST = "The audit service tracks quarterly access reviews.";
+    stubExtraction(orch, () => ({
+      facts: [{ category: "fact", content: FIRST, confidence: 0.9, tags: [] }],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    }));
+    installNeighbors(orch, () => []);
+    await orch.processTurn("user", `Please remember: ${FIRST}`, "session-temporal-1");
+    assert.equal(await orch.waitForExtractionIdle(15_000), true);
+    // Turn 1's temporal-index bootstrap is fire-and-forget: wait until it
+    // has COMPLETED (the created fact's row is served) so turn 2 runs the
+    // INCREMENTAL id-filtered update instead of re-bootstrapping the whole
+    // corpus — a re-bootstrap would index the already-merged target even
+    // without the fix, masking the defect.
+    let bootstrapped = false;
+    for (let attempt = 0; attempt < 40 && !bootstrapped; attempt++) {
+      const events =
+        (await queryTemporalTimelineAsync(memoryDir, { query: "quarterly", limit: 10 })) ?? [];
+      bootstrapped = events.length > 0;
+      if (!bootstrapped) await sleep(250);
+    }
+    assert.ok(bootstrapped, "turn 1's temporal index bootstrap must complete");
+    // Turn 2: the merge commits "09:00 UTC sharp" into the target.
+    stubExtraction(orch, () => ({
+      facts: [{ category: "fact", content: INCOMING_A, confidence: 0.9, tags: [] }],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    }));
+    installNeighbors(orch, (query) =>
+      query === INCOMING_A ? [{ id: "merge-target-temporal", score: BAND_SCORE }] : [],
+    );
+    await orch.processTurn("user", `Please remember: ${INCOMING_A}`, "session-temporal-2");
+    assert.equal(await orch.waitForExtractionIdle(15_000), true);
+    assert.equal(judge.calls, 1);
+    await assertMerged(targetFile, ["Tuesday cadence", "09:00 UTC sharp"], 1);
+    // Membership in the returned rows is not evidence on its own: with few
+    // rows the query returns the chronology unfiltered (and the no-match
+    // fallback returns both edges). Assert the merged token's HASH is on the
+    // target's own row — the exact contract queryTemporalTimelineAsync
+    // scores against.
+    const sharpToken = crypto.createHash("sha256").update("sharp").digest("hex");
+    let served = false;
+    for (let attempt = 0; attempt < 40 && !served; attempt++) {
+      const events =
+        (await queryTemporalTimelineAsync(memoryDir, { query: "sharp", limit: 10 })) ?? [];
+      served = events.some(
+        (event) =>
+          event.path.endsWith("merge-target-temporal.md") &&
+          (event.searchTokenHashes ?? []).includes(sharpToken),
+      );
+      if (!served) await sleep(250);
+    }
+    assert.ok(
+      served,
+      "event-order queries must find the merged target's new tokens without a full rebuild",
+    );
+  } finally {
+    await orch?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+test("repeated merges leave exactly one generated edge per graph type for the target (round N+7 G)", async () => {
+  const memoryDir = await mkTempMemoryDir("semantic-merge-graph-parity");
+  let orch: Orchestrator | undefined;
+  try {
+    const cfg = mergeLifecycleConfig(memoryDir, {
+      multiGraphMemoryEnabled: true,
+      threadingEnabled: true,
+    });
+    orch = new Orchestrator(cfg);
+    const judge = { calls: 0 };
+    installJudge(orch, judge);
+    // Two turns; each creates its own thread-local fact (becomes that
+    // thread's first episode) and merges a because-sentence into the SAME
+    // target. Each merge appends time+causal edges INTO the target from that
+    // turn's created fact — without per-type replacement the second merge
+    // duplicates them.
+    const GRAPH_INCOMING_2 =
+      "The billing service deploy window opens early because the EU handoff needs overlap.";
+    let extractionCall = 0;
+    stubExtraction(orch, () => {
+      extractionCall++;
+      return {
+        facts: [
+          {
+            category: "fact",
+            content: extractionCall === 1 ? "The audit service tracks quarterly access reviews." : "The audit service also archives vendor onboarding evidence.",
+            confidence: 0.9,
+            tags: [],
+          },
+          {
+            category: "fact",
+            content: extractionCall === 1 ? GRAPH_INCOMING : GRAPH_INCOMING_2,
+            confidence: 0.9,
+            tags: [],
+          },
+        ],
+        entities: [],
+        relationships: [],
+        questions: [],
+        profileUpdates: [],
+      };
+    });
+    installNeighbors(orch, (query) =>
+      query === GRAPH_INCOMING || query === GRAPH_INCOMING_2
+        ? [{ id: "merge-target-parity", score: BAND_SCORE }]
+        : [],
+    );
+    const targetFile = await seedMergeTarget(memoryDir, "merge-target-parity", GRAPH_SEED, {
+      extraFrontmatter: ["entityRef: entity-billing-service"],
+    });
+    await seedMergeTarget(memoryDir, "merge-sibling-parity", GRAPH_SIBLING, {
+      extraFrontmatter: ["entityRef: entity-billing-service"],
+    });
+    await orch.processTurn("user", `Please remember: ${GRAPH_INCOMING}`, "session-parity-1");
+    assert.equal(await orch.waitForExtractionIdle(15_000), true);
+    await orch.processTurn("user", `Please remember: ${GRAPH_INCOMING_2}`, "session-parity-2");
+    assert.equal(await orch.waitForExtractionIdle(15_000), true);
+
+    assert.equal(judge.calls, 2, "both turns must reach the judge");
+    await assertMerged(targetFile, ["Tuesday cadence", "09:00 UTC"], 2);
+
+    const entityEdges = await readGraphEdges(memoryDir, "entity");
+    assert.equal(
+      entityEdges.filter((e) => e.from.endsWith("merge-target-parity.md")).length,
+      1,
+      "entity: the target's from-side edges are replaced, not accumulated",
+    );
+    const timeEdges = await readGraphEdges(memoryDir, "time");
+    assert.equal(
+      timeEdges.filter((e) => e.to.endsWith("merge-target-parity.md")).length,
+      1,
+      `time: one inbound edge for the target, got ${JSON.stringify(timeEdges)}`,
+    );
+    const causalEdges = await readGraphEdges(memoryDir, "causal");
+    assert.equal(
+      causalEdges.filter((e) => e.to.endsWith("merge-target-parity.md")).length,
+      1,
+      `causal: one inbound edge for the target, got ${JSON.stringify(causalEdges)}`,
+    );
+  } finally {
+    await orch?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
 
 runLifecycleMatrix("semantic-merge-lifecycle", subject);

@@ -444,6 +444,45 @@ export function hasCitationForTemplate(text: string, template: string): boolean 
 }
 
 /**
+ * Return the LAST citation marker in `text` for the given template (or the
+ * default `[Source: ...]` shape). `attachCitation` always appends at the
+ * trimmed end, so the last occurrence is the most recently attached marker —
+ * callers use this to lift a just-attached citation off a cited body and
+ * re-attach it to a derived body (the merged-target commit path). Returns
+ * null when the text carries no marker of this template (including
+ * all-placeholder templates that cannot be matched reliably).
+ */
+export function lastCitationMarkerForTemplate(
+  text: string,
+  template: string = DEFAULT_CITATION_FORMAT,
+): string | null {
+  if (typeof text !== "string" || text.length === 0) return null;
+  let matcher: RegExp | null;
+  if (template === DEFAULT_CITATION_FORMAT) {
+    matcher = defaultCitationMatcher();
+  } else if (!PLACEHOLDER_REGEX.test(template)) {
+    // Fully-literal template: presence is exact inclusion (no placeholders
+    // to widen the match).
+    PLACEHOLDER_REGEX.lastIndex = 0;
+    return text.includes(template) ? template : null;
+  } else {
+    PLACEHOLDER_REGEX.lastIndex = 0;
+    matcher = templateMatcher(template);
+  }
+  if (!matcher) return null;
+  const global = new RegExp(
+    matcher.source,
+    matcher.flags.includes("g") ? matcher.flags : matcher.flags + "g",
+  );
+  let last: string | null = null;
+  for (let match = global.exec(text); match !== null; match = global.exec(text)) {
+    last = match[0];
+    if (match[0].length === 0) global.lastIndex++;
+  }
+  return last;
+}
+
+/**
  * Attach an inline citation to fact text.
  *
  * If the text already has a citation — either the default `[Source: ...]`

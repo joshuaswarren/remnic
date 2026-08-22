@@ -9,6 +9,7 @@ import { inferIntentFromText } from "../intent.js";
 import {
   applySemanticMergeAtPersist,
   buildMergedTargetPromotionPayload,
+  runMergedTargetPostEffects,
   type ApplySemanticMergeOptions,
 } from "../orchestration/semantic-merge-persist.js";
 import { promotionWithholdsToolScope } from "../orchestration/extraction-persist-promotion.js";
@@ -1606,6 +1607,7 @@ test("applySemanticMergeAtPersist: the committed merged record carries the lower
   const payload = await buildMergedTargetPromotionPayload(storage, {
     targetId: created.id,
     mergedContent: MERGED,
+    provenancePatched: true,
   });
   assert.ok(payload);
   assert.equal(payload.confidence, 0.5);
@@ -1671,6 +1673,7 @@ test("buildMergedTargetPromotionPayload: never promotes from an inactive committ
       await buildMergedTargetPromotionPayload(storage, {
         targetId: created.id,
         mergedContent: MERGED,
+    provenancePatched: true,
       }),
       null,
       status,
@@ -1684,6 +1687,7 @@ test("buildMergedTargetPromotionPayload: never promotes from an inactive committ
   const payload = await buildMergedTargetPromotionPayload(storage, {
     targetId: created.id,
     mergedContent: MERGED,
+    provenancePatched: true,
   });
   assert.ok(payload);
   assert.equal(payload.content, MERGED);
@@ -1734,6 +1738,7 @@ test("buildMergedTargetPromotionPayload: carries the committed tool-scope marker
   const payload = await buildMergedTargetPromotionPayload(storage, {
     targetId: created.id,
     mergedContent: MERGED,
+    provenancePatched: true,
   });
   assert.ok(payload);
   // The content heuristics alone would NOT withhold the merged body — only
@@ -1767,6 +1772,7 @@ test("buildMergedTargetPromotionPayload: an unscoped target promotes a payload w
   const payload = await buildMergedTargetPromotionPayload(storage, {
     targetId: created.id,
     mergedContent: MERGED,
+    provenancePatched: true,
   });
   assert.ok(payload);
   assert.equal("toolScoped" in payload, false);
@@ -2104,4 +2110,198 @@ test("parseSemanticMergeConfig: present-but-unparseable maxCandidates throws; ab
     parseSemanticMergeConfig({ semanticMerge: { maxCandidates: "12" } }).semanticMerge.maxCandidates,
     12,
   );
+});
+// ── Round N+7: trust gate, promotion reconciliation, citation, graph parity ──
+
+test("buildMergedTargetPromotionPayload: a degraded merge never yields a promotion payload (round N+7 A)", async () => {
+  // Patch fails AND rollback fails: the target holds the merged body with its
+  // OLD confidence/provenance/sources/hash. A payload built off that record
+  // would publish the merged claims under the target's stronger pre-merge
+  // metadata, so the payload builder must refuse the degraded outcome.
+  const h = await harness({ frontmatterFails: true, rollbackFails: true });
+  const degraded = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(degraded.action, "merged");
+  if (degraded.action !== "merged") return;
+  assert.equal(degraded.provenancePatched, false);
+  assert.equal(
+    await buildMergedTargetPromotionPayload(h.storage, degraded),
+    null,
+    "no shared/profile copy may be built from an unpatched provenance record",
+  );
+
+  // Positive control: a fully patched merge of the same shape still promotes.
+  const ok = await harness();
+  const patched = await applySemanticMergeAtPersist(ok.deps, {
+    storage: ok.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(patched.action, "merged");
+  if (patched.action !== "merged") return;
+  assert.equal(patched.provenancePatched, true);
+  const payload = await buildMergedTargetPromotionPayload(ok.storage, patched);
+  assert.ok(payload);
+  assert.equal(payload?.sourceMemoryId, "fact-target");
+});
+
+test("applySemanticMergeAtPersist: the committed merged body preserves the incoming citation (round N+7 C)", async () => {
+  const OLD_CIT = "[Source: agent=agent-a, session=proj/s-old, ts=2026-08-19T00:00:00Z]";
+  const NEW_CIT = "[Source: agent=agent-a, session=proj/s-new, ts=2026-08-21T00:00:00Z]";
+  const h = await harness({ topLevelConfig: { inlineSourceAttributionEnabled: true } });
+  // The target carries an older citation from its original write; the judge's
+  // merged body embeds it. Without the incoming marker, the combined body
+  // reads as wholly attributed to the earlier source.
+  await h.setTargetContent(`${EXISTING} ${OLD_CIT}`);
+  const MERGED_WITH_OLD = `${MERGED} ${OLD_CIT}`;
+  const mergeOptions = {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    // The caller's single cited body for this write — the same string the
+    // verbatim artifact stores, so memory and artifact share one timestamp.
+    incomingCitedContent: `${INCOMING} ${NEW_CIT}`,
+    judgeCall: async () => ({
+      decision: "merge",
+      targetId: "fact-target",
+      mergedContent: MERGED_WITH_OLD,
+      reason: "same cadence, target citation embedded",
+    }),
+  } as ApplySemanticMergeOptions;
+  const outcome = await applySemanticMergeAtPersist(h.deps, mergeOptions);
+  assert.equal(outcome.action, "merged");
+  const committed = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  // BOTH attributions survive on the committed body.
+  assert.equal(committed?.content, `${MERGED_WITH_OLD} ${NEW_CIT}`);
+  if (outcome.action !== "merged") return;
+  assert.equal(outcome.mergedContent, `${MERGED_WITH_OLD} ${NEW_CIT}`);
+  // The hash rule survives too: identity stays on the RAW pre-citation body
+  // with BOTH markers stripped — never on the cited combined form.
+  const stamped = h.calls.frontmatterPatches.at(-1)?.patch.contentHash;
+  assert.equal(stamped, ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text));
+});
+
+/** Minimal real-dir harness for the merged-target post-effects executor. */
+async function postEffectsHarness(options: {
+  graphEdgeThrows?: boolean;
+} = {}): Promise<{
+  deps: ExtractionPersistDeps;
+  storage: StorageManager;
+  dir: string;
+  targetRelPath: string;
+}> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-pe-"));
+  const factsDay = path.join(dir, "facts", "2026-08-20");
+  await mkdir(factsDay, { recursive: true });
+  const targetPath = path.join(factsDay, "fact-target.md");
+  await writeFile(
+    targetPath,
+    `---\nid: fact-target\ncategory: fact\nentityRef: entity-billing-service\n---\n\n${MERGED}\n`,
+    "utf8",
+  );
+  const storage = {
+    dir,
+    getMemoryByIdIncludingArchived: async (id: string) =>
+      id === "fact-target"
+        ? {
+            path: targetPath,
+            frontmatter: { id, category: "fact", entityRef: "entity-billing-service" },
+            content: MERGED,
+          }
+        : null,
+  } as unknown as StorageManager;
+  const deps = {
+    config: parseConfig({ memoryDir: dir }),
+    ...(options.graphEdgeThrows
+      ? {
+          buildGraphEdge: async () => {
+            throw new Error("graph append I/O failure");
+          },
+        }
+      : {}),
+  } as unknown as ExtractionPersistDeps;
+  return { deps, storage, dir, targetRelPath: path.relative(dir, targetPath) };
+}
+
+const ALL_GRAPH_CAPS = {
+  entityGraph: true,
+  timeGraph: true,
+  causalGraph: true,
+  multiGraphMemory: true,
+  graphWriteSessionAdjacency: false,
+} as const;
+
+async function seedGraphFile(dir: string, type: "entity" | "time" | "causal", edges: unknown[]) {
+  const graphsDir = path.join(dir, "state", "graphs");
+  await mkdir(graphsDir, { recursive: true });
+  await writeFile(
+    path.join(graphsDir, `${type}.jsonl`),
+    edges.map((e) => JSON.stringify(e)).join("\n") + "\n",
+    "utf8",
+  );
+}
+
+async function readGraphFile(dir: string, type: "entity" | "time" | "causal") {
+  try {
+    const raw = await readFile(path.join(dir, "state", "graphs", `${type}.jsonl`), "utf8");
+    return raw
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+}
+
+test("runMergedTargetPostEffects: a failing graph rebuild leaves the prior edges intact (round N+7 E)", async () => {
+  const h = await postEffectsHarness({ graphEdgeThrows: true });
+  const OTHER = "facts/2026-08-19/other.md";
+  const priorEntity = { from: h.targetRelPath, to: OTHER, type: "entity", weight: 1, label: "entity-billing-service", ts: "2026-08-19T00:00:00.000Z" };
+  const priorTime = { from: OTHER, to: h.targetRelPath, type: "time", weight: 1, label: "thread-0", ts: "2026-08-19T00:00:00.000Z" };
+  const priorCausal = { from: OTHER, to: h.targetRelPath, type: "causal", weight: 1, label: "because", ts: "2026-08-19T00:00:00.000Z" };
+  await seedGraphFile(h.dir, "entity", [priorEntity]);
+  await seedGraphFile(h.dir, "time", [priorTime]);
+  await seedGraphFile(h.dir, "causal", [priorCausal]);
+
+  await runMergedTargetPostEffects(h.deps, h.storage, { targetId: "fact-target", mergedContent: MERGED }, {
+    category: "fact",
+    incomingContent: INCOMING,
+    incomingConfidence: 0.9,
+    namespace: "default",
+    graphCaps: ALL_GRAPH_CAPS,
+    graphContext: { allMemsForGraph: [], memoryPathById: new Map() },
+    threadIdForEdge: undefined,
+    threadEpisodeIdsForGraph: undefined,
+  });
+
+  // Failure leaves the OLD complete set, never none: the target's generated
+  // edges in every enabled graph type survive the failed rebuild verbatim.
+  assert.deepEqual(await readGraphFile(h.dir, "entity"), [priorEntity]);
+  assert.deepEqual(await readGraphFile(h.dir, "time"), [priorTime]);
+  assert.deepEqual(await readGraphFile(h.dir, "causal"), [priorCausal]);
+});
+
+test("runMergedTargetPostEffects: a re-merge records the target as the LATEST thread event (round N+7 F)", async () => {
+  const h = await postEffectsHarness();
+  // The target is already in the thread's episode list (it was created there
+  // before this merge): the merge must move it to the end, not leave it at
+  // its old position.
+  const episodes = ["fact-target", "mem-earlier"];
+  await runMergedTargetPostEffects(h.deps, h.storage, { targetId: "fact-target", mergedContent: MERGED }, {
+    category: "fact",
+    incomingContent: INCOMING,
+    incomingConfidence: 0.9,
+    namespace: "default",
+    graphCaps: ALL_GRAPH_CAPS,
+    graphContext: { allMemsForGraph: [], memoryPathById: new Map() },
+    threadIdForEdge: "thread-1",
+    threadEpisodeIdsForGraph: episodes,
+  });
+  assert.deepEqual(episodes, ["mem-earlier", "fact-target"]);
 });

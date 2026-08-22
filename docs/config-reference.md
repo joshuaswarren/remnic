@@ -1231,7 +1231,12 @@ into a create-or-update decision:
    fact-content hash index, reindex, and, when verbatim artifacts are enabled
    and the fact's category and confidence qualify, store the incoming
    extraction's text as a verbatim artifact anchored to the merged target —
-   the same anchor the normal write would have stored. A lower incoming
+   the same anchor the normal write would have stored — and commits the
+   merged body WITH the incoming extraction's citation marker appended
+   (lifted from the same cited string the artifact stores, so memory and
+   artifact share one timestamp), so incoming claims stay attributed even
+   when the judge's merged text embeds the target's older citation; quoting
+   or copying the combined body carries both attributions. A lower incoming
    confidence downgrades the merged record to `min(incoming, target)`
    (restamped with the tier that score maps to; an unreadable value
    bypasses the merge), so a low-confidence extraction can never leave a
@@ -1248,16 +1253,23 @@ into a create-or-update decision:
    the surviving target — committed merged body as content — into the batch's
    harmonic construction pass, so a merge-only extraction still derives its
    episode/abstraction nodes and cue anchors; the returned `persistedIds`
-   stay new-fragment only.
+   stay new-fragment only, while the surviving target joins the batch's
+   internal temporal/tag index refresh so event-order queries see the merged
+   tokens without a full corpus rebuild.
    When multi-graph memory is enabled, a successful merge also builds the
    surviving target's graph edges — entity, time, and causal — through the
    same `buildGraphEdge` call the create path runs, derived from the
    re-read committed record (its category, entity ref, relative path, and
    raw pre-citation merged body — the cold-aware committed path, never a
-   hot-only path-map fallback), replacing the target's prior from-side
-   entity edges instead of re-appending them, and enrolling the target in
-   the batch's thread episode list so later facts in the same extraction
-   chain time/causal adjacency through it — all fail-open like the create
+   hot-only path-map fallback), replacing the target's prior generated
+   edges in EVERY enabled graph type — entity from-side, time and causal
+   inbound — instead of re-appending them (one shared routine; if the
+   replacement build fails, the removed edges are restored, so failure
+   leaves either the old or the new complete set), and enrolling the target
+   at the END of the batch's thread episode list — deduped first when
+   already present, so the merge is the thread's latest event — so later
+   facts in the same extraction chain time/causal adjacency through it —
+   all fail-open like the create
    path's graph block; and a `preference`-category merge records its
    `preference_affinity` event in the behavior-signal ledger, so
    graph-mode recall and runtime-policy learning observe claims accepted
@@ -1301,7 +1313,15 @@ into a create-or-update decision:
    copy was promoted cannot hide that copy from the scan. A successful merge
    into a target with no promoted copy yet still runs the shared/profile
    promotion the create path would have performed, anchored to the merged
-   target id and fail-open like the create path. The promotion payload is
+   target id and fail-open like the create path — but never off an
+   unpatched provenance record: a degraded merge (see step 5) yields no
+   promotion payload at all, so nothing trust-elevating is copied from a
+   record still holding its pre-merge trust metadata. Once the merged-body
+   copy lands, any concurrently promoted pre-merge copy of the same target
+   (same `sourceMemoryId`, older body — the pre-mutation copy probe can race
+   a concurrent writer) is superseded with `supersededBy` naming the current
+   copy, so a stale and a current copy cannot both stay active across
+   namespaces. The promotion payload is
    derived solely from the re-read committed record — body, category,
    confidence, tags, entity ref, structured attributes, importance, intent
    fields, memory kind, bi-temporal bounds (`validAt`, `invalidAt`,
@@ -1351,7 +1371,8 @@ into a create-or-update decision:
    outcome reported as a merge rather than a create, so the fact is still never
    written twice; the target then holds merged text without the incoming
    provenance and reinforcement metadata, the hash-index resync and reindex
-   still run before that outcome is reported, and the error log names the page
+   still run before that outcome is reported, no shared/profile promotion is
+   built from that record, and the error log names the page
    version to recover from.
 
 Merging requires page versioning (`versioningEnabled`): without it there is no
