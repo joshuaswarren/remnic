@@ -1,17 +1,38 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { parseConfig } from "@remnic/core";
-import { createAdminControls, envOverrides, loadConfigFile, mergeRemnicConfigForServer, parseServerConfig } from "./index.js";
+import { createAdminControls, envOverrides, loadConfigFile, mergeRemnicConfigForServer, parseServerConfig, startServer, type ServerResult } from "./index.js";
 
 async function writeConfig(content: string): Promise<{ filePath: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-server-config-"));
   const filePath = path.join(dir, "config.json");
   await writeFile(filePath, content, "utf-8");
   return { filePath, cleanup: () => rm(dir, { recursive: true, force: true }) };
+}
+
+function getFreePort(): Promise<number> {
+  const { promise, resolve, reject } = Promise.withResolvers<number>();
+  const server = net.createServer();
+  server.unref();
+  server.once("error", reject);
+  server.listen(0, "127.0.0.1", () => {
+    const address = server.address();
+    server.close((error) => {
+      if (error) {
+        reject(error);
+      } else if (!address || typeof address === "string") {
+        reject(new Error("Failed to allocate a free TCP port"));
+      } else {
+        resolve(address.port);
+      }
+    });
+  });
+  return promise;
 }
 
 test("server config merge preserves openaiApiKey=false over OPENAI_API_KEY env override", () => {
@@ -208,6 +229,63 @@ test("server config parser rejects invalid trustPrincipalHeader values", () => {
     () => parseServerConfig({ trustPrincipalHeader: "maybe" as unknown as boolean }),
     /server\.trustPrincipalHeader: expected a boolean/,
   );
+});
+
+test("standalone startServer forwards a trusted request principal", async () => {
+  const { filePath, cleanup } = await writeConfig("{}");
+  const memoryDir = path.join(path.dirname(filePath), "memory");
+  const port = await getFreePort();
+  await writeFile(
+    filePath,
+    JSON.stringify({
+      remnic: {
+        memoryDir,
+        qmdEnabled: false,
+        qmdDaemonEnabled: false,
+        searchBackend: "noop",
+        namespacesEnabled: true,
+        defaultNamespace: "default",
+        defaultRecallNamespaces: ["self"],
+        namespacePolicies: [
+          {
+            name: "tenant-a",
+            readPrincipals: ["header-agent"],
+            writePrincipals: ["header-agent"],
+          },
+        ],
+      },
+      server: {
+        host: "127.0.0.1",
+        port,
+        authToken: "test-token",
+        trustPrincipalHeader: true,
+      },
+    }),
+    "utf8",
+  );
+
+  let result: ServerResult | undefined;
+  try {
+    result = await startServer({ configPath: filePath, authToken: "test-token" });
+    const url = `http://127.0.0.1:${result.port}/engram/v1/memories?namespace=tenant-a&limit=10&offset=0&sort=updated_desc`;
+    const withoutHeader = await fetch(url, {
+      headers: { authorization: "Bearer test-token" },
+    });
+    assert.equal(withoutHeader.status, 400, await withoutHeader.text());
+
+    const withHeader = await fetch(url, {
+      headers: {
+        authorization: "Bearer test-token",
+        "x-engram-principal": "header-agent",
+      },
+    });
+    assert.equal(withHeader.status, 200);
+    const body = (await withHeader.json()) as { namespace?: string };
+    assert.equal(body.namespace, "tenant-a");
+  } finally {
+    await result?.stop();
+    await cleanup();
+  }
 });
 
 test("server config parser rejects invalid field types", () => {
