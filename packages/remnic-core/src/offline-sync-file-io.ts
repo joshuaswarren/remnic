@@ -67,33 +67,16 @@ export async function readPlainOfflineSyncFileChunk(options: {
   }
 }
 
-/** Bounded digest cache for plain-file chunk reads: key is the file identity
- * (path + size + mtimeMs), value the streamed whole-file sha256. Capped so a
- * churning corpus cannot grow it unbounded. Exported for the chunk reader in
- * offline-sync.ts, which must attach the full-file sha to every response. */
-const PLAIN_FILE_DIGEST_CACHE_MAX = 64;
-const plainFileDigestCache = new Map<string, string>();
-
-export async function plainFileDigest(
-  filePath: string,
-  st: { size: number; mtimeMs: number },
-): Promise<string> {
-  const key = `${filePath}\0${st.size}\0${st.mtimeMs}`;
-  const cached = plainFileDigestCache.get(key);
-  if (cached !== undefined) {
-    plainFileDigestCache.delete(key);
-    plainFileDigestCache.set(key, cached);
-    return cached;
-  }
+/** Streamed whole-file sha256 for plain-file chunk reads — the value the
+ * file-content response contract exposes as x-remnic-file-sha256. Deliberately
+ * UNCACHED: identity keys like (path, size, mtimeMs) are spoofable (a rewrite
+ * that preserves size and mtime would serve a stale digest, defeating the
+ * uploader's verify-before-idempotent-skip check). One bounded-memory hash
+ * pass per chunk request; content reads stay windowed. */
+export async function plainFileDigest(filePath: string): Promise<string> {
   const hash = createHash("sha256");
   for await (const piece of createReadStream(filePath)) {
     hash.update(piece as Buffer);
   }
-  const digest = hash.digest("hex");
-  plainFileDigestCache.set(key, digest);
-  if (plainFileDigestCache.size > PLAIN_FILE_DIGEST_CACHE_MAX) {
-    const oldest = plainFileDigestCache.keys().next().value;
-    if (typeof oldest === "string") plainFileDigestCache.delete(oldest);
-  }
-  return digest;
+  return hash.digest("hex");
 }

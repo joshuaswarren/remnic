@@ -1212,7 +1212,7 @@ export async function readOfflineSyncFileContentChunk(options: {
       length: requestedLength,
       bytes: st.size,
     });
-    const digest = await plainFileDigest(filePath, st);
+    const digest = await plainFileDigest(filePath);
     return {
       path: relPath,
       sha256: digest,
