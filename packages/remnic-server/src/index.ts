@@ -66,10 +66,12 @@ function parseServerPort(value: unknown, source: string): number {
   if (
     typeof port !== "number" ||
     !Number.isInteger(port) ||
-    port < 1 ||
+    port < 0 ||
     port > 65535
   ) {
-    throw new Error(`Invalid ${source}: expected an integer port from 1 to 65535`);
+    // Port 0 is allowed: the OS assigns an ephemeral port at bind time and
+    // startServer reports the bound port via ServerResult.port.
+    throw new Error(`Invalid ${source}: expected an integer port from 0 to 65535 (0 = ephemeral)`);
   }
   return port;
 }
