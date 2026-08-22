@@ -44,7 +44,6 @@ export interface ServerConfig {
     port?: unknown;
     authToken?: string;
     principal?: string;
-    /** Trust X-Engram-Principal per request (issue #2782; same gate as OpenClaw --trust-principal-header). */
     trustPrincipalHeader?: boolean;
     maxBodyBytes?: number;
     /** Max write requests per rolling window before 429 write_rate_limited (issue #1937). */
@@ -62,7 +61,6 @@ export interface ServerConfig {
     oauth?: unknown;
   } & AdminConsoleServerFields;
 }
-
 function parseServerPort(value: unknown, source: string): number {
   const port = typeof value === "string" ? Number(value.trim()) : value;
   if (
