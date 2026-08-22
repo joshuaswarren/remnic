@@ -405,7 +405,9 @@ export async function promoteAndReconcileMergedTarget(args: {
  * and `promotedMemoryId` may be omitted (below-threshold downgrade or
  * degraded merge) — stale copies then supersede onto the committed source
  * target itself, leaving exactly one current copy or none if none is
- * warranted. Replace, not add: each stale copy is superseded with
+ * warranted. Round N+13 (A): an unreadable, missing, or empty canonical
+ * body ABORTS the reconciliation — no copy is ever retired off a body that
+ * was never confirmed. Replace, not add: each stale copy is superseded with
  * `supersededBy` pointing at the current copy (or the source target).
  * Best-effort and fail-open per namespace — a failed retirement is logged
  * and leaves the pre-fix state, which the next merge retries. Returns the
@@ -430,9 +432,20 @@ export async function retireStaleMergedTargetPromotionCopies(args: {
   const canonicalRecord = args.promotedContent === undefined
     ? await args.sourceStorage.getMemoryByIdIncludingArchived(args.sourceMemoryId).catch(() => null)
     : null;
-  const promotedForm = args.normalize(
-    args.promotedContent ?? canonicalRecord?.content ?? "",
-  );
+  const canonicalBody = args.promotedContent ?? canonicalRecord?.content;
+  // Round N+13 (A): the guard's outcomes are "keep copies" and "retire
+  // copies", so an unreadable canonical record MUST resolve to keep. A
+  // failed re-read degrading to "" made every non-empty active copy compare
+  // stale against normalize("") and superseded the whole copy set with no
+  // confirmed replacement body to compare against. Abort the reconciliation
+  // entirely; the next merge retries it.
+  if (typeof canonicalBody !== "string" || canonicalBody.length === 0) {
+    log.warn(
+      `persistExtraction: merged-target promotion reconciliation aborted for ${args.sourceMemoryId} — the canonical record could not be read, so no copy is retired`,
+    );
+    return 0;
+  }
+  const promotedForm = args.normalize(canonicalBody);
   let retired = 0;
   for (const namespace of promotionScanNamespaces(args.config, args.scopeProfileWritePlan)) {
     try {

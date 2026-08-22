@@ -4077,8 +4077,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * facts that are not active.
    */
   async restoreFactHashAfterApproval(memoryId: string): Promise<void> {
-    const all = await this.readAllMemories();
-    const memory = all.find((m) => m.frontmatter.id === memoryId);
+    // Cold-aware (issue #2330 round N+13 C): hot-only scans missed cold/ targets.
+    const memory = await this.getMemoryByIdIncludingArchived(memoryId);
     if (!memory) return;
     await this.addActiveFactContentHash(memory);
   }

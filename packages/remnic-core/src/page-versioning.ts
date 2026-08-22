@@ -319,6 +319,48 @@ export async function pruneVersions(
 }
 
 /**
+ * Remove ONE version from the manifest and delete its snapshot file.
+ * Idempotent: a version already gone (or never present) is a no-op.
+ *
+ * Used by guarded-write callers whose staged snapshot must not survive an
+ * aborted attempt (issue #2330 round N+13 B): staging itself mutates
+ * history, and without this rollback repeated failed attempts grow history
+ * past `maxVersionsPerPage`, so a later successful commit's prune trades
+ * real rollback states for duplicate failed-attempt snapshots of a body that
+ * never changed. Never call this for a version a committed write relies on.
+ * `currentVersion` returns to the newest remaining snapshot (or `"0"` when
+ * history emptied) — never to a removed id.
+ */
+export async function removeVersion(
+  pagePath: string,
+  versionId: string,
+  config: VersioningConfig,
+  log: VersioningLogger = NOOP_LOGGER,
+  memoryDir?: string,
+): Promise<void> {
+  const resolvedMemoryDir = memoryDir ?? resolveMemoryDir(pagePath);
+  const rel = relPath(pagePath, resolvedMemoryDir);
+  await withPageLock(manifestPath(resolvedMemoryDir, config.sidecarDir, rel), async () => {
+    const history = await readManifest(resolvedMemoryDir, config.sidecarDir, rel);
+    const index = history.versions.findIndex((version) => version.versionId === versionId);
+    if (index === -1) return;
+    history.versions.splice(index, 1);
+    const dir = sidecarDir(resolvedMemoryDir, config.sidecarDir, rel);
+    const ext = path.extname(pagePath) || ".md";
+    try {
+      await unlink(path.join(dir, `${versionId}${ext}`));
+    } catch {
+      log.debug(`page-versioning: could not remove snapshot file for ${pagePath} version ${versionId}`);
+    }
+    history.currentVersion = history.versions.length > 0
+      ? String(Math.max(...history.versions.map((version) => Number(version.versionId))))
+      : "0";
+    await writeManifest(resolvedMemoryDir, config.sidecarDir, rel, history);
+    log.debug(`page-versioning: removed version ${versionId} for ${pagePath}`);
+  });
+}
+
+/**
  * List all versions for a page.
  */
 export async function listVersions(

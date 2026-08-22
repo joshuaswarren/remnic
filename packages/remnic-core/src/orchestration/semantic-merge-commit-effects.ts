@@ -14,13 +14,13 @@
 import { removeNodeEdgesForRewrite, rollbackNodeEdgeRewrite } from "../graph-jsonl.js";
 import type { GraphType } from "../graph.js";
 
-
 import { readFile } from "node:fs/promises";
 
 import { log } from "../logger.js";
-import { createVersion, pruneVersions, type VersioningConfig } from "../page-versioning.js";
+import { createVersion, pruneVersions, removeVersion, type VersioningConfig } from "../page-versioning.js";
 import type { ThreadingManager } from "../threading.js";
 import type { MemoryFile } from "../types.js";
+import type { StorageManager } from "../index.js";
 
 /**
  * Stage the pre-merge rollback snapshot WITHOUT pruning. The CAS that
@@ -66,6 +66,77 @@ export async function finalizeMergedVersionPrune(
       `semantic-merge: version prune finalization failed for ${targetId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
     ),
   );
+}
+
+/**
+ * Round N+13 (B): undo the staged pre-merge snapshot after an aborted
+ * attempt — a lost content CAS, or a metadata failure whose content revert
+ * succeeded. Staging mutates version history, so without this rollback every
+ * failed attempt left a snapshot of an unchanged body in the manifest;
+ * repeated failures grew history past `maxVersionsPerPage` and a later
+ * successful merge's prune then discarded real rollback states to make room
+ * for those duplicates. History returns to its pre-attempt state. Best-effort
+ * and idempotent: a removal failure is logged and never masks the abort's
+ * own result. A degraded success (unrollbackable metadata failure) keeps the
+ * staged snapshot — it is the recovery point for the committed merge.
+ */
+export async function discardMergedTargetSnapshot(
+  targetPath: string,
+  versioning: VersioningConfig,
+  memoryDir: string,
+  targetId: string,
+  versionId: string,
+): Promise<void> {
+  await removeVersion(targetPath, versionId, versioning, log, memoryDir).catch((err) =>
+    log.warn(
+      `semantic-merge: staged snapshot ${versionId} removal failed for ${targetId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+    ),
+  );
+}
+
+/**
+ * Re-read the target through the SAME reader the storage compare-and-swaps
+ * use, so a snapshot handed to one of them carries an identical fingerprint
+ * basis. Null means the file no longer holds this memory, which no caller may
+ * read as "unchanged".
+ */
+export async function readTargetSnapshot(
+  storage: StorageManager,
+  target: MemoryFile,
+): Promise<MemoryFile | null> {
+  const current = await storage.readMemoryByPath(target.path);
+  if (!current || current.frontmatter.id !== target.frontmatter.id) return null;
+  return current;
+}
+
+/**
+ * Undo a merged body whose provenance patch never landed, and report what is
+ * actually true of storage afterwards: `true` means the target no longer holds
+ * unprovenanced merged text, so the caller may honestly create the fact.
+ *
+ * Three states, because only one of them is ours to undo:
+ *  - the body is still our merged text → restore the pre-merge body under a
+ *    compare-and-swap on the re-read snapshot;
+ *  - another writer already replaced it → nothing of ours remains, so the
+ *    restore is skipped rather than clobbering that writer's body;
+ *  - the target is unreadable → unverifiable, so assume the merged text stands
+ *    and refuse to create a duplicate.
+ */
+export async function revertMergedContent(
+  storage: StorageManager,
+  target: MemoryFile,
+  mergedContent: string,
+): Promise<boolean> {
+  try {
+    const current = await readTargetSnapshot(storage, target);
+    if (!current) return false;
+    if (current.content !== mergedContent) return true;
+    return await storage.updateMemoryIfUnchanged(current, target.content, {
+      actor: "semantic-merge-rollback",
+    });
+  } catch {
+    return false;
+  }
 }
 
 /**

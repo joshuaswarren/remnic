@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { mkdtemp } from "node:fs/promises";
+import type { MemoryFile } from "../types.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -270,6 +271,65 @@ test("retireStaleMergedTargetPromotionCopies: a concurrent promotion of the pre-
   assert.equal(staleRow?.frontmatter.supersededBy, current.id);
   const currentRow = await s.shared.getMemoryByIdIncludingArchived(current.id);
   assert.equal(currentRow?.frontmatter.status ?? "active", "active");
+});
+
+test("retireStaleMergedTargetPromotionCopies: an unreadable canonical record aborts reconciliation — no copy is retired (round N+13 A)", async () => {
+  // No-promotion path: the committed source record is re-read to serve as
+  // the canonical body. When that re-read fails transiently, returns nothing,
+  // or yields an empty body, there is NO confirmed replacement body to
+  // compare against — an empty-string fallback would classify every
+  // non-empty active copy as stale and supersede it (keep-vs-destroy guard:
+  // unreadable input resolves toward keep). Reconciliation aborts; the next
+  // merge retries it.
+  const s = await makeStorages();
+  const copy = await s.shared.writeMemory("fact", PROMOTED_BODY, {
+    source: "test",
+    sourceMemoryId: "fact-target",
+  });
+  const cases: Array<{ label: string; read: () => Promise<MemoryFile | null> }> = [
+    {
+      label: "transient read failure",
+      read: async () => {
+        throw new Error("transient canonical read failure");
+      },
+    },
+    { label: "record not found", read: async () => null },
+    {
+      label: "record with empty body",
+      read: async () =>
+        ({
+          path: `${s.source.dir}/facts/2026-08-20/fact-target.md`,
+          frontmatter: { id: "fact-target", category: "fact" },
+          content: "",
+        }) as unknown as MemoryFile,
+    },
+  ];
+  for (const testCase of cases) {
+    const readSpy = mock.method(s.source, "getMemoryByIdIncludingArchived", testCase.read);
+    try {
+      const retired = await retireStaleMergedTargetPromotionCopies({
+        config: parseConfig({ memoryDir: s.source.dir, sharedNamespace: "shared" }),
+        getStorageRouter: () => s.router,
+        scopeProfileWritePlan: null,
+        sourceStorage: s.source,
+        sourceMemoryId: "fact-target",
+        normalize: (content: string) => content,
+      });
+      assert.equal(
+        retired,
+        0,
+        `${testCase.label}: no copy may be retired without a confirmed canonical body`,
+      );
+    } finally {
+      readSpy.mock.restore();
+    }
+    const row = await s.shared.getMemoryByIdIncludingArchived(copy.id);
+    assert.equal(
+      row?.frontmatter.status ?? "active",
+      "active",
+      `${testCase.label}: the promoted copy stays active`,
+    );
+  }
 });
 
 test("former promotion layers still resolvable are scanned: a copy on a layer removed from promotionTargets is detected and reconciled (round N+12 B)", async () => {

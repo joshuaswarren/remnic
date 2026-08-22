@@ -28,7 +28,10 @@ import { sanitizeMemoryContent } from "../sanitize.js";
 import { ContentHashIndex } from "../storage/content-hash-index.js";
 import type { VersioningConfig } from "../page-versioning.js";
 import {
+  discardMergedTargetSnapshot,
   finalizeMergedVersionPrune,
+  readTargetSnapshot,
+  revertMergedContent,
   rewriteMergedTargetGraphEdges,
   stageMergedTargetSnapshot,
 } from "./semantic-merge-commit-effects.js";
@@ -638,51 +641,6 @@ function versioningConfigFrom(deps: ExtractionPersistDeps): VersioningConfig {
 }
 
 /**
- * Re-read the target through the SAME reader the storage compare-and-swaps
- * use, so a snapshot handed to one of them carries an identical fingerprint
- * basis. Null means the file no longer holds this memory, which no caller may
- * read as "unchanged".
- */
-async function readTargetSnapshot(
-  storage: StorageManager,
-  target: MemoryFile,
-): Promise<MemoryFile | null> {
-  const current = await storage.readMemoryByPath(target.path);
-  if (!current || current.frontmatter.id !== target.frontmatter.id) return null;
-  return current;
-}
-
-/**
- * Undo a merged body whose provenance patch never landed, and report what is
- * actually true of storage afterwards: `true` means the target no longer holds
- * unprovenanced merged text, so the caller may honestly create the fact.
- *
- * Three states, because only one of them is ours to undo:
- *  - the body is still our merged text → restore the pre-merge body under a
- *    compare-and-swap on the re-read snapshot;
- *  - another writer already replaced it → nothing of ours remains, so the
- *    restore is skipped rather than clobbering that writer's body;
- *  - the target is unreadable → unverifiable, so assume the merged text stands
- *    and refuse to create a duplicate.
- */
-async function revertMergedContent(
-  storage: StorageManager,
-  target: MemoryFile,
-  mergedContent: string,
-): Promise<boolean> {
-  try {
-    const current = await readTargetSnapshot(storage, target);
-    if (!current) return false;
-    if (current.content !== mergedContent) return true;
-    return await storage.updateMemoryIfUnchanged(current, target.content, {
-      actor: "semantic-merge-rollback",
-    });
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Finding B — union the incoming fact's suggested navigation links into the
  * target's committed links, deduping on (targetId, linkType): the same key
  * `StorageManager.addLinksToMemory` uses. A suggestion naming the surviving
@@ -884,7 +842,20 @@ export async function applySemanticMergeAtPersist(
     const updated = await options.storage.updateMemoryIfUnchanged(target, committedContent, {
       actor: "semantic-merge",
     });
-    if (!updated) return { action: "created", reason: "target_changed" };
+    if (!updated) {
+      // Round N+13 (B): the CAS lost the race, so no merge committed — roll
+      // the staged snapshot back out or this failed attempt leaves a
+      // duplicate history entry a later successful prune would trade real
+      // rollback states for.
+      await discardMergedTargetSnapshot(
+        target.path,
+        versioning,
+        options.storage.dir,
+        decision.targetId,
+        versionId,
+      );
+      return { action: "created", reason: "target_changed" };
+    }
     contentCommitted = true;
     // The provenance patch must land on OUR merged body. An id-keyed patch
     // re-reads and stamps whatever the latest row holds, so a writer landing
@@ -991,8 +962,23 @@ export async function applySemanticMergeAtPersist(
         provenancePatched: false,
       };
     }
+    // Round N+13 (B): with the content committed and the revert above
+    // confirmed, storage holds the pre-merge body, so the staged snapshot of
+    // that same body is a duplicate and goes. (The degraded-success branch
+    // above keeps it as the recovery point. A throw BEFORE the content
+    // commit leaves storage state unverifiable — keep-side, the snapshot
+    // stays.)
+    if (contentCommitted) {
+      await discardMergedTargetSnapshot(
+        target.path,
+        versioning,
+        options.storage.dir,
+        decision.targetId,
+        versionId,
+      );
+    }
     log.warn(
-      `semantic-merge: update failed for ${decision.targetId}${contentCommitted ? " (content rolled back)" : ""} (snapshot ${versionId} holds the pre-merge state): ${detail}`,
+      `semantic-merge: update failed for ${decision.targetId}${contentCommitted ? ` (content rolled back; snapshot ${versionId} rolled back out of history)` : ` (snapshot ${versionId} staged)`}: ${detail}`,
     );
     return { action: "created", reason: "update_failed" };
   }

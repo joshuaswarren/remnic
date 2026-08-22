@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile, chmod } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test, mock } from "node:test";
 import { parseConfig } from "../config.js";
 import { createVersion, listVersions, type VersionTrigger } from "../page-versioning.js";
 import { inferIntentFromText } from "../intent.js";
@@ -1181,6 +1181,93 @@ test("applySemanticMergeAtPersist: real storage registers the merged body in the
   assert.equal(await storage.hasFactContentHash(EXISTING), false);
 });
 
+test("applySemanticMergeAtPersist: repair registers the merged hash for a cold-tier target whose patch hash sync failed (round N+13 C)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-cold-hash-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    // Cold-tier target (same tier layout as the embedding-index test above):
+    // a long-lived merge target that was demoted to cold/.
+    const targetPath = path.join(dir, "cold", "facts", "2026-08-20", "fact-cold-target.md");
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    const existingHash = ContentHashIndex.computeHash(sanitizeMemoryContent(EXISTING).text);
+    await writeFile(
+      targetPath,
+      [
+        "---",
+        "id: fact-cold-target",
+        "category: fact",
+        "created: 2026-08-20T00:00:00.000Z",
+        "updated: 2026-08-20T00:00:00.000Z",
+        "status: active",
+        `contentHash: ${existingHash}`,
+        "---",
+        "",
+        EXISTING,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    // Make the fact-hash index authoritative BEFORE the merge. The corpus
+    // rebuild is cold-aware, so a post-merge rebuild would register the
+    // merged hash no matter what the repair did — pre-loading pins the
+    // assertion to the in-process repair path the finding names.
+    assert.equal(await storage.isFactContentHashAuthoritative(), true);
+
+    // One-shot swallow: the provenance patch's internal hash sync fails
+    // (logged, non-fatal — the write stands), so ONLY repairIndexes can
+    // register the merged hash.
+    let swallowed = false;
+    const originalAdd = ContentHashIndex.prototype.addFactByHash;
+    const addSpy = mock.method(
+      ContentHashIndex.prototype,
+      "addFactByHash",
+      function (this: ContentHashIndex, hash: string) {
+        if (!swallowed) {
+          swallowed = true;
+          throw new Error("simulated swallowed frontmatter-hash sync failure");
+        }
+        return originalAdd.call(this, hash);
+      },
+    );
+    try {
+      const deps = {
+        config: parseConfig({
+          memoryDir: dir,
+          versioningEnabled: true,
+          semanticMerge: { enabled: true },
+        }),
+        getLocalLlm: () => null,
+        semanticDedupLookup: async () => [{ id: "fact-cold-target", score: 0.85 }],
+        indexPersistedMemory: async () => {},
+      } as unknown as ExtractionPersistDeps;
+      const outcome = await applySemanticMergeAtPersist(deps, {
+        storage,
+        content: INCOMING,
+        category: "fact",
+        sources: [INCOMING_SOURCE],
+        judgeCall: (options) => acceptingJudge(options),
+      });
+      assert.equal(outcome.action, "merged");
+      assert.equal(swallowed, true, "the patch's hash sync must actually fail for this scenario");
+      // Answer from the loaded index's fact partition (getSharedFactHashIndex
+      // returns the same in-process instance the repair mutated), never
+      // through hasFactContentHash's corpus fallback.
+      const index = await storage.getSharedFactHashIndex();
+      assert.equal(
+        index.hasFact(sanitizeMemoryContent(MERGED).text),
+        true,
+        "the repair registered the merged hash for the cold-tier target",
+      );
+    } finally {
+      addSpy.mock.restore();
+      await StorageManager.clearAllStaticCaches();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // ── Finding A: judge output the sanitizer would rewrite never mutates ───────
 
 test("decideSemanticMerge: unsafe merged output is judge_invalid, never a merge", async () => {
@@ -1515,6 +1602,66 @@ test("applySemanticMergeAtPersist: a rejected frontmatter patch at a full versio
     true,
     "the rolled-back target body is the pre-merge text",
   );
+});
+
+// ── Round N+13 (B): staging itself mutates history — an aborted attempt must
+// roll the staged snapshot back out, or repeated failures grow history past
+// the cap and a later successful merge's prune trades real rollback states
+// for duplicate failed-attempt snapshots. ────────────────────────────────────
+
+test("applySemanticMergeAtPersist: a lost CAS race rolls the staged snapshot back out of history (round N+13 B)", async () => {
+  const RACED = "Billing service deploys happen on Tuesdays, except during a freeze.";
+  const h = await harness({ mutateOnWrite: RACED, topLevelConfig: { versioningMaxPerPage: 3 } });
+  const versioning = { enabled: true, maxVersionsPerPage: 3, sidecarDir: ".versions" };
+  for (let i = 1; i <= 3; i++) {
+    await createVersion(h.target.path, `${EXISTING} (history fill ${i})`, "write", versioning, undefined, undefined, h.storage.dir);
+  }
+  const before = await listVersions(h.target.path, versioning, h.storage.dir);
+  assert.equal(before.versions.length, 3, "history starts full at the cap");
+
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "created", reason: "target_changed" });
+
+  const after = await listVersions(h.target.path, versioning, h.storage.dir);
+  assert.deepEqual(
+    after.versions.map((v) => v.versionId),
+    before.versions.map((v) => v.versionId),
+    "a lost CAS race must leave exactly the pre-attempt history",
+  );
+  assert.equal(after.currentVersion, before.currentVersion, "currentVersion must return to the pre-attempt newest");
+});
+
+test("applySemanticMergeAtPersist: a reverted metadata failure rolls the staged snapshot back out of history (round N+13 B)", async () => {
+  const h = await harness({ frontmatterFails: true, topLevelConfig: { versioningMaxPerPage: 3 } });
+  const versioning = { enabled: true, maxVersionsPerPage: 3, sidecarDir: ".versions" };
+  for (let i = 1; i <= 3; i++) {
+    await createVersion(h.target.path, `${EXISTING} (history fill ${i})`, "write", versioning, undefined, undefined, h.storage.dir);
+  }
+  const before = await listVersions(h.target.path, versioning, h.storage.dir);
+  assert.equal(before.versions.length, 3, "history starts full at the cap");
+
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "created", reason: "update_failed" });
+
+  const after = await listVersions(h.target.path, versioning, h.storage.dir);
+  assert.deepEqual(
+    after.versions.map((v) => v.versionId),
+    before.versions.map((v) => v.versionId),
+    "a successfully reverted metadata failure must leave exactly the pre-attempt history",
+  );
+  assert.equal(after.currentVersion, before.currentVersion, "currentVersion must return to the pre-attempt newest");
 });
 
 // ── Final round: origin authority, log privacy, least-privilege subject ──────
