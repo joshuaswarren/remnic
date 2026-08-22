@@ -121,7 +121,8 @@ import {
 } from "../orchestrator.js";
 import type { HarmonicConstructionInput } from "../harmonic-construction.js";
 import { enqueueMergedTargetForHarmonicConstruction, persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
-import { applySemanticMergeAtPersist, buildMergedTargetPromotionPayload, runMergedTargetPostEffects, writeMergedVerbatimArtifact } from "./semantic-merge-persist.js";
+import { applySemanticMergeAtPersist, runMergedTargetPostEffects, writeMergedVerbatimArtifact } from "./semantic-merge-persist.js";
+import { buildMergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
 import { persistMergedTargetThreadEpisode } from "./semantic-merge-commit-effects.js";
 import { ExtractionAnchorSnapshot } from "./extraction-anchor-snapshot.js";
 
@@ -2551,8 +2552,7 @@ export class ExtractionPersistCoordinator {
       if (semanticMerge.action === "merged") {
         semanticMergedCount++;
         await anchorSnapshots.replace(targetStorage, semanticMerge.targetId, writeCategory, memoryPathById);
-        // D + final round (A/B): with no promoted copies the create path's promotion must still run — fail-open, the merge stands — and its payload is derived SOLELY from the re-read committed record: no field reads the incoming extraction (see buildMergedTargetPromotionPayload; null = target replaced mid-flight or retired by a concurrent lifecycle operation, skip promotion). Promotion eligibility gates on the committed record's tier — the downgraded min(incoming, target) confidence where a lower incoming fact merged in.
-        // Round N+7 (A): the payload builder refuses a degraded merge (provenancePatched=false) — no promotion off unpatched trust metadata. (B): after the current copy lands, any concurrently promoted PRE-merge copy is superseded (promotion dedups by content, so without this both stay active).
+        // D + final round (A/B) + N+7 (A/B) + N+18 (B): with no promoted copies the create path's promotion must still run — fail-open, the merge stands — and its payload derives SOLELY from the re-read committed record (no field reads the incoming extraction; the null cases — replaced mid-flight, retired, degraded merge, or the isolated fail-open reread failure — are documented on buildMergedTargetPromotionPayload). After the current copy lands, any concurrently promoted PRE-merge copy is superseded. Promotion eligibility gates on the committed record's tier — the downgraded min(incoming, target) confidence where a lower incoming fact merged in.
         const mergedPromotion = await buildMergedTargetPromotionPayload(targetStorage, semanticMerge);
         // Round N+10 (A): promotion AND reconciliation — including the no-promotion path, where a below-threshold downgrade or a degraded merge writes no replacement copy but a concurrently published PRE-merge copy must still retire. See promoteAndReconcileMergedTarget.
         await promoteAndReconcileMergedTarget({ promote: (payload) => promoteMemoryToShared({ sourceStorage: targetStorage, ...payload }), config: this.deps.config, getStorageRouter: this.deps.getStorageRouter, scopeProfileWritePlan, sourceStorage: targetStorage, sourceMemoryId: semanticMerge.targetId, mergedPromotion, normalize: normalizeStoredHashSource, onReconciled: () => promotedCopyProbe.invalidate() });

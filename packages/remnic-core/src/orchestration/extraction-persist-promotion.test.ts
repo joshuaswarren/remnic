@@ -8,7 +8,7 @@ import path from "node:path";
 import { StorageManager } from "../index.js";
 import { parseConfig } from "../config.js";
 import { createBatchPromotedCopyProbe, mergeTargetHasPromotedCopies, promoteAndReconcileMergedTarget, retireStaleMergedTargetPromotionCopies } from "./extraction-persist-promotion.js";
-import { buildMergedTargetPromotionPayload } from "./semantic-merge-persist.js";
+import { buildMergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 
 // Synthetic fixtures only — no real paths, hosts, or memory content.

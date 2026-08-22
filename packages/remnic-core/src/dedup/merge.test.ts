@@ -8,10 +8,10 @@ import { createVersion, listVersions, type VersionTrigger } from "../page-versio
 import { inferIntentFromText } from "../intent.js";
 import {
   applySemanticMergeAtPersist,
-  buildMergedTargetPromotionPayload,
   runMergedTargetPostEffects,
   type ApplySemanticMergeOptions,
 } from "../orchestration/semantic-merge-persist.js";
+import { buildMergedTargetPromotionPayload } from "../orchestration/semantic-merge-promotion-payload.js";
 import { appendEdge, GraphIndex, type GraphEdge } from "../graph.js";
 import { PersistenceIndexCoordinator } from "../orchestration/persistence-index.js";
 import { createBatchPromotedCopyProbe, promotionWithholdsToolScope } from "../orchestration/extraction-persist-promotion.js";
@@ -2752,6 +2752,42 @@ test("buildMergedTargetPromotionPayload: a degraded merge never yields a promoti
   const payload = await buildMergedTargetPromotionPayload(ok.storage, patched);
   assert.ok(payload);
   assert.equal(payload?.sourceMemoryId, "fact-target");
+});
+
+test("buildMergedTargetPromotionPayload: a failed post-commit reread fails open to a logged null (round N+18 B)", async () => {
+  // The merge has already committed; the hash-index repair makes any retry
+  // dedupe against the committed body. A reread that throws here (secure
+  // store locked, corpus read I/O error) must degrade to "no promotion" —
+  // never abort the caller's remaining durable effects (thread episode,
+  // temporal/tag tracking, harmonic construction, graph rebuild, behavior
+  // signals, artifact write).
+  const entries: Array<{ level: string; message: string }> = [];
+  const backend: LoggerBackend = {
+    info: (msg: string) => entries.push({ level: "info", message: msg }),
+    warn: (msg: string) => entries.push({ level: "warn", message: msg }),
+    error: () => {},
+    debug: () => {},
+  };
+  initLogger(backend, true);
+  try {
+    const lockedStore = {
+      getMemoryByIdIncludingArchived: async () => {
+        throw new Error("secure store locked");
+      },
+    } as unknown as StorageManager;
+    const payload = await buildMergedTargetPromotionPayload(lockedStore, {
+      targetId: "fact-target",
+      mergedContent: "merged body",
+      provenancePatched: true,
+    });
+    assert.equal(payload, null, "a reread failure must resolve to null, not a rejection");
+    const line = entries.find(
+      (e) => e.level === "warn" && e.message.includes("semantic-merge") && e.message.includes("fact-target"),
+    )?.message;
+    assert.ok(line, "the skipped promotion must be surfaced as a warn");
+  } finally {
+    resetLogger();
+  }
 });
 
 test("applySemanticMergeAtPersist: the committed merged body preserves the incoming citation (round N+7 C)", async () => {

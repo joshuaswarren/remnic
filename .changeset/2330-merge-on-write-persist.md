@@ -238,3 +238,31 @@ That promotion is a copy of the committed target, not of the incoming extraction
 Off by default behind the new `semanticMerge` config block (`enabled`, `minSimilarity`, `maxCandidates` — `0` disables merging before any embedding lookup, and a present-but-unparseable value (`"abc"`, an object, `NaN`, or infinity) is rejected at parse time instead of silently falling back to the default — only an absent key means `3` — `categories`, `shadowMode`). With the gate off there is no lookup and no judge call. `semanticMerge.minSimilarity` must be strictly below `semanticDedupThreshold`, and a config that inverts the band is rejected at parse time whenever merging is enabled or `minSimilarity` is set explicitly — a pre-existing config that lowered `semanticDedupThreshold` and never configured `semanticMerge` keeps starting unchanged. `semanticMerge.categories` entries are validated against the mergeable memory categories (`fact, preference, entity, decision, relationship, principle, commitment, skill, rule`) — an unknown entry such as `facts` is rejected at parse time with the valid list, because no extracted memory can ever match it and the misconfiguration would otherwise silently disable merging for every category; the episodic and immutable categories (`procedure`, `reasoning_trace`, `moment`, `correction`) never merge and cannot be listed. A fact may only merge into a neighbor carrying the identical source connector, or into an unscoped neighbor when the fact itself is unscoped — an unscoped merge into a connector-owned target would rewrite the target while its `sourceConnector` frontmatter kept naming that connector (stricter than the dedup gates, which keep the broad unscoped neighborhood). The in-place update is a compare-and-swap against the body the judge was shown, and a content update whose provenance patch fails rolls back to the pre-merge body under the snapshot. Every refusal — embedding-backend outage, fabricated target id, empty or oversized merged content, judge error, inactive target, failed snapshot or update — creates the new fact as before, each with its own telemetry reason, and `shadowMode` decides without ever mutating.
 
 Also fixes a latent page-versioning defect found while adding the trigger: `readManifest` validated snapshot triggers against a hardcoded list, so any trigger added to the `VersionTrigger` union would have produced manifests that then failed to parse. The runtime allow-list is now derived from the union.
+
+Round N+18: two review fixes plus a CI repair. (A) Graph JSONL rewrites are
+now serialized across PROCESSES sharing a memory directory: the per-file
+write lock (`withGraphWriteLock`) chained only within one process, so a peer
+Remnic appending an edge between this process's read-snapshot and its
+rename-backed rewrite had the edge permanently discarded by the stale
+snapshot. Every locked graph section (append, decay rewrite, node-edge
+remove/restore/rollback) now also holds the established `withHeldFileLock`
+advisory lock — the same primitive round N+16 gave the page-versioning
+manifest — as a sibling `<file>.lock`; a lock that cannot be taken within
+the bounded wait fails the write rather than proceeding unsynchronized
+(graph callers are fail-open, so the error degrades to a logged skip). The
+lock implementation lives in the new `graph-write-lock.ts` sibling and is
+re-exported from `@remnic/core/graph` unchanged. (B) The post-commit
+promotion reread is isolated fail-open: `buildMergedTargetPromotionPayload`
+re-reads the committed record through the cold-aware lookup, and a reread
+that throws — a locked secure store, a corpus read I/O error — resolved as
+an uncaught rejection AFTER the merge had committed, aborting the whole
+extraction before the target reached durable thread history, temporal/tag
+refresh tracking, harmonic construction, graph rebuilding, or the behavior
+ledger, while the hash repair made any retry dedupe against the committed
+body so the effects were never repaired. The reread now resolves to null
+with a logged warn (promotion skipped, merge stands — the same isolation
+the artifact write helper uses), and every durable effect still runs. The
+builder and its payload type moved to the `semantic-merge-promotion-payload.ts`
+sibling. The CI test-typecheck failure was real: a round-N+17 test addition
+passed an implicitly-any callback, invisible to the root typecheck because
+`tests/**` is only compiled by the tests project.

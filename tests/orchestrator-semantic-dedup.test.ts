@@ -15,7 +15,7 @@ import {
   renderAuthorityBoundContent,
   renderAuthorityFence,
 } from "@remnic/core";
-import type { ExtractionResult } from "@remnic/core/types";
+import type { BehaviorSignalEvent, ExtractionResult } from "@remnic/core/types";
 
 // ---------------------------------------------------------------------------
 // Integration tests for the write-time semantic dedup guard (issue #373).
@@ -692,7 +692,7 @@ test("semantic merge: an artifact I/O failure never strands the committed target
   // Effect 5 — behavior-signal ledger.
   const signals = await storage.readBehaviorSignals();
   assert.ok(
-    signals.some((event) => event.memoryId === targetId),
+    signals.some((event: BehaviorSignalEvent) => event.memoryId === targetId),
     "the behavior ledger must record the merge event for the target",
   );
 });

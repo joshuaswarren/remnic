@@ -22,7 +22,7 @@ import {
 } from "../capabilities.js";
 import type { MemoryFile, PluginConfig } from "../types.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
-import type { MergedTargetPromotionPayload } from "./semantic-merge-persist.js";
+import type { MergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
 
 export const confidenceTierOrder = [
   "explicit",

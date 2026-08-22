@@ -24,6 +24,7 @@ import {
   type ActivationPredecessor,
 } from "./graph-path-reconstruction.js";
 export { reconstructActivationPath, type ActivationPredecessor };
+import { withGraphWriteLock } from "./graph-write-lock.js";
 
 export type GraphType = "entity" | "time" | "causal";
 
@@ -110,38 +111,11 @@ export async function ensureGraphsDir(memoryDir: string): Promise<void> {
   await mkdir(graphsDir(memoryDir), { recursive: true });
 }
 
-// ---------------------------------------------------------------------------
-// Per-graph-file write lock (gotcha #40 promise-chain pattern).
-//
-// Both the append path (`appendEdge`) and the rewrite path used by the
-// decay maintenance job must serialize on the same lock keyed by the
-// JSONL file path. Without this, an extraction can append a new edge
-// between the decay job's read-snapshot and rewrite, silently dropping
-// the appended edge during active traffic (issue #729 / Codex P1).
-// ---------------------------------------------------------------------------
-const graphWriteLocks = new Map<string, Promise<void>>();
-
-/**
- * Run `fn` while holding the write lock for the given graph JSONL file.
- *
- * The lock is keyed by absolute file path so concurrent writes to
- * different graph types proceed independently. The chain recovers from
- * rejection (gotcha #40) so a single I/O failure does not poison all
- * future writers, but the original error is still surfaced to the
- * caller of `withGraphWriteLock`.
- */
-export function withGraphWriteLock<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
-  const prev = graphWriteLocks.get(filePath) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
-  graphWriteLocks.set(
-    filePath,
-    next.then(
-      () => undefined,
-      () => undefined
-    )
-  );
-  return next;
-}
+// Per-graph-file write lock lives in the graph-write-lock.ts sibling (the
+// in-process chain plus the cross-process advisory lock, issue #2330 round
+// N+18 A). Re-exported here because `@remnic/core/graph` is a public
+// subpath export whose consumers import `withGraphWriteLock` from it.
+export { withGraphWriteLock };
 
 export async function appendEdge(memoryDir: string, edge: GraphEdge): Promise<void> {
   await ensureGraphsDir(memoryDir);
