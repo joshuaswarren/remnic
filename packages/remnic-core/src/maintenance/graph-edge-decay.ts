@@ -220,7 +220,7 @@ export async function runGraphEdgeDecayMaintenance(
           );
           return { typeDecayed: 0, typeBelow: localBelow, typeTotal: edges.length };
         }
-        await writeGraphJsonlAtomic(filePath, updated);
+        await writeGraphJsonlAtomic(filePath, updated, lock);
       }
 
       return {

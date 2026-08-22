@@ -642,7 +642,7 @@ async function harness(
     restoreFactHashAfterApproval: async (id: string) => {
       calls.hashAdds.push(id);
     },
-    registerFactContentHash: async (id: string, hash: string) => {
+    registerFactContentHash: async (id: string, hash: string, _expectedContent: string) => {
       calls.hashRegistrations.push({ id, hash });
     },
   } as unknown as StorageManager;
@@ -1197,7 +1197,7 @@ test("registerFactContentHash: exact dedup finds the degraded record's merged bo
     assert.equal(await storage.hasFactContentHash(EXISTING), true, "it re-registered the stale pre-merge identity instead");
     // The FIXED repair: register the hash of what is actually STORED.
     await storage.removeFactContentHashesForMemories([degraded]);
-    await storage.registerFactContentHash(id, mergedHash);
+    await storage.registerFactContentHash(id, mergedHash, MERGED);
     assert.equal(
       await storage.hasFactContentHash(MERGED),
       true,
@@ -1255,7 +1255,7 @@ test("persistRepairedContentHash: the repaired hash survives a restart's corpus 
     assert.equal(await storage.updateMemoryIfUnchanged(before, MERGED, { actor: "semantic-merge" }), true);
     const mergedHash = ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text);
     // The N+16 C repair alone (process-local registration).
-    await storage.registerFactContentHash(id, mergedHash);
+    await storage.registerFactContentHash(id, mergedHash, MERGED);
     // Simulated restart WITHOUT the durable repair: the fresh instance ALWAYS
     // rebuilds the index from the durable corpus on first use, and the corpus
     // reader prefers the stale persisted identity — the pre-fix loss this
@@ -1284,6 +1284,77 @@ test("persistRepairedContentHash: the repaired hash survives a restart's corpus 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ── Round N+20 (B): hash registration is body-coupled. A writer that
+// replaces the target between this writer's content commit and the degraded
+// repair keeps its own record; registering OUR (now-obsolete) merged-body
+// hash on it created a phantom exact-dedup hit that suppressed a later real
+// extraction of that body. ─────────────────────────────────────────────────
+
+test("registerFactContentHash: a record replaced after the commit gets no phantom hash (round N+20 B)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-hash-phantom-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const REPLACED = "Deploys were moved to Thursdays by the platform team.";
+    const { id } = await storage.writeMemory("fact", EXISTING, { source: "extraction" });
+    const before = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id)!;
+    await storage.updateMemoryIfUnchanged(before, MERGED, { actor: "semantic-merge" });
+    const mergedHash = ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text);
+    // Another writer replaces the target after this writer's content commit,
+    // before the degraded repair's registration runs.
+    const degraded = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id)!;
+    await storage.updateMemoryIfUnchanged(degraded, REPLACED, { actor: "other-writer" });
+    await storage.registerFactContentHash(id, mergedHash, MERGED);
+    assert.equal(
+      (await storage.readAllMemories()).find((m) => m.frontmatter.id === id)?.content,
+      REPLACED,
+      "fixture sanity: the record was replaced after the degraded writer's commit",
+    );
+    assert.equal(
+      await storage.hasFactContentHash(MERGED),
+      false,
+      "no phantom exact-dedup hit for a body the record no longer holds",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── Round N+20 (C): a degraded SUCCESS (body committed and kept) commits its
+// recovery snapshot. Pre-fix, the staged version kept `pending` forever, and
+// pruneExcessVersions excludes pending entries — repeated degraded merges
+// grew the manifest and snapshot directory past maxVersionsPerPage with no
+// later prune able to recover the bound. ────────────────────────────────────
+
+test("applySemanticMergeAtPersist: consecutive degraded merges keep the manifest within the page cap (round N+20 C)", async () => {
+  const h = await harness({ frontmatterFails: true, rollbackFails: true, topLevelConfig: { versioningMaxPerPage: 2 } });
+  const versioning = { enabled: true, maxVersionsPerPage: 2, sidecarDir: ".versions" };
+  for (let i = 1; i <= 2; i++) {
+    await createVersion(h.target.path, `${EXISTING} (history fill ${i})`, "write", versioning, undefined, undefined, h.storage.dir);
+  }
+  for (let i = 1; i <= 2; i++) {
+    const outcome = await applySemanticMergeAtPersist(h.deps, {
+      storage: h.storage,
+      content: INCOMING,
+      category: "fact",
+      judgeCall: (options) => acceptingJudge(options),
+    });
+    assert.equal(outcome.action, "merged", `degraded merge ${i} must report merged`);
+    assert.equal(outcome.provenancePatched, false, `degraded merge ${i} is the double-failure path`);
+  }
+  const history = await listVersions(h.target.path, versioning, h.storage.dir);
+  assert.ok(
+    history.versions.length <= versioning.maxVersionsPerPage,
+    `the manifest must stay within maxVersionsPerPage (got ${history.versions.length}: ${history.versions.map((v) => `${v.versionId}${v.pending ? "p" : ""}`).join(",")})`,
+  );
+  assert.equal(
+    history.versions.some((version) => version.pending === true),
+    false,
+    "a degraded success's recovery snapshot must be committed, not pending forever",
+  );
+  assert.equal(history.versions.at(-1)?.trigger, "semantic-merge", "the newest entry is the kept recovery point");
 });
 
 // ── Item A: extraction metadata a merge cannot carry ─────────────────────────

@@ -674,7 +674,10 @@ export async function applySemanticMergeAtPersist(
     try {
       await options.storage.removeFactContentHashesForMemories([target]);
       if (committedFactHash !== undefined) {
-        await options.storage.registerFactContentHash(decision.targetId, committedFactHash);
+        // Round N+20 (B): body-coupled — a writer that replaced the target
+        // after this writer's content commit keeps its own record (and its
+        // own hash); registering ours would be a phantom exact-dedup hit.
+        await options.storage.registerFactContentHash(decision.targetId, committedFactHash, committedContent);
         // Round N+19 (B): also persist the repaired identity in the
         // frontmatter — the index registration is process-local state over
         // a persisted stale `contentHash`, and a restart's corpus rebuild
@@ -839,6 +842,14 @@ export async function applySemanticMergeAtPersist(
       // reporting the degraded success. N+16 (C): the record's persisted
       // frontmatter hash is the stale PRE-merge identity, so register the
       // COMMITTED body's hash instead.
+      // Round N+20 (C): degraded SUCCESS commits the recovery snapshot —
+      // the body is committed and kept, so the staged version clears its
+      // `pending` flag under the same page lock as a finalizing prune.
+      // Without it pruneExcessVersions excluded every degraded recovery
+      // point forever, so repeated degraded merges grew the manifest and
+      // snapshot directory past maxVersionsPerPage and no later successful
+      // merge could prune them back.
+      await finalizeMergedVersionPrune(target.path, versioning, options.storage.dir, decision.targetId, versionId);
       await repairIndexes(committedMergedFactHash(deps, options.category, committedContent));
       return {
         action: "merged",

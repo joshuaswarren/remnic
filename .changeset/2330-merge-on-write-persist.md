@@ -114,8 +114,9 @@ snapshot is staged WITHOUT pruning.
 Round N+12: the cap-based prune finalizes only after the COMPLETE
 content-and-metadata transaction commits — both compare-and-swaps, not the
 content one — so a rejected frontmatter patch (or its successful rollback)
-leaves version history untouched; a degraded success deliberately keeps the
-full history for the recovery path. The promoted-copy probe and the
+leaves version history untouched; a degraded success deliberately keeps its
+staged snapshot as the recovery path (round N+20 C commits that snapshot, so
+pruning still bounds the history). The promoted-copy probe and the
 post-merge reconciliation enumerate EVERY resolvable profile layer
 (`readOrder`/resolved `layers`), not only today's `promotionTargets`: a
 namespace that received copies while its layer was selected keeps serving
@@ -290,3 +291,26 @@ finds the merged body. The CI lifecycle-coverage gap that missed the
 new `semantic-merge-promotion-payload.ts` sibling is closed: it maps to
 the `semantic-merge-lifecycle` subject, which exercises the real merge →
 promotion-payload path for all nine matrix rows.
+
+Round N+20: three P2 fixes. (A) The atomic graph JSONL publish
+(`writeGraphJsonlAtomic`) now receives the lock controller itself and
+revalidates ownership (`refresh`) immediately before the destructive
+rename: the round-N+19 guards sat in each caller before the body build,
+and a section paused past the 30-second stale window between that check
+and the rename resumed to publish over a peer that had broken the lock
+and written its own newer graph. The rename now aborts with
+`GraphLockLostError` and leaves the peer's file intact. (B)
+`registerFactContentHash` is body-coupled: the degraded-merge repair
+passes the committed body and the registration verifies the record still
+holds it (the same expected-body check the durable repair's CAS uses)
+before adding the hash, so a writer whose target was replaced between
+its content commit and the repair can no longer register an obsolete
+hash for the newer record — a phantom exact-dedup hit that would
+suppress a later real extraction of that body. (C) A degraded merge
+success (body committed and kept) now commits its recovery snapshot: the
+staged page version's `pending` flag clears under the same page lock as
+a normal finalizing prune, so `pruneExcessVersions` bounds the manifest
+and snapshot directory at `maxVersionsPerPage` again — repeated
+degraded merges no longer grow history without bound, and later
+successful merges can prune those recovery points like any other
+committed version.

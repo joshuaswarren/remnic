@@ -4056,13 +4056,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * Register an EXPLICITLY computed content hash for an active fact (issue
    * #2330 round N+16 C): the degraded merge repair indexes the COMMITTED
    * body while the persisted `frontmatter.contentHash` is the stale
-   * PRE-merge identity — readers preferring the persisted value return it,
-   * leaving the merged body unindexed for exact dedup. No-op otherwise.
+   * PRE-merge identity. Round N+20 (B): body-coupled (`expectedContent`) —
+   * repair), so no obsolete hash lands on a newer record. No-op otherwise.
    */
-  async registerFactContentHash(memoryId: string, contentHash: string): Promise<void> {
+  async registerFactContentHash(memoryId: string, contentHash: string, expectedContent: string): Promise<void> {
     if (!contentHash) return;
     const memory = await this.getMemoryByIdIncludingArchived(memoryId);
-    if (!memory) return;
+    if (!memory || memory.content !== expectedContent) return;
     await this.publishActiveFactHashes(memory, [contentHash]);
   }
 

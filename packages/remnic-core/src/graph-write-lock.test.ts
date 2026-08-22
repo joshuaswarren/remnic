@@ -22,7 +22,7 @@ import {
   GraphLockLostError,
   withGraphWriteLock,
 } from "./graph-write-lock.js";
-import { removeNodeEdgesForRewrite } from "./graph-jsonl.js";
+import { removeNodeEdgesForRewrite, writeGraphJsonlAtomic } from "./graph-jsonl.js";
 
 test("withGraphWriteLock: a peer append between read and rewrite is never discarded (round N+18 A)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-xproc-"));
@@ -190,4 +190,39 @@ test("removeNodeEdgesForRewrite: a stale-broken lock aborts the rewrite instead 
     "the aborted rewrite must leave the node's edges untouched (the peer that broke the lock owns the file)",
   );
   assert.equal(after.split("\n").filter((line) => line.trim().length > 0).length, 60_000);
+});
+
+test("writeGraphJsonlAtomic: the rename itself revalidates ownership and refuses a broken lock (round N+20 A)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-rename-guard-"));
+  const filePath = graphFilePath(dir, "entity");
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const PEER_ROW = `${JSON.stringify({
+    from: "facts/peer.md",
+    to: "facts/peer-target.md",
+    type: "entity",
+    weight: 1,
+    label: "peer",
+    ts: "2026-08-22T00:00:00.000Z",
+  })}\n`;
+  await writeFile(filePath, PEER_ROW, "utf8");
+
+  await withGraphWriteLock(filePath, async (lock) => {
+    assert.equal(await lock.refresh(), true, "an unbroken lock refreshes");
+    // The N+20 A window: the CALLER's ownership check has passed, then the
+    // section stalls past the 30s stale window — a peer breaks the lock and
+    // publishes its own write — and the section resumes at the rename.
+    const lockPath = `${filePath}.lock`;
+    await unlink(lockPath).catch(() => undefined);
+    await writeFile(lockPath, `${process.pid} peer-${randomUUID()} ${new Date().toISOString()}\n`, "utf8");
+    await assert.rejects(
+      writeGraphJsonlAtomic(
+        filePath,
+        [{ from: "facts/mine.md", to: "facts/mine-target.md", type: "entity", weight: 1, label: "mine", ts: "2026-08-22T00:00:00.000Z" }],
+        lock,
+      ),
+      GraphLockLostError,
+      "the publish step must revalidate ownership immediately before the rename",
+    );
+    assert.equal(await readFile(filePath, "utf8"), PEER_ROW, "the refused rename left the peer's write intact");
+  });
 });

@@ -12,7 +12,11 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { log } from "./logger.js";
 import { graphFilePath, readEdgesStrict, withGraphWriteLock, type GraphEdge, type GraphType } from "./graph.js";
-import { assertGraphLockHeld, yieldForLockHeartbeat } from "./graph-write-lock.js";
+import {
+  assertGraphLockHeld,
+  yieldForLockHeartbeat,
+  type GraphWriteLockSection,
+} from "./graph-write-lock.js";
 
 /**
  * Write a graph JSONL file atomically using temp+rename (gotcha #54: never
@@ -25,7 +29,11 @@ import { assertGraphLockHeld, yieldForLockHeartbeat } from "./graph-write-lock.j
  * the lock's heartbeat window. */
 const EDGE_SERIALIZE_YIELD_BATCH = 5_000;
 
-export async function writeGraphJsonlAtomic(filePath: string, edges: GraphEdge[]): Promise<void> {
+export async function writeGraphJsonlAtomic(
+  filePath: string,
+  edges: GraphEdge[],
+  lock: GraphWriteLockSection,
+): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
   // Chunked with event-loop yields: the caller holds the graph write lock,
   // and its mtime heartbeat is a timer that cannot fire while a single
@@ -41,6 +49,13 @@ export async function writeGraphJsonlAtomic(filePath: string, edges: GraphEdge[]
   }
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
   await writeFile(tempPath, body, "utf-8");
+  // Round N+20 (A): the callers' pre-build guards cannot cover the build
+  // itself — a section paused past the stale window between the caller's
+  // check and this rename resumes to publish over the peer that broke the
+  // lock and wrote its own newer graph. Revalidate ownership immediately
+  // before the destructive rename; a lost lock aborts and leaves the peer's
+  // file untouched (the staged temp is orphaned, same as a rename failure).
+  await assertGraphLockHeld(filePath, lock);
   await rename(tempPath, filePath);
 }
 
@@ -97,6 +112,7 @@ export async function removeNodeEdgesForRewrite(
         await writeGraphJsonlAtomic(
           filePath,
           edges.filter((edge) => !isNodeGeneratedEdge(edge, type, memoryPath)),
+          lock,
         );
         return removedEdges;
       });
@@ -135,7 +151,7 @@ export async function restoreRemovedNodeEdges(
     // snapshot over its write would clobber it. The throw leaves the current
     // (peer-owned) file intact; callers log the skipped restore.
     await assertGraphLockHeld(removed.filePath, lock);
-    await writeGraphJsonlAtomic(removed.filePath, [...current, ...toRestore]);
+    await writeGraphJsonlAtomic(removed.filePath, [...current, ...toRestore], lock);
     return toRestore.length;
   });
 }
@@ -239,7 +255,7 @@ async function removeAppendedNodeEdges(
             residue.add(type);
             return;
           }
-          await writeGraphJsonlAtomic(filePath, kept);
+          await writeGraphJsonlAtomic(filePath, kept, lock);
         }
       }
       if (edges.some((edge) => isNodeGeneratedEdge(edge, type, memoryPath) && !mine.includes(JSON.stringify(edge)))) {
