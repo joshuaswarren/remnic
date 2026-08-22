@@ -1304,7 +1304,10 @@ into a create-or-update decision:
    heuristics that earned the marker). When memory linking is on and the
    caller suggested navigation links for the incoming fact, a successful
    merge attaches them to the target's committed `links` (deduped on
-   target+type) in the same conditional frontmatter patch, so the
+   target+type; a suggestion naming the surviving target itself is
+   dropped rather than becoming a self-edge, since memory linking and the
+   merge judge both search on the incoming content and suggest the target
+   itself) in the same conditional frontmatter patch, so the
    relationships the create path would have stamped on the new fact stay
    traversable from the target instead of being lost.
    Promotion eligibility gates on the committed target's own confidence —

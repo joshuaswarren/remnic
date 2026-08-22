@@ -525,16 +525,16 @@ export function createPathMergeParity(input: {
   // Finding C — faithfulness verdicts must be preserved. The create path
   // stamps `faithfulnessFm` whenever the gate ran (shadow mode included: a
   // contradicted fact gets the verdict without pending_review status). The
-  // merge patch cannot compose an honest verdict for a combined body, so a
-  // defined incoming verdict must equal the target's effective one —
-  // otherwise the create path runs and persists the verdict it computed.
-  // An undefined incoming verdict (gate off) leaves the target's own
-  // verdict describing the target's own claims, exactly as a create would.
+  // merge patch cannot compose an honest verdict for a combined body, so the
+  // effective verdicts must be EQUAL — both present and identical, or both
+  // absent. One-sided verdicts (gate ran on one side only) bypass too: the
+  // trust stage maps `entailed` to the maximum contribution, so claims the
+  // gate never checked must not inherit an entailment rendered over the
+  // other side's claims alone. The create path runs instead and persists
+  // the verdict it computed (or none).
   const incomingFaithfulness = effectiveFaithfulness(md?.faithfulness?.verdict);
-  if (
-    incomingFaithfulness !== undefined &&
-    incomingFaithfulness !== effectiveFaithfulness(target.frontmatter.faithfulness?.verdict)
-  ) {
+  const targetFaithfulness = effectiveFaithfulness(target.frontmatter.faithfulness?.verdict);
+  if (incomingFaithfulness !== targetFaithfulness) {
     return { ok: false, field: "faithfulness" };
   }
   return {
@@ -620,24 +620,30 @@ async function revertMergedContent(
 /**
  * Finding B — union the incoming fact's suggested navigation links into the
  * target's committed links, deduping on (targetId, linkType): the same key
- * `StorageManager.addLinksToMemory` uses. Returns undefined when there is
- * nothing to attach so the patch carries no `links` key at all (an empty
- * array would ERASE committed links).
+ * `StorageManager.addLinksToMemory` uses. A suggestion naming the surviving
+ * target itself is DISCARDED — memory linking and the merge judge both
+ * search on the incoming content, so the suggested neighbor is often the
+ * merge target itself, and attaching it would make the record its own
+ * neighbor (recall-navigate would return the current memory and burn
+ * traversal budget). Returns undefined when there is nothing to attach so
+ * the patch carries no `links` key at all (an empty array would ERASE
+ * committed links).
  */
 export function mergeMemoryLinks(
   existing: readonly MemoryLink[] | undefined,
   incoming: readonly MemoryLink[] | undefined,
+  survivingTargetId: string,
 ): MemoryLink[] | undefined {
   if (!incoming || incoming.length === 0) return undefined;
   const merged = [...(existing ?? [])];
   for (const link of incoming) {
+    if (link.targetId === survivingTargetId) continue;
     if (!merged.some((l) => l.targetId === link.targetId && l.linkType === link.linkType)) {
       merged.push({ ...link });
     }
   }
-  return merged;
+  return merged.length > 0 ? merged : undefined;
 }
-
 export async function applySemanticMergeAtPersist(
   deps: ExtractionPersistDeps,
   options: ApplySemanticMergeOptions,
@@ -860,7 +866,11 @@ export async function applySemanticMergeAtPersist(
     // Finding B — the incoming fact's suggested navigation links attach to
     // the target here, in the same conditional patch (the fact is never
     // created on this path, so the create path's `links` carrier cannot run).
-    const mergedLinks = mergeMemoryLinks(merged.frontmatter.links, options.incomingLinks);
+    const mergedLinks = mergeMemoryLinks(
+      merged.frontmatter.links,
+      options.incomingLinks,
+      decision.targetId,
+    );
     const patched = await options.storage.writeMemoryFrontmatterIfUnchanged(
       merged,
       {

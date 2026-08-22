@@ -1469,9 +1469,12 @@ test("applySemanticMergeAtPersist: an effectively identical faithfulness verdict
   assert.equal(outcome.action, "merged");
 });
 
-test("applySemanticMergeAtPersist: no incoming verdict leaves the target's own verdict describing its own claims (finding C)", async () => {
-  // Faithfulness gate off: the create path would stamp nothing, so the
-  // target's prior verdict on its prior claims survives untouched.
+test("applySemanticMergeAtPersist: a one-sided faithfulness verdict bypasses the merge — gate-disabled incoming into a judged target (finding C)", async () => {
+  // Faithfulness gate off for the incoming fact: its claims were never
+  // checked, but the target's `entailed` maps to the trust stage's maximum
+  // contribution. Merging would let unchecked claims inherit an entailment
+  // rendered over the target's claims alone, so the merge bypasses and the
+  // create path stores the fact without a verdict, exactly as it would.
   const h = await harness({ targetFaithfulness: { verdict: "entailed" } });
   const outcome = await applySemanticMergeAtPersist(h.deps, {
     storage: h.storage,
@@ -1480,11 +1483,28 @@ test("applySemanticMergeAtPersist: no incoming verdict leaves the target's own v
     sources: [INCOMING_SOURCE],
     judgeCall: (options) => acceptingJudge(options),
   });
-  assert.equal(outcome.action, "merged");
-  assert.equal(
-    "faithfulness" in (h.calls.frontmatterPatches[0]?.patch ?? {}),
-    false,
-  );
+  assert.deepEqual(outcome, { action: "created", reason: "metadata_unpreservable" });
+  assert.deepEqual(h.calls.contentUpdates, []);
+  assert.deepEqual(h.calls.frontmatterPatches, []);
+});
+
+test("applySemanticMergeAtPersist: a one-sided faithfulness verdict bypasses the merge — judged incoming into a legacy target (finding C)", async () => {
+  // Mirror of the gate-off case: the incoming `entailed` covers only the
+  // incoming claims, and no verdict was ever rendered over the target's.
+  // The combined body must not carry a one-sided verdict, so the merge
+  // bypasses and the create path persists the verdict it computed.
+  const h = await harness();
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { faithfulness: { verdict: "entailed" } },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "created", reason: "metadata_unpreservable" });
+  assert.deepEqual(h.calls.contentUpdates, []);
+  assert.deepEqual(h.calls.frontmatterPatches, []);
 });
 
 test("applySemanticMergeAtPersist: an unscoped fact never merges into a connector-owned cold target (finding D)", async () => {
@@ -1815,6 +1835,46 @@ test("applySemanticMergeAtPersist: no suggested links leaves the target's commit
   assert.equal(outcome.action, "merged");
   // An empty links patch would ERASE committed links — the key must be absent.
   assert.equal("links" in (h.calls.frontmatterPatches[0]?.patch ?? {}), false);
+});
+
+test("applySemanticMergeAtPersist: a suggested link naming the merge target itself is discarded, not attached (finding B)", async () => {
+  // Memory linking and the merge judge both search on the incoming content,
+  // so the suggested neighbor is often the merge target itself. Attaching it
+  // would make the surviving record its own neighbor — recall-navigate would
+  // return the current memory and burn traversal budget for nothing.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-selflink-"));
+  const storage = new StorageManager(dir);
+  await storage.ensureDirectories();
+  const created = await storage.writeMemory("fact", EXISTING, { source: "test" });
+  const neighbor = await storage.writeMemory(
+    "fact",
+    "Releases are cut after the deploy window closes.",
+    { source: "test" },
+  );
+  const outcome = await applySemanticMergeAtPersist(realStorageDeps(dir, created.id), {
+    storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingLinks: [
+      { targetId: created.id, linkType: "related", strength: 0.8, reason: "same cadence" },
+      { targetId: neighbor.id, linkType: "related", strength: 0.7 },
+    ],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  const committed = await storage.getMemoryByIdIncludingArchived(created.id);
+  assert.ok(committed);
+  const links = committed.frontmatter.links ?? [];
+  assert.equal(
+    links.some((l) => l.targetId === created.id),
+    false,
+    "no self-edge on the committed record",
+  );
+  assert.ok(
+    links.some((l) => l.targetId === neighbor.id && l.linkType === "related"),
+    "other suggested links still attach",
+  );
 });
 
 test("parseSemanticMergeConfig: unknown or never-mergeable categories are rejected with the valid list (finding C)", () => {
