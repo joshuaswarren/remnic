@@ -1393,7 +1393,7 @@ export type {
   CalendarSource,
   RecallDisclosure,
 } from "./types.js";
-export { CONVERGE_CONFLICT_POLICIES, DEFAULT_CONVERGE_CONFLICT_POLICY } from "./converge-config.js";
+export { CONVERGE_CONFLICT_POLICIES, DEFAULT_CONVERGE_CONFLICT_POLICY, DEFAULT_CONVERGE_PEER_REQUEST_TIMEOUT_MS, MAX_CONVERGE_PEER_REQUEST_TIMEOUT_MS, envConvergePeerRequestTimeoutMs, normalizeConvergePeerRequestTimeoutMs, parseConvergeConfig } from "./converge-config.js";
 export {
   DEFAULT_RECALL_DISCLOSURE,
   RECALL_DISCLOSURE_LEVELS,

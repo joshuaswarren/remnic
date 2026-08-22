@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `remnic converge` against a live peer at boot scale: a configurable per-request peer timeout (`--timeout <seconds>`, `converge.peerRequestTimeoutMs`, `REMNIC_CONVERGE_PEER_TIMEOUT_MS`; default 30s, clamped to 1h) replaces the hard-coded 30s that killed manifest fetches for ~100k-file namespaces; a peer that lists but will not serve a tombstone file is tolerated (empty file evidence, the snapshot digest array still applies) instead of aborting the plan; a tombstone file that grew append-only while the plan ran is accepted via prefix-extension verification; and the Windows path-portability gates (trailing dot/space, Windows-invalid characters, reserved device names) now apply only when the planning host is Windows, so POSIX-origin paths containing `:` plan normally (`localPlatform` is injectable for tests).
+
 ## [v9.69.17] — 2026-08-22
 
 ### Fixed

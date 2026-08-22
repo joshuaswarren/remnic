@@ -2,10 +2,7 @@ import { CENSUS_MAX_MTIME_MS, isCensusMtimeMs, isSha256Hex } from "../census-val
 import { normalizeNamespaceIdentity } from "../namespaces/identity.js";
 import { validateArchiveRelativePath } from "../transfer/fs-utils.js";
 import type { OfflineSyncFileState } from "../offline-sync.js";
-import {
-  CONVERGE_CONFLICT_POLICIES,
-  DEFAULT_CONVERGE_CONFLICT_POLICY,
-} from "../converge-config.js";
+import { CONVERGE_CONFLICT_POLICIES, DEFAULT_CONVERGE_CONFLICT_POLICY } from "../converge-config.js";
 import type { ConvergeConflictPolicy } from "../types.js";
 export type ReconcileConflictPolicy = ConvergeConflictPolicy;
 
@@ -180,6 +177,21 @@ export interface ReconcileNamespaceInput {
 
 export interface ReconcileOptions {
   conflictPolicy?: ConvergeConflictPolicy;
+  /**
+   * Platform whose filesystem constraints the portability gates enforce
+   * (trailing dot/space, Windows-invalid characters, reserved device names).
+   * Defaults to the local platform: a POSIX planner may reason about
+   * POSIX-origin paths that carry characters Windows cannot store, because
+   * that plan will never be applied on a Windows participant. Injectable so
+   * the Windows branches stay testable from any platform.
+   */
+  localPlatform?: NodeJS.Platform;
+  /**
+   * Platform of the PEER participant when known (advertised via the
+   * offline-sync capabilities route). Push entries materialize on the peer,
+   * so Windows path hazards apply when EITHER participant is win32.
+   */
+  peerPlatform?: string;
 }
 
 /**
@@ -210,11 +222,12 @@ function assertCensusRecord(
   file: ReconcileFileState | undefined,
   side: string,
   namespace: string,
+  platforms: readonly (string | undefined)[]
 ): ReconcileFileState {
   const path = file?.path;
   if (typeof path !== "string" || path.length === 0) {
     throw new ReconcilePlanInputError(
-      `reconcile: ${side} census for namespace ${namespace} contains a record with no path`,
+      `reconcile: ${side} census for namespace ${namespace} contains a record with no path`
     );
   }
   // Same boundary offline-sync applies to this field: a peer census is
@@ -225,7 +238,7 @@ function assertCensusRecord(
   } catch (err) {
     throw new ReconcilePlanInputError(err instanceof Error ? err.message : String(err));
   }
-  assertPortablePathSegments(path, side, namespace);
+  assertPortablePathSegments(path, side, namespace, platforms);
   return {
     ...file,
     path,
@@ -248,7 +261,7 @@ function assertCensusRecord(
 function assertMtimeMs(value: unknown, context: string): number {
   if (!isCensusMtimeMs(value)) {
     throw new ReconcilePlanInputError(
-      `reconcile: ${context} has an out-of-range mtimeMs; expected a finite value between 0 and ${CENSUS_MAX_MTIME_MS}`,
+      `reconcile: ${context} has an out-of-range mtimeMs; expected a finite value between 0 and ${CENSUS_MAX_MTIME_MS}`
     );
   }
   return value;
@@ -262,9 +275,7 @@ function assertMtimeMs(value: unknown, context: string): number {
  */
 function assertDigest(value: unknown, context: string): string {
   if (!isSha256Hex(value)) {
-    throw new ReconcilePlanInputError(
-      `reconcile: ${context} must carry a 64-character sha256 hex digest`,
-    );
+    throw new ReconcilePlanInputError(`reconcile: ${context} must carry a 64-character sha256 hex digest`);
   }
   return value.toLowerCase();
 }
@@ -288,19 +299,23 @@ function assertNamespace(namespace: unknown): string {
     // surrogate and a literal U+FFFD collapse to ONE storage identity while
     // comparing as two here - slipping both past the duplicate-namespace guard.
     throw new ReconcilePlanInputError(
-      "reconcile: namespace contains an unpaired surrogate; it would collide with another namespace on disk",
+      "reconcile: namespace contains an unpaired surrogate; it would collide with another namespace on disk"
     );
   }
   if (normalizeNamespaceIdentity(namespace) !== namespace) {
     throw new ReconcilePlanInputError(
-      `reconcile: namespace ${JSON.stringify(namespace)} is not canonical; pass ${JSON.stringify(normalizeNamespaceIdentity(namespace))}`,
+      `reconcile: namespace ${JSON.stringify(namespace)} is not canonical; pass ${JSON.stringify(normalizeNamespaceIdentity(namespace))}`
     );
   }
   return namespace;
 }
 
 function assertIterable(value: unknown, side: string, namespace: string): Iterable<ReconcileFileState> {
-  if (value === null || typeof value !== "object" || typeof (value as Iterable<ReconcileFileState>)[Symbol.iterator] !== "function") {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    typeof (value as Iterable<ReconcileFileState>)[Symbol.iterator] !== "function"
+  ) {
     throw new ReconcilePlanInputError(`reconcile: ${side} census for namespace ${namespace} must be iterable`);
   }
   return value as Iterable<ReconcileFileState>;
@@ -321,13 +336,26 @@ const WIN32_INVALID_CHARS = /[<>:"|?*\u0000-\u001f]/;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 const WIN32_RESERVED_NAMES = /^(con|prn|aux|nul|(com|lpt)[1-9\u00b9\u00b2\u00b3])$/i;
 
-function assertPortablePathSegments(path: string, side: string, namespace: string): void {
+function assertPortablePathSegments(
+  path: string,
+  side: string,
+  namespace: string,
+  platforms: readonly (string | undefined)[]
+): void {
+  // Windows-only hazards (trailing dot/space stripping, invalid characters
+  // like `:`, reserved device names) only constrain a plan whose LOCAL
+  // participant would materialize those paths on Windows. POSIX-origin
+  // corpora legitimately contain `:` (e.g. sqlite sidecar names), so the
+  // gates are skipped for non-win32 planners. The lone-surrogate check is
+  // UNCONDITIONAL: Node mangles unpaired surrogates identically everywhere,
+  // which corrupts cross-platform path comparison itself.
+  const isWindows = platforms.some((candidate) => candidate === "win32");
   for (const segment of path.split("/")) {
     if (segment.length === 0) continue;
-    if (segment.endsWith(".") || segment.endsWith(" ")) {
+    if (isWindows && (segment.endsWith(".") || segment.endsWith(" "))) {
       throw new ReconcilePlanInputError(
         `reconcile: ${side} census for namespace ${namespace} path ${path} has a segment ending in a dot or space; ` +
-          "Windows strips those and would alias it onto another file",
+          "Windows strips those and would alias it onto another file"
       );
     }
     // `:` opens an alternate data stream, the rest cannot be created at all,
@@ -337,27 +365,23 @@ function assertPortablePathSegments(path: string, side: string, namespace: strin
       // Node encodes an unpaired surrogate as U+FFFD, so this path and a
       // literal U+FFFD path are one file on disk while comparing as distinct.
       throw new ReconcilePlanInputError(
-        `reconcile: ${side} census for namespace ${namespace} path ${path} contains an unpaired surrogate`,
+        `reconcile: ${side} census for namespace ${namespace} path ${path} contains an unpaired surrogate`
       );
     }
-    if (WIN32_INVALID_CHARS.test(segment)) {
+    if (isWindows && WIN32_INVALID_CHARS.test(segment)) {
       throw new ReconcilePlanInputError(
-        `reconcile: ${side} census for namespace ${namespace} path ${path} contains a character Windows cannot store`,
+        `reconcile: ${side} census for namespace ${namespace} path ${path} contains a character Windows cannot store`
       );
     }
-    if (WIN32_RESERVED_NAMES.test(segment.split(".")[0] ?? "")) {
+    if (isWindows && WIN32_RESERVED_NAMES.test(segment.split(".")[0] ?? "")) {
       throw new ReconcilePlanInputError(
-        `reconcile: ${side} census for namespace ${namespace} path ${path} uses a reserved Windows device name`,
+        `reconcile: ${side} census for namespace ${namespace} path ${path} uses a reserved Windows device name`
       );
     }
   }
 }
 
-function assertNoPathAlias(
-  seen: Map<string, string>,
-  path: string,
-  namespace: string,
-): void {
+function assertNoPathAlias(seen: Map<string, string>, path: string, namespace: string): void {
   // NFC first: macOS stores decomposed names and compares canonically, so
   // `é` (U+00E9) and `é` (e + U+0301) are ONE file there. Then a FULL caseless
   // fold - upper-then-lower, which collapses forms a bare toLowerCase() keeps
@@ -365,12 +389,16 @@ function assertNoPathAlias(
   // those distinct and the planner would emit both a push and a pull.
   // `ß` upper-folds to `ss` while `ẞ` folds to `ß`, so one more pass equalizes
   // the pair that a single upper-then-lower still leaves apart.
-  const folded = path.normalize("NFC").toUpperCase().toLowerCase().replace(/\u00df/g, "ss");
+  const folded = path
+    .normalize("NFC")
+    .toUpperCase()
+    .toLowerCase()
+    .replace(/\u00df/g, "ss");
   const existing = seen.get(folded);
   if (existing !== undefined && existing !== path) {
     throw new ReconcilePlanInputError(
       `reconcile: namespace ${namespace} has aliasing paths (${existing}, ${path}); ` +
-        "they resolve to one file on a case-insensitive or Unicode-normalizing peer",
+        "they resolve to one file on a case-insensitive or Unicode-normalizing peer"
     );
   }
   seen.set(folded, path);
@@ -386,12 +414,12 @@ function rejectConflictingDuplicate(
   incoming: { sha256: string; mtimeMs?: number },
   path: string,
   side: string,
-  namespace: string,
+  namespace: string
 ): boolean {
   if (!existing) return false;
   if (existing.sha256 !== incoming.sha256) {
     throw new ReconcilePlanInputError(
-      `reconcile: ${side} census for namespace ${namespace} lists ${path} twice with different digests`,
+      `reconcile: ${side} census for namespace ${namespace} lists ${path} twice with different digests`
     );
   }
   // Same bytes but a different mtime is still ambiguous: `newest-wins` reads
@@ -399,7 +427,7 @@ function rejectConflictingDuplicate(
   // the winner.
   if (existing.mtimeMs !== incoming.mtimeMs) {
     throw new ReconcilePlanInputError(
-      `reconcile: ${side} census for namespace ${namespace} lists ${path} twice with different mtimeMs`,
+      `reconcile: ${side} census for namespace ${namespace} lists ${path} twice with different mtimeMs`
     );
   }
   return true;
@@ -409,10 +437,11 @@ function indexByPath(
   files: Iterable<ReconcileFileState>,
   side: string,
   namespace: string,
+  platforms: readonly (string | undefined)[]
 ): Map<string, ReconcileFileState> {
   const index = new Map<string, ReconcileFileState>();
   for (const raw of files) {
-    const file = assertCensusRecord(raw, side, namespace);
+    const file = assertCensusRecord(raw, side, namespace, platforms);
     if (rejectConflictingDuplicate(index.get(file.path), file, file.path, side, namespace)) continue;
     index.set(file.path, file);
   }
@@ -428,19 +457,19 @@ function indexByPath(
 function parseTombstonedDigests(
   value: Iterable<string> | undefined,
   namespace: string,
-  field = "tombstonedFileSha256",
+  field = "tombstonedFileSha256"
 ): Set<string> {
   if (value === undefined) return new Set();
   if (typeof value === "string") {
     throw new ReconcilePlanInputError(
-      `reconcile: ${field} for namespace ${namespace} must be a collection of digests, not a single string`,
+      `reconcile: ${field} for namespace ${namespace} must be a collection of digests, not a single string`
     );
   }
   if (value === null || typeof value !== "object" || typeof value[Symbol.iterator] !== "function") {
     // Otherwise the for...of below throws a raw TypeError and a caller handling
     // ReconcilePlanInputError cannot tell a bad request from a planner bug.
     throw new ReconcilePlanInputError(
-      `reconcile: ${field} for namespace ${namespace} must be an iterable collection of digests`,
+      `reconcile: ${field} for namespace ${namespace} must be an iterable collection of digests`
     );
   }
   const digests = new Set<string>();
@@ -461,10 +490,11 @@ function indexDigestsByPath(
   files: Iterable<ReconcileFileState>,
   side: string,
   namespace: string,
+  platforms: readonly (string | undefined)[]
 ): Map<string, string> {
   const index = new Map<string, string>();
   for (const raw of files) {
-    const file = assertCensusRecord(raw, side, namespace);
+    const file = assertCensusRecord(raw, side, namespace, platforms);
     const existing = index.get(file.path);
     // One map, not a parallel `seen`: the base's own mtimeMs is never a
     // decision input (only the local and peer timestamps order a conflict), so
@@ -473,7 +503,7 @@ function indexDigestsByPath(
     if (existing !== undefined) {
       if (existing !== file.sha256) {
         throw new ReconcilePlanInputError(
-          `reconcile: ${side} census for namespace ${namespace} lists ${file.path} twice with different digests`,
+          `reconcile: ${side} census for namespace ${namespace} lists ${file.path} twice with different digests`
         );
       }
       continue;
@@ -487,7 +517,7 @@ function assertConflictPolicy(value: ConvergeConflictPolicy | undefined): Conver
   if (value === undefined) return DEFAULT_CONVERGE_CONFLICT_POLICY;
   if (!CONVERGE_CONFLICT_POLICIES.includes(value)) {
     throw new ReconcilePlanInputError(
-      `reconcile: unknown conflictPolicy ${JSON.stringify(value)}; expected one of ${CONVERGE_CONFLICT_POLICIES.join(", ")}`,
+      `reconcile: unknown conflictPolicy ${JSON.stringify(value)}; expected one of ${CONVERGE_CONFLICT_POLICIES.join(", ")}`
     );
   }
   return value;
@@ -519,7 +549,7 @@ function resolveConflict(
   policy: ConvergeConflictPolicy,
   localMtimeMs: number | undefined,
   peerMtimeMs: number | undefined,
-  missingTimestampResolution: ReconcileResolution,
+  missingTimestampResolution: ReconcileResolution
 ): ReconcileResolution {
   if (policy !== "newest-wins") return "unresolved";
   if (localMtimeMs === undefined || peerMtimeMs === undefined || localMtimeMs === peerMtimeMs) {
@@ -532,12 +562,11 @@ function parseDeletionMtimes(
   value: ReadonlyMap<string, number> | undefined,
   side: string,
   namespace: string,
+  platforms: readonly (string | undefined)[]
 ): ReadonlyMap<string, number> {
   if (value === undefined) return new Map();
   if (!(value instanceof Map)) {
-    throw new ReconcilePlanInputError(
-      `reconcile: ${side} deletion mtimes for namespace ${namespace} must be a Map`,
-    );
+    throw new ReconcilePlanInputError(`reconcile: ${side} deletion mtimes for namespace ${namespace} must be a Map`);
   }
   const parsed = new Map<string, number>();
   for (const [path, mtimeMs] of value) {
@@ -546,7 +575,7 @@ function parseDeletionMtimes(
     } catch (err) {
       throw new ReconcilePlanInputError(err instanceof Error ? err.message : String(err));
     }
-    assertPortablePathSegments(path, side, namespace);
+    assertPortablePathSegments(path, side, namespace, platforms);
     parsed.set(path, assertMtimeMs(mtimeMs, `${side} deletion for namespace ${namespace} entry ${path}`));
   }
   return parsed;
@@ -562,7 +591,7 @@ function parseDeletionMtimes(
  */
 export function planNamespaceReconciliation(
   input: ReconcileNamespaceInput,
-  options: ReconcileOptions = {},
+  options: ReconcileOptions = {}
 ): ReconcilePlanEntry[] {
   if (!isPlainObject(input)) {
     throw new ReconcilePlanInputError("reconcile: namespace input must be a plain object");
@@ -580,23 +609,21 @@ export function planNamespaceReconciliation(
   // Index the peer census only, then stream the local one against it, removing
   // each match as it is consumed. Peak residency is one index plus the entry
   // list rather than two full censuses (round 2, codex P2).
-  const peer = indexByPath(assertIterable(input.peer, "peer", namespace), "peer", namespace);
+  const effectivePlatforms = [options.localPlatform ?? process.platform, options.peerPlatform];
+  const peer = indexByPath(assertIterable(input.peer, "peer", namespace), "peer", namespace, effectivePlatforms);
   // Only `base.sha256` is ever read, so the base is compacted to path -> digest
   // instead of a second full record index (round 7, codex P2).
   // Only an ABSENT base means bootstrap. A null/invalid cursor silently read as
   // "no prior agreement" would turn a peer-side deletion into a push and
   // resurrect it.
-  const base = input.base === undefined
-    ? null
-    : indexDigestsByPath(assertIterable(input.base, "base", namespace), "base", namespace);
+  const base =
+    input.base === undefined
+      ? null
+      : indexDigestsByPath(assertIterable(input.base, "base", namespace), "base", namespace, effectivePlatforms);
   const tombstoned = parseTombstonedDigests(input.tombstonedFileSha256, namespace);
-  const peerTombstoned = parseTombstonedDigests(
-    input.peerTombstonedFileSha256,
-    namespace,
-    "peerTombstonedFileSha256",
-  );
-  const localDeletionMtimeMs = parseDeletionMtimes(input.localDeletionMtimeMs, "local", namespace);
-  const peerDeletionMtimeMs = parseDeletionMtimes(input.peerDeletionMtimeMs, "peer", namespace);
+  const peerTombstoned = parseTombstonedDigests(input.peerTombstonedFileSha256, namespace, "peerTombstonedFileSha256");
+  const localDeletionMtimeMs = parseDeletionMtimes(input.localDeletionMtimeMs, "local", namespace, effectivePlatforms);
+  const peerDeletionMtimeMs = parseDeletionMtimes(input.peerDeletionMtimeMs, "peer", namespace, effectivePlatforms);
   const entries: ReconcilePlanEntry[] = [];
 
   // Path -> digest only, never the file objects: enough to make the stream
@@ -611,7 +638,7 @@ export function planNamespaceReconciliation(
   // materializing the second census.
   const seenLocal = new Map<string, { sha256: string; mtimeMs?: number }>();
   for (const rawLocal of localCensus) {
-    const localFile = assertCensusRecord(rawLocal, "local", namespace);
+    const localFile = assertCensusRecord(rawLocal, "local", namespace, effectivePlatforms);
     const path = localFile.path;
     assertNoPathAlias(caseFold, path, namespace);
     const seen = seenLocal.get(path);
@@ -658,14 +685,10 @@ export function planNamespaceReconciliation(
       // path, and a bootstrap merge must push — both sides hold unique data.
       if (baseSha256 !== undefined) {
         const peerDeletionMtime = peerDeletionMtimeMs.get(path);
-        const resolution = baseSha256 === localFile.sha256
-          ? "unresolved"
-          : resolveConflict(
-              policy,
-              localFile.mtimeMs,
-              peerDeletionMtime,
-              "unresolved",
-            );
+        const resolution =
+          baseSha256 === localFile.sha256
+            ? "unresolved"
+            : resolveConflict(policy, localFile.mtimeMs, peerDeletionMtime, "unresolved");
         entries.push({
           path,
           namespace,
@@ -727,12 +750,7 @@ export function planNamespaceReconciliation(
       });
       continue;
     }
-    const resolution = resolveConflict(
-      policy,
-      localFile.mtimeMs,
-      peerFile.mtimeMs,
-      "supersede-link",
-    );
+    const resolution = resolveConflict(policy, localFile.mtimeMs, peerFile.mtimeMs, "supersede-link");
     entries.push({
       path,
       namespace,
@@ -767,14 +785,10 @@ export function planNamespaceReconciliation(
     }
     if (baseSha256 !== undefined) {
       const localDeletionMtime = localDeletionMtimeMs.get(path);
-      const resolution = baseSha256 === peerFile.sha256
-        ? "unresolved"
-        : resolveConflict(
-            policy,
-            localDeletionMtime,
-            peerFile.mtimeMs,
-            "unresolved",
-          );
+      const resolution =
+        baseSha256 === peerFile.sha256
+          ? "unresolved"
+          : resolveConflict(policy, localDeletionMtime, peerFile.mtimeMs, "unresolved");
       entries.push({
         path,
         namespace,
@@ -811,12 +825,12 @@ export function summarizeReconcilePlan(entries: readonly ReconcilePlanEntry[]): 
       byNamespace.set(entry.namespace, report);
     }
     report[entry.action] += 1;
-    const needsOperator =
-      entry.resolution === "unresolved"
-      || entry.resolution === "supersede-link";
+    const needsOperator = entry.resolution === "unresolved" || entry.resolution === "supersede-link";
     if (entry.action === "conflict" && needsOperator) report.unresolved += 1;
   }
-  return [...byNamespace.values()].sort((a, b) => (a.namespace === b.namespace ? 0 : a.namespace < b.namespace ? -1 : 1));
+  return [...byNamespace.values()].sort((a, b) =>
+    a.namespace === b.namespace ? 0 : a.namespace < b.namespace ? -1 : 1
+  );
 }
 
 /**
@@ -828,7 +842,7 @@ export function summarizeReconcilePlan(entries: readonly ReconcilePlanEntry[]): 
  */
 export function planReconciliation(
   namespaces: readonly ReconcileNamespaceInput[],
-  options: ReconcileOptions = {},
+  options: ReconcileOptions = {}
 ): ReconcilePlan {
   if (!Array.isArray(namespaces)) {
     throw new ReconcilePlanInputError("reconcile: planReconciliation expects an array of namespace inputs");
@@ -849,7 +863,7 @@ export function planReconciliation(
     const name = assertNamespace(namespace?.namespace);
     if (seenNamespaces.has(name)) {
       throw new ReconcilePlanInputError(
-        `reconcile: namespace ${name} appears twice; merge its censuses before planning`,
+        `reconcile: namespace ${name} appears twice; merge its censuses before planning`
       );
     }
     seenNamespaces.add(name);

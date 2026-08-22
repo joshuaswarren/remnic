@@ -1747,3 +1747,128 @@ test("converge watch: abort fires through the sleeping path, not the pre-check",
     clearTimeout(abortTimer);
   }
 });
+
+// ---------------------------------------------------------------------------
+// converge live-peer robustness (timeout surface + tombstone tolerance)
+// ---------------------------------------------------------------------------
+
+import {
+  DEFAULT_CONVERGE_PEER_REQUEST_TIMEOUT_MS,
+  MAX_CONVERGE_PEER_REQUEST_TIMEOUT_MS,
+  parseConvergeConfig,
+} from "@remnic/core";
+
+test("converge config: peerRequestTimeoutMs is parsed, defaulted, and clamped", async () => {
+  const dflt = parseConvergeConfig(undefined);
+  assert.equal(dflt.peerRequestTimeoutMs, undefined);
+
+  const set = parseConvergeConfig({ peerRequestTimeoutMs: 120000 });
+  assert.equal(set.peerRequestTimeoutMs, 120000);
+
+  const clamped = parseConvergeConfig({ peerRequestTimeoutMs: 99_999_999 });
+  assert.equal(clamped.peerRequestTimeoutMs, MAX_CONVERGE_PEER_REQUEST_TIMEOUT_MS);
+
+  assert.throws(() => parseConvergeConfig({ peerRequestTimeoutMs: -1 }), /positive integer/);
+  assert.throws(() => parseConvergeConfig({ peerRequestTimeoutMs: "soon" }), /positive integer/);
+  assert.equal(DEFAULT_CONVERGE_PEER_REQUEST_TIMEOUT_MS, 30_000);
+});
+
+function tombstonePeerFixture(opts: {
+  listedBytes: number;
+  serveBytes: Buffer | null;
+  listedShaOverride?: string;
+}) {
+  const memoryContent = Buffer.from(`---\nid: mem-1\ncategory: fact\nstatus: active\n---\nA fact\n`);
+  const memorySha = createHash("sha256").update(memoryContent).digest("hex");
+  const tombstonePart = Buffer.alloc(opts.listedBytes, 0x61);
+  const listedSha = opts.listedShaOverride ?? createHash("sha256").update(tombstonePart).digest("hex");
+  const files = [
+    { path: "facts/live.md", sha256: memorySha, bytes: memoryContent.length, mtimeMs: 1 },
+    { path: "state/tombstones.jsonl", sha256: listedSha, bytes: opts.listedBytes, mtimeMs: 1 },
+  ];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/offline-sync/capabilities")) {
+      return new Response(null, { status: 404 });
+    }
+    if (url.pathname.endsWith("/offline-sync/snapshot")) {
+      return Response.json({ files, tombstones: [] });
+    }
+    const request = JSON.parse(String(init?.body)) as { path: string; offset: number };
+    if (request.path === "state/tombstones.jsonl" && opts.serveBytes === null) {
+      return new Response(null, { status: 404 });
+    }
+    const content = request.path === "state/tombstones.jsonl" ? (opts.serveBytes as Buffer) : memoryContent;
+    return new Response(new Uint8Array(content.subarray(request.offset)), {
+      headers: {
+        "x-remnic-chunk-offset": String(request.offset),
+        "x-remnic-chunk-bytes": String(content.length - request.offset),
+        "x-remnic-file-bytes": String(content.length),
+        "x-remnic-file-mtime-ms": "1",
+        "x-remnic-file-path": encodeURIComponent(request.path),
+        "x-remnic-file-sha256": createHash("sha256").update(content).digest("hex"),
+      },
+    });
+  };
+  return {
+    fetchImpl,
+    localFilesByNamespace: new Map<string, ReconcileFileState[]>([
+      ["default", [{ path: "facts/live.md", sha256: memorySha, bytes: memoryContent.length, mtimeMs: 1 }]],
+    ]),
+  };
+}
+
+test("converge plan: a peer that lists but cannot serve tombstones stays FATAL (retraction evidence is load-bearing)", async () => {
+  const fixture = tombstonePeerFixture({ listedBytes: 10, serveBytes: null });
+  await assert.rejects(
+    computeConvergePlan({
+      peerUrl: "http://peer",
+      localFilesByNamespace: fixture.localFilesByNamespace,
+      fetchImpl: fixture.fetchImpl,
+    }),
+    /failed to read peer tombstone evidence/
+  );
+});
+
+test("converge plan: a tombstone file that grew (append-only race) is accepted via prefix match", async () => {
+  // Listed revision = 10 bytes of 'a'; the live file now has 10 bytes of 'a'
+  // PLUS a newer append — consistent with an append-only store on a live peer.
+  const served = Buffer.concat([Buffer.alloc(10, 0x61), Buffer.from("{}\n")]);
+  const fixture = tombstonePeerFixture({ listedBytes: 10, serveBytes: served });
+  const plan = await computeConvergePlan({
+    peerUrl: "http://peer",
+    localFilesByNamespace: fixture.localFilesByNamespace,
+    fetchImpl: fixture.fetchImpl,
+  });
+  // Completed without the fatal mismatch despite the grown file.
+  assert.ok(plan.entries.some((entry) => entry.path === "state/tombstones.jsonl"));
+});
+
+test("converge plan: a tombstone file whose prefix diverges from the listing is still fatal", async () => {
+  const served = Buffer.alloc(10, 0x62); // entirely different bytes
+  const fixture = tombstonePeerFixture({ listedBytes: 10, serveBytes: served });
+  await assert.rejects(
+    computeConvergePlan({
+      peerUrl: "http://peer",
+      localFilesByNamespace: fixture.localFilesByNamespace,
+      fetchImpl: fixture.fetchImpl,
+    }),
+    /failed to read peer tombstone evidence/
+  );
+});
+
+test("reconcile plan: POSIX-origin paths with colons are accepted off-Windows and rejected on Windows", async () => {
+  const localFile: ReconcileFileState = { path: "facts/a.md", sha256: shaA, mtimeMs: 1000 };
+  const peerFile: ReconcileFileState = {
+    path: "codegraph/generalist/root:cglspfixmac.sqlite",
+    sha256: shaB,
+    mtimeMs: 2000,
+  };
+  const input = {
+    localFilesByNamespace: new Map([["default", [localFile]]]),
+    peerFilesByNamespace: new Map([["default", [peerFile]]]),
+  };
+  const plan = await computeConvergePlan(input);
+  assert.equal(plan.converged, false);
+  assert.equal(plan.byNamespace[0]?.pull, 1);
+});
