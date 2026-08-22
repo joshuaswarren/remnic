@@ -11,6 +11,8 @@ import type { ReconcileManifest } from "@remnic/core/reconcile/manifest.js";
 import { parsePeerManifestStream } from "./converge-peer-manifest.js";
 
 export const DEFAULT_PEER_REQUEST_TIMEOUT_MS = 30_000;
+// Re-exported so the CLI can resolve flag > config > env > default once.
+export { envConvergePeerRequestTimeoutMs } from "@remnic/core";
 
 function normalizePeerBaseUrl(peerUrl: string): string {
   const normalized = normalizeConvergePeerUrl(peerUrl);
@@ -31,12 +33,10 @@ async function fetchPeerRequest(
   fetchImpl: typeof fetch,
   input: string,
   init: RequestInit,
-  timeoutMs: number,
+  timeoutMs: number
 ): Promise<Response> {
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  const signal = init.signal
-    ? AbortSignal.any([init.signal, timeoutSignal])
-    : timeoutSignal;
+  const signal = init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
   return fetchImpl(input, { ...init, signal });
 }
 
@@ -49,14 +49,11 @@ export async function fetchPeerSyncCapabilities(
   peerUrl: string,
   token: string | undefined,
   fetchImpl: typeof fetch,
-  timeoutMs: number,
+  timeoutMs: number
 ): Promise<PeerSyncCapabilities | null> {
   const base = normalizePeerBaseUrl(peerUrl);
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
-  const routes = [
-    "/remnic/v1/offline-sync/capabilities",
-    "/engram/v1/offline-sync/capabilities",
-  ];
+  const routes = ["/remnic/v1/offline-sync/capabilities", "/engram/v1/offline-sync/capabilities"];
   for (const route of routes) {
     const response = await fetchPeerRequest(fetchImpl, `${base}${route}`, { headers }, timeoutMs);
     if (response.status === 404 || response.status === 405) continue;
@@ -68,12 +65,12 @@ export async function fetchPeerSyncCapabilities(
     }
     const payload: unknown = await response.json().catch(() => null);
     if (
-      !payload
-      || typeof payload !== "object"
-      || !("convergenceFinalization" in payload)
-      || typeof payload.convergenceFinalization !== "boolean"
-      || !("manifestStream" in payload)
-      || typeof payload.manifestStream !== "boolean"
+      !payload ||
+      typeof payload !== "object" ||
+      !("convergenceFinalization" in payload) ||
+      typeof payload.convergenceFinalization !== "boolean" ||
+      !("manifestStream" in payload) ||
+      typeof payload.manifestStream !== "boolean"
     ) {
       throw new Error("peer capability response was malformed");
     }
@@ -89,7 +86,7 @@ export async function fetchPeerManifestStream(
   namespace: string,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS
 ): Promise<ReconcileManifest | null> {
   const base = normalizePeerBaseUrl(peerUrl);
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
@@ -109,13 +106,12 @@ export async function fetchPeerManifestStream(
   return null;
 }
 
-
 export async function fetchPeerSnapshot(
   peerUrl: string,
   namespace: string,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS
 ): Promise<{
   files: ReconcileFileState[];
   tombstones: Set<string>;
@@ -151,24 +147,26 @@ export async function fetchPeerSnapshot(
       throw new Error(`invalid peer snapshot for namespace ${namespace}: files must be an array`);
     }
 
-    const files: ReconcileFileState[] = data.files.map((item, index) => {
-      if (
-        !item
-        || typeof item !== "object"
-        || !("path" in item)
-        || typeof item.path !== "string"
-        || !("sha256" in item)
-        || typeof item.sha256 !== "string"
-      ) {
-        throw new Error(`invalid peer snapshot for namespace ${namespace}: malformed file at index ${index}`);
-      }
-      return {
-        path: item.path,
-        sha256: item.sha256,
-        mtimeMs: "mtimeMs" in item && typeof item.mtimeMs === "number" ? item.mtimeMs : undefined,
-        bytes: "bytes" in item && typeof item.bytes === "number" ? item.bytes : undefined,
-      };
-    }).filter((file) => !isInternalRemnicStatePath(file.path));
+    const files: ReconcileFileState[] = data.files
+      .map((item, index) => {
+        if (
+          !item ||
+          typeof item !== "object" ||
+          !("path" in item) ||
+          typeof item.path !== "string" ||
+          !("sha256" in item) ||
+          typeof item.sha256 !== "string"
+        ) {
+          throw new Error(`invalid peer snapshot for namespace ${namespace}: malformed file at index ${index}`);
+        }
+        return {
+          path: item.path,
+          sha256: item.sha256,
+          mtimeMs: "mtimeMs" in item && typeof item.mtimeMs === "number" ? item.mtimeMs : undefined,
+          bytes: "bytes" in item && typeof item.bytes === "number" ? item.bytes : undefined,
+        };
+      })
+      .filter((file) => !isInternalRemnicStatePath(file.path));
 
     const rawTombstones = "tombstones" in data ? data.tombstones : undefined;
     if (rawTombstones !== undefined && !Array.isArray(rawTombstones)) {
@@ -186,7 +184,6 @@ export async function fetchPeerSnapshot(
 
   throw new Error(`failed to fetch peer snapshot for namespace ${namespace}: ${lastFailure}`);
 }
-
 
 export interface PeerFileContent {
   content: Buffer;
@@ -219,14 +216,11 @@ export async function streamPeerFileContent(
   onChunk: (chunk: PeerFileChunk) => Promise<void>,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS
 ): Promise<Omit<PeerFileContent, "content"> | null> {
   assertTransferablePeerPath(filePath);
   const base = normalizePeerBaseUrl(peerUrl);
-  const routes = [
-    "/remnic/v1/offline-sync/file-content",
-    "/engram/v1/offline-sync/file-content",
-  ];
+  const routes = ["/remnic/v1/offline-sync/file-content", "/engram/v1/offline-sync/file-content"];
   const headers: Record<string, string> = {
     "content-type": "application/json",
     ...(token ? { authorization: `Bearer ${token}` } : {}),
@@ -242,17 +236,22 @@ export async function streamPeerFileContent(
     do {
       let response: Response;
       try {
-        response = await fetchPeerRequest(fetchImpl, `${base}${route}`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            namespace,
-            includeTranscripts: false,
-            path: filePath,
-            offset,
-            length: OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
-          }),
-        }, timeoutMs);
+        response = await fetchPeerRequest(
+          fetchImpl,
+          `${base}${route}`,
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              namespace,
+              includeTranscripts: false,
+              path: filePath,
+              offset,
+              length: OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
+            }),
+          },
+          timeoutMs
+        );
         if (!response.ok) throw new Error(`offline file content request failed: ${response.status}`);
       } catch {
         routeFailed = true;
@@ -272,13 +271,13 @@ export async function streamPeerFileContent(
         sha256 = response.headers.get("x-remnic-file-sha256");
         const encodedPath = response.headers.get("x-remnic-file-path");
         if (
-          !sha256
-          || chunkOffset !== offset
-          || chunkBytes !== content.length
-          || (encodedPath !== null && decodeURIComponent(encodedPath) !== filePath)
-          || (expectedBytes !== undefined && expectedBytes !== totalBytes)
-          || (expectedSha256 !== undefined && expectedSha256 !== sha256)
-          || (content.length === 0 && offset < totalBytes)
+          !sha256 ||
+          chunkOffset !== offset ||
+          chunkBytes !== content.length ||
+          (encodedPath !== null && decodeURIComponent(encodedPath) !== filePath) ||
+          (expectedBytes !== undefined && expectedBytes !== totalBytes) ||
+          (expectedSha256 !== undefined && expectedSha256 !== sha256) ||
+          (content.length === 0 && offset < totalBytes)
         ) {
           throw new Error(`offline file content response changed during transfer: ${filePath}`);
         }
@@ -305,11 +304,11 @@ export async function streamPeerFileContent(
   }
 
   if (
-    expectedBytes === undefined
-    || expectedSha256 === undefined
-    || mtimeMs === undefined
-    || offset !== expectedBytes
-    || hash.digest("hex") !== expectedSha256
+    expectedBytes === undefined ||
+    expectedSha256 === undefined ||
+    mtimeMs === undefined ||
+    offset !== expectedBytes ||
+    hash.digest("hex") !== expectedSha256
   ) {
     return null;
   }
@@ -322,7 +321,7 @@ export async function fetchPeerFileContent(
   filePath: string,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS
 ): Promise<PeerFileContent | null> {
   const chunks: Buffer[] = [];
   const metadata = await streamPeerFileContent(
@@ -334,7 +333,7 @@ export async function fetchPeerFileContent(
     },
     token,
     fetchImpl,
-    timeoutMs,
+    timeoutMs
   );
   if (!metadata) return null;
   return {
@@ -342,7 +341,6 @@ export async function fetchPeerFileContent(
     content: Buffer.concat(chunks, metadata.bytes),
   };
 }
-
 
 export interface PeerFileSource {
   sha256: string;
@@ -359,7 +357,7 @@ export async function postPeerFileContent(
   source: PeerFileSource,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS
 ): Promise<"applied" | "skipped" | false> {
   assertTransferablePeerPath(filePath);
   const base = normalizePeerBaseUrl(peerUrl);
@@ -394,11 +392,16 @@ export async function postPeerFileContent(
       };
       let response: Response;
       try {
-        response = await fetchPeerRequest(fetchImpl, `${base}${route}`, {
-          method: "POST",
-          headers,
-          body: new Uint8Array(chunk),
-        }, timeoutMs);
+        response = await fetchPeerRequest(
+          fetchImpl,
+          `${base}${route}`,
+          {
+            method: "POST",
+            headers,
+            body: new Uint8Array(chunk),
+          },
+          timeoutMs
+        );
         if (!response.ok) throw new Error(`offline apply-file-content request failed: ${response.status}`);
       } catch {
         if (previousAttemptFailed && offset > 0 && !restartedRoute) {
@@ -411,15 +414,15 @@ export async function postPeerFileContent(
       }
       const result: unknown = await response.json().catch(() => null);
       if (
-        !result
-        || typeof result !== "object"
-        || !("done" in result)
-        || typeof result.done !== "boolean"
-        || !("applied" in result)
-        || typeof result.applied !== "boolean"
-        || !("skipped" in result)
-        || typeof result.skipped !== "boolean"
-        || ("conflict" in result && result.conflict)
+        !result ||
+        typeof result !== "object" ||
+        !("done" in result) ||
+        typeof result.done !== "boolean" ||
+        !("applied" in result) ||
+        typeof result.applied !== "boolean" ||
+        !("skipped" in result) ||
+        typeof result.skipped !== "boolean" ||
+        ("conflict" in result && result.conflict)
       ) {
         return false;
       }
@@ -439,35 +442,35 @@ export async function postPeerConvergenceComplete(
   namespaces: readonly string[],
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS
 ): Promise<boolean> {
   const base = normalizePeerBaseUrl(peerUrl);
-  const query = namespaces
-    .map((namespace) => `namespace=${encodeURIComponent(namespace)}`)
-    .join("&");
-  const routes = [
-    "/remnic/v1/offline-sync/convergence-complete",
-    "/engram/v1/offline-sync/convergence-complete",
-  ];
+  const query = namespaces.map((namespace) => `namespace=${encodeURIComponent(namespace)}`).join("&");
+  const routes = ["/remnic/v1/offline-sync/convergence-complete", "/engram/v1/offline-sync/convergence-complete"];
   for (const route of routes) {
-    const response = await fetchPeerRequest(fetchImpl, `${base}${route}?${query}`, {
-      method: "POST",
-      headers: {
-        "x-remnic-source-id": encodeURIComponent("remnic-converge"),
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
+    const response = await fetchPeerRequest(
+      fetchImpl,
+      `${base}${route}?${query}`,
+      {
+        method: "POST",
+        headers: {
+          "x-remnic-source-id": encodeURIComponent("remnic-converge"),
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
       },
-    }, timeoutMs).catch(() => null);
+      timeoutMs
+    ).catch(() => null);
     if (!response?.ok) continue;
     const result: unknown = await response.json().catch(() => null);
     if (
-      result
-      && typeof result === "object"
-      && "namespaces" in result
-      && Array.isArray(result.namespaces)
-      && result.namespaces.length === namespaces.length
-      && result.namespaces.every((namespace, index) => namespace === namespaces[index])
-      && "refreshed" in result
-      && result.refreshed === true
+      result &&
+      typeof result === "object" &&
+      "namespaces" in result &&
+      Array.isArray(result.namespaces) &&
+      result.namespaces.length === namespaces.length &&
+      result.namespaces.every((namespace, index) => namespace === namespaces[index]) &&
+      "refreshed" in result &&
+      result.refreshed === true
     ) {
       return true;
     }
@@ -482,7 +485,7 @@ export async function postPeerFileDeletion(
   baseSha256: string,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS
 ): Promise<"applied" | "skipped" | false> {
   assertTransferablePeerPath(filePath);
   const base = normalizePeerBaseUrl(peerUrl);
@@ -494,33 +497,38 @@ export async function postPeerFileDeletion(
   let previousAttemptFailed = false;
   for (const route of routes) {
     try {
-      const response = await fetchPeerRequest(fetchImpl, `${base}${route}`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          namespace,
-          changeset: {
-            format: OFFLINE_SYNC_CHANGESET_FORMAT,
-            schemaVersion: 1,
-            createdAt: new Date().toISOString(),
-            sourceId: "remnic-converge",
-            includeTranscripts: false,
-            changes: [{ type: "delete", path: filePath, baseSha256 }],
-          },
-        }),
-      }, timeoutMs);
+      const response = await fetchPeerRequest(
+        fetchImpl,
+        `${base}${route}`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            namespace,
+            changeset: {
+              format: OFFLINE_SYNC_CHANGESET_FORMAT,
+              schemaVersion: 1,
+              createdAt: new Date().toISOString(),
+              sourceId: "remnic-converge",
+              includeTranscripts: false,
+              changes: [{ type: "delete", path: filePath, baseSha256 }],
+            },
+          }),
+        },
+        timeoutMs
+      );
       if (!response.ok) throw new Error(`offline apply request failed: ${response.status}`);
       const result: unknown = await response.json().catch(() => null);
       if (
-        !result
-        || typeof result !== "object"
-        || !("appliedDeletes" in result)
-        || typeof result.appliedDeletes !== "number"
-        || !("skipped" in result)
-        || typeof result.skipped !== "number"
-        || !("conflicts" in result)
-        || !Array.isArray(result.conflicts)
-        || result.conflicts.length > 0
+        !result ||
+        typeof result !== "object" ||
+        !("appliedDeletes" in result) ||
+        typeof result.appliedDeletes !== "number" ||
+        !("skipped" in result) ||
+        typeof result.skipped !== "number" ||
+        !("conflicts" in result) ||
+        !Array.isArray(result.conflicts) ||
+        result.conflicts.length > 0
       ) {
         return false;
       }
@@ -533,4 +541,3 @@ export async function postPeerFileDeletion(
   }
   return false;
 }
-

@@ -33,7 +33,7 @@ test("converged corpora produce no work and report converged", () => {
   assert.equal(plan.converged, true);
   assert.deepEqual(
     plan.entries.map((e) => e.action),
-    ["identical", "identical"],
+    ["identical", "identical"]
   );
   assert.deepEqual(plan.byNamespace, [
     { namespace: "default", pull: 0, push: 0, identical: 2, conflict: 0, suppress: 0, unresolved: 0 },
@@ -56,7 +56,7 @@ test("a bootstrap merge moves unique data both ways and deletes nothing", () => 
   assert.equal(
     plan.entries.filter((e) => e.action === "conflict").length,
     0,
-    "absent on one side without a base means never seen, not deleted",
+    "absent on one side without a base means never seen, not deleted"
   );
 });
 
@@ -79,7 +79,7 @@ test("newest-wins picks the later side by mtime", () => {
       local: [file("facts/a.md", "local", 2000), file("facts/b.md", "local", 1000)],
       peer: [file("facts/a.md", "peer", 1000), file("facts/b.md", "peer", 2000)],
     },
-    { conflictPolicy: "newest-wins" },
+    { conflictPolicy: "newest-wins" }
   );
   assert.equal(entryFor(entries, "facts/a.md").resolution, "local-wins");
   assert.equal(entryFor(entries, "facts/b.md").resolution, "peer-wins");
@@ -95,12 +95,11 @@ test("newest-wins degrades to keeping both when the order is not decidable", () 
       local: [file("facts/untimed.md", "local"), file("facts/tied.md", "local", 5000)],
       peer: [file("facts/untimed.md", "peer", 1000), file("facts/tied.md", "peer", 5000)],
     },
-    { conflictPolicy: "newest-wins" },
+    { conflictPolicy: "newest-wins" }
   );
   assert.equal(entryFor(entries, "facts/untimed.md").resolution, "supersede-link");
   assert.equal(entryFor(entries, "facts/tied.md").resolution, "supersede-link");
 });
-
 
 test("a base turns a one-sided change back into an ordinary transfer", () => {
   const base = [file("facts/a.md", "v1"), file("facts/b.md", "v1")];
@@ -216,7 +215,7 @@ test("newest-wins compares delete revision times with surviving modifications", 
         ["facts/peer-deletion-wins.md", 3000],
       ]),
     },
-    { conflictPolicy: "newest-wins" },
+    { conflictPolicy: "newest-wins" }
   );
   assert.equal(entryFor(entries, "facts/local-modification-wins.md").resolution, "local-wins");
   assert.equal(entryFor(entries, "facts/peer-deletion-wins.md").resolution, "peer-wins");
@@ -237,7 +236,10 @@ test("namespaces are planned independently and reported separately", () => {
   assert.equal(plan.entries.length, 2);
   assert.equal(plan.entries.filter((e) => e.namespace === "alpha")[0]?.action, "push");
   assert.equal(plan.entries.filter((e) => e.namespace === "beta")[0]?.action, "pull");
-  assert.deepEqual(plan.byNamespace.map((r) => r.namespace), ["alpha", "beta"]);
+  assert.deepEqual(
+    plan.byNamespace.map((r) => r.namespace),
+    ["alpha", "beta"]
+  );
 });
 
 test("the plan is byte-stable across runs regardless of input order", () => {
@@ -256,8 +258,16 @@ test("the plan is byte-stable across runs regardless of input order", () => {
   assert.deepEqual(first.entries, second.entries);
   assert.deepEqual(
     first.entries.map((e) => `${e.namespace}:${e.path}`),
-    ["alpha:facts/a.md", "alpha:facts/b.md", "alpha:facts/c.md", "alpha:facts/z.md",
-      "beta:facts/a.md", "beta:facts/b.md", "beta:facts/c.md", "beta:facts/z.md"],
+    [
+      "alpha:facts/a.md",
+      "alpha:facts/b.md",
+      "alpha:facts/c.md",
+      "alpha:facts/z.md",
+      "beta:facts/a.md",
+      "beta:facts/b.md",
+      "beta:facts/c.md",
+      "beta:facts/z.md",
+    ]
   );
 });
 
@@ -315,7 +325,7 @@ test("streaming the local side still reports every peer-only path exactly once",
   });
   assert.deepEqual(
     entries.filter((e) => e.action === "pull").map((e) => e.path),
-    ["facts/p1.md", "facts/p2.md"],
+    ["facts/p1.md", "facts/p2.md"]
   );
 });
 
@@ -345,7 +355,7 @@ test("a retracted peer revision cannot win a conflict", () => {
       peer: [file("facts/a.md", "retracted", 9000)],
       tombstonedFileSha256: [digest("retracted")],
     },
-    { conflictPolicy: "newest-wins" },
+    { conflictPolicy: "newest-wins" }
   );
   const entry = entryFor(entries, "facts/a.md");
   assert.equal(entry.action, "suppress");
@@ -362,7 +372,7 @@ test("a malformed census record fails the plan instead of vanishing from it", ()
           peer: side === "peer" ? [{ path: "", sha256: digest("x") }] : [],
         }),
       ReconcilePlanInputError,
-      `${side} census with an empty path must reject`,
+      `${side} census with an empty path must reject`
     );
   }
 });
@@ -379,7 +389,7 @@ test("a path listed twice with different digests is rejected on every census", (
           base: side === "base" ? dupe : undefined,
         }),
       /lists facts\/a\.md twice with different digests/,
-      `${side} census must not silently pick a winner by arrival order`,
+      `${side} census must not silently pick a winner by arrival order`
     );
   }
   // An exact repeat is unambiguous and stays acceptable.
@@ -388,7 +398,7 @@ test("a path listed twice with different digests is rejected on every census", (
       namespace: "default",
       local: [file("facts/a.md", "one"), file("facts/a.md", "one")],
       peer: [],
-    }),
+    })
   );
 });
 
@@ -398,9 +408,9 @@ test("an unknown conflictPolicy is rejected rather than silently treated as manu
       planNamespaceReconciliation(
         { namespace: "default", local: [file("facts/a.md", "l")], peer: [file("facts/a.md", "p")] },
         // Deserialized config or an untyped JS caller can produce this.
-        { conflictPolicy: "newest_wins" as unknown as "newest-wins" },
+        { conflictPolicy: "newest_wins" as unknown as "newest-wins" }
       ),
-    ReconcilePlanInputError,
+    ReconcilePlanInputError
   );
 });
 
@@ -426,7 +436,7 @@ test("a retracted local revision does not win a conflict either", () => {
       peer: [file("facts/a.md", "live", 1000)],
       tombstonedFileSha256: [digest("retracted")],
     },
-    { conflictPolicy: "newest-wins" },
+    { conflictPolicy: "newest-wins" }
   );
   assert.equal(entryFor(entries, "facts/a.md").action, "suppress");
 });
@@ -443,7 +453,7 @@ test("a census record without a usable digest is rejected", () => {
           peer: [],
         }),
       /64-character sha256 hex digest/,
-      `digest ${JSON.stringify(bad)} must be rejected`,
+      `digest ${JSON.stringify(bad)} must be rejected`
     );
   }
 });
@@ -458,15 +468,12 @@ test("paths differing only by case are rejected across censuses", () => {
         local: [file("Facts/A.md", "one")],
         peer: [file("facts/a.md", "two")],
       }),
-    /aliasing paths/,
+    /aliasing paths/
   );
 });
 
 test("a missing namespace or a non-iterable census is rejected", () => {
-  assert.throws(
-    () => planNamespaceReconciliation({ namespace: "", local: [], peer: [] }),
-    ReconcilePlanInputError,
-  );
+  assert.throws(() => planNamespaceReconciliation({ namespace: "", local: [], peer: [] }), ReconcilePlanInputError);
   for (const side of ["local", "peer"] as const) {
     assert.throws(
       () =>
@@ -476,7 +483,7 @@ test("a missing namespace or a non-iterable census is rejected", () => {
           peer: side === "peer" ? (undefined as unknown as ReconcileFileState[]) : [],
         }),
       /must be iterable/,
-      `${side} census`,
+      `${side} census`
     );
   }
 });
@@ -540,7 +547,7 @@ test("a single digest string is rejected instead of being split into characters"
         // Satisfies Iterable<string>; new Set() would make 64 one-char members.
         tombstonedFileSha256: digest("gone") as unknown as string[],
       }),
-    /must be a collection of digests, not a single string/,
+    /must be a collection of digests, not a single string/
   );
   assert.throws(
     () =>
@@ -550,7 +557,7 @@ test("a single digest string is rejected instead of being split into characters"
         peer: [file("facts/r.md", "gone")],
         tombstonedFileSha256: ["not-a-digest"],
       }),
-    /64-character sha256 hex digest/,
+    /64-character sha256 hex digest/
   );
 });
 
@@ -564,7 +571,7 @@ test("an unsafe census path is rejected before it becomes transfer work", () => 
           peer: [{ path: bad, sha256: digest("x") }],
         }),
       ReconcilePlanInputError,
-      `peer census path ${bad} must be rejected`,
+      `peer census path ${bad} must be rejected`
     );
   }
 });
@@ -579,7 +586,7 @@ test("a duplicate record disagreeing only on mtime is rejected", () => {
         local: [],
         peer: [file("facts/a.md", "same", 1000), file("facts/a.md", "same", 2000)],
       }),
-    /lists facts\/a\.md twice with different mtimeMs/,
+    /lists facts\/a\.md twice with different mtimeMs/
   );
 });
 
@@ -592,7 +599,7 @@ test("the base census participates in case-collision detection", () => {
         peer: [],
         base: [file("Facts/A.md", "one")],
       }),
-    /aliasing paths/,
+    /aliasing paths/
   );
 });
 
@@ -604,7 +611,7 @@ test("the streamed local census rejects an mtime-only duplicate like the indexed
         local: [file("facts/a.md", "same", 1000), file("facts/a.md", "same", 2000)],
         peer: [],
       }),
-    /local census for namespace default lists facts\/a\.md twice with different mtimeMs/,
+    /local census for namespace default lists facts\/a\.md twice with different mtimeMs/
   );
 });
 
@@ -619,9 +626,9 @@ test("newest-wins cannot be flipped by local census ordering", () => {
       () =>
         planNamespaceReconciliation(
           { namespace: "default", local: order, peer: [file("facts/a.md", "peer", 5000)] },
-          { conflictPolicy: "newest-wins" },
+          { conflictPolicy: "newest-wins" }
         ),
-      ReconcilePlanInputError,
+      ReconcilePlanInputError
     );
   }
 });
@@ -635,7 +642,7 @@ test("the same namespace supplied twice is rejected", () => {
         { namespace: "default", local: [file("facts/a.md", "one")], peer: [] },
         { namespace: "default", local: [], peer: [file("facts/a.md", "two")] },
       ]),
-    /namespace default appears twice/,
+    /namespace default appears twice/
   );
 });
 
@@ -654,7 +661,7 @@ test("an out-of-range mtimeMs cannot decide newest-wins", () => {
             base: side === "base" ? [record] : undefined,
           }),
         /out-of-range mtimeMs/,
-        `${side} census mtimeMs ${String(bad)} must be rejected`,
+        `${side} census mtimeMs ${String(bad)} must be rejected`
       );
     }
   }
@@ -665,21 +672,21 @@ test("malformed public API envelopes raise ReconcilePlanInputError, not TypeErro
     assert.throws(
       () => planReconciliation(bad as unknown as []),
       ReconcilePlanInputError,
-      `planReconciliation(${JSON.stringify(bad)})`,
+      `planReconciliation(${JSON.stringify(bad)})`
     );
     assert.throws(
       () => planNamespaceReconciliation(bad as unknown as { namespace: string; local: []; peer: [] }),
       ReconcilePlanInputError,
-      `planNamespaceReconciliation(${JSON.stringify(bad)})`,
+      `planNamespaceReconciliation(${JSON.stringify(bad)})`
     );
   }
   assert.throws(
     () =>
       planNamespaceReconciliation(
         { namespace: "default", local: [], peer: [] },
-        null as unknown as Record<string, never>,
+        null as unknown as Record<string, never>
       ),
-    ReconcilePlanInputError,
+    ReconcilePlanInputError
   );
 });
 
@@ -692,7 +699,7 @@ test("a fractional mtime from fs.stat is accepted", () => {
       local: [file("facts/a.md", "local", 1_700_000_000_123.456)],
       peer: [file("facts/a.md", "peer", 1_700_000_000_999.789)],
     },
-    { conflictPolicy: "newest-wins" },
+    { conflictPolicy: "newest-wins" }
   );
   assert.equal(entryFor(entries, "facts/a.md").resolution, "peer-wins");
 });
@@ -700,7 +707,7 @@ test("a fractional mtime from fs.stat is accepted", () => {
 test("a non-canonical namespace is rejected so duplicates cannot slip past", () => {
   assert.throws(
     () => planNamespaceReconciliation({ namespace: " team ", local: [], peer: [] }),
-    /is not canonical; pass "team"/,
+    /is not canonical; pass "team"/
   );
   // The dedup guard would otherwise see two distinct keys for one namespace.
   assert.throws(
@@ -709,7 +716,7 @@ test("a non-canonical namespace is rejected so duplicates cannot slip past", () 
         { namespace: "team", local: [file("facts/a.md", "one")], peer: [] },
         { namespace: " team ", local: [], peer: [file("facts/a.md", "two")] },
       ]),
-    ReconcilePlanInputError,
+    ReconcilePlanInputError
   );
 });
 
@@ -723,7 +730,7 @@ test("a null base cursor is rejected rather than read as a bootstrap", () => {
         peer: [],
         base: null as unknown as undefined,
       }),
-    /must be iterable/,
+    /must be iterable/
   );
 });
 
@@ -737,7 +744,7 @@ test("canonically equivalent Unicode paths are treated as one file", () => {
         local: [file("facts/\u00e9.md", "one")],
         peer: [file("facts/e\u0301.md", "two")],
       }),
-    /aliasing paths/,
+    /aliasing paths/
   );
 });
 
@@ -746,13 +753,13 @@ test("an array is not a valid options or input envelope", () => {
     () =>
       planNamespaceReconciliation(
         { namespace: "default", local: [], peer: [] },
-        [] as unknown as Record<string, never>,
+        [] as unknown as Record<string, never>
       ),
-    /options must be a plain object/,
+    /options must be a plain object/
   );
   assert.throws(
     () => planNamespaceReconciliation([] as unknown as { namespace: string; local: []; peer: [] }),
-    /namespace input must be a plain object/,
+    /namespace input must be a plain object/
   );
 });
 
@@ -781,7 +788,7 @@ test("the peer tombstone set is validated like our own", () => {
         peer: [],
         peerTombstonedFileSha256: digest("x") as unknown as string[],
       }),
-    /peerTombstonedFileSha256 for namespace default must be a collection of digests/,
+    /peerTombstonedFileSha256 for namespace default must be a collection of digests/
   );
 });
 
@@ -791,17 +798,19 @@ test("Win32-aliasing path segments are rejected", () => {
   for (const bad of ["facts/a.md.", "facts/a.md ", "facts/dir./a.md"]) {
     assert.throws(
       () =>
-        planNamespaceReconciliation({
-          namespace: "default",
-          local: [{ path: bad, sha256: digest("x") }],
-          peer: [],
-        }),
+        planNamespaceReconciliation(
+          {
+            namespace: "default",
+            local: [{ path: bad, sha256: digest("x") }],
+            peer: [],
+          },
+          { localPlatform: "win32" }
+        ),
       /dot or space/,
-      `path ${JSON.stringify(bad)} must be rejected`,
+      `path ${JSON.stringify(bad)} must be rejected`
     );
   }
 });
-
 
 test("an unorderable supersede link says so instead of picking a side", () => {
   for (const pair of [
@@ -810,7 +819,7 @@ test("an unorderable supersede link says so instead of picking a side", () => {
   ] as const) {
     const entries = planNamespaceReconciliation(
       { namespace: "default", local: [pair[0]], peer: [pair[1]] },
-      { conflictPolicy: "newest-wins" },
+      { conflictPolicy: "newest-wins" }
     );
     const entry = entryFor(entries, "facts/a.md");
     assert.equal(entry.resolution, "supersede-link");
@@ -821,13 +830,16 @@ test("Windows-unstorable and reserved path names are rejected", () => {
   for (const bad of ["facts/a:b.md", "facts/CON.md", "facts/com1.txt", 'facts/a"b.md', "facts/a\u0001b.md"]) {
     assert.throws(
       () =>
-        planNamespaceReconciliation({
-          namespace: "default",
-          local: [{ path: bad, sha256: digest("x") }],
-          peer: [],
-        }),
+        planNamespaceReconciliation(
+          {
+            namespace: "default",
+            local: [{ path: bad, sha256: digest("x") }],
+            peer: [],
+          },
+          { localPlatform: "win32" }
+        ),
       ReconcilePlanInputError,
-      `path ${JSON.stringify(bad)} must be rejected`,
+      `path ${JSON.stringify(bad)} must be rejected`
     );
   }
   // A name that merely CONTAINS a reserved word is fine.
@@ -836,7 +848,7 @@ test("Windows-unstorable and reserved path names are rejected", () => {
       namespace: "default",
       local: [file("facts/console.md", "x")],
       peer: [],
-    }),
+    })
   );
 });
 
@@ -849,25 +861,27 @@ test("a directionless supersede link is reported as unresolved", () => {
       local: [file("facts/a.md", "local", 5000)],
       peer: [file("facts/a.md", "peer", 5000)],
     },
-    { conflictPolicy: "newest-wins" },
+    { conflictPolicy: "newest-wins" }
   );
   assert.deepEqual(summarizeReconcilePlan(entries), [
     { namespace: "default", pull: 0, push: 0, identical: 0, conflict: 1, suppress: 0, unresolved: 1 },
   ]);
 });
 
-
 test("superscript COM and LPT device aliases are rejected", () => {
   for (const bad of ["facts/COM\u00b9.txt", "facts/LPT\u00b2", "facts/com\u00b3.md"]) {
     assert.throws(
       () =>
-        planNamespaceReconciliation({
-          namespace: "default",
-          local: [{ path: bad, sha256: digest("x") }],
-          peer: [],
-        }),
+        planNamespaceReconciliation(
+          {
+            namespace: "default",
+            local: [{ path: bad, sha256: digest("x") }],
+            peer: [],
+          },
+          { localPlatform: "win32" }
+        ),
       /reserved Windows device name/,
-      `path ${JSON.stringify(bad)} must be rejected`,
+      `path ${JSON.stringify(bad)} must be rejected`
     );
   }
 });
@@ -882,7 +896,7 @@ test("a full caseless fold catches sigma-style aliases", () => {
         local: [file("facts/\u03c2.md", "one")],
         peer: [file("facts/\u03c3.md", "two")],
       }),
-    /aliasing paths/,
+    /aliasing paths/
   );
 });
 
@@ -894,18 +908,18 @@ test("non-plain objects are not accepted as envelopes", () => {
       () =>
         planNamespaceReconciliation(
           { namespace: "default", local: [], peer: [] },
-          bad as unknown as Record<string, never>,
+          bad as unknown as Record<string, never>
         ),
       /options must be a plain object/,
-      `options ${Object.prototype.toString.call(bad)}`,
+      `options ${Object.prototype.toString.call(bad)}`
     );
   }
   // A null-prototype record is still a record.
   assert.doesNotThrow(() =>
     planNamespaceReconciliation(
       { namespace: "default", local: [], peer: [] },
-      Object.assign(Object.create(null), { conflictPolicy: "manual" }) as Record<string, never>,
-    ),
+      Object.assign(Object.create(null), { conflictPolicy: "manual" }) as Record<string, never>
+    )
   );
 });
 
@@ -915,7 +929,7 @@ test("an empty namespace list still validates its options", () => {
     assert.throws(
       () => planReconciliation([], bad as unknown as Record<string, never>),
       ReconcilePlanInputError,
-      `options ${Object.prototype.toString.call(bad)}`,
+      `options ${Object.prototype.toString.call(bad)}`
     );
   }
   assert.equal(planReconciliation([], { conflictPolicy: "manual" }).converged, true);
@@ -929,7 +943,7 @@ test("sharp-S aliases fold together", () => {
         local: [file("facts/stra\u00dfe.md", "one")],
         peer: [file("facts/stra\u1e9ee.md", "two")],
       }),
-    /aliasing paths/,
+    /aliasing paths/
   );
 });
 
@@ -944,7 +958,7 @@ test("a malformed tombstone collection raises the planner's error, not a TypeErr
           tombstonedFileSha256: bad as unknown as string[],
         }),
       ReconcilePlanInputError,
-      `tombstonedFileSha256 ${JSON.stringify(bad)}`,
+      `tombstonedFileSha256 ${JSON.stringify(bad)}`
     );
   }
 });
@@ -955,12 +969,15 @@ test("an unpaired surrogate path is rejected", () => {
   for (const bad of ["facts/\ud800.md", "facts/\udc00.md"]) {
     assert.throws(
       () =>
-        planNamespaceReconciliation({
-          namespace: "default",
-          local: [{ path: bad, sha256: digest("x") }],
-          peer: [],
-        }),
-      /unpaired surrogate/,
+        planNamespaceReconciliation(
+          {
+            namespace: "default",
+            local: [{ path: bad, sha256: digest("x") }],
+            peer: [],
+          },
+          { localPlatform: "win32" }
+        ),
+      /unpaired surrogate/
     );
   }
   // A well-formed pair is fine.
@@ -969,7 +986,7 @@ test("an unpaired surrogate path is rejected", () => {
       namespace: "default",
       local: [file("facts/\ud83d\ude00.md", "x")],
       peer: [],
-    }),
+    })
   );
 });
 
@@ -982,7 +999,7 @@ test("the base cursor is validated with the same rules as the other censuses", (
         peer: [],
         base: [file("facts/a.md", "one"), file("facts/a.md", "two")],
       }),
-    /base census for namespace default lists facts\/a\.md twice with different digests/,
+    /base census for namespace default lists facts\/a\.md twice with different digests/
   );
   // And it still drives the one-sided-change decision it exists for.
   const entries = planNamespaceReconciliation({
@@ -998,8 +1015,5 @@ test("the base cursor is validated with the same rules as the other censuses", (
 test("a namespace with an unpaired surrogate is rejected", () => {
   // namespaceIdentityToken() encodes through TextEncoder, so this and a
   // literal U+FFFD namespace are one directory on disk.
-  assert.throws(
-    () => planNamespaceReconciliation({ namespace: "\ud800", local: [], peer: [] }),
-    /unpaired surrogate/,
-  );
+  assert.throws(() => planNamespaceReconciliation({ namespace: "\ud800", local: [], peer: [] }), /unpaired surrogate/);
 });
