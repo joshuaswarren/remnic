@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
 import {
   lstat,
   mkdir,
@@ -33,6 +32,7 @@ import {
   shouldExcludeOfflineSyncFile,
   type OfflineSyncExcludeFile,
   type OfflineSyncFileTarget,
+  plainFileDigest,
 } from "./offline-sync-file-io.js";
 import { CENSUS_MAX_MTIME_MS, isCensusMtimeMs, isSha256Hex } from "./census-validation.js";
 export type { OfflineSyncExcludeFile, OfflineSyncFileTarget } from "./offline-sync-file-io.js";
@@ -1139,37 +1139,6 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
     files: sortedFiles,
     ...(deletions === undefined ? {} : { deletions }),
   };
-}
-
-/** Bounded digest cache for plain-file chunk reads: key is the file identity
- * (dev/ino-free approximation: path + size + mtimeMs), value the streamed
- * whole-file sha256. Capped so a churning corpus cannot grow it unbounded. */
-const PLAIN_FILE_DIGEST_CACHE_MAX = 64;
-const plainFileDigestCache = new Map<string, string>();
-
-async function plainFileDigest(
-  filePath: string,
-  st: { size: number; mtimeMs: number },
-): Promise<string> {
-  const key = `${filePath}\0${st.size}\0${st.mtimeMs}`;
-  const cached = plainFileDigestCache.get(key);
-  if (cached !== undefined) {
-    // Refresh LRU position.
-    plainFileDigestCache.delete(key);
-    plainFileDigestCache.set(key, cached);
-    return cached;
-  }
-  const hash = createHash("sha256");
-  for await (const piece of createReadStream(filePath)) {
-    hash.update(piece as Buffer);
-  }
-  const digest = hash.digest("hex");
-  plainFileDigestCache.set(key, digest);
-  if (plainFileDigestCache.size > PLAIN_FILE_DIGEST_CACHE_MAX) {
-    const oldest = plainFileDigestCache.keys().next().value;
-    if (typeof oldest === "string") plainFileDigestCache.delete(oldest);
-  }
-  return digest;
 }
 
 export async function readOfflineSyncFileContentChunk(options: {
