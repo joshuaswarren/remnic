@@ -21,6 +21,7 @@
  */
 
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -59,6 +60,11 @@ const INCOMING_BOB = "The audit service also covers vendor onboarding.";
 const TURN_A = `Please remember: ${INCOMING_A}`;
 const TURN_B = `Please remember: ${INCOMING_B}`;
 const TURN_BOB = `Please remember: ${INCOMING_BOB}`;
+const GRAPH_SEED = "The billing service deploys on a Tuesday cadence.";
+const GRAPH_INCOMING = "The billing service deploys at 09:00 UTC because payments reconciliation gates the window.";
+const GRAPH_SIBLING = "The billing service pages the on-call engineer after failed deploys.";
+const PREF_SEED = "Commit messages favor terse commit subject lines.";
+const PREF_INCOMING = "Commit messages favor imperative mood subjects.";
 
 const NEEDLE_SEED_A = "Tuesday cadence";
 const NEEDLE_A = "09:00 UTC sharp";
@@ -219,9 +225,20 @@ function installJudge(orchestrator: Orchestrator, judge: { calls: number }): voi
  * importance score, so an incoming fact's own importance never bypasses the
  * merge as unpreservable metadata. Returns the file path.
  */
-async function seedMergeTarget(root: string, id: string, content: string): Promise<string> {
+async function seedMergeTarget(
+  root: string,
+  id: string,
+  content: string,
+  options: {
+    /** Category (and its directory) for the target; default `fact`/`facts`. */
+    category?: "fact" | "preference";
+    /** Extra frontmatter lines stamped between `status` and `importanceScore`. */
+    extraFrontmatter?: string[];
+  } = {},
+): Promise<string> {
+  const category = options.category ?? "fact";
   const created = pastIso();
-  const dir = path.join(root, "facts", created.slice(0, 10));
+  const dir = path.join(root, category === "preference" ? "preferences" : "facts", created.slice(0, 10));
   await mkdir(dir, { recursive: true });
   const file = path.join(dir, `${id}.md`);
   await writeFile(
@@ -229,13 +246,14 @@ async function seedMergeTarget(root: string, id: string, content: string): Promi
     [
       "---",
       `id: ${id}`,
-      "category: fact",
+      `category: ${category}`,
       `created: ${created}`,
       `updated: ${created}`,
       "source: extraction",
       "confidence: 0.9",
       "confidenceTier: explicit",
       "status: active",
+      ...(options.extraFrontmatter ?? []),
       "importanceScore: 0.9",
       "importanceLevel: high",
       "---",
@@ -259,6 +277,152 @@ async function assertMerged(file: string, needles: string[], reinforcementCount:
     `merged target must record reinforcement_count: ${reinforcementCount}`,
   );
 }
+
+/** Read one graph JSONL edge file (entity/time/causal) as parsed rows. */
+async function readGraphEdges(
+  memoryDir: string,
+  type: "entity" | "time" | "causal",
+): Promise<Array<{ from: string; to: string; label: string }>> {
+  const file = path.join(memoryDir, "state", "graphs", `${type}.jsonl`);
+  try {
+    const raw = await readFile(file, "utf8");
+    return raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as { from: string; to: string; label: string });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+}
+
+test("a judge-accepted merge builds the create path's graph edges for the target (round N+5 A)", async () => {
+  const memoryDir = await mkTempMemoryDir("semantic-merge-graph");
+  let orch: Orchestrator | undefined;
+  try {
+    const cfg = mergeLifecycleConfig(memoryDir, {
+      multiGraphMemoryEnabled: true,
+      threadingEnabled: true,
+    });
+    orch = new Orchestrator(cfg);
+    const judge = { calls: 0 };
+    installJudge(orch, judge);
+    // Fact 1 has no merge candidate (created; becomes the batch's causal and
+    // time predecessor). Fact 2 merges into the seeded target.
+    const FIRST = "The audit service tracks quarterly access reviews.";
+    stubExtraction(orch, () => ({
+      facts: [
+        { category: "fact", content: FIRST, confidence: 0.9, tags: [] },
+        { category: "fact", content: GRAPH_INCOMING, confidence: 0.9, tags: [] },
+      ],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    }));
+    installNeighbors(orch, (query) =>
+      query === GRAPH_INCOMING ? [{ id: "merge-target-graph", score: BAND_SCORE }] : [],
+    );
+    const targetFile = await seedMergeTarget(memoryDir, "merge-target-graph", GRAPH_SEED, {
+      extraFrontmatter: ["entityRef: entity-billing-service"],
+    });
+    await seedMergeTarget(memoryDir, "merge-sibling-graph", GRAPH_SIBLING, {
+      extraFrontmatter: ["entityRef: entity-billing-service"],
+    });
+    await orch.processTurn("user", `Please remember: ${GRAPH_INCOMING}`, "session-graph");
+    assert.equal(await orch.waitForExtractionIdle(15_000), true);
+
+    assert.equal(judge.calls, 1, "the mergeable fact must reach the judge exactly once");
+    await assertMerged(targetFile, ["Tuesday cadence", "09:00 UTC"], 1);
+
+    const entityEdges = await readGraphEdges(memoryDir, "entity");
+    assert.equal(
+      entityEdges.filter((e) => e.from.endsWith("merge-target-graph.md")).length,
+      1,
+      "the merged target must carry an entity edge to its seeded sibling",
+    );
+    assert.ok(
+      entityEdges.some(
+        (e) =>
+          e.from.endsWith("merge-target-graph.md") &&
+          e.to.endsWith("merge-sibling-graph.md") &&
+          e.label === "entity-billing-service",
+      ),
+    );
+    const timeEdges = await readGraphEdges(memoryDir, "time");
+    assert.equal(
+      timeEdges.filter((e) => e.to.endsWith("merge-target-graph.md")).length,
+      1,
+      "the merged target must carry a time edge from the same extraction's created fact",
+    );
+    assert.ok(
+      timeEdges.every((e) => typeof e.label === "string" && e.label.length > 0),
+      "time edges carry the thread id as their label",
+    );
+    const causalEdges = await readGraphEdges(memoryDir, "causal");
+    assert.equal(
+      causalEdges.filter((e) => e.to.endsWith("merge-target-graph.md")).length,
+      1,
+      "the merged body's causal phrase must link the created fact to the merged target",
+    );
+  } finally {
+    await orch?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+test("a preference accepted through semantic merge reaches the behavior-signal ledger (round N+5 B)", async () => {
+  const memoryDir = await mkTempMemoryDir("semantic-merge-pref");
+  let orch: Orchestrator | undefined;
+  try {
+    const cfg = mergeLifecycleConfig(memoryDir);
+    orch = new Orchestrator(cfg);
+    const judge = { calls: 0 };
+    installJudge(orch, judge);
+    stubExtraction(orch, () => ({
+      facts: [
+        { category: "preference", content: PREF_INCOMING, confidence: 0.9, tags: [] },
+      ],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    }));
+    installNeighbors(orch, (query) =>
+      query === PREF_INCOMING ? [{ id: "merge-target-pref", score: BAND_SCORE }] : [],
+    );
+    const targetFile = await seedMergeTarget(memoryDir, "merge-target-pref", PREF_SEED, {
+      category: "preference",
+    });
+    await orch.processTurn("user", `Please remember: ${PREF_INCOMING}`, "session-pref");
+    assert.equal(await orch.waitForExtractionIdle(15_000), true);
+
+    assert.equal(judge.calls, 1, "the preference must reach the judge exactly once");
+    await assertMerged(targetFile, ["terse commit subject lines", "imperative mood"], 1);
+
+    const ledgerPath = path.join(memoryDir, "state", "behavior-signals.jsonl");
+    const rows = (await readFile(ledgerPath, "utf8"))
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as Record<string, string>);
+    const affinity = rows.filter(
+      (row) => row.memoryId === "merge-target-pref" && row.signalType === "preference_affinity",
+    );
+    assert.equal(
+      affinity.length,
+      1,
+      "the merged preference target must record exactly one preference_affinity event",
+    );
+    assert.equal(affinity[0]?.direction, "positive");
+    assert.equal(affinity[0]?.category, "preference");
+    assert.equal(affinity[0]?.source, "extraction");
+  } finally {
+    await orch?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
 
 // ── Subject ───────────────────────────────────────────────────────────────────
 

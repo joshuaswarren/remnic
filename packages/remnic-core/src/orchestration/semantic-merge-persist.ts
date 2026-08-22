@@ -14,6 +14,9 @@
  * its own entry — it was never persisted (checklist #32).
  */
 
+import path from "node:path";
+
+import { buildBehaviorSignalsForMemory } from "../behavior-signals.js";
 import { readFile } from "node:fs/promises";
 
 import { isUntrustedOrigin, parseOriginClass } from "../security/origin-authority.js";
@@ -52,8 +55,11 @@ import {
   resolvePipelineProcessingCapabilities,
   resolvePresentationCapabilities,
   resolveRecallAuxiliaryCapabilities,
+  type GraphConstructionCapabilitySet,
 } from "../capabilities.js";
+import { resolvePersistedMemoryRelativePath } from "./orchestrator-helpers.js";
 import type {
+  BehaviorSignalEvent,
   FaithfulnessFrontmatter,
   ImportanceScore,
   MemoryCategory,
@@ -997,4 +1003,88 @@ export async function writeMergedVerbatimArtifact(
     ...(input.origin ? { origin: input.origin } : {}),
     ...(input.toolScoped ? { toolScoped: true as const } : {}),
   });
+}
+
+/**
+ * Round N+5 (A+B): the create path's write is followed by post-write stages
+ * that OBSERVE the persisted record — graph-edge construction and the
+ * behavior-signal ledger. The merge path's `continue` skipped both, so a
+ * judge-accepted merge committed new claims that graph-mode recall and
+ * runtime-policy learning could never see. This helper runs them for the
+ * SURVIVING target, derived from the re-read committed record exactly like
+ * `buildMergedTargetPromotionPayload`: category, entityRef, and graph content
+ * come from the committed merged body, never the incoming extraction. The
+ * graph content is the canonical RAW pre-citation form — the same body the
+ * create path hands `buildGraphEdge`. Graph failures are fail-open (the
+ * committed merge stands, matching the create path's try/catch); the caller
+ * owns the ledger flush, so the behavior events are RETURNED for its storage.
+ */
+export async function runMergedTargetPostEffects(
+  deps: ExtractionPersistDeps,
+  storage: StorageManager,
+  merge: { targetId: string; mergedContent: string },
+  input: {
+    /** Written category (parity-guaranteed equal to the committed record's). */
+    category: MemoryCategory;
+    incomingContent: string;
+    incomingConfidence: number;
+    namespace: string;
+    graphCaps: GraphConstructionCapabilitySet;
+    graphContext: {
+      allMemsForGraph: MemoryFile[] | null;
+      memoryPathById: Map<string, string>;
+      previousPersistedRelPath?: string;
+    };
+    threadIdForEdge: string | undefined;
+    threadEpisodeIdsForGraph: string[] | undefined;
+  },
+): Promise<BehaviorSignalEvent[]> {
+  const signals = buildBehaviorSignalsForMemory({
+    memoryId: merge.targetId,
+    category: input.category,
+    content: input.incomingContent,
+    namespace: input.namespace,
+    confidence: input.incomingConfidence,
+    source: "extraction",
+  });
+  if (!input.graphCaps.multiGraphMemory) return signals;
+  try {
+    const committed = await storage.getMemoryByIdIncludingArchived(merge.targetId);
+    if (!committed || committed.content !== merge.mergedContent) return signals;
+    if (inferMemoryStatus(committed.frontmatter, committed.path) !== "active") return signals;
+    const category = committed.frontmatter.category;
+    const entityRef = committed.frontmatter.entityRef;
+    const rawBody = rawPreCitationMergedBody(deps, merge.mergedContent);
+    const memoryRelPath = resolvePersistedMemoryRelativePath({
+      memoryId: merge.targetId,
+      pathById: input.graphContext.memoryPathById,
+      category,
+    });
+    input.graphContext.memoryPathById.set(merge.targetId, memoryRelPath);
+    // The target predates this extraction, so a corpus-loaded context already
+    // holds an entry for it — refresh that entry's body in place instead of
+    // appending a duplicate the sibling scan would double-count.
+    const all = input.graphContext.allMemsForGraph;
+    if (Array.isArray(all)) {
+      const entry = all.find((m) => path.relative(storage.dir, m.path) === memoryRelPath);
+      if (entry) entry.content = rawBody;
+    }
+    await deps.buildGraphEdge(
+      storage,
+      memoryRelPath,
+      entityRef,
+      merge.targetId,
+      rawBody,
+      all,
+      input.graphContext.memoryPathById,
+      input.threadIdForEdge,
+      input.threadEpisodeIdsForGraph,
+      input.graphContext.previousPersistedRelPath,
+      input.graphCaps,
+    );
+    input.graphContext.previousPersistedRelPath = memoryRelPath;
+  } catch {
+    /* fail-open: the committed merge stands; the create path's graph block fails open too */
+  }
+  return signals;
 }

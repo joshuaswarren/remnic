@@ -120,7 +120,7 @@ import {
 } from "../orchestrator.js";
 import type { HarmonicConstructionInput } from "../harmonic-construction.js";
 import { enqueueMergedTargetForHarmonicConstruction, persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
-import { applySemanticMergeAtPersist, buildMergedTargetPromotionPayload, writeMergedVerbatimArtifact } from "./semantic-merge-persist.js";
+import { applySemanticMergeAtPersist, buildMergedTargetPromotionPayload, runMergedTargetPostEffects, writeMergedVerbatimArtifact } from "./semantic-merge-persist.js";
 import { ExtractionAnchorSnapshot } from "./extraction-anchor-snapshot.js";
 
 export class ExtractionPersistCoordinator {
@@ -2302,11 +2302,7 @@ export class ExtractionPersistCoordinator {
               );
             }
           } finally {
-            // The parent memory is durable once writeMemory returns `parentId`.
-            // Touch immediately around the chunk-write loop so a later chunk
-            // failure still surfaces the partially durable parent/chunk files to
-            // catalog-driven `writtenSince` maintenance. The final touch below
-            // still refreshes `lastWriteAt` after later durable writes on success.
+            // #1522: the catalog write touch lives in the storage chokepoint.
           }
 
           if (routedRuleId) {
@@ -2499,11 +2495,7 @@ export class ExtractionPersistCoordinator {
               }
             }
           } finally {
-            // Catalog touch (issue #1499): refresh AFTER later chunked
-            // source-namespace durable mutations — temporal supersession, shared
-            // promotion, optional artifact writes, and graph-edge writes — so
-            // `lastWriteAt` cannot precede later file changes on successful
-            // completion. Use the KNOWN routed name, not a dir-decoded guess.
+            // #1522: the catalog write touch lives in the storage chokepoint.
           }
           trackBehaviorSignals(
             targetStorage,
@@ -2565,6 +2557,14 @@ export class ExtractionPersistCoordinator {
         if (harmonicConstructionEnabled) {
           enqueueMergedTargetForHarmonicConstruction(harmonicFactsByStorage, targetStorage, harmonicFact, semanticMerge.targetId, semanticMerge.mergedContent, new Date(harmonicSourceInsertedAtBase + harmonicSourceOrder++).toISOString());
         }
+        // Round N+5 (A+B): create-path parity — the create path's graph-edge build and
+        // behavior-signal ledger entry must also observe a committed merge.
+        trackBehaviorSignals(targetStorage, await runMergedTargetPostEffects(this.deps, targetStorage, semanticMerge, {
+          category: writeCategory, incomingContent: fact.content, incomingConfidence: fact.confidence,
+          namespace: this.deps.storageDirNamespace(targetStorage.dir), graphCaps,
+          graphContext: await ensureGraphContext(targetStorage),
+          threadIdForEdge: threadIdForExtraction ?? undefined, threadEpisodeIdsForGraph,
+        }));
         continue;
       }
       const factWriteEnvelope = composeSalvagedExtractionEnvelope(
@@ -2812,13 +2812,6 @@ export class ExtractionPersistCoordinator {
         // .md never outlives a missing shared fact-hash index entry.
         await flushDeferredFactHashOnFailure(() => this.deps.saveContentHashIndexes(), factDedupEnabled);
         throw err;
-      } finally {
-        // Catalog touch (issue #1499): record AFTER every synchronous
-        // source-namespace mutation in the non-chunked path: writeMemory,
-        // temporal supersession, graph edges, and optional verbatim artifacts.
-        // The `finally` preserves the write touch when post-write indexing or
-        // promotion fails after the canonical memory is already durable. Use the
-        // KNOWN routed name, not a dir-decoded guess (NCQI0).
       }
     }
 
