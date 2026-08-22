@@ -18,7 +18,7 @@ import path from "node:path";
 import { type GraphConstructionCapabilitySet, resolveCapabilities, resolveGraphConstructionCapabilities, resolveIndexingCapabilities, resolveMemoryLifecycleCapabilities, resolveNamespaceCapabilities, resolveRecallEnhancementCapabilities } from "../capabilities.js";
 import type { SemanticDedupHit } from "../dedup/semantic.js";
 import { EmbeddingFallback } from "../embedding-fallback.js";
-import { GraphIndex } from "../graph.js";
+import { GraphIndex, type GraphEdge } from "../graph.js";
 import { ContentHashIndex, StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
@@ -335,7 +335,21 @@ export class PersistenceIndexCoordinator {
   ): Promise<void> {
     if (!resolveMemoryLifecycleCapabilities(this.deps.config).embeddingFallback) return;
     if (!(await this.deps.embeddingFallback.isAvailable())) return;
-    const memory = await storage.getMemoryById(memoryId);
+    // #2330 round N+10 (B): getMemoryById is HOT-tier only, so a semantic
+    // merge's surviving target living under cold/ resolved to null and the
+    // embedding fallback kept serving the pre-merge text. Fall back to the
+    // same cold-aware id lookup the merge path used
+    // (getMemoryByIdIncludingArchived, PR #2771 N+9 B parity for the temporal
+    // refresh); retired records stay out via the active-status gate.
+    let memory = await storage.getMemoryById(memoryId);
+    if (!memory) {
+      const coldAware = await storage
+        .getMemoryByIdIncludingArchived(memoryId)
+        .catch(() => null);
+      if (coldAware && isActiveMemoryStatus(coldAware.frontmatter.status)) {
+        memory = coldAware;
+      }
+    }
     if (!memory) return;
     await this.deps.embeddingFallback.indexFile(
       memoryId,
@@ -361,7 +375,7 @@ export class PersistenceIndexCoordinator {
     threadEpisodeIdsForGraph: string[] | undefined,
     fallbackCausalPredecessor: string | undefined,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.deps.config),
-  ): Promise<void> {
+  ): Promise<GraphEdge[]> {
     // Entity siblings: other memories sharing the same entityRef
     const entitySiblings: string[] = [];
     if (entityRef) {
@@ -405,7 +419,7 @@ export class PersistenceIndexCoordinator {
     }
     const causalPredecessor =
       recentInThread[recentInThread.length - 1] ?? fallbackCausalPredecessor;
-    await this.deps.graphIndexFor(storage).onMemoryWritten({
+    return await this.deps.graphIndexFor(storage).onMemoryWritten({
       memoryPath: memoryRelPath,
       entityRef,
       content: factContent,
@@ -467,12 +481,26 @@ export class PersistenceIndexCoordinator {
           : await storage.readAllMemories();
 
       // Bootstrap: index only active (non-archived, non-superseded) memories.
-      // Incremental: index only the newly persisted IDs.
+      // Incremental: index only the newly persisted IDs. `readAllMemories`
+      // is HOT-tier only, so an id that lives under `cold/` (e.g. a semantic
+      // merge's surviving target — PR #2771 round N+9 B) is missing from the
+      // pool and the index keeps serving the pre-merge row. Fetch each
+      // missing id through the same cold-aware lookup the merge path used
+      // (`getMemoryByIdIncludingArchived`) instead of scanning the whole
+      // cold tier per batch.
       const pool = needsFullRebuild
         ? allMemories.filter((m) => isActiveMemoryStatus(m.frontmatter.status))
-        : (() => {
+        : await (async () => {
             const idSet = new Set(persistedIds);
-            return allMemories.filter((m) => idSet.has(m.frontmatter.id));
+            const hot = allMemories.filter((m) => idSet.has(m.frontmatter.id));
+            for (const id of persistedIds) {
+              if (hot.some((m) => m.frontmatter.id === id)) continue;
+              const cold = await storage
+                .getMemoryByIdIncludingArchived(id)
+                .catch(() => null);
+              if (cold) hot.push(cold);
+            }
+            return hot;
           })();
 
       const entries: Array<{

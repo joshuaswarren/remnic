@@ -1163,6 +1163,12 @@ See [compounding.md](compounding.md).
 | `semanticDedupEnabled` | `true` | Write-time semantic similarity guard (issue #373) — embeds each candidate fact, queries the top-K nearest neighbors, and skips the write when cosine similarity ≥ `semanticDedupThreshold`. Fails open when the embedding backend is unavailable. |
 | `semanticDedupThreshold` | `0.92` | Cosine similarity threshold in `[0, 1]` above which a candidate fact is treated as a near-duplicate and skipped. |
 | `semanticDedupCandidates` | `5` | Number of nearest-neighbor candidates to compare against during the write-time semantic dedup check. |
+| `semanticMerge` | — | Must be an object when present; a present non-object value (`semanticMerge: true`, `"enabled"`, an array, `null`, `undefined`) is rejected at parse time. Only an absent block falls back to the defaults below. Presence is own-property presence throughout this block: a key inherited through the prototype chain never applies, and a present-but-`undefined` value is rejected rather than treated as absent. |
+| `semanticMerge.enabled` | `false` | Judge-mediated merge-on-write (issue #2330). Master gate; with it off there is no lookup and no judge call — byte-identical behavior to before the feature. |
+| `semanticMerge.minSimilarity` | `0.8` | Lower bound of the merge band `[minSimilarity, semanticDedupThreshold)`. Must be **strictly below** `semanticDedupThreshold` (which owns the near-duplicate skip path above it); an equal or higher value is rejected at config parse time whenever merging is enabled or this key is set explicitly. A pre-existing config that lowered `semanticDedupThreshold` to at or below `0.8` and never configured `semanticMerge` keeps starting — the disabled feature performs no band lookup. |
+| `semanticMerge.maxCandidates` | `3` | Maximum in-band neighbors offered to the merge judge. Must be an **integer ≥ 0** — non-integer values (`0.5`, `3.7`) are rejected at parse time rather than floored, and a **present-but-unparseable** value (`"abc"`, an object, `null`, `undefined`, `NaN`, `Infinity`) is rejected too instead of silently falling back to the default: only an absent key means `3`. **Set to `0` to disable merging entirely** — the short-circuit happens before any embedding lookup. |
+| `semanticMerge.categories` | `["fact","preference","decision","relationship","skill"]` | Memory categories eligible for merging; must be an array of mergeable category names — every entry must be one of `fact, preference, entity, decision, relationship, principle, commitment, skill, rule`. Anything else (a malformed array, an unknown entry such as `facts`, or an episodic/immutable category) is rejected at parse time with the valid list, never silently replaced with the defaults — an unknown entry would silently disable merging for every category because no extracted memory can match it. The episodic and immutable categories (procedure, reasoning trace, moment, correction) never merge regardless of this list and cannot be listed. |
+| `semanticMerge.shadowMode` | `false` | Decision-only rollout mode: run the lookup and judge, log the would-merge verdict, then always create. Never mutates an existing memory. |
 | `noveltyGateEnabled` | `false` | Write-path embedding-density novelty gate (issue #1953). Off = unchanged persist path. |
 | `noveltyAddThreshold` | `0.55` | Novelty score ≥ this value is ADD (skip semantic/LLM dedup). |
 | `noveltyNoopThreshold` | `0.15` | Novelty score ≤ this value is NOOP (drop; do not write contentHashIndex). Between the two thresholds is UNCERTAIN. |
@@ -1189,6 +1195,212 @@ miss and before any storage work:
 The guard shares its decision function with the CLI `remnic dedup` tooling
 via `packages/remnic-core/src/dedup/semantic.ts`, so there is a single source
 of truth for similarity logic across read-time and write-time code paths.
+
+### Judge-mediated merge-on-write (issue #2330)
+
+Semantic dedup only ever *rejects*: a paraphrase below `semanticDedupThreshold`
+is written as a brand-new fragment, so near-duplicate variants accumulate in the
+`[0.80, 0.92)` band. `semanticMerge` closes that gap by turning an in-band match
+into a create-or-update decision:
+
+1. Query the same namespace-scoped lookup semantic dedup uses, keeping only
+   neighbors inside `[minSimilarity, semanticDedupThreshold)` that share the
+   candidate's category, carry the identical provenance connector — or are
+   unscoped when the fact itself is unscoped (stricter than the novelty and
+   near-duplicate gates, which keep the broad unscoped neighborhood, because
+   a merge rewrites the neighbor's body: an unscoped merge into a
+   connector-owned target would rewrite it while its `sourceConnector`
+   frontmatter kept naming that connector) — and are still `active`.
+2. Ask an LLM merge judge (routed like the extraction judge — local model first,
+   then the gateway fallback chain) whether the pair describes the same
+   underlying concept. `contradicts` and `create` verdicts fall through to the
+   normal write, leaving contradiction detection and temporal supersession
+   untouched.
+3. On a `merge` verdict, validate the returned target id against the candidate
+   snapshot the target as a page version with trigger `semantic-merge`
+   — staged WITHOUT pruning the version history; the cap-based prune runs
+   only after the COMPLETE content-and-metadata transaction commits (both
+   compare-and-swaps), so an attempt that loses either CAS race — or whose
+   frontmatter patch is rejected and rolled back — never discards the
+   oldest rollback point —
+   then update the memory **in place** (same id and path) with a
+   compare-and-swap against the exact body the judge was shown, then stamp
+   `derived_via: merge`, bump `reinforcement_count`, restamp `contentHash`
+   from the same canonical form the normal write path hashes — the sanitized
+   RAW body with the configured citation form stripped off the judge-composed
+   merged text first, so a merged record's identity equals the ordinary write
+   of the equivalent raw fact and exact dedup never fragments — and append
+   the incoming fact's provenance `sources` through
+   the conditional frontmatter API — a second compare-and-swap, so provenance
+   can only ever land on the merged body this run committed — resync the
+   fact-content hash index, reindex, and, when verbatim artifacts are enabled
+   and the fact's category and confidence qualify, store the incoming
+   extraction's text as a verbatim artifact anchored to the merged target —
+   the same anchor the normal write would have stored; this artifact write is
+   the merge's FINAL durable effect, so a failing artifact write is logged
+   and skipped (the committed target stays fully discoverable) — and commits
+   merged body WITH the incoming extraction's citation marker appended
+   (lifted from the same cited string the artifact stores, so memory and
+   artifact share one timestamp), so incoming claims stay attributed even
+   when the judge's merged text embeds the target's older citation; quoting
+   or copying the combined body carries both attributions. A lower incoming
+   confidence downgrades the merged record to `min(incoming, target)`
+   (restamped with the tier that score maps to; an unreadable value
+   bypasses the merge), so a low-confidence extraction can never leave a
+   merged record — or a copy promoted from it — scoring above what the
+   create path would have stored for that fact alone.
+   When intent routing is on, the same patch restamps
+   `intentGoal`/`intentActionType`/`intentEntityTypes` by recomputing them
+   from the committed merged body — the record's own category and tags plus
+   the RAW pre-citation body, the same `inferIntentFromText` call the normal
+   write runs — so the record's intent routing always describes the body it
+   holds instead of the target's stale pre-merge values (an empty entity-type
+   list clears a stale field, exactly as a fresh write would omit it; with
+   routing off the fields are untouched). A successful merge also enqueues
+   the surviving target — committed merged body as content — into the batch's
+   harmonic construction pass, so a merge-only extraction still derives its
+   episode/abstraction nodes and cue anchors; two facts merging into the
+   same target in one batch coalesce to a single entry (the latest committed
+   body replaces the earlier cumulative snapshot, cue anchors union across
+   merges). The returned `persistedIds` stay new-fragment only, while the
+   surviving target joins the batch's internal temporal/tag index refresh —
+   resolved through the cold-aware id lookup when the hot-tier scan misses
+   it, so a `cold/` target's row refreshes too — so event-order queries see
+   the merged tokens without a full corpus rebuild.
+   When multi-graph memory is enabled, a successful merge also builds the
+   surviving target's graph edges — entity, time, and causal — through the
+   same `buildGraphEdge` call the create path runs, derived from the
+   re-read committed record (its category, entity ref, relative path, and
+   raw pre-citation merged body — the cold-aware committed path, never a
+   hot-only path-map fallback), replacing the target's prior generated
+   edges in EVERY enabled graph type — entity from-side, time and causal
+   inbound — instead of re-appending them (one shared routine; if the
+   replacement build fails, the removed edges are restored, so failure
+   leaves either the old or the new complete set; the whole
+   remove-and-rebuild is revision-guarded, so a writer committing a newer
+   body mid-rebuild aborts the stale install instead of clobbering the
+   newer merge's edges), and enrolling the target
+   at the END of the batch's thread episode list — deduped first when
+   already present, so the merge is the thread's latest event — so later
+   facts in the same extraction chain time/causal adjacency through it.
+   The target is ALSO persisted in the thread's durable episode-set file
+   MOVE-TO-END — a target already earlier in the durable list moves to the
+   tail, matching the batch-local ordering — so a target that entered the
+   thread only through a merge, or merged again later, is still at the tail
+   when the next extraction reloads the thread — without widening the public
+   `persistedIds` contract, which stays new-fragment-only. All of it is
+   fail-open like the create path's graph block; and a `preference`-category
+   merge records its
+   `preference_affinity` event in the behavior-signal ledger, so
+   graph-mode recall and runtime-policy learning observe claims accepted
+   through a merge.
+4. A merge carries only content, category, sources, and connector. A fact
+   that also carries extraction metadata the merge cannot preserve —
+   structured attributes, an entity ref, bi-temporal bounds, effective
+   validity bounds the incoming fact does not carry identically (the merged
+   body inherits the target's `valid_at`/`invalid_at`, so a target with
+   `invalid_at` never merges and a target with `valid_at` merges only with an
+   incoming fact carrying the same bound — otherwise a fresh unbounded claim
+   would inherit an expired bound and drop out of normal recall the moment it
+   merges), tags the target lacks, a higher importance, stronger provenance, a
+   subject classification
+   whose effective value (absent = the least-privileged `user`, the same
+   default the subject guard applies) differs from the target's effective
+   subject (so an unclassified fact extracted with classification disabled is
+   never merged into an `agent`-labeled memory that reinforcement could then
+   promote), a computed episode/note `memoryKind` that differs from the
+   target's committed kind (the merged record keeps the target's kind — the
+   classification that drives episode-cache membership and the episode-only
+   verification and promotion paths — so a time-specific fact is never filed
+   as a note and a stable note never rides the episode-only paths; a fact
+   extracted with classification disabled carries no kind and still merges), a
+   `toolScoped: true` classification the target lacks (a
+   tool-scoped fact never widens into an unscoped target; an already-scoped
+   target keeps its stricter flag), or an untrusted authority origin (per
+   `untrustedOrigins`) offered to a trusted-origin target (the merged body
+   renders under the target's origin at recall, so such a merge would hand
+   untrusted text the target's unfenced authority; mismatches that never
+   reduce fencing — equal origins, or trusted content into an untrusted
+   target — still merge, so legacy targets with no `origin` stamp keep
+   receiving user-origin facts) — is created through the normal write
+   instead, so metadata, access scope, and authority are never silently
+   discarded or escalated. A would-be target that already has promoted
+   shared/profile copies (memories linked back by `sourceMemoryId`) also
+   bypasses the merge: those copies are reconciled only by the normal write's
+   promotion step, so merging would strand them at the pre-merge body. Only
+   copies that are still ACTIVE count — a superseded or archived copy serves
+   no body, so it does not block later judge-approved merges into the target.
+   The
+   copy scan inspects every known promotion layer and the shared namespace
+   regardless of current write authorization, so a permission revoked after a
+   copy was promoted cannot hide that copy from the scan. A successful merge
+   into a target with no promoted copy yet still runs the shared/profile
+   promotion the create path would have performed, anchored to the merged
+   target id and fail-open like the create path — but never off an
+   unpatched provenance record: a degraded merge (see step 5) yields no
+   promotion payload at all, so nothing trust-elevating is copied from a
+   record still holding its pre-merge trust metadata. Once the merged-body
+   copy lands, any concurrently promoted pre-merge copy of the same target
+   (same `sourceMemoryId`, older body — the pre-mutation copy probe can race
+   a concurrent writer) is superseded with `supersededBy` naming the current
+   copy, so a stale and a current copy cannot both stay active across
+   namespaces. The promotion payload is
+   derived solely from the re-read committed record — body, category,
+   confidence, tags, entity ref, structured attributes, importance, intent
+   fields, memory kind, bi-temporal bounds (`validAt`, `invalidAt`,
+   `observedAt`, `eventTimeSource`), provenance strength, claim spans,
+   subject, write-provenance label, and the tool-scope marker with its owning
+   `sourceConnector` — so no field on the promotion path reads the incoming
+   extraction, and a copy is authority-fenced exactly like the
+   source its `sourceMemoryId` names (an unstamped legacy target promotes
+   as `unknown`, the fence's least-privilege default; a target whose temporal
+   bounds or attributes the incoming fact omits keeps them on the copy; a
+   `toolScoped: true` target's copy stays withheld from the shared
+   namespace even when the merged body no longer matches the content
+   heuristics that earned the marker). When memory linking is on and the
+   caller suggested navigation links for the incoming fact, a successful
+   merge attaches them to the target's committed `links` (deduped on
+   target+type; a suggestion naming the surviving target itself is
+   dropped rather than becoming a self-edge, since memory linking and the
+   merge judge both search on the incoming content and suggest the target
+   itself) in the same conditional frontmatter patch, so the
+   relationships the create path would have stamped on the new fact stay
+   traversable from the target instead of being lost.
+   Promotion eligibility gates on the committed target's own confidence —
+   the downgraded `min(incoming, target)` value where a lower incoming
+   confidence merged in. A target that cannot ground the promotion after
+   the merge commits (deleted, its body replaced by another writer, or
+   archived/superseded by a concurrent lifecycle operation — promoting
+   from a retired record would resurrect it) skips the promotion
+   fail-open — the merge itself stands. The
+   merge lookup also honors the batch's embedding-outage short circuit (its
+   own lookup failures arm it for the remaining facts) and the novelty
+   gate's `add` decision: when either bypasses semantic dedup for a fact, no
+   merge lookup runs either.
+5. Any doubt — no in-band candidate, fabricated target id, empty or oversized
+   merged content, judge error or timeout, inactive target, a target another
+   writer changed after it was judged, a metadata, subject, or authority-origin
+   guard refusal, a target with promoted copies, failed
+   snapshot or update — creates the
+   new fact exactly as before. The unsafe default is always *create*, and the
+   merged entry is recoverable from the page-version snapshot. When a content
+   update commits but its provenance patch fails, storage is re-read before
+   anything is reported: if the target still holds this run's merged body it is
+   restored to the pre-merge text and the outcome falls back to create, and if
+   another writer has already replaced that body the restore is skipped — that
+   writer's content is never clobbered — and the outcome is likewise a create,
+   because nothing of this merge remains. Only when the merged body is still
+   present and cannot be restored, or the target cannot be read at all, is the
+   outcome reported as a merge rather than a create, so the fact is still never
+   written twice; the target then holds merged text without the incoming
+   provenance and reinforcement metadata, the hash-index resync and reindex
+   still run before that outcome is reported, no shared/profile promotion is
+   built from that record, and the error log names the page
+   version to recover from.
+
+Merging requires page versioning (`versioningEnabled`): without it there is no
+pre-merge snapshot to roll back to, so the merge is refused and the fact is
+created instead.
 
 ## v8.2 Graph Recall Activation
 
