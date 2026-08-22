@@ -190,6 +190,26 @@ test("server config parser disables the admin console by default", () => {
   assert.equal(parseServerConfig({}).adminConsolePrefillToken, false);
 });
 
+test("server config parser defaults trustPrincipalHeader to false and accepts boolean-like strings", () => {
+  assert.equal(parseServerConfig({}).trustPrincipalHeader, false);
+  assert.equal(parseServerConfig({ trustPrincipalHeader: true }).trustPrincipalHeader, true);
+  assert.equal(
+    parseServerConfig({ trustPrincipalHeader: "true" as unknown as boolean }).trustPrincipalHeader,
+    true,
+  );
+  assert.equal(
+    parseServerConfig({ trustPrincipalHeader: "0" as unknown as boolean }).trustPrincipalHeader,
+    false,
+  );
+});
+
+test("server config parser rejects invalid trustPrincipalHeader values", () => {
+  assert.throws(
+    () => parseServerConfig({ trustPrincipalHeader: "maybe" as unknown as boolean }),
+    /server\.trustPrincipalHeader: expected a boolean/,
+  );
+});
+
 test("server config parser rejects invalid field types", () => {
   assert.throws(
     () => parseServerConfig({ host: 123 as unknown as string }),

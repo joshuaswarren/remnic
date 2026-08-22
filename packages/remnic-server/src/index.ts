@@ -44,6 +44,8 @@ export interface ServerConfig {
     port?: unknown;
     authToken?: string;
     principal?: string;
+    /** Trust X-Engram-Principal per request (issue #2782; same gate as OpenClaw --trust-principal-header). */
+    trustPrincipalHeader?: boolean;
     maxBodyBytes?: number;
     /** Max write requests per rolling window before 429 write_rate_limited (issue #1937). */
     writeRateLimitMaxRequests?: number;
@@ -133,6 +135,7 @@ export interface ParsedServerConfig extends ParsedAdminConsoleConfig {
   port: number;
   authToken?: string;
   principal?: string;
+  trustPrincipalHeader?: boolean;
   maxBodyBytes?: number;
   writeRateLimitMaxRequests?: number;
   writeRateLimitWindowMs?: number;
@@ -151,6 +154,7 @@ export function parseServerConfig(
       : parseServerPort(raw.port, options?.portSource ?? "server.port"),
     authToken: parseOptionalString(raw.authToken, "server.authToken"),
     principal: parseOptionalString(raw.principal, "server.principal"),
+    trustPrincipalHeader: parseOptionalBoolean(raw.trustPrincipalHeader, "server.trustPrincipalHeader") ?? false,
     maxBodyBytes: parseOptionalPositiveInteger(raw.maxBodyBytes, "server.maxBodyBytes"),
     writeRateLimitMaxRequests: parseOptionalPositiveInteger(
       raw.writeRateLimitMaxRequests,
@@ -845,6 +849,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     tokenPathPolicy: (connector, pathname) => connector !== "chatgpt" || pathname === "/mcp",
     readiness: () => readiness,
     principal: parsedServerConfig.principal,
+    trustPrincipalHeader: parsedServerConfig.trustPrincipalHeader,
     maxBodyBytes: parsedServerConfig.maxBodyBytes,
     writeRateLimitMaxRequests: parsedServerConfig.writeRateLimitMaxRequests,
     writeRateLimitWindowMs: parsedServerConfig.writeRateLimitWindowMs,

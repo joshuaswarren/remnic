@@ -400,12 +400,19 @@ If `lcmEnabled` is `false`, the response will have an empty `results` array and 
 
 ## Per-request principal override
 
-Standalone `remnic-server` does not currently expose a CLI flag to enable
-trusted per-request principal override. In standalone mode, principal resolution
-comes from `server.principal` in config or from session-key prefix rules.
+Standalone `remnic-server` supports trusted per-request principal override via
+the `server.trustPrincipalHeader` config option (issue #2782):
 
-If you need `X-Engram-Principal` header trust today, use the OpenClaw-hosted HTTP
-access server instead of `remnic-server`:
+```json
+{
+  "server": {
+    "authToken": "set-me",
+    "trustPrincipalHeader": true
+  }
+}
+```
+
+The same gate exists on the OpenClaw-hosted HTTP access server as a CLI flag:
 
 ```bash
 openclaw engram access http-serve \
