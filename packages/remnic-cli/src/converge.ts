@@ -6,6 +6,8 @@ import {
   CONVERGE_CONFLICT_POLICIES,
   DEFAULT_CONVERGE_CONFLICT_POLICY,
   parseConfig,
+  envConvergePeerRequestTimeoutMs,
+  normalizeConvergePeerRequestTimeoutMs,
   type ResolveSecretRefFn,
   buildOfflineSyncSnapshotFromBase,
   applyOfflineSyncFileContentChunk,
@@ -180,6 +182,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   const peerDeletionMtimeMs = new Map<string, ReadonlyMap<string, number>>();
   const localManifests = new Map<string, ReconcileManifest>();
   const peerManifests = new Map<string, ReconcileManifest>();
+  let peerPlatform: string | undefined;
 
   if (options.baseFilesByNamespace) {
     for (const [ns, files] of options.baseFilesByNamespace) {
@@ -323,8 +326,13 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       }
     }
     const fetchFn = options.fetchImpl ?? globalThis.fetch;
-    const timeoutMs = options.peerRequestTimeoutMs ?? DEFAULT_PEER_REQUEST_TIMEOUT_MS;
+    const timeoutMs =
+      options.peerRequestTimeoutMs ??
+      config?.converge.peerRequestTimeoutMs ??
+      envConvergePeerRequestTimeoutMs() ??
+      DEFAULT_PEER_REQUEST_TIMEOUT_MS;
     const capabilities = await fetchPeerSyncCapabilities(peerUrl, resolvedToken, fetchFn, timeoutMs);
+    peerPlatform = capabilities?.platform;
     for (const ns of namespacesToPlan) {
       const peerData = await fetchPeerSnapshot(peerUrl, ns, resolvedToken, fetchFn, timeoutMs);
       const streamedManifest = capabilities?.manifestStream
@@ -363,8 +371,31 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
         const state = peerFiles.find((file) => file.path === tombstonePath);
         if (!state) continue;
         const remote = await fetchPeerFileContent(peerUrl, ns, tombstonePath, resolvedToken, fetchFn, timeoutMs);
-        if (!remote || remote.sha256.toLowerCase() !== state.sha256.toLowerCase()) {
+        // A transport-level failure here is FATAL on purpose: tombstone
+        // evidence is what stops a plan from pushing a peer-retracted memory
+        // back (resurrection). There is no safe "empty evidence" fallback —
+        // the snapshot response carries no tombstone digest array today.
+        if (!remote) {
           throw new Error(`failed to read peer tombstone evidence: ${tombstonePath}`);
+        }
+        if (remote.sha256.toLowerCase() !== state.sha256.toLowerCase()) {
+          // A LIVE peer appends tombstones while the plan runs, so the file
+          // can legitimately differ from the snapshot listing that scheduled
+          // this fetch. Tombstone stores are append-only by design, so the
+          // fetch is consistent with the listing exactly when the listed
+          // revision is a byte-prefix of the fetched content. The comparison
+          // is BYTES throughout: state.bytes is a byte count and hashing the
+          // buffer directly avoids UTF-16 code-unit slicing on non-ASCII
+          // logs (review round 1).
+          const listedBytes = typeof state.bytes === "number" ? state.bytes : -1;
+          const prefixMatches =
+            listedBytes >= 0 &&
+            remote.content.length >= listedBytes &&
+            createHash("sha256").update(remote.content.subarray(0, listedBytes)).digest("hex") ===
+              state.sha256.toLowerCase();
+          if (!prefixMatches) {
+            throw new Error(`failed to read peer tombstone evidence: ${tombstonePath}`);
+          }
         }
         const parsed = parseTombstoneEvidence(remote.content.toString("utf8"));
         for (const value of parsed.contentHashes) evidence.contentHashes.add(value);
@@ -422,7 +453,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   }
 
   const conflictPolicy = options.conflictPolicy ?? config?.converge.conflictPolicy ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
-  const plan = planReconciliation(inputs, { conflictPolicy });
+  const plan = planReconciliation(inputs, { conflictPolicy, peerPlatform });
   return collapseActiveFactDuplicates(plan, localManifests, peerManifests, semanticAgreementMap);
 }
 
@@ -498,9 +529,6 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
       resolvedToken = options.peerToken;
     }
   }
-  const fetchFn = options.fetchImpl ?? globalThis.fetch;
-  const timeoutMs = options.peerRequestTimeoutMs ?? DEFAULT_PEER_REQUEST_TIMEOUT_MS;
-
   let config = options.config;
   if (!config) {
     try {
@@ -509,6 +537,12 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
       // ignore
     }
   }
+  const fetchFn = options.fetchImpl ?? globalThis.fetch;
+  const timeoutMs =
+    options.peerRequestTimeoutMs ??
+    config?.converge.peerRequestTimeoutMs ??
+    envConvergePeerRequestTimeoutMs() ??
+    DEFAULT_PEER_REQUEST_TIMEOUT_MS;
 
   const rootMap = new Map<string, string>();
   if (config) {
@@ -986,6 +1020,9 @@ Options:
                     Default: converge.conflictPolicy (newest-wins)
   --interval <seconds>
                     Watch cadence in seconds (watch only; default 300, min 1)
+  --timeout <seconds>
+                    Per-request peer HTTP timeout (default 30; use 300+ for
+                    boot-scale namespaces of ~100k files)
   --dry-run         Simulate transfers without mutating disk or remote peer
   --json            Output detailed JSON plan report
 `);
@@ -1003,6 +1040,7 @@ Options:
   let dryRun = false;
   let conflictPolicy: ConvergeConflictPolicy | undefined;
   let intervalSeconds: number | undefined;
+  let timeoutSeconds: number | undefined;
 
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
@@ -1026,6 +1064,18 @@ Options:
         return;
       }
       intervalSeconds = parsed;
+      i += 1;
+    } else if (arg === "--timeout") {
+      // Flag-present-but-value-absent is malformed, not "use the default".
+      const raw = rest[i + 1];
+      const parsed = raw === undefined ? Number.NaN : Number(raw);
+      try {
+        timeoutSeconds = normalizeConvergePeerRequestTimeoutMs(parsed, "--timeout") / 1000;
+      } catch {
+        process.stderr.write("converge: --timeout must be a positive number of seconds.\n");
+        process.exitCode = 2;
+        return;
+      }
       i += 1;
     } else if (arg === "--conflict-policy") {
       const policy = rest[i + 1];
@@ -1052,6 +1102,7 @@ Options:
         peerToken,
         conflictPolicy,
         intervalMs: intervalSeconds !== undefined ? intervalSeconds * 1000 : undefined,
+        peerRequestTimeoutMs: timeoutSeconds !== undefined ? timeoutSeconds * 1000 : undefined,
         signal: controller.signal,
         onCycle: json
           ? undefined
@@ -1088,7 +1139,13 @@ Options:
   }
 
   if (action === "plan") {
-    const plan = await computeConvergePlan({ config, peerUrl, peerToken, conflictPolicy });
+    const plan = await computeConvergePlan({
+      config,
+      peerUrl,
+      peerToken,
+      conflictPolicy,
+      ...(timeoutSeconds !== undefined ? { peerRequestTimeoutMs: timeoutSeconds * 1000 } : {}),
+    });
     if (json) {
       console.log(JSON.stringify(plan, null, 2));
     } else {
@@ -1103,6 +1160,7 @@ Options:
     dryRun,
     conflictPolicy,
     config,
+    ...(timeoutSeconds !== undefined ? { peerRequestTimeoutMs: timeoutSeconds * 1000 } : {}),
   });
 
   if (json) {

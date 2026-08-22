@@ -1488,6 +1488,7 @@ Polling never runs inline on the health request path: a probe reads the last com
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `converge.conflictPolicy` | `newest-wins` | Selects how `remnic converge` resolves revisions that conflict. |
+| `converge.peerRequestTimeoutMs` | `30000` | Per-request peer HTTP timeout (ms) for `converge plan/apply/watch`. Boot-scale namespaces (~100k files) can take over 30s to serve a manifest; raise this instead of watching fetches time out. Positive integer, clamped to `3600000`. The `--timeout <seconds>` CLI flag and the `REMNIC_CONVERGE_PEER_TIMEOUT_MS` env var override it (flag > config > env). |
 
 Policy values:
 

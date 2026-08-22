@@ -11,7 +11,11 @@ import type { ContradictionLocalizationConfig, ContradictionScanConfig } from ".
 import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 export type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
 export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
-import type { DriftDetectionSettings, MemoryDriftProvenance, RecallDriftAnnotation } from "./preferences/drift-types.js";
+import type {
+  DriftDetectionSettings,
+  MemoryDriftProvenance,
+  RecallDriftAnnotation,
+} from "./preferences/drift-types.js";
 import type { DeepRecallSettings } from "./deep-recall-config.js";
 import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
 import type { SkillProjectionConfig } from "./procedural/skill-projection.js";
@@ -25,9 +29,24 @@ export type TriggerMode = "smart" | "every_n" | "time_based";
 export type ConvergeConflictPolicy = "newest-wins" | "manual";
 export interface ConvergeConfig {
   conflictPolicy: ConvergeConflictPolicy;
+  /** Per-request peer HTTP timeout in ms (plan/apply/watch). Default 30000; clamped to <= 3600000. */
+  peerRequestTimeoutMs?: number;
 }
 export type SignalLevel = "none" | "low" | "medium" | "high";
-export type MemoryCategory = "fact" | "preference" | "correction" | "entity" | "decision" | "relationship" | "principle" | "commitment" | "moment" | "skill" | "rule" | "procedure" | "reasoning_trace";
+export type MemoryCategory =
+  | "fact"
+  | "preference"
+  | "correction"
+  | "entity"
+  | "decision"
+  | "relationship"
+  | "principle"
+  | "commitment"
+  | "moment"
+  | "skill"
+  | "rule"
+  | "procedure"
+  | "reasoning_trace";
 export type ConsolidationAction = "ADD" | "MERGE" | "UPDATE" | "INVALIDATE" | "SKIP";
 export type ConfidenceTier = "explicit" | "implied" | "inferred" | "speculative";
 export type PrincipalFromSessionKeyMode = "map" | "prefix" | "regex";
@@ -71,13 +90,7 @@ export type ActiveRecallModelFallbackPolicy = "default-remote" | "resolved-only"
  * sequential — callers may jump straight to a lower tier when eligibility
  * does not hold.
  */
-export type RetrievalTier =
-  | "exact-cache"
-  | "fuzzy-cache"
-  | "direct-answer"
-  | "hybrid"
-  | "rerank-graph"
-  | "agentic";
+export type RetrievalTier = "exact-cache" | "fuzzy-cache" | "direct-answer" | "hybrid" | "rerank-graph" | "agentic";
 
 /**
  * Per-recall annotation describing which retrieval tier served a result,
@@ -125,11 +138,7 @@ export type RecallDisclosure = "chunk" | "section" | "raw";
  * Treat this as the single source of truth — do not hard-code disclosure
  * strings elsewhere.
  */
-export const RECALL_DISCLOSURE_LEVELS: readonly RecallDisclosure[] = [
-  "chunk",
-  "section",
-  "raw",
-] as const;
+export const RECALL_DISCLOSURE_LEVELS: readonly RecallDisclosure[] = ["chunk", "section", "raw"] as const;
 
 /**
  * Default disclosure level when a caller omits `disclosure`.  Set to `chunk`
@@ -139,8 +148,7 @@ export const RECALL_DISCLOSURE_LEVELS: readonly RecallDisclosure[] = [
 export const DEFAULT_RECALL_DISCLOSURE: RecallDisclosure = "chunk";
 
 export function isRecallDisclosure(value: unknown): value is RecallDisclosure {
-  return typeof value === "string"
-    && (RECALL_DISCLOSURE_LEVELS as readonly string[]).includes(value);
+  return typeof value === "string" && (RECALL_DISCLOSURE_LEVELS as readonly string[]).includes(value);
 }
 
 export interface RecallSectionConfig {
@@ -575,17 +583,9 @@ export interface CodingContext {
   defaultBranch: string | null;
 }
 
-export type ScopeProfileLayerId =
-  | "userProject"
-  | "teamProject"
-  | "userGlobal"
-  | "serverShared";
+export type ScopeProfileLayerId = "userProject" | "teamProject" | "userGlobal" | "serverShared";
 
-export type ScopeProfilePromotionTarget =
-  | ScopeProfileLayerId
-  | "serverShared"
-  | "teamProject"
-  | "userGlobal";
+export type ScopeProfilePromotionTarget = ScopeProfileLayerId | "serverShared" | "teamProject" | "userGlobal";
 
 export interface ScopeProfileTeamProjectConfig {
   /**
@@ -660,8 +660,8 @@ export interface CodexCompatConfig {
 
 export function confidenceTier(score: number): ConfidenceTier {
   if (score >= 0.95) return "explicit";
-  if (score >= 0.70) return "implied";
-  if (score >= 0.40) return "inferred";
+  if (score >= 0.7) return "implied";
+  if (score >= 0.4) return "inferred";
   return "speculative";
 }
 
@@ -683,7 +683,12 @@ export interface SemanticChunkingConfigShape {
   fallbackToRecursive: boolean;
 }
 
-export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig, DriftDetectionSettings, ActiveContextConfigFields, DeepRecallSettings {
+export interface PluginConfig
+  extends BoundedJsonlStateConfig,
+    SecurityConfig,
+    DriftDetectionSettings,
+    ActiveContextConfigFields,
+    DeepRecallSettings {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
   model: string;
@@ -1570,7 +1575,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig, D
   /** Maximum number of trace files to keep (rolling window). */
   profilingMaxTraces: number;
   // Extraction stability guards (P0/P1).
-  extractionDedupeEnabled: boolean; extractionSourceGroundingEnabled: boolean;
+  extractionDedupeEnabled: boolean;
+  extractionSourceGroundingEnabled: boolean;
   extractionDedupeWindowMs: number;
   extractionMinChars: number;
   extractionMinUserTurns: number;
@@ -2714,7 +2720,13 @@ export interface BehaviorLoopPolicyState {
   updatedAt: string;
 }
 
-export type BehaviorSignalType = "correction_override" | "preference_affinity" | "topic_revisitation" | "action_pattern" | "outcome_preference" | "phrasing_style";
+export type BehaviorSignalType =
+  | "correction_override"
+  | "preference_affinity"
+  | "topic_revisitation"
+  | "action_pattern"
+  | "outcome_preference"
+  | "phrasing_style";
 export type BehaviorSignalDirection = "positive" | "negative";
 
 export interface BehaviorSignalEvent {
@@ -3531,12 +3543,7 @@ export type MemoryActionPolicyDecision = "allow" | "defer" | "deny";
 
 export type MemoryActionStatus = "validated" | "applied" | "rejected";
 
-export type MemoryActionEligibilitySource =
-  | "extraction"
-  | "consolidation"
-  | "replay"
-  | "manual"
-  | "unknown";
+export type MemoryActionEligibilitySource = "extraction" | "consolidation" | "replay" | "manual" | "unknown";
 
 export interface MemoryActionEligibilityContext {
   confidence: number;
@@ -3632,7 +3639,8 @@ export interface MemoryProjectionCurrentState {
   accessCount?: number;
   lastAccessed?: string;
   tags?: string[];
-  preview?: string; privateRecord?: boolean;
+  preview?: string;
+  privateRecord?: boolean;
 }
 
 export interface CompressionGuidelineOptimizerSourceWindow {
@@ -3763,12 +3771,7 @@ export type LlmTraceCallback = (event: EngramTraceEvent) => void;
 // Gateway Configuration Types (for fallback AI)
 // ============================================================================
 
-export type ModelApi =
-  | "openai-completions"
-  | "anthropic-messages"
-  | "google-generative"
-  | "codex-cli"
-  | string;
+export type ModelApi = "openai-completions" | "anthropic-messages" | "google-generative" | "codex-cli" | string;
 export type CodexCliReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export type ModelProviderAuthMode = "bearer" | "header" | "query";
