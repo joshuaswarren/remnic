@@ -14,6 +14,7 @@ import { StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import { withholdToolScopedFromSharedNamespace } from "../tool-scoped-memory.js";
 import { evaluateSubjectGuard, isSharedPromotionTarget } from "../memory-subject.js";
+import { inferMemoryStatus, toMemoryPathRel } from "../memory-lifecycle-ledger-utils.js";
 import { confidenceTier, type MemorySubject } from "../types.js";
 import {
   resolveNamespaceCapabilities,
@@ -252,8 +253,19 @@ export function createBatchPromotedCopyProbe(
           const active = await readActiveMemoriesBothTiers(storage);
           return {
             dir: storage.dir,
+            // Round N+11 (A): only ACTIVE copies count as promoted (§41 —
+            // enumerate the active set). readActiveMemoriesBothTiers returns
+            // every hot+cold copy, superseded ones included; a superseded
+            // copy serves no body, so counting it made targetHasPromotedCopies
+            // reject every later judge-approved merge and the supposedly
+            // mergeable updates accumulated as new fragments instead.
             sourceIds: new Set(
               active
+                .filter(
+                  (memory) =>
+                    inferMemoryStatus(memory.frontmatter, toMemoryPathRel(storage.dir, memory.path)) ===
+                    "active",
+                )
                 .map((memory) => memory.frontmatter.sourceMemoryId)
                 .filter((id): id is string => typeof id === "string"),
             ),

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile, chmod } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile, chmod } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { parseConfig } from "../config.js";
-import { listVersions, type VersionTrigger } from "../page-versioning.js";
+import { createVersion, listVersions, type VersionTrigger } from "../page-versioning.js";
 import { inferIntentFromText } from "../intent.js";
 import {
   applySemanticMergeAtPersist,
@@ -14,7 +14,7 @@ import {
 } from "../orchestration/semantic-merge-persist.js";
 import { GraphIndex } from "../graph.js";
 import { PersistenceIndexCoordinator } from "../orchestration/persistence-index.js";
-import { promotionWithholdsToolScope } from "../orchestration/extraction-persist-promotion.js";
+import { createBatchPromotedCopyProbe, promotionWithholdsToolScope } from "../orchestration/extraction-persist-promotion.js";
 import { withholdToolScopedFromSharedNamespace } from "../tool-scoped-memory.js";
 import type { ExtractionPersistDeps } from "../orchestration/extraction-persist-deps.js";
 import { StorageManager } from "../index.js";
@@ -1371,6 +1371,118 @@ test("applySemanticMergeAtPersist: a target with promoted copies bypasses the me
   assert.deepEqual(h.calls.frontmatterPatches, []);
   const history = await listVersions(h.target.path, { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" }, h.storage.dir);
   assert.equal(history.versions.length, 0, "the bypass must precede the rollback snapshot");
+});
+
+// ── Round N+11 (A): only ACTIVE promoted copies block a merge ────────────────
+
+test("mergeTargetHasPromotedCopies: a namespace holding only a superseded copy does not block the merge (round N+11 A)", async () => {
+  const sourceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-scan-src-"));
+  const sharedDir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-scan-shr-"));
+  try {
+    // A superseded copy in the shared namespace, linked back to the target.
+    const copyDir = path.join(sharedDir, "facts", "2026-08-20");
+    await mkdir(copyDir, { recursive: true });
+    await writeFile(
+      path.join(copyDir, "copy-superseded.md"),
+      [
+        "---",
+        "id: fact-copy-superseded",
+        "category: fact",
+        "created: 2026-08-20T00:00:00.000Z",
+        "updated: 2026-08-20T00:00:00.000Z",
+        "status: superseded",
+        "sourceMemoryId: fact-target",
+        "---",
+        "",
+        EXISTING,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const sourceStorage = new StorageManager(sourceDir);
+    const sharedStorage = new StorageManager(sharedDir);
+    await sourceStorage.ensureDirectories();
+    await sharedStorage.ensureDirectories();
+    const config = parseConfig({ memoryDir: sourceDir }) as PluginConfig;
+    const probe = createBatchPromotedCopyProbe(
+      config,
+      () => ({
+        storageFor: async (namespace: string) =>
+          namespace === config.sharedNamespace ? sharedStorage : sourceStorage,
+      }),
+      null,
+    );
+    // A superseded copy serves no body, so it must not read as promoted.
+    assert.equal(
+      await probe.check(sourceStorage, "fact-target"),
+      false,
+      "a namespace holding only a superseded copy must not report promoted copies",
+    );
+
+    // End to end: the REAL probe wired into the merge gate lets judge-approved
+    // updates merge instead of accumulating as new fragments.
+    const h = await harness();
+    const outcome = await applySemanticMergeAtPersist(h.deps, {
+      storage: h.storage,
+      content: INCOMING,
+      category: "fact",
+      sources: [INCOMING_SOURCE],
+      targetHasPromotedCopies: (targetId) => probe.check(h.storage, targetId),
+      judgeCall: (options) => acceptingJudge(options),
+    });
+    assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
+  } finally {
+    await StorageManager.clearAllStaticCaches();
+    await rm(sourceDir, { recursive: true, force: true });
+    await rm(sharedDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round N+11 (C): a failed CAS must not discard the oldest rollback point ──
+
+test("applySemanticMergeAtPersist: a failed CAS at a full version history keeps the oldest rollback point (round N+11 C)", async () => {
+  const RACED = "Billing service deploys happen on Tuesdays, except during a freeze.";
+  const h = await harness({ mutateOnWrite: RACED, topLevelConfig: { versioningMaxPerPage: 3 } });
+  const versioning = { enabled: true, maxVersionsPerPage: 3, sidecarDir: ".versions" };
+  for (let i = 1; i <= 3; i++) {
+    await createVersion(h.target.path, `${EXISTING} (history fill ${i})`, "write", versioning, undefined, undefined, h.storage.dir);
+  }
+  const before = await listVersions(h.target.path, versioning, h.storage.dir);
+  assert.equal(before.versions.length, 3, "history starts full at the cap");
+
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "created", reason: "target_changed" });
+
+  const after = await listVersions(h.target.path, versioning, h.storage.dir);
+  assert.ok(
+    after.versions.some((v) => v.versionId === "1"),
+    `the oldest rollback point must survive the failed attempt (got ${JSON.stringify(after.versions.map((v) => v.versionId))})`,
+  );
+});
+
+test("applySemanticMergeAtPersist: a committed merge still finalizes the prune back to the cap (round N+11 C)", async () => {
+  const h = await harness({ topLevelConfig: { versioningMaxPerPage: 3 } });
+  const versioning = { enabled: true, maxVersionsPerPage: 3, sidecarDir: ".versions" };
+  for (let i = 1; i <= 3; i++) {
+    await createVersion(h.target.path, `${EXISTING} (history fill ${i})`, "write", versioning, undefined, undefined, h.storage.dir);
+  }
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  const after = await listVersions(h.target.path, versioning, h.storage.dir);
+  assert.equal(after.versions.length, 3, "a committed merge prunes the history back to the configured cap");
+  assert.equal(after.versions.at(-1)?.trigger, "semantic-merge");
 });
 
 // ── Final round: origin authority, log privacy, least-privilege subject ──────

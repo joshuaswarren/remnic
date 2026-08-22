@@ -17,7 +17,6 @@
 import path from "node:path";
 
 import { buildBehaviorSignalsForMemory } from "../behavior-signals.js";
-import { readFile } from "node:fs/promises";
 
 import { isUntrustedOrigin, parseOriginClass } from "../security/origin-authority.js";
 import {
@@ -27,7 +26,11 @@ import {
 import { log } from "../logger.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
 import { ContentHashIndex } from "../storage/content-hash-index.js";
-import { createVersion, type VersioningConfig } from "../page-versioning.js";
+import type { VersioningConfig } from "../page-versioning.js";
+import {
+  finalizeMergedVersionPrune,
+  stageMergedTargetSnapshot,
+} from "./semantic-merge-commit-effects.js";
 import {
   buildMergeFrontmatterUpdate,
   type MergeFrontmatterUpdate,
@@ -825,17 +828,7 @@ export async function applySemanticMergeAtPersist(
   }
   let versionId: string;
   try {
-    const currentFile = await readFile(target.path, "utf8");
-    const version = await createVersion(
-      target.path,
-      currentFile,
-      "semantic-merge",
-      versioning,
-      log,
-      "judge-mediated merge-on-write (issue #2330)",
-      options.storage.dir,
-    );
-    versionId = String(version.versionId);
+    versionId = await stageMergedTargetSnapshot(target, versioning, options.storage.dir);
   } catch (err) {
     log.warn(
       `semantic-merge: snapshot failed for ${decision.targetId}; creating new fact instead: ${err instanceof Error ? err.message : String(err)}`,
@@ -893,6 +886,7 @@ export async function applySemanticMergeAtPersist(
     });
     if (!updated) return { action: "created", reason: "target_changed" };
     contentCommitted = true;
+    await finalizeMergedVersionPrune(target.path, versioning, options.storage.dir, decision.targetId);
     // The provenance patch must land on OUR merged body. An id-keyed patch
     // re-reads and stamps whatever the latest row holds, so a writer landing
     // after the content commit would receive this merge's provenance while

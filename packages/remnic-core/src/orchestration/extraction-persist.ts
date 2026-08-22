@@ -122,6 +122,7 @@ import {
 import type { HarmonicConstructionInput } from "../harmonic-construction.js";
 import { enqueueMergedTargetForHarmonicConstruction, persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
 import { applySemanticMergeAtPersist, buildMergedTargetPromotionPayload, runMergedTargetPostEffects, writeMergedVerbatimArtifact } from "./semantic-merge-persist.js";
+import { persistMergedTargetThreadEpisode } from "./semantic-merge-commit-effects.js";
 import { ExtractionAnchorSnapshot } from "./extraction-anchor-snapshot.js";
 
 export class ExtractionPersistCoordinator {
@@ -2557,8 +2558,9 @@ export class ExtractionPersistCoordinator {
         const mergedPromotion = await buildMergedTargetPromotionPayload(targetStorage, semanticMerge);
         // Round N+10 (A): promotion AND reconciliation — including the no-promotion path, where a below-threshold downgrade or a degraded merge writes no replacement copy but a concurrently published PRE-merge copy must still retire. See promoteAndReconcileMergedTarget.
         await promoteAndReconcileMergedTarget({ promote: (payload) => promoteMemoryToShared({ sourceStorage: targetStorage, ...payload }), config: this.deps.config, getStorageRouter: this.deps.getStorageRouter, scopeProfileWritePlan, sourceStorage: targetStorage, sourceMemoryId: semanticMerge.targetId, mergedPromotion, normalize: normalizeStoredHashSource, onReconciled: () => promotedCopyProbe.invalidate() });
-        // Round N+7 (D): the merged body joins the INTERNAL temporal/tag index refresh (id-keyed, incremental); the PUBLIC persistedIds return stays new-fragment only.
+        // Round N+7 (D): the merged body joins the INTERNAL temporal/tag index refresh (id-keyed, incremental); the PUBLIC persistedIds return stays new-fragment only. Round N+11 (B): the target is also persisted into the thread's DURABLE episode set via the same appendEpisodeIds path the create path uses — the batch-local adjacency list is not durable, so without this the target leaves the thread at the next extraction.
         trackPersistedId(targetStorage, semanticMerge.targetId, { includeReturnedIds: false });
+        await persistMergedTargetThreadEpisode(this.deps.getThreading(), threadIdForExtraction, semanticMerge.targetId);
         // Finding B (round N+3): enqueue the surviving target so the end-of-batch harmonic pass covers the committed merged claims.
         if (harmonicConstructionEnabled) {
           enqueueMergedTargetForHarmonicConstruction(harmonicFactsByStorage, targetStorage, harmonicFact, semanticMerge.targetId, semanticMerge.mergedContent, new Date(harmonicSourceInsertedAtBase + harmonicSourceOrder++).toISOString());

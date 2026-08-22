@@ -1349,6 +1349,176 @@ test("persistExtraction enqueues a merged target for harmonic construction (merg
   }
 });
 
+test("persistExtraction keeps a merged target in the thread episode set across extractions (round N+11 B)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-merge-thread-"));
+  const TARGET_ID = "merge-target-thread";
+  const SEED = "The billing service deploys on a Tuesday cadence.";
+  const INCOMING = "The billing service deploys at 09:00 UTC sharp.";
+  const LATER = "The billing service pages an on-call engineer after a failed deploy.";
+  const SESSION_KEY = "session:harmonic-merge-thread";
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: true,
+      chunkingEnabled: false,
+      harmonicRetrievalEnabled: false,
+      abstractionAnchorsEnabled: false,
+      versioningEnabled: true,
+      semanticMerge: { enabled: true },
+    });
+    const orchestrator = new Orchestrator(config) as unknown as PersistenceHarness & {
+      embeddingFallback: {
+        isAvailable: () => Promise<boolean>;
+        search: (
+          query: string,
+          limit: number,
+          options?: unknown,
+        ) => Promise<Array<{ id: string; score: number; path: string }>>;
+        indexFile: (id: string, content: string, path: string) => Promise<void>;
+        removeFromIndex: (id: string) => Promise<void>;
+      };
+      localLlm: {
+        chatCompletion: (
+          messages: Array<{ role: string; content: string }>,
+        ) => Promise<{ content: string } | null>;
+      };
+      threading: {
+        processTurn: (
+          turn: { role: string; content: string; timestamp: string; sessionKey: string },
+          episodeIds: string[],
+        ) => Promise<string>;
+        loadThread: (id: string) => Promise<{ episodeIds: string[] } | null>;
+      };
+      appendPersistedThreadEpisodes: (threadId: string, persistedIds: string[]) => Promise<void>;
+    };
+    const storage = await orchestrator.getStorage("default");
+    await storage.ensureDirectories();
+    // Seed a merge target the way the sibling merge-only test does: past
+    // timestamps, high importance, active — preservable metadata only.
+    const created = new Date(Date.now() - 3600_000).toISOString();
+    const seededDir = path.join(memoryDir, "facts", created.slice(0, 10));
+    await mkdir(seededDir, { recursive: true });
+    await writeFile(
+      path.join(seededDir, `${TARGET_ID}.md`),
+      [
+        "---",
+        `id: ${TARGET_ID}`,
+        "category: fact",
+        `created: ${created}`,
+        `updated: ${created}`,
+        "source: extraction",
+        "confidence: 0.9",
+        "confidenceTier: explicit",
+        "status: active",
+        "importanceScore: 0.9",
+        "importanceLevel: high",
+        "---",
+        "",
+        SEED,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    // Band neighbor for the incoming fact only; the later fact finds none.
+    orchestrator.embeddingFallback = {
+      isAvailable: async () => true,
+      search: async (query: string) =>
+        query === INCOMING ? [{ id: TARGET_ID, score: 0.85, path: "" }] : [],
+      indexFile: async () => {},
+      removeFromIndex: async () => {},
+    };
+    // Deterministic judge: merge into the top candidate's current body.
+    orchestrator.localLlm = {
+      chatCompletion: async (messages) => {
+        if (
+          messages[0]?.role !== "system" ||
+          !messages[0].content.startsWith("You maintain a long-term memory store")
+        ) {
+          return null;
+        }
+        const input = JSON.parse(messages[1]?.content ?? "{}") as {
+          new?: { content?: string };
+          existing?: Array<{ id?: string; content?: string }>;
+        };
+        const target = input.existing?.[0];
+        if (!target?.id || typeof target.content !== "string" || typeof input.new?.content !== "string") {
+          return { content: JSON.stringify({ decision: "create", targetId: null, mergedContent: null, reason: "no candidate" }) };
+        }
+        return {
+          content: JSON.stringify({
+            decision: "merge",
+            targetId: target.id,
+            mergedContent: `${target.content} ${input.new.content}`.trim(),
+            reason: "deterministic judge for thread-episode persistence",
+          }),
+        };
+      },
+    };
+    // Establish the thread the way runExtraction's processTurn step does,
+    // so appendEpisodeIds has a thread file to write into.
+    const threadId = await orchestrator.threading.processTurn(
+      {
+        role: "user",
+        content: "Tell me about billing deploys.",
+        timestamp: "2026-08-22T10:00:00.000Z",
+        sessionKey: SESSION_KEY,
+      },
+      [],
+    );
+    assert.ok(threadId, "thread established via processTurn");
+
+    const mergeResult: ExtractionResult = {
+      facts: [{ category: "fact", content: INCOMING, confidence: 0.9, tags: [] }],
+      entities: [],
+      profileUpdates: [],
+      questions: [],
+      relationships: [],
+    };
+    // --- Flush 1: merge-only. persistedIds stays new-fragment only. ---
+    const flush1 = await orchestrator.persistExtraction(mergeResult, storage, threadId, {
+      sessionKey: SESSION_KEY,
+    });
+    assert.deepEqual(flush1.persistedIds, [], "a merge-only batch reports no new fragments");
+    // runExtraction's append step, exactly as production runs it.
+    await orchestrator.appendPersistedThreadEpisodes(threadId, flush1.persistedIds);
+
+    // --- Flush 2: a NEW fact in the same thread + the append step. ---
+    const laterResult: ExtractionResult = {
+      facts: [{ category: "fact", content: LATER, confidence: 0.9, tags: [] }],
+      entities: [],
+      profileUpdates: [],
+      questions: [],
+      relationships: [],
+    };
+    const flush2 = await orchestrator.persistExtraction(laterResult, storage, threadId, {
+      sessionKey: SESSION_KEY,
+    });
+    await orchestrator.appendPersistedThreadEpisodes(threadId, flush2.persistedIds);
+    const laterId = flush2.persistedIds[0];
+    assert.ok(laterId, "the later fact persisted as a new fragment");
+
+    const thread = await orchestrator.threading.loadThread(threadId);
+    const episodes = thread?.episodeIds ?? [];
+    assert.ok(
+      episodes.includes(TARGET_ID),
+      `the merged target must persist into the thread episode set (got ${JSON.stringify(episodes)})`,
+    );
+    assert.ok(
+      laterId && episodes.includes(laterId),
+      "the later fragment persists into the thread episode set",
+    );
+    assert.ok(
+      episodes.indexOf(TARGET_ID) < episodes.indexOf(laterId),
+      "adjacency: the merged target precedes the fragment extracted after it",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("harmonic anchors stay scoped to projected active sources in a mixed episode", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-anchor-sources-"));
   try {

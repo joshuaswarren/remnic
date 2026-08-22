@@ -209,7 +209,11 @@ async function writeManifest(
  * `content` is snapshotted as version 1.
  *
  * Pruning: when the number of versions exceeds `config.maxVersionsPerPage`,
- * the oldest snapshots (and their files) are removed.
+ * the oldest snapshots (and their files) are removed. Pass
+ * `options.deferPrune` to stage the snapshot WITHOUT pruning and finalize
+ * with {@link pruneVersions} once the guarded write that staged it commits —
+ * a failed attempt then leaves the history untouched instead of discarding
+ * the oldest rollback point (issue #2330 round N+11 C).
  */
 export async function createVersion(
   pagePath: string,
@@ -219,6 +223,7 @@ export async function createVersion(
   log: VersioningLogger = NOOP_LOGGER,
   note?: string,
   memoryDir?: string,
+  options?: { deferPrune?: boolean },
 ): Promise<PageVersion> {
   const { sidecarDir: sidecar, maxVersionsPerPage } = config;
   const resolvedMemoryDir = memoryDir ?? resolveMemoryDir(pagePath);
@@ -235,7 +240,7 @@ export async function createVersion(
       versionId: nextId,
       timestamp: new Date().toISOString(),
       contentHash: hash,
-      sizeBytes: Buffer.byteLength(content, "utf-8"),
+      sizeBytes: Buffer.byteLength(content, "utf8"),
       trigger,
       ...(note !== undefined ? { note } : {}),
     };
@@ -245,28 +250,71 @@ export async function createVersion(
     await mkdir(dir, { recursive: true });
     const ext = path.extname(pagePath) || ".md";
     const snapshotPath = path.join(dir, `${nextId}${ext}`);
-    await writeFile(snapshotPath, content, "utf-8");
+    await writeFile(snapshotPath, content, "utf8");
 
     history.versions.push(version);
     history.currentVersion = nextId;
 
-    // Prune old versions if exceeding max
-    if (maxVersionsPerPage > 0 && history.versions.length > maxVersionsPerPage) {
-      const toRemove = history.versions.splice(0, history.versions.length - maxVersionsPerPage);
-      for (const old of toRemove) {
-        const oldPath = path.join(dir, `${old.versionId}${ext}`);
-        try {
-          await unlink(oldPath);
-        } catch {
-          log.debug(`page-versioning: could not remove old snapshot ${oldPath}`);
-        }
-      }
+    // Prune old versions if exceeding max, unless the caller deferred the
+    // prune until its guarded write commits (issue #2330 round N+11 C).
+    if (options?.deferPrune !== true) {
+      await pruneExcessVersions(history, maxVersionsPerPage, dir, ext, log);
     }
 
     await writeManifest(resolvedMemoryDir, sidecar, relPath(pagePath, resolvedMemoryDir), history);
     log.debug(`page-versioning: created version ${nextId} for ${pagePath} (trigger=${trigger})`);
 
     return version;
+  });
+}
+
+/** Prune the oldest snapshots in place. The caller holds the page lock. */
+async function pruneExcessVersions(
+  history: VersionHistory,
+  maxVersionsPerPage: number,
+  dir: string,
+  ext: string,
+  log: VersioningLogger,
+): Promise<void> {
+  if (!(maxVersionsPerPage > 0) || history.versions.length <= maxVersionsPerPage) return;
+  const toRemove = history.versions.splice(0, history.versions.length - maxVersionsPerPage);
+  for (const old of toRemove) {
+    const oldPath = path.join(dir, `${old.versionId}${ext}`);
+    try {
+      await unlink(oldPath);
+    } catch {
+      log.debug(`page-versioning: could not remove old snapshot ${oldPath}`);
+    }
+  }
+}
+
+/**
+ * Finalize a deferred prune: drop the oldest snapshots (and their files)
+ * until the history is back at `config.maxVersionsPerPage`. Call only after
+ * the guarded write that staged the snapshot has committed — a failed
+ * attempt never calls this, so it cannot discard rollback points.
+ */
+export async function pruneVersions(
+  pagePath: string,
+  config: VersioningConfig,
+  log: VersioningLogger = NOOP_LOGGER,
+  memoryDir?: string,
+): Promise<void> {
+  const resolvedMemoryDir = memoryDir ?? resolveMemoryDir(pagePath);
+  const rel = relPath(pagePath, resolvedMemoryDir);
+  await withPageLock(manifestPath(resolvedMemoryDir, config.sidecarDir, rel), async () => {
+    const history = await readManifest(resolvedMemoryDir, config.sidecarDir, rel);
+    const before = history.versions.length;
+    await pruneExcessVersions(
+      history,
+      config.maxVersionsPerPage,
+      sidecarDir(resolvedMemoryDir, config.sidecarDir, rel),
+      path.extname(pagePath) || ".md",
+      log,
+    );
+    if (history.versions.length !== before) {
+      await writeManifest(resolvedMemoryDir, config.sidecarDir, rel, history);
+    }
   });
 }
 

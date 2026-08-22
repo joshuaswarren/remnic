@@ -1217,7 +1217,10 @@ into a create-or-update decision:
    normal write, leaving contradiction detection and temporal supersession
    untouched.
 3. On a `merge` verdict, validate the returned target id against the candidate
-   set, snapshot the target as a page version with trigger `semantic-merge`,
+   set, snapshot the target as a page version with trigger `semantic-merge`
+   — staged WITHOUT pruning the version history; the cap-based prune runs
+   only after the compare-and-swap commits, so an attempt that loses the CAS
+   race never discards the oldest rollback point —
    then update the memory **in place** (same id and path) with a
    compare-and-swap against the exact body the judge was shown, then stamp
    `derived_via: merge`, bump `reinforcement_count`, restamp `contentHash`
@@ -1272,9 +1275,14 @@ into a create-or-update decision:
    leaves either the old or the new complete set), and enrolling the target
    at the END of the batch's thread episode list — deduped first when
    already present, so the merge is the thread's latest event — so later
-   facts in the same extraction chain time/causal adjacency through it —
-   all fail-open like the create
-   path's graph block; and a `preference`-category merge records its
+   facts in the same extraction chain time/causal adjacency through it.
+   The target is ALSO appended to the thread's durable episode-set file
+   through the same unique-append storage path the create path uses, so a
+   target that entered the thread only through a merge is still there when
+   the next extraction reloads the thread — without widening the public
+   `persistedIds` contract, which stays new-fragment-only. All of it is
+   fail-open like the create path's graph block; and a `preference`-category
+   merge records its
    `preference_affinity` event in the behavior-signal ledger, so
    graph-mode recall and runtime-policy learning observe claims accepted
    through a merge.
@@ -1311,7 +1319,10 @@ into a create-or-update decision:
    discarded or escalated. A would-be target that already has promoted
    shared/profile copies (memories linked back by `sourceMemoryId`) also
    bypasses the merge: those copies are reconciled only by the normal write's
-   promotion step, so merging would strand them at the pre-merge body. The
+   promotion step, so merging would strand them at the pre-merge body. Only
+   copies that are still ACTIVE count — a superseded or archived copy serves
+   no body, so it does not block later judge-approved merges into the target.
+   The
    copy scan inspects every known promotion layer and the shared namespace
    regardless of current write authorization, so a permission revoked after a
    copy was promoted cannot hide that copy from the scan. A successful merge
