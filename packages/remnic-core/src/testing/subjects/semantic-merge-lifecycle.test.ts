@@ -232,13 +232,20 @@ async function seedMergeTarget(
   options: {
     /** Category (and its directory) for the target; default `fact`/`facts`. */
     category?: "fact" | "preference";
+    /** Storage tier: `cold` seeds under `<root>/cold/...` (demoted target). */
+    tier?: "hot" | "cold";
     /** Extra frontmatter lines stamped between `status` and `importanceScore`. */
     extraFrontmatter?: string[];
   } = {},
 ): Promise<string> {
   const category = options.category ?? "fact";
   const created = pastIso();
-  const dir = path.join(root, category === "preference" ? "preferences" : "facts", created.slice(0, 10));
+  const dir = path.join(
+    root,
+    options.tier === "cold" ? "cold" : ".",
+    category === "preference" ? "preferences" : "facts",
+    created.slice(0, 10),
+  );
   await mkdir(dir, { recursive: true });
   const file = path.join(dir, `${id}.md`);
   await writeFile(
@@ -418,6 +425,197 @@ test("a preference accepted through semantic merge reaches the behavior-signal l
     assert.equal(affinity[0]?.direction, "positive");
     assert.equal(affinity[0]?.category, "preference");
     assert.equal(affinity[0]?.source, "extraction");
+  } finally {
+    await orch?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+test("a merge into a cold-tier target records graph edges at the committed cold path (round N+6 A)", async () => {
+  const memoryDir = await mkTempMemoryDir("semantic-merge-cold-graph");
+  let orch: Orchestrator | undefined;
+  try {
+    const cfg = mergeLifecycleConfig(memoryDir, {
+      multiGraphMemoryEnabled: true,
+      threadingEnabled: true,
+    });
+    orch = new Orchestrator(cfg);
+    const judge = { calls: 0 };
+    installJudge(orch, judge);
+    stubExtraction(orch, () => ({
+      facts: [
+        { category: "fact", content: INCOMING_A, confidence: 0.9, tags: [] },
+      ],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    }));
+    installNeighbors(orch, (query) =>
+      query === INCOMING_A ? [{ id: "merge-target-cold", score: BAND_SCORE }] : [],
+    );
+    // The sibling stays hot so the entity-edge neighbor scan can see it; the
+    // TARGET is demoted to cold/, invisible to the hot-only graph context.
+    await seedMergeTarget(memoryDir, "merge-sibling-cold", GRAPH_SIBLING, {
+      extraFrontmatter: ["entityRef: entity-billing-service"],
+    });
+    const coldFile = await seedMergeTarget(memoryDir, "merge-target-cold", GRAPH_SEED, {
+      tier: "cold",
+      extraFrontmatter: ["entityRef: entity-billing-service"],
+    });
+    await orch.processTurn("user", `Please remember: ${INCOMING_A}`, "session-cold");
+    assert.equal(await orch.waitForExtractionIdle(15_000), true);
+
+    assert.equal(judge.calls, 1, "the cold-tier target must still reach the judge");
+    await assertMerged(coldFile, ["Tuesday cadence", "09:00 UTC sharp"], 1);
+
+    const entityEdges = await readGraphEdges(memoryDir, "entity");
+    const targetEdges = entityEdges.filter((e) => e.from.endsWith("merge-target-cold.md"));
+    assert.equal(targetEdges.length, 1, "the cold target must carry its entity edge");
+    assert.ok(
+      targetEdges[0]?.from.startsWith(`cold${path.sep}`),
+      `entity edge must reference the committed cold path, got ${targetEdges[0]?.from}`,
+    );
+    // The pre-fix hot-only fallback fabricated facts/<day>/merge-target-cold.md.
+    const day = path.basename(path.dirname(coldFile));
+    const fabricated = path.join("facts", day, "merge-target-cold.md");
+    for (const type of ["entity", "time", "causal"] as const) {
+      const edges = await readGraphEdges(memoryDir, type);
+      assert.ok(
+        edges.every((e) => e.from !== fabricated && e.to !== fabricated),
+        `no ${type} edge may reference the fabricated hot path ${fabricated}`,
+      );
+    }
+  } finally {
+    await orch?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+test("repeated merges of one target replace, not re-append, its entity edges (round N+6 B)", async () => {
+  const memoryDir = await mkTempMemoryDir("semantic-merge-dup-edges");
+  let orch: Orchestrator | undefined;
+  try {
+    const cfg = mergeLifecycleConfig(memoryDir, { multiGraphMemoryEnabled: true });
+    orch = new Orchestrator(cfg);
+    const judge = { calls: 0 };
+    installJudge(orch, judge);
+    // Turn 1 merges INCOMING_A into the target; turn 2 merges INCOMING_B into
+    // the SAME (already-merged) target — the replay pattern the judge stub
+    // exists for.
+    let extractionCall = 0;
+    stubExtraction(orch, () => {
+      extractionCall++;
+      return {
+        facts: [
+          {
+            category: "fact",
+            content: extractionCall === 1 ? INCOMING_A : INCOMING_B,
+            confidence: 0.9,
+            tags: [],
+          },
+        ],
+        entities: [],
+        relationships: [],
+        questions: [],
+        profileUpdates: [],
+      };
+    });
+    installNeighbors(orch, (query) =>
+      query === INCOMING_A || query === INCOMING_B
+        ? [{ id: "merge-target-dup", score: BAND_SCORE }]
+        : [],
+    );
+    const targetFile = await seedMergeTarget(memoryDir, "merge-target-dup", GRAPH_SEED, {
+      extraFrontmatter: ["entityRef: entity-billing-service"],
+    });
+    await seedMergeTarget(memoryDir, "merge-sibling-dup", GRAPH_SIBLING, {
+      extraFrontmatter: ["entityRef: entity-billing-service"],
+    });
+    await orch.processTurn("user", `Please remember: ${INCOMING_A}`, "session-dup-1");
+    assert.equal(await orch.waitForExtractionIdle(15_000), true);
+    await orch.processTurn("user", `Please remember: ${INCOMING_B}`, "session-dup-2");
+    assert.equal(await orch.waitForExtractionIdle(15_000), true);
+
+    assert.equal(judge.calls, 2, "both turns must reach the judge");
+    await assertMerged(targetFile, ["Tuesday cadence", "09:00 UTC sharp", "payments module"], 2);
+
+    const entityEdges = await readGraphEdges(memoryDir, "entity");
+    const fromTarget = entityEdges.filter((e) => e.from.endsWith("merge-target-dup.md"));
+    assert.equal(
+      fromTarget.length,
+      1,
+      `re-merging must replace the target's entity edges, got ${JSON.stringify(fromTarget)}`,
+    );
+    assert.equal(
+      fromTarget.filter((e) => e.to.endsWith("merge-sibling-dup.md")).length,
+      1,
+      "exactly one edge per (target, neighbor) pair after both merges",
+    );
+  } finally {
+    await orch?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+test("the fact after a merge chains time/causal adjacency through the merged target (round N+6 C)", async () => {
+  const memoryDir = await mkTempMemoryDir("semantic-merge-thread-chain");
+  let orch: Orchestrator | undefined;
+  try {
+    const cfg = mergeLifecycleConfig(memoryDir, {
+      multiGraphMemoryEnabled: true,
+      threadingEnabled: true,
+    });
+    orch = new Orchestrator(cfg);
+    const judge = { calls: 0 };
+    installJudge(orch, judge);
+    // One batch: FIRST is created (becomes the thread's first episode),
+    // INCOMING_A merges into the target, then SUCCESSOR is created and must
+    // chain through the merged target — its "because" phrase drives the
+    // causal edge. No other content carries a causal phrase.
+    const FIRST = "The audit service tracks quarterly access reviews.";
+    const SUCCESSOR =
+      "The billing service deploy queue drains slowly because reconciliation locks the ledger.";
+    stubExtraction(orch, () => ({
+      facts: [
+        { category: "fact", content: FIRST, confidence: 0.9, tags: [] },
+        { category: "fact", content: INCOMING_A, confidence: 0.9, tags: [] },
+        { category: "fact", content: SUCCESSOR, confidence: 0.9, tags: [] },
+      ],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    }));
+    installNeighbors(orch, (query) =>
+      query === INCOMING_A ? [{ id: "merge-target-thread", score: BAND_SCORE }] : [],
+    );
+    const targetFile = await seedMergeTarget(memoryDir, "merge-target-thread", GRAPH_SEED, {});
+    await orch.processTurn("user", `Please remember: ${INCOMING_A}`, "session-chain");
+    assert.equal(await orch.waitForExtractionIdle(15_000), true);
+
+    assert.equal(judge.calls, 1, "only the mergeable fact reaches the judge");
+    await assertMerged(targetFile, ["Tuesday cadence", "09:00 UTC sharp"], 1);
+
+    const timeEdges = await readGraphEdges(memoryDir, "time");
+    const intoTarget = timeEdges.find((e) => e.to.endsWith("merge-target-thread.md"));
+    const outOfTarget = timeEdges.find((e) => e.from.endsWith("merge-target-thread.md"));
+    assert.ok(intoTarget, "the merged target keeps its own incoming time edge");
+    assert.ok(
+      outOfTarget,
+      "the fact following the merge must chain its time edge through the merged target",
+    );
+    assert.equal(
+      outOfTarget?.from,
+      intoTarget?.to,
+      "the successor edge starts at the merged target's committed path",
+    );
+    const causalEdges = await readGraphEdges(memoryDir, "causal");
+    assert.equal(
+      causalEdges.filter((e) => e.from.endsWith("merge-target-thread.md")).length,
+      1,
+      "the successor fact's causal phrase must link through the merged target",
+    );
   } finally {
     await orch?.destroy().catch(() => undefined);
     await cleanupDir(memoryDir);

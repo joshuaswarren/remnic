@@ -57,7 +57,7 @@ import {
   resolveRecallAuxiliaryCapabilities,
   type GraphConstructionCapabilitySet,
 } from "../capabilities.js";
-import { resolvePersistedMemoryRelativePath } from "./orchestrator-helpers.js";
+import { removeEntityEdgesFromNode } from "../graph-jsonl.js";
 import type {
   BehaviorSignalEvent,
   FaithfulnessFrontmatter,
@@ -1006,18 +1006,28 @@ export async function writeMergedVerbatimArtifact(
 }
 
 /**
- * Round N+5 (A+B): the create path's write is followed by post-write stages
- * that OBSERVE the persisted record — graph-edge construction and the
- * behavior-signal ledger. The merge path's `continue` skipped both, so a
- * judge-accepted merge committed new claims that graph-mode recall and
- * runtime-policy learning could never see. This helper runs them for the
- * SURVIVING target, derived from the re-read committed record exactly like
- * `buildMergedTargetPromotionPayload`: category, entityRef, and graph content
- * come from the committed merged body, never the incoming extraction. The
- * graph content is the canonical RAW pre-citation form — the same body the
- * create path hands `buildGraphEdge`. Graph failures are fail-open (the
- * committed merge stands, matching the create path's try/catch); the caller
- * owns the ledger flush, so the behavior events are RETURNED for its storage.
+ * Round N+5 (A+B) + N+6 (A/B/C): the create path's write is followed by
+ * post-write stages that OBSERVE the persisted record — graph-edge
+ * construction and the behavior-signal ledger. The merge path's `continue`
+ * skipped both, so a judge-accepted merge committed new claims that
+ * graph-mode recall and runtime-policy learning could never see. This helper
+ * runs them for the SURVIVING target, derived from the re-read committed
+ * record exactly like `buildMergedTargetPromotionPayload`: category,
+ * entityRef, graph content, AND the relative graph path come from the
+ * committed record, never the incoming extraction and never a hot-only
+ * path-map fallback — the graph context is built from a hot-only corpus
+ * scan, so a cold-tier target is absent from it and only `committed.path`
+ * carries the true location (N+6 A). The graph content is the canonical RAW
+ * pre-citation form — the same body the create path hands `buildGraphEdge`.
+ * The target's prior from-side entity edges are removed first so a re-merge
+ * REPLACES them instead of re-appending duplicates into an append-only
+ * JSONL that spreadingActivation would then double-count (N+6 B). The
+ * target joins the batch's thread episode list — mirroring the normal write
+ * path's push — so later facts in the same extraction chain their
+ * time/causal adjacency through the merge (N+6 C). Graph failures are
+ * fail-open (the committed merge stands, matching the create path's
+ * try/catch); the caller owns the ledger flush, so the behavior events are
+ * RETURNED for its storage.
  */
 export async function runMergedTargetPostEffects(
   deps: ExtractionPersistDeps,
@@ -1047,19 +1057,30 @@ export async function runMergedTargetPostEffects(
     confidence: input.incomingConfidence,
     source: "extraction",
   });
+  // N+6 C: the normal write path pushes every freshly persisted memory onto
+  // the thread episode list (extraction-persist.ts post-write block); the
+  // merge must too, or the next fact in the same batch resolves its
+  // recent-in-thread list without the merge that immediately preceded it —
+  // the fallback predecessor is ignored once the list resolves ANY older
+  // episode, so the merge is skipped in time/causal adjacency.
+  if (
+    input.threadEpisodeIdsForGraph &&
+    !input.threadEpisodeIdsForGraph.includes(merge.targetId)
+  ) {
+    input.threadEpisodeIdsForGraph.push(merge.targetId);
+  }
   if (!input.graphCaps.multiGraphMemory) return signals;
   try {
     const committed = await storage.getMemoryByIdIncludingArchived(merge.targetId);
     if (!committed || committed.content !== merge.mergedContent) return signals;
     if (inferMemoryStatus(committed.frontmatter, committed.path) !== "active") return signals;
-    const category = committed.frontmatter.category;
     const entityRef = committed.frontmatter.entityRef;
     const rawBody = rawPreCitationMergedBody(deps, merge.mergedContent);
-    const memoryRelPath = resolvePersistedMemoryRelativePath({
-      memoryId: merge.targetId,
-      pathById: input.graphContext.memoryPathById,
-      category,
-    });
+    // N+6 A: derive the relative path from the cold-aware committed record.
+    // The graph context's path map was built from a HOT-only corpus scan, so
+    // a cold-tier target is missing from it and the category-dir fallback
+    // would fabricate a hot node path that graph recall cannot resolve.
+    const memoryRelPath = path.relative(storage.dir, committed.path);
     input.graphContext.memoryPathById.set(merge.targetId, memoryRelPath);
     // The target predates this extraction, so a corpus-loaded context already
     // holds an entry for it — refresh that entry's body in place instead of
@@ -1068,6 +1089,14 @@ export async function runMergedTargetPostEffects(
     if (Array.isArray(all)) {
       const entry = all.find((m) => path.relative(storage.dir, m.path) === memoryRelPath);
       if (entry) entry.content = rawBody;
+    }
+    // N+6 B: onMemoryWritten is append-only; without removing the target's
+    // prior from-side entity edges every later merge re-appends them —
+    // duplicate edges that spreadingActivation sums into candidate scores
+    // while entity.jsonl grows without bound. No entityRef means no entity
+    // edges can exist for this node, so the rewrite is skipped.
+    if (entityRef) {
+      await removeEntityEdgesFromNode(storage.dir, memoryRelPath);
     }
     await deps.buildGraphEdge(
       storage,

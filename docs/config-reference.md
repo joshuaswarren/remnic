@@ -1252,11 +1252,16 @@ into a create-or-update decision:
    When multi-graph memory is enabled, a successful merge also builds the
    surviving target's graph edges — entity, time, and causal — through the
    same `buildGraphEdge` call the create path runs, derived from the
-   re-read committed record (its category, entity ref, and raw pre-citation
-   merged body), fail-open like the create path's graph block; and a
-   `preference`-category merge records its `preference_affinity` event in
-   the behavior-signal ledger, so graph-mode recall and runtime-policy
-   learning observe claims accepted through a merge.
+   re-read committed record (its category, entity ref, relative path, and
+   raw pre-citation merged body — the cold-aware committed path, never a
+   hot-only path-map fallback), replacing the target's prior from-side
+   entity edges instead of re-appending them, and enrolling the target in
+   the batch's thread episode list so later facts in the same extraction
+   chain time/causal adjacency through it — all fail-open like the create
+   path's graph block; and a `preference`-category merge records its
+   `preference_affinity` event in the behavior-signal ledger, so
+   graph-mode recall and runtime-policy learning observe claims accepted
+   through a merge.
 4. A merge carries only content, category, sources, and connector. A fact
    that also carries extraction metadata the merge cannot preserve —
    structured attributes, an entity ref, bi-temporal bounds, effective

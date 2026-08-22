@@ -162,7 +162,6 @@ export async function appendEdge(memoryDir: string, edge: GraphEdge): Promise<vo
     confidence: typeof edge.confidence === "number" ? edge.confidence : 1.0,
   });
 }
-
 function isNodeError(err: unknown): err is NodeJS.ErrnoException {
   return typeof err === "object" && err !== null && "code" in err;
 }

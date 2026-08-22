@@ -31,6 +31,7 @@ import {
   readEdgeConfidence,
   type DecayOptions,
 } from "../graph-edge-reinforcement.js";
+import { writeGraphJsonlAtomic } from "../graph-jsonl.js";
 import {
   graphFilePath,
   graphsDir,
@@ -94,17 +95,6 @@ export function graphEdgeDecayStatusPath(memoryDir: string): string {
   return path.join(memoryDir, "state", "graph-edge-decay-status.json");
 }
 
-/** Write a JSONL file atomically using temp+rename (CLAUDE.md gotcha #54). */
-async function writeJsonlAtomic(filePath: string, edges: GraphEdge[]): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const body = edges.length === 0 ? "" : edges.map((e) => JSON.stringify(e)).join("\n") + "\n";
-  // Codex P2 / gotcha #54: write to temp then rename. Never rmSync(target)
-  // before the rename succeeds; rename is atomic on the same filesystem.
-  // Include pid + monotonic-ish suffix so concurrent runs cannot collide.
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
-  await writeFile(tempPath, body, "utf-8");
-  await rename(tempPath, filePath);
-}
 
 /**
  * Run a single decay pass over every edge type.
@@ -209,7 +199,7 @@ export async function runGraphEdgeDecayMaintenance(
       }
 
       if (!dryRun && localChangedAny && edges.length > 0) {
-        await writeJsonlAtomic(filePath, updated);
+        await writeGraphJsonlAtomic(filePath, updated);
       }
 
       return {
