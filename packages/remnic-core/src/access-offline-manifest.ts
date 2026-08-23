@@ -11,6 +11,7 @@ import {
   type ReconcileManifestFile,
   type ReconcileMemoryIdentity,
   type ReconcileMemoryParser,
+  buildReconcileManifestFile,
   citationTemplateFingerprint,
   isCachedIdentityReusable,
   isReconcileMemoryIdentity,
