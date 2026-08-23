@@ -211,6 +211,22 @@ test("server config parser rejects invalid trustPrincipalHeader values", () => {
   );
 });
 
+test("server config parser rejects ephemeral and blank ports in user-facing config", () => {
+  // Port 0 is reserved for the programmatic allowEphemeralPort runtime
+  // option: user-facing server.port / REMNIC_PORT / --port must stay 1-65535
+  // so runServerHealthcheck never probes port 0 (review: PR #2790).
+  assert.throws(
+    () => parseServerConfig({ port: 0 }),
+    /server\.port: expected an integer port from 1 to 65535/,
+  );
+  // Number("".trim()) === 0, so a blank string must be rejected explicitly
+  // rather than silently resolving to an ephemeral port.
+  assert.throws(
+    () => parseServerConfig({ port: "" }),
+    /server\.port: expected an integer port from 1 to 65535/,
+  );
+});
+
 test("standalone startServer forwards a trusted request principal", async () => {
   const { filePath, cleanup } = await writeConfig("{}");
   const memoryDir = path.join(path.dirname(filePath), "memory");
@@ -235,9 +251,6 @@ test("standalone startServer forwards a trusted request principal", async () => 
       },
       server: {
         host: "127.0.0.1",
-        // Port 0 lets the OS assign a free port atomically at bind time;
-        // startServer reports the bound port via result.port.
-        port: 0,
         authToken: "test-token",
         trustPrincipalHeader: true,
       },
@@ -247,7 +260,13 @@ test("standalone startServer forwards a trusted request principal", async () => 
 
   let result: ServerResult | undefined;
   try {
-    result = await startServer({ configPath: filePath, authToken: "test-token" });
+    result = await startServer({
+      configPath: filePath,
+      authToken: "test-token",
+      // OS-assigned ephemeral port at bind time; result.port reports the
+      // bound value. Avoids the probe-then-close EADDRINUSE race.
+      allowEphemeralPort: true,
+    });
     const url = `http://127.0.0.1:${result.port}/engram/v1/memories?namespace=tenant-a&limit=10&offset=0&sort=updated_desc`;
     const withoutHeader = await fetch(url, {
       headers: { authorization: "Bearer test-token" },

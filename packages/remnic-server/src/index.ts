@@ -66,12 +66,10 @@ function parseServerPort(value: unknown, source: string): number {
   if (
     typeof port !== "number" ||
     !Number.isInteger(port) ||
-    port < 0 ||
+    port < 1 ||
     port > 65535
   ) {
-    // Port 0 is allowed: the OS assigns an ephemeral port at bind time and
-    // startServer reports the bound port via ServerResult.port.
-    throw new Error(`Invalid ${source}: expected an integer port from 0 to 65535 (0 = ephemeral)`);
+    throw new Error(`Invalid ${source}: expected an integer port from 1 to 65535`);
   }
   return port;
 }
@@ -264,6 +262,8 @@ type ServerRuntimeOptions = {
   host?: string;
   port?: number;
   authToken?: string;
+  /** Test/programmatic-only: bind an OS-assigned ephemeral port (port 0). */
+  allowEphemeralPort?: boolean;
 };
 
 type EffectiveServerRuntimeConfig = {
@@ -282,9 +282,11 @@ function resolveEffectiveServerRuntimeConfig(
   const { remnic: envRemnic, ...envServer } = envOverrides();
   const cliServerConfig: Partial<ServerConfig["server"]> = {};
   if (options?.host !== undefined) cliServerConfig.host = options.host;
-  if (options?.port !== undefined) cliServerConfig.port = parseServerPort(options.port, "options.port");
   if (options?.authToken !== undefined) cliServerConfig.authToken = options.authToken;
-
+  // User-facing config (server.port, REMNIC_PORT, --port) stays 1-65535 so
+  // runServerHealthcheck's configured-port probe never targets port 0.
+  // allowEphemeralPort bypasses the parser AFTER validation instead.
+  const ephemeralRequested = options?.allowEphemeralPort === true && options.port === undefined;
   const serverConfig = {
     ...fileConfig.server,
     ...envServer,
@@ -296,12 +298,14 @@ function resolveEffectiveServerRuntimeConfig(
       ? "REMNIC_PORT/ENGRAM_PORT"
       : "server.port";
 
+  const parsedServerConfig = parseServerConfig(serverConfig, { portSource });
+  if (ephemeralRequested) parsedServerConfig.port = 0;
   return {
     resolvedConfigPath,
     fileConfig,
     envRemnic,
     serverConfig,
-    parsedServerConfig: parseServerConfig(serverConfig, { portSource }),
+    parsedServerConfig,
   };
 }
 
