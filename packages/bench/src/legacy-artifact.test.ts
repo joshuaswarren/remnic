@@ -150,6 +150,20 @@ function canonicalResult(): BenchmarkResult {
   };
 }
 
+function modernArtifactMissingResults(): Record<string, unknown> {
+  const { results: _results, ...rest } = canonicalResult();
+  return {
+    ...rest,
+    meta: {
+      ...rest.meta,
+      splitType: "holdout",
+      qrelsSealedHash: "aa",
+      judgePromptHash: "bb",
+      datasetHash: "cc",
+    },
+  };
+}
+
 test("recognizeLegacyBenchmarkArtifact upgrades the minimal pre-#2800 shape with documented defaults", () => {
   const recognition = recognizeLegacyBenchmarkArtifact(minimalLegacyArtifact());
 
@@ -438,4 +452,36 @@ test("loadBenchmarkResult rejects a canonical artifact with a non-string failure
     );
   });
 });
+
+test("recognizeLegacyBenchmarkArtifact rejects a modern artifact missing results", () => {
+  const recognition = recognizeLegacyBenchmarkArtifact(modernArtifactMissingResults());
+  assert.equal(recognition.ok, false);
+  if (recognition.ok) return;
+  assert.match(recognition.reason, /missing results is not a legacy artifact/);
+});
+
+test("recognizeLegacyBenchmarkArtifact rejects integrity-marked artifacts without the legacy shape", () => {
+  const recognition = recognizeLegacyBenchmarkArtifact({
+    meta: {
+      id: "run-sealed",
+      benchmark: "locomo",
+      timestamp: "2026-05-21T00:00:00.000Z",
+      splitType: "holdout",
+      qrelsSealedHash: "aa",
+    },
+  });
+  assert.equal(recognition.ok, false);
+  if (recognition.ok) return;
+  assert.match(recognition.reason, /modern provenance\/integrity markers present/);
+});
+
+test("loadBenchmarkResult rejects a modern artifact missing results instead of fabricating tasks", async () => {
+  await withResultFile(modernArtifactMissingResults(), async (filePath) => {
+    await assert.rejects(
+      () => loadBenchmarkResult(filePath),
+      /missing results is not a legacy artifact/,
+    );
+  });
+});
+
 

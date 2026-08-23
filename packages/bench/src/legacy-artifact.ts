@@ -23,11 +23,15 @@
  *   downstream integrity gates (publish, leaderboard) still classify
  *   these results as `missing-integrity`. Unknown version, Remnic
  *   version, and git SHA upgrade to the explicit marker `"unknown"`.
+ * - Modern provenance or integrity markers (version/remnicVersion/gitSha,
+ *   published/remnic tier, or split/hash seals) are not shape 1. Reject
+ *   those payloads; never fabricate empty results for them.
  * - Task entries without a usable `taskId` are skipped, exactly as the
  *   pre-#2800 UI skipped unidentifiable task rows.
  */
 
 import type { AggregateMetrics, BenchmarkMode, BenchmarkResult, BenchmarkTier, MetricAggregate, ProviderConfig, TaskResult } from "./types.js";
+import { INTEGRITY_META_FIELDS } from "./integrity/types.js";
 
 /**
  * Recognized legacy shape version. Shape 1 is the pre-#2800 bench-ui
@@ -515,6 +519,20 @@ function upgradeEnvironment(legacy: JsonRecord): BenchmarkResult["environment"] 
 export function recognizeLegacyBenchmarkArtifact(value: unknown): LegacyArtifactRecognition {
   if (!isRecord(value)) {
     return { ok: false, reason: "artifact is not a JSON object" };
+  }
+  if (isRecord(value.meta)) {
+    const meta = value.meta;
+    const modernProvenance = "version" in meta && "remnicVersion" in meta && "gitSha" in meta;
+    const modernTier = meta.benchmarkTier === "published" || meta.benchmarkTier === "remnic";
+    const modernIntegrity = INTEGRITY_META_FIELDS.some((key) => key in meta);
+    if (modernProvenance || modernTier || modernIntegrity) {
+      return {
+        ok: false,
+        reason: !("results" in value)
+          ? "modern provenance/integrity markers present; missing results is not a legacy artifact"
+          : "modern provenance/integrity markers present; not a legacy artifact",
+      };
+    }
   }
 
   try {
