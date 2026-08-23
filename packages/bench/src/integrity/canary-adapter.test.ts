@@ -5,6 +5,7 @@ import {
   CANARY_SCORE_FLOOR,
   assertCanaryUnderFloor,
   createCanaryAdapter,
+  resolveCanaryFloorFromEnv,
 } from "./canary-adapter.ts";
 
 test("canary adapter returns the fixed response for every query", async () => {
@@ -71,4 +72,55 @@ test("assertCanaryUnderFloor rejects malformed floors", () => {
 test("assertCanaryUnderFloor fails on non-finite scores", () => {
   const result = assertCanaryUnderFloor("b", Number.NaN);
   assert.equal(result.passed, false);
+});
+
+test("resolveCanaryFloorFromEnv returns the canonical default when the override is unset or empty", () => {
+  const saved = process.env.REMNIC_BENCH_CANARY_FLOOR;
+  try {
+    delete process.env.REMNIC_BENCH_CANARY_FLOOR;
+    assert.equal(resolveCanaryFloorFromEnv(), CANARY_SCORE_FLOOR);
+
+    process.env.REMNIC_BENCH_CANARY_FLOOR = "";
+    assert.equal(resolveCanaryFloorFromEnv(), CANARY_SCORE_FLOOR);
+  } finally {
+    if (saved === undefined) {
+      delete process.env.REMNIC_BENCH_CANARY_FLOOR;
+    } else {
+      process.env.REMNIC_BENCH_CANARY_FLOOR = saved;
+    }
+  }
+});
+
+test("resolveCanaryFloorFromEnv accepts valid non-negative overrides", () => {
+  const saved = process.env.REMNIC_BENCH_CANARY_FLOOR;
+  try {
+    process.env.REMNIC_BENCH_CANARY_FLOOR = "0.05";
+    assert.equal(resolveCanaryFloorFromEnv(), 0.05);
+
+    process.env.REMNIC_BENCH_CANARY_FLOOR = "0";
+    assert.equal(resolveCanaryFloorFromEnv(), 0);
+  } finally {
+    if (saved === undefined) {
+      delete process.env.REMNIC_BENCH_CANARY_FLOOR;
+    } else {
+      process.env.REMNIC_BENCH_CANARY_FLOOR = saved;
+    }
+  }
+});
+
+test("resolveCanaryFloorFromEnv rejects invalid, non-finite, or negative overrides", () => {
+  const saved = process.env.REMNIC_BENCH_CANARY_FLOOR;
+  const invalid = ["abc", "-1", "NaN", "Infinity", "1e999"];
+  try {
+    for (const raw of invalid) {
+      process.env.REMNIC_BENCH_CANARY_FLOOR = raw;
+      assert.throws(() => resolveCanaryFloorFromEnv(), /Invalid REMNIC_BENCH_CANARY_FLOOR/, raw);
+    }
+  } finally {
+    if (saved === undefined) {
+      delete process.env.REMNIC_BENCH_CANARY_FLOOR;
+    } else {
+      process.env.REMNIC_BENCH_CANARY_FLOOR = saved;
+    }
+  }
 });

@@ -208,6 +208,13 @@ export interface BenchmarkResult {
      * Must stay below the benchmark's canary floor.
      */
     canaryScore?: number;
+    /**
+     * Effective canary floor (validated `REMNIC_BENCH_CANARY_FLOOR` or the
+     * canonical default) that gated `canaryScore`. Persisted by
+     * `writeBenchmarkResult` so readers judge the score against the
+     * producing run's floor without the environment variable.
+     */
+    canaryFloor?: number;
     /** "partial" if the benchmark was interrupted; absent or "complete" otherwise. */
     status?: "complete" | "partial";
     /** If partial, the error that caused interruption. */

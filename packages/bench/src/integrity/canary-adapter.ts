@@ -12,6 +12,7 @@
  * for the `bench-exploit-audit` CI workflow.
  */
 
+import process from "node:process";
 import type {
   BenchMemoryAdapter,
   MemoryStats,
@@ -24,6 +25,25 @@ export const CANARY_FIXED_RECALL = "__remnic_canary_response__";
 
 /** The score floor the canary must NOT exceed for any benchmark. */
 export const CANARY_SCORE_FLOOR = 0.1;
+
+/**
+ * Effective canary floor for this process: a validated
+ * `REMNIC_BENCH_CANARY_FLOOR` override, else the canonical default.
+ * Empty, non-finite, or negative values are rejected loudly, never
+ * silently coerced to the default — an out-of-range override must not
+ * be trusted by the audit gate or persisted into results.
+ */
+export function resolveCanaryFloorFromEnv(): number {
+  const raw = process.env.REMNIC_BENCH_CANARY_FLOOR;
+  if (!raw) {
+    return CANARY_SCORE_FLOOR;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`Invalid REMNIC_BENCH_CANARY_FLOOR: ${raw}`);
+  }
+  return parsed;
+}
 
 export interface CanaryAdapterOptions {
   /**
