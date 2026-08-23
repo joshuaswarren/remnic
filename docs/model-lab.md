@@ -176,10 +176,7 @@ a model-backed detector lands in the consuming child.
 
 ## Privacy + consent
 
-- The **harvest stream** (teacher labels from shadow mode) is opt-in, local-only,
-  and documented. `harvest-shadow-logs.py` requires `--i-consent-local-data` and
-  prints exactly what it will read. It is a **stub** until the relevant shadow
-  telemetry lands (#1576 for the gate, #1581 for correction-intent).
+- The **harvest stream** (teacher labels from shadow mode) is not implemented. It will be opt-in, local-only, and documented when it lands with the #1585 GPU-run follow-up (#1576 for the gate, #1581 for correction-intent).
 - Teacher-model outputs ("LLM traces") live under the gitignored data dir like
   everything else.
 

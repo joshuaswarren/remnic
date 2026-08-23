@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { diffGraphSnapshots } from "./graph-diff.js";
-import type { GraphSnapshot } from "./graph-parser.js";
+import { diffGraphSnapshots } from "../../src/graph-dashboard-diff.js";
+import type { GraphSnapshot } from "../../src/graph-dashboard-parser.js";
 
 test("diffGraphSnapshots detects added and removed nodes/edges", () => {
   const previous: GraphSnapshot = {

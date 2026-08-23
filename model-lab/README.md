@@ -25,14 +25,12 @@ model-lab/
     perturbations.py              pure perturbation primitives + the selfcheck case table
     train.py                      encoder-baseline training recipe (GPU + deps at runtime)
     eval.py                       held-out eval recipe; emits the manifest eval block
-    harvest-shadow-logs.py        shadow-log harvest — STUB; waits for #1576 shadow mode
     manifest.json                 THE reproducibility artifact (schema example; pending-training)
   correction-intent/
     generate-data.py              synthetic morphology generator (CI-tested; mirrors #1581)
     morphology.py                 seed grammar: #1581 polarities + anti-fixtures
     train.py                      RoBERTa detection classifier (v1, issue #1738); causal-LM extraction is v2
     eval.py                       held-out detection F1 + span quality + p95 latency
-    harvest-shadow-logs.py        shadow-log harvest — STUB; waits for #1581 telemetry
     manifest.json                 THE reproducibility artifact (schema example; pending-training)
 ```
 
@@ -108,5 +106,5 @@ python model-lab/faithfulness-gate/eval.py --version-tag v1             # → ma
 
 ## Privacy + consent
 
-* The **harvest stream** (teacher labels from #1576 shadow mode) is opt-in, local-only, and documented. `harvest-shadow-logs.py` requires an explicit `--i-consent-local-data` flag and prints exactly what it will read. It is a **stub in PR1** — harvest waits for #1576 shadow mode.
+* The **harvest stream** (teacher labels from shadow mode) is not implemented: it is opt-in and local-only by design and lands with the #1585 GPU-run follow-up once #1576/#1581 shadow telemetry exists.
 * Teacher-model outputs ("LLM traces") live under the gitignored data dir like everything else.

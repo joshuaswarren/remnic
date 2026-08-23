@@ -23,7 +23,7 @@ Outputs
 * stdout gains ``DATASET_SHA256=<hex>`` for machine parsing.
 
 The harvest stream (teacher labels from #1576 shadow mode) is NOT here — it
-waits for #1576 shadow mode and lives in ``harvest-shadow-logs.py``.
+lands with the #1585 GPU-run follow-up once #1576 shadow mode exists.
 """
 
 from __future__ import annotations
