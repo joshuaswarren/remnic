@@ -11,6 +11,7 @@ test("@remnic/capture-screen preserves dependency-light package configuration", 
     dependencies?: Record<string, string>;
     peerDependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
+    scripts?: Record<string, string>;
   };
 
   assert.equal(
@@ -28,6 +29,9 @@ test("@remnic/capture-screen preserves dependency-light package configuration", 
     "workspace:*",
     "@remnic/capture-screen must keep @remnic/core as a dev dependency for source and build",
   );
+  const prepareCore = "node ../../scripts/pnpm.mjs --filter @remnic/core build";
+  assert.equal(pkg.scripts?.prebuild, prepareCore);
+  assert.equal(pkg.scripts?.["precheck-types"], prepareCore);
 });
 
 test("@remnic/capture-screen configures tsup to bundle @remnic/core/activity/digest", async () => {
@@ -48,9 +52,9 @@ test("built dist artifacts (if present) have no runtime @remnic/core imports", a
     const fileUrl = new URL(`../${file}`, import.meta.url);
     try {
       const content = await readFile(fileUrl, "utf8");
-      assert.doesNotMatch(
-        content,
-        /from\s+["']@remnic\/core(\/[^"']*)?["']|import\s*\(\s*["']@remnic\/core(\/[^"']*)?["']\s*\)|require\s*\(\s*["']@remnic\/core(\/[^"']*)?["']\s*\)/,
+      assert.equal(
+        content.includes("@remnic/core"),
+        false,
         `${file} must not contain runtime imports from @remnic/core`,
       );
     } catch (err) {

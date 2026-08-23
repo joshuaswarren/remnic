@@ -18,9 +18,9 @@
     "dist"
   ],
   "scripts": {
-    "prebuild": "node ../../scripts/ensure-bench-build-deps.mjs",
+    "prebuild": "node ../../scripts/pnpm.mjs --filter @remnic/core build",
     "build": "tsup --config tsup.config.ts",
-    "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
+    "precheck-types": "node ../../scripts/pnpm.mjs --filter @remnic/core build",
     "check-types": "tsc --noEmit",
     "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test src/simhash.test.ts src/dedup.test.ts src/daywindow.test.ts src/denylist.test.ts src/axtree.test.ts src/redact.test.ts src/config.test.ts src/validate.test.ts src/util.test.ts src/token.test.ts src/spool.test.ts src/capture.test.ts src/helper.test.ts src/live.test.ts src/replay.test.ts src/scheduler.test.ts src/daemon.test.ts src/cli.test.ts src/package.test.ts",
     "prepublishOnly": "npm run build"
