@@ -8,6 +8,7 @@ const pnpmCmd = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const FINGERPRINT_VERSION = 1;
 const LOCK_POLL_INTERVAL_MS = 50;
 const DEFAULT_LOCK_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_OWNERLESS_GRACE_MS = 30 * 1000;
 const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
 const PROCESS_NONCE = crypto.randomBytes(8).toString("hex");
 const PROCESS_START_TICKS = readProcessStartTicks(process.pid);
@@ -159,8 +160,9 @@ function removeFingerprintSidecar(distPath) {
 // Cross-process lock so concurrent ensurePackageBuild calls for one package
 // trigger at most one build: the waiter re-checks freshness under the lock and
 // skips. A lock whose owning pid is dead, whose start identity no longer
-// matches, or whose age exceeds the wait bound is reclaimed by renaming the
-// observed owner dir aside — never by recursive-deleting a live lock path.
+// matches, whose age exceeds the wait bound, or that a crash left ownerless
+// past its creation grace window is reclaimed by renaming the observed dir
+// aside — never by recursive-deleting a live lock path.
 // ponytail: on timeout we run the build without the lock — a duplicate build
 // beats a stuck workflow; per-package finer locking if waiting ever matters.
 function withBuildLock(repoRoot, pkgName, fn) {
@@ -194,8 +196,9 @@ function lockTimeoutMs() {
 }
 
 // Returns a handle owning the exact lock identity written, or null when the
-// lock is held by a live owner (or the reclaim race was lost). The handle is
-// the only thing releaseLockDir will remove.
+// lock is held by a live owner or by an ownerless dir inside its creation
+// grace window (or the reclaim race was lost). The handle is the only thing
+// releaseLockDir will remove.
 export function acquireLockDir(lockDir) {
   let owner = null;
   try {
@@ -205,7 +208,7 @@ export function acquireLockDir(lockDir) {
       throw error;
     }
     const observed = readLockOwner(lockDir);
-    if (isOwnerLive(observed)) {
+    if (isLockHeld(lockDir, observed)) {
       return null;
     }
     if (!quarantineLockIfOwnerMatches(lockDir, observed)) {
@@ -220,15 +223,44 @@ export function acquireLockDir(lockDir) {
   try {
     owner = writeLockOwner(lockDir);
   } catch {
-    // Holding the directory is the lock; a missing owner file only disables
-    // stale reclaim until the holder exits. The handle keeps owner null so
-    // release still removes the identity-less dir this process holds.
+    // Holding the directory is the lock; an owner write failure keeps the
+    // holder protected only for the ownerless grace window, after which
+    // another waiter may reclaim the identity-less dir. The handle keeps
+    // owner null so release still removes only an identity-less dir this
+    // process holds.
   }
   return { lockDir, owner };
 }
 
 export function isLockHeldByLiveProcess(lockDir) {
-  return isOwnerLive(readLockOwner(lockDir));
+  return isLockHeld(lockDir, readLockOwner(lockDir));
+}
+
+// Held means: an inspectable owner is alive, or an ownerless dir is still
+// inside its creation grace window, because a live creator may be between
+// mkdir and its owner write. Past that window an ownerless dir is a crashed
+// partial creation and is reclaimable like any stale lock.
+function isLockHeld(lockDir, owner) {
+  if (owner == null) {
+    return !isOwnerlessLockReclaimable(lockDir);
+  }
+  return isOwnerLive(owner);
+}
+
+function ownerlessGraceMs() {
+  const raw = Number(process.env.REMNIC_BUILD_LOCK_OWNERLESS_GRACE_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_OWNERLESS_GRACE_MS;
+}
+
+function isOwnerlessLockReclaimable(lockDir) {
+  let mtimeMs;
+  try {
+    mtimeMs = fs.statSync(lockDir).mtimeMs;
+  } catch {
+    return false; // Dir vanished; the caller's retry loop handles it.
+  }
+  // A future mtime (clock skew) counts as inside the grace window: fail safe.
+  return Date.now() - mtimeMs > ownerlessGraceMs();
 }
 
 function isOwnerLive(owner) {
@@ -256,7 +288,7 @@ function isOwnerLive(owner) {
   }
 }
 
-function quarantineLockIfOwnerMatches(lockDir, expected) {
+export function quarantineLockIfOwnerMatches(lockDir, expected) {
   const quarantineDir = `${lockDir}.stale-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
   try {
     fs.renameSync(lockDir, quarantineDir);
@@ -264,7 +296,7 @@ function quarantineLockIfOwnerMatches(lockDir, expected) {
     return false;
   }
   const quarantined = readLockOwner(quarantineDir);
-  if (!ownersMatch(expected, quarantined)) {
+  if (!lockIdentityMatches(expected, quarantined)) {
     try {
       fs.renameSync(quarantineDir, lockDir);
     } catch {
@@ -278,6 +310,16 @@ function quarantineLockIfOwnerMatches(lockDir, expected) {
     // Quarantine is off the lock path; leftover bytes are not a live lock.
   }
   return true;
+}
+
+// A null expected identity means the dir must still be ownerless after the
+// rename: ownerlessness is the identity an ownerless reclaim verifies, so a
+// creator that completes its owner write mid-reclaim is detected and restored.
+function lockIdentityMatches(expected, actual) {
+  if (expected == null) {
+    return actual == null;
+  }
+  return ownersMatch(expected, actual);
 }
 
 function readLockOwner(lockDir) {
@@ -372,7 +414,7 @@ export function releaseLockDir(handle, testHooks) {
   }
   testHooks?.afterOccupy?.();
   const observedAside = readLockOwner(asideDir);
-  const stillOurs = owner === null ? observedAside === null : ownersMatch(owner, observedAside);
+  const stillOurs = lockIdentityMatches(owner, observedAside);
   if (!stillOurs) {
     if (occupied) {
       try {
