@@ -495,6 +495,15 @@ function upgradeResults(legacy: JsonRecord): BenchmarkResult["results"] {
     resultsExtras.statistics = results.statistics;
   }
 
+  const hasCategoryAggregate =
+    isRecord(resultsExtras.categoryAggregates) &&
+    Object.values(resultsExtras.categoryAggregates).some(
+      (category) => isRecord(category) && Object.keys(category).length > 0,
+    );
+  if (upgraded.tasks.length === 0 && Object.keys(upgraded.aggregates).length === 0 && !hasCategoryAggregate) {
+    reject("results must contain at least one recognized task or aggregate");
+  }
+
   return upgraded;
 }
 

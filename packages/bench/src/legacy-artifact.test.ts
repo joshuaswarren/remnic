@@ -284,6 +284,13 @@ test("recognizeLegacyBenchmarkArtifact rejects malformed and ambiguous shapes wi
   const rejections: Array<[unknown, RegExp]> = [
     [{}, /meta with non-empty id/],
     [{ meta: { id: "x", benchmark: "y" } }, /meta\.timestamp must be a non-empty string/],
+    [
+      {
+        meta: { id: "partial", benchmark: "locomo", timestamp: "2026-05-21T00:00:00.000Z" },
+        results: { aggregates: {} },
+      },
+      /at least one recognized task or aggregate/,
+    ],
     [{ meta: { id: "", benchmark: "y", timestamp: "t" } }, /meta\.id must be a non-empty string/],
     [
       { ...minimalLegacyArtifact(), meta: { ...(minimalLegacyArtifact().meta as Record<string, unknown>), mode: "eval" } },
