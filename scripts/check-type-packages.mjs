@@ -94,19 +94,23 @@ export function runCheckTypePackages(packagesDir = join(repoRoot, "packages")) {
 const USAGE =
   "usage: check-type-packages.mjs [--list | --list-manifests | --run] [--packages-dir <dir>]";
 
+/**
+ * Strict grammar per USAGE (#2883): argv[0] is the single mode token (the
+ * default list mode only when argv is empty), followed by at most one
+ * `--packages-dir <dir>` pair. Every other token — a second mode, an unknown
+ * flag, a positional — is a usage error, never silently ignored: a typo like
+ * `--list --run` used to downgrade the gate to a non-running list operation.
+ */
 function parseCliArgs(argv) {
   const mode = argv[0] ?? "--list";
   if (mode !== "--list" && mode !== "--list-manifests" && mode !== "--run") return null;
   let packagesDir;
-  let sawPackagesDir = false;
-  for (let i = 0; i < argv.length; i += 1) {
-    if (argv[i] !== "--packages-dir") continue;
+  for (let i = 1; i < argv.length; i += 1) {
+    if (argv[i] !== "--packages-dir") return null;
     const value = argv[i + 1];
-    if (sawPackagesDir || value === undefined || value.startsWith("-") || value.trim() === "") {
-      return null;
-    }
+    if (value === undefined || value.startsWith("-") || value.trim() === "") return null;
+    if (packagesDir !== undefined) return null;
     packagesDir = value;
-    sawPackagesDir = true;
     i += 1;
   }
   return { mode, packagesDir: packagesDir ?? join(repoRoot, "packages") };

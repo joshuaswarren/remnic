@@ -284,6 +284,19 @@ exit "\${STUB_EXIT:-0}"
     "--packages-dir",
     join(tmpdir(), "check-type-packages-b"),
   ]);
+  // #2883: every token must match the usage grammar. Extra modes, unknown
+  // flags, and positionals are usage errors — never silently ignored.
+  assertUsageReject(["--list", "--run"]);
+  assertUsageReject(["--run", "--list"]);
+  assertUsageReject(["--list", "--list-manifests"]);
+  assertUsageReject(["--list", "--list"]);
+  assertUsageReject(["--run", "--list-manifests", "--packages-dir", join(tmpdir(), "ctpk-x")]);
+  assertUsageReject(["--list", "extra"]);
+  assertUsageReject(["--run", "packages/remnic-core"]);
+  assertUsageReject(["--list", "--verbose"]);
+  assertUsageReject(["--run", "--packages-dir", join(tmpdir(), "ctpk-y"), "--run"]);
+  assertUsageReject(["--packages-dir", join(tmpdir(), "ctpk-z"), "--list"]);
+  assertUsageReject(["--bogus-mode"]);
 
   const listDir = mkdtempSync(join(tmpdir(), "check-type-packages-list-"));
   try {
@@ -295,6 +308,18 @@ exit "\${STUB_EXIT:-0}"
       "import-like-optional",
       "zzz-late-alpha",
     ]);
+    const manifests = spawnCli(["--list-manifests", "--packages-dir", packagesDir]);
+    assert.equal(manifests.status, 0, manifests.stderr);
+    assert.deepEqual(manifests.stdout.trim().split(/\r?\n/), [
+      "aaa-early-omega",
+      "host-adapter-plain",
+      "import-like-optional",
+      "native-platform-shim",
+      "zzz-late-alpha",
+    ]);
+    // Default mode with no tokens is the supported list invocation.
+    const bare = spawnCli([]);
+    assert.equal(bare.status, 0, bare.stderr);
   } finally {
     rmSync(listDir, { recursive: true, force: true });
   }
