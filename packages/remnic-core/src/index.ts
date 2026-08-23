@@ -149,6 +149,19 @@ export {
   type CodexCliFallbackResult,
   type CodexCliFallbackRunner,
 } from "./cli-fallback.js";
+export {
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
+  codexSubscriptionBuiltinProviderConfig,
+  createCodexSubscriptionRunner,
+  ensureCodexSubscriptionRunnerRegistered,
+  CodexSubscriptionAuthError,
+  CodexSubscriptionConfigError,
+  CodexSubscriptionTimeoutError,
+  type CodexSubscriptionAuthReason,
+  type CodexSubscriptionExecRequest,
+  type CodexSubscriptionExecResult,
+  type CodexSubscriptionRunnerDeps,
+} from "./codex-subscription.js";
 
 // ---------------------------------------------------------------------------
 // Smart buffer (issue #563)

@@ -803,6 +803,41 @@ Notes:
 - It **only applies in `gateway` mode.** In `plugin` mode it is ignored and Remnic logs a startup warning. Plugin-mode users who hit non-OpenAI model-ID failures at the direct client should switch to `modelSource: "gateway"` and use `taskModelChain` (see issue #1365).
 - A present-but-malformed value (missing `primary`, wrong types) is rejected at config-parse time rather than silently ignored.
 
+#### Codex subscription provider (`codex-subscription`)
+
+Built-in provider (issue #2784) that runs extraction and consolidation LLM
+calls through the `codex` CLI, authenticated by your Codex subscription
+login — no OpenAI API key and no codex-openai-proxy. Reference it in any
+gateway-mode model chain:
+
+```jsonc
+{
+  "modelSource": "gateway",
+  "taskModelChain": {
+    "primary": "codex-subscription/gpt-5.5"
+  }
+}
+```
+
+Behavior:
+
+- Credentials come exclusively from `codex login` (ChatGPT account). The
+  provider never reads, accepts, or logs tokens; an `apiKey` in the provider
+  config is rejected with a pointer to `codex login`.
+- Requests run sandboxed and ephemeral (`codex exec` with tools, hooks,
+  plugins, and memories disabled), so extraction cannot touch your machine.
+- Ambient `OPENAI_API_KEY` / `OPENAI_BASE_URL` are stripped from the child
+  environment so the subscription login — not metered API auth — is used.
+- Optional provider overrides via `models.providers["codex-subscription"]`:
+  `executable` (or `REMNIC_CODEX_EXECUTABLE` env), `reasoningEffort`
+  (`low` | `medium` | `high` | `xhigh`, default `medium`).
+- Not logged in → the provider fails fast with `codex login` guidance; an
+  expired or revoked session fails with re-auth guidance. Timeouts surface
+  as `TimeoutError`; caller cancellations keep their original abort reason.
+- A host or benchmark run that registers its own `codex-cli` transport
+  always wins; Remnic registers its subprocess transport only when the seam
+  is free.
+
 ### Setup
 
 1. **Define providers** in `agents/main/agent/models.json` with the endpoints and credentials you want Remnic to use (e.g., `fireworks`, `zai`, `anthropic`, `lmstudio`).

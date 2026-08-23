@@ -51,9 +51,18 @@ const VALID_CODEX_CLI_REASONING_EFFORTS = new Set<CodexCliReasoningEffort>([
 let processRunner: CodexCliFallbackRunner | undefined;
 
 /**
- * Registers the process-local Codex CLI transport. Core deliberately does not
- * import child_process so host adapters such as OpenClaw do not ship shell
- * execution in their plugin bundle; benchmark/standalone runtimes opt in.
+ * True when a process-local Codex CLI transport is registered. Lets a default
+ * runner (codex-subscription) register only when no host/benchmark runner has
+ * claimed the seam, so explicit registrations always win.
+ */
+export function isCodexCliFallbackRunnerRegistered(): boolean {
+  return processRunner !== undefined;
+}
+
+/**
+ * Registers the process-local Codex CLI transport. Core itself stays free of
+ * child_process here; hosts and benchmark runtimes opt in, and the
+ * codex-subscription module registers a subprocess runner on demand.
  */
 export function setCodexCliFallbackRunnerForProcess(
   runner: CodexCliFallbackRunner | undefined,
