@@ -89,6 +89,15 @@ function errorClass(err: unknown): string {
       : typeof err;
 }
 
+function bestEffortLog(level: "info" | "warn", message: string): void {
+  try {
+    log[level](message);
+  } catch {
+    // Diagnostics must never turn a successful or fail-open briefing read into
+    // a request failure when a host logger transport is unavailable.
+  }
+}
+
 /**
  * One structured, content-free discriminator per briefing memory read
  * (issue #2779): `mode`, `durationMs`, `count` when known, `outcome`, and on
@@ -108,7 +117,7 @@ function logBriefingMemoryRead(
     `outcome=${outcome}`,
     ...(errClass === undefined ? [] : [`err=${errClass}`]),
   ];
-  log.info(`briefing: memory read ${fields.join(" ")}`);
+  bestEffortLog("info", `briefing: memory read ${fields.join(" ")}`);
 }
 
 /** Read only the memories needed by a briefing, with compatibility fallback. */
@@ -131,21 +140,23 @@ export async function safeReadMemories(
   } catch (err) {
     if (err instanceof BriefingReadTimedOut) {
       outcome = "timeout";
-      log.warn(
+      bestEffortLog(
+        "warn",
         `briefing: memory read mode=full-read-fallback timed out after ${err.deadlineMs}ms — ` +
           `returning no memories (storage adapter lacks readMemoriesWindow; upgrade it to ` +
           `windowed or signal-aware reads)`,
       );
     } else if (err instanceof LegacyReadUnsupported) {
       errClass = errorClass(err);
-      log.warn(
+      bestEffortLog(
+        "warn",
         `briefing: memory read mode=full-read-fallback refused: readAllMemories() takes no abort ` +
           `signal, so its scan could not be stopped at the deadline — returning no memories ` +
           `(upgrade the storage adapter to readMemoriesWindow or a signal-aware readAllMemories)`,
       );
     } else {
       errClass = errorClass(err);
-      log.warn(`briefing: read memories failed (${errClass}) — returning no memories`);
+      bestEffortLog("warn", `briefing: read memories failed (${errClass}) — returning no memories`);
     }
     return [];
   } finally {

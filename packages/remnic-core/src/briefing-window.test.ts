@@ -102,6 +102,31 @@ test("safeReadMemories prefers readMemoriesWindow and logs exactly one windowed 
   }
 });
 
+test("discriminator logger failure cannot override a successful memory read", async () => {
+  initLogger(
+    {
+      info: () => {
+        throw new Error("logger transport unavailable");
+      },
+      warn() {},
+      error() {},
+      debug() {},
+    },
+    false,
+  );
+  try {
+    const expected = makeMemory("2026-04-10T01:00:00.000Z");
+    const storage = {
+      readMemoriesWindow: async () => ({ memories: [expected], filePaths: [] }),
+      readAllMemories: async () => [],
+    };
+
+    assert.deepEqual(await safeReadMemories(storage, WINDOW), [expected]);
+  } finally {
+    initLogger({ info() {}, warn() {}, error() {}, debug() {} }, false);
+  }
+});
+
 test("safeReadMemories falls back to a signal-aware readAllMemories and logs exactly one success discriminator", async () => {
   const { lines, restore } = captureLogs();
   try {
