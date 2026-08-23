@@ -106,5 +106,5 @@ python model-lab/faithfulness-gate/eval.py --version-tag v1             # → ma
 
 ## Privacy + consent
 
-* The **harvest stream** (teacher labels from shadow mode) is not implemented: it is opt-in and local-only by design and lands with the #1585 GPU-run follow-up once #1576/#1581 shadow telemetry exists.
+* The **harvest stream** (teacher labels from shadow mode) is not implemented and never was — the deleted `harvest-shadow-logs.py` stubs (#2847) were dead code, and the #1585 GPU-run work landed with synthetic-data training only. Shadow verdicts are already recorded (`extraction-persist.ts`, #1576); harvesting them into training data is a separate, unscheduled enhancement (#2852), opt-in and local-only by design.
 * Teacher-model outputs ("LLM traces") live under the gitignored data dir like everything else.
