@@ -291,6 +291,7 @@ import {
 } from "./memory-worth-outcomes.js";
 import type { LcmMessagePartInput, MessagePartSourceFormat } from "./message-parts/index.js";
 import type { CategoryAliasCoercion, ObserveRequest, RecallRequest } from "./access-schema.js";
+import { splitCanonicalWriteRequest } from "./access-observe-write-category.js";
 import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
 import { objectiveStateStoreOverrideForNamespace } from "./objective-state.js";
 import { offlineSyncStorageForSnapshot } from "./offline-sync-impression-drain.js";
@@ -994,7 +995,7 @@ export interface EngramAccessWriteResponse {
   duplicateOf?: string;
   idempotencyKey?: string;
   idempotencyReplay?: boolean;
-  /** Present when the request's category was a compat alias coerced to "fact" during parsing (#2829). */
+  /** Present when a project-shaped category alias was coerced to "fact" (#2780/#2829). */
   categoryCoercion?: CategoryAliasCoercion;
 }
 
@@ -2951,7 +2952,11 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return this.accessObserveWriteSurface.memoryStore(request, hooks);
   }
 
-  async peekMemoryStoreIdempotency(request: EngramAccessMemoryStoreRequest): Promise<EngramAccessIdempotencyStatus> {
+  async peekMemoryStoreIdempotency(
+    rawRequest: EngramAccessMemoryStoreRequest
+  ): Promise<EngramAccessIdempotencyStatus> {
+    // #2780/#2829: fingerprint the canonical category (schema transform already mapped aliases).
+    const { canonical: request } = splitCanonicalWriteRequest(rawRequest);
     const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
@@ -2986,8 +2991,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   }
 
   async peekSuggestionSubmitIdempotency(
-    request: EngramAccessSuggestionSubmitRequest
+    rawRequest: EngramAccessSuggestionSubmitRequest
   ): Promise<EngramAccessIdempotencyStatus> {
+    // #2780/#2829: fingerprint the canonical category (schema transform already mapped aliases).
+    const { canonical: request } = splitCanonicalWriteRequest(rawRequest);
     const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {

@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# Honor an explicit DATASETS_DIR from the environment so packaged CLI
-# installs can route downloads to a user-writable location (e.g.
-# ~/.remnic/bench/datasets) instead of a sibling of the script dir.
-DATASETS_DIR="${DATASETS_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)/datasets}"
+# Canonical dataset store is ~/.remnic/bench/datasets for every install
+# mode (repo checkout and packaged CLI alike — issue #2798). An explicit
+# DATASETS_DIR from the environment still wins.
+DATASETS_DIR="${DATASETS_DIR:-$HOME/.remnic/bench/datasets}"
 
 usage() {
   echo "Usage: $0 [--benchmark <name>]"

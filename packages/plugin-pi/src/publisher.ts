@@ -560,7 +560,7 @@ export class OmpMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
 
   /**
    * Pre-bundles the omp extension with `bun build` so omp's embedded runtime
-   * never resolves bare npm specifiers (e.g. @sinclair/typebox) from the
+   * never resolves bare npm specifiers (e.g. @remnic/core) from the
    * extension's node_modules at load time. The bundle is written to a temp
    * directory and swapped into dist-bundle/ on success. The pre-existing
    * dist-bundle is renamed aside (not removed) before the swap, so a failure

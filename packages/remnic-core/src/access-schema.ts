@@ -344,7 +344,16 @@ export function reapplyCategoryCoercion<T extends object>(
   return restamped;
 }
 
-const categoryWireSchema = z.enum([...MEMORY_CATEGORY_CANONICAL_INPUT, ...MEMORY_CATEGORY_ALIAS_INPUT]);
+const categoryWireSchema = z.enum(
+  [...MEMORY_CATEGORY_CANONICAL_INPUT, ...MEMORY_CATEGORY_ALIAS_INPUT],
+  {
+    errorMap: () => ({
+      message:
+        `category must be one of: ${[...MEMORY_CATEGORY_CANONICAL_INPUT, ...MEMORY_CATEGORY_ALIAS_INPUT].join(", ")}; ` +
+        'for project state/facts use "fact"',
+    }),
+  },
+);
 
 const confidenceSchema = z.number().min(0).max(1).optional();
 const tagsSchema = z.array(z.string().max(256)).max(50).optional();
