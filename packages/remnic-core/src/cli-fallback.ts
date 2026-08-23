@@ -79,14 +79,15 @@ export async function callCodexCliFallback(
   modelId: string,
   messages: CodexCliFallbackMessage[],
   options: CodexCliFallbackOptions = {},
+  runner: CodexCliFallbackRunner | undefined = processRunner,
 ): Promise<CodexCliFallbackResult> {
-  if (!processRunner) {
+  if (!runner) {
     throw new Error(
       'codex-cli fallback transport is not registered; install a runner with setCodexCliFallbackRunnerForProcess() before using api: "codex-cli"',
     );
   }
 
-  return await processRunner({
+  return await runner({
     config: normalizeCodexCliFallbackConfig(config),
     modelId: normalizeCodexCliModel(modelId),
     messages,

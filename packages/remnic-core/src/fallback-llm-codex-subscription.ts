@@ -5,7 +5,9 @@
  * live here so fallback-llm.ts stays generic chain orchestration.
  */
 
-import { callCodexCliFallback } from "./cli-fallback.js";
+import { raceAbort } from "./abort-error.js";
+import { callCodexCliFallback, isCodexCliFallbackRunnerRegistered } from "./cli-fallback.js";
+import type { CodexCliFallbackRunner } from "./cli-fallback.js";
 import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   CodexSubscriptionAuthError,
@@ -40,6 +42,50 @@ export function isTerminalCodexSubscriptionError(error: unknown): boolean {
 }
 
 /**
+ * Settle a fallback-LLM chain at the caller deadline. Abort the in-flight
+ * work, return immediately, and observe the abandoned promise so a late
+ * rejection cannot become unhandled.
+ */
+export async function raceFallbackLlmDeadline<T>(
+  work: Promise<T>,
+  timeoutMs: number,
+  abortOnTimeout: () => void,
+): Promise<{ timedOut: true } | { timedOut: false; value: T }> {
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), timeoutMs);
+  deadline.signal.addEventListener("abort", abortOnTimeout, { once: true });
+  try {
+    const value = await raceAbort(
+      work,
+      deadline.signal,
+      `fallback LLM timed out after ${timeoutMs}ms`,
+    );
+    return { timedOut: false, value };
+  } catch (error) {
+    if (!deadline.signal.aborted) throw error;
+    const afterAbort = await Promise.race([
+      work.then(
+        (value) => ({ state: "value" as const, value }),
+        (lateError) => ({ state: "error" as const, error: lateError }),
+      ),
+      new Promise<{ state: "pending" }>((resolve) => {
+        setImmediate(() => resolve({ state: "pending" }));
+      }),
+    ]);
+    if (afterAbort.state === "value") return { timedOut: false, value: afterAbort.value };
+    if (afterAbort.state === "error") throw afterAbort.error;
+    void work.then(
+      () => undefined,
+      () => undefined,
+    );
+    return { timedOut: true };
+  } finally {
+    clearTimeout(timer);
+    deadline.signal.removeEventListener("abort", abortOnTimeout);
+  }
+}
+
+/**
  * Attempt the Codex CLI / subscription provider. Returns `undefined` when the
  * model is not `api: "codex-cli"` so the generic FallbackLlmClient path runs.
  *
@@ -58,6 +104,7 @@ export async function tryCodexSubscriptionProvider(
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
   options: { timeoutMs?: number; signal?: AbortSignal },
   resolveFallbackApiKey: () => Promise<string | undefined>,
+  runner?: CodexCliFallbackRunner,
 ): Promise<CodexSubscriptionAttemptResult | undefined> {
   if (model.providerConfig.api !== "codex-cli") return undefined;
 
@@ -79,11 +126,21 @@ export async function tryCodexSubscriptionProvider(
     ...(resolvedApiKey ? { apiKey: resolvedApiKey } : {}),
   };
 
-  // Registers the core subprocess transport only when no host/benchmark
-  // runner claimed the seam, so daemon/plugin runtimes work out of the box.
-  ensureCodexSubscriptionRunnerRegistered();
-  return await callCodexCliFallback(effectiveConfig, model.modelId, messages, {
-    timeoutMs: options.timeoutMs,
+  // Let the provider surface its typed timeout before the generic outer deadline.
+  const callOptions = {
+    timeoutMs: options.timeoutMs === undefined
+      ? undefined
+      : Math.max(1, options.timeoutMs - Math.min(25, Math.max(1, Math.floor(options.timeoutMs / 10)))),
     signal: options.signal,
-  });
+  };
+  // A host/benchmark runner on the process seam still wins. Otherwise use
+  // the owning runtime's runner so shutdown cannot kill another instance.
+  if (isCodexCliFallbackRunnerRegistered()) {
+    return await callCodexCliFallback(effectiveConfig, model.modelId, messages, callOptions);
+  }
+  if (runner) {
+    return await callCodexCliFallback(effectiveConfig, model.modelId, messages, callOptions, runner);
+  }
+  ensureCodexSubscriptionRunnerRegistered();
+  return await callCodexCliFallback(effectiveConfig, model.modelId, messages, callOptions);
 }

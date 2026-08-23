@@ -16,9 +16,15 @@ import {
 import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   codexSubscriptionBuiltinProviderConfig,
+  getCodexSubscriptionRunnerForOwner,
 } from "./providers/codex-subscription.js";
 import { loadModelsJsonProviders } from "./models-json.js";
-import { isTerminalCodexSubscriptionError, tryCodexSubscriptionProvider } from "./fallback-llm-codex-subscription.js";
+import {
+  isTerminalCodexSubscriptionError,
+  raceFallbackLlmDeadline,
+  tryCodexSubscriptionProvider,
+} from "./fallback-llm-codex-subscription.js";
+import type { CodexCliFallbackRunner } from "./cli-fallback.js";
 import { resolveHomeDir } from "./runtime/env.js";
 import { expandTildePath } from "./utils/path.js";
 
@@ -84,6 +90,8 @@ export interface FallbackLlmRuntimeContext {
   getRuntimeAuthForModel?: GetRuntimeAuthForModelFn | null;
   resolveApiKeyForProvider?: ResolveApiKeyFn | null;
   workspaceDir?: string;
+  /** Per-runtime Codex child owner. Shutdown must terminate only this runner. */
+  codexSubscriptionRunner?: CodexCliFallbackRunner;
 }
 
 export function fallbackLlmRuntimeContextFromConfig(
@@ -97,6 +105,7 @@ export function fallbackLlmRuntimeContextFromConfig(
     workspaceDir: config.workspaceDir,
     resolveApiKeyForProvider: config.providerApiKeyResolver,
     getRuntimeAuthForModel: config.runtimeAuthForModelResolver,
+    codexSubscriptionRunner: getCodexSubscriptionRunnerForOwner(config),
     ...overrides,
   };
 }
@@ -338,7 +347,6 @@ export class FallbackLlmClient {
         log.warn("fallback LLM: timed out before request started");
         return null;
       }
-      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const controller = new AbortController();
       const onCallerAbort = (): void => {
         controller.abort(abortReason(options.signal));
@@ -357,20 +365,14 @@ export class FallbackLlmClient {
         },
       );
       try {
-        return await Promise.race([
-          guarded,
-          new Promise<FallbackLlmResponse | null>((resolve, reject) => {
-            timeoutHandle = setTimeout(() => {
-              log.warn(`fallback LLM: timed out after ${options.timeoutMs}ms`);
-              controller.abort(
-                new Error(`fallback LLM timed out after ${options.timeoutMs}ms`),
-              );
-              void guarded.then(resolve, reject);
-            }, options.timeoutMs);
-          }),
-        ]);
+        const outcome = await raceFallbackLlmDeadline(guarded, options.timeoutMs, () => {
+          log.warn(`fallback LLM: timed out after ${options.timeoutMs}ms`);
+          controller.abort(
+            new Error(`fallback LLM timed out after ${options.timeoutMs}ms`),
+          );
+        });
+        return outcome.timedOut ? null : outcome.value;
       } finally {
-        if (timeoutHandle) clearTimeout(timeoutHandle);
         options.signal?.removeEventListener("abort", onCallerAbort);
       }
     }
@@ -674,9 +676,9 @@ export class FallbackLlmClient {
       messages,
       options,
       () => this.resolveFallbackApiKey(model),
+      this.runtimeContext.codexSubscriptionRunner,
     );
     if (codexResult !== undefined) return codexResult;
-
     const runtimeAuth = await this.resolveRuntimeAuth(model);
     const effectiveBaseUrl = runtimeAuth?.baseUrl ?? model.providerConfig.baseUrl;
     const resolvedApiKey = runtimeAuth?.apiKey ?? await this.resolveFallbackApiKey(model);

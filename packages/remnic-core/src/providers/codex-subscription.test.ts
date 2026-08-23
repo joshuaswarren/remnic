@@ -937,7 +937,7 @@ test(
         }
       );
       // The detached child group must be untracked after settle — no leak.
-      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(), 0);
+      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(runner), 0);
     } finally {
       await rm(dir, { force: true, recursive: true }).catch(() => {});
     }
@@ -1043,22 +1043,86 @@ test(
     );
     try {
       const waitUntil = Date.now() + 2_000;
-      while (__codexSubscriptionTestHooks.activeCodexChildCount() === 0 && Date.now() < waitUntil) {
+      while (__codexSubscriptionTestHooks.activeCodexChildCount(runner) === 0 && Date.now() < waitUntil) {
         await flushLoop();
       }
-      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(), 1);
+      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(runner), 1);
       assert.equal(process.listenerCount("SIGHUP"), before.sighup);
       assert.equal(process.listenerCount("SIGINT"), before.sigint);
       assert.equal(process.listenerCount("SIGTERM"), before.sigterm);
       assert.equal(process.listenerCount("exit"), before.exit);
-      terminateActiveCodexSubscriptionChildren("SIGKILL");
+      terminateActiveCodexSubscriptionChildren("SIGKILL", runner);
       await pendingDone;
-      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(), 0);
+      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(runner), 0);
       assert.equal(process.listenerCount("SIGINT"), before.sigint);
       assert.equal(process.listenerCount("SIGTERM"), before.sigterm);
     } finally {
-      terminateActiveCodexSubscriptionChildren("SIGKILL");
+      terminateActiveCodexSubscriptionChildren("SIGKILL", runner);
       await pendingDone.catch(() => undefined);
+      await rm(dir, { force: true, recursive: true }).catch(() => {});
+    }
+  }
+);
+
+test(
+  "terminating one runtime does not kill another runtime's children",
+  { skip: process.platform === "win32" },
+  async () => {
+    __codexSubscriptionTestHooks.resetLoginStatusCache();
+    const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-fakebin-"));
+    const script = path.join(dir, "codex-fake");
+    await writeFile(script, "#!/bin/sh\ntrap '' TERM\nwhile true; do sleep 0.1; done\n", { mode: 0o755 });
+    const makeLiveRunner = () =>
+      createCodexSubscriptionRunner({
+        env: { HOME: "/home/alice", PATH: "/usr/bin:/bin" },
+        now: () => 0,
+        runLoginStatus: async () => ({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" }),
+      });
+    const first = makeLiveRunner();
+    const second = makeLiveRunner();
+    const ignoreSettle = (pending: Promise<unknown>): Promise<void> =>
+      pending.then(
+        () => {
+          throw new Error("expected terminated child");
+        },
+        () => undefined,
+      );
+    const firstPending = ignoreSettle(
+      first({
+        config: { executable: script },
+        modelId: "gpt-5.6-luna",
+        messages: [{ role: "user", content: "hi" }],
+        options: { timeoutMs: 30_000 },
+      }),
+    );
+    const secondPending = ignoreSettle(
+      second({
+        config: { executable: script },
+        modelId: "gpt-5.6-luna",
+        messages: [{ role: "user", content: "hi" }],
+        options: { timeoutMs: 30_000 },
+      }),
+    );
+    try {
+      const waitUntil = Date.now() + 2_000;
+      while (
+        (__codexSubscriptionTestHooks.activeCodexChildCount(first) === 0 ||
+          __codexSubscriptionTestHooks.activeCodexChildCount(second) === 0) &&
+        Date.now() < waitUntil
+      ) {
+        await flushLoop();
+      }
+      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(first), 1);
+      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(second), 1);
+      terminateActiveCodexSubscriptionChildren("SIGKILL", first);
+      await firstPending;
+      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(first), 0);
+      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(second), 1);
+    } finally {
+      terminateActiveCodexSubscriptionChildren("SIGKILL", first);
+      terminateActiveCodexSubscriptionChildren("SIGKILL", second);
+      await firstPending.catch(() => undefined);
+      await secondPending.catch(() => undefined);
       await rm(dir, { force: true, recursive: true }).catch(() => {});
     }
   }
@@ -1079,13 +1143,12 @@ test(
       "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 0.1; done\n",
       { mode: 0o755 }
     );
-    const restore = setCodexCliFallbackRunnerForProcess(
-      createCodexSubscriptionRunner({
-        env: { HOME: "/home/alice", PATH: "/usr/bin:/bin" },
-        now: () => 0,
-        runLoginStatus: async () => ({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" }),
-      })
-    );
+    const runner = createCodexSubscriptionRunner({
+      env: { HOME: "/home/alice", PATH: "/usr/bin:/bin" },
+      now: () => 0,
+      runLoginStatus: async () => ({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" }),
+    });
+    const restore = setCodexCliFallbackRunnerForProcess(runner);
     try {
       const llm = new FallbackLlmClient({
         agents: { defaults: { model: { primary: `${CODEX_SUBSCRIPTION_PROVIDER_ID}/gpt-5.6-luna` } } },
@@ -1110,7 +1173,7 @@ test(
       );
     } finally {
       restore();
-      terminateActiveCodexSubscriptionChildren("SIGKILL");
+      terminateActiveCodexSubscriptionChildren("SIGKILL", runner);
       clearModelsJsonCache();
       clearSecretCache();
       await rm(dir, { force: true, recursive: true }).catch(() => {});

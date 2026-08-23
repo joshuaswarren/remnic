@@ -14,7 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler } from "@remnic/core";
+import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, getCodexSubscriptionRunnerForOwner, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler, type CodexCliFallbackRunner } from "@remnic/core";
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
 import { envOverrides } from "./server-env.js";
@@ -688,8 +688,9 @@ export function createAdminControls(
 async function cleanupFailedStartup(
   orchestrator: Orchestrator,
   httpServer: EngramAccessHttpServer,
+  codexRunner: CodexCliFallbackRunner,
 ): Promise<void> {
-  terminateActiveCodexSubscriptionChildren("SIGTERM");
+  terminateActiveCodexSubscriptionChildren("SIGTERM", codexRunner);
   try {
     await httpServer.stop();
   } catch (err) {
@@ -701,7 +702,7 @@ async function cleanupFailedStartup(
   } catch (err) {
     log.warn(`HTTP startup failure cleanup could not destroy orchestrator: ${err}`);
   }
-  terminateActiveCodexSubscriptionChildren("SIGKILL");
+  terminateActiveCodexSubscriptionChildren("SIGKILL", codexRunner);
 }
 
 export interface SupportPassportServerRuntime {
@@ -775,6 +776,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   const remnicConfig = mergeRemnicConfigForServer(fileConfig.remnic, envRemnic);
 
   const config = parseConfig(remnicConfig);
+  const codexRunner = getCodexSubscriptionRunnerForOwner(config);
   // Re-init now that config is known. The call at the top of startServer runs
   // BEFORE the config file is read, so it could only ever default `debug` to
   // false — `debug: true` was accepted, documented, and silently inert on the
@@ -848,7 +850,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   try {
     ({ host, port } = await httpServer.start());
   } catch (err) {
-    await cleanupFailedStartup(orchestrator, httpServer);
+    await cleanupFailedStartup(orchestrator, httpServer, codexRunner);
     throw err;
   }
 
@@ -908,7 +910,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   const stop = async (): Promise<void> => {
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
-      terminateActiveCodexSubscriptionChildren("SIGTERM");
+      terminateActiveCodexSubscriptionChildren("SIGTERM", codexRunner);
       startupSyncAbort.abort();
       readinessAbort.abort();
       supportPassportRuntime.close();
@@ -920,7 +922,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
           await readinessTask;
         } finally {
           await orchestrator.destroy();
-          terminateActiveCodexSubscriptionChildren("SIGKILL");
+          terminateActiveCodexSubscriptionChildren("SIGKILL", codexRunner);
         }
       }
     })();

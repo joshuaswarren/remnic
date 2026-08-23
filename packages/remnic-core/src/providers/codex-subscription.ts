@@ -210,12 +210,36 @@ interface LoginStatusCacheEntry {
 }
 
 const loginStatusCache = new Map<string, LoginStatusCacheEntry>();
-const activeCodexChildPids = new Set<number>();
+const childrenByRunner = new WeakMap<CodexCliFallbackRunner, Set<number>>();
+const runnerByOwner = new WeakMap<object, CodexCliFallbackRunner>();
+let defaultRegisteredRunner: CodexCliFallbackRunner | undefined;
 let coreRunnerRegistered = false;
 
 export function createCodexSubscriptionRunner(deps: CodexSubscriptionRunnerDeps = {}): CodexCliFallbackRunner {
   const envSource = deps.env ?? process.env;
-  return (request) => runCodexSubscriptionRequest(request, deps, envSource);
+  const children = new Set<number>();
+  const runnerDeps: CodexSubscriptionRunnerDeps = {
+    ...deps,
+    runCodexExec: deps.runCodexExec ?? ((request) => runCodexExecSubprocess(request, children)),
+    runLoginStatus:
+      deps.runLoginStatus ??
+      ((executable, env, timeoutMs, signal) =>
+        runLoginStatusSubprocess(executable, env, timeoutMs, signal, children)),
+  };
+  const runner: CodexCliFallbackRunner = (request) =>
+    runCodexSubscriptionRequest(request, runnerDeps, envSource);
+  childrenByRunner.set(runner, children);
+  return runner;
+}
+
+/** One runner per owning runtime/config object so teardown cannot cross instances. */
+export function getCodexSubscriptionRunnerForOwner(owner: object): CodexCliFallbackRunner {
+  let runner = runnerByOwner.get(owner);
+  if (!runner) {
+    runner = createCodexSubscriptionRunner();
+    runnerByOwner.set(owner, runner);
+  }
+  return runner;
 }
 
 /**
@@ -227,14 +251,24 @@ export function createCodexSubscriptionRunner(deps: CodexSubscriptionRunnerDeps 
  */
 export function ensureCodexSubscriptionRunnerRegistered(deps: CodexSubscriptionRunnerDeps = {}): boolean {
   if (isCodexCliFallbackRunnerRegistered()) return false;
-  setCodexCliFallbackRunnerForProcess(createCodexSubscriptionRunner(deps));
+  defaultRegisteredRunner = createCodexSubscriptionRunner(deps);
+  setCodexCliFallbackRunnerForProcess(defaultRegisteredRunner);
   coreRunnerRegistered = true;
   return true;
 }
 
-/** Host shutdown hook: terminate detached Codex child groups. Does not exit. */
-export function terminateActiveCodexSubscriptionChildren(signal: NodeJS.Signals = "SIGTERM"): void {
-  terminateActiveCodexChildren(signal);
+/** Host shutdown hook: terminate this runtime's detached Codex children. Does not exit. */
+export function terminateActiveCodexSubscriptionChildren(
+  signal: NodeJS.Signals = "SIGTERM",
+  runner?: CodexCliFallbackRunner,
+): void {
+  const target = runner ?? defaultRegisteredRunner;
+  if (!target) return;
+  const pids = childrenByRunner.get(target);
+  if (!pids) return;
+  for (const pid of pids) {
+    terminateCodexChildPid(pid, signal);
+  }
 }
 
 async function runCodexSubscriptionRequest(
@@ -280,7 +314,7 @@ async function runCodexSubscriptionRequest(
     const outputPath = path.join(tempDir, "last-message.txt");
     await mkdir(workspacePath, { recursive: true });
 
-    const runCodexExec = deps.runCodexExec ?? runCodexExecSubprocess;
+    const runCodexExec = deps.runCodexExec!;
     const result = await runCodexExec({
       executable,
       args: buildExecArgs(request.modelId, config, workspacePath, outputPath),
@@ -447,7 +481,7 @@ async function runLoginStatusCheck(
   ctx: LoginCheckContext,
   entry: LoginStatusCacheEntry
 ): Promise<void> {
-  const runLoginStatus = deps.runLoginStatus ?? runLoginStatusSubprocess;
+  const runLoginStatus = deps.runLoginStatus!;
   const result = await runLoginStatus(executable, env, ctx.loginStatusTimeoutMs, entry.controller.signal);
   const output = `${result.stdout}\n${result.stderr}`.trim();
   if (TIMEOUT_PATTERN.test(output)) {
@@ -775,7 +809,8 @@ async function runLoginStatusSubprocess(
   executable: string,
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
-  signal?: AbortSignal
+  signal: AbortSignal | undefined,
+  children: Set<number>,
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return await runSubprocess(executable, ["login", "status"], {
     env,
@@ -783,10 +818,14 @@ async function runLoginStatusSubprocess(
     timeoutMs,
     timeoutLabel: "login status",
     signal,
+    children,
   });
 }
 
-async function runCodexExecSubprocess(request: CodexSubscriptionExecRequest): Promise<CodexSubscriptionExecResult> {
+async function runCodexExecSubprocess(
+  request: CodexSubscriptionExecRequest,
+  children: Set<number>,
+): Promise<CodexSubscriptionExecResult> {
   const result = await runSubprocess(request.executable, request.args, {
     env: request.env,
     stdin: request.input,
@@ -794,7 +833,9 @@ async function runCodexExecSubprocess(request: CodexSubscriptionExecRequest): Pr
     timeoutLabel: "exec",
     signal: request.signal,
     cwd: request.workspacePath,
+    children,
   });
+  if (result.status === 124) return { ...result, outputText: "" };
   let outputText = "";
   try {
     outputText = (await readFile(request.outputPath, "utf8")).trim();
@@ -811,6 +852,7 @@ interface SubprocessOptions {
   timeoutLabel: string;
   signal?: AbortSignal;
   cwd?: string;
+  children: Set<number>;
 }
 
 async function runSubprocess(executable: string, args: string[], options: SubprocessOptions): Promise<CommandOutput> {
@@ -826,7 +868,7 @@ async function runSubprocess(executable: string, args: string[], options: Subpro
       detached: process.platform !== "win32",
       windowsHide: true,
     });
-    registerActiveCodexChild(child.pid);
+    registerActiveCodexChild(child.pid, options.children);
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -910,7 +952,7 @@ async function runSubprocess(executable: string, args: string[], options: Subpro
       stderr = appendBounded(stderr, `\ncodex-subscription: stdin error: ${error.code ?? error.message}`);
     });
     child.on("error", (error) => {
-      unregisterActiveCodexChild(child.pid);
+      unregisterActiveCodexChild(child.pid, options.children);
       finish(() => {
         reject(
           child.pid
@@ -924,7 +966,7 @@ async function runSubprocess(executable: string, args: string[], options: Subpro
     });
     child.on("close", (status, signal) => {
       clearKillTimeout();
-      unregisterActiveCodexChild(child.pid);
+      unregisterActiveCodexChild(child.pid, options.children);
       finish(() => {
         resolve({
           status: timedOut ? (status === null || status === 0 ? 124 : status) : status,
@@ -949,7 +991,10 @@ function safeMessage(error: unknown): string {
 }
 
 export const __codexSubscriptionTestHooks = {
-  activeCodexChildCount: (): number => activeCodexChildPids.size,
+  activeCodexChildCount: (runner?: CodexCliFallbackRunner): number => {
+    const target = runner ?? defaultRegisteredRunner;
+    return target ? (childrenByRunner.get(target)?.size ?? 0) : 0;
+  },
   appendBounded,
   resetLoginStatusCache: (): void => {
     loginStatusCache.clear();
@@ -957,23 +1002,18 @@ export const __codexSubscriptionTestHooks = {
   isCoreRunnerRegistered: (): boolean => coreRunnerRegistered,
   resetCoreRunnerRegistered: (): void => {
     coreRunnerRegistered = false;
+    defaultRegisteredRunner = undefined;
   },
 };
 
-function registerActiveCodexChild(pid: number | undefined): void {
+function registerActiveCodexChild(pid: number | undefined, children: Set<number>): void {
   if (pid === undefined) return;
-  activeCodexChildPids.add(pid);
+  children.add(pid);
 }
 
-function unregisterActiveCodexChild(pid: number | undefined): void {
+function unregisterActiveCodexChild(pid: number | undefined, children: Set<number>): void {
   if (pid === undefined) return;
-  activeCodexChildPids.delete(pid);
-}
-
-function terminateActiveCodexChildren(signal: NodeJS.Signals): void {
-  for (const pid of activeCodexChildPids) {
-    terminateCodexChildPid(pid, signal);
-  }
+  children.delete(pid);
 }
 
 function terminateCodexChildPid(pid: number, signal: NodeJS.Signals): void {

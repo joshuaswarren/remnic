@@ -149,7 +149,7 @@ export {
   type CodexCliFallbackResult,
   type CodexCliFallbackRunner,
 } from "./cli-fallback.js";
-export { CODEX_SUBSCRIPTION_PROVIDER_ID, codexSubscriptionBuiltinProviderConfig, createCodexSubscriptionRunner, ensureCodexSubscriptionRunnerRegistered, terminateActiveCodexSubscriptionChildren, CodexSubscriptionAuthError, CodexSubscriptionConfigError, CodexSubscriptionTimeoutError } from "./providers/codex-subscription.js";
+export { CODEX_SUBSCRIPTION_PROVIDER_ID, codexSubscriptionBuiltinProviderConfig, createCodexSubscriptionRunner, ensureCodexSubscriptionRunnerRegistered, getCodexSubscriptionRunnerForOwner, terminateActiveCodexSubscriptionChildren, CodexSubscriptionAuthError, CodexSubscriptionConfigError, CodexSubscriptionTimeoutError } from "./providers/codex-subscription.js";
 
 // ---------------------------------------------------------------------------
 // Smart buffer (issue #563)
