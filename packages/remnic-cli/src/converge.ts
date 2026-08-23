@@ -1025,16 +1025,12 @@ Subcommands:
   apply             Execute bidirectional converge transport (alias: transport, sync)
   watch             Run apply on a cadence until stopped (scheduled replication)
 
-Options:
   --peer <url>      Peer server URL (or --remote-url / --remote)
   --token <token>   Peer auth token (argv-visible; prefer safe channels below)
   --token-file <p> / REMNIC_CONVERGE_PEER_TOKEN  Non-argv token channels
-  --conflict-policy <policy>
-                    Policy override (newest-wins|manual; default newest-wins)
-  --interval <seconds>
-                    Watch cadence seconds (watch only; default 300)
-  --timeout <seconds>
-                    Peer HTTP timeout seconds (default 30; boot-scale 300+)
+  --conflict-policy <policy>  Override (newest-wins|manual; default newest-wins)
+  --interval <seconds>  Watch cadence seconds (watch only; default 300)
+  --timeout <seconds>  Peer HTTP timeout seconds (default 30; boot-scale 300+)
   --dry-run         Simulate transfers without mutating disk or remote peer
   --json            Output detailed JSON plan report
 `);
@@ -1042,7 +1038,7 @@ Options:
   }
 
   if (action !== "plan" && action !== "apply" && action !== "transport" && action !== "sync" && action !== "watch") {
-    process.stderr.write(`converge: unknown action "${action}". Use: plan, apply, or watch [options].\n`);
+    process.stderr.write(`converge: unknown action "${action}". Use plan, apply, or watch.\n`);
     process.exitCode = 2;
     return;
   }
@@ -1054,7 +1050,6 @@ Options:
   let conflictPolicy: ConvergeConflictPolicy | undefined;
   let intervalSeconds: number | undefined;
   let timeoutMsFlag: number | undefined;
-
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
     if (arg === "--token-file") {
