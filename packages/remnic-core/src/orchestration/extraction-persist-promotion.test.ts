@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
-import { mkdtemp } from "node:fs/promises";
-import type { MemoryFile } from "../types.js";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import type { MemoryFile } from "../types.js";
 
 import { StorageManager } from "../index.js";
 import { parseConfig } from "../config.js";
@@ -596,4 +597,124 @@ test("promoteAndReconcileMergedTarget: an unreadable payload skips destructive r
     "active",
     "an unconfirmed no-promotion outcome must never retire copies — the next merge retries promotion and reconciliation",
   );
+});
+
+function casShardPath(storageDir: string, memoryPath: string): string {
+  const relative = path.relative(storageDir, memoryPath).split(path.sep).join("/");
+  const hash = createHash("sha256").update(relative).digest("hex");
+  return path.join(storageDir, ".offline-sync", "cas-revisions", `${hash}.json`);
+}
+
+test("buildMergedTargetPromotionPayload: an unreadable CAS receipt shard refuses the promotion (#2813 P1 A)", async () => {
+  const s = await makeStorages();
+  const target = await s.source.writeMemory("fact", PRE_MERGE_BODY, { source: "test" });
+  await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
+  const committedRow = await s.source.getMemoryByIdIncludingArchived(target.id);
+  assert.ok(committedRow);
+  const shardPath = casShardPath(s.source.dir, committedRow.path);
+  // Prove a real standing receipt existed before tearing the shard.
+  const shard = JSON.parse(await readFile(shardPath, "utf8")) as { revision?: string };
+  assert.ok(shard.revision, "the merge commit minted a standing receipt");
+  await writeFile(shardPath, "{corrupt", "utf8");
+
+  // A concurrent writer published the PRE-merge body after the initial
+  // guard — reconciliation may retire it ONLY off a confirmed outcome.
+  const staleCopy = await s.shared.writeMemory("fact", PRE_MERGE_BODY, {
+    source: "writer-b",
+    sourceMemoryId: target.id,
+  });
+  const built = await buildMergedTargetPromotionPayload(s.source, {
+    targetId: target.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.equal(built.payload, null, "an unreadable receipt must refuse the promotion");
+  assert.equal(built.readFailed, true, "the refusal is an unknown outcome, not a no-promotion verdict");
+
+  let promotions = 0;
+  await promoteAndReconcileMergedTarget({
+    promote: async () => {
+      promotions += 1;
+      return `copy-${promotions}`;
+    },
+    config: parseConfig({ memoryDir: s.source.dir, sharedNamespace: "shared" }),
+    getStorageRouter: () => s.router,
+    scopeProfileWritePlan: null,
+    sourceStorage: s.source,
+    sourceMemoryId: target.id,
+    mergedPromotion: built.payload,
+    mergedPromotionReadFailed: built.readFailed,
+    normalize: (content) => content,
+  });
+  assert.equal(promotions, 0, "nothing is promoted off an unconfirmable receipt");
+  const row = await s.shared.getMemoryByIdIncludingArchived(staleCopy.id);
+  assert.equal(
+    row?.frontmatter.status ?? "active",
+    "active",
+    "no destructive reconciliation runs off an unknown payload",
+  );
+});
+
+test("promoteAndReconcileMergedTarget: a receipt that becomes unreadable before the promotion abandons it (#2813 P1 A)", async () => {
+  const s = await makeStorages();
+  // Fresh target, never minted: the payload legitimately carries no token.
+  const target = await s.source.writeMemory("fact", A_MERGED_BODY, { source: "test" });
+  const { payload } = await buildMergedTargetPromotionPayload(s.source, {
+    targetId: target.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.ok(payload);
+  assert.equal(payload.committedRevision, undefined, "a genuinely absent receipt builds a tokenless payload");
+  // A torn shard write lands between build and promotion: absence became
+  // UNREADABLE, and the old undefined-vs-undefined comparison would have
+  // confirmed the cached body anyway.
+  const committedRow = await s.source.getMemoryByIdIncludingArchived(target.id);
+  assert.ok(committedRow);
+  await writeFile(casShardPath(s.source.dir, committedRow.path), "{corrupt", "utf8");
+
+  let promotions = 0;
+  await promoteAndReconcileMergedTarget({
+    promote: async () => {
+      promotions += 1;
+      return `copy-${promotions}`;
+    },
+    config: parseConfig({ memoryDir: s.source.dir, sharedNamespace: "shared" }),
+    getStorageRouter: () => s.router,
+    scopeProfileWritePlan: null,
+    sourceStorage: s.source,
+    sourceMemoryId: target.id,
+    mergedPromotion: payload,
+    normalize: (content) => content,
+  });
+  assert.equal(promotions, 0, "an unreadable standing receipt must not confirm the cached payload");
+});
+
+test("promoteAndReconcileMergedTarget: a genuinely absent receipt still confirms and promotes (#2813 P1 A)", async () => {
+  const s = await makeStorages();
+  const target = await s.source.writeMemory("fact", A_MERGED_BODY, { source: "test" });
+  const { payload } = await buildMergedTargetPromotionPayload(s.source, {
+    targetId: target.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.ok(payload);
+  assert.equal(payload.committedRevision, undefined, "a pre-sidecar target promotes without a token");
+
+  let promotions = 0;
+  await promoteAndReconcileMergedTarget({
+    promote: async (promotionPayload) => {
+      promotions += 1;
+      assert.equal(promotionPayload.content, A_MERGED_BODY);
+      return `copy-${promotions}`;
+    },
+    config: parseConfig({ memoryDir: s.source.dir, sharedNamespace: "shared" }),
+    getStorageRouter: () => s.router,
+    scopeProfileWritePlan: null,
+    sourceStorage: s.source,
+    sourceMemoryId: target.id,
+    mergedPromotion: payload,
+    normalize: (content) => content,
+  });
+  assert.equal(promotions, 1, "absent-versus-absent confirms — pre-sidecar records keep their promotion semantics");
 });

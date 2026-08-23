@@ -18,6 +18,18 @@ type CasRevisionMetadata = {
   revisions: Array<{ path: string; revision: string }>;
 };
 
+/** #2813 (P1 A): truthful outcome of a standing-receipt read.
+ * - `present` — the target's standing receipt token.
+ * - `absent` — no receipt was ever minted (a pre-sidecar legacy record, or
+ *   a fresh target); `undefined` semantics stay correct for those.
+ * - `unavailable` — the sidecar could not be read, so receipt identity is
+ *   UNKNOWN. The fail-open `readRevision` collapses this into `undefined`;
+ *   callers that transact on receipt identity MUST refuse instead. */
+export type CasRevisionReadStatus =
+  | { status: "present"; revision: string }
+  | { status: "absent" }
+  | { status: "unavailable"; reason: string };
+
 const CAS_REVISION_LOCK_STALE_MS = 60_000;
 const CAS_REVISION_LOCK_MAX_WAIT_MS = 120_000;
 
@@ -103,36 +115,60 @@ export class CasRevisionStore {
   }
 
   private async readStandingRevision(relativePath: string): Promise<string | undefined> {
-    const { shardPath } = this.getShardInfo(relativePath);
     try {
-      const raw = await readFile(shardPath, "utf8");
-      const parsed = JSON.parse(raw) as unknown;
-      if (
-        parsed &&
-        typeof parsed === "object" &&
-        !Array.isArray(parsed) &&
-        (parsed as Record<string, unknown>).version === 1 &&
-        (parsed as Record<string, unknown>).path === relativePath &&
-        typeof (parsed as Record<string, unknown>).revision === "string" &&
-        ((parsed as Record<string, unknown>).revision as string).length > 0
-      ) {
-        return (parsed as Record<string, unknown>).revision as string;
-      }
+      return await this.readStandingRevisionStrict(relativePath);
     } catch (error) {
-      if (!isErrnoCode(error, "ENOENT")) {
-        log.warn(`CasRevisionStore failed to read shard for ${relativePath}: ${error}`);
-        return undefined;
-      }
-    }
-    try {
-      const legacyMap = await this.readLegacyMetadata();
-      return legacyMap.get(relativePath);
-    } catch (error) {
-      if (!isErrnoCode(error, "ENOENT")) {
-        log.warn(`CasRevisionStore failed to read legacy metadata for ${relativePath}: ${error}`);
-      }
+      log.warn(`CasRevisionStore failed to read standing revision for ${relativePath}: ${error}`);
       return undefined;
     }
+  }
+
+  /** #2813 (P1 A): strict core of {@link readStandingRevision}. Returns
+   * undefined ONLY when no receipt exists for the target — the shard is
+   * absent (or names another target) and the legacy metadata holds no
+   * entry. THROWS when the standing receipt cannot be determined: an
+   * unreadable or corrupt shard, or unreadable or invalid legacy metadata.
+   * Fail-open callers collapse the throw into undefined; truthful callers
+   * ({@link readRevisionStatus}) report `unavailable` so a transaction can
+   * refuse instead of mistaking the failure for absence. */
+  private async readStandingRevisionStrict(relativePath: string): Promise<string | undefined> {
+    const { shardPath } = this.getShardInfo(relativePath);
+    const fromShard = await this.readShardRevision(shardPath, relativePath);
+    if (fromShard !== undefined) return fromShard;
+    const legacyMap = await this.readLegacyMetadata();
+    return legacyMap.get(relativePath);
+  }
+
+  /** The shard's standing revision, or undefined when the shard is absent
+   * or names another target (fall back to legacy metadata, as before).
+   * Throws when the shard exists but cannot be read or parsed — a corrupt
+   * shard is unavailability, never absence. */
+  private async readShardRevision(shardPath: string, relativePath: string): Promise<string | undefined> {
+    let raw: string;
+    try {
+      raw = await readFile(shardPath, "utf8");
+    } catch (error) {
+      if (isErrnoCode(error, "ENOENT")) return undefined;
+      throw error;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("CAS revision shard is unreadable.");
+    }
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      (parsed as Record<string, unknown>).version === 1 &&
+      (parsed as Record<string, unknown>).path === relativePath &&
+      typeof (parsed as Record<string, unknown>).revision === "string" &&
+      ((parsed as Record<string, unknown>).revision as string).length > 0
+    ) {
+      return (parsed as Record<string, unknown>).revision as string;
+    }
+    return undefined;
   }
 
   private async writeShard(
@@ -184,6 +220,21 @@ export class CasRevisionStore {
     } catch (error) {
       log.warn(`CasRevisionStore.readRevision failed for ${filePath}: ${error}`);
       return undefined;
+    }
+  }
+
+  /** #2813 (P1 A): the truthful standing-receipt read. `absent` means no
+   * receipt was ever minted for the target — undefined semantics stay
+   * correct for those records. `unavailable` means the sidecar could not
+   * be read; callers that transact on receipt identity MUST refuse rather
+   * than treat the failure as absence. */
+  async readRevisionStatus(filePath: string): Promise<CasRevisionReadStatus> {
+    try {
+      const relativePath = await this.resolveRelativePath(filePath);
+      const revision = await this.readStandingRevisionStrict(relativePath);
+      return revision === undefined ? { status: "absent" } : { status: "present", revision };
+    } catch (error) {
+      return { status: "unavailable", reason: error instanceof Error ? error.message : String(error) };
     }
   }
 

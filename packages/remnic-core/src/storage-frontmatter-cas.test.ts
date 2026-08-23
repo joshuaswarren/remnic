@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -233,5 +234,141 @@ test("backward-compatible legacy cas-revisions.v1.json is read when shard is abs
     assert.equal(await storage.writeMemoryFrontmatter(memory, { status: "archived" }), true);
     const nextToken = await storage.readCasRevision(memory.path);
     assert.ok(nextToken && nextToken > legacyToken, "next revision is strictly greater than legacy token");
+  });
+});
+
+function casShardPath(memoryDir: string, memoryPath: string): string {
+  const relative = path.relative(memoryDir, memoryPath).split(path.sep).join("/");
+  const hash = createHash("sha256").update(relative).digest("hex");
+  return path.join(memoryDir, ".offline-sync", "cas-revisions", `${hash}.json`);
+}
+
+test("readCasRevisionStatus distinguishes present, absent, and unavailable receipts (#2813 P1 A)", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "Status truth test content.", { source: "test" });
+    const memory = await storage.getMemoryById(created.id);
+    assert.ok(memory);
+
+    assert.deepEqual(
+      await storage.readCasRevisionStatus(memory.path),
+      { status: "absent" },
+      "a fresh target that never minted is genuinely absent, not unavailable",
+    );
+
+    assert.equal(await storage.writeMemoryFrontmatter(memory, { status: "archived" }), true);
+    const standing = await storage.readCasRevision(memory.path);
+    assert.ok(standing);
+    assert.deepEqual(await storage.readCasRevisionStatus(memory.path), {
+      status: "present",
+      revision: standing,
+    });
+
+    // A torn shard write: the receipt EXISTS but cannot be read. That is
+    // unavailability — never absence — while the fail-open read keeps
+    // collapsing the error to undefined.
+    // Test seam: baseDir is the constructor's memoryDir (private on StorageManager).
+    const { baseDir } = storage as unknown as { baseDir: string };
+    await writeFile(casShardPath(baseDir, memory.path), "{corrupt", "utf8");
+    const unreadable = await storage.readCasRevisionStatus(memory.path);
+    assert.equal(unreadable.status, "unavailable");
+    assert.equal(
+      await storage.readCasRevision(memory.path),
+      undefined,
+      "the fail-open read still collapses the error to undefined",
+    );
+  });
+});
+
+test("a failed receipt mint leaves the durable memory file untouched on a content update (#2813 P1 B)", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "Mint failure must not mutate the record.", { source: "test" });
+    const before = await storage.getMemoryById(created.id);
+    assert.ok(before);
+    const bytesBefore = await readFile(before.path);
+    assert.equal((await storage.readCasRevisionStatus(before.path)).status, "absent");
+
+    const seams = storage as unknown as {
+      casRevisions: { commitRevision: (pathname: string) => Promise<string> };
+    };
+    const origCommit = seams.casRevisions.commitRevision.bind(seams.casRevisions);
+    seams.casRevisions.commitRevision = async () => {
+      throw new Error("simulated sidecar mint failure");
+    };
+    try {
+      await assert.rejects(storage.updateMemory(created.id, "This body must never land."));
+    } finally {
+      seams.casRevisions.commitRevision = origCommit;
+    }
+
+    assert.deepEqual(
+      await readFile(before.path),
+      bytesBefore,
+      "the durable memory file is byte-identical after a failed mint",
+    );
+    const after = await storage.getMemoryById(created.id);
+    assert.ok(after);
+    assert.equal(after.content, before.content, "the indexed record still holds the original body");
+    assert.equal(after.frontmatter.updated, before.frontmatter.updated, "frontmatter business time is untouched");
+    assert.equal(
+      (await storage.readCasRevisionStatus(before.path)).status,
+      "absent",
+      "no receipt was recorded for a write that never landed",
+    );
+  });
+});
+
+test("a failed receipt mint leaves the durable memory file untouched on a semantic frontmatter write (#2813 P1 B)", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "Frontmatter mint failure content.", { source: "test" });
+    const before = await storage.getMemoryById(created.id);
+    assert.ok(before);
+    const bytesBefore = await readFile(before.path);
+
+    const seams = storage as unknown as {
+      casRevisions: { commitRevision: (pathname: string) => Promise<string> };
+    };
+    const origCommit = seams.casRevisions.commitRevision.bind(seams.casRevisions);
+    seams.casRevisions.commitRevision = async () => {
+      throw new Error("simulated sidecar mint failure");
+    };
+    try {
+      await assert.rejects(storage.writeMemoryFrontmatter(before, { status: "archived" }));
+    } finally {
+      seams.casRevisions.commitRevision = origCommit;
+    }
+
+    assert.deepEqual(await readFile(before.path), bytesBefore);
+    const after = await storage.getMemoryById(created.id);
+    assert.ok(after);
+    assert.equal(after.frontmatter.status ?? "active", "active", "the semantic flip never landed");
+    assert.equal((await storage.readCasRevisionStatus(before.path)).status, "absent");
+  });
+});
+
+test("an access-only frontmatter patch bypasses the mint and still lands (#2813 P1 B)", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "Access telemetry mint bypass content.", { source: "test" });
+    const before = await storage.getMemoryById(created.id);
+    assert.ok(before);
+
+    const seams = storage as unknown as {
+      casRevisions: { commitRevision: (pathname: string) => Promise<string> };
+    };
+    seams.casRevisions.commitRevision = async () => {
+      throw new Error("access-only patches must never mint");
+    };
+
+    const lastAccessed = "2026-08-22T00:00:00.000Z";
+    assert.equal(
+      await storage.writeMemoryFrontmatter(before, { accessCount: 9, lastAccessed }),
+      true,
+      "an access-only patch succeeds even with a broken mint — it never mints",
+    );
+
+    const after = await storage.getMemoryById(created.id);
+    assert.ok(after);
+    assert.equal(after.frontmatter.accessCount, 9);
+    assert.equal(after.frontmatter.lastAccessed, lastAccessed);
+    assert.equal((await storage.readCasRevisionStatus(before.path)).status, "absent");
   });
 });

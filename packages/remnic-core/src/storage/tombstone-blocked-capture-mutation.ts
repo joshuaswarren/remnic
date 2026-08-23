@@ -232,6 +232,15 @@ export async function runTombstoneBlockedMutation(
       }
       const rebuildMarker = mutation.blocked || currentBlocked ? await host.prepareWrite() : undefined;
       try {
+        // #2813 (P1 B): reserve the receipt BEFORE the durable file
+        // publish, inside this same path lock. A failed mint must leave the
+        // memory file untouched — never a mutated record without a receipt.
+        // A later file-write failure may strand a skipped receipt (token
+        // minted, record unchanged), which retires no earlier receipt and
+        // attributes no false ownership.
+        if (mutation.shouldMintRevision?.(current)) {
+          mintedRevision = await host.commitDurableMemoryRevision?.(mutation.pathname);
+        }
         await host.writeStorageSecureFile(mutation.pathname, mutation.fileContent);
       } catch (err) {
         if (rebuildMarker) {
@@ -254,11 +263,8 @@ export async function runTombstoneBlockedMutation(
       }
       if (rebuildMarker) await mutation.beforeIndexUpdate?.();
       await mutation.updateIndex(rebuildMarker, currentBlocked && current !== null ? current : undefined);
-
-      if (mutation.shouldMintRevision?.(current)) {
-        mintedRevision = await host.commitDurableMemoryRevision?.(mutation.pathname);
-      }
     };
+
     await host.withCaptureWriteLock(mutate, lockIdentity);
     if (retryIdentity === undefined) return mintedRevision;
     const identities = Array.isArray(lockIdentity) ? [...lockIdentity, retryIdentity] : [lockIdentity, retryIdentity];

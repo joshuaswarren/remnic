@@ -22,7 +22,7 @@ import {
 } from "../capabilities.js";
 import type { MemoryFile, PluginConfig } from "../types.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
-import type { MergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
+import { readPromotionReceiptStatus, type MergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
 
 export const confidenceTierOrder = [
   "explicit",
@@ -388,13 +388,26 @@ export async function promoteAndReconcileMergedTarget(args: {
     if (
       !current ||
       inferMemoryStatus(current.frontmatter, current.path) !== "active" ||
-      current.content !== payload.content ||
-      // #2807: the dedicated CAS revision token — never public `updated`.
-      (await args.sourceStorage.readCasRevision(current.path).catch(() => undefined)) !==
-        (payload.committedRevision ?? undefined)
+      current.content !== payload.content
     ) {
       log.warn(
         `persistExtraction: merged-target promotion abandoned for ${args.sourceMemoryId} — the committed record advanced past the cached payload, so the newer writer's copy stands`,
+      );
+      return;
+    }
+    // #2813 (P1 A): confirm the cached payload against a TRUTHFUL receipt
+    // read. An unavailable sidecar abandons the promotion — the previous
+    // undefined-vs-undefined comparison confirmed any payload whose receipt
+    // identity had become unreadable. A genuinely absent receipt (a target
+    // that predates the sidecar, or a payload minted without one) still
+    // compares equal and promotes.
+    const standingReceipt = await readPromotionReceiptStatus(args.sourceStorage, current.path);
+    if (
+      !standingReceipt.available ||
+      (standingReceipt.revision ?? undefined) !== (payload.committedRevision ?? undefined)
+    ) {
+      log.warn(
+        `persistExtraction: merged-target promotion abandoned for ${args.sourceMemoryId} — the committed record's CAS receipt ${standingReceipt.available ? "is not the cached payload's" : "is unreadable"}, so the cached body is not confirmed`,
       );
       return;
     }

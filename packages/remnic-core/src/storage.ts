@@ -47,7 +47,7 @@ import {
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { DeletionRevisionStore, invalidationCommitFingerprint, withCasCommitReceipt } from "./storage/deletion-revision-store.js";
-import { CasRevisionStore } from "./storage/cas-revision-store.js";
+import { CasRevisionStore, type CasRevisionReadStatus } from "./storage/cas-revision-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import * as entityMigration from "./storage/entity-canonical-id-migration.js";
 import * as entityRefs from "./storage/entity-canonical-id-references.js";
@@ -2723,6 +2723,15 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       log.warn(`storage.readCasRevision failed for ${filePath}: ${err}`);
       return undefined;
     }
+  }
+
+  /** #2813 (P1 A): truthful CAS receipt probe — distinguishes a genuinely
+   * ABSENT receipt (target predates the sidecar; `undefined` semantics stay
+   * correct) from an UNAVAILABLE one (unreadable shard: receipt identity is
+   * unknown). Transactional callers that must refuse on unknown identity
+   * route here; `readCasRevision` stays fail-open for advisory reads. */
+  async readCasRevisionStatus(filePath: string): Promise<CasRevisionReadStatus> {
+    return await this.casRevisions.readRevisionStatus(filePath);
   }
 
   protected override async commitDurableMemoryRevision(pathname: string): Promise<string> {

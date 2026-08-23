@@ -210,10 +210,12 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   protected abstract deleteManagedStorageFile(filePath: string, deletionMtimeMs?: number | null): Promise<boolean>;
   protected abstract writeManagedStorageFile(filePath: string, write: () => Promise<void>): Promise<void>;
 
-  /** #2813 (P1, #2807 CI repair): mint the target's next durable CAS
-   * revision token once a semantic write has landed. Receipt identity lives
-   * in the per-target sidecar, never in public `frontmatter.updated`. The
-   * default host keeps no receipt identity; StorageManager records it. */
+  /** #2813 (P1, #2807 CI repair): reserve the target's next durable CAS
+   * revision token as part of the same locked mutation — BEFORE the durable
+   * file publish (#2813 P1 B: a failed mint leaves the memory file
+   * untouched). Receipt identity lives in the per-target sidecar, never in
+   * public `frontmatter.updated`. The default host keeps no receipt
+   * identity; StorageManager records it. */
   protected async commitDurableMemoryRevision(_pathname: string): Promise<string | undefined> {
     return undefined;
   }

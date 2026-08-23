@@ -87,7 +87,8 @@ export interface MergedTargetPromotionPayload {
  */
 export interface MergedTargetPromotionResult {
   payload: MergedTargetPromotionPayload | null;
-  /** True only when `payload` is null because the reread threw — the payload is unknown, not refused. */
+  /** True when `payload` is null because the reread threw OR the CAS receipt
+   * sidecar was unreadable (#2813 P1 A) — the payload is unknown, not refused. */
   readFailed: boolean;
 }
 
@@ -148,12 +149,19 @@ export async function buildMergedTargetPromotionPayload(
     return { payload: null, readFailed: false };
   }
   const fm = committed.frontmatter;
-  // #2807: receipt identity is the sidecar token, not `fm.updated`
-  // (business/event time).
-  const committedRevision = await storage.readCasRevision(committed.path).catch((err) => {
-    log.warn(`buildMergedTargetPromotionPayload: failed to read CAS revision for ${committed.path}: ${err}`);
-    return undefined;
-  });
+  // #2813 (P1 A): an unreadable receipt sidecar is NOT an absent receipt.
+  // The reread record above is confirmed, but the payload's receipt identity
+  // is what lets the caller verify the cached body later — a payload built
+  // off an unknown receipt could never be confirmed nor attributed. Refuse
+  // (unknown, not a no-promotion verdict): a target that genuinely predates
+  // the sidecar reads `absent` and still promotes without a receipt.
+  const receipt = await readPromotionReceiptStatus(storage, committed.path);
+  if (!receipt.available) {
+    log.warn(
+      `semantic-merge: merged-target promotion refused for ${merge.targetId} — the CAS revision receipt for ${committed.path} is unavailable (${receipt.reason}); promotion and reconciliation retry on the next merge`,
+    );
+    return { payload: null, readFailed: true };
+  }
   return {
     payload: {
       category: fm.category,
@@ -185,8 +193,25 @@ export async function buildMergedTargetPromotionPayload(
       ...(fm.subject !== undefined ? { subject: fm.subject } : {}),
       ...(fm.toolScoped === true ? { toolScoped: true as const } : {}),
       ...(fm.sourceConnector !== undefined ? { sourceConnector: fm.sourceConnector } : {}),
-      ...(committedRevision !== undefined ? { committedRevision } : {}),
+      ...(receipt.revision !== undefined ? { committedRevision: receipt.revision } : {}),
     },
     readFailed: false,
   };
+}
+
+/** #2813 (P1 A): read the standing receipt as a three-way truth for the
+ * promotion path. Present and absent are usable identities (absent = the
+ * target predates the sidecar); unavailable is not. A storage whose status
+ * probe itself throws reads as unavailable — never as absence. */
+export async function readPromotionReceiptStatus(
+  storage: Pick<StorageManager, "readCasRevisionStatus">,
+  filePath: string,
+): Promise<{ available: true; revision: string | undefined } | { available: false; reason: string }> {
+  try {
+    const status = await storage.readCasRevisionStatus(filePath);
+    if (status.status === "unavailable") return { available: false, reason: status.reason };
+    return { available: true, revision: status.status === "present" ? status.revision : undefined };
+  } catch (err) {
+    return { available: false, reason: err instanceof Error ? err.message : String(err) };
+  }
 }
