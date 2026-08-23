@@ -6,12 +6,15 @@
  *
  *   - presence-tracked precedence: --token > --token-file > env chain, where
  *     an EMPTY higher source is a hard error and never falls through
- *   - token-file safety: 0600 regular file, no symlinks, no directories
+ *   - token-file safety: 0600 regular file, no symlinks, no directories;
+ *     validate+read share one inode so a mid-read symlink swap cannot
+ *     return an attacker token
  *   - argv tokens resolve but are flagged tokenFromArgv so callers warn once
  *     without echoing the value
  *   - the offline CLI routes all four subcommands through the channel
  */
 import assert from "node:assert/strict";
+import { symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -150,6 +153,51 @@ test("a directory passed as --token-file is rejected as non-regular", async () =
     );
     assert.equal(result.ok, false);
     assert.match(!result.ok ? result.error : "", /nested must be a regular file/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a token-file swap to a symlink between validate and read never returns the attacker token", async () => {
+  if (process.platform === "win32") return;
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-token-file-"));
+  try {
+    const file = await makeTokenFile(dir, "peer.token", "legit-secret\n");
+    const attacker = await makeTokenFile(dir, "attacker.token", "attacker-secret\n");
+    const result = resolveCredentialChannel(
+      { argvToken: undefined, tokenFile: file, envNames: OFFLINE_ENV },
+      {},
+      {
+        afterTokenFileValidated: () => {
+          unlinkSync(file);
+          symlinkSync(attacker, file);
+        },
+      }
+    );
+    assert.notEqual(result.ok && result.token, "attacker-secret");
+    if (result.ok) assert.equal(result.token, "legit-secret");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a token-file replacement between validate and read never returns the attacker token", async () => {
+  if (process.platform === "win32") return;
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-token-file-"));
+  try {
+    const file = await makeTokenFile(dir, "peer.token", "legit-secret\n");
+    const result = resolveCredentialChannel(
+      { argvToken: undefined, tokenFile: file, envNames: OFFLINE_ENV },
+      {},
+      {
+        afterTokenFileValidated: () => {
+          unlinkSync(file);
+          writeFileSync(file, "attacker-secret\n", { mode: 0o600 });
+        },
+      }
+    );
+    assert.notEqual(result.ok && result.token, "attacker-secret");
+    if (result.ok) assert.equal(result.token, "legit-secret");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -33,9 +33,75 @@ export function parseTokenFileFlag(raw: string | undefined): string | null {
   return raw !== undefined && raw.length > 0 ? raw : null;
 }
 
+/**
+ * Bind type/mode/symlink checks and the token read to one inode.
+ * POSIX: O_NOFOLLOW open, fstat regular+0600, read that fd, re-fstat identity.
+ * Windows: open with O_NOFOLLOW when present, then the existing post-open
+ * path↔fd identity pairing — never lstat then pathname readFile.
+ */
+function readTokenFileSameInode(
+  tokenFile: string,
+  afterValidate?: () => void
+): CredentialChannelResult {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(tokenFile, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ELOOP") {
+      return { ok: false, error: `--token-file ${tokenFile} must be a regular file, not a symlink` };
+    }
+    if (code === "EISDIR" || code === "ENOTDIR") {
+      return { ok: false, error: `--token-file ${tokenFile} must be a regular file` };
+    }
+    return { ok: false, error: `--token-file ${tokenFile} could not be read: ${err}` };
+  }
+  try {
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile()) {
+      return { ok: false, error: `--token-file ${tokenFile} must be a regular file` };
+    }
+    // Windows mode bits are synthesized (readable files commonly present as
+    // 0666), so the owner-only check is POSIX-only.
+    if (process.platform !== "win32" && opened.mode & 0o077) {
+      return { ok: false, error: `--token-file ${tokenFile} must not be group- or world-readable (chmod 600)` };
+    }
+    if (process.platform === "win32" || (fs.constants.O_NOFOLLOW ?? 0) === 0) {
+      const pathStat = fs.lstatSync(tokenFile);
+      if (pathStat.isSymbolicLink()) {
+        return { ok: false, error: `--token-file ${tokenFile} must be a regular file, not a symlink` };
+      }
+      if (!pathStat.isFile() || pathStat.dev !== opened.dev || pathStat.ino !== opened.ino) {
+        return { ok: false, error: `--token-file ${tokenFile} must be a regular file` };
+      }
+    }
+    afterValidate?.();
+    const token = fs.readFileSync(fd, "utf8").trim();
+    const after = fs.fstatSync(fd);
+    if (opened.dev !== after.dev || opened.ino !== after.ino || !after.isFile()) {
+      return { ok: false, error: `--token-file ${tokenFile} could not be read: file changed during read` };
+    }
+    if (token.length === 0) {
+      return { ok: false, error: `--token-file ${tokenFile} is empty` };
+    }
+    return { ok: true, token, tokenFromArgv: false };
+  } catch (err) {
+    return { ok: false, error: `--token-file ${tokenFile} could not be read: ${err}` };
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // already closed or unusable
+      }
+    }
+  }
+}
+
 export function resolveCredentialChannel(
   input: CredentialChannelInput,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  hooks?: { afterTokenFileValidated?: () => void }
 ): CredentialChannelResult {
   if (input.argvToken !== undefined && input.argvToken.trim().length === 0) {
     return { ok: false, error: "--token requires a non-empty value" };
@@ -47,32 +113,7 @@ export function resolveCredentialChannel(
     if (input.tokenFile.length === 0) {
       return { ok: false, error: "--token-file requires a non-empty path" };
     }
-    try {
-      // lstat (not stat): a symlink must be rejected as a channel, not
-      // followed — a symlinked credential can be repointed between this
-      // check and the read below, defeating the mode check.
-      const stat = fs.lstatSync(input.tokenFile);
-      if (stat.isSymbolicLink()) {
-        return { ok: false, error: `--token-file ${input.tokenFile} must be a regular file, not a symlink` };
-      }
-      if (!stat.isFile()) {
-        return { ok: false, error: `--token-file ${input.tokenFile} must be a regular file` };
-      }
-      // A group/world-readable credential file defeats the point of the
-      // channel; reject it instead of trusting the content. Windows mode bits
-      // are synthesized (readable files commonly present as 0666), so the
-      // check is POSIX-only.
-      if (process.platform !== "win32" && stat.mode & 0o077) {
-        return { ok: false, error: `--token-file ${input.tokenFile} must not be group- or world-readable (chmod 600)` };
-      }
-      const token = fs.readFileSync(input.tokenFile, "utf8").trim();
-      if (token.length === 0) {
-        return { ok: false, error: `--token-file ${input.tokenFile} is empty` };
-      }
-      return { ok: true, token, tokenFromArgv: false };
-    } catch (err) {
-      return { ok: false, error: `--token-file ${input.tokenFile} could not be read: ${err}` };
-    }
+    return readTokenFileSameInode(input.tokenFile, hooks?.afterTokenFileValidated);
   }
   for (const name of input.envNames) {
     const value = env[name];
