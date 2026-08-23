@@ -5,6 +5,7 @@ import * as path from "node:path";
 import test from "node:test";
 
 import { createHash } from "node:crypto";
+import { type ServerIdentityCacheEntry, planServerIdentityCacheWrite } from "./access-offline-manifest.js";
 import { isInternalRemnicStatePath } from "./offline-sync.js";
 import { convergeIdentityCachePath } from "./reconcile/cursor.js";
 import {
@@ -135,9 +136,11 @@ test("citation templates fingerprint distinctly and default consistently", () =>
 });
 
 test("malformed cached identities are rejected instead of trusted", () => {
-  const valid = { id: "a", category: "fact", contentHash: "abc", status: "active" };
+  const hash = "a".repeat(64);
+  const otherHash = "b".repeat(64);
+  const valid = { id: "a", category: "fact", contentHash: hash, status: "active" };
   assert.equal(isReconcileMemoryIdentity(valid), true);
-  assert.equal(isReconcileMemoryIdentity({ ...valid, contentHashAliases: ["x"] }), true);
+  assert.equal(isReconcileMemoryIdentity({ ...valid, contentHashAliases: [otherHash] }), true);
   assert.equal(isReconcileMemoryIdentity(null), false);
   assert.equal(isReconcileMemoryIdentity(undefined), false);
   assert.equal(isReconcileMemoryIdentity([valid]), false);
@@ -145,4 +148,116 @@ test("malformed cached identities are rejected instead of trusted", () => {
   assert.equal(isReconcileMemoryIdentity({ ...valid, status: undefined }), false);
   assert.equal(isReconcileMemoryIdentity({ ...valid, normalizerVersion: "4" }), false);
   assert.equal(isReconcileMemoryIdentity({ ...valid, contentHashAliases: [1] }), false);
+  // A well-typed but non-hash value would be reused without a parse and could
+  // shift duplicate decisions, so the guard enforces the producer's format.
+  assert.equal(isReconcileMemoryIdentity({ ...valid, contentHash: "not-a-hash" }), false);
+  assert.equal(isReconcileMemoryIdentity({ ...valid, contentHashAliases: ["not-a-hash"] }), false);
+});
+
+test("a cache miss before a cache hit does not overwrite the hit", async () => {
+  const changed = memoryFile("mixed-a", "edited body");
+  const unchanged = memoryFile("mixed-b", "stable body");
+  const changedSha = createHash("sha256").update(changed).digest("hex");
+  const unchangedSha = createHash("sha256").update(unchanged).digest("hex");
+  const byPath = new Map([
+    ["facts/mixed-a.md", changed],
+    ["facts/mixed-b.md", unchanged],
+  ]);
+  const files = [
+    { path: "facts/mixed-a.md", sha256: changedSha, mtimeMs: 2, bytes: changed.length },
+    { path: "facts/mixed-b.md", sha256: unchangedSha, mtimeMs: 1, bytes: unchanged.length },
+  ];
+
+  const cold = await buildReconcileManifest({
+    files,
+    parseMemory: parseFrontmatter,
+    readFile: async (file) => byPath.get(file.path) ?? null,
+  });
+
+  // Warm run where only the FIRST file changed: its rebuild is assigned by
+  // input index while the second file is a cache hit.
+  const staleSha = createHash("sha256").update("stale").digest("hex");
+  const warm = await buildReconcileManifest({
+    files,
+    parseMemory: parseFrontmatter,
+    cachedFiles: [
+      { path: "facts/mixed-a.md", sha256: staleSha, mtimeMs: 1, bytes: 1 },
+      cold.files.find((file) => file.path === "facts/mixed-b.md")!,
+    ],
+    readFile: async (file) => byPath.get(file.path) ?? null,
+  });
+
+  assert.equal(warm.files.length, 2);
+  assert.deepEqual(
+    warm.files.map((file) => file.path),
+    ["facts/mixed-a.md", "facts/mixed-b.md"]
+  );
+  assert.equal(
+    warm.files.every((file) => file !== undefined),
+    true
+  );
+  assert.equal(warm.files[0]?.memory?.id, "mixed-a");
+  assert.equal(warm.files[1]?.memory?.id, "mixed-b");
+});
+
+test("the server cache write persists removals and prunes only completed walks", () => {
+  const entry = (path: string): ServerIdentityCacheEntry => ({
+    path,
+    sha256: "c".repeat(64),
+    memory: {
+      id: path,
+      category: "fact",
+      contentHash: "d".repeat(64),
+      normalizerVersion: 4,
+      identityResolutionVersion: 2,
+      status: "active",
+    },
+  });
+  const persisted = new Map([
+    ["facts/kept.md", entry("facts/kept.md")],
+    ["facts/deleted.md", entry("facts/deleted.md")],
+  ]);
+
+  // A completed walk that only observed the surviving file must still write,
+  // or the deleted file's entry stays on disk forever.
+  const pruned = planServerIdentityCacheWrite({
+    persisted,
+    yieldedPaths: new Set(["facts/kept.md"]),
+    streamCompleted: true,
+    cacheDirty: false,
+  });
+  assert.equal(pruned.shouldWrite, true);
+  assert.deepEqual(
+    pruned.entries.map((e) => e.path),
+    ["facts/kept.md"]
+  );
+
+  // An entry dropped because its file lost its identity is a mutation even
+  // though nothing was rebuilt.
+  const lostIdentity = planServerIdentityCacheWrite({
+    persisted: new Map([["facts/kept.md", entry("facts/kept.md")]]),
+    yieldedPaths: new Set(["facts/kept.md", "facts/lost.md"]),
+    streamCompleted: true,
+    cacheDirty: true,
+  });
+  assert.equal(lostIdentity.shouldWrite, true);
+
+  // Nothing changed: no write.
+  const unchanged = planServerIdentityCacheWrite({
+    persisted,
+    yieldedPaths: new Set(["facts/kept.md", "facts/deleted.md"]),
+    streamCompleted: true,
+    cacheDirty: false,
+  });
+  assert.equal(unchanged.shouldWrite, false);
+
+  // An aborted walk never prunes, so it can only add.
+  const aborted = planServerIdentityCacheWrite({
+    persisted,
+    yieldedPaths: new Set(["facts/kept.md"]),
+    streamCompleted: false,
+    cacheDirty: false,
+  });
+  assert.equal(aborted.shouldWrite, false);
+  assert.equal(aborted.entries.length, 2);
 });

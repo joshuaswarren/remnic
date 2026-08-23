@@ -8,6 +8,7 @@ import type { ReconcileManifest } from "@remnic/core/reconcile/manifest.js";
 import { loadConvergeIdentityCache, saveConvergeIdentityCache } from "./converge-identity-cache.js";
 
 const TEMPLATE = "Source: {{source}}";
+const HASH_A = "a".repeat(64);
 
 function manifest(): ReconcileManifest {
   return {
@@ -22,7 +23,7 @@ function manifest(): ReconcileManifest {
         memory: {
           id: "a",
           category: "fact",
-          contentHash: "hash-a",
+          contentHash: HASH_A,
           normalizerVersion: 4,
           identityResolutionVersion: 2,
           status: "active",
@@ -47,7 +48,7 @@ test("a saved cache round-trips only the entries that carry an identity", async 
     await saveConvergeIdentityCache(cachePath, manifest(), TEMPLATE);
     const loaded = await loadConvergeIdentityCache(cachePath, TEMPLATE);
     assert.deepEqual([...loaded.keys()], ["facts/a.md"]);
-    assert.equal(loaded.get("facts/a.md")?.memory?.contentHash, "hash-a");
+    assert.equal(loaded.get("facts/a.md")?.memory?.contentHash, HASH_A);
   });
 });
 
@@ -68,6 +69,11 @@ test("entries with a malformed identity are dropped, not handed to the hit path"
     };
     raw.files.push({ path: "facts/null.md", sha256: "cc", memory: null });
     raw.files.push({ path: "facts/partial.md", sha256: "dd", memory: { id: "p" } });
+    raw.files.push({
+      path: "facts/bad-hash.md",
+      sha256: "ff",
+      memory: { id: "b", category: "fact", contentHash: "not-a-hash", status: "active" },
+    });
     raw.files.push({ sha256: "ee" });
     await fs.promises.writeFile(cachePath, JSON.stringify(raw));
 

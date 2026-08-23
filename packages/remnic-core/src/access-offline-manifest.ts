@@ -27,10 +27,35 @@ export interface OfflineSyncManifestStreamResponse extends Omit<ReconcileManifes
   files: AsyncIterable<ReconcileManifestFile>;
 }
 
-interface ServerIdentityCacheEntry {
+export interface ServerIdentityCacheEntry {
   path: string;
   sha256: string;
   memory?: ReconcileMemoryIdentity;
+}
+
+/**
+ * Decide what the manifest stream should persist, and whether a write is
+ * needed at all.
+ *
+ * A write is required whenever the persisted set changed — an identity was
+ * rebuilt, or an entry was dropped because its file lost its identity — and
+ * also when a completed walk leaves entries for paths it never saw, which are
+ * files that have since been deleted. Skipping the write in that last case
+ * would strand those entries on disk forever.
+ *
+ * Pruning is gated on the walk completing: an aborted or partially consumed
+ * stream has simply not observed the remaining paths, so it may only add.
+ */
+export function planServerIdentityCacheWrite(input: {
+  persisted: ReadonlyMap<string, ServerIdentityCacheEntry>;
+  yieldedPaths: ReadonlySet<string>;
+  streamCompleted: boolean;
+  cacheDirty: boolean;
+}): { shouldWrite: boolean; entries: ServerIdentityCacheEntry[] } {
+  const entries = input.streamCompleted
+    ? [...input.persisted.values()].filter((entry) => input.yieldedPaths.has(entry.path))
+    : [...input.persisted.values()];
+  return { shouldWrite: input.cacheDirty || entries.length !== input.persisted.size, entries };
 }
 
 /**
@@ -104,7 +129,10 @@ export async function createOfflineSyncManifestStream(
     format: RECONCILE_MANIFEST_FORMAT,
     schemaVersion: RECONCILE_MANIFEST_SCHEMA_VERSION,
     files: (async function* () {
-      let updated = 0;
+      // Any change to the persisted set, not just a rebuilt identity: a file
+      // that lost its identity, or a completed walk that must prune vanished
+      // paths, also has to reach disk or the removal is lost forever.
+      let cacheDirty = false;
       let streamCompleted = false;
       // Seeded with every previously cached entry so a partially consumed
       // stream (client disconnect, abort) can only add to the cache. Writing
@@ -114,12 +142,13 @@ export async function createOfflineSyncManifestStream(
       const persistedEntries = new Map(identityCache);
       const yieldedPaths = new Set<string>();
       const flush = async (): Promise<void> => {
-        if (updated === 0) return;
-        // Prune entries for files the walk no longer sees, but only when the
-        // walk actually finished — an aborted stream has not observed them.
-        const entries = streamCompleted
-          ? [...persistedEntries.values()].filter((entry) => yieldedPaths.has(entry.path))
-          : [...persistedEntries.values()];
+        const { shouldWrite, entries } = planServerIdentityCacheWrite({
+          persisted: persistedEntries,
+          yieldedPaths,
+          streamCompleted,
+          cacheDirty,
+        });
+        if (!shouldWrite) return;
         try {
           const fs = await import("node:fs/promises");
           const cachePath = serverIdentityCachePath(storage.dir);
@@ -155,9 +184,9 @@ export async function createOfflineSyncManifestStream(
           );
           if (built.memory !== undefined) {
             persistedEntries.set(built.path, { path: built.path, sha256: built.sha256, memory: built.memory });
-            updated += 1;
-          } else {
-            persistedEntries.delete(built.path);
+            cacheDirty = true;
+          } else if (persistedEntries.delete(built.path)) {
+            cacheDirty = true;
           }
           yield built;
         }

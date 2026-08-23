@@ -158,7 +158,7 @@ export function isReconcileMemoryIdentity(value: unknown): value is ReconcileMem
   const memory = value as Record<string, unknown>;
   if (typeof memory.id !== "string") return false;
   if (typeof memory.category !== "string") return false;
-  if (typeof memory.contentHash !== "string") return false;
+  if (typeof memory.contentHash !== "string" || !SHA256_PATTERN.test(memory.contentHash)) return false;
   if (typeof memory.status !== "string") return false;
   if (memory.normalizerVersion !== undefined && typeof memory.normalizerVersion !== "number") return false;
   if (memory.identityResolutionVersion !== undefined && typeof memory.identityResolutionVersion !== "number") {
@@ -166,7 +166,8 @@ export function isReconcileMemoryIdentity(value: unknown): value is ReconcileMem
   }
   if (
     memory.contentHashAliases !== undefined &&
-    (!Array.isArray(memory.contentHashAliases) || memory.contentHashAliases.some((alias) => typeof alias !== "string"))
+    (!Array.isArray(memory.contentHashAliases) ||
+      memory.contentHashAliases.some((alias) => typeof alias !== "string" || !SHA256_PATTERN.test(alias)))
   ) {
     return false;
   }
@@ -209,12 +210,16 @@ export async function buildReconcileManifest(options: BuildReconcileManifestOpti
     cachedByPath.set(cached.path, cached);
   }
 
-  const files: ReconcileManifestFile[] = [];
+  const allFiles = [...options.files];
+  // Every result — cache hit or rebuild — is stored at its own input index.
+  // Pushing hits onto a dense array while rebuilds are assigned by index
+  // silently drops entries whenever a miss precedes a hit: the rebuild lands
+  // on the slot the hit already occupied.
+  const files: ReconcileManifestFile[] = new Array(allFiles.length);
   // Cache hits stay on a synchronous fast path (no promise allocation, no
   // Promise.all — a fully-cached rebuild must not regress); only the uncached
-  // entries ride the bounded batches. Order is preserved by index.
+  // entries ride the bounded batches.
   const uncached: Array<{ index: number; file: ReconcileFileState }> = [];
-  const allFiles = [...options.files];
   for (let i = 0; i < allFiles.length; i += 1) {
     const file = allFiles[i]!;
     const cached = cachedByPath.get(file.path);
@@ -225,7 +230,7 @@ export async function buildReconcileManifest(options: BuildReconcileManifestOpti
         (cached.memory.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION &&
           cached.memory.identityResolutionVersion === IDENTITY_RESOLUTION_VERSION))
     ) {
-      files.push({ ...file, ...(cached.memory ? { memory: cached.memory } : {}) });
+      files[i] = { ...file, ...(cached.memory ? { memory: cached.memory } : {}) };
     } else {
       uncached.push({ index: i, file });
     }
