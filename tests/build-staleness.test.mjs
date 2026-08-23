@@ -467,3 +467,46 @@ test("long build outlives stale reclaim: late release leaves the new owner's loc
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("release keeps a swapped-in owner while a third acquirer races", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-build-staleness-release-race-"));
+  try {
+    const lockRoot = path.join(root, "node_modules", ".cache", "remnic-build-locks");
+    const lockDir = path.join(lockRoot, "scope-release-race-pkg");
+    await mkdir(lockRoot, { recursive: true });
+
+    const handleA = acquireLockDir(lockDir);
+    assert.ok(handleA);
+
+    let handleB = null;
+    let handleC = null;
+    releaseLockDir(handleA, {
+      beforeQuarantine() {
+        fsSync.rmSync(lockDir, { recursive: true, force: true });
+        fsSync.mkdirSync(lockDir);
+        const ownerB = {
+          pid: process.pid,
+          startTicks: -2,
+          nonce: "owner-b",
+          acquiredAt: Date.now(),
+        };
+        fsSync.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify(ownerB)}\n`);
+        handleB = { lockDir, owner: ownerB };
+      },
+      afterOccupy() {
+        handleC = acquireLockDir(lockDir);
+      },
+    });
+
+    assert.equal(handleC, null, "third acquirer must not take the path while B is displaced");
+    assert.equal(fsSync.existsSync(lockDir), true, "swapped-in owner must remain on the live path");
+    const observed = JSON.parse(fsSync.readFileSync(path.join(lockDir, "owner.json"), "utf8"));
+    assert.deepEqual(observed, handleB.owner);
+    assert.deepEqual(fsSync.readdirSync(lockRoot), [path.basename(lockDir)]);
+
+    releaseLockDir(handleB);
+    assert.equal(fsSync.existsSync(lockDir), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

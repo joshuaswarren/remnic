@@ -348,35 +348,43 @@ function readProcessStartTicks(pid) {
   }
 }
 
-// Release only the identity the handle owns. A long build whose lock was
-// quarantined and reacquired after the stale-age bound must not delete the
-// new owner's lock: the live path is never rmSync'd directly — the dir is
-// renamed aside and removed only when the aside copy still matches the
-// handle's identity. Any mismatch is a no-op (or a restore, if the rename
-// caught a swapped-in owner).
-export function releaseLockDir(handle) {
+// Release only the identity the handle owns. Quarantine first, occupy the
+// live path, then delete or restore the aside copy so a stale reclaimer
+// cannot install a new owner into a vacant path. Never rmSync the live path.
+export function releaseLockDir(handle, testHooks) {
   if (!handle || typeof handle.lockDir !== "string") {
     return;
   }
   const { lockDir, owner } = handle;
-  const observedLive = readLockOwner(lockDir);
-  const owned = owner === null ? observedLive === null : ownersMatch(owner, observedLive);
-  if (!owned) {
-    return; // Reclaimed and reacquired by another process — not ours to remove.
-  }
+  testHooks?.beforeQuarantine?.();
   const asideDir = `${lockDir}.released-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
   try {
     fs.renameSync(lockDir, asideDir);
   } catch {
     return; // Live path gone: already reclaimed or released.
   }
+  let occupied = false;
+  try {
+    fs.mkdirSync(lockDir);
+    occupied = true;
+  } catch {
+    // Another acquirer already recreated lockDir; do not unlink it.
+  }
+  testHooks?.afterOccupy?.();
   const observedAside = readLockOwner(asideDir);
   const stillOurs = owner === null ? observedAside === null : ownersMatch(owner, observedAside);
   if (!stillOurs) {
-    try {
-      fs.renameSync(asideDir, lockDir);
-    } catch {
-      // Another acquirer already recreated lockDir; the aside dir is inert.
+    if (occupied) {
+      try {
+        fs.renameSync(asideDir, lockDir);
+      } catch {
+        try {
+          fs.rmdirSync(lockDir);
+          fs.renameSync(asideDir, lockDir);
+        } catch {
+          // Another acquirer holds lockDir; the aside dir is inert.
+        }
+      }
     }
     return;
   }
@@ -384,6 +392,13 @@ export function releaseLockDir(handle) {
     fs.rmSync(asideDir, { recursive: true, force: true });
   } catch {
     // Aside is off the lock path; leftover bytes are not a live lock.
+  }
+  if (occupied) {
+    try {
+      fs.rmdirSync(lockDir);
+    } catch {
+      // Not empty: a new owner appeared — never unlink their lock.
+    }
   }
 }
 
