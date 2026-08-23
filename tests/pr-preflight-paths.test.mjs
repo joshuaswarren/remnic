@@ -66,6 +66,11 @@ assert.equal(coreScope.status, 0, coreScope.stderr);
 assert.match(coreScope.stdout, /Checked packages:.*plugin-openclaw/);
 assert.match(coreScope.stdout, /Skipped packages:.*bench-ui/);
 
+const pythonPluginScope = packageScope("packages/plugin-hermes/remnic_hermes/hermes_llm_bridge.py");
+assert.equal(pythonPluginScope.status, 0, pythonPluginScope.stderr);
+assert.match(pythonPluginScope.stdout, /Quick package scope: all packages/);
+assert.match(pythonPluginScope.stdout, /Checked packages:.*remnic-core/);
+
 const rootConfigScope = packageScope("tsconfig.json");
 assert.equal(rootConfigScope.status, 0, rootConfigScope.stderr);
 assert.match(rootConfigScope.stdout, /Quick package scope: all packages/);
