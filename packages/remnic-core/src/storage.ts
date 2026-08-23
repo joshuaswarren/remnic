@@ -46,7 +46,7 @@ import {
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
-import { DeletionRevisionStore, invalidationCommitFingerprint, nextCasRevisionIso, withCasCommitReceipt } from "./storage/deletion-revision-store.js";
+import { DeletionRevisionStore, frontmatterWriteRevision, invalidationCommitFingerprint, nextCasRevisionIso, withCasCommitReceipt } from "./storage/deletion-revision-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import * as entityMigration from "./storage/entity-canonical-id-migration.js";
 import * as entityRefs from "./storage/entity-canonical-id-references.js";
@@ -5381,11 +5381,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       [buildCapturePathLockIdentity(expected.path), oldIdentity, newIdentity]
     );
   }
-
-
   /**
-   * Update frontmatter fields without changing memory content.
-   * Returns false when the memory is not found.
+   * Update frontmatter fields without changing memory content. Returns false when the memory is not found.
    */
   async writeMemoryFrontmatter(
     memory: MemoryFile,
@@ -5396,8 +5393,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // Canonicalize the EFFECTIVE merged entityRef (issue #2213) — an
     // unrelated patch must not rewrite an inherited legacy ref back out.
     const resolveIds = this.currentHistoricalIds();
+    // #2813 P1: the persisted revision is clamped against the CURRENT on-disk
+    // record — never the caller's snapshot or wall clock — so a frontmatter
+    // write can never lower or reuse a standing revision (CAS receipts).
+    const standingUpdated = (await this.readMemoryByPath(memory.path))?.frontmatter.updated ?? memory.frontmatter.updated;
     const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
-      { ...memory.frontmatter, ...patch },
+      { ...memory.frontmatter, ...patch, updated: frontmatterWriteRevision(standingUpdated, patch) },
       resolveIds
     );
     const refIds = typeof updated.entityRef === "string" ? resolveIds : null;
@@ -5471,7 +5472,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       return await this.writeMemoryFrontmatter(current, patch, lifecycle);
     });
   }
-
 
   /**
    * Update frontmatter by memory ID.

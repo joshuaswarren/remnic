@@ -102,6 +102,37 @@ export function nextCasRevisionIso(previous: string | undefined, now = new Date(
 }
 
 /**
+ * #2813 P1 (round 4): the revision EVERY frontmatter write persists.
+ * `writeMemoryFrontmatter` merges caller patches via
+ * `{...frontmatter, ...patch}`, so a caller-supplied wall-clock
+ * `patch.updated` could rewind the record's standing revision below a
+ * receipt a CAS already issued — and the next commit would then reuse that
+ * retired receipt, which a delayed rollback misidentifies as its own.
+ * The clamp keeps the on-disk sequence monotonic:
+ *   - no proposed revision → preserve the standing one (a patch that claims
+ *     no revision must not move it);
+ *   - a proposal strictly past the standing revision → honored exactly;
+ *   - anything else (stale, equal, unparseable) → `nextCasRevisionIso` over
+ *     the standing revision: strictly past it, never lower, never a reuse.
+ * `standing` must be the record's CURRENT on-disk revision, never the
+ * caller's (possibly pre-CAS) snapshot.
+ */
+export function frontmatterWriteRevision(
+  standing: string | undefined,
+  patch: { updated?: string | undefined },
+  now = new Date(),
+): string {
+  const { updated: proposed } = patch;
+  if (proposed === undefined) return standing ?? nextCasRevisionIso(standing, now);
+  const standingMs = standing !== undefined ? new Date(standing).getTime() : Number.NaN;
+  const proposedMs = new Date(proposed).getTime();
+  if (Number.isFinite(proposedMs) && (!Number.isFinite(standingMs) || proposedMs > standingMs)) {
+    return proposed;
+  }
+  return nextCasRevisionIso(standing, now);
+}
+
+/**
  * Runs a compare-and-swap write's post-commit steps. The durable mutation
  * has already landed by the time `run` executes, so any throw it raises is
  * stamped with the commit receipt — callers must attribute the standing

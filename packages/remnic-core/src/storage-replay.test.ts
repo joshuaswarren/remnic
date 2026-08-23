@@ -179,3 +179,103 @@ test("updateMemoryIfUnchanged receipts are unique per commit inside one millisec
     assert.notEqual(standing.frontmatter.updated, first);
   });
 });
+
+test("writeMemoryFrontmatter never lowers or reuses the standing revision (#2813 P1)", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "Standing revision guard.", { source: "test" });
+    const stale = await storage.getMemoryById(created.id);
+    assert.ok(stale);
+    const T1 = "2027-01-01T00:00:00.001Z";
+    assert.ok(await storage.writeMemoryFrontmatter(stale, { updated: T1 }));
+    let after = await storage.getMemoryById(created.id);
+    assert.ok(after);
+    assert.equal(after.frontmatter.updated, T1, "a forward revision is honored exactly");
+
+    // Regression 1: a caller-supplied wall clock below the standing revision
+    // must not rewind the record — it steps strictly past the standing T+1.
+    assert.ok(await storage.writeMemoryFrontmatter(after, { updated: "2027-01-01T00:00:00.000Z" }));
+    after = await storage.getMemoryById(created.id);
+    assert.ok(after);
+    assert.ok(
+      new Date(after.frontmatter.updated).getTime() > new Date(T1).getTime(),
+      "stored revision stays strictly past the standing revision — never rewound to T",
+    );
+    const afterLowered = after.frontmatter.updated;
+
+    // An equal wall clock must not reuse the standing revision either.
+    assert.ok(await storage.writeMemoryFrontmatter(after, { updated: after.frontmatter.updated }));
+    after = await storage.getMemoryById(created.id);
+    assert.ok(after);
+    assert.ok(
+      new Date(after.frontmatter.updated).getTime() > new Date(afterLowered).getTime(),
+      "an equal revision is never reused — the write steps past it",
+    );
+
+    // An unparseable clock is never trusted: the revision only steps forward.
+    assert.ok(await storage.writeMemoryFrontmatter(after, { updated: "not-a-date" }));
+    after = await storage.getMemoryById(created.id);
+    assert.ok(after);
+    assert.ok(
+      new Date(after.frontmatter.updated).getTime() >= new Date("2027-01-01T00:00:00.003Z").getTime(),
+      "an unparseable patch.updated is refused, not applied",
+    );
+
+    // A patch with NO updated at all preserves the on-disk standing revision,
+    // even when the caller's snapshot predates a concurrent CAS commit.
+    const staleSnapshot = after;
+    const casReceipt = await storage.updateMemoryIfUnchanged(staleSnapshot, "Advanced past the snapshot.");
+    assert.ok(typeof casReceipt === "string");
+    assert.ok(await storage.writeMemoryFrontmatter(staleSnapshot, { tags: ["lifecycle"] }));
+    after = await storage.getMemoryById(created.id);
+    assert.ok(after);
+    assert.equal(
+      after.frontmatter.updated,
+      casReceipt,
+      "an absent patch.updated preserves the DISK standing revision, not the stale snapshot's",
+    );
+    assert.deepEqual(after.frontmatter.tags, ["lifecycle"]);
+  });
+});
+
+test("a stale-clock frontmatter write cannot make C reuse A's receipt — A's rollback rejects it (#2813 P1)", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "Body v0.", { source: "test" });
+    const T = "2027-01-01T00:00:00.000Z";
+    const stale = await storage.getMemoryById(created.id);
+    assert.ok(stale);
+    assert.ok(await storage.writeMemoryFrontmatter(stale, { updated: T }));
+    const seeded = await storage.getMemoryById(created.id);
+    assert.ok(seeded);
+
+    // A: content CAS commits the deterministic merged body; receipt T+1.
+    const aReceipt = await storage.updateMemoryIfUnchanged(seeded, "Merged body.");
+    assert.equal(aReceipt, "2027-01-01T00:00:00.001Z");
+
+    // Intervening GENERIC frontmatter write — a lifecycle caller stamping its
+    // own wall clock, stale relative to the receipt A just issued.
+    const postA = await storage.getMemoryById(created.id);
+    assert.ok(postA);
+    assert.ok(await storage.writeMemoryFrontmatter(postA, { tags: ["lifecycle"], updated: T }));
+    const afterLifecycle = await storage.getMemoryById(created.id);
+    assert.ok(afterLifecycle);
+    assert.equal(
+      afterLifecycle.frontmatter.updated,
+      "2027-01-01T00:00:00.002Z",
+      "the generic write steps the revision strictly past A's receipt — never back to T",
+    );
+    assert.deepEqual(afterLifecycle.frontmatter.tags, ["lifecycle"]);
+
+    // C: commits the identical deterministic body in the same millisecond.
+    const cReceipt = await storage.updateMemoryIfUnchanged(afterLifecycle, "Merged body.");
+    assert.equal(cReceipt, "2027-01-01T00:00:00.003Z", "C must not reuse A's retired receipt T+1");
+
+    // A's delayed rollback keys ownership on its receipt: the standing
+    // revision has advanced past it, so the comparison REJECTS — no
+    // pre-merge body is ever restored over C's commit.
+    const standing = await storage.getMemoryById(created.id);
+    assert.ok(standing);
+    assert.notEqual(standing.frontmatter.updated, aReceipt);
+    assert.equal(standing.content, "Merged body.");
+    assert.deepEqual(standing.frontmatter.tags, ["lifecycle"], "the intervening lifecycle write survives");
+  });
+});
