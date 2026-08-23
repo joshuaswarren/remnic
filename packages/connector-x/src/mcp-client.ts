@@ -15,6 +15,13 @@
 
 import { setTimeout as sleepMs } from "node:timers/promises";
 
+import {
+  ConnectorApiError,
+  describeNetworkError,
+  retryingFetch,
+  stripTrailingSlashes,
+} from "@remnic/core/http-retry";
+
 import { isXObject } from "./guards.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -23,12 +30,12 @@ const MAX_RETRY_DELAY_MS = 8_000;
 export const X_MCP_PROTOCOL_VERSION = "2025-06-18";
 export const X_MCP_DEFAULT_URL = "https://api.x.com/mcp";
 
-export class XMcpError extends Error {
+export class XMcpError extends ConnectorApiError {
   constructor(
     message: string,
-    readonly status?: number
+    status?: number
   ) {
-    super(message);
+    super(message, status);
     this.name = "XMcpError";
   }
 }
@@ -72,12 +79,6 @@ interface RpcResponse {
   headers: Headers | null;
 }
 
-function stripTrailingSlashes(value: string): string {
-  let end = value.length;
-  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end--;
-  return value.slice(0, end);
-}
-
 /** Parses an SSE body into decoded `data:` JSON values, in order. */
 export function parseSseData(body: string): unknown[] {
   const values: unknown[] = [];
@@ -92,14 +93,6 @@ export function parseSseData(body: string): unknown[] {
     }
   }
   return values;
-}
-
-function describeNetworkError(err: unknown): string {
-  if (!(err instanceof Error)) return "unexpected non-Error failure";
-  if ("code" in err && typeof err.code === "string" && err.code.length > 0) {
-    return `${err.name} (${err.code})`;
-  }
-  return err.name;
 }
 
 /** True when a tool-result body signals exhausted credits (docs + observed shape). */
@@ -241,67 +234,52 @@ export class XMcpClient {
     signal: AbortSignal | undefined,
     expectBody: boolean
   ): Promise<RpcResponse> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      signal?.throwIfAborted();
-      const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-      const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-        Accept: "application/json, text/event-stream",
-        Authorization: `Bearer ${await this.tokenProvider()}`,
-      };
-      if (this.sessionId !== null) headers["Mcp-Session-Id"] = this.sessionId;
-
-      let response: Response;
-      try {
-        response = await this.fetchImpl(this.url, {
+    const response = await retryingFetch(this.url, {
+      buildInit: async () => {
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: `Bearer ${await this.tokenProvider()}`,
+        };
+        if (this.sessionId !== null) headers["Mcp-Session-Id"] = this.sessionId;
+        return {
           method: "POST",
           headers,
           body: JSON.stringify(message),
-          signal: combined,
-        });
-      } catch (err) {
-        if (signal?.aborted) throw err;
-        lastError = err;
-        if (attempt < MAX_RETRIES) {
-          await this.sleep(backoffMs(attempt));
-          continue;
-        }
-        throw new XMcpError(`X MCP request failed after ${MAX_RETRIES + 1} attempts: ${describeNetworkError(err)}`);
-      }
-
-      if (response.status === 402) throw new XCreditsDepletedError();
-      if (response.status === 401) {
-        throw new XMcpError(
-          "X MCP rejected the bearer token (401) — the OAuth2 token or refresh chain is broken; re-authorize",
-          401
-        );
-      }
-      if (response.status === 404 && this.sessionId !== null) {
-        throw new XMcpError("X MCP session expired", 404);
-      }
-      if (response.status === 429 || response.status >= 500) {
-        lastError = new XMcpError(`X MCP responded ${response.status}`, response.status);
-        if (attempt < MAX_RETRIES) {
-          await this.sleep(retryDelayMs(response, attempt));
-          continue;
-        }
-        throw lastError;
-      }
-      if (!response.ok) {
-        throw new XMcpError(`X MCP responded ${response.status}`, response.status);
-      }
-      if (!expectBody || response.status === 202) {
-        return { result: null, headers: response.headers };
-      }
-      const body = await response.text();
-      return {
-        result: this.decodeBody(body, response.headers, message.id),
-        headers: response.headers,
-      };
+        };
+      },
+      fetchImpl: this.fetchImpl,
+      sleep: this.sleep,
+      signal,
+      timeoutMs: this.timeoutMs,
+      maxRetries: MAX_RETRIES,
+      maxRetryDelayMs: MAX_RETRY_DELAY_MS,
+      backoffBaseMs: 500,
+      networkError: (err, attempts) =>
+        new XMcpError(`X MCP request failed after ${attempts} attempts: ${describeNetworkError(err)}`),
+      retryableError: (retryable) => new XMcpError(`X MCP responded ${retryable.status}`, retryable.status),
+    });
+    if (response.status === 402) throw new XCreditsDepletedError();
+    if (response.status === 401) {
+      throw new XMcpError(
+        "X MCP rejected the bearer token (401) — the OAuth2 token or refresh chain is broken; re-authorize",
+        401
+      );
     }
-    throw lastError instanceof Error ? lastError : new XMcpError("X MCP request failed");
+    if (response.status === 404 && this.sessionId !== null) {
+      throw new XMcpError("X MCP session expired", 404);
+    }
+    if (!response.ok) {
+      throw new XMcpError(`X MCP responded ${response.status}`, response.status);
+    }
+    if (!expectBody || response.status === 202) {
+      return { result: null, headers: response.headers };
+    }
+    const body = await response.text();
+    return {
+      result: this.decodeBody(body, response.headers, message.id),
+      headers: response.headers,
+    };
   }
 
   private decodeBody(body: string, headers: Headers, messageId: number | undefined): unknown {
@@ -337,17 +315,4 @@ export class XMcpClient {
   }
 }
 
-function backoffMs(attempt: number): number {
-  return Math.min(MAX_RETRY_DELAY_MS, 500 * 2 ** attempt);
-}
 
-function retryDelayMs(response: Response, attempt: number): number {
-  const headerValue = response.headers.get("retry-after");
-  if (headerValue !== null) {
-    const parsed = Number(headerValue);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return Math.min(MAX_RETRY_DELAY_MS, Math.ceil(parsed * 1_000));
-    }
-  }
-  return backoffMs(attempt);
-}

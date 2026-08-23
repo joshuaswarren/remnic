@@ -31,6 +31,16 @@
       "remnic-source": "./src/salvage-envelope.ts",
       "import": "./dist/salvage-envelope.js"
     },
+    "./http-retry": {
+      "types": "./dist/http-retry.d.ts",
+      "remnic-source": "./src/http-retry.ts",
+      "import": "./dist/http-retry.js"
+    },
+    "./http-retry.js": {
+      "types": "./dist/http-retry.d.ts",
+      "remnic-source": "./src/http-retry.ts",
+      "import": "./dist/http-retry.js"
+    },
     "./abort-error.js": {
       "types": "./dist/abort-error.d.ts",
       "remnic-source": "./src/abort-error.ts",

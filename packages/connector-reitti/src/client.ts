@@ -17,6 +17,11 @@
  * and never advance any state (the client is stateless).
  */
 
+import {
+  ConnectorApiError,
+  discardResponseBody,
+  retryingFetch,
+} from "@remnic/core/http-retry";
 import { assertValidTimezone } from "@remnic/core";
 import { isValidLocationDate } from "@remnic/core/location";
 
@@ -119,15 +124,13 @@ export type ReittiErrorKind =
 
 const RETRYABLE_KINDS: readonly ReittiErrorKind[] = ["rate-limit", "server", "network", "timeout"];
 
-export class ReittiApiError extends Error {
+export class ReittiApiError extends ConnectorApiError {
   readonly kind: ReittiErrorKind;
-  readonly status?: number;
 
   constructor(message: string, kind: ReittiErrorKind, status?: number) {
-    super(message);
+    super(message, status);
     this.name = "ReittiApiError";
     this.kind = kind;
-    this.status = status;
   }
 
   get retryable(): boolean {
@@ -325,8 +328,7 @@ export class ReittiClient {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly maxResponseBytes: number;
-  private readonly sleep: (ms: number) => Promise<void>;
-
+  private readonly sleep: ((ms: number) => Promise<void>) | undefined;
   constructor(options: ReittiClientOptions) {
     if (typeof options.token !== "string" || options.token.trim().length === 0) {
       throw new TypeError("Reitti token must be a non-empty string (resolve the secret reference first)");
@@ -341,7 +343,7 @@ export class ReittiClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
-    this.sleep = options.sleep ?? defaultSleep;
+    this.sleep = options.sleep;
   }
 
   /** Every VISIT/TRIP entry overlapping the local day (primary source). */
@@ -377,56 +379,43 @@ export class ReittiClient {
   }
 
   private async requestJson(pathAndQuery: string, signal?: AbortSignal): Promise<unknown> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
-      signal?.throwIfAborted();
-      const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-      const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-      let response: Response;
-      try {
-        response = await this.fetchImpl(`${this.baseUrl}${pathAndQuery}`, {
-          method: "GET",
-          headers: this.authHeaders(),
-          signal: combined,
-        });
-      } catch (err) {
-        // The caller's abort always propagates unwrapped and unretried.
-        if (signal?.aborted) throw err;
-        lastError = timeoutSignal.aborted
+    const response = await retryingFetch(`${this.baseUrl}${pathAndQuery}`, {
+      init: {
+        method: "GET",
+        headers: this.authHeaders(),
+      },
+      fetchImpl: this.fetchImpl,
+      sleep: this.sleep,
+      signal,
+      timeoutMs: this.timeoutMs,
+      networkError: (err, _attempts, { timedOut }) =>
+        timedOut
           ? new ReittiApiError(`Reitti request timed out after ${this.timeoutMs}ms`, "timeout")
-          : new ReittiApiError(`Reitti request failed: ${err instanceof Error ? err.name : String(err)}`, "network");
-        if (attempt < MAX_RETRIES) {
-          await this.sleep(backoffMs(attempt));
-          continue;
-        }
-        throw lastError;
-      }
-
-      if (response.status === 429 || response.status >= 500) {
-        discardBody(response);
-        lastError = new ReittiApiError(`Reitti API responded ${response.status}`, kindForStatus(response.status), response.status);
-        if (attempt < MAX_RETRIES) {
-          await this.sleep(await retryDelayMs(response, attempt));
-          continue;
-        }
-        throw lastError;
-      }
-      if (!response.ok) {
-        discardBody(response);
-        throw new ReittiApiError(
-          `Reitti API responded ${response.status} for ${pathAndQuery.split("?")[0]}`,
-          kindForStatus(response.status),
-          response.status,
-        );
-      }
-      const text = await this.readBounded(response);
-      try {
-        return JSON.parse(text) as unknown;
-      } catch {
-        throw new ReittiApiError("Reitti API returned a non-JSON body", "invalid-json");
-      }
+          : new ReittiApiError(
+              `Reitti request failed: ${err instanceof Error ? err.name : String(err)}`,
+              "network",
+            ),
+      retryableError: (retryable) =>
+        new ReittiApiError(
+          `Reitti API responded ${retryable.status}`,
+          kindForStatus(retryable.status),
+          retryable.status,
+        ),
+    });
+    if (!response.ok) {
+      discardResponseBody(response);
+      throw new ReittiApiError(
+        `Reitti API responded ${response.status} for ${pathAndQuery.split("?")[0]}`,
+        kindForStatus(response.status),
+        response.status,
+      );
     }
-    throw lastError instanceof Error ? lastError : new ReittiApiError("Reitti API request failed", "network");
+    const text = await this.readBounded(response);
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      throw new ReittiApiError("Reitti API returned a non-JSON body", "invalid-json");
+    }
   }
 
   /** Exactly one auth header, per the configured mode — never both. */
@@ -439,7 +428,7 @@ export class ReittiClient {
   private async readBounded(response: Response): Promise<string> {
     const declared = Number(response.headers.get("content-length"));
     if (Number.isFinite(declared) && declared > this.maxResponseBytes) {
-      discardBody(response);
+      discardResponseBody(response);
       throw new ReittiApiError(
         `Reitti response exceeds the ${this.maxResponseBytes}-byte bound (${declared} bytes declared)`,
         "response-too-large",
@@ -474,29 +463,4 @@ function kindForStatus(status: number): ReittiErrorKind {
   if (status === 429) return "rate-limit";
   if (status >= 500) return "server";
   return "http";
-}
-
-function defaultSleep(ms: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
-}
-
-/** Release the socket back to the pool on error paths (unconsumed bodies pin it). */
-function discardBody(response: Response): void {
-  void response.body?.cancel().catch(() => {});
-}
-
-
-/** Exponential retry delay for a transient GET, capped at MAX_RETRY_DELAY_MS. */
-function backoffMs(attempt: number): number {
-  return Math.min(MAX_RETRY_DELAY_MS, 1_000 * 2 ** attempt);
-}
-
-async function retryDelayMs(response: Response, attempt: number): Promise<number> {
-  const retryAfter = response.headers.get("retry-after");
-  if (retryAfter !== null && /^\d+$/.test(retryAfter)) {
-    return Math.min(MAX_RETRY_DELAY_MS, Number(retryAfter) * 1_000);
-  }
-  return backoffMs(attempt);
 }
