@@ -5,8 +5,13 @@ import * as path from "node:path";
 import test from "node:test";
 
 import { createHash } from "node:crypto";
-import { buildReconcileManifest } from "./reconcile/manifest.js";
+import { isInternalRemnicStatePath } from "./offline-sync.js";
 import { convergeIdentityCachePath } from "./reconcile/cursor.js";
+import {
+  buildReconcileManifest,
+  citationTemplateFingerprint,
+  isReconcileMemoryIdentity,
+} from "./reconcile/manifest.js";
 import { parseFrontmatter } from "./storage.js";
 
 function memoryFile(id: string, body: string): string {
@@ -103,4 +108,41 @@ test("a changed sha invalidates the cached identity (cold re-read)", async () =>
   } finally {
     await fs.promises.rm(dir, { recursive: true, force: true });
   }
+});
+
+test("the server identity cache lives on a path snapshot enumeration excludes", () => {
+  // The cache is node-local: enumerating it would advertise it as a peer file
+  // and make convergence transfer the cache itself.
+  assert.equal(isInternalRemnicStatePath(".remnic/state/converge-identity-cache.json"), true);
+  assert.equal(isInternalRemnicStatePath("state/converge-identity-cache.json"), false);
+});
+
+test("the CLI identity cache path is excluded from enumeration too", () => {
+  const absolute = convergeIdentityCachePath("/tmp/mem", "http://peer", "default");
+  const relative = absolute.slice("/tmp/mem/".length);
+  assert.equal(isInternalRemnicStatePath(relative), true);
+});
+
+test("citation templates fingerprint distinctly and default consistently", () => {
+  const fallback = citationTemplateFingerprint(undefined);
+  assert.equal(
+    citationTemplateFingerprint("{{source}} — {{title}}"),
+    citationTemplateFingerprint("{{source}} — {{title}}")
+  );
+  assert.notEqual(citationTemplateFingerprint("{{source}}"), citationTemplateFingerprint("{{title}}"));
+  assert.notEqual(citationTemplateFingerprint("{{source}}"), fallback);
+  assert.match(fallback, /^[0-9a-f]{16}$/);
+});
+
+test("malformed cached identities are rejected instead of trusted", () => {
+  const valid = { id: "a", category: "fact", contentHash: "abc", status: "active" };
+  assert.equal(isReconcileMemoryIdentity(valid), true);
+  assert.equal(isReconcileMemoryIdentity({ ...valid, contentHashAliases: ["x"] }), true);
+  assert.equal(isReconcileMemoryIdentity(null), false);
+  assert.equal(isReconcileMemoryIdentity(undefined), false);
+  assert.equal(isReconcileMemoryIdentity([valid]), false);
+  assert.equal(isReconcileMemoryIdentity({ ...valid, id: 1 }), false);
+  assert.equal(isReconcileMemoryIdentity({ ...valid, status: undefined }), false);
+  assert.equal(isReconcileMemoryIdentity({ ...valid, normalizerVersion: "4" }), false);
+  assert.equal(isReconcileMemoryIdentity({ ...valid, contentHashAliases: [1] }), false);
 });

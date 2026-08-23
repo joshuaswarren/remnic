@@ -1,63 +1,63 @@
-import * as fs from "node:fs";
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import {
-  type PluginConfig,
   CONVERGE_CONFLICT_POLICIES,
   DEFAULT_CONVERGE_CONFLICT_POLICY,
-  parseConfig,
-  envConvergePeerRequestTimeoutMs,
-  normalizeConvergePeerRequestTimeoutMs,
-  type ResolveSecretRefFn,
-  buildOfflineSyncSnapshotFromBase,
-  applyOfflineSyncFileContentChunk,
-  isInternalRemnicStatePath,
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
+  type PluginConfig,
+  type ResolveSecretRefFn,
+  applyOfflineSyncFileContentChunk,
+  buildOfflineSyncSnapshotFromBase,
+  envConvergePeerRequestTimeoutMs,
+  isInternalRemnicStatePath,
+  normalizeConvergePeerRequestTimeoutMs,
+  parseConfig,
 } from "@remnic/core";
-import { parseFrontmatter } from "@remnic/core/storage.js";
-import type { ConvergeConflictPolicy } from "@remnic/core/types.js";
 import { resolveCorpusNamespaceRoots } from "@remnic/core/corpus-watermark.js";
 import { listNamespaces } from "@remnic/core/namespaces/migrate.js";
 import {
-  planReconciliation,
+  type ConvergeCursorState,
+  convergeIdentityCachePath,
+  defaultConvergeCursorPath,
+  deriveConvergeCursorBase,
+  normalizeConvergePeerUrl,
+  readConvergeCursor,
+  writeConvergeCursor,
+} from "@remnic/core/reconcile/cursor.js";
+import {
+  type ReconcileManifest,
+  buildReconcileManifest,
+  collapseActiveFactDuplicates,
+} from "@remnic/core/reconcile/manifest.js";
+import {
   type ReconcileFileState,
   type ReconcileNamespaceInput,
   type ReconcilePlan,
   type ReconcileSemanticAgreement,
+  planReconciliation,
 } from "@remnic/core/reconcile/plan.js";
-import {
-  convergeIdentityCachePath,
-  defaultConvergeCursorPath,
-  deriveConvergeCursorBase,
-  readConvergeCursor,
-  writeConvergeCursor,
-  type ConvergeCursorState,
-  normalizeConvergePeerUrl,
-} from "@remnic/core/reconcile/cursor.js";
-import {
-  buildReconcileManifest,
-  collapseActiveFactDuplicates,
-  type ReconcileManifest,
-} from "@remnic/core/reconcile/manifest.js";
-import { createOfflineStorageIo } from "./offline-storage-io.js";
-import { convergeWatch, type ConvergeWatchOutcome } from "./converge-watch.js";
-import { parseConvergeTokenFileFlag, resolveConvergeTokenChannel } from "./converge-token-channel.js";
-import { loadConvergeIdentityCache, saveConvergeIdentityCache } from "./converge-identity-cache.js";
 import { resolveAgentAccessAuthToken } from "@remnic/core/resolve-auth-token.js";
+import { parseFrontmatter } from "@remnic/core/storage.js";
+import type { ConvergeConflictPolicy } from "@remnic/core/types.js";
+import { loadConvergeIdentityCache, saveConvergeIdentityCache } from "./converge-identity-cache.js";
 import {
   DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  type PeerFileChunk,
+  type PeerFileContent,
+  type PeerFileSource,
   fetchPeerFileContent,
   fetchPeerManifestStream,
-  fetchPeerSyncCapabilities,
   fetchPeerSnapshot,
+  fetchPeerSyncCapabilities,
   postPeerConvergenceComplete,
   postPeerFileContent,
   postPeerFileDeletion,
   streamPeerFileContent,
-  type PeerFileContent,
-  type PeerFileChunk,
-  type PeerFileSource,
 } from "./converge-peer-transport.js";
+import { parseConvergeTokenFileFlag, resolveConvergeTokenChannel } from "./converge-token-channel.js";
+import { type ConvergeWatchOutcome, convergeWatch } from "./converge-watch.js";
+import { createOfflineStorageIo } from "./offline-storage-io.js";
 export interface ConvergePlanOptions {
   config?: PluginConfig;
   peerUrl?: string;
@@ -284,7 +284,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       const identityCachePath = memoryDir
         ? convergeIdentityCachePath(memoryDir, options.peerUrl ?? "local", ns)
         : undefined;
-      const identityCache = await loadConvergeIdentityCache(identityCachePath);
+      const identityCache = await loadConvergeIdentityCache(identityCachePath, config.inlineSourceAttributionFormat);
       const manifest = await buildReconcileManifest({
         files,
         parseMemory: parseFrontmatter,
@@ -313,7 +313,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       }
       localManifests.set(ns, manifest);
       localTombstones.set(ns, tombstonedFileDigests(evidence, manifest));
-      await saveConvergeIdentityCache(identityCachePath, manifest);
+      await saveConvergeIdentityCache(identityCachePath, manifest, config.inlineSourceAttributionFormat);
     }
   }
   const peerUrl = options.peerUrl;

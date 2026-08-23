@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { computeLegacyContentHash, normalizeLegacyContent } from "../content-hash.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
-import { ContentHashIndex, type ContentHashPathEntry } from "../storage/content-hash-index.js";
 import { DEFAULT_CITATION_FORMAT, stripCitationForTemplate } from "../source-attribution.js";
+import { ContentHashIndex, type ContentHashPathEntry } from "../storage/content-hash-index.js";
 import { storedContentIdentityCandidates } from "../structured-attributes.js";
 import type { MemoryFrontmatter, MemoryStatus } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
@@ -130,6 +130,47 @@ function parsedMemoryIdentity(
     identityResolutionVersion: IDENTITY_RESOLUTION_VERSION,
     status: inferMemoryStatus(parsed.frontmatter, filePath),
   };
+}
+
+/**
+ * Stable fingerprint of the citation template that `parsedMemoryIdentity` uses
+ * to strip inline attribution before hashing. A persisted identity cache is
+ * only reusable while this matches: identical file content under a different
+ * template yields a different `contentHash`, which would silently change
+ * duplicate and conflict decisions on a warm plan.
+ */
+export function citationTemplateFingerprint(citationTemplate?: string): string {
+  return createHash("sha256")
+    .update(citationTemplate ?? DEFAULT_CITATION_FORMAT)
+    .digest("hex")
+    .slice(0, 16);
+}
+
+/**
+ * Structural guard for identities read back from an on-disk cache. A cache file
+ * is untrusted JSON: without this an entry carrying `memory: null` survives the
+ * loader's cast and then throws when the hit path dereferences
+ * `memory.normalizerVersion`, aborting a manifest build that should instead
+ * fall back to a cold parse.
+ */
+export function isReconcileMemoryIdentity(value: unknown): value is ReconcileMemoryIdentity {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const memory = value as Record<string, unknown>;
+  if (typeof memory.id !== "string") return false;
+  if (typeof memory.category !== "string") return false;
+  if (typeof memory.contentHash !== "string") return false;
+  if (typeof memory.status !== "string") return false;
+  if (memory.normalizerVersion !== undefined && typeof memory.normalizerVersion !== "number") return false;
+  if (memory.identityResolutionVersion !== undefined && typeof memory.identityResolutionVersion !== "number") {
+    return false;
+  }
+  if (
+    memory.contentHashAliases !== undefined &&
+    (!Array.isArray(memory.contentHashAliases) || memory.contentHashAliases.some((alias) => typeof alias !== "string"))
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export async function buildReconcileManifestFile(
