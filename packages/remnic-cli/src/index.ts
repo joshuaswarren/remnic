@@ -162,6 +162,7 @@ import {
   evaluateActionConfidence,
   renderActionConfidenceText,
   expandTildePath,
+  readCompatEnv,
   forkCapsule,
   readForkLineage,
   OPERATION_NAMES,
@@ -291,11 +292,12 @@ import {
   loadOpenclawManagedUpgradeModule,
 } from "./openclaw-managed-upgrade-loader.js";
 import { expandTilde, resolveHomeDir } from "./path-utils.js";
+import { resolveConfigPath } from "./config-path.js";
+export { resolveConfigPath };
 import {
   hostedOnlyDaemonRefusalMessage,
   probeDaemonHealth,
   printHealthCheck,
-  readCompatEnv,
   remoteRecall,
   remoteRecallXray,
   resolveDaemonBaseUrl,
@@ -4109,22 +4111,6 @@ export function loadConvergeCommandConfig(): PluginConfig {
   return loadStandaloneConvergeCommandConfig();
 }
 
-export function resolveConfigPath(cliPath?: string): string {
-  if (cliPath) return path.resolve(expandTilde(cliPath));
-  const envPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH");
-  if (envPath) return path.resolve(expandTilde(envPath));
-
-  const candidates = [
-    path.join(process.cwd(), "remnic.config.json"),
-    path.join(process.cwd(), "engram.config.json"),
-    path.join(resolveHomeDir(), ".config", "remnic", "config.json"),
-    path.join(resolveHomeDir(), ".config", "engram", "config.json"),
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return path.join(resolveHomeDir(), ".config", "remnic", "config.json");
-}
 
 function resolveExistingBenchRemnicConfigPath(cliPath?: string): string | undefined {
   const configPath = resolveConfigPath(cliPath);

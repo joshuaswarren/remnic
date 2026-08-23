@@ -9,7 +9,8 @@ import {
 } from "@remnic/core";
 import { hasFlag, resolveFlag } from "../cli-args.js";
 import { expandTilde } from "../path-utils.js";
-import { resolveConfigPath, resolveMemoryDir } from "../index.js";
+import { resolveConfigPath } from "../config-path.js";
+import { resolveMemoryDir } from "../index.js";
 
 export async function runDriftBinaryCommand(rest: string[]): Promise<void> {
   initLogger();

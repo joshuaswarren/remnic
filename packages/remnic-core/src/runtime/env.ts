@@ -25,6 +25,17 @@ export function readEnvVar(name: string): string | undefined {
   }
   return undefined;
 }
+/**
+ * Read an env var by its current name, falling back to a legacy name.
+ *
+ * Unlike `readEnvVar`, an explicitly-set empty string is returned as-is:
+ * callers that must distinguish set-but-invalid from unset (server config
+ * readiness, auth-token fallbacks) rely on `??`-only semantics.
+ */
+export function readCompatEnv(primary: string, legacy: string): string | undefined {
+  const env = getEnvMap();
+  return env?.[primary] ?? env?.[legacy];
+}
 
 export function resolveHomeDir(): string {
   return readEnvVar("HOME") || os.homedir();

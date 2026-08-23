@@ -30,7 +30,7 @@
  * rewritten to plain http — that downgrade is a loud error.
  */
 import fs from "node:fs";
-import type { RecallXraySnapshot } from "@remnic/core";
+import { readCompatEnv, type RecallXraySnapshot } from "@remnic/core";
 import { isLoopbackHost } from "@remnic/core/runtime/http-transport.js";
 import type { QueryRenderableResult } from "./index.js";
 
@@ -38,11 +38,6 @@ import type { QueryRenderableResult } from "./index.js";
 export interface RemoteDaemon {
   baseUrl: string;
   token?: string;
-}
-
-/** Primary env var wins; legacy env var is checked as fallback. */
-export function readCompatEnv(primary: string, legacy: string): string | undefined {
-  return process.env[primary] ?? process.env[legacy];
 }
 
 /**

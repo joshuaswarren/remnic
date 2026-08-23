@@ -14,7 +14,7 @@ import {
   resolveRemnicConfigRecord,
   runWearablesCliCommand,
 } from "@remnic/core";
-import { resolveConfigPath } from "../index.js";
+import { resolveConfigPath } from "../config-path.js";
 
 export async function runWearablesBinaryCommand(rest: string[]): Promise<void> {
   const wearablesArgs =

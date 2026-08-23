@@ -4,7 +4,7 @@ import {
   exportCodegraphOkfBundle,
   parseOkfCodegraphSymbolFilter,
 } from "@remnic/core/export-okf-codegraph";
-import { resolveConfigPath } from "../index.js";
+import { resolveConfigPath } from "../config-path.js";
 
 function takeFlag(rest: string[], name: string): string | undefined {
   const index = rest.indexOf(name);

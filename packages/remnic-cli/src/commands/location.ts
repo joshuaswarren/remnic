@@ -10,7 +10,7 @@
 import fs from "node:fs";
 import { parseConfig, resolveRemnicConfigRecord } from "@remnic/core";
 import { backfillMemoryStorage, runLocationCliCommand } from "@remnic/core/location";
-import { resolveConfigPath } from "../index.js";
+import { resolveConfigPath } from "../config-path.js";
 
 export async function runLocationBinaryCommand(rest: string[]): Promise<void> {
   const locationArgs =

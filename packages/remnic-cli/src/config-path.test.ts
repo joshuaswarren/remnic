@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { resolveConfigPath } from "./config-path.js";
 import {
   loadConvergeCommandConfig,
-  resolveConfigPath,
   resolveMemoryDir,
   resolveSyncSourceDir,
 } from "./index.js";
@@ -126,6 +126,9 @@ test("resolveConfigPath expands home-relative env config paths", async () => {
     process.env.REMNIC_CONFIG_PATH = "~/remnic.json";
     delete process.env.ENGRAM_CONFIG_PATH;
 
+    assert.equal(resolveConfigPath(), path.join(home, "remnic.json"));
+
+    process.env.REMNIC_CONFIG_PATH = "$HOME/remnic.json";
     assert.equal(resolveConfigPath(), path.join(home, "remnic.json"));
 
     delete process.env.REMNIC_CONFIG_PATH;

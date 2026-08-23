@@ -6,15 +6,9 @@
  * returned as raw strings; `parseServerConfig` coerces/validates them.
  */
 
-import type { ServerConfig } from "./index.js";
+import { readCompatEnv } from "@remnic/core";
 
-/**
- * Read an env var by its current `REMNIC_` name, falling back to the legacy
- * `ENGRAM_` name.
- */
-export function readCompatEnv(primary: string, legacy: string): string | undefined {
-  return process.env[primary] ?? process.env[legacy];
-}
+import type { ServerConfig } from "./index.js";
 
 /**
  * Collect server-config overrides sourced from environment variables. Merged

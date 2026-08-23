@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { Orchestrator, parseConfig, resolveRemnicConfigRecord, type PluginConfig } from "@remnic/core";
 import { exportOkfBundle, parseIncludeStatus } from "@remnic/core/export-okf";
-import { resolveConfigPath } from "../index.js";
+import { resolveConfigPath } from "../config-path.js";
 
 function takeFlag(rest: string[], name: string): string | undefined {
   const index = rest.indexOf(name);

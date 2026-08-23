@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { type ExternalWikiRoot, parseConfig, resolveRemnicConfigRecord, runExternalWikiCliCommand } from "@remnic/core";
-import { resolveConfigPath } from "../index.js";
+import { resolveConfigPath } from "../config-path.js";
 
 export async function runExternalWikiBinaryCommand(rest: string[]): Promise<void> {
   let roots: readonly ExternalWikiRoot[];

@@ -12,7 +12,7 @@ import {
   runTimelineCliCommand,
 } from "@remnic/core";
 import type { PluginConfig } from "@remnic/core";
-import { resolveConfigPath } from "../index.js";
+import { resolveConfigPath } from "../config-path.js";
 
 export async function runTimelineBinaryCommand(rest: string[]): Promise<void> {
   const timelineArgs =

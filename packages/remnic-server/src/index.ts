@@ -14,10 +14,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch } from "@remnic/core";
+import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch } from "@remnic/core";
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
-import { envOverrides, readCompatEnv } from "./server-env.js";
+import { envOverrides } from "./server-env.js";
 import {
   STARTUP_DEGRADED_AFTER_ATTEMPTS,
   abortableDelay,
@@ -26,7 +26,7 @@ import {
   type StartupReadinessState,
 } from "./startup-readiness.js";
 import { createSupportPassportServerRuntime } from "./support-passport-runtime.js";
-import { parseAdminConsoleConfig, type AdminConsoleServerFields, type ParsedAdminConsoleConfig } from "./admin-console-config.js";
+import { parseAdminConsoleConfig, parseOptionalBoolean, parseOptionalString, type AdminConsoleServerFields, type ParsedAdminConsoleConfig } from "./admin-console-config.js";
 export { envOverrides };
 export {
   completeStartupReadiness,
@@ -74,13 +74,6 @@ function parseServerPort(value: unknown, source: string): number {
   return port;
 }
 
-function parseOptionalString(value: unknown, source: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "string") {
-    throw new Error(`Invalid ${source}: expected a string`);
-  }
-  return value;
-}
 
 function parseOptionalNonEmptyString(value: unknown, source: string): string | undefined {
   const parsed = parseOptionalString(value, source);
@@ -104,16 +97,6 @@ function parseOptionalPositiveInteger(value: unknown, source: string): number | 
   return parsed;
 }
 
-function parseOptionalBoolean(value: unknown, source: string): boolean | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (["true", "1", "yes", "on"].includes(normalized)) return true;
-    if (["false", "0", "no", "off"].includes(normalized)) return false;
-  }
-  throw new Error(`Invalid ${source}: expected a boolean`);
-}
 
 function parseOptionalNonNegativeInteger(value: unknown, source: string): number | undefined {
   if (value === undefined) return undefined;
@@ -170,41 +153,6 @@ export function parseServerConfig(
   };
 }
 
-interface ResolvedConfigPath {
-  path: string;
-  explicit: boolean;
-  source: string;
-}
-
-function resolveUserPath(value: string): string {
-  return path.resolve(expandTildePath(value));
-}
-
-function resolveConfigPath(cliPath?: string): ResolvedConfigPath {
-  if (cliPath) {
-    return { path: resolveUserPath(cliPath), explicit: true, source: "--config" };
-  }
-
-  const envPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH");
-  if (envPath) {
-    return { path: resolveUserPath(envPath), explicit: true, source: "REMNIC_CONFIG_PATH/ENGRAM_CONFIG_PATH" };
-  }
-
-  const homeDir = process.env.HOME ?? "~";
-  const candidates = [
-    path.join(process.cwd(), "remnic.config.json"),
-    path.join(process.cwd(), "engram.config.json"),
-    path.join(homeDir, ".config", "remnic", "config.json"),
-    path.join(homeDir, ".config", "engram", "config.json"),
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
-      return { path: candidate, explicit: false, source: "auto-discovery" };
-    }
-  }
-
-  return { path: path.join(homeDir, ".config", "remnic", "config.json"), explicit: false, source: "auto-discovery" };
-}
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -237,7 +185,7 @@ export function loadConfigFile(configPath: string): ServerConfig {
   };
 }
 
-function loadResolvedConfig(resolved: ResolvedConfigPath): ServerConfig {
+function loadResolvedConfig(resolved: DiscoveredConfigPath): ServerConfig {
   if (!fs.existsSync(resolved.path)) {
     if (resolved.explicit) {
       throw new Error(`Config file from ${resolved.source} not found: ${resolved.path}`);
@@ -263,7 +211,7 @@ type ServerRuntimeOptions = {
 };
 
 type EffectiveServerRuntimeConfig = {
-  resolvedConfigPath: ResolvedConfigPath;
+  resolvedConfigPath: DiscoveredConfigPath;
   fileConfig: ServerConfig;
   envRemnic: Record<string, unknown> | undefined;
   serverConfig: Partial<ServerConfig["server"]>;
@@ -273,7 +221,7 @@ type EffectiveServerRuntimeConfig = {
 function resolveEffectiveServerRuntimeConfig(
   options?: ServerRuntimeOptions,
 ): EffectiveServerRuntimeConfig {
-  const resolvedConfigPath = resolveConfigPath(options?.configPath);
+  const resolvedConfigPath = discoverConfigPath(options?.configPath);
   const fileConfig = loadResolvedConfig(resolvedConfigPath);
   const { remnic: envRemnic, ...envServer } = envOverrides();
   const cliServerConfig: Partial<ServerConfig["server"]> = {};

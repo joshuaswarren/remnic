@@ -17,7 +17,7 @@ export interface ParsedAdminConsoleConfig {
   adminConsoleMemoryReviewEnabled: boolean;
 }
 
-function parseOptionalString(value: unknown, source: string): string | undefined {
+export function parseOptionalString(value: unknown, source: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string") {
     throw new Error(`Invalid ${source}: expected a string`);
@@ -25,7 +25,7 @@ function parseOptionalString(value: unknown, source: string): string | undefined
   return value;
 }
 
-function parseOptionalBoolean(value: unknown, source: string): boolean | undefined {
+export function parseOptionalBoolean(value: unknown, source: string): boolean | undefined {
   if (value === undefined) return undefined;
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
