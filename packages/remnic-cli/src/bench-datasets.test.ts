@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import test from "node:test";
+import { mkdir, mkdtemp, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+ import test from "node:test";
 
 import {
   __benchDatasetTestHooks,
@@ -258,4 +259,198 @@ test("paired baseline-locomo failure path clears the shared replay cache", () =>
     wrappedCache,
   );
   assert.equal(cleared, 1);
+});
+
+// --- Legacy evals/datasets discovery (#2867) -------------------------------
+//
+// `locomo` is used as the fixture benchmark: its downloaded-marker is a
+// single `locomo10.json` file, so a one-file directory is a complete
+// dataset for discovery purposes.
+
+async function writeLocomoDataset(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, "locomo10.json"), "[]");
+}
+
+// Deterministic content hash of a directory tree (names, structure, file
+// bytes, symlink targets) — used to prove discovery never moves or mutates.
+async function hashTree(root: string): Promise<string> {
+  const hash = createHash("sha256");
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    const entries = await readdir(dir, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        hash.update(`${prefix}${entry.name}/\n`);
+        await walk(entryPath, `${prefix}${entry.name}/`);
+      } else if (entry.isSymbolicLink()) {
+        hash.update(`${prefix}${entry.name}->${await realpath(entryPath)}\n`);
+      } else {
+        hash.update(`${prefix}${entry.name}\n`);
+        hash.update(await readFile(entryPath));
+      }
+    }
+  };
+  await walk(root, "");
+  return hash.digest("hex");
+}
+
+async function listDir(dir: string): Promise<string[]> {
+  try {
+    return (await readdir(dir)).sort();
+  } catch {
+    return [];
+  }
+}
+
+function captureConsoleError(): { lines: () => string[]; restore: () => void } {
+  const recorded: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    recorded.push(args.map((arg) => String(arg)).join(" "));
+  };
+  return { lines: () => recorded, restore: () => (console.error = original) };
+}
+
+test("discoverBenchDatasetDir uses the canonical store when the legacy tree is absent", async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-dataset-discovery-"));
+  const canonicalRoot = path.join(base, "canonical");
+  const legacyRoot = path.join(base, "evals", "datasets");
+  await writeLocomoDataset(path.join(canonicalRoot, "locomo"));
+
+  __benchDatasetTestHooks.resetLegacyDatasetDiscoveryWarningForTest();
+  const captured = captureConsoleError();
+  try {
+    const discovered = __benchDatasetTestHooks.discoverBenchDatasetDir("locomo", {
+      canonicalRoot,
+      legacyRoot,
+    });
+    assert.ok(discovered);
+    assert.equal(discovered.source, "canonical");
+    assert.equal(discovered.dir, path.join(canonicalRoot, "locomo"));
+    assert.deepEqual(captured.lines(), []);
+  } finally {
+    captured.restore();
+  }
+});
+
+test("discoverBenchDatasetDir: canonical wins when both locations exist, legacy left alone", async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-dataset-discovery-"));
+  const canonicalRoot = path.join(base, "canonical");
+  const legacyRoot = path.join(base, "evals", "datasets");
+  await writeLocomoDataset(path.join(canonicalRoot, "locomo"));
+  await writeLocomoDataset(path.join(legacyRoot, "locomo"));
+  const legacyHashBefore = await hashTree(legacyRoot);
+
+  __benchDatasetTestHooks.resetLegacyDatasetDiscoveryWarningForTest();
+  const captured = captureConsoleError();
+  try {
+    const discovered = __benchDatasetTestHooks.discoverBenchDatasetDir("locomo", {
+      canonicalRoot,
+      legacyRoot,
+    });
+    assert.ok(discovered);
+    assert.equal(discovered.source, "canonical");
+    assert.equal(discovered.dir, path.join(canonicalRoot, "locomo"));
+    // Canonical winning is not worth a warning; the legacy copy is simply
+    // ignored, untouched.
+    assert.deepEqual(captured.lines(), []);
+  } finally {
+    captured.restore();
+  }
+  assert.equal(await hashTree(legacyRoot), legacyHashBefore);
+});
+
+test("discoverBenchDatasetDir uses a legacy dataset read-only with a once-per-process migration hint", async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-dataset-discovery-"));
+  const canonicalRoot = path.join(base, "canonical");
+  const legacyRoot = path.join(base, "evals", "datasets");
+  const legacyDir = path.join(legacyRoot, "locomo");
+  await writeLocomoDataset(legacyDir);
+  const legacyHashBefore = await hashTree(legacyRoot);
+  const canonicalEntriesBefore = await listDir(canonicalRoot);
+
+  __benchDatasetTestHooks.resetLegacyDatasetDiscoveryWarningForTest();
+  const captured = captureConsoleError();
+  try {
+    const first = __benchDatasetTestHooks.discoverBenchDatasetDir("locomo", {
+      canonicalRoot,
+      legacyRoot,
+    });
+    assert.ok(first);
+    assert.equal(first.source, "legacy-evals");
+    assert.equal(first.dir, legacyDir);
+
+    const second = __benchDatasetTestHooks.discoverBenchDatasetDir("locomo", {
+      canonicalRoot,
+      legacyRoot,
+    });
+    assert.equal(second?.dir, legacyDir);
+
+    const warnings = captured.lines();
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /`remnic bench datasets download locomo`/);
+    assert.match(warnings[0]!, /~\/\.remnic\/bench\/datasets/);
+    assert.match(warnings[0]!, /evals\/datasets\/locomo/);
+    assert.match(warnings[0]!, /read-only/);
+    // No host-resolved paths in the hint.
+    assert.ok(!warnings[0]!.includes(base));
+    assert.ok(!warnings[0]!.includes(os.homedir()));
+  } finally {
+    captured.restore();
+  }
+
+  // No movement, link, or mutation: the legacy tree is byte-identical and
+  // nothing appeared in the canonical root.
+  assert.equal(await hashTree(legacyRoot), legacyHashBefore);
+  assert.deepEqual(await listDir(canonicalRoot), canonicalEntriesBefore);
+});
+
+test("discoverBenchDatasetDir returns undefined when neither location has the dataset", async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-dataset-discovery-"));
+  const canonicalRoot = path.join(base, "canonical");
+  const legacyRoot = path.join(base, "evals", "datasets");
+  // Canonical dir exists but lacks the marker file; legacy root is absent.
+  await mkdir(path.join(canonicalRoot, "locomo"), { recursive: true });
+
+  __benchDatasetTestHooks.resetLegacyDatasetDiscoveryWarningForTest();
+  const captured = captureConsoleError();
+  try {
+    assert.equal(
+      __benchDatasetTestHooks.discoverBenchDatasetDir("locomo", {
+        canonicalRoot,
+        legacyRoot,
+      }),
+      undefined,
+    );
+    assert.deepEqual(captured.lines(), []);
+  } finally {
+    captured.restore();
+  }
+});
+
+test("discoverBenchDatasetDir rejects legacy paths that escape the legacy root via symlink", async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-dataset-discovery-"));
+  const canonicalRoot = path.join(base, "canonical");
+  const legacyRoot = path.join(base, "evals", "datasets");
+  const outside = path.join(base, "outside", "locomo");
+  await writeLocomoDataset(outside);
+  await mkdir(legacyRoot, { recursive: true });
+  await symlink(outside, path.join(legacyRoot, "locomo"));
+
+  __benchDatasetTestHooks.resetLegacyDatasetDiscoveryWarningForTest();
+  const captured = captureConsoleError();
+  try {
+    assert.equal(
+      __benchDatasetTestHooks.discoverBenchDatasetDir("locomo", {
+        canonicalRoot,
+        legacyRoot,
+      }),
+      undefined,
+    );
+    assert.deepEqual(captured.lines(), []);
+  } finally {
+    captured.restore();
+  }
 });

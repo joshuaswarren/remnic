@@ -44,6 +44,10 @@ test("remnic CLI source wires the new bench command and keeps benchmark as an al
 
 test("bench surface publishes the phase-1 benchmark catalog and quick-run fallback mapping", async () => {
   const source = await readFile("packages/remnic-cli/src/index.ts", "utf8");
+  const datasetStoreSource = await readFile(
+    "packages/remnic-cli/src/bench-dataset-store.ts",
+    "utf8",
+  );
   const fallbackSource = await readFile("packages/remnic-cli/src/bench-fallback.ts", "utf8");
 
   for (const benchmarkId of ["ama-bench", "memory-arena", "amemgym", "longmemeval", "locomo"]) {
@@ -60,7 +64,7 @@ test("bench surface publishes the phase-1 benchmark catalog and quick-run fallba
     "membench",
     "memoryagentbench",
   ]) {
-    assert.match(source, new RegExp(`"${datasetBenchmarkId}"`));
+    assert.match(datasetStoreSource, new RegExp(`"${datasetBenchmarkId}"`));
   }
   assert.match(
     fallbackSource,
