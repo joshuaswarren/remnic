@@ -74,6 +74,8 @@ export interface MergedTargetPromotionPayload {
    * reconciliation canon.
    */
   committedRevision?: string;
+  /** #2813 (P1 B): sha256 hex digest of the durable memory file when committed. */
+  committedDigest?: string;
 }
 
 /**
@@ -149,16 +151,27 @@ export async function buildMergedTargetPromotionPayload(
     return { payload: null, readFailed: false };
   }
   const fm = committed.frontmatter;
-  // #2813 (P1 A): an unreadable receipt sidecar is NOT an absent receipt.
-  // The reread record above is confirmed, but the payload's receipt identity
-  // is what lets the caller verify the cached body later — a payload built
-  // off an unknown receipt could never be confirmed nor attributed. Refuse
-  // (unknown, not a no-promotion verdict): a target that genuinely predates
-  // the sidecar reads `absent` and still promotes without a receipt.
+  // #2813 (P1 B): promotion reads record metadata and digest, then receipt.
+  // Compare record snapshot digest to receipt's committed digest to catch
+  // interleaving metadata writers with same body/new metadata.
+  const snapshotDigest =
+    typeof storage.readDurableFileDigest === "function"
+      ? await storage.readDurableFileDigest(committed.path).catch(() => null)
+      : null;
   const receipt = await readPromotionReceiptStatus(storage, committed.path);
   if (!receipt.available) {
     log.warn(
       `semantic-merge: merged-target promotion refused for ${merge.targetId} — the CAS revision receipt for ${committed.path} is unavailable (${receipt.reason}); promotion and reconciliation retry on the next merge`,
+    );
+    return { payload: null, readFailed: true };
+  }
+  if (
+    receipt.committedDigest !== undefined &&
+    snapshotDigest !== null &&
+    snapshotDigest !== receipt.committedDigest
+  ) {
+    log.warn(
+      `semantic-merge: merged-target promotion refused for ${merge.targetId} — record snapshot digest (${snapshotDigest}) does not match committed receipt digest (${receipt.committedDigest}); record metadata was mutated concurrently`,
     );
     return { payload: null, readFailed: true };
   }
@@ -194,6 +207,11 @@ export async function buildMergedTargetPromotionPayload(
       ...(fm.toolScoped === true ? { toolScoped: true as const } : {}),
       ...(fm.sourceConnector !== undefined ? { sourceConnector: fm.sourceConnector } : {}),
       ...(receipt.revision !== undefined ? { committedRevision: receipt.revision } : {}),
+      ...(receipt.committedDigest !== undefined
+        ? { committedDigest: receipt.committedDigest }
+        : snapshotDigest !== null
+          ? { committedDigest: snapshotDigest }
+          : {}),
     },
     readFailed: false,
   };
@@ -206,11 +224,18 @@ export async function buildMergedTargetPromotionPayload(
 export async function readPromotionReceiptStatus(
   storage: Pick<StorageManager, "readCasRevisionStatus">,
   filePath: string,
-): Promise<{ available: true; revision: string | undefined } | { available: false; reason: string }> {
+): Promise<
+  | { available: true; revision: string | undefined; committedDigest?: string }
+  | { available: false; reason: string }
+> {
   try {
     const status = await storage.readCasRevisionStatus(filePath);
     if (status.status === "unavailable") return { available: false, reason: status.reason };
-    return { available: true, revision: status.status === "present" ? status.revision : undefined };
+    return {
+      available: true,
+      revision: status.status === "present" ? status.revision : undefined,
+      committedDigest: status.status === "present" ? status.committedDigest : undefined,
+    };
   } catch (err) {
     return { available: false, reason: err instanceof Error ? err.message : String(err) };
   }

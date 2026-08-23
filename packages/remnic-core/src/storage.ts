@@ -2755,14 +2755,26 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return await this.casRevisions.readRevisionStatus(filePath);
   }
 
-  protected override async beginDurableMemoryRevision(pathname: string): Promise<CasRevisionTransaction> {
+  async readDurableFileDigest(filePath: string): Promise<string | null> {
+    try {
+      return await this.casRevisions.digestDurableFile(filePath);
+    } catch (err) {
+      log.warn(`storage.readDurableFileDigest failed for ${filePath}: ${err}`);
+      return null;
+    }
+  }
+
+  protected override async beginDurableMemoryRevision(
+    pathname: string,
+    expectedContent?: string | Buffer | null,
+  ): Promise<CasRevisionTransaction> {
     // #2807 (P1): reconcile any crash-orphaned PENDING marker for this
     // target BEFORE the next semantic mutation reserves a new token —
     // otherwise a crashed reservation would make the memory permanently
     // unwritable. Decisive evidence heals; ambiguity throws so the
     // mutation fails closed with the actionable recovery error.
     await this.casRevisions.recoverPendingRevision(pathname);
-    return await this.casRevisions.beginRevisionTransaction(pathname);
+    return await this.casRevisions.beginRevisionTransaction(pathname, expectedContent);
   }
   private async recordCommittedInvalidation(memory: MemoryFile): Promise<void> {
     return this.deletionRevisionStore.recordCommittedInvalidation(memory);

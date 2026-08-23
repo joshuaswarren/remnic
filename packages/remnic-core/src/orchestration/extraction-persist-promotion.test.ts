@@ -720,3 +720,39 @@ test("promoteAndReconcileMergedTarget: a genuinely absent receipt still confirms
   });
   assert.equal(promotions, 1, "absent-versus-absent confirms — pre-sidecar records keep their promotion semantics");
 });
+test("buildMergedTargetPromotionPayload and promotion refuse when interleaving writer updates metadata with same body (#2813 P1 B)", async () => {
+  const s = await makeStorages();
+  const target = await s.source.writeMemory("fact", PRE_MERGE_BODY, { source: "test", confidence: 0.5 });
+  await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
+  const { payload } = await buildMergedTargetPromotionPayload(s.source, {
+    targetId: target.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.ok(payload);
+  assert.ok(payload.committedRevision);
+  assert.ok(payload.committedDigest);
+
+  // Interleaving writer updates metadata with the SAME body/content:
+  assert.ok(await s.source.updateMemoryFrontmatter(target.id, { confidence: 0.95 }));
+
+  let promotions = 0;
+  await promoteAndReconcileMergedTarget({
+    promote: async () => {
+      promotions += 1;
+      return `copy-${promotions}`;
+    },
+    config: parseConfig({ memoryDir: s.source.dir, sharedNamespace: "shared" }),
+    getStorageRouter: () => s.router,
+    scopeProfileWritePlan: null,
+    sourceStorage: s.source,
+    sourceMemoryId: target.id,
+    mergedPromotion: payload,
+    normalize: (content) => content,
+  });
+  assert.equal(
+    promotions,
+    0,
+    "promotion must be abandoned when standing receipt digest/revision changes due to same-body metadata update",
+  );
+});

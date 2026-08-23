@@ -225,6 +225,7 @@ test("an evidenced gated recovery defers a reserve-only marker to the path-locke
     assert.deepEqual(await store.readRevisionStatus(target), {
       status: "present",
       revision: b.pendingRevision,
+      committedDigest: store.digestContent("landed bytes"),
     });
   });
 });
@@ -256,6 +257,7 @@ test("recoverPendingRevision publishes a crashed reservation whose write landed 
     assert.deepEqual(await store.readRevisionStatus(target), {
       status: "present",
       revision: b.pendingRevision,
+      committedDigest: store.digestContent("new durable bytes"),
     });
     assert.equal(await store.recoverPendingRevision(target), "committed", "idempotent");
   });
@@ -306,5 +308,53 @@ test("recoverPendingRevision never guesses on a legacy pending marker without ev
 
     await assert.rejects(store.recoverPendingRevision(target), /no crash evidence[\s\S]*Refusing to guess/);
     assert.equal((await store.readRevisionStatus(target)).status, "unavailable");
+  });
+});
+test("beginRevisionTransaction with expectedContent persists expectedDigest in pending marker before memory write (P1 A)", async () => {
+  await withStore(async (store, root) => {
+    const target = path.join(root, "memories", "fact-p1a-prewrite.md");
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, "baseline content", "utf8");
+
+    // Establish standing receipt for baseline
+    const initial = await store.beginRevisionTransaction(target, "baseline content");
+    await initial.commit();
+
+    const expectedContent = "new expected content";
+    const txn = await store.beginRevisionTransaction(target, expectedContent);
+
+    // Inspect the shard before the memory write occurs:
+    const shard = JSON.parse(await readFile(shardPathFor(root, target), "utf8")) as {
+      state?: string;
+      baselineDigest?: string;
+      expectedDigest?: string;
+    };
+    assert.equal(shard.state, "pending");
+    assert.ok(shard.baselineDigest, "baseline digest is persisted");
+    assert.equal(
+      shard.expectedDigest,
+      store.digestContent(expectedContent),
+      "expected digest is persisted before memory write",
+    );
+
+    // Case 1: Crash BEFORE memory write (file remains at baseline content):
+    assert.equal(await store.recoverPendingRevision(target), "aborted");
+    assert.equal((await store.readRevisionStatus(target)).status, "present");
+    assert.equal(
+      (await store.readRevisionStatus(target) as { revision: string }).revision,
+      initial.pendingRevision,
+      "aborted transaction restored standing receipt",
+    );
+
+    // Case 2: Fresh transaction, memory write lands, crash AFTER memory write:
+    const txn2 = await store.beginRevisionTransaction(target, expectedContent);
+    await writeFile(target, expectedContent, "utf8");
+    // Without calling txn2.writeLanded() or txn2.commit(), simulate crash recovery:
+    assert.equal(await store.recoverPendingRevision(target), "committed");
+    assert.deepEqual(await store.readRevisionStatus(target), {
+      status: "present",
+      revision: txn2.pendingRevision,
+      committedDigest: store.digestContent(expectedContent),
+    });
   });
 });

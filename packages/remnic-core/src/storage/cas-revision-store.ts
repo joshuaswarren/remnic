@@ -28,6 +28,8 @@ type CasRevisionShard = {
    * write has landed; recorded by `writeLanded` before `commit` publishes.
    * null means the file was absent when the write landed. */
   expectedDigest?: string | null;
+  /** #2813 (P1 B): sha256 hex digest of the durable memory file when committed. */
+  committedDigest?: string | null;
 };
 
 type CasRevisionMetadata = {
@@ -44,7 +46,7 @@ type CasRevisionMetadata = {
  *   `readRevision` collapses this into `undefined`; callers that transact
  *   on receipt identity MUST refuse instead. */
 export type CasRevisionReadStatus =
-  | { status: "present"; revision: string }
+  | { status: "present"; revision: string; committedDigest?: string }
   | { status: "absent" }
   | { status: "unavailable"; reason: string };
 
@@ -71,7 +73,7 @@ export interface CasRevisionTransaction {
 type CasShardView =
   | { kind: "missing" }
   | { kind: "foreign" }
-  | { kind: "committed"; revision: string; foreign: boolean }
+  | { kind: "committed"; revision: string; committedDigest?: string; foreign: boolean }
   | {
       kind: "pending";
       revision: string;
@@ -233,6 +235,8 @@ export class CasRevisionStore {
         throw new Error("CAS revision shard is unreadable.");
       }
       const foreign = root.path !== relativePath;
+      const committedDigest =
+        typeof root.committedDigest === "string" ? root.committedDigest : undefined;
       return root.state === "pending"
         ? {
             kind: "pending",
@@ -242,7 +246,7 @@ export class CasRevisionStore {
             baselineDigest: root.baselineDigest as string | null | undefined,
             expectedDigest: root.expectedDigest as string | null | undefined,
           }
-        : { kind: "committed", revision: root.revision, foreign };
+        : { kind: "committed", revision: root.revision, committedDigest, foreign };
     }
     // Pre-two-phase shard: a full-shape match reads as committed; anything
     // else keeps the legacy fall-through (legacy metadata, then absence).
@@ -252,7 +256,9 @@ export class CasRevisionStore {
       typeof root.revision === "string" &&
       root.revision.length > 0
     ) {
-      return { kind: "committed", revision: root.revision, foreign: false };
+      const committedDigest =
+        typeof root.committedDigest === "string" ? root.committedDigest : undefined;
+      return { kind: "committed", revision: root.revision, committedDigest, foreign: false };
     }
     return { kind: "foreign" };
   }
@@ -275,7 +281,9 @@ export class CasRevisionStore {
    * Fail-open callers collapse the throw into undefined; truthful callers
    * ({@link readRevisionStatus}) report `unavailable` so a transaction can
    * refuse instead of mistaking the failure for absence. */
-  private async readStandingRevisionStrict(relativePath: string): Promise<string | undefined> {
+  private async readStandingRevisionStrict(
+    relativePath: string,
+  ): Promise<{ revision: string; committedDigest?: string } | undefined> {
     const { shardPath } = await this.getSafeShardInfo(relativePath);
     const view = await this.readShardView(shardPath, relativePath);
     if (view.kind === "pending") {
@@ -283,9 +291,12 @@ export class CasRevisionStore {
         `CAS revision receipt for ${relativePath} is pending finalization (recovery needed).`,
       );
     }
-    if (view.kind === "committed" && !view.foreign) return view.revision;
+    if (view.kind === "committed" && !view.foreign) {
+      return { revision: view.revision, committedDigest: view.committedDigest };
+    }
     const legacyMap = await this.readLegacyMetadata();
-    return legacyMap.get(relativePath);
+    const legacyRev = legacyMap.get(relativePath);
+    return legacyRev === undefined ? undefined : { revision: legacyRev };
   }
 
   private async writeShard(
@@ -295,16 +306,23 @@ export class CasRevisionStore {
     lock: HeldFileLockController,
     state: "pending" | "committed",
     previous?: string,
-    evidence?: { baselineDigest: string | null; expectedDigest?: string | null },
+    evidence?: {
+      baselineDigest?: string | null;
+      expectedDigest?: string | null;
+      committedDigest?: string | null;
+    },
   ): Promise<void> {
     let payload: CasRevisionShard;
     if (state === "committed") {
       payload = { version: 1, path: relativePath, revision, state };
+      if (evidence?.committedDigest !== undefined) {
+        payload.committedDigest = evidence.committedDigest;
+      }
     } else {
       payload = { version: 1, path: relativePath, revision, state };
       if (previous !== undefined) payload.previous = previous;
       if (evidence !== undefined) {
-        payload.baselineDigest = evidence.baselineDigest;
+        if (evidence.baselineDigest !== undefined) payload.baselineDigest = evidence.baselineDigest;
         if (evidence.expectedDigest !== undefined) payload.expectedDigest = evidence.expectedDigest;
       }
     }
@@ -381,8 +399,16 @@ export class CasRevisionStore {
   async readRevisionStatus(filePath: string): Promise<CasRevisionReadStatus> {
     try {
       const relativePath = await this.resolveRelativePath(filePath);
-      const revision = await this.readStandingRevisionStrict(relativePath);
-      return revision === undefined ? { status: "absent" } : { status: "present", revision };
+      const standing = await this.readStandingRevisionStrict(relativePath);
+      return standing === undefined
+        ? { status: "absent" }
+        : {
+            status: "present",
+            revision: standing.revision,
+            ...(standing.committedDigest !== undefined
+              ? { committedDigest: standing.committedDigest }
+              : {}),
+          };
     } catch (error) {
       return { status: "unavailable", reason: error instanceof Error ? error.message : String(error) };
     }
@@ -399,15 +425,34 @@ export class CasRevisionStore {
    * #2807: the marker also records the durable file's reserve-time
    * fingerprint (`baselineDigest`), so a crash between reserve and
    * finalize is decidable by {@link recoverPendingRevision}. */
-  async beginRevisionTransaction(filePath: string): Promise<CasRevisionTransaction> {
+  /** #2813 (P1 C): reserve the NEXT revision token as a durable PENDING
+   * marker under the target's shard lock — the write-ahead record of a
+   * receipt transaction. The token is strictly greater than the standing
+   * token (max(clock, prev + 1ms)), so two commits can never share a
+   * receipt — not within one millisecond, not across a backward clock
+   * step. Refuses while another reservation is pending (recovery needed)
+   * or the standing receipt cannot be determined. The caller MUST either
+   * `commit` after its durable write lands or `abort` when it fails.
+   * #2807: the marker also records the durable file's reserve-time
+   * fingerprint (`baselineDigest`) and EXPECTED post-write fingerprint
+   * (`expectedDigest`) before the memory write under lock, so a crash
+   * before or after the memory write is decidable by {@link recoverPendingRevision}. */
+  async beginRevisionTransaction(
+    filePath: string,
+    expectedContent?: string | Buffer | null,
+  ): Promise<CasRevisionTransaction> {
     const relativePath = await this.resolveRelativePath(filePath);
     return await this.withShardLock(relativePath, async (lock) => {
-      const standing = await this.readStandingRevisionStrict(relativePath);
+      const standingInfo = await this.readStandingRevisionStrict(relativePath);
+      const standing = standingInfo?.revision;
       const next = nextCasRevisionIso(standing);
       const baselineDigest = await this.digestDurableFile(relativePath);
+      const expectedDigest =
+        expectedContent != null ? this.digestContent(expectedContent) : undefined;
       const { shardPath } = await this.getSafeShardInfo(relativePath);
       await this.writeShard(shardPath, relativePath, next, lock, "pending", standing, {
         baselineDigest,
+        ...(expectedDigest !== undefined ? { expectedDigest } : {}),
       });
       return {
         pendingRevision: next,
@@ -418,12 +463,13 @@ export class CasRevisionStore {
     });
   }
 
-  /** #2807: sha256 of the durable memory file's raw BYTES (ciphertext when
-   * the store is encrypted — recovery compares durable state, never
-   * content), or null when the file is absent. Resolved through the same
-   * symlink-auditing path safety as every sidecar path. Any other read
-   * failure throws: evidence must never be guessed. */
-  private async digestDurableFile(relativePath: string): Promise<string | null> {
+  public digestContent(content: string | Buffer): string {
+    const bytes = typeof content === "string" ? Buffer.from(content, "utf8") : content;
+    return createHash("sha256").update(bytes).digest("hex");
+  }
+
+  public async digestDurableFile(filePath: string): Promise<string | null> {
+    const relativePath = await this.resolveRelativePath(filePath);
     const baseDir = path.resolve(this.baseDir);
     const target = await resolveSafeStoragePath(baseDir, relativePath);
     let bytes: Buffer;
@@ -470,7 +516,11 @@ export class CasRevisionStore {
       const view = await this.readShardView(shardPath, relativePath);
       if (view.kind === "pending" && !view.foreign && view.revision === token) {
         if (outcome === "commit") {
-          await this.writeShard(shardPath, relativePath, token, lock, "committed");
+          const committedDigest =
+            view.expectedDigest ?? (await this.digestDurableFile(relativePath));
+          await this.writeShard(shardPath, relativePath, token, lock, "committed", undefined, {
+            committedDigest,
+          });
         } else if (view.previous !== undefined) {
           await this.writeShard(shardPath, relativePath, view.previous, lock, "committed");
         } else {
@@ -512,7 +562,11 @@ export class CasRevisionStore {
         );
       }
       if (fileWriteLanded) {
-        await this.writeShard(shardPath, relativePath, view.revision, lock, "committed");
+        const committedDigest =
+          view.expectedDigest ?? (await this.digestDurableFile(relativePath));
+        await this.writeShard(shardPath, relativePath, view.revision, lock, "committed", undefined, {
+          committedDigest,
+        });
       } else if (view.previous !== undefined) {
         await this.writeShard(shardPath, relativePath, view.previous, lock, "committed");
       } else {
@@ -558,13 +612,15 @@ export class CasRevisionStore {
           `CAS revision pending marker for ${relativePath} names another target; manual recovery is required.`,
         );
       }
-      if (options?.onlyWithWriteEvidence && view.expectedDigest === undefined) {
-        return "reserved";
-      }
       const currentDigest = await this.digestDurableFile(relativePath);
       if (view.expectedDigest !== undefined && currentDigest === view.expectedDigest) {
-        await this.writeShard(shardPath, relativePath, view.revision, lock, "committed");
+        await this.writeShard(shardPath, relativePath, view.revision, lock, "committed", undefined, {
+          committedDigest: view.expectedDigest,
+        });
         return "committed";
+      }
+      if (options?.onlyWithWriteEvidence) {
+        return "reserved";
       }
       if (view.baselineDigest !== undefined && currentDigest === view.baselineDigest) {
         if (view.previous !== undefined) {

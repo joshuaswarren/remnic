@@ -217,7 +217,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
    * the durable file write lands. Receipt identity lives in the per-target
    * sidecar, never in public `frontmatter.updated`. The default host keeps
    * no receipt identity; StorageManager records it. */
-  protected async beginDurableMemoryRevision(_pathname: string): Promise<CasRevisionTransaction | undefined> {
+  protected async beginDurableMemoryRevision(_pathname: string, _expectedContent?: string | Buffer | null): Promise<CasRevisionTransaction | undefined> {
     return undefined;
   }
 

@@ -395,19 +395,28 @@ export async function promoteAndReconcileMergedTarget(args: {
       );
       return;
     }
-    // #2813 (P1 A): confirm the cached payload against a TRUTHFUL receipt
-    // read. An unavailable sidecar abandons the promotion — the previous
-    // undefined-vs-undefined comparison confirmed any payload whose receipt
-    // identity had become unreadable. A genuinely absent receipt (a target
-    // that predates the sidecar, or a payload minted without one) still
-    // compares equal and promotes.
+    // #2813 (P1 A, P1 B): confirm the cached payload against a TRUTHFUL receipt
+    // read and digest check. An unavailable sidecar or digest mismatch abandons the
+    // promotion — the previous undefined-vs-undefined comparison confirmed any
+    // payload whose receipt identity had become unreadable. A genuinely absent receipt
+    // still compares equal and promotes.
     const standingReceipt = await readPromotionReceiptStatus(args.sourceStorage, current.path);
+    const standingDigest =
+      typeof args.sourceStorage.readDurableFileDigest === "function"
+        ? await args.sourceStorage.readDurableFileDigest(current.path).catch(() => null)
+        : null;
     if (
       !standingReceipt.available ||
-      (standingReceipt.revision ?? undefined) !== (payload.committedRevision ?? undefined)
+      (standingReceipt.revision ?? undefined) !== (payload.committedRevision ?? undefined) ||
+      (payload.committedDigest !== undefined &&
+        standingReceipt.committedDigest !== undefined &&
+        standingReceipt.committedDigest !== payload.committedDigest) ||
+      (payload.committedDigest !== undefined &&
+        standingDigest !== null &&
+        standingDigest !== payload.committedDigest)
     ) {
       log.warn(
-        `persistExtraction: merged-target promotion abandoned for ${args.sourceMemoryId} — the committed record's CAS receipt ${standingReceipt.available ? "is not the cached payload's" : "is unreadable"}, so the cached body is not confirmed`,
+        `persistExtraction: merged-target promotion abandoned for ${args.sourceMemoryId} — the committed record's CAS receipt or digest ${standingReceipt.available ? "does not match the cached payload's" : "is unreadable"}, so the cached body is not confirmed`,
       );
       return;
     }

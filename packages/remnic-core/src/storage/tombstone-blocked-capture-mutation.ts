@@ -197,7 +197,7 @@ export type TombstoneBlockedMutationHost = {
   writeStorageSecureFile: (pathname: string, fileContent: string) => Promise<void>;
   withCaptureWriteLock: (task: () => Promise<void>, identity: string | readonly string[]) => Promise<void>;
   logWarning: (message: string) => void;
-  beginDurableMemoryRevision?: (pathname: string) => Promise<CasRevisionTransaction | undefined>;
+  beginDurableMemoryRevision?: (pathname: string, expectedContent?: string | Buffer | null) => Promise<CasRevisionTransaction | undefined>;
 };
 
 export type TombstoneBlockedMutation = {
@@ -251,7 +251,7 @@ export async function runTombstoneBlockedMutation(
         // failed write can never leave the reservation posing as
         // ownership.
         transaction = mutation.shouldMintRevision?.(current)
-          ? await host.beginDurableMemoryRevision?.(mutation.pathname)
+          ? await host.beginDurableMemoryRevision?.(mutation.pathname, mutation.fileContent)
           : undefined;
         await host.writeStorageSecureFile(mutation.pathname, mutation.fileContent);
       } catch (err) {
