@@ -74,6 +74,8 @@ export interface TimelineCliDeps {
   timelineEnabled?: boolean;
   /** Required for `publish`; range/search never read it. */
   config?: PluginConfig;
+  /** Production host loads cards through regenerateTimelineDay. */
+  loadCards?: (window: { from?: string; to?: string }) => Promise<readonly TimelineQueryCard[] | null>;
 }
 
 const USAGE = `Usage: timeline <command> [options]
@@ -304,7 +306,12 @@ export async function runTimelineCliCommand(
       const from = flagString(flags, "--from");
       const to = flagString(flags, "--to");
       if (!from || !to) throw new TypeError("range requires --from and --to");
-      if (!Array.isArray(deps.cards)) {
+      const cards = Array.isArray(deps.cards)
+        ? deps.cards
+        : deps.loadCards === undefined
+          ? null
+          : await deps.loadCards({ from, to });
+      if (!Array.isArray(cards)) {
         io.stderr.write("store_unreadable\n");
         return 1;
       }
@@ -313,7 +320,7 @@ export async function runTimelineCliCommand(
         throw new TypeError("format must be one of: cards, compact");
       }
       const categoriesRaw = flagString(flags, "--categories");
-      const result = queryTimelineRange(deps.cards, {
+      const result = queryTimelineRange(cards, {
         from,
         to,
         format: formatRaw,
@@ -332,10 +339,17 @@ export async function runTimelineCliCommand(
       if (limitRaw !== undefined && !Number.isInteger(limit)) {
         throw new RangeError("limit must be an integer from 1 to 50");
       }
-      const result = queryTimelineSearch(deps.cards, {
+      const from = flagString(flags, "--from");
+      const to = flagString(flags, "--to");
+      const cards = Array.isArray(deps.cards)
+        ? deps.cards
+        : deps.loadCards === undefined
+          ? null
+          : await deps.loadCards({ from, to });
+      const result = queryTimelineSearch(cards, {
         query: q,
-        from: flagString(flags, "--from"),
-        to: flagString(flags, "--to"),
+        from,
+        to,
         limit,
       });
       io.stdout.write(`${JSON.stringify(result)}\n`);

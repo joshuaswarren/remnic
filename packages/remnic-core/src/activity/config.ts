@@ -6,7 +6,7 @@ import { resolveJournalSource } from "./journal-source.js";
 import { validateVaultNoteTemplate } from "./vault-path.js";
 import { validateRegionName } from "./vault-region.js";
 import { TIMELINE_ANALYSIS_DEFAULT_TIMEOUT_MS } from "./timeline/analysis.js";
-import { isAnalysisIdentifier } from "./timeline/analysis-metadata.js";
+import { ANALYSIS_METADATA_MAX_FIELD_LENGTH, isAnalysisIdentifier } from "./timeline/analysis-metadata.js";
 import type {
   ActivityConfig,
   ActivityExtractionMode,
@@ -261,9 +261,20 @@ function parseTimelineAnalysisConfig(raw: unknown): ActivityTimelineAnalysisConf
     ["provider", provider],
     ["model", model],
   ] as const) {
-    if (value !== undefined && !isAnalysisIdentifier(value)) {
+    if (value === undefined) continue;
+    if (key === "provider" && value.includes("/")) {
+      throw new RangeError(
+        "activity.timeline.analysis.provider must be a single provider segment (no '/')",
+      );
+    }
+    if (!isAnalysisIdentifier(value)) {
       throw new RangeError(
         `activity.timeline.analysis.${key} must be an identifier (letters, digits, and ._:-/ only)`,
+      );
+    }
+    if (value.length > ANALYSIS_METADATA_MAX_FIELD_LENGTH) {
+      throw new RangeError(
+        `activity.timeline.analysis.${key} must be at most ${ANALYSIS_METADATA_MAX_FIELD_LENGTH} characters`,
       );
     }
   }

@@ -490,3 +490,64 @@ test("runActivitySyncOnce reports every local date that gained snapshots (issue 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("runActivitySyncOnce regenerates timeline analysis once per day", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-runner-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    const pages = new Map<string | null, ActivitySnapshotPage>([
+      [null, { snapshots: [snapshot()], nextCursor: null }],
+    ]);
+    const client = fixtureClient("workstation-a", pages);
+    let calls = 0;
+    const base = defaultActivityConfig();
+    const summary = await runActivitySyncOnce({
+      config: enabledConfig({
+        timeline: {
+          ...base.timeline,
+          enabled: true,
+          analysis: { enabled: true, provider: "openai", model: "gpt-test" },
+        },
+      }),
+      memoryDir,
+      store,
+      now: NOW,
+      createSourceClient: () => client,
+      analysisDeps: {
+        remoteLlm: {
+          chatCompletion: async () => {
+            calls += 1;
+            return { content: '{"ops":[]}' };
+          },
+        },
+      },
+    });
+    assert.equal(summary.ranCount, 1);
+    assert.equal(calls, 1);
+    await runActivitySyncOnce({
+      config: enabledConfig({
+        timeline: {
+          ...base.timeline,
+          enabled: true,
+          analysis: { enabled: true, provider: "openai", model: "gpt-test" },
+        },
+      }),
+      memoryDir,
+      store,
+      now: NOW,
+      createSourceClient: () => client,
+      analysisDeps: {
+        remoteLlm: {
+          chatCompletion: async () => {
+            calls += 1;
+            return { content: '{"ops":[]}' };
+          },
+        },
+      },
+    });
+    assert.equal(calls, 1, "second sync must not re-run analysis for unchanged evidence");
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

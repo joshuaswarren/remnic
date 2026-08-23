@@ -6395,11 +6395,15 @@
                   },
                   "provider": {
                     "type": "string",
-                    "description": "Explicit provider id: 'local' routes to the local LLM client; any other identifier routes to the configured remote provider registry pinned to exactly this provider with no chain fallback. Identifier syntax (letters, digits, ._:-/); required when enabled."
+                    "maxLength": 120,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+                    "description": "Explicit provider id: 'local' routes to the local LLM client; any other identifier routes to the configured remote provider registry pinned to exactly this provider with no chain fallback. Single provider segment (letters, digits, ._:-; no '/'); at most 120 characters; required when enabled."
                   },
                   "model": {
                     "type": "string",
-                    "description": "Model id, same identifier syntax as provider. Required when enabled."
+                    "maxLength": 120,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                    "description": "Model id (letters, digits, ._:-/); at most 120 characters. May include '/'. Required when enabled."
                   },
                   "timeoutMs": {
                     "type": "integer",

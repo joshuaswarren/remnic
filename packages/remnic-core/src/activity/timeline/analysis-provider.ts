@@ -24,6 +24,7 @@ export interface TimelineAnalysisLocalLlm {
       signal?: AbortSignal;
       operation?: string;
       redactProviderErrors?: boolean;
+      model?: string;
     },
   ): Promise<{ content: string } | null>;
 }
@@ -104,6 +105,7 @@ export function timelineAnalysisCompleteFromClients(input: {
         signal,
         operation: "timeline-analysis",
         redactProviderErrors: true,
+        model,
       });
       if (result === null) {
         throw new TimelineAnalysisProviderError(

@@ -138,14 +138,16 @@ test("local provider routes to the local client seam", async () => {
     timezone: TZ,
     cards: sampleCards(),
     observations: [observation()],
-    config: { ...ENABLED, provider: "local" },
+    config: { ...ENABLED, provider: "local", model: "qwen3.8-27b" },
     deps: { localLlm: local.localLlm, remoteLlm: remote.remoteLlm },
   });
   assert.equal(result.status, "ok");
   assert.equal(local.calls.length, 1);
   assert.equal(remote.calls.length, 0);
   assert.equal(local.calls[0]?.options.operation, "timeline-analysis");
+  assert.equal(local.calls[0]?.options.model, "qwen3.8-27b");
   assert.equal(result.metadata?.provider, "local");
+  assert.equal(result.metadata?.model, "qwen3.8-27b");
 });
 
 test("prompt carries evidence-only chronology and strict-output instructions with only safe fields", async () => {

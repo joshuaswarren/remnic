@@ -237,6 +237,8 @@ interface LocalLlmChatCompletionOptions {
   priority?: LocalLlmRequestPriority;
   signal?: AbortSignal;
   redactProviderErrors?: boolean;
+  /** Per-request model; defaults to config.localLlmModel. */
+  model?: string;
 }
 interface LocalLlmQueuedRequest {
   messages: Array<{ role: string; content: string }>;
@@ -957,8 +959,9 @@ export class LocalLlmClient {
       }
 
       const promptChars = messages.reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
+      const requestModel = options.model ?? this.config.localLlmModel;
       const requestBody: Record<string, unknown> = {
-        model: this.config.localLlmModel,
+        model: requestModel,
         messages,
         temperature: options.temperature ?? 0.7,
         // Use max_tokens consistent with cloud models

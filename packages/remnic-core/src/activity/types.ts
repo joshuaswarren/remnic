@@ -167,10 +167,11 @@ export interface ActivityTimelineAnalysisConfig {
   /**
    * Explicit provider id: `"local"` routes to the local LLM client; any other
    * identifier routes to the configured remote provider registry. Required
-   * when enabled. An invalid explicit provider fails — never a silent fallback.
+   * when enabled. A single provider segment only — `/` is rejected at parse.
+   * At most 120 characters so accepted config cannot fail metadata validation.
    */
   provider?: string;
-  /** Model id. Required when enabled. */
+  /** Model id. Required when enabled. May include `/`. At most 120 characters. */
   model?: string;
   /** Per-request timeout in ms. Positive integer. */
   timeoutMs?: number;

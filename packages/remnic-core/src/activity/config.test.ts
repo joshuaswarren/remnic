@@ -227,6 +227,38 @@ test("activity timeline analysis rejects prose or blank provider/model identifie
   );
 });
 
+test("activity timeline analysis rejects a slash in the provider segment", () => {
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: { analysis: { enabled: true, provider: "gateway/openai", model: "gpt-test" } },
+      }),
+    /provider must be a single provider segment/,
+  );
+  const ok = parseActivityConfig({
+    timeline: { analysis: { enabled: true, provider: "openai", model: "org/gpt-test" } },
+  }).timeline.analysis;
+  assert.equal(ok.model, "org/gpt-test");
+});
+
+test("activity timeline analysis rejects provider and model longer than metadata max", () => {
+  const tooLong = `m${"x".repeat(120)}`;
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: { analysis: { enabled: true, provider: tooLong, model: "gpt-test" } },
+      }),
+    /provider must be at most 120 characters/,
+  );
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: { analysis: { enabled: true, provider: "openai", model: tooLong } },
+      }),
+    /model must be at most 120 characters/,
+  );
+});
+
 test("activity timeline analysis rejects invalid timeout and preferences shapes", () => {
   const base = { provider: "openai", model: "gpt-5.2" } as const;
   for (const timeoutMs of [0, 999, 120_001, 1.5, "fast"]) {
