@@ -28,6 +28,10 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export function isValidActivityDate(date: string): boolean {
   if (typeof date !== "string" || !DATE_PATTERN.test(date)) return false;
+  // Year 0000 passes the round-trip below but Intl formats it as astronomical
+  // year 1 BC, so zonedDayStartIso's padded year yields 0001 and day windows
+  // land on the wrong boundary. Reject it here, at validation.
+  if (date.startsWith("0000-")) return false;
   // Reject impossible calendar days (e.g. 2026-02-30, 2026-13-01): the UTC
   // round-trip must reproduce the same Y-M-D, else Date normalized an overflow.
   const parsed = new Date(`${date}T00:00:00Z`);
@@ -65,68 +69,89 @@ export function assertValidTimezone(timezone: string): void {
 
 function zonedDayStartIso(date: string, timezone: string): string {
   // The first UTC instant whose local wall-clock is this date at 00:00. Probe
-  // several instants across the day to collect every offset in play; keep an
-  // offset only if constructing local midnight with it lands back on that same
-  // offset (so it is genuinely local midnight, not a wall-clock that never
-  // occurred), then take the EARLIEST such instant — the FIRST 00:00 across a
-  // DST fall-back that repeats local midnight.
+  // several instants across the day to collect every offset in play, keep an
+  // offset only if constructing local midnight with it lands on an exact
+  // local midnight, then take the EARLIEST such instant — the FIRST 00:00
+  // across a rollback that repeats local midnight (America/Cancun dropped
+  // LMT −05:47:04 for −06:00 exactly at local midnight 1922-01-01, so 00:00
+  // occurred twice; the day must start at the first one).
   // Probe the previous UTC day too: for zones east of UTC the requested date's
   // UTC instants all fall after local midnight, so the pre-transition offset
   // valid at the real local 00:00 is only observable on the prior UTC day.
+  const wall = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const localStamp = (ms: number): string => {
+    const parts = wall.formatToParts(new Date(ms));
+    const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? "";
+    // Intl formats pre-1000 years unpadded ("999" for 0999). Pad back to the
+    // four-digit form the equality and ordering comparisons below assume,
+    // or "998-12-31" compares greater than "0999-01-01".
+    const year = get("year").padStart(4, "0");
+    return `${year}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}`;
+  };
+  const localDate = (ms: number): string => localStamp(ms).slice(0, 10);
+  // Derive each probe's offset at FULL precision (seconds included) from the
+  // rendered wall clock, never from a longOffset string: those strings
+  // truncate to whole minutes while historical LMT offsets carry seconds
+  // (America/Cancun was −05:47:04; Asia/Manila −15:56:08). A candidate built
+  // from a truncated offset lands off the true midnight instant, the
+  // exact-stamp check below rejects it, and a midnight repeated by a
+  // rollback silently resolves to the later occurrence under the new
+  // whole-minute offset — misattributing the gap between the two.
+  const offsetMs = (ms: number): number | null => {
+    const wallAsUtc = Date.parse(`${localStamp(ms)}Z`);
+    return Number.isFinite(wallAsUtc) ? wallAsUtc - ms : null;
+  };
+  const midnightUtc = Date.parse(`${date}T00:00:00Z`);
   const prevDate = shiftIsoDate(date, -1);
-  const probeOffsets = new Set(
-    [
-      `${prevDate}T12:00:00Z`,
-      `${prevDate}T23:00:00Z`,
-      `${date}T00:00:00Z`,
-      `${date}T12:00:00Z`,
-      `${date}T23:00:00Z`,
-    ].map((iso) => timezoneOffsetIso(new Date(iso), timezone)),
-  );
   let best: number | null = null;
-  for (const offset of probeOffsets) {
-    const candidate = Date.parse(`${date}T00:00:00${offset}`);
+  for (const iso of [
+    `${prevDate}T12:00:00Z`,
+    `${prevDate}T23:00:00Z`,
+    `${date}T00:00:00Z`,
+    `${date}T12:00:00Z`,
+    `${date}T23:00:00Z`,
+  ]) {
+    const offset = offsetMs(Date.parse(iso));
+    if (offset === null) continue;
+    const candidate = midnightUtc - offset;
     if (!Number.isFinite(candidate)) continue;
-    // Reject an offset whose local midnight does not actually occur (the wall
-    // clock skipped by a spring-forward): the offset in effect at the candidate
-    // instant must be the same offset we used to build it.
-    if (timezoneOffsetIso(new Date(candidate), timezone) !== offset) continue;
+    // Accept only an EXACT local midnight. This rejects a wall-clock midnight
+    // that never occurred (spring-forward at 00:00, Egypt 2026) and one whose
+    // instant the transition already carried past (Asia/Manila's LMT midnight
+    // of 1844-12-31 lands on the post-transition clock as 1845-01-01).
+    if (localStamp(candidate) !== `${date}T00:00:00`) continue;
     if (best === null || candidate < best) best = candidate;
   }
   if (best === null) {
-    // Local midnight was skipped by a spring-forward at 00:00. Advance to the
-    // first local wall-clock minute on this date that actually exists (never
-    // backdating to a 00:00 that never occurred), scanning forward up to 3h.
-    for (let minute = 1; minute <= 180 && best === null; minute++) {
-      const hh = String(Math.floor(minute / 60)).padStart(2, "0");
-      const mm = String(minute % 60).padStart(2, "0");
-      for (const offset of probeOffsets) {
-        const candidate = Date.parse(`${date}T${hh}:${mm}:00${offset}`);
-        if (!Number.isFinite(candidate)) continue;
-        if (timezoneOffsetIso(new Date(candidate), timezone) !== offset) continue;
-        if (best === null || candidate < best) best = candidate;
-      }
-    }
-  }
-  if (best === null) {
-    // The ENTIRE civil date was skipped — no local wall-clock time on it
-    // exists (Pacific/Apia 2011-12-30 is the canonical case: the date-line
-    // jump went 2011-12-29 23:59:59-10:00 → 2011-12-31 00:00:00+14:00).
-    // Extending the never-backdate convention above, resolve the day start
-    // to the transition instant: the earliest instant whose local calendar
-    // date reaches `date`. Local date is monotone non-decreasing in the UTC
-    // instant (a fall-back never crosses local midnight backwards), so
-    // binary-search a 48h bracket at minute granularity. The bracket is
-    // safe: `<date>T00:00Z − 24h` is always locally before `date`, and
-    // `<date>T00:00Z + 24h` is always locally on/after it.
-    let lo = Date.parse(`${date}T00:00:00Z`) - 24 * 3_600_000;
+    // No exact local midnight: either local midnight was skipped by a
+    // spring-forward (00:00 → 01:00) or the ENTIRE civil date never existed
+    // (Pacific/Apia 2011-12-30; Asia/Manila 1844-12-31). Extending the
+    // never-backdate convention, resolve the day start to the first instant
+    // whose local calendar date reaches `date`. Local date is monotone
+    // non-decreasing in the UTC instant (a fall-back never crosses local
+    // midnight backwards), so binary-search a 48h bracket down to the
+    // millisecond — transitions can carry seconds (Manila's landed at
+    // :56:08, not on a minute boundary), so minute granularity mis-resolves
+    // by up to 59s and hands the skipped date a window of its own. The
+    // bracket is safe: `<date>T00:00Z − 24h` is always locally before
+    // `date`, and `<date>T00:00Z + 24h` is always locally on/after it.
+    let lo = midnightUtc - 24 * 3_600_000;
     let hi = lo + 48 * 3_600_000;
-    while (hi - lo > 60_000) {
-      const mid = lo + Math.floor((hi - lo) / 2 / 60_000) * 60_000;
-      if (activityDateInTimezone(new Date(mid), timezone) >= date) hi = mid;
-      else lo = mid;
+    while (lo < hi) {
+      const mid = lo + Math.floor((hi - lo) / 2);
+      if (localDate(mid) >= date) hi = mid;
+      else lo = mid + 1;
     }
-    best = hi;
+    best = lo;
   }
   if (best === null || !Number.isFinite(best)) {
     throw new RangeError(`activity: could not resolve a local day start for "${date}" in "${timezone}".`);
