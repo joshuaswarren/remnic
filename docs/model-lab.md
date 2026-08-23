@@ -176,10 +176,13 @@ a model-backed detector lands in the consuming child.
 
 ## Privacy + consent
 
-- The **harvest stream** (teacher labels from shadow mode) is opt-in, local-only,
-  and documented. `harvest-shadow-logs.py` requires `--i-consent-local-data` and
-  prints exactly what it will read. It is a **stub** until the relevant shadow
-  telemetry lands (#1576 for the gate, #1581 for correction-intent).
+- The **harvest stream** (teacher labels from shadow mode) is not implemented
+  and never was: the deleted `harvest-shadow-logs.py` scripts (#2847) were
+  unimplemented stubs, and the #1585 GPU-run work landed with synthetic-data
+  training only. Shadow verdicts themselves exist — `extraction-persist.ts`
+  records them in fact frontmatter (#1576) — but no tool harvests them into
+  training data. Any such enhancement is opt-in and local-only by design and
+  is tracked separately in #2852.
 - Teacher-model outputs ("LLM traces") live under the gitignored data dir like
   everything else.
 
