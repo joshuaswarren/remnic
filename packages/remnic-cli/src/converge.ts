@@ -40,7 +40,7 @@ import {
 } from "@remnic/core/reconcile/manifest.js";
 import { createOfflineStorageIo } from "./offline-storage-io.js";
 import { convergeWatch, type ConvergeWatchOutcome } from "./converge-watch.js";
-import { resolveConvergeTokenChannel } from "./converge-token-channel.js";
+import { parseConvergeTokenFileFlag, resolveConvergeTokenChannel } from "./converge-token-channel.js";
 import { resolveAgentAccessAuthToken } from "@remnic/core/resolve-auth-token.js";
 import {
   DEFAULT_PEER_REQUEST_TIMEOUT_MS,
@@ -1020,7 +1020,6 @@ export async function cmdConverge(
 ): Promise<void> {
   if (action === "help" || action === "--help" || action === "-h" || rest.includes("--help") || rest.includes("-h")) {
     console.log(`Usage: remnic converge <plan|apply|watch> [options]
-
 Subcommands:
   plan              Compute and display reconciliation plan
   apply             Execute bidirectional converge transport (alias: transport, sync)
@@ -1028,18 +1027,14 @@ Subcommands:
 
 Options:
   --peer <url>      Peer server URL (or --remote-url / --remote)
-  --token <token>   Peer auth token (argv-visible; prefer the safe channels)
-  --token-file <path>
-                    Read the peer token from a 0600 file (not argv-visible)
-  REMNIC_CONVERGE_PEER_TOKEN  Env alternative to --token (not argv-visible)
+  --token <token>   Peer auth token (argv-visible; prefer safe channels below)
+  --token-file <p> / REMNIC_CONVERGE_PEER_TOKEN  Non-argv token channels
   --conflict-policy <policy>
-                    Policy override (newest-wins|manual)
-                    Default: converge.conflictPolicy (newest-wins)
+                    Policy override (newest-wins|manual; default newest-wins)
   --interval <seconds>
-                    Watch cadence in seconds (watch only; default 300, min 1)
+                    Watch cadence seconds (watch only; default 300)
   --timeout <seconds>
-                    Per-request peer HTTP timeout (default 30; use 300+ for
-                    boot-scale namespaces of ~100k files)
+                    Peer HTTP timeout seconds (default 30; boot-scale 300+)
   --dry-run         Simulate transfers without mutating disk or remote peer
   --json            Output detailed JSON plan report
 `);
@@ -1054,7 +1049,7 @@ Options:
 
   let peerUrl: string | undefined;
   let peerToken: string | undefined;
-  let tokenFile: string | undefined;
+  let tokenFile: string | null | undefined;
   let dryRun = false;
   let conflictPolicy: ConvergeConflictPolicy | undefined;
   let intervalSeconds: number | undefined;
@@ -1063,13 +1058,12 @@ Options:
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
     if (arg === "--token-file") {
-      const raw = rest[i + 1];
-      if (raw === undefined || raw.length === 0) {
+      tokenFile = parseConvergeTokenFileFlag(rest[i + 1]);
+      if (tokenFile === null) {
         process.stderr.write("converge: --token-file requires a path.\n");
         process.exitCode = 2;
         return;
       }
-      tokenFile = raw;
       i += 1;
     } else if ((arg === "--peer" || arg === "--remote-url" || arg === "--remote") && rest[i + 1]) {
       peerUrl = rest[i + 1];
@@ -1112,8 +1106,10 @@ Options:
       i += 1;
     }
   }
-
-  const tokenChannel = resolveConvergeTokenChannel({ argvToken: peerToken, tokenFile }, process.env);
+  const tokenChannel = resolveConvergeTokenChannel(
+    { argvToken: peerToken, tokenFile: tokenFile ?? undefined },
+    process.env
+  );
   if (!tokenChannel.ok) {
     process.stderr.write(`converge: ${tokenChannel.error}\n`);
     process.exitCode = 2;
@@ -1122,10 +1118,9 @@ Options:
   peerToken = tokenChannel.token;
   if (tokenChannel.tokenFromArgv) {
     process.stderr.write(
-      "converge: note: --token is argv-visible; prefer --token-file <path> or REMNIC_CONVERGE_PEER_TOKEN\n"
+      "converge: note: --token is argv-visible; prefer --token-file or REMNIC_CONVERGE_PEER_TOKEN\n"
     );
   }
-
   if (action === "watch") {
     const controller = new AbortController();
     const onSignal = () => controller.abort();

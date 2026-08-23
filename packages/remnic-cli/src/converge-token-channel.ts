@@ -26,6 +26,11 @@ export type ConvergeTokenChannelResult =
  * error, never a silent fall-through to a lower-precedence channel. Token
  * files must not be group- or world-readable (chmod 600).
  */
+/** Parse the --token-file flag value: a non-empty path, or null when absent/empty. */
+export function parseConvergeTokenFileFlag(raw: string | undefined): string | null {
+  return raw !== undefined && raw.length > 0 ? raw : null;
+}
+
 export function resolveConvergeTokenChannel(
   input: ConvergeTokenChannelInput,
   env: NodeJS.ProcessEnv
