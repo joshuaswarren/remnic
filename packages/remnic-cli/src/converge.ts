@@ -1028,6 +1028,11 @@ Subcommands:
 Options:
   --peer <url>      Peer server URL (or --remote-url / --remote)
   --token <token>   Bearer token or SecretRef for peer authentication
+                    (argv-visible; prefer --token-file or the env var below)
+  --token-file <path>
+                    Read the peer token from a 0600 file (not argv-visible)
+  REMNIC_CONVERGE_PEER_TOKEN=<token>
+                    Env alternative to --token (not argv-visible)
   --conflict-policy <policy>
                     Policy override (newest-wins|manual)
                     Default: converge.conflictPolicy (newest-wins)
@@ -1050,6 +1055,7 @@ Options:
 
   let peerUrl: string | undefined;
   let peerToken: string | undefined;
+  let tokenFile: string | undefined;
   let dryRun = false;
   let conflictPolicy: ConvergeConflictPolicy | undefined;
   let intervalSeconds: number | undefined;
@@ -1057,7 +1063,16 @@ Options:
 
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
-    if ((arg === "--peer" || arg === "--remote-url" || arg === "--remote") && rest[i + 1]) {
+    if (arg === "--token-file") {
+      const raw = rest[i + 1];
+      if (raw === undefined || raw.length === 0) {
+        process.stderr.write("converge: --token-file requires a path.\n");
+        process.exitCode = 2;
+        return;
+      }
+      tokenFile = raw;
+      i += 1;
+    } else if ((arg === "--peer" || arg === "--remote-url" || arg === "--remote") && rest[i + 1]) {
       peerUrl = rest[i + 1];
       i += 1;
     } else if (arg === "--token" && rest[i + 1]) {
@@ -1097,6 +1112,44 @@ Options:
       conflictPolicy = policy as ConvergeConflictPolicy;
       i += 1;
     }
+  }
+
+  // Credential channel hygiene (#2823): argv tokens are visible to any
+  // process listing for the lifetime of a plan/apply/watch run. Env and
+  // token-file are the operator-safe channels; --token still works but warns.
+  // Presence is tracked per source so an EMPTY value never silently falls
+  // through to a lower-precedence channel (documented order: --token >
+  // --token-file > env).
+  const tokenFromArgv = peerToken !== undefined;
+  if (!tokenFromArgv && tokenFile !== undefined) {
+    try {
+      const stat = fs.statSync(tokenFile);
+      // A group/world-readable credential file defeats the point of the
+      // channel; reject it instead of trusting the content.
+      if (stat.mode & 0o077) {
+        process.stderr.write(`converge: --token-file ${tokenFile} must not be group- or world-readable (chmod 600)\n`);
+        process.exitCode = 2;
+        return;
+      }
+      peerToken = fs.readFileSync(tokenFile, "utf8").trim();
+    } catch (err) {
+      process.stderr.write(`converge: --token-file ${tokenFile} could not be read: ${err}\n`);
+      process.exitCode = 2;
+      return;
+    }
+    if (peerToken.length === 0) {
+      process.stderr.write(`converge: --token-file ${tokenFile} is empty\n`);
+      process.exitCode = 2;
+      return;
+    }
+  }
+  if (!tokenFromArgv && tokenFile === undefined && process.env.REMNIC_CONVERGE_PEER_TOKEN !== undefined) {
+    peerToken = process.env.REMNIC_CONVERGE_PEER_TOKEN;
+  }
+  if (tokenFromArgv) {
+    process.stderr.write(
+      "converge: note: --token places the credential on argv, where any process listing can read it; prefer --token-file <path> or REMNIC_CONVERGE_PEER_TOKEN\n"
+    );
   }
 
   if (action === "watch") {
