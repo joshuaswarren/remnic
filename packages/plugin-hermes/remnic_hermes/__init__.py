@@ -1,7 +1,10 @@
 """Remnic MemoryProvider plugin for Hermes Agent."""
 
+import logging
+
 from remnic_hermes.client import RemnicClient
 from remnic_hermes.config import RemnicHermesConfig
+from remnic_hermes.llm_bridge import BridgePolicy, HermesLlmBridge, start_bridge_from_config
 from remnic_hermes.provider import RemnicMemoryProvider
 
 # Legacy aliases — preserved for the Engram → Remnic compat window.
@@ -11,12 +14,14 @@ EngramClient = RemnicClient
 EngramHermesConfig = RemnicHermesConfig
 
 __all__ = [
-    "RemnicMemoryProvider",
-    "RemnicClient",
-    "RemnicHermesConfig",
-    "EngramMemoryProvider",
+    "BridgePolicy",
     "EngramClient",
     "EngramHermesConfig",
+    "EngramMemoryProvider",
+    "HermesLlmBridge",
+    "RemnicClient",
+    "RemnicHermesConfig",
+    "RemnicMemoryProvider",
     "register",
 ]
 
@@ -98,3 +103,29 @@ def register(ctx):  # type: ignore[no-untyped-def]
 
     # Every tool the provider exposes, under its remnic_* and engram_* names.
     _register_tools_from_schemas(ctx, provider)
+
+    # Opt-in loopback LLM bridge (issue #2834); a no-op unless configured.
+    _maybe_start_llm_bridge(ctx, config)
+
+
+_log = logging.getLogger("remnic_hermes")
+
+
+def _maybe_start_llm_bridge(ctx, config: dict[str, object]) -> HermesLlmBridge | None:  # type: ignore[no-untyped-def]
+    """Start the opt-in policy-bound loopback LLM bridge (issue #2834).
+
+    Disabled unless the ``remnic.llm_bridge.enabled`` config is true, so the
+    default plugin is unchanged. Requires the host's ``ctx.llm`` runtime
+    resolver; a missing facade only warns. Any failure is contained: the
+    bridge serves optional background generation, never recall.
+    """
+    try:
+        llm = getattr(ctx, "llm", None)
+        llm_complete = getattr(llm, "complete", None) if llm is not None else None
+        return start_bridge_from_config(
+            config.get("llm_bridge") if isinstance(config, dict) else None,
+            llm_complete,
+        )
+    except Exception:
+        _log.warning("llm_bridge setup failed unexpectedly", exc_info=True)
+        return None
