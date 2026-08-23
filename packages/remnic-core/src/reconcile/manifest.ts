@@ -59,9 +59,7 @@ export interface ReconcileManifest {
   files: ReconcileManifestFile[];
 }
 
-export type ReconcileMemoryParser = (
-  raw: string,
-) => { frontmatter: MemoryFrontmatter; content: string } | null;
+export type ReconcileMemoryParser = (raw: string) => { frontmatter: MemoryFrontmatter; content: string } | null;
 
 export interface BuildReconcileManifestOptions {
   files: Iterable<ReconcileFileState>;
@@ -82,32 +80,26 @@ function isMemoryPath(filePath: string): boolean {
   return MEMORY_DIRS.has(segments[index] ?? "");
 }
 
-
 function parsedMemoryIdentity(
   filePath: string,
   raw: Buffer | string,
   parseMemory: ReconcileMemoryParser,
-  citationTemplate: string,
+  citationTemplate: string
 ): ReconcileMemoryIdentity | undefined {
   if (!isMemoryPath(filePath)) return undefined;
   const parsed = parseMemory(Buffer.isBuffer(raw) ? raw.toString("utf8") : raw);
   if (!parsed?.frontmatter.id) return undefined;
 
   const storedHash =
-    parsed.frontmatter.contentHash &&
-    SHA256_PATTERN.test(parsed.frontmatter.contentHash)
+    parsed.frontmatter.contentHash && SHA256_PATTERN.test(parsed.frontmatter.contentHash)
       ? parsed.frontmatter.contentHash.toLowerCase()
       : undefined;
   const candidates = storedContentIdentityCandidates(parsed.content, (content) =>
     stripCitationForTemplate(content, citationTemplate)
   );
   const bodyHash = ContentHashIndex.computeHash(candidates[0] ?? "");
-  const currentMatch = candidates.find(
-    (content) => ContentHashIndex.computeHash(content) === storedHash
-  );
-  const legacyMatch = [...candidates].reverse().find(
-    (content) => computeLegacyContentHash(content) === storedHash
-  );
+  const currentMatch = candidates.find((content) => ContentHashIndex.computeHash(content) === storedHash);
+  const legacyMatch = [...candidates].reverse().find((content) => computeLegacyContentHash(content) === storedHash);
   let contentHash: string;
   let contentHashAliases: string[] | undefined;
   if (currentMatch) {
@@ -126,7 +118,7 @@ function parsedMemoryIdentity(
     // An EMPTY legacy skeleton identifies nothing (every non-ASCII body maps
     // to it), so preserving it would collapse unrelated records. Recovering
     // the current identity here is repair, not replacement.
-    contentHash = legacyMatch ? ContentHashIndex.computeHash(legacyMatch) : storedHash ?? bodyHash;
+    contentHash = legacyMatch ? ContentHashIndex.computeHash(legacyMatch) : (storedHash ?? bodyHash);
   }
 
   return {
@@ -144,7 +136,7 @@ export async function buildReconcileManifestFile(
   file: ReconcileFileState,
   readFile: (file: ReconcileFileState) => Promise<Buffer | string | null>,
   parseMemory: ReconcileMemoryParser,
-  citationTemplate = DEFAULT_CITATION_FORMAT,
+  citationTemplate = DEFAULT_CITATION_FORMAT
 ): Promise<ReconcileManifestFile> {
   let raw: Buffer | string | null = null;
   if (isMemoryPath(file.path)) {
@@ -161,6 +153,15 @@ export async function buildReconcileManifestFile(
   return { ...file, ...(memory ? { memory } : {}) };
 }
 
+/** Read-batch size for manifest builds. Uncached files are independent (a
+ * per-file read + sha256 + frontmatter parse); processing them in bounded
+ * batches amortizes the per-file promise/async-hook overhead that dominates
+ * boot-scale corpus builds (measured: ~66% of CPU in async_hooks._propagate +
+ * GC at ~100k files) and overlaps IO waits, while the bound keeps memory flat.
+ * Order is preserved: results land in input order regardless of completion
+ * order, so the manifest output is byte-identical to the sequential form. */
+const MANIFEST_BUILD_BATCH_SIZE = 50;
+
 export async function buildReconcileManifest(options: BuildReconcileManifestOptions): Promise<ReconcileManifest> {
   const cachedByPath = new Map<string, ReconcileManifestFile>();
   for (const cached of options.cachedFiles ?? []) {
@@ -168,24 +169,27 @@ export async function buildReconcileManifest(options: BuildReconcileManifestOpti
   }
 
   const files: ReconcileManifestFile[] = [];
-  for (const file of options.files) {
-    const cached = cachedByPath.get(file.path);
-    if (
-      cached?.sha256.toLowerCase() === file.sha256.toLowerCase() &&
-      (cached.memory === undefined ||
-        (cached.memory.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION &&
-          cached.memory.identityResolutionVersion === IDENTITY_RESOLUTION_VERSION))
-    ) {
-      files.push({ ...file, ...(cached.memory ? { memory: cached.memory } : {}) });
-      continue;
+  const allFiles = [...options.files];
+  for (let i = 0; i < allFiles.length; i += MANIFEST_BUILD_BATCH_SIZE) {
+    const batch = allFiles.slice(i, i + MANIFEST_BUILD_BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map(async (file: ReconcileFileState) => {
+        const cached = cachedByPath.get(file.path);
+        if (
+          cached !== undefined &&
+          cached.sha256.toLowerCase() === file.sha256.toLowerCase() &&
+          (cached.memory === undefined ||
+            (cached.memory.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION &&
+              cached.memory.identityResolutionVersion === IDENTITY_RESOLUTION_VERSION))
+        ) {
+          return { ...file, ...(cached.memory ? { memory: cached.memory } : {}) } as ReconcileManifestFile;
+        }
+        return buildReconcileManifestFile(file, options.readFile, options.parseMemory, options.citationTemplate);
+      })
+    );
+    for (const result of results) {
+      files.push(result);
     }
-
-    files.push(await buildReconcileManifestFile(
-      file,
-      options.readFile,
-      options.parseMemory,
-      options.citationTemplate,
-    ));
   }
   files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
   return {
@@ -209,10 +213,7 @@ function memoryIdentityHashes(memory: ReconcileMemoryIdentity): string[] {
   return [memory.contentHash, ...(memory.contentHashAliases ?? [])];
 }
 
-function contentHashRows(
-  files: Iterable<ActiveFactManifestFile>,
-  contentHash: string,
-): ContentHashPathEntry[] {
+function contentHashRows(files: Iterable<ActiveFactManifestFile>, contentHash: string): ContentHashPathEntry[] {
   const rows: ContentHashPathEntry[] = [];
   for (const file of files) {
     rows.push({ path: file.path, contentHash });
@@ -237,7 +238,7 @@ export function collapseActiveFactDuplicates(
   plan: ReconcilePlan,
   localManifests: ReadonlyMap<string, ReconcileManifest>,
   peerManifests: ReadonlyMap<string, ReconcileManifest>,
-  priorSemanticAgreements?: ReadonlyMap<string, readonly ReconcileSemanticAgreement[]>,
+  priorSemanticAgreements?: ReadonlyMap<string, readonly ReconcileSemanticAgreement[]>
 ): ReconcilePlan {
   const entriesByNamespace = new Map<string, ReconcilePlanEntry[]>();
   for (const entry of plan.entries) {
@@ -256,10 +257,7 @@ export function collapseActiveFactDuplicates(
     const localFilesByPath = new Map((localManifest?.files ?? []).map((file) => [file.path, file]));
     const peerFilesByPath = new Map((peerManifest?.files ?? []).map((file) => [file.path, file]));
     const priorSemanticByPathPair = new Map(
-      (priorSemanticAgreements?.get(namespace) ?? []).map((agreement) => [
-        semanticAgreementKey(agreement),
-        agreement,
-      ])
+      (priorSemanticAgreements?.get(namespace) ?? []).map((agreement) => [semanticAgreementKey(agreement), agreement])
     );
     const localByHash = new Map<string, ActiveFactManifestFile[]>();
     const peerByHash = new Map<string, ActiveFactManifestFile[]>();
@@ -286,17 +284,17 @@ export function collapseActiveFactDuplicates(
       const localCandidates = (localByHash.get(hash) ?? []).filter((file) => {
         const opposite = peerFilesByPath.get(file.path);
         const activeOpposite = peerByPath.get(file.path);
-        return opposite === undefined || (
-          activeOpposite !== undefined &&
-          memoryIdentityHashes(activeOpposite.memory).includes(hash)
+        return (
+          opposite === undefined ||
+          (activeOpposite !== undefined && memoryIdentityHashes(activeOpposite.memory).includes(hash))
         );
       });
       const peerCandidates = (peerByHash.get(hash) ?? []).filter((file) => {
         const opposite = localFilesByPath.get(file.path);
         const activeOpposite = localByPath.get(file.path);
-        return opposite === undefined || (
-          activeOpposite !== undefined &&
-          memoryIdentityHashes(activeOpposite.memory).includes(hash)
+        return (
+          opposite === undefined ||
+          (activeOpposite !== undefined && memoryIdentityHashes(activeOpposite.memory).includes(hash))
         );
       });
       const localPath = ContentHashIndex.resolvePathByHash(hash, contentHashRows(localCandidates, hash));
@@ -313,19 +311,21 @@ export function collapseActiveFactDuplicates(
           ...localCandidates.map((file) => file.path),
           ...peerCandidates.map((file) => file.path),
         ]);
-        const authoritativeSamePathEntries = new Set(entries.filter(
-          (entry) =>
-            duplicatePaths.has(entry.path)
-            && localFilesByPath.has(entry.path)
-            && peerFilesByPath.has(entry.path)
-            && entry.action !== "identical"
-        ));
+        const authoritativeSamePathEntries = new Set(
+          entries.filter(
+            (entry) =>
+              duplicatePaths.has(entry.path) &&
+              localFilesByPath.has(entry.path) &&
+              peerFilesByPath.has(entry.path) &&
+              entry.action !== "identical"
+          )
+        );
         if (authoritativeSamePathEntries.size > 0) {
           for (const entry of entries) {
             if (
-              duplicatePaths.has(entry.path)
-              && !authoritativeSamePathEntries.has(entry)
-              && (entry.action === "pull" || entry.action === "push" || entry.action === "identical")
+              duplicatePaths.has(entry.path) &&
+              !authoritativeSamePathEntries.has(entry) &&
+              (entry.action === "pull" || entry.action === "push" || entry.action === "identical")
             ) {
               removed.add(entry);
               changed = true;
