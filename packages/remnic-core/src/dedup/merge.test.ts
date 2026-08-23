@@ -47,7 +47,7 @@ import {
   type MergeJudgeRawVerdict,
 } from "./merge.js";
 import type { SemanticDedupHit } from "./semantic.js";
-import { invalidationCommitFingerprint, markCasCommittedRevision, nextCasRevisionIso } from "../storage/deletion-revision-store.js";
+import { frontmatterWriteRevision, invalidationCommitFingerprint, markCasCommittedRevision, nextCasRevisionIso } from "../storage/deletion-revision-store.js";
 
 // The merge snapshot trigger must stay a literal union: a widened
 // `VersionTrigger` (e.g. annotated `readonly string[]`) would let an unknown
@@ -464,6 +464,8 @@ interface MergeHarness {
     hashRegistrations: Array<{ id: string; hash: string }>;
     reindexed: string[];
     lookupStorages: string[];
+    /** Every revision `commit()` stamped, in order — [0] is the content CAS's receipt. */
+    commitRevisions: string[];
   };
 }
 
@@ -525,6 +527,14 @@ async function harness(
      * open.
      */
     mutateAtPatch?: string;
+    /**
+     * #2807 (P1 exception round): a concurrent correction retirement inside
+     * the patch window — a SEMANTIC frontmatter mutation whose patch omits
+     * `updated` (retireMemoryFn). Routed through the production
+     * `frontmatterWriteRevision` so the test exercises the real revision
+     * decision, not the stub's opinion.
+     */
+    retireAtPatch?: boolean;
     /** Force the frontmatter patch to fail after the content update commits. */
     frontmatterFails?: boolean;
     /** Force the automatic rollback of that committed content to fail. */
@@ -589,6 +599,7 @@ async function harness(
     hashRegistrations: [],
     reindexed: [],
     lookupStorages: [],
+    commitRevisions: [],
   };
   const commit = async (content: string, revision?: string): Promise<string> => {
     // Signature-faithful to updateMemoryFromCurrent: the durable write stamps
@@ -596,6 +607,7 @@ async function harness(
     // (nextCasRevisionIso), and the CAS receipt carries that same revision
     // (#2813 P1) — unique per commit even inside one millisecond.
     const stamped = revision ?? nextCasRevisionIso(state.frontmatter.updated);
+    calls.commitRevisions.push(stamped);
     state = {
       ...state,
       content,
@@ -698,6 +710,25 @@ async function harness(
       // A concurrent writer inside the patch window: after the caller's
       // verifying read, before storage takes its own lock.
       if (overrides.mutateAtPatch !== undefined) await commit(overrides.mutateAtPatch);
+      // #2807 (P1 exception round): a concurrent correction retirement in
+      // the same window — status flip with NO proposed revision, stamped
+      // through the production boundary exactly as
+      // StorageManager.writeMemoryFrontmatter stamps it.
+      if (overrides.retireAtPatch) {
+        const stamped = frontmatterWriteRevision(state.frontmatter.updated, {
+          status: "superseded",
+          supersededBy: "fact-replacement",
+        });
+        state = {
+          ...state,
+          frontmatter: {
+            ...state.frontmatter,
+            status: "superseded",
+            supersededBy: "fact-replacement",
+            updated: stamped,
+          },
+        };
+      }
       if (!(await unchanged(expected))) return false;
       calls.frontmatterPatches.push({ id: expected.frontmatter.id, patch, actor: options?.actor });
       // #2813 (P1, round 3): the accepted patch becomes the standing
@@ -3788,6 +3819,73 @@ test("applySemanticMergeAtPersist: a successful content CAS retains its receipt,
     h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
     [{ content: MERGED, actor: "semantic-merge" }],
     "no semantic-merge-rollback write runs — the pre-merge restore must never fire against another writer's commit",
+  );
+  assert.equal(
+    h.calls.hashRegistrations.length,
+    1,
+    "the degraded path repairs the hash indexes for the standing merged body",
+  );
+  assert.equal(
+    (
+      await listVersions(
+        h.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        h.storage.dir,
+      )
+    ).versions.length,
+    0,
+    "this writer's staged duplicate snapshot is discarded, not finalized into history",
+  );
+});
+
+test("applySemanticMergeAtPersist: a timestamp-less retirement between the content CAS and the provenance patch is never rolled back over (#2807 P1)", async () => {
+  // The exception-round P1 hole — the PRESERVED revision. This writer's
+  // content CAS commits the merged body (receipt T+1) and, before the
+  // provenance patch takes its lock, a concurrent correction retirement
+  // lands: a semantic frontmatter mutation whose patch omits `updated`
+  // (retireMemoryFn). The status flip makes the provenance patch's
+  // fingerprint compare reject it, so the catch path rolls back holding the
+  // content CAS's receipt. Pre-fix, the timestamp-less write PRESERVED the
+  // standing revision, so the retired record still carried this writer's
+  // receipt — the rollback claimed the foreign record as its own and
+  // CAS-restored the pre-merge body, leaving the retirement metadata
+  // (superseded/supersededBy) attached to content it never described. The
+  // boundary fix advances the revision on EVERY semantic frontmatter
+  // mutation, so the failure handler detects the foreign revision and the
+  // retired record is never touched.
+  const h = await harness({ retireAtPatch: true });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, {
+    action: "merged",
+    targetId: "fact-target",
+    mergedContent: MERGED,
+    provenancePatched: false,
+  });
+  const body = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.ok(body);
+  assert.equal(body.content, MERGED, "the merged body is never rolled back over the concurrent retirement");
+  assert.equal(body.frontmatter.status, "superseded", "the retirement metadata survives untouched");
+  assert.equal(body.frontmatter.supersededBy, "fact-replacement");
+  // The failure handler detected the FOREIGN revision: the standing
+  // revision advanced strictly past the content CAS's receipt — the
+  // identity the rollback compares.
+  const receipt = h.calls.commitRevisions[0];
+  assert.ok(receipt, "the content CAS stamped a receipt");
+  assert.ok(body.frontmatter.updated, "the retirement stamped a revision");
+  assert.notEqual(body.frontmatter.updated, receipt);
+  assert.ok(
+    new Date(body.frontmatter.updated as string).getTime() > new Date(receipt).getTime(),
+    "the timestamp-less retirement advanced the revision strictly past the CAS receipt",
+  );
+  assert.deepEqual(
+    h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [{ content: MERGED, actor: "semantic-merge" }],
+    "no semantic-merge-rollback write runs — the retired record is another writer's",
   );
   assert.equal(
     h.calls.hashRegistrations.length,

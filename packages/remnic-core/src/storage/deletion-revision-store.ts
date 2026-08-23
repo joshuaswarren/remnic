@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, rename, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { resolveSafeStoragePath } from "../storage-paths.js";
-import type { MemoryFile } from "../types.js";
+import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { withHeldFileLock, type HeldFileLockController } from "../utils/serialize-mutations.js";
 import { log } from "../logger.js";
@@ -102,28 +102,46 @@ export function nextCasRevisionIso(previous: string | undefined, now = new Date(
 }
 
 /**
- * #2813 P1 (round 4): the revision EVERY frontmatter write persists.
- * `writeMemoryFrontmatter` merges caller patches via
- * `{...frontmatter, ...patch}`, so a caller-supplied wall-clock
- * `patch.updated` could rewind the record's standing revision below a
- * receipt a CAS already issued — and the next commit would then reuse that
- * retired receipt, which a delayed rollback misidentifies as its own.
- * The clamp keeps the on-disk sequence monotonic:
- *   - no proposed revision → preserve the standing one (a patch that claims
- *     no revision must not move it);
+ * #2813 P1 (round 5, #2807): the revision EVERY semantic frontmatter write
+ * persists. `writeMemoryFrontmatter` merges caller patches via
+ * `{...frontmatter, ...patch}`, and `patch.updated` is ADVISORY event
+ * time — never revision identity. A semantic patch that omits it
+ * (correction retirement, lifecycle status flips) still mutates the
+ * record, so it still advances the revision: a timestamp-less write that
+ * preserved the standing revision left a retired record carrying a live
+ * CAS receipt, and the receipt's owner "recognised" the foreign record
+ * during rollback and restored its body over the retirement metadata.
+ * Access telemetry (`accessCount`/`lastAccessed` — exactly the fields the
+ * CAS fingerprint strips) is NOT semantic: it preserves the standing
+ * revision so an access bump cannot invalidate a pending conditional
+ * write. The clamp keeps the on-disk sequence monotonic:
+ *   - no proposed revision, access-only (or empty) patch → the standing
+ *     revision stands (a non-semantic write moves nothing);
+ *   - no proposed revision, any semantic field → `nextCasRevisionIso` over
+ *     the standing revision: every semantic mutation is a new revision;
  *   - a proposal strictly past the standing revision → honored exactly;
- *   - anything else (stale, equal, unparseable) → `nextCasRevisionIso` over
- *     the standing revision: strictly past it, never lower, never a reuse.
+ *   - anything else (stale, equal, unparseable) → `nextCasRevisionIso`
+ *     over the standing revision: strictly past it, never lower, never
+ *     a reuse of a receipt any CAS already issued.
  * `standing` must be the record's CURRENT on-disk revision, never the
  * caller's (possibly pre-CAS) snapshot.
  */
+const ACCESS_ONLY_FRONTMATTER_FIELDS: Record<string, true> = {
+  accessCount: true,
+  lastAccessed: true,
+};
+
 export function frontmatterWriteRevision(
   standing: string | undefined,
-  patch: { updated?: string | undefined },
+  patch: Partial<MemoryFrontmatter>,
   now = new Date(),
 ): string {
   const { updated: proposed } = patch;
-  if (proposed === undefined) return standing ?? nextCasRevisionIso(standing, now);
+  if (proposed === undefined) {
+    const keys = Object.keys(patch);
+    const nonSemantic = keys.every((key) => ACCESS_ONLY_FRONTMATTER_FIELDS[key] === true);
+    return nonSemantic ? (standing ?? nextCasRevisionIso(standing, now)) : nextCasRevisionIso(standing, now);
+  }
   const standingMs = standing !== undefined ? new Date(standing).getTime() : Number.NaN;
   const proposedMs = new Date(proposed).getTime();
   if (Number.isFinite(proposedMs) && (!Number.isFinite(standingMs) || proposedMs > standingMs)) {

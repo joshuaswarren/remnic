@@ -220,18 +220,21 @@ test("writeMemoryFrontmatter never lowers or reuses the standing revision (#2813
       "an unparseable patch.updated is refused, not applied",
     );
 
-    // A patch with NO updated at all preserves the on-disk standing revision,
-    // even when the caller's snapshot predates a concurrent CAS commit.
+    // #2807 (P1 exception round): a patch with NO updated is still a
+    // semantic mutation — it ADVANCES the standing revision, strictly past
+    // any receipt a concurrent CAS issued. A preserved revision would leave
+    // a foreign record carrying a live CAS receipt, and the receipt's owner
+    // would "recognise" it during rollback.
     const staleSnapshot = after;
     const casReceipt = await storage.updateMemoryIfUnchanged(staleSnapshot, "Advanced past the snapshot.");
     assert.ok(typeof casReceipt === "string");
     assert.ok(await storage.writeMemoryFrontmatter(staleSnapshot, { tags: ["lifecycle"] }));
     after = await storage.getMemoryById(created.id);
     assert.ok(after);
-    assert.equal(
-      after.frontmatter.updated,
-      casReceipt,
-      "an absent patch.updated preserves the DISK standing revision, not the stale snapshot's",
+    assert.ok(after.frontmatter.updated, "an absent patch.updated still stamps a revision");
+    assert.ok(
+      new Date(after.frontmatter.updated).getTime() > new Date(casReceipt).getTime(),
+      "an absent patch.updated ADVANCES the standing revision strictly past the CAS receipt — every semantic frontmatter mutation is a new revision (#2807)",
     );
     assert.deepEqual(after.frontmatter.tags, ["lifecycle"]);
   });
