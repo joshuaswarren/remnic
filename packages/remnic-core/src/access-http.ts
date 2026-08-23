@@ -49,6 +49,7 @@ import { getOperation, type OperationName } from "./access-boundary.js";
 import { authorizationProbeNamespaces, authorizationProbeRequiresPrincipalNamespace, probeOperationAuthorization } from "./access-authorization-probe.js";
 import { resolveQueryNamespaceWritablePreflight } from "./access-namespace-preflight.js";
 import { respondAccessCapabilitiesHttp } from "./access-http-lcm-compaction.js";
+import { respondBriefingHttp } from "./access-http-briefing.js";
 import { handleWhoKnowsHttpQuery } from "./who-knows.js";
 import {
   assertOperationAllowed,
@@ -994,11 +995,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       // `memory_search` tool already exposes, reachable by HTTP-only clients.
       this.enforceTokenOp("memory_search"); // boundary dispatch (issue #1525)
       const operation = getOperation("memory_search");
-      if (!operation) {
-        throw new EngramAccessInputError(
-          "access-boundary: operation not registered: memory_search",
-        );
-      }
+      if (!operation) throw new EngramAccessInputError("access-boundary: operation not registered: memory_search");
       // The body `namespace` is user-controlled, so it must pass the same
       // effective-namespace allow-list gate as every other namespace-scoped
       // route (issue #1850 finding 2); the authenticated principal — never a
@@ -1946,9 +1943,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         namespace: this.resolveNamespace(req, body.namespace),
       };
       const op = getOperation("memory_store");
-      if (!op) {
-        throw new EngramAccessInputError("access-boundary: operation not registered: memory_store");
-      }
+      if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: memory_store");
       const output = (await op.run(envelope, {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
@@ -1980,9 +1975,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         this.ensureWriteRateLimitAvailable(req);
       }
       const op = getOperation("coding_decision");
-      if (!op) {
-        throw new EngramAccessInputError("access-boundary: operation not registered: coding_decision");
-      }
+      if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: coding_decision");
       const output = (await op.run(this.gatedBodyNamespace(req, body), {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
@@ -2005,9 +1998,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         this.ensureWriteRateLimitAvailable(req);
       }
       const op = getOperation("coding_architecture");
-      if (!op) {
-        throw new EngramAccessInputError("access-boundary: operation not registered: coding_architecture");
-      }
+      if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: coding_architecture");
       const output = (await op.run(this.gatedBodyNamespace(req, body), {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
@@ -2028,14 +2019,24 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       // write-quota enforcement.
       const body = await this.readJsonBody(req);
       const op = getOperation("coding_delta");
-      if (!op) {
-        throw new EngramAccessInputError("access-boundary: operation not registered: coding_delta");
-      }
+      if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: coding_delta");
       const output = (await op.run(this.gatedBodyNamespace(req, body), {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       })) as { result: unknown };
       this.respondJson(res, 200, output.result);
+      return;
+    }
+
+    // Daily briefing — pure read through the registered `briefing` boundary
+    // operation (sibling module; see access-http-briefing.ts).
+    if (req.method === "POST" && pathname === "/engram/v1/briefing") {
+      await respondBriefingHttp({
+        gatedBody: this.gatedBodyNamespace(req, await this.readJsonBody(req)),
+        service: this.service,
+        principal: this.resolveRequestPrincipal(req),
+        respondJson: (status, payload) => this.respondJson(res, status, payload),
+      });
       return;
     }
 
@@ -2051,9 +2052,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       this.ensureWriteRateLimitAvailable(req);
       const body = await this.readJsonBody(req);
       const op = getOperation("memory_correct_plan");
-      if (!op) {
-        throw new EngramAccessInputError("access-boundary: operation not registered: memory_correct_plan");
-      }
+      if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: memory_correct_plan");
       const output = (await op.run(this.gatedBodyNamespace(req, body), {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
@@ -2067,9 +2066,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       this.ensureWriteRateLimitAvailable(req);
       const body = await this.readJsonBody(req);
       const op = getOperation("memory_correct_apply");
-      if (!op) {
-        throw new EngramAccessInputError("access-boundary: operation not registered: memory_correct_apply");
-      }
+      if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: memory_correct_apply");
       const output = (await op.run(this.gatedBodyNamespace(req, body), {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),

@@ -810,6 +810,82 @@ test("HTTP coding-context endpoint accepts projectTag shorthand", async () => {
   }
 });
 
+test("HTTP briefing endpoint dispatches through the briefing operation", async () => {
+  const calls: unknown[] = [];
+  const service = {
+    briefing: async (request: unknown) => {
+      calls.push(request);
+      return {
+        format: "markdown",
+        window: { from: "2026-08-21", to: "2026-08-22" },
+        namespace: "team",
+        markdown: "# Briefing",
+        json: { sections: { activeThreads: [] } },
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    principal: "panel-user",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/briefing`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          since: "24h",
+          namespace: "team",
+          format: "markdown",
+          maxFollowups: 5,
+        }),
+      },
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { format: string; markdown: string; json: { sections: { activeThreads: unknown[] } } };
+    assert.equal(body.format, "markdown");
+    assert.equal(body.markdown, "# Briefing");
+    assert.deepEqual(body.json.sections.activeThreads, []);
+    assert.deepEqual(calls, [
+      {
+        since: "24h",
+        focus: undefined,
+        namespace: "team",
+        format: "markdown",
+        maxFollowups: 5,
+        principal: "panel-user",
+      },
+    ]);
+
+    const invalid = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/briefing`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ format: "jsno" }),
+      },
+    );
+    assert.equal(invalid.status, 400);
+    assert.equal(((await invalid.json()) as { code: string }).code, "input_error");
+    assert.equal(calls.length, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP contradiction scan uses writable namespace resolver", async () => {
   const resolverCalls: Array<{
     namespace: string | undefined;
