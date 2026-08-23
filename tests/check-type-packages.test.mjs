@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { checkTypePackageDirs, manifestPackageDirs, noCheckTypePackageDirs } from "../scripts/check-type-packages.mjs";
@@ -78,15 +78,34 @@ try {
 // --run wiring: one explicit --filter per covered package through the pinned
 // pnpm wrapper — never a glob filter — with exit-code propagation. The stub
 // pnpm satisfies the wrapper's pinned-version probe and records its args.
-{
-  const runDir = mkdtempSync(join(tmpdir(), "check-type-packages-run-"));
-  try {
-    const packagesDir = writeWorkspace(runDir, { shuffled: false, hydrated: false });
-    const stubBin = join(runDir, "stub-bin");
-    mkdirSync(stubBin);
-    const argsFile = join(runDir, "args.txt");
+function createStubPnpm(stubBin, argsFile) {
+  mkdirSync(stubBin, { recursive: true });
+  const isWindows = process.platform === "win32";
+  const binaryName = isWindows ? "pnpm.cmd" : "pnpm";
+  const stubPath = join(stubBin, binaryName);
+
+  if (isWindows) {
     writeFileSync(
-      join(stubBin, "pnpm"),
+      stubPath,
+      `@echo off
+if "%~1"=="--version" (
+  echo 10.32.1
+  exit /b 0
+)
+break > "${argsFile}"
+for %%A in (%*) do (
+  (echo %%A)>>"${argsFile}"
+)
+if defined STUB_EXIT (
+  exit /b %STUB_EXIT%
+) else (
+  exit /b 0
+)
+`
+    );
+  } else {
+    writeFileSync(
+      stubPath,
       `#!/bin/sh
 if [ "$1" = "--version" ]; then
   printf '10.32.1\\n'
@@ -97,21 +116,39 @@ exit "\${STUB_EXIT:-0}"
 `,
       { mode: 0o755 }
     );
+    chmodSync(stubPath, 0o755);
+  }
+  return stubPath;
+}
 
+{
+  const runDir = mkdtempSync(join(tmpdir(), "check-type-packages-run-"));
+  try {
+    const packagesDir = writeWorkspace(runDir, { shuffled: false, hydrated: false });
+    const stubBin = join(runDir, "stub-bin");
+    const argsFile = join(runDir, "args.txt");
+    const stubPath = createStubPnpm(stubBin, argsFile);
+
+    assert.ok(existsSync(stubPath), "platform-appropriate pnpm stub binary must exist");
+    assert.equal(
+      stubPath.endsWith(process.platform === "win32" ? "pnpm.cmd" : "pnpm"),
+      true,
+      "stub binary name must match platform conventions"
+    );
     const run = (extraEnv) =>
       spawnSync(process.execPath, [modulePath, "--run", "--packages-dir", packagesDir], {
         cwd: runDir,
         encoding: "utf8",
         env: {
           ...process.env,
-          PATH: `${stubBin}${process.env.PATH ? `:${process.env.PATH}` : ""}`,
+          PATH: `${stubBin}${delimiter}${process.env.PATH ?? ""}`,
           ...extraEnv,
         },
       });
 
     const ok = run({});
     assert.equal(ok.status, 0, ok.stderr);
-    const args = readFileSync(argsFile, "utf8").trim().split("\n");
+    const args = readFileSync(argsFile, "utf8").trim().split(/\r?\n/);
     assert.deepEqual(args, [
       "--recursive",
       "--if-present",
