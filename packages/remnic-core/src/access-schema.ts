@@ -3,6 +3,8 @@
 // field-level detail so consumers get clear feedback on malformed requests.
 
 import { z } from "zod";
+import { isMemoryCategory, MEMORY_CATEGORY_NAMES } from "./write-envelope.js";
+import type { MemoryCategory } from "./types.js";
 import {
   ACTION_CONFIDENCE_CONTEXT_READINESS,
   ACTION_CONFIDENCE_RISK_CATEGORIES,
@@ -258,13 +260,73 @@ export const deepRecallRequestSchema = z.object({
 // ---------------------------------------------------------------------------
 
 const writeContentSchema = z.string().min(1, "content is required").max(50000);
-const categorySchema = z
-  .enum([
-    "fact", "preference", "correction", "entity", "decision",
-    "relationship", "principle", "commitment", "moment", "skill", "rule", "procedure",
-    "reasoning_trace",
-  ])
-  .optional();
+/**
+ * #2780: the canonical category set stays authoritative (`isMemoryCategory`),
+ * with exactly four admitted input-compat aliases — the project-shaped
+ * spellings fleet telemetry actually shows (`project`, `project_state`,
+ * `project-state`, `project_update`) — for a project-shaped category that
+ * does not exist. Exact match only, no case folding: `Project_State` and
+ * near-misses like `projection` reject like any other invalid category.
+ * Aliases are NOT enum members: the write-surface funnel coerces them to
+ * "fact" and reports the coercion on the response. Everything else rejects
+ * naming the full valid set plus a "use fact" hint so callers learn the
+ * canonical name.
+ */
+const PROJECT_CATEGORY_ALIASES: Record<string, true> = {
+  project: true,
+  project_state: true,
+  "project-state": true,
+  project_update: true,
+};
+
+export interface CategoryAliasCoercion {
+  from: string;
+  to: "fact";
+}
+
+export function coerceProjectCategoryAlias<T extends { category?: string }>(
+  request: T,
+): { request: T; categoryCoercion?: CategoryAliasCoercion } {
+  const category = request.category;
+  if (category === undefined || PROJECT_CATEGORY_ALIASES[category] !== true) {
+    return { request };
+  }
+  return { request: { ...request, category: "fact" }, categoryCoercion: { from: category, to: "fact" } };
+}
+
+/**
+ * #2780 fix B: an idempotent replay returns the FIRST request's stored
+ * response, whose coercion note names that request's spelling. Rewrite the
+ * note from the CURRENT raw request so every response identifies what its
+ * caller actually sent; the stored idempotent result is reused untouched.
+ */
+export function reapplyCategoryCoercion<T extends { categoryCoercion?: CategoryAliasCoercion }>(
+  response: T,
+  categoryCoercion: CategoryAliasCoercion | undefined,
+): T {
+  if (categoryCoercion !== undefined) {
+    return { ...response, categoryCoercion };
+  }
+  if (response.categoryCoercion === undefined) {
+    return response;
+  }
+  const { categoryCoercion: _stored, ...rest } = response;
+  return rest as T;
+}
+
+const categorySchema = (
+  z
+    .string()
+    .superRefine((value, ctx) => {
+      if (isMemoryCategory(value)) return;
+      if (PROJECT_CATEGORY_ALIASES[value] === true) return;
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `category must be one of: ${MEMORY_CATEGORY_NAMES.join(", ")}; for project state/facts use "fact"`,
+      });
+    })
+    .optional() as unknown as z.ZodType<MemoryCategory | undefined, z.ZodTypeDef, MemoryCategory | undefined>
+);
 const confidenceSchema = z.number().min(0).max(1).optional();
 const tagsSchema = z.array(z.string().max(256)).max(50).optional();
 const entityRefSchema = z.string().trim().max(512).optional();
