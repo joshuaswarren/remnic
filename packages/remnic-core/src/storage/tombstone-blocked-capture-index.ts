@@ -542,6 +542,10 @@ export class TombstoneBlockedCaptureIndex {
    */
   async clearCommittedWriteMarker(rebuildMarker: string): Promise<void> {
     await this.clearRebuildRequired([rebuildMarker]);
+    // getIndex() may have rebuilt while this marker was still pending and
+    // left authoritative=false. After the marker is gone, restore authority
+    // if no other uncommitted marker remains.
+    await this.setAuthoritative(true);
   }
 
   async syncUpdatedMemory(

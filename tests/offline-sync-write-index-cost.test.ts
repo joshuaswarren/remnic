@@ -21,6 +21,10 @@ class CountingStorage extends StorageManager {
     this.readAllMemoriesCalls += 1;
     return super.readAllMemories();
   }
+
+  captureIndex() {
+    return this.getTombstoneBlockedCaptureIndex();
+  }
 }
 
 function memoryMarkdown(id: string, body: string, extra = ""): string {
@@ -64,6 +68,11 @@ test("offline-sync write of an unblocked memory does not re-read the corpus", as
       storage.readAllMemoriesCalls,
       before,
       "an unblocked offline-sync write must not trigger a full corpus rebuild"
+    );
+    assert.equal(
+      await storage.captureIndex().isAuthoritative(),
+      true,
+      "clearing the committed marker must restore index authority"
     );
     const stored = await storage.readMemoryByPath(target);
     assert.equal(stored?.frontmatter.id, "repl-1", "the replicated file must still be written");
@@ -122,5 +131,20 @@ test("unblocking via offline-sync write rebuilds and drops the key", async () =>
       false,
       "the unblocked key must be gone"
     );
+  });
+});
+
+test("clearing a committed marker restores authority after a mid-write rebuild", async () => {
+  await withStorage(async (storage) => {
+    await storage.hasTombstoneBlockedExplicitCapture("nothing", "fact");
+    const index = storage.captureIndex();
+    assert.equal(await index.isAuthoritative(), true);
+
+    const marker = await index.prepareWrite();
+    await index.check("nothing", "fact");
+    assert.equal(await index.isAuthoritative(), false, "a pending marker must make the index non-authoritative");
+
+    await index.clearCommittedWriteMarker(marker);
+    assert.equal(await index.isAuthoritative(), true, "clearing the last pending marker must restore authority");
   });
 });

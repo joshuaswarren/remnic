@@ -508,7 +508,12 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       // per write against a ~190k-file corpus, which turns a boot-scale
       // `converge apply` into a multi-week run. Clear the committed marker and
       // keep the index as-is.
-      await this.getTombstoneBlockedCaptureIndex().clearCommittedWriteMarker(ownedMarker);
+      try {
+        await this.getTombstoneBlockedCaptureIndex().clearCommittedWriteMarker(ownedMarker);
+      } catch (err) {
+        this.getTombstoneBlockedCaptureIndex().markUntrusted();
+        log.warn(`storage.offlineSyncFile committed write succeeded; marker cleanup failed: ${err}`);
+      }
     }
     if (filePath.includes(`${path.sep}artifacts${path.sep}`)) {
       this.bumpArtifactWriteVersion();
