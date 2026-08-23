@@ -43,8 +43,6 @@ const LOGIN_STATUS_TIMEOUT_MS = 10_000;
 const LOGIN_STATUS_CACHE_TTL_MS = 10 * 60_000;
 const STDIO_LIMIT = 64_000;
 const OUTPUT_SUMMARY_LIMIT = 500;
-const CODEX_PARENT_SIGNALS: NodeJS.Signals[] = ["SIGHUP", "SIGINT", "SIGTERM"];
-const CODEX_PARENT_FORCED_EXIT_MS = 1_000;
 /**
  * Env keys whose value is a filesystem path. Relative values resolve against
  * the original process cwd before either child launches, because the exec
@@ -213,7 +211,6 @@ interface LoginStatusCacheEntry {
 
 const loginStatusCache = new Map<string, LoginStatusCacheEntry>();
 const activeCodexChildPids = new Set<number>();
-let parentCleanupInstalled = false;
 let coreRunnerRegistered = false;
 
 export function createCodexSubscriptionRunner(deps: CodexSubscriptionRunnerDeps = {}): CodexCliFallbackRunner {
@@ -233,6 +230,11 @@ export function ensureCodexSubscriptionRunnerRegistered(deps: CodexSubscriptionR
   setCodexCliFallbackRunnerForProcess(createCodexSubscriptionRunner(deps));
   coreRunnerRegistered = true;
   return true;
+}
+
+/** Host shutdown hook: terminate detached Codex child groups. Does not exit. */
+export function terminateActiveCodexSubscriptionChildren(signal: NodeJS.Signals = "SIGTERM"): void {
+  terminateActiveCodexChildren(signal);
 }
 
 async function runCodexSubscriptionRequest(
@@ -290,11 +292,18 @@ async function runCodexSubscriptionRequest(
       signal: request.options.signal,
     });
 
+    if (result.status !== 0) {
+      const failure = execFailureError(result, remainingTimeoutMs, executable, env);
+      if (failure instanceof CodexSubscriptionTimeoutError) {
+        throw failure;
+      }
+      if (request.options.signal?.aborted) {
+        throw abortErrorOf(request.options.signal);
+      }
+      throw failure;
+    }
     if (request.options.signal?.aborted) {
       throw abortErrorOf(request.options.signal);
-    }
-    if (result.status !== 0) {
-      throw execFailureError(result, remainingTimeoutMs, executable, env);
     }
 
     const content = result.outputText.trim();
@@ -397,13 +406,11 @@ async function assertSubscriptionLogin(
   const now = deps.now ?? Date.now;
   const cacheKey = `${executable}\0${env.CODEX_HOME ?? env.HOME ?? ""}`;
   const cached = loginStatusCache.get(cacheKey);
-  if (
-    cached &&
-    now() - cached.at < LOGIN_STATUS_CACHE_TTL_MS &&
-    (await authStoreFingerprint(env)) === cached.fingerprint
-  ) {
-    await waitForLoginEntry(cached, cacheKey, ctx, now);
-    return;
+  if (cached && now() - cached.at < LOGIN_STATUS_CACHE_TTL_MS) {
+    if (!cached.settled || (await authStoreFingerprint(env)) === cached.fingerprint) {
+      await waitForLoginEntry(cached, cacheKey, ctx, now);
+      return;
+    }
   }
   loginStatusCache.delete(cacheKey);
   if (ctx.signal?.aborted) {
@@ -742,9 +749,18 @@ function readCounter(value: unknown): number | undefined {
 }
 
 function abortErrorOf(signal: AbortSignal): Error {
-  if (signal.reason instanceof Error) return signal.reason;
-  if (signal.reason !== undefined) return new Error(String(signal.reason));
-  return new DOMException("The operation was aborted.", "AbortError");
+  if (signal.reason instanceof CodexSubscriptionTimeoutError) return signal.reason;
+  const reason =
+    signal.reason instanceof Error
+      ? signal.reason
+      : signal.reason !== undefined
+        ? new Error(String(signal.reason))
+        : new DOMException("The operation was aborted.", "AbortError");
+  const match = /timed out after (\d+)ms/i.exec(reason.message);
+  if (match) {
+    return new CodexSubscriptionTimeoutError(Number(match[1]));
+  }
+  return reason;
 }
 
 /** Bounds streamed child output to STDIO_LIMIT, keeping the TAIL — codex
@@ -814,6 +830,7 @@ async function runSubprocess(executable: string, args: string[], options: Subpro
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let settled = false;
     let killTimeout: ReturnType<typeof setTimeout> | undefined;
     const clearKillTimeout = (): void => {
       if (killTimeout) {
@@ -837,20 +854,47 @@ async function runSubprocess(executable: string, args: string[], options: Subpro
       killTimeout = setTimeout(() => terminate("SIGKILL"), 1_000);
       killTimeout.unref();
     };
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", onAbort);
+      fn();
+    };
+    const settleTimeout = (): void => {
+      timedOut = true;
+      stderr = appendBounded(
+        stderr,
+        `\ncodex-subscription: ${options.timeoutLabel} timed out after ${options.timeoutMs}ms.`
+      );
+      finish(() => {
+        resolve({
+          status: 124,
+          signal: "SIGTERM",
+          stdout,
+          stderr,
+        });
+      });
+    };
     const onAbort = (): void => {
+      const reasonText =
+        options.signal?.reason instanceof Error
+          ? options.signal.reason.message
+          : String(options.signal?.reason ?? "");
       terminate("SIGTERM");
       scheduleForcedKill();
+      if (TIMEOUT_PATTERN.test(reasonText)) {
+        settleTimeout();
+        return;
+      }
+      finish(() => reject(abortErrorOf(options.signal!)));
     };
     options.signal?.addEventListener("abort", onAbort, { once: true });
     const timeout = options.timeoutMs
       ? setTimeout(() => {
-          timedOut = true;
-          stderr = appendBounded(
-            stderr,
-            `\ncodex-subscription: ${options.timeoutLabel} timed out after ${options.timeoutMs}ms.`
-          );
           terminate("SIGTERM");
           scheduleForcedKill();
+          settleTimeout();
         }, options.timeoutMs)
       : undefined;
     timeout?.unref();
@@ -865,15 +909,9 @@ async function runSubprocess(executable: string, args: string[], options: Subpro
     child.stdin?.on("error", (error: NodeJS.ErrnoException) => {
       stderr = appendBounded(stderr, `\ncodex-subscription: stdin error: ${error.code ?? error.message}`);
     });
-    const settle = (fn: () => void): void => {
-      clearTimeout(timeout);
-      clearKillTimeout();
-      options.signal?.removeEventListener("abort", onAbort);
-      unregisterActiveCodexChild(child.pid);
-      fn();
-    };
     child.on("error", (error) => {
-      settle(() => {
+      unregisterActiveCodexChild(child.pid);
+      finish(() => {
         reject(
           child.pid
             ? new Error(`codex-subscription: codex CLI failed after start: ${safeMessage(error)}`, { cause: error })
@@ -885,11 +923,10 @@ async function runSubprocess(executable: string, args: string[], options: Subpro
       });
     });
     child.on("close", (status, signal) => {
-      settle(() => {
+      clearKillTimeout();
+      unregisterActiveCodexChild(child.pid);
+      finish(() => {
         resolve({
-          // A timed-out child must never report success, even when it traps
-          // SIGTERM and exits 0 (issue #2833) — 124 is the canonical timeout
-          // status and post-timeout output is never treated as a result.
           status: timedOut ? (status === null || status === 0 ? 124 : status) : status,
           signal: timedOut ? (signal ?? "SIGTERM") : signal,
           stdout,
@@ -925,47 +962,12 @@ export const __codexSubscriptionTestHooks = {
 
 function registerActiveCodexChild(pid: number | undefined): void {
   if (pid === undefined) return;
-  installCodexParentCleanup();
   activeCodexChildPids.add(pid);
 }
 
 function unregisterActiveCodexChild(pid: number | undefined): void {
   if (pid === undefined) return;
   activeCodexChildPids.delete(pid);
-}
-
-/**
- * Codex children run detached (own process group) so a crashed parent cannot
- * leave them half-killed — but the flip side is that the standalone server's
- * `process.exit(0)` on SIGINT/SIGTERM would orphan an in-flight request that
- * keeps consuming the subscription. Mirrors the bench provider: terminate the
- * tracked groups on parent signals/exit, then force-kill and exit.
- */
-function installCodexParentCleanup(): void {
-  if (parentCleanupInstalled) {
-    return;
-  }
-  parentCleanupInstalled = true;
-
-  process.once("exit", () => {
-    terminateActiveCodexChildren("SIGTERM");
-  });
-
-  for (const signal of CODEX_PARENT_SIGNALS) {
-    process.once(signal, () => {
-      const activeChildren = activeCodexChildPids.size;
-      terminateActiveCodexChildren(signal === "SIGINT" ? "SIGINT" : "SIGTERM");
-      process.exitCode = signalExitCode(signal);
-
-      setTimeout(
-        () => {
-          terminateActiveCodexChildren("SIGKILL");
-          process.exit(signalExitCode(signal));
-        },
-        activeChildren > 0 ? CODEX_PARENT_FORCED_EXIT_MS : 0,
-      );
-    });
-  }
 }
 
 function terminateActiveCodexChildren(signal: NodeJS.Signals): void {
@@ -988,18 +990,5 @@ function terminateCodexChildPid(pid: number, signal: NodeJS.Signals): void {
     process.kill(pid, signal);
   } catch {
     // The child may already have exited.
-  }
-}
-
-function signalExitCode(signal: NodeJS.Signals): number {
-  switch (signal) {
-    case "SIGHUP":
-      return 129;
-    case "SIGINT":
-      return 130;
-    case "SIGTERM":
-      return 143;
-    default:
-      return 1;
   }
 }

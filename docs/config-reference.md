@@ -847,9 +847,11 @@ Behavior:
 - Relative `HOME`/`CODEX_HOME` values resolve against the daemon's working
   directory before either subprocess starts (same rule as the executable
   path), so the login precheck and the exec child always see the same auth
-  home. Detached Codex child process groups are tracked and terminated on
-  parent SIGINT/SIGTERM/shutdown, so stopping Remnic stops in-flight
-  subscription requests too.
+  home. Detached Codex child process groups are tracked by the provider.
+  The owning server or plugin runtime invokes
+  `terminateActiveCodexSubscriptionChildren` on shutdown, so stopping
+  Remnic stops in-flight subscription requests. The provider does not
+  install process signal listeners or call `process.exit`.
 - A host or benchmark run that registers its own `codex-cli` transport
   always wins; Remnic registers its subprocess transport only when the seam
   is free.

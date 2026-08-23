@@ -17,6 +17,7 @@ import {
   __codexSubscriptionTestHooks,
   createCodexSubscriptionRunner,
   ensureCodexSubscriptionRunnerRegistered,
+  terminateActiveCodexSubscriptionChildren,
 } from "./codex-subscription.js";
 import { parseConfig } from "../config.js";
 import { FallbackLlmClient } from "../fallback-llm.js";
@@ -1007,4 +1008,153 @@ test("relative HOME and CODEX_HOME resolve against the original process cwd", as
   // each child happens to run in.
   assert.equal(loginCalls[0]?.env.CODEX_HOME, path.resolve("rel-codex"));
   assert.equal(loginCalls[0]?.env.HOME, path.resolve("rel-home"));
+});
+
+test(
+  "core provider does not install process signal listeners or call process.exit",
+  { skip: process.platform === "win32" },
+  async () => {
+    __codexSubscriptionTestHooks.resetLoginStatusCache();
+    const before = {
+      sighup: process.listenerCount("SIGHUP"),
+      sigint: process.listenerCount("SIGINT"),
+      sigterm: process.listenerCount("SIGTERM"),
+      exit: process.listenerCount("exit"),
+    };
+    const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-fakebin-"));
+    const script = path.join(dir, "codex-fake");
+    await writeFile(script, "#!/bin/sh\ntrap '' TERM\nwhile true; do sleep 0.1; done\n", { mode: 0o755 });
+    const runner = createCodexSubscriptionRunner({
+      env: { HOME: "/home/alice", PATH: "/usr/bin:/bin" },
+      now: () => 0,
+      runLoginStatus: async () => ({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" }),
+    });
+    const pending = runner({
+      config: { executable: script },
+      modelId: "gpt-5.6-luna",
+      messages: [{ role: "user", content: "hi" }],
+      options: { timeoutMs: 30_000 },
+    });
+    const pendingDone = pending.then(
+      () => {
+        throw new Error("expected terminated child");
+      },
+      () => undefined,
+    );
+    try {
+      const waitUntil = Date.now() + 2_000;
+      while (__codexSubscriptionTestHooks.activeCodexChildCount() === 0 && Date.now() < waitUntil) {
+        await flushLoop();
+      }
+      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(), 1);
+      assert.equal(process.listenerCount("SIGHUP"), before.sighup);
+      assert.equal(process.listenerCount("SIGINT"), before.sigint);
+      assert.equal(process.listenerCount("SIGTERM"), before.sigterm);
+      assert.equal(process.listenerCount("exit"), before.exit);
+      terminateActiveCodexSubscriptionChildren("SIGKILL");
+      await pendingDone;
+      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(), 0);
+      assert.equal(process.listenerCount("SIGINT"), before.sigint);
+      assert.equal(process.listenerCount("SIGTERM"), before.sigterm);
+    } finally {
+      terminateActiveCodexSubscriptionChildren("SIGKILL");
+      await pendingDone.catch(() => undefined);
+      await rm(dir, { force: true, recursive: true }).catch(() => {});
+    }
+  }
+);
+
+test(
+  "typed provider timeout rejects before the fallback outer timer resolves null",
+  { concurrency: false, skip: process.platform === "win32" },
+  async () => {
+    clearModelsJsonCache();
+    clearSecretCache();
+    __codexSubscriptionTestHooks.resetLoginStatusCache();
+    __codexSubscriptionTestHooks.resetCoreRunnerRegistered();
+    const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-fakebin-"));
+    const script = path.join(dir, "codex-fake");
+    await writeFile(
+      script,
+      "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 0.1; done\n",
+      { mode: 0o755 }
+    );
+    const restore = setCodexCliFallbackRunnerForProcess(
+      createCodexSubscriptionRunner({
+        env: { HOME: "/home/alice", PATH: "/usr/bin:/bin" },
+        now: () => 0,
+        runLoginStatus: async () => ({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" }),
+      })
+    );
+    try {
+      const llm = new FallbackLlmClient({
+        agents: { defaults: { model: { primary: `${CODEX_SUBSCRIPTION_PROVIDER_ID}/gpt-5.6-luna` } } },
+        models: {
+          providers: {
+            [CODEX_SUBSCRIPTION_PROVIDER_ID]: {
+              baseUrl: "codex-cli://subscription",
+              api: "codex-cli",
+              models: [],
+              executable: script,
+            },
+          },
+        },
+      });
+      await assert.rejects(
+        llm.chatCompletion([{ role: "user", content: "hi" }], { timeoutMs: 250 }),
+        (error: unknown) => {
+          assert.ok(error instanceof CodexSubscriptionTimeoutError, `expected timeout, got: ${error}`);
+          assert.equal(error.name, "TimeoutError");
+          return true;
+        }
+      );
+    } finally {
+      restore();
+      terminateActiveCodexSubscriptionChildren("SIGKILL");
+      clearModelsJsonCache();
+      clearSecretCache();
+      await rm(dir, { force: true, recursive: true }).catch(() => {});
+    }
+  }
+);
+
+test("concurrent callers share one in-flight login when auth.json already exists", async () => {
+  __codexSubscriptionTestHooks.resetLoginStatusCache();
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-home-"));
+  const codexHome = path.join(home, ".codex");
+  await mkdir(codexHome, { recursive: true });
+  await writeFile(path.join(codexHome, "auth.json"), '{"tokens":{}}\n');
+  let loginCalls = 0;
+  const loginPending = Promise.withResolvers<{ status: number | null; stdout: string; stderr: string }>();
+  const runner = createCodexSubscriptionRunner({
+    env: { HOME: "/home/alice", CODEX_HOME: codexHome, PATH: "/usr/bin:/bin" },
+    now: () => 0,
+    runLoginStatus: () => {
+      loginCalls++;
+      return loginPending.promise;
+    },
+    runCodexExec: async () => ({ status: 0, stdout: "", stderr: "", outputText: "ok" }),
+  });
+  const call = () =>
+    runner({
+      config: { executable: "codex-fake" },
+      modelId: "gpt-5.6-luna",
+      messages: [{ role: "user", content: "hi" }],
+      options: { timeoutMs: 10_000 },
+    });
+
+  try {
+    const first = call();
+    await flushLoop();
+    assert.equal(loginCalls, 1);
+    const second = call();
+    await flushLoop();
+    assert.equal(loginCalls, 1, "unsettled login must be reused even when auth.json fingerprint is non-null");
+    loginPending.resolve({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" });
+    assert.equal((await first).content, "ok");
+    assert.equal((await second).content, "ok");
+    assert.equal(loginCalls, 1);
+  } finally {
+    await rm(home, { force: true, recursive: true }).catch(() => {});
+  }
 });

@@ -17,4 +17,6 @@ patterns in mixed output, a timed-out child that traps SIGTERM and exits 0
 still reports `TimeoutError`, and terminal typed provider errors
 (timeout/auth/config) survive `FallbackLlmClient` chain exhaustion instead
 of collapsing into a generic empty result. Detached Codex child process
-groups are tracked and terminated on parent SIGINT/SIGTERM/shutdown.
+groups are tracked by the provider; the owning server or plugin runtime
+invokes the exported cleanup on shutdown. The provider does not install
+process signal listeners or call process.exit.

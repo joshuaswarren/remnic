@@ -14,7 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler } from "@remnic/core";
+import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler } from "@remnic/core";
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
 import { envOverrides } from "./server-env.js";
@@ -689,6 +689,7 @@ async function cleanupFailedStartup(
   orchestrator: Orchestrator,
   httpServer: EngramAccessHttpServer,
 ): Promise<void> {
+  terminateActiveCodexSubscriptionChildren("SIGTERM");
   try {
     await httpServer.stop();
   } catch (err) {
@@ -700,6 +701,7 @@ async function cleanupFailedStartup(
   } catch (err) {
     log.warn(`HTTP startup failure cleanup could not destroy orchestrator: ${err}`);
   }
+  terminateActiveCodexSubscriptionChildren("SIGKILL");
 }
 
 export interface SupportPassportServerRuntime {
@@ -906,6 +908,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   const stop = async (): Promise<void> => {
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
+      terminateActiveCodexSubscriptionChildren("SIGTERM");
       startupSyncAbort.abort();
       readinessAbort.abort();
       supportPassportRuntime.close();
@@ -917,6 +920,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
           await readinessTask;
         } finally {
           await orchestrator.destroy();
+          terminateActiveCodexSubscriptionChildren("SIGKILL");
         }
       }
     })();
