@@ -81,7 +81,7 @@ import type {
 } from "../types.js";
 import { normalizeConnectorScope } from "../dedup/connector-scope.js";
 import type { StorageManager } from "../index.js";
-import { casCommittedRevisionOf } from "../storage/deletion-revision-store.js";
+import { casCommittedRevisionOf, nextCasRevisionIso } from "../storage/deletion-revision-store.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
 
 export type SemanticMergeCreateReason =
@@ -715,9 +715,7 @@ export async function applySemanticMergeAtPersist(
   // win rather than be overwritten from a stale body. The active-target check
   // above makes a tombstone block structurally impossible here.
   const nowIso = (options.now ? options.now() : new Date()).toISOString();
-  let casRevision: string | undefined; // #2813 (P1, fix A): receipt of OUR content CAS — retained on the success path, not just the throwing one
-  // Captured so the success return can describe the COMMITTED frontmatter
-  // (the patch's appended sources) without widening the try's scope.
+  let casRevision: string | undefined; // #2813 (P1): OUR content CAS's receipt — feeds the patch stamp below and the catch's rollback comparison
   let mergePatch: MergeFrontmatterUpdate | undefined;
   try {
     mergePatch = buildMergeFrontmatterUpdate({
@@ -791,7 +789,9 @@ export async function applySemanticMergeAtPersist(
     const patched = await options.storage.writeMemoryFrontmatterIfUnchanged(
       merged,
       {
-        updated: mergePatch.updated,
+        // #2813 (P1, round 3): mergePatch.updated is a PRE-CAS clock — stamping it would regress
+        // the revision below the issued receipt (retired-receipt reuse); stay at/after the receipt.
+        updated: nextCasRevisionIso(casRevision, options.now ? options.now() : new Date()),
         derived_via: mergePatch.derived_via,
         reinforcement_count: mergePatch.reinforcement_count,
         sources: mergePatch.sources,

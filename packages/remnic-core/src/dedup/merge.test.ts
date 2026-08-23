@@ -506,6 +506,15 @@ async function harness(
     targetMemoryKind?: MemoryFrontmatter["memoryKind"];
     /** Stamp stale intent routing fields on the target's frontmatter (round N+3 A). */
     targetIntent?: { goal: string; actionType: string; entityTypes: string[] };
+    /** Seed `updated` on the target's frontmatter (receipt-clock tests). */
+    targetUpdated?: string;
+    /**
+     * Model what StorageManager.writeMemoryFrontmatter does on success: the
+     * accepted patch becomes the standing record's frontmatter — INCLUDING
+     * `updated` — so a patch that regresses the revision below an issued CAS
+     * receipt is observable (#2813 P1, round 3).
+     */
+    applyFrontmatterPatches?: boolean;
     /** Top-level parseConfig overrides (citation enablement, round N+2 C). */
     topLevelConfig?: Record<string, unknown>;
     lookupHits?: SemanticDedupHit[];
@@ -556,6 +565,7 @@ async function harness(
     ...(overrides.targetValidAt ? { valid_at: overrides.targetValidAt } : {}),
     ...(overrides.targetInvalidAt ? { invalid_at: overrides.targetInvalidAt } : {}),
     ...(overrides.targetMemoryKind ? { memoryKind: overrides.targetMemoryKind } : {}),
+    ...(overrides.targetUpdated ? { updated: overrides.targetUpdated } : {}),
     ...(overrides.targetIntent
       ? {
           intentGoal: overrides.targetIntent.goal,
@@ -690,6 +700,12 @@ async function harness(
       if (overrides.mutateAtPatch !== undefined) await commit(overrides.mutateAtPatch);
       if (!(await unchanged(expected))) return false;
       calls.frontmatterPatches.push({ id: expected.frontmatter.id, patch, actor: options?.actor });
+      // #2813 (P1, round 3): the accepted patch becomes the standing
+      // record's frontmatter — INCLUDING `updated`, mirroring
+      // StorageManager.writeMemoryFrontmatter's {...frontmatter, ...patch}.
+      if (overrides.applyFrontmatterPatches) {
+        state = { ...state, frontmatter: { ...state.frontmatter, ...patch } };
+      }
       return overrides.frontmatterFails !== true;
     },
     removeFactContentHashesForMemories: async (memories: MemoryFile[]) => {
@@ -3788,6 +3804,122 @@ test("applySemanticMergeAtPersist: a successful content CAS retains its receipt,
     ).versions.length,
     0,
     "this writer's staged duplicate snapshot is discarded, not finalized into history",
+  );
+});
+
+test("applySemanticMergeAtPersist: the monotonic receipt survives the metadata patch — three same-millisecond merges, A's rollback never restores over C's commit (#2813 P1)", async () => {
+  // Round-3 P1 hole — the receipt was monotonic only until the metadata
+  // patch. The patch stamped the PRE-CAS wall clock (mergePatch.updated), so
+  // a successful writer REGRESSED frontmatter.updated below the receipt its
+  // own CAS had just issued. Three writers merging into the same target
+  // inside one millisecond (target seeded at T, every writer's clock T):
+  //   A CAS → T+1 (receipt), A's patch then fails post-commit;
+  //   B CAS → T+2, B's patch writes `updated` back to T  ← the regression;
+  //   C CAS → nextCasRevisionIso(T) = T+1 — A's RETIRED receipt, reused.
+  // A's rollback then read the standing record carrying T+1, matched its own
+  // receipt, and CAS-restored the pre-merge body over C's valid commit.
+  //
+  // The seed sits AHEAD of the real wall clock on purpose: the fake's commit
+  // stamps via nextCasRevisionIso against the real clock, so a future seed
+  // forces every stamp into the +1ms monotonic branch — the sequence is
+  // pinned to T+n exactly as inside the finding's single millisecond.
+  // The patch now stamps nextCasRevisionIso(over the issued receipt), so the
+  // persisted revision never sits below a receipt already issued and every
+  // later stamp steps past all prior ones — C lands at T+4, A classifies the
+  // standing record as superseded, and C's commit survives A's failure.
+  const T = new Date(Date.now() + 60_000);
+  const h = await harness({
+    targetUpdated: T.toISOString(),
+    applyFrontmatterPatches: true,
+  });
+  const realPatch = h.storage.writeMemoryFrontmatterIfUnchanged.bind(h.storage);
+  let patchCalls = 0;
+  let releaseC!: () => void;
+  const cGate = new Promise<void>((resolve) => {
+    releaseC = resolve;
+  });
+  let cArrived!: () => void;
+  const cArrivedGate = new Promise<void>((resolve) => {
+    cArrived = resolve;
+  });
+  let cMerge: Promise<{ action: string }> | undefined;
+  h.storage.writeMemoryFrontmatterIfUnchanged = (async (
+    expected: MemoryFile,
+    patch: Partial<MemoryFrontmatter>,
+    options?: { actor?: string },
+  ) => {
+    if (options?.actor !== "semantic-merge") {
+      return await realPatch(expected, patch, options);
+    }
+    patchCalls += 1;
+    if (patchCalls === 1) {
+      // A's patch: B commits fully (CAS + patch) while A's post-commit work
+      // is failing; C commits its CAS and suspends INSIDE its own patch —
+      // exactly the finding's window, where C's commit stands at the reused
+      // receipt and its patch has not landed.
+      const bOutcome = await applySemanticMergeAtPersist(h.deps, {
+        storage: h.storage,
+        content: INCOMING,
+        category: "fact",
+        judgeCall: (options) => acceptingJudge(options),
+        now: () => T,
+      });
+      assert.equal(bOutcome.action, "merged", "B's merge commits fully");
+      cMerge = applySemanticMergeAtPersist(h.deps, {
+        storage: h.storage,
+        content: INCOMING,
+        category: "fact",
+        judgeCall: (options) => acceptingJudge(options),
+        now: () => T,
+      });
+      await cArrivedGate;
+      return false; // A's patch is rejected — A enters its post-commit failure path
+    }
+    if (patchCalls === 3) {
+      // C's patch: suspended until A's rollback has compared the standing
+      // record, so A's classification runs against C's bare CAS commit.
+      cArrived();
+      await cGate;
+    }
+    return await realPatch(expected, patch, options);
+  }) as StorageManager["writeMemoryFrontmatterIfUnchanged"];
+
+  const aOutcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+    now: () => T,
+  });
+  releaseC();
+  const cOutcome = await cMerge!;
+
+  assert.deepEqual(aOutcome, {
+    action: "merged",
+    targetId: "fact-target",
+    mergedContent: MERGED,
+    provenancePatched: false,
+  });
+  assert.deepEqual(cOutcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
+  const body = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(
+    body?.content,
+    MERGED,
+    "C's commit stands — A's rollback must not restore the pre-merge body over it",
+  );
+  assert.equal(
+    body?.frontmatter.updated,
+    new Date(T.getTime() + 5).toISOString(),
+    "the revision advanced past every issued receipt: A T+1, B T+2, B's patch T+3, C T+4, C's patch T+5",
+  );
+  assert.deepEqual(
+    h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [
+      { content: MERGED, actor: "semantic-merge" },
+      { content: MERGED, actor: "semantic-merge" },
+      { content: MERGED, actor: "semantic-merge" },
+    ],
+    "exactly the three CAS commits — no semantic-merge-rollback write ever fires",
   );
 });
 
