@@ -6,7 +6,7 @@ import {
   callCodexCliFallback,
   isCodexCliFallbackRunnerRegistered,
   setCodexCliFallbackRunnerForProcess,
-} from "./cli-fallback.js";
+} from "../cli-fallback.js";
 import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   CodexSubscriptionAuthError,
@@ -17,11 +17,11 @@ import {
   createCodexSubscriptionRunner,
   ensureCodexSubscriptionRunnerRegistered,
 } from "./codex-subscription.js";
-import { parseConfig } from "./config.js";
-import { FallbackLlmClient } from "./fallback-llm.js";
-import { initLogger, resetLogger } from "./logger.js";
-import { clearModelsJsonCache } from "./models-json.js";
-import { clearSecretCache } from "./resolve-provider-secret.js";
+import { parseConfig } from "../config.js";
+import { FallbackLlmClient } from "../fallback-llm.js";
+import { initLogger, resetLogger } from "../logger.js";
+import { clearModelsJsonCache } from "../models-json.js";
+import { clearSecretCache } from "../resolve-provider-secret.js";
 
 const AMBIENT_API_KEY = ["sk", "ambient-must-not-forward"].join("-");
 const REJECTED_API_KEY = ["sk", "should-never-echo"].join("-");

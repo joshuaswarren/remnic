@@ -17,7 +17,7 @@ import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   codexSubscriptionBuiltinProviderConfig,
   ensureCodexSubscriptionRunnerRegistered,
-} from "./codex-subscription.js";
+} from "./providers/codex-subscription.js";
 import { loadModelsJsonProviders } from "./models-json.js";
 import { callCodexCliFallback } from "./cli-fallback.js";
 import { resolveHomeDir } from "./runtime/env.js";

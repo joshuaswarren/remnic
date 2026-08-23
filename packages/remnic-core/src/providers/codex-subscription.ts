@@ -25,12 +25,12 @@ import type {
   CodexCliFallbackRequest,
   CodexCliFallbackResult,
   CodexCliFallbackRunner,
-} from "./cli-fallback.js";
-import { isCodexCliFallbackRunnerRegistered, normalizeCodexCliTimeoutMs, setCodexCliFallbackRunnerForProcess } from "./cli-fallback.js";
-import { log } from "./logger.js";
-import { launchProcess } from "./runtime/child-process.js";
-import type { CodexCliReasoningEffort, ModelProviderConfig } from "./types.js";
-import { expandTildePath } from "./utils/path.js";
+} from "../cli-fallback.js";
+import { isCodexCliFallbackRunnerRegistered, normalizeCodexCliTimeoutMs, setCodexCliFallbackRunnerForProcess } from "../cli-fallback.js";
+import { log } from "../logger.js";
+import { launchProcess } from "../runtime/child-process.js";
+import type { CodexCliReasoningEffort, ModelProviderConfig } from "../types.js";
+import { expandTildePath } from "../utils/path.js";
 
 export const CODEX_SUBSCRIPTION_PROVIDER_ID = "codex-subscription";
 
