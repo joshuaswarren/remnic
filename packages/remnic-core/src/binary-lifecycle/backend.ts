@@ -10,6 +10,7 @@ import type { Stats } from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { BinaryStorageBackendConfig } from "./types.js";
+import { isErrnoCode } from "../utils/errno.js";
 
 // ---------------------------------------------------------------------------
 // Interface
@@ -154,7 +155,7 @@ export class FilesystemBackend implements BinaryStorageBackend {
     }
 
     const realParent = await fsp.realpath(destDir).catch((err: NodeJS.ErrnoException) => {
-      if (err.code === "ENOENT") return null;
+      if (isErrnoCode(err, "ENOENT")) return null;
       throw err;
     });
     if (realParent === null) {

@@ -60,6 +60,7 @@ import type {
   SyncIncrementalResult,
 } from "./framework.js";
 import { isTransientHttpError } from "./transient-errors.js";
+import { throwIfAborted } from "../../abort-error.js";
 
 // ---------------------------------------------------------------------------
 // Public constants
@@ -363,17 +364,6 @@ const NOTION_BASE_URL = "https://api.notion.com/v1";
 const NOTION_API_VERSION = "2022-06-28";
 
 /**
- * Throw if aborted (cooperative cancellation).
- */
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) {
-    const err = new Error("notion: sync aborted");
-    err.name = "AbortError";
-    throw err;
-  }
-}
-
-/**
  * Build a Notion API error with the HTTP status attached for classification.
  */
 function makeNotionApiError(apiErr: NotionApiError): Error & { notionStatus: number } {
@@ -531,14 +521,14 @@ async function fetchPageText(
   signal: AbortSignal | undefined,
 ): Promise<string> {
   if (depth > MAX_BLOCK_DEPTH) return "";
-  throwIfAborted(signal);
+  throwIfAborted(signal, "notion: sync aborted");
 
   const lines: string[] = [];
   let cursor: string | undefined = undefined;
 
   // Page through block children.
   while (true) {
-    throwIfAborted(signal);
+    throwIfAborted(signal, "notion: sync aborted");
     const pathQuery = cursor
       ? `/blocks/${blockId}/children?page_size=100&start_cursor=${encodeURIComponent(cursor)}`
       : `/blocks/${blockId}/children?page_size=100`;
@@ -552,7 +542,7 @@ async function fetchPageText(
     };
 
     for (const block of page.results ?? []) {
-      throwIfAborted(signal);
+      throwIfAborted(signal, "notion: sync aborted");
       const text = extractBlockText(block);
       if (text.length > 0) lines.push(text);
 
@@ -653,7 +643,7 @@ export function createNotionConnector(
 
     async syncIncremental(args: SyncIncrementalArgs): Promise<SyncIncrementalResult> {
       const config = validateNotionConfig(args.config);
-      throwIfAborted(args.abortSignal);
+      throwIfAborted(args.abortSignal, "notion: sync aborted");
 
       // Short-circuit: if no databases are configured, there is nothing to do.
       // We still return a valid cursor so the framework has something to
@@ -719,12 +709,12 @@ async function seedWatermark(
   const databases = { ...payload.databases };
 
   for (const dbId of config.databaseIds) {
-    throwIfAborted(signal);
+    throwIfAborted(signal, "notion: sync aborted");
     let notionCursor: string | undefined = undefined;
     let latestInDb = "";
 
     while (true) {
-      throwIfAborted(signal);
+      throwIfAborted(signal, "notion: sync aborted");
       const body: Record<string, unknown> = { page_size: 100, sorts: [] };
       if (notionCursor) body.start_cursor = notionCursor;
 
@@ -784,7 +774,7 @@ async function incrementalSync(
   let totalConsumed = 0;
 
   for (const dbId of config.databaseIds) {
-    throwIfAborted(signal);
+    throwIfAborted(signal, "notion: sync aborted");
     if (totalConsumed >= MAX_PAGES_PER_PASS) break;
 
     const dbWatermark = payload.databases[dbId];
@@ -807,7 +797,7 @@ async function incrementalSync(
     let databaseFullyDrained = false;
 
     while (true) {
-      throwIfAborted(signal);
+      throwIfAborted(signal, "notion: sync aborted");
       if (totalConsumed >= MAX_PAGES_PER_PASS) break;
 
       const body: Record<string, unknown> = {
@@ -845,7 +835,7 @@ async function incrementalSync(
 
       let cutoffMidPage = false;
       for (const notionPage of pageResp.results ?? []) {
-        throwIfAborted(signal);
+        throwIfAborted(signal, "notion: sync aborted");
 
         const pageId = notionPage.id;
         const lastEdited = notionPage.last_edited_time;
@@ -970,7 +960,7 @@ async function fetchPageDocument(
   fetchedAt: string,
   signal: AbortSignal | undefined,
 ): Promise<ConnectorDocument | "too-large" | "empty" | null> {
-  throwIfAborted(signal);
+  throwIfAborted(signal, "notion: sync aborted");
 
   let text: string;
   try {

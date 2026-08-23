@@ -16,6 +16,7 @@ import { buildProcedurePersistBody, normalizeProcedureSteps, type ProcedureStep 
 import { clusterByKey } from "./reinforcement-core.js";
 import { log } from "../logger.js";
 import { composeMemoryEnvelope, STRUCTURED_ATTRIBUTE_LIMITS } from "../write-envelope.js";
+import { isErrnoCode } from "../utils/errno.js";
 
 /** Must match truncation on `procedure_cluster` structured attribute (dedupe + storage). */
 const PROCEDURE_CLUSTER_ATTR_MAX = 500;
@@ -51,15 +52,6 @@ function clusterKey(record: CausalTrajectoryRecord): string {
 
 function clusterKeyHash(cluster: string): string {
   return createHash("sha256").update(cluster).digest("hex");
-}
-
-function isErrnoCode(error: unknown, code: string): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === code
-  );
 }
 
 function sleep(ms: number): Promise<void> {

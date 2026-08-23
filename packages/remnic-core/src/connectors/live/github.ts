@@ -63,6 +63,7 @@ import type {
   SyncIncrementalArgs,
   SyncIncrementalResult,
 } from "./framework.js";
+import { throwIfAborted } from "../../abort-error.js";
 
 // ---------------------------------------------------------------------------
 // Public constants
@@ -425,14 +426,6 @@ function pickNumericGitHubStatus(e: {
 
 const GITHUB_API_BASE = "https://api.github.com";
 
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) {
-    const err = new Error("github: sync aborted");
-    err.name = "AbortError";
-    throw err;
-  }
-}
-
 function makeGitHubApiError(status: number, message: string): Error & { githubStatus: number } {
   const err = new Error(`github: HTTP ${status}: ${message}`) as Error & {
     githubStatus: number;
@@ -526,7 +519,7 @@ export function createGitHubConnector(
 
     async syncIncremental(args: SyncIncrementalArgs): Promise<SyncIncrementalResult> {
       const config = validateGitHubConfig(args.config);
-      throwIfAborted(args.abortSignal);
+      throwIfAborted(args.abortSignal, "github: sync aborted");
 
       // Short-circuit: nothing to do if no repos are configured.
       if (config.repos.length === 0) {
@@ -582,7 +575,7 @@ async function seedWatermarks(
   // seenIds starts empty for first-sync; nothing has been processed yet.
 
   for (const repo of config.repos) {
-    throwIfAborted(signal);
+    throwIfAborted(signal, "github: sync aborted");
 
     // Issue comments
     try {
@@ -599,7 +592,7 @@ async function seedWatermarks(
       // 404/403 → repo inaccessible, skip silently.
     }
 
-    throwIfAborted(signal);
+    throwIfAborted(signal, "github: sync aborted");
 
     // PR review comments
     try {
@@ -617,7 +610,7 @@ async function seedWatermarks(
 
     // Discussions (GraphQL not used; we use the REST search endpoint for simplicity)
     if (config.includeDiscussions) {
-      throwIfAborted(signal);
+      throwIfAborted(signal, "github: sync aborted");
       try {
         const latest = await fetchLatestTimestamp(
           fetchFn,
@@ -683,7 +676,7 @@ async function incrementalSync(
 
   for (const repo of config.repos) {
     if (totalConsumed >= MAX_ITEMS_PER_PASS) break;
-    throwIfAborted(signal);
+    throwIfAborted(signal, "github: sync aborted");
 
     // --- Issue comments ---
     {
@@ -730,7 +723,7 @@ async function incrementalSync(
     }
 
     if (totalConsumed >= MAX_ITEMS_PER_PASS) break;
-    throwIfAborted(signal);
+    throwIfAborted(signal, "github: sync aborted");
 
     // --- PR review comments ---
     {
@@ -775,7 +768,7 @@ async function incrementalSync(
 
     // --- Discussion comments (optional) ---
     if (config.includeDiscussions && totalConsumed < MAX_ITEMS_PER_PASS) {
-      throwIfAborted(signal);
+      throwIfAborted(signal, "github: sync aborted");
       const wmKey = watermarkKey(repo, "discussion");
       const since = payload.watermarks[wmKey];
       try {
@@ -922,14 +915,14 @@ async function fetchAndFilterComments(
   let nextUrl: string | undefined = firstPageUrl;
 
   while (nextUrl && consumed < remainingBudget) {
-    throwIfAborted(signal);
+    throwIfAborted(signal, "github: sync aborted");
 
     const data = await githubGet(fetchFn, token, nextUrl, signal);
     if (!Array.isArray(data)) break;
 
     for (const item of data) {
       if (consumed >= remainingBudget) break;
-      throwIfAborted(signal);
+      throwIfAborted(signal, "github: sync aborted");
 
       const comment = normalizeGitHubComment(item, kind);
       if (!comment) {

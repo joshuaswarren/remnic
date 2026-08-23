@@ -2,6 +2,7 @@ import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { listJsonFilesStrict, readJsonFile, withJsonStoreMutationLock, writeJsonFileAtomic } from "./json-store.js";
 import { compareDeterministicStrings, mergeSortedUniqueStrings } from "./deterministic-order.js";
+import { isNotFoundError } from "./utils/errno.js";
 import {
   assertIsoRecordedAt,
   assertSafePathSegment,
@@ -11,10 +12,6 @@ import {
   recordStoreDay,
   validateStringRecord,
 } from "./store-contract.js";
-
-function isNotFoundError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-}
 
 export type AbstractionNodeKind = "episode" | "topic" | "project" | "workflow" | "constraint";
 export type AbstractionLevel = "micro" | "meso" | "macro";

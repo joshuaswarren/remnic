@@ -18,6 +18,7 @@ import {
 } from "../memory-lifecycle-ledger-utils.js";
 import { withHeldFileLock, type HeldFileLockOptions, type HeldFileLockController } from "../utils/serialize-mutations.js";
 import { probeEncryptedRegularFileHeader } from "../secure-store/secure-fs.js";
+import { isErrnoCode } from "../utils/errno.js";
 
 
 export interface RebuildMemoryLifecycleLedgerOptions {
@@ -115,10 +116,6 @@ export interface RebuildMemoryLifecycleLedgerResult {
   rewritten?: boolean;
 }
 
-function isNodeError(err: unknown): err is NodeJS.ErrnoException {
-  return typeof err === "object" && err !== null && "code" in err;
-}
-
 /** Serialized on-disk size (bytes, incl. trailing newline) of one ledger row. */
 function lifecycleRowBytes(event: MemoryLifecycleEvent): number {
   return Buffer.byteLength(`${JSON.stringify(event)}\n`, "utf8");
@@ -174,7 +171,7 @@ export async function backupExistingLedger(
   try {
     await stat(outputPath);
   } catch (err) {
-    if (isNodeError(err) && err.code === "ENOENT") {
+    if (isErrnoCode(err, "ENOENT")) {
       return undefined;
     }
     throw err;
@@ -397,7 +394,7 @@ export async function rebuildMemoryLifecycleLedger(
         currentEncrypted = await probeEncryptedRegularFileHeader(outputPath);
         priorRawBuffer = await storage.readMemoryLifecycleLedgerRawBufferForCompaction();
       } catch (err) {
-        if (!isNodeError(err) || err.code !== "ENOENT") throw err;
+        if (!isErrnoCode(err, "ENOENT")) throw err;
       }
       // Preserve encryption at rest (#2033). An already-encrypted ledger (or its
       // encrypted backup) MUST be rewritten encrypted even when the

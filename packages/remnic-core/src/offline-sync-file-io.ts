@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { open } from "node:fs/promises";
+import { throwIfAborted } from "./abort-error.js";
 import { MAGIC_HEADER_SIZE, isEncryptedFile } from "./secure-store/secure-fs.js";
 
 export interface OfflineSyncFileTarget {
@@ -10,11 +11,6 @@ export interface OfflineSyncFileTarget {
 }
 
 export type OfflineSyncExcludeFile = (target: OfflineSyncFileTarget) => boolean | Promise<boolean>;
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw new Error("offline sync request aborted");
-}
-
 export async function shouldExcludeOfflineSyncFile(
   excludeFile: OfflineSyncExcludeFile | undefined,
   target: OfflineSyncFileTarget
@@ -29,12 +25,12 @@ export async function sha256OfflineSyncFile(
   const hash = createHash("sha256");
   let bytes = 0;
   for await (const chunk of createReadStream(filePath)) {
-    throwIfAborted(signal);
+    throwIfAborted(signal, "offline sync request aborted");
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     hash.update(buffer);
     bytes += buffer.length;
   }
-  throwIfAborted(signal);
+  throwIfAborted(signal, "offline sync request aborted");
   return { sha256: hash.digest("hex"), bytes };
 }
 

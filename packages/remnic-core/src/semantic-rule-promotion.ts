@@ -6,6 +6,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { StorageManager } from "./storage.js";
 import type { MemoryFile, MemoryLink } from "./types.js";
+import { isErrnoCode } from "./utils/errno.js";
 
 export interface SemanticRulePromotionCandidate {
   id: string;
@@ -77,10 +78,6 @@ function promotionLockOwnerlessGraceMs(): number {
 
 function promotionLockHeartbeatMs(): number {
   return testHooks?.heartbeatMs ?? PROMOTION_LOCK_HEARTBEAT_MS;
-}
-
-function isErrnoCode(err: unknown, code: string): boolean {
-  return typeof err === "object" && err !== null && "code" in err && (err as { code?: unknown }).code === code;
 }
 
 function promotionLockDir(memoryDir: string, ruleKey: string): string {

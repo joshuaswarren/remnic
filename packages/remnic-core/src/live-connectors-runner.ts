@@ -29,6 +29,7 @@ import {
   type ConnectorState,
   type LiveConnector,
 } from "./connectors/live/index.js";
+import { abortError } from "./abort-error.js";
 import type { LiveConnectorsConfig } from "./types.js";
 
 export type LiveConnectorSkipReason =
@@ -428,7 +429,7 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (reason instanceof Error) {
     throw reason;
   }
-  throw new Error(reason === undefined ? "operation aborted" : String(reason));
+  throw abortError(reason === undefined ? "operation aborted" : String(reason));
 }
 
 async function writeConnectorErrorState(options: {
