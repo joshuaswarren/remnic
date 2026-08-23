@@ -4,8 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { Kind } from "@sinclair/typebox";
-
 import remnicPiExtension, {
   buildCompactionSummary,
   createRemnicPiExtension,
@@ -98,7 +96,7 @@ test("stripSessionOwnedRuntimeFields removes nested session routing values", () 
   );
 });
 
-test("toPiToolParametersSchema wraps stripped MCP schemas as TypeBox schemas", () => {
+test("toPiToolParametersSchema passes stripped MCP schemas through as plain JSON Schema", () => {
   const schema = toPiToolParametersSchema({
     type: "object",
     properties: {
@@ -109,14 +107,17 @@ test("toPiToolParametersSchema wraps stripped MCP schemas as TypeBox schemas", (
     },
     required: ["sessionKey", "query"],
     additionalProperties: false,
-  }) as any;
-
-  assert.equal(schema[Kind], "Unsafe");
-  assert.deepEqual(schema.properties, {
-    query: { type: "string" },
   });
-  assert.deepEqual(schema.required, ["query"]);
-  assert.equal(schema.additionalProperties, false);
+
+  assert.deepEqual(schema, {
+    type: "object",
+    properties: {
+      query: { type: "string" },
+    },
+    required: ["query"],
+    additionalProperties: false,
+  });
+  assert.equal(Object.getOwnPropertySymbols(schema).length, 0);
 });
 
 test("module import does not load the default Pi config eagerly", async (t) => {

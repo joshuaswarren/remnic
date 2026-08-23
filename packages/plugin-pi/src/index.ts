@@ -1,4 +1,3 @@
-import { Type, type TSchema } from "@sinclair/typebox";
 import { createHash } from "node:crypto";
 
 
@@ -490,8 +489,11 @@ async function registerMcpTools(
   }
 }
 
-export function toPiToolParametersSchema(inputSchema: unknown): TSchema {
-  return Type.Unsafe(stripSessionOwnedSchemaFields(inputSchema));
+/** Plain JSON Schema: Pi validates tool parameters as plain JSON Schema. */
+export type PiToolParametersSchema = Record<string, unknown>;
+
+export function toPiToolParametersSchema(inputSchema: unknown): PiToolParametersSchema {
+  return stripSessionOwnedSchemaFields(inputSchema);
 }
 
 export function stripSessionOwnedSchemaFields(inputSchema: unknown): Record<string, unknown> {

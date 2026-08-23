@@ -10,5 +10,5 @@ export default defineConfig({
   sourcemap: true,
   dts: true,
   bundle: true,
-  external: ["@remnic/core", "@sinclair/typebox"],
+  external: ["@remnic/core"],
 });
