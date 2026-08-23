@@ -19,7 +19,7 @@ import {
 
 export const RECONCILE_MANIFEST_FORMAT = "remnic-reconcile-manifest";
 export const RECONCILE_MANIFEST_SCHEMA_VERSION = 1;
-const CONTENT_HASH_NORMALIZER_VERSION = 4;
+export const CONTENT_HASH_NORMALIZER_VERSION = 4;
 /**
  * Version of the identity-resolution LOGIC (alias recovery, candidate
  * ordering), independent of the content normalizer: a cached manifest entry
@@ -28,7 +28,7 @@ const CONTENT_HASH_NORMALIZER_VERSION = 4;
  * review round 2). Bump when parsedMemoryIdentity's output shape or
  * semantics change.
  */
-const IDENTITY_RESOLUTION_VERSION = 2;
+export const IDENTITY_RESOLUTION_VERSION = 2;
 
 export interface ReconcileMemoryIdentity {
   id: string;
