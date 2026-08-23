@@ -109,9 +109,24 @@ function zonedDayStartIso(date: string, timezone: string): string {
     }
   }
   if (best === null) {
-    // Degenerate safety net: use the noon-derived offset for a deterministic start.
-    const noon = timezoneOffsetIso(new Date(`${date}T12:00:00Z`), timezone);
-    best = Date.parse(`${date}T00:00:00${noon}`);
+    // The ENTIRE civil date was skipped — no local wall-clock time on it
+    // exists (Pacific/Apia 2011-12-30 is the canonical case: the date-line
+    // jump went 2011-12-29 23:59:59-10:00 → 2011-12-31 00:00:00+14:00).
+    // Extending the never-backdate convention above, resolve the day start
+    // to the transition instant: the earliest instant whose local calendar
+    // date reaches `date`. Local date is monotone non-decreasing in the UTC
+    // instant (a fall-back never crosses local midnight backwards), so
+    // binary-search a 48h bracket at minute granularity. The bracket is
+    // safe: `<date>T00:00Z − 24h` is always locally before `date`, and
+    // `<date>T00:00Z + 24h` is always locally on/after it.
+    let lo = Date.parse(`${date}T00:00:00Z`) - 24 * 3_600_000;
+    let hi = lo + 48 * 3_600_000;
+    while (hi - lo > 60_000) {
+      const mid = lo + Math.floor((hi - lo) / 2 / 60_000) * 60_000;
+      if (activityDateInTimezone(new Date(mid), timezone) >= date) hi = mid;
+      else lo = mid;
+    }
+    best = hi;
   }
   if (best === null || !Number.isFinite(best)) {
     throw new RangeError(`activity: could not resolve a local day start for "${date}" in "${timezone}".`);
@@ -135,10 +150,24 @@ export function activityDayWindow(date: string, timezone: string): { startUtc: s
     throw new RangeError(`Invalid activity date "${date}"; expected a real YYYY-MM-DD day.`);
   }
   assertValidTimezone(timezone);
-  return {
-    startUtc: new Date(zonedDayStartIso(date, timezone)).toISOString(),
-    endUtc: new Date(zonedDayStartIso(nextIsoDate(date), timezone)).toISOString(),
-  };
+  const startUtc = zonedDayStartIso(date, timezone);
+  let endDate = nextIsoDate(date);
+  let endUtc = zonedDayStartIso(endDate, timezone);
+  // Semantics for a date the zone skipped entirely: its day start resolves
+  // to the transition instant, which is ALSO the following existing date's
+  // start — so the naive [start, end) collapses to identical bounds (an
+  // empty window that drops every record nominally of that day). A skipped
+  // date instead spans [transition instant, the next EXISTING date's start):
+  // it adopts the local day the calendar jumped into (Pacific/Apia
+  // 2011-12-30 adopts 2011-12-31's interval, sharing it). Windows stay
+  // non-degenerate, the last REAL day keeps its full window (its end is
+  // exactly the skipped date's start), and no date inherits the PREVIOUS
+  // date's interval.
+  while (endUtc <= startUtc) {
+    endDate = nextIsoDate(endDate);
+    endUtc = zonedDayStartIso(endDate, timezone);
+  }
+  return { startUtc, endUtc };
 }
 
 /**
