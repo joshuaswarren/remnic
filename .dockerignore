@@ -14,6 +14,7 @@ logs
 state
 bench-datasets
 docs/benchmarks/results
+evals/datasets
 packages/plugin-openclaw/reports
 
 .env

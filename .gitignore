@@ -47,6 +47,10 @@ packages/plugin-openclaw/reports/
 # `scripts/bench/fetch-datasets.sh --help`. Never commit raw dataset files.
 bench-datasets/
 
+# Legacy eval dataset location — keep ignored for existing developer checkouts
+# after the tracked evals/ runner was removed (#2798).
+evals/datasets/
+
 # Git worktrees
 .worktrees/
 PR_PREFLIGHT.md
