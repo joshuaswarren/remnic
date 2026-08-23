@@ -8,6 +8,23 @@ const pnpmCmd = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const FINGERPRINT_VERSION = 1;
 const LOCK_POLL_INTERVAL_MS = 50;
 const DEFAULT_LOCK_TIMEOUT_MS = 10 * 60 * 1000;
+const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+const PROCESS_NONCE = crypto.randomBytes(8).toString("hex");
+const PROCESS_START_TICKS = readProcessStartTicks(process.pid);
+
+export function spawnSucceeded(result) {
+  return result != null && result.error == null && result.signal == null && result.status === 0;
+}
+
+export function spawnExitCode(result) {
+  if (result?.signal) {
+    return SIGNAL_EXIT_CODES[result.signal] ?? 1;
+  }
+  if (typeof result?.status === "number" && result.status !== 0) {
+    return result.status;
+  }
+  return 1;
+}
 
 export function runPnpm(repoRoot, args) {
   const result = spawnSync(pnpmCmd, args, {
@@ -20,10 +37,11 @@ export function runPnpm(repoRoot, args) {
     throw result.error;
   }
 
-  if (typeof result.status === "number" && result.status !== 0) {
-    process.exit(result.status);
+  if (!spawnSucceeded(result)) {
+    process.exit(spawnExitCode(result));
   }
 }
+
 export function ensurePackageBuild(repoRoot, pkgName, distPath, sourcePaths, options = {}) {
   withBuildLock(repoRoot, pkgName, () => {
     if (fs.existsSync(distPath) && recordedFingerprintMatches(repoRoot, sourcePaths, distPath)) {
@@ -32,6 +50,9 @@ export function ensurePackageBuild(repoRoot, pkgName, distPath, sourcePaths, opt
     // Snapshot before building: an edit landing mid-build changes the tree,
     // so the recorded fingerprint no longer matches and the next run rebuilds.
     const fingerprint = computeSourceFingerprint(repoRoot, sourcePaths);
+    // Drop the marker before the spawn so a signaled or failed build cannot
+    // leave a fingerprint that would skip a later rebuild of partial dist.
+    removeFingerprintSidecar(distPath);
     if (options.runBuild) {
       options.runBuild();
     } else {
@@ -124,9 +145,22 @@ function writeFingerprintSidecar(distPath, fingerprint) {
   fs.renameSync(tempPath, sidecarPath);
 }
 
+function removeFingerprintSidecar(distPath) {
+  const sidecarPath = fingerprintSidecarPath(distPath);
+  for (const candidate of [sidecarPath, `${sidecarPath}.tmp-${process.pid}`]) {
+    try {
+      fs.rmSync(candidate, { force: true });
+    } catch {
+      // Best effort; the next run rebuilds if the marker is still missing.
+    }
+  }
+}
+
 // Cross-process lock so concurrent ensurePackageBuild calls for one package
 // trigger at most one build: the waiter re-checks freshness under the lock and
-// skips. A lock whose owning pid is dead is reclaimed.
+// skips. A lock whose owning pid is dead, whose start identity no longer
+// matches, or whose age exceeds the wait bound is reclaimed by renaming the
+// observed owner dir aside — never by recursive-deleting a live lock path.
 // ponytail: on timeout we run the build without the lock — a duplicate build
 // beats a stuck workflow; per-package finer locking if waiting ever matters.
 function withBuildLock(repoRoot, pkgName, fn) {
@@ -158,17 +192,20 @@ function lockTimeoutMs() {
   return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_LOCK_TIMEOUT_MS;
 }
 
-function acquireLockDir(lockDir) {
+export function acquireLockDir(lockDir) {
   try {
     fs.mkdirSync(lockDir);
   } catch (error) {
     if (error?.code !== "EEXIST") {
       throw error;
     }
-    if (isLockHeldByLiveProcess(lockDir)) {
+    const observed = readLockOwner(lockDir);
+    if (isOwnerLive(observed)) {
       return false;
     }
-    fs.rmSync(lockDir, { recursive: true, force: true });
+    if (!quarantineLockIfOwnerMatches(lockDir, observed)) {
+      return false;
+    }
     try {
       fs.mkdirSync(lockDir);
     } catch {
@@ -176,24 +213,34 @@ function acquireLockDir(lockDir) {
     }
   }
   try {
-    fs.writeFileSync(path.join(lockDir, "pid"), `${process.pid}\n`);
+    writeLockOwner(lockDir);
   } catch {
-    // Holding the directory is the lock; a missing pid file only disables
+    // Holding the directory is the lock; a missing owner file only disables
     // stale reclaim until the holder exits.
   }
   return true;
 }
 
-function isLockHeldByLiveProcess(lockDir) {
-  let pidText;
-  try {
-    pidText = fs.readFileSync(path.join(lockDir, "pid"), "utf8");
-  } catch {
+export function isLockHeldByLiveProcess(lockDir) {
+  return isOwnerLive(readLockOwner(lockDir));
+}
+
+function isOwnerLive(owner) {
+  if (!owner) {
     return true; // Cannot inspect: assume held.
   }
-  const pid = Number.parseInt(pidText.trim(), 10);
+  if (typeof owner.acquiredAt === "number" && Date.now() - owner.acquiredAt > lockTimeoutMs()) {
+    return false;
+  }
+  const pid = owner.pid;
   if (!Number.isInteger(pid) || pid <= 0) {
     return true;
+  }
+  if (owner.startTicks != null) {
+    const liveTicks = readProcessStartTicks(pid);
+    if (liveTicks != null && liveTicks !== owner.startTicks) {
+      return false;
+    }
   }
   try {
     process.kill(pid, 0);
@@ -203,11 +250,102 @@ function isLockHeldByLiveProcess(lockDir) {
   }
 }
 
-function releaseLockDir(lockDir) {
+function quarantineLockIfOwnerMatches(lockDir, expected) {
+  const quarantineDir = `${lockDir}.stale-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
+  try {
+    fs.renameSync(lockDir, quarantineDir);
+  } catch {
+    return false;
+  }
+  const quarantined = readLockOwner(quarantineDir);
+  if (!ownersMatch(expected, quarantined)) {
+    try {
+      fs.renameSync(quarantineDir, lockDir);
+    } catch {
+      // Another acquirer already recreated lockDir; leave the quarantine.
+    }
+    return false;
+  }
+  try {
+    fs.rmSync(quarantineDir, { recursive: true, force: true });
+  } catch {
+    // Quarantine is off the lock path; leftover bytes are not a live lock.
+  }
+  return true;
+}
+
+function readLockOwner(lockDir) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(lockDir, "owner.json"), "utf8"));
+    if (parsed && Number.isInteger(parsed.pid)) {
+      return parsed;
+    }
+  } catch {
+    // Fall through to the legacy pid file.
+  }
+  try {
+    const pid = Number.parseInt(fs.readFileSync(path.join(lockDir, "pid"), "utf8").trim(), 10);
+    if (!Number.isInteger(pid) || pid <= 0) {
+      return null;
+    }
+    return {
+      pid,
+      startTicks: null,
+      nonce: null,
+      acquiredAt: fs.statSync(lockDir).mtimeMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeLockOwner(lockDir) {
+  const owner = {
+    pid: process.pid,
+    startTicks: PROCESS_START_TICKS,
+    nonce: PROCESS_NONCE,
+    acquiredAt: Date.now(),
+  };
+  const ownerPath = path.join(lockDir, "owner.json");
+  const tempPath = `${ownerPath}.tmp-${process.pid}`;
+  fs.writeFileSync(tempPath, `${JSON.stringify(owner)}\n`);
+  fs.renameSync(tempPath, ownerPath);
+}
+
+function ownersMatch(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.pid === right.pid &&
+    left.startTicks === right.startTicks &&
+    left.nonce === right.nonce &&
+    left.acquiredAt === right.acquiredAt
+  );
+}
+
+function readProcessStartTicks(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return null;
+  }
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const closeParen = stat.lastIndexOf(")");
+    if (closeParen === -1) {
+      return null;
+    }
+    const ticks = Number(stat.slice(closeParen + 2).split(" ")[19]);
+    return Number.isFinite(ticks) ? ticks : null;
+  } catch {
+    return null;
+  }
+}
+
+export function releaseLockDir(lockDir) {
   try {
     fs.rmSync(lockDir, { recursive: true, force: true });
   } catch {
-    // Best effort; a leaked lock dir is reclaimed via its pid file.
+    // Best effort; a leaked lock dir is reclaimed via its owner file.
   }
 }
 

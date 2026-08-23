@@ -6,7 +6,14 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ensurePackageBuild } from "../scripts/build-staleness.mjs";
+import {
+  acquireLockDir,
+  ensurePackageBuild,
+  isLockHeldByLiveProcess,
+  releaseLockDir,
+  spawnExitCode,
+  spawnSucceeded,
+} from "../scripts/build-staleness.mjs";
 
 const buildStalenessModuleUrl = new URL("../scripts/build-staleness.mjs", import.meta.url).href;
 
@@ -190,6 +197,128 @@ test("concurrent ensurePackageBuild processes trigger exactly one build", async 
         `import { ensurePackageBuild } from ${JSON.stringify(buildStalenessModuleUrl)};`,
         "const [rootArg, distArg, logArg] = process.argv.slice(2);",
         "ensurePackageBuild(rootArg, '@scope/concurrent-pkg', distArg, [path.join(rootArg, 'pkg', 'src')], {",
+        "  runBuild: () => {",
+        "    fs.appendFileSync(logArg, `build ${process.pid}\\n`);",
+        "    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400);",
+        "    fs.mkdirSync(path.dirname(distArg), { recursive: true });",
+        "    fs.writeFileSync(distArg, 'dist\\n');",
+        "  },",
+        "});",
+      ].join("\n"),
+    );
+
+    const children = [0, 1].map(() => {
+      const child = spawn(process.execPath, [driverPath, root, distFile, buildLog], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      child.stdout.resume();
+      child.stderr.resume();
+      return child;
+    });
+    const exitCodes = await Promise.all(
+      children.map((child) => new Promise((resolve) => child.on("close", (code) => resolve(code)))),
+    );
+    assert.deepEqual(exitCodes, [0, 0]);
+
+    const log = await readFile(buildLog, "utf8");
+    assert.equal(log.trim().split("\n").filter((line) => line.length > 0).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("signaled spawnSync build is a failure and does not keep a fingerprint", async () => {
+  assert.equal(spawnSucceeded({ status: null, signal: "SIGTERM" }), false);
+  assert.equal(spawnExitCode({ status: null, signal: "SIGTERM" }), 143);
+  assert.equal(spawnExitCode({ status: null, signal: "SIGINT" }), 130);
+  assert.equal(spawnExitCode({ status: null, signal: "SIGHUP" }), 129);
+  assert.equal(spawnExitCode({ status: null, signal: "SIGKILL" }), 1);
+  assert.equal(spawnSucceeded({ status: 0, signal: null }), true);
+  assert.equal(spawnSucceeded({ status: 1, signal: null }), false);
+  assert.equal(spawnExitCode({ status: 2, signal: null }), 2);
+  assert.equal(spawnSucceeded({ status: null, signal: null, error: new Error("spawn failed") }), false);
+  assert.equal(spawnExitCode({ status: null, signal: null, error: new Error("spawn failed") }), 1);
+
+  const scenario = await makeScenario("remnic-build-staleness-signal-");
+  try {
+    const { distFile, state, ensure } = scenario;
+    await ensure();
+    assert.equal(state.builds, 1);
+    assert.equal(fsSync.existsSync(sidecarPath(distFile)), true);
+
+    await writeFile(scenario.sourceFile, "export const v = 99;\n");
+    const failing = () =>
+      ensurePackageBuild(scenario.root, "@scope/test-pkg", distFile, [scenario.srcDir], {
+        runBuild: () => {
+          state.builds += 1;
+          throw new Error("simulated signaled build");
+        },
+      });
+    assert.throws(failing, /simulated signaled build/);
+    assert.equal(state.builds, 2);
+    assert.equal(fsSync.existsSync(sidecarPath(distFile)), false);
+  } finally {
+    await rm(scenario.root, { recursive: true, force: true });
+  }
+});
+
+test("PID reuse cannot keep a lock live", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-build-staleness-pid-reuse-"));
+  try {
+    const lockDir = path.join(root, "lock");
+    fsSync.mkdirSync(lockDir);
+    fsSync.writeFileSync(
+      path.join(lockDir, "owner.json"),
+      `${JSON.stringify({
+        pid: process.pid,
+        startTicks: -1,
+        nonce: "reused-pid",
+        acquiredAt: Date.now(),
+      })}\n`,
+    );
+    assert.equal(isLockHeldByLiveProcess(lockDir), false);
+    assert.equal(acquireLockDir(lockDir), true);
+    const owner = JSON.parse(fsSync.readFileSync(path.join(lockDir, "owner.json"), "utf8"));
+    assert.equal(owner.pid, process.pid);
+    assert.notEqual(owner.nonce, "reused-pid");
+    assert.notEqual(owner.startTicks, -1);
+    releaseLockDir(lockDir);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("two stale-lock reclaimers leave exactly one owner", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-build-staleness-reclaim-"));
+  try {
+    const srcDir = path.join(root, "pkg", "src");
+    await mkdir(srcDir, { recursive: true });
+    await writeFile(path.join(srcDir, "index.ts"), "export const v = 1;\n");
+    const distFile = path.join(root, "pkg", "dist", "index.js");
+    const buildLog = path.join(root, "builds.log");
+    const lockDir = path.join(root, "node_modules", ".cache", "remnic-build-locks", "scope-reclaim-pkg");
+    const dead = spawn(process.execPath, ["-e", "process.exit(0)"]);
+    await new Promise((resolve) => dead.on("close", resolve));
+    fsSync.mkdirSync(lockDir, { recursive: true });
+    fsSync.writeFileSync(
+      path.join(lockDir, "owner.json"),
+      `${JSON.stringify({
+        pid: dead.pid,
+        startTicks: 0,
+        nonce: "dead-owner",
+        acquiredAt: Date.now() - 1000,
+      })}\n`,
+    );
+
+    const driverPath = path.join(root, "reclaim-driver.mjs");
+    await writeFile(
+      driverPath,
+      [
+        'import fs from "node:fs";',
+        'import path from "node:path";',
+        `import { ensurePackageBuild } from ${JSON.stringify(buildStalenessModuleUrl)};`,
+        "const [rootArg, distArg, logArg] = process.argv.slice(2);",
+        "ensurePackageBuild(rootArg, '@scope/reclaim-pkg', distArg, [path.join(rootArg, 'pkg', 'src')], {",
         "  runBuild: () => {",
         "    fs.appendFileSync(logArg, `build ${process.pid}\\n`);",
         "    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400);",
