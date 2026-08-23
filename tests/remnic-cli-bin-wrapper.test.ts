@@ -28,7 +28,6 @@ test("@remnic/cli package test script includes linked root tests", async () => {
   const testScript = (scripts as Record<string, unknown>).test;
   assert.equal(typeof testScript, "string");
   const testScriptText = testScript as string;
-  assert.match(testScriptText, /tests\/evals-engram-adapter-buffering\.test\.ts/);
   assert.match(testScriptText, /tests\/shim-openclaw-engram-package\.test\.ts/);
   assert.match(testScriptText, /tests\/engram-access-bin-errors\.test\.ts/);
   assert.match(testScriptText, /tests\/remnic-cli-bench-surface\.test\.ts/);

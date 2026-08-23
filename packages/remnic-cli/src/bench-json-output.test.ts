@@ -57,11 +57,3 @@ test("benchmark JSON-capable progress and legacy report prefaces use JSON-aware 
   );
 });
 
-test("benchmark fallback artifacts are included in repro manifest inputs", async () => {
-  const source = await readFile("packages/remnic-cli/src/index.ts", "utf8");
-
-  assert.match(
-    source,
-    /const fallbackResultPath = await runBenchViaFallback\([^;]+;\s*writtenPaths\.push\(fallbackResultPath\);[\s\S]*?writeBenchReproManifestForPackageRun\(\{[\s\S]*?resultPaths: writtenPaths,/,
-  );
-});

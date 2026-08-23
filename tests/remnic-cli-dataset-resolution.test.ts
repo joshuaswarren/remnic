@@ -6,7 +6,7 @@ import { chmod, mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promis
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-const scriptPath = path.join(process.cwd(), "evals", "scripts", "download-datasets.sh");
+const scriptPath = path.join(process.cwd(), "packages", "remnic-cli", "assets", "download-datasets.sh");
 
 function resolveCommand(command: string): string {
   const result = spawnSync("bash", ["-lc", `command -v ${command}`], {

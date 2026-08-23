@@ -354,6 +354,6 @@ BUILD / TEST / DEVELOP
   Quality gate: pnpm run preflight:quick
   Config check: npm run check-config-contract
   Docs parity:  npm run check:docs-parity
-  Eval suite:   npm run eval:run
+  Eval suite:   npm run bench:run
 
 Contributor guide: docs/development/contributing.md.
