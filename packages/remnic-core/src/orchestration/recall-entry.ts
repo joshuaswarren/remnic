@@ -272,6 +272,20 @@ export class RecallEntryCoordinator {
      * also threaded to formatQmdResultEntries for the epistemic hedge.
      */
     trustByPath?: Map<string, TrustStageResultItem> | null;
+    /**
+     * #1952 — per-request effective state-view flag (per-call `stateView`
+     * OR `recallStateViews` config, gated on change intent), computed once
+     * in recallInternal and threaded here. The inject seam uses this flag
+     * instead of rereading live config so a per-call `stateView: true`
+     * still labels/widens when the global flag is false.
+     */
+    stateViewActive?: boolean;
+    /**
+     * #1952 — historical recall pin (epoch ms) for this call. Under a
+     * pin, annotation must not discard a predecessor whose successor is
+     * absent due to the asOf validity filter; see applyRecallStateViews.
+     */
+    asOfMs?: number;
   }): void {
     const sectionId = "memories";
     const trustByPath = options.trustByPath ?? null;
@@ -281,6 +295,8 @@ export class RecallEntryCoordinator {
         : options.results,
       options.retrievalQuery,
       this.deps.config,
+      options.stateViewActive === true,
+      options.asOfMs,
     );
     if (injectable.length === 0) return;
 

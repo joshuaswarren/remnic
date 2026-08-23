@@ -833,11 +833,10 @@ export class AccessRecallSurface {
       this.deps.budget.gc();
     }
     const topK = Number.isFinite(request.topK) ? Math.max(0, Math.floor(request.topK ?? 0)) : undefined;
-    // Issue #680 — historical recall pin.  Validate at the input
-    // boundary so a malformed `asOf` is rejected with a structured
-    // 400 instead of silently flooring at NaN inside the orchestrator
-    // (CLAUDE.md rule 51, gotcha #51).  Empty / undefined is fine —
-    // means "no pin".
+    // Issue #680 — historical recall pin.  Validate at the input boundary so
+    // a malformed `asOf` is rejected with a structured 400 instead of
+    // silently flooring at NaN inside the orchestrator (rule 51, gotcha #51).
+    // Empty / undefined is fine — means "no pin".
     let asOf: string | undefined;
     if (request.asOf !== undefined && request.asOf !== null) {
       if (typeof request.asOf !== "string" || request.asOf.trim().length === 0) {
@@ -863,6 +862,7 @@ export class AccessRecallSurface {
       },
       ...(authenticatedPrincipal ? { principalOverride: authenticatedPrincipal } : {}),
       ...(request.sourceConnector ? { sourceConnector: request.sourceConnector } : {}),
+      ...(request.stateView !== undefined ? { stateView: request.stateView } : {}),
       ...(asOf !== undefined ? { asOf } : {}),
       ...(request.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
       ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),

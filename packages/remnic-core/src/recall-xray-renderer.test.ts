@@ -558,6 +558,33 @@ test("renderXrayText omits per-edge confidence line when graphEdgeConfidences ab
   assert.ok(!out.includes("edge-confidences:"));
 });
 
+// ─── Issue #1952 — state-view text rendering ──────────────────────────────
+
+test("renderXrayText renders the state-view line exactly once per result", () => {
+  const snap: RecallXraySnapshot = {
+    ...minimalSnapshot(),
+    results: [
+      {
+        memoryId: "mem-current",
+        path: "facts/job.md",
+        servedBy: "hybrid",
+        scoreDecomposition: { final: 0.9 },
+        admittedBy: [],
+        stateView: "current",
+        pathPenaltyApplied: false,
+      },
+    ],
+  };
+  const out = renderXrayText(snap);
+  const count = out.split("state-view:").length - 1;
+  assert.equal(
+    count,
+    1,
+    `state-view must render once per result (stable location after path), got ${count}:\n${out}`,
+  );
+  assert.ok(out.includes("state-view: current"));
+});
+
 test("renderXrayText tier-explain block matches shared helper output", async () => {
   // CLAUDE.md rule 22: the tier-explain text block must be a single
   // source of truth shared between recall-explain-renderer and

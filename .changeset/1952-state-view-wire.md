@@ -2,4 +2,4 @@
 "@remnic/core": patch
 ---
 
-Wire annotateStateView into recall injection. `recallStateViews` defaults false (identity). parseConfig does not yet parse the key. Part of #1952.
+Wire `annotateStateView` into recall injection and parse `recallStateViews` in `parseConfig` (completes the #1952 wiring: policy-filter admission, historical prefix rendering, MCP `stateView` param, X-ray labels).

@@ -22,6 +22,7 @@ import { randomUUID } from "node:crypto";
 import { normalizeRetrievedMemoryProvenance, type RetrievedMemoryProvenance } from "./memory-provenance.js";
 import { estimateTokenCount } from "./token-estimate.js";
 import type { RecallDisclosure, RecallTierExplain } from "./types.js";
+import type { StateLabel } from "./recall-state-view.js";
 import { isRecallDisclosure } from "./types.js";
 
 /**
@@ -196,6 +197,13 @@ export interface RecallXrayResult {
     quarantined: boolean;
     quarantineReason?: string;
   };
+  /**
+   * #1952 — recall state-view label for this result (`current`,
+   * `historical`, or `transition`). Present only when state views were
+   * active for the recall AND the result was annotated at the inject
+   * seam; absent otherwise, so legacy snapshots round-trip unchanged.
+   */
+  stateView?: StateLabel;
 }
 
 /**
@@ -522,6 +530,10 @@ function cloneResult(result: RecallXrayResult): RecallXrayResult {
     typeof result.pathPenaltyApplied === "boolean"
       ? result.pathPenaltyApplied
       : undefined;
+  const stateView =
+    result.stateView === "current" || result.stateView === "historical" || result.stateView === "transition"
+      ? result.stateView
+      : undefined;
   const auditEntryId = nonEmptyString(result.auditEntryId);
   const rejectedBy = nonEmptyString(result.rejectedBy);
   const scoreDecomposition = cloneScoreDecomposition(result.scoreDecomposition);
@@ -538,6 +550,7 @@ function cloneResult(result: RecallXrayResult): RecallXrayResult {
   }
   if (pathNodeIds !== undefined) out.pathNodeIds = pathNodeIds;
   if (pathPenaltyApplied !== undefined) out.pathPenaltyApplied = pathPenaltyApplied;
+  if (stateView !== undefined) out.stateView = stateView;
   if (auditEntryId !== undefined) out.auditEntryId = auditEntryId;
   if (rejectedBy !== undefined) out.rejectedBy = rejectedBy;
   // Disclosure + token telemetry (issue #677 PR 3/4).  Only attach when

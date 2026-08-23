@@ -156,10 +156,10 @@ function liveEntries(
   query: string,
   stateViewsEnabled: boolean,
 ): { entries: string[]; widened: { id?: string; stateLabel?: string }[] } {
-  // parseConfig intentionally does not carry `recallStateViews` (see
-  // recall-state-view-wire.ts: "parseConfig cannot grow"), so operators set it
-  // on the live config object. Setting it INSIDE parseConfig silently yields a
-  // disabled render, which makes a zero-diff assertion vacuous.
+  // parseConfig now carries `recallStateViews` (default false); the override
+  // below exercises the enabled path against the real parsed config, and the
+  // disabled path uses the parsed default — so a parse regression (flag
+  // silently ignored) makes the enabled assertions below fail.
   const parsed = parseConfig({ memoryDir: "/tmp/remnic-zero-diff-test" });
   const config = stateViewsEnabled
     ? ({ ...parsed, recallStateViews: true } as typeof parsed)
@@ -196,7 +196,7 @@ function linesFrom(
   }));
 }
 
-test("the enabled route labels an admitted superseded row; disabled leaves labels alone", () => {
+test("the enabled route labels a superseded row and renders the historical prefix", () => {
   const results = [
     { memoryId: "m-1", text: "we use PostgreSQL", stateLabel: "current" as const, score: 0.9 },
     {
@@ -224,12 +224,21 @@ test("the enabled route labels an admitted superseded row; disabled leaves label
     "current",
     "the disabled route must not touch labels",
   );
-  // NOTE: the live formatter renders no superseded prefix — formatSupersededPrefix
-  // is reachable only from renderStateViewLine, which has no production caller.
-  // So the rendered entries are identical here, and asserting a rendered
-  // annotation through this route would be asserting a feature that is not
-  // wired. That gap belongs to the rendering slice, not to this guard.
-  assert.deepEqual(enabled.entries, disabled.entries);
+  // Observable effect #2 (rendering slice): the enabled route prefixes the
+  // admitted superseded row with `[superseded <date> by <id>]`; the disabled
+  // render stays byte-identical (no prefix, same snippet).
+  const enabledOld = enabled.entries.find((entry) => entry.includes("we use SQLite"));
+  const disabledOld = disabled.entries.find((entry) => entry.includes("we use SQLite"));
+  assert.ok(enabledOld, "enabled render includes the superseded row");
+  assert.ok(disabledOld, "disabled render includes the (unlabeled) row");
+  assert.match(enabledOld!, /\[superseded 2026-08-01 by m-1\] we use SQLite/);
+  assert.doesNotMatch(disabledOld!, /\[superseded/);
+  // Current rows are untouched in both renders.
+  for (const entries of [enabled.entries, disabled.entries]) {
+    const current = entries.find((entry) => entry.includes("we use PostgreSQL"));
+    assert.ok(current);
+    assert.doesNotMatch(current!, /\[superseded/);
+  }
 });
 
 test("the enabled route drops a superseded row whose successor is absent", () => {

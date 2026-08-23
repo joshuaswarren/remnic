@@ -152,6 +152,7 @@ function renderResultTextLines(
   const lines: string[] = [];
   lines.push(`[${rank}] ${result.memoryId} — ${servedByLabel(result.servedBy)}`);
   if (result.path) lines.push(`    path: ${result.path}`);
+  if (result.stateView) lines.push(`    state-view: ${result.stateView}`);
   lines.push(`    score: ${renderScoreDecomposition(result)}`);
   if (result.provenance) {
     lines.push(
@@ -396,6 +397,9 @@ function renderResultMarkdownLines(
     lines.push(
       `- **Admitted by:** ${result.admittedBy.map(mdInlineCode).join(", ")}`,
     );
+  }
+  if (result.stateView) {
+    lines.push(`- **State view:** ${mdInlineCode(result.stateView)}`);
   }
   if (result.rejectedBy) {
     lines.push(`- **Rejected by:** ${mdInlineCode(result.rejectedBy)}`);
