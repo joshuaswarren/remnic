@@ -3,6 +3,8 @@
 // field-level detail so consumers get clear feedback on malformed requests.
 
 import { z } from "zod";
+
+import type { MemoryCategory } from "./types.js";
 import {
   ACTION_CONFIDENCE_CONTEXT_READINESS,
   ACTION_CONFIDENCE_RISK_CATEGORIES,
@@ -258,26 +260,107 @@ export const deepRecallRequestSchema = z.object({
 // ---------------------------------------------------------------------------
 
 const writeContentSchema = z.string().min(1, "content is required").max(50000);
-const categorySchema = z
-  .enum([
-    "fact", "preference", "correction", "entity", "decision",
-    "relationship", "principle", "commitment", "moment", "skill", "rule", "procedure",
-    "reasoning_trace",
-  ])
-  .optional();
+// ---------------------------------------------------------------------------
+// Category wire contract (issue #2829): truthful input/output modeling.
+// ---------------------------------------------------------------------------
+
+/** Canonical input spellings — exactly the `MemoryCategory` union. */
+const MEMORY_CATEGORY_CANONICAL_INPUT = [
+  "fact", "preference", "correction", "entity", "decision",
+  "relationship", "principle", "commitment", "moment", "skill", "rule", "procedure",
+  "reasoning_trace",
+] as const satisfies readonly MemoryCategory[];
+
+/**
+ * Compatibility alias spellings admitted on input. The four project-shaped
+ * categories fleet telemetry actually shows do not exist in the taxonomy;
+ * they parse to the canonical "fact". Exact match only — no trimming, no
+ * case folding, so near-misses like `projection` or `Project_State` reject
+ * like any other invalid category, with the full valid list in the error.
+ */
+const MEMORY_CATEGORY_ALIAS_INPUT = [
+  "project",
+  "project_state",
+  "project-state",
+  "project_update",
+] as const;
+
+export type MemoryCategoryAlias = (typeof MEMORY_CATEGORY_ALIAS_INPUT)[number];
+
+const MEMORY_CATEGORY_ALIAS_TO_CANONICAL: Readonly<
+  Record<MemoryCategoryAlias, Extract<MemoryCategory, "fact">>
+> = {
+  project: "fact",
+  project_state: "fact",
+  "project-state": "fact",
+  project_update: "fact",
+};
+
+export function isMemoryCategoryAlias(value: string): value is MemoryCategoryAlias {
+  return Object.prototype.hasOwnProperty.call(MEMORY_CATEGORY_ALIAS_TO_CANONICAL, value);
+}
+
+/** Coercion diagnostic for a write whose input category was a compat alias. */
+export interface CategoryAliasCoercion {
+  from: MemoryCategoryAlias;
+  to: "fact";
+}
+
+/** Boundary-derived coercion note for a retained raw spelling. */
+export function categoryAliasCoercion(rawCategory: string | undefined): CategoryAliasCoercion | undefined {
+  return rawCategory !== undefined && isMemoryCategoryAlias(rawCategory)
+    ? { from: rawCategory, to: "fact" }
+    : undefined;
+}
+
+/**
+ * Recover the retained alias spelling from a pre-parse raw envelope: the
+ * `rawCategory` minted by a previous parse of the same schema (the HTTP/MCP
+ * validate-then-dispatch double pass) or an as-yet-untransformed alias
+ * `category` (single-parse callers like the CLI store command).
+ */
+export function retainedCategoryAlias(rawInput: unknown): MemoryCategoryAlias | undefined {
+  if (!rawInput || typeof rawInput !== "object") return undefined;
+  const spelling = (rawInput as Record<string, unknown>).rawCategory;
+  return typeof spelling === "string" && isMemoryCategoryAlias(spelling) ? spelling : undefined;
+}
+
+/**
+ * An idempotent replay returns the FIRST request's stored response, whose
+ * coercion note names that request's spelling. Rewrite the note from the
+ * CURRENT request's retained spelling so every response identifies what its
+ * caller actually sent; the stored idempotent result is reused untouched.
+ */
+export function reapplyCategoryCoercion<T extends { categoryCoercion?: CategoryAliasCoercion }>(
+  response: T,
+  categoryCoercion: CategoryAliasCoercion | undefined,
+): T {
+  if (categoryCoercion !== undefined) {
+    return { ...response, categoryCoercion };
+  }
+  if (response.categoryCoercion === undefined) {
+    return response;
+  }
+  const withoutNote = { ...response };
+  delete withoutNote.categoryCoercion;
+  return withoutNote;
+}
+
+const categoryWireSchema = z.enum([...MEMORY_CATEGORY_CANONICAL_INPUT, ...MEMORY_CATEGORY_ALIAS_INPUT]);
+
 const confidenceSchema = z.number().min(0).max(1).optional();
 const tagsSchema = z.array(z.string().max(256)).max(50).optional();
 const entityRefSchema = z.string().trim().max(512).optional();
 const ttlSchema = z.string().trim().max(128).optional();
 const sourceReasonSchema = z.string().trim().max(2000).optional();
 
-export const memoryStoreRequestSchema = z.object({
+const memoryStoreRequestShape = z.object({
   schemaVersion: schemaVersionSchema,
   idempotencyKey: idempotencyKeySchema,
   dryRun: dryRunSchema,
   sessionKey: sessionKeySchema,
   content: writeContentSchema,
-  category: categorySchema,
+  category: categoryWireSchema.optional(),
   confidence: confidenceSchema,
   namespace: namespaceSchema,
   tags: tagsSchema,
@@ -291,6 +374,34 @@ export const memoryStoreRequestSchema = z.object({
   cwd: cwdSchema,
   projectTag: projectTagSchema,
 });
+
+/**
+ * Parsed memory-store request (issue #2829): the category transform maps
+ * compat aliases to the canonical "fact" DURING parsing, so the output type
+ * stays the finite `MemoryCategory` union — never an alias spelling. The raw
+ * spelling travels separately on `rawCategory`, minted only by the transform
+ * (zod strips it from client bodies), for the write surface's coercion note
+ * and idempotent-replay rebuild.
+ */
+export type MemoryStoreParsedRequest = Omit<z.infer<typeof memoryStoreRequestShape>, "category"> & {
+  category?: MemoryCategory;
+  rawCategory?: MemoryCategoryAlias;
+};
+
+export const memoryStoreRequestSchema = memoryStoreRequestShape.transform(
+  (request): MemoryStoreParsedRequest => {
+    if (request.category === undefined || !isMemoryCategoryAlias(request.category)) {
+      // Spread so the narrowed canonical category, not the wide wire union,
+      // becomes the output type.
+      return { ...request, category: request.category };
+    }
+    return {
+      ...request,
+      category: MEMORY_CATEGORY_ALIAS_TO_CANONICAL[request.category],
+      rawCategory: request.category,
+    };
+  },
+);
 
 export const suggestionSubmitRequestSchema = memoryStoreRequestSchema;
 

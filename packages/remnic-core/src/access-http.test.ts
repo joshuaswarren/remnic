@@ -4020,6 +4020,84 @@ test("PR #1852: token rotation between authorization and write does not stamp th
   }
 });
 
+test("issue #2829: memory_store category aliases canonicalize with a retained spelling; near-misses 400", async () => {
+  const captured: Array<Record<string, unknown>> = [];
+  const service = {
+    memoryStore: (req: Record<string, unknown>) => {
+      captured.push(req);
+      return Promise.resolve({
+        schemaVersion: 1,
+        operation: "memory_store",
+        namespace: "default",
+        dryRun: false,
+        accepted: true,
+        queued: false,
+        status: "stored",
+      });
+    },
+    suggestionSubmit: (req: Record<string, unknown>) => {
+      captured.push(req);
+      return Promise.resolve({
+        schemaVersion: 1,
+        operation: "suggestion_submit",
+        namespace: "default",
+        dryRun: false,
+        accepted: true,
+        queued: true,
+        status: "queued_for_review",
+      });
+    },
+  } as unknown as EngramAccessService;
+
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    const post = (pathname: string, body: unknown) =>
+      fetch(`http://127.0.0.1:${status.port}${pathname}`, {
+        method: "POST",
+        headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    const aliased = await post("/engram/v1/memories", {
+      content: "alias over http",
+      category: "project_state",
+    });
+    assert.equal(aliased.status, 201);
+    assert.equal(captured[0]?.category, "fact", "HTTP memory_store must canonicalize the alias");
+    assert.equal(captured[0]?.rawCategory, "project_state", "HTTP memory_store must retain the spelling");
+
+    const suggested = await post("/engram/v1/suggestions", {
+      content: "alias over http suggestion",
+      category: "project_update",
+    });
+    assert.equal(suggested.status, 201);
+    assert.equal(captured[1]?.category, "fact");
+    assert.equal(captured[1]?.rawCategory, "project_update", "the suggestions route forwards the retained spelling");
+
+    const nearMiss = await post("/engram/v1/memories", {
+      content: "near miss over http",
+      category: "projection",
+    });
+    assert.equal(nearMiss.status, 400, "a near-miss category must reject");
+    const nearMissBody = (await nearMiss.json()) as {
+      error?: string;
+      details?: Array<{ field: string; message: string }>;
+    };
+    const categoryDetail = nearMissBody.details?.find((detail) => detail.field === "category");
+    assert.ok(categoryDetail, "the 400 must name the category field");
+    assert.match(categoryDetail.message, /'fact'/, "the 400 must list valid options");
+    assert.equal(captured.length, 2, "the near-miss must not dispatch");
+  } finally {
+    await server.stop();
+  }
+});
+
 test("PR #1852: static operator token has no connector provenance under rotation", async () => {
   // An operator-supplied static token must never acquire connector provenance,
   // even when an entries getter is also configured and the static token

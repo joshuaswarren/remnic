@@ -29,6 +29,7 @@ import {
   type MemoryScopePlan,
   NamespaceNotWritableError,
 } from "./access-service.js";
+import { categoryAliasCoercion, reapplyCategoryCoercion } from "./access-schema.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
 import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
@@ -485,25 +486,32 @@ export class AccessObserveWriteSurface {
     request: EngramAccessMemoryStoreRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> }
   ): Promise<EngramAccessWriteResponse> {
+    // #2829: the wire schema already canonicalized an alias category to
+    // "fact"; rawCategory retains the caller's spelling for the response
+    // note and must never reach the write candidate or the fingerprint.
+    const { rawCategory, ...canonical } = request;
+    const categoryCoercion = categoryAliasCoercion(rawCategory);
     let namespace: string;
     try {
-      namespace = await this.deps.resolveCodingScopedWriteNamespace(request);
+      namespace = await this.deps.resolveCodingScopedWriteNamespace(canonical);
     } catch (err) {
       // A dry run is a no-persist validation, and a replay re-submit sets
       // suppressQuarantine so a still-unwritable target propagates instead of
-      // re-parking (issue #1888): never dead-letter either.
+      // re-parking (issue #1888): never dead-letter either. Park the FULL
+      // request (rawCategory included) so quarantine replay can re-report the
+      // alias coercion (Codex review, PR #2826).
       if (request.dryRun !== true && request.suppressQuarantine !== true) {
         await this.parkRejectedWrite(err, "memory_store", request);
       }
       throw err;
     }
-    const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
+    const schemaVersion = canonical.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
       throw new EngramAccessInputError(`unsupported schemaVersion: ${schemaVersion}`);
     }
     const execute = async (): Promise<EngramAccessWriteResponse> => {
-      const candidate = this.deps.validateWriteCandidate(request, namespace);
-      if (request.dryRun === true) {
+      const candidate = this.deps.validateWriteCandidate(canonical, namespace);
+      if (canonical.dryRun === true) {
         return {
           schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
           operation: "memory_store",
@@ -512,7 +520,8 @@ export class AccessObserveWriteSurface {
           accepted: true,
           queued: false,
           status: "validated",
-          idempotencyKey: request.idempotencyKey?.trim() || undefined,
+          idempotencyKey: canonical.idempotencyKey?.trim() || undefined,
+          ...(categoryCoercion ? { categoryCoercion } : {}),
         };
       }
       const result = await persistExplicitCapture(this.deps.orchestrator, candidate, "memory_store");
@@ -523,7 +532,7 @@ export class AccessObserveWriteSurface {
       // but never binds the session on a dryRun, replay/conflict, quota
       // rejection, or an explicit-namespace write (which bypasses the overlay),
       // since those don't reach this point or aren't project-scoped (Codex review).
-      await this.deps.attachCodingContextAfterScopedWrite(request);
+      await this.deps.attachCodingContextAfterScopedWrite(canonical);
       // #1645 (review thread yG-): a tombstone-blocked capture is pending_review
       // (no active copy) — report it as queued_for_review so the HTTP/MCP caller
       // doesn't read it as a successfully stored active memory.
@@ -538,58 +547,69 @@ export class AccessObserveWriteSurface {
         status: blocked ? "queued_for_review" : result.duplicateOf ? "duplicate" : "stored",
         memoryId: result.id,
         duplicateOf: result.duplicateOf,
-        idempotencyKey: request.idempotencyKey?.trim() || undefined,
+        idempotencyKey: canonical.idempotencyKey?.trim() || undefined,
+        ...(categoryCoercion ? { categoryCoercion } : {}),
       };
       log.info(
         `access-write op=memory_store namespace=${namespace} dryRun=false status=${response.status} memoryId=${response.memoryId ?? "-"} idempotency=${response.idempotencyKey ? "yes" : "no"}`
       );
       return response;
     };
-    return this.deps.handleIdempotentWrite({
+    const response = await this.deps.handleIdempotentWrite({
       operation: "memory_store",
-      idempotencyKey: request.idempotencyKey,
+      idempotencyKey: canonical.idempotencyKey,
       // Shared builder (issue #1989 PR3): byte-parity with the historical
       // inline literal is asserted by access-fingerprint-parity.test.ts.
+      // Fingerprints the CANONICAL category, so `fact` and an alias spelling
+      // under one idempotency key are the same request (#2829).
       requestFingerprint: buildAccessWriteRequestFingerprint({
         schemaVersion,
         namespace,
-        content: request.content,
-        category: request.category,
-        confidence: request.confidence,
-        tags: request.tags,
-        entityRef: request.entityRef,
-        ttl: request.ttl,
-        sourceReason: request.sourceReason,
-        sourceConnector: request.sourceConnector,
+        content: canonical.content,
+        category: canonical.category,
+        confidence: canonical.confidence,
+        tags: canonical.tags,
+        entityRef: canonical.entityRef,
+        ttl: canonical.ttl,
+        sourceReason: canonical.sourceReason,
+        sourceConnector: canonical.sourceConnector,
       }),
-      skip: request.dryRun === true,
+      skip: canonical.dryRun === true,
       beforeExecute: hooks?.enforceWriteQuota,
       execute,
     });
+    // #2829: a replay returns the first request's stored note; rebuild it
+    // from THIS request's spelling so the response names what this caller sent.
+    return reapplyCategoryCoercion(response, categoryCoercion);
   }
 
   async suggestionSubmit(
     request: EngramAccessSuggestionSubmitRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> }
   ): Promise<EngramAccessWriteResponse> {
+    // #2829: same alias-retention funnel as memory_store.
+    const { rawCategory, ...canonical } = request;
+    const categoryCoercion = categoryAliasCoercion(rawCategory);
     let namespace: string;
     try {
-      namespace = await this.deps.resolveCodingScopedWriteNamespace(request);
+      namespace = await this.deps.resolveCodingScopedWriteNamespace(canonical);
     } catch (err) {
       // A dry run never persists, and a replay re-submit sets suppressQuarantine
       // so a still-unwritable target propagates instead of re-parking (#1888).
+      // Park the FULL request (rawCategory included) so quarantine replay can
+      // re-report the alias coercion.
       if (request.dryRun !== true && request.suppressQuarantine !== true) {
         await this.parkRejectedWrite(err, "suggestion_submit", request);
       }
       throw err;
     }
-    const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
+    const schemaVersion = canonical.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
       throw new EngramAccessInputError(`unsupported schemaVersion: ${schemaVersion}`);
     }
     const execute = async (): Promise<EngramAccessWriteResponse> => {
-      const candidate = this.deps.validateWriteCandidate(request, namespace);
-      if (request.dryRun === true) {
+      const candidate = this.deps.validateWriteCandidate(canonical, namespace);
+      if (canonical.dryRun === true) {
         return {
           schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
           operation: "suggestion_submit",
@@ -598,19 +618,20 @@ export class AccessObserveWriteSurface {
           accepted: true,
           queued: true,
           status: "validated",
-          idempotencyKey: request.idempotencyKey?.trim() || undefined,
+          idempotencyKey: canonical.idempotencyKey?.trim() || undefined,
+          ...(categoryCoercion ? { categoryCoercion } : {}),
         };
       }
       const result = await queueExplicitCaptureForReview(
         this.deps.orchestrator,
         candidate,
         "suggestion_submit",
-        new Error(request.sourceReason?.trim() || "submitted via engram suggestion_submit")
+        new Error(canonical.sourceReason?.trim() || "submitted via engram suggestion_submit")
       );
       // Seed the session binding only after a real, project-scoped submit commits
       // (mirrors memory_store / recall; skips dryRun, replay, quota-reject, and
       // explicit-namespace writes — Codex review).
-      await this.deps.attachCodingContextAfterScopedWrite(request);
+      await this.deps.attachCodingContextAfterScopedWrite(canonical);
       const response: EngramAccessWriteResponse = {
         schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
         operation: "suggestion_submit",
@@ -621,34 +642,38 @@ export class AccessObserveWriteSurface {
         status: "queued_for_review",
         memoryId: result.id,
         duplicateOf: result.duplicateOf,
-        idempotencyKey: request.idempotencyKey?.trim() || undefined,
+        idempotencyKey: canonical.idempotencyKey?.trim() || undefined,
+        ...(categoryCoercion ? { categoryCoercion } : {}),
       };
       log.info(
         `access-write op=suggestion_submit namespace=${namespace} dryRun=false status=${response.status} memoryId=${response.memoryId ?? "-"} idempotency=${response.idempotencyKey ? "yes" : "no"}`
       );
       return response;
     };
-    return this.deps.handleIdempotentWrite({
+    const response = await this.deps.handleIdempotentWrite({
       operation: "suggestion_submit",
-      idempotencyKey: request.idempotencyKey,
+      idempotencyKey: canonical.idempotencyKey,
       // Shared builder (issue #1989 PR3): byte-parity with the historical
       // inline literal is asserted by access-fingerprint-parity.test.ts.
+      // Fingerprints the CANONICAL category (#2829).
       requestFingerprint: buildAccessWriteRequestFingerprint({
         schemaVersion,
         namespace,
-        content: request.content,
-        category: request.category,
-        confidence: request.confidence,
-        tags: request.tags,
-        entityRef: request.entityRef,
-        ttl: request.ttl,
-        sourceReason: request.sourceReason,
-        sourceConnector: request.sourceConnector,
+        content: canonical.content,
+        category: canonical.category,
+        confidence: canonical.confidence,
+        tags: canonical.tags,
+        entityRef: canonical.entityRef,
+        ttl: canonical.ttl,
+        sourceReason: canonical.sourceReason,
+        sourceConnector: canonical.sourceConnector,
       }),
-      skip: request.dryRun === true,
+      skip: canonical.dryRun === true,
       beforeExecute: hooks?.enforceWriteQuota,
       execute,
     });
+    // #2829: rebuild a replayed coercion note from THIS request's spelling.
+    return reapplyCategoryCoercion(response, categoryCoercion);
   }
 
   async runObserve(request: EngramAccessObserveRequest): Promise<EngramAccessObserveResponse> {

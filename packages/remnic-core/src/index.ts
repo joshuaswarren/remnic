@@ -569,12 +569,19 @@ export {
   observeRequestSchema,
   memoryStoreRequestSchema,
   suggestionSubmitRequestSchema,
+  categoryAliasCoercion,
+  isMemoryCategoryAlias,
+  reapplyCategoryCoercion,
+  retainedCategoryAlias,
   type SchemaValidationError,
   type SchemaName,
   type RecallRequest,
   type ObserveRequest,
   type MemoryStoreRequest,
+  type MemoryStoreParsedRequest,
   type SuggestionSubmitRequest,
+  type MemoryCategoryAlias,
+  type CategoryAliasCoercion,
 } from "./access-schema.js";
 
 // ---------------------------------------------------------------------------
