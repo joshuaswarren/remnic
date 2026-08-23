@@ -191,8 +191,9 @@ a model-backed detector lands in the consuming child.
   UTF-8 (strict decode, never U+FFFD replacement text) as malformed, derives
   polarity and assertion from the action, reconstructs gated `factText` by
   stripping the persist-time attribute suffix and default inline citation,
-  streams reads (one payload resident at a time, fingerprint chained
-  per-file in walk order, row set bounded by `--max-records`),
+  skips child files that persist `parentId` plus `chunkIndex` with an inherited
+  whole-fact verdict, streams reads (one payload resident at a time, fingerprint
+  chained per-file in walk order, row set bounded by `--max-records`),
   stats-and-streams `--max-text-bytes` before a full read, and never
   runs from the daemon, build, or CI. See `model-lab/README.md`
   ("Harvesting shadow-telemetry labels") for the command recipe.
