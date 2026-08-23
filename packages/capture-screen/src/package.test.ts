@@ -29,7 +29,7 @@ test("@remnic/capture-screen preserves dependency-light package configuration", 
     "workspace:*",
     "@remnic/capture-screen must keep @remnic/core as a dev dependency for source and build",
   );
-  const prepareCore = "node ../../scripts/pnpm.mjs --filter @remnic/core build";
+  const prepareCore = "node ../../scripts/ensure-core-build-deps.mjs";
   assert.equal(pkg.scripts?.prebuild, prepareCore);
   assert.equal(pkg.scripts?.["precheck-types"], prepareCore);
 });
