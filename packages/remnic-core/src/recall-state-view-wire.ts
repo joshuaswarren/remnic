@@ -14,6 +14,7 @@ export function applyRecallStateViews<T extends StateViewResult>(
   query: string,
   config: unknown,
   stateViewActive?: boolean,
+  asOfMs?: number,
 ): T[] {
-  return widenRecallStateViews(results, query, config, [], stateViewActive);
+  return widenRecallStateViews(results, query, config, [], stateViewActive, asOfMs);
 }

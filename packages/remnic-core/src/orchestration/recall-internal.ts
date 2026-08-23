@@ -4076,6 +4076,7 @@ export class RecallInternalCoordinator {
             truncated: identityInjectionTruncated,
           },
         stateViewActive,
+        asOfMs,
         trustByPath: recallTrustByPath,
         });
         recalledMemoryPaths = memoryResults
@@ -4199,6 +4200,7 @@ export class RecallInternalCoordinator {
               truncated: identityInjectionTruncated,
             },
           stateViewActive,
+          asOfMs,
           trustByPath: recallTrustByPath,
           });
           recalledMemoryPaths = scoped
@@ -4255,6 +4257,7 @@ export class RecallInternalCoordinator {
                 truncated: identityInjectionTruncated,
               },
             stateViewActive,
+            asOfMs,
             trustByPath: recallTrustByPath,
             });
             recalledMemoryPaths = longTerm
@@ -4412,6 +4415,7 @@ export class RecallInternalCoordinator {
             truncated: identityInjectionTruncated,
           },
         stateViewActive,
+        asOfMs,
         trustByPath: recallTrustByPath,
         });
         recalledMemoryPaths = scoped
@@ -4432,38 +4436,71 @@ export class RecallInternalCoordinator {
           // shouldFilterSupersededFromRecall so recent-scan and the QMD
           // safety filter share semantics (kill switch, audit mode, PR #402).
           // #1952: an active state view admits a superseded memory whose
-          // successor is also in this candidate pool — same rule as the
-          // filterSearchResultsByRecallSafety branch.
+          // successor ALSO survives this admission filter — a successor
+          // excluded by status or path can never anchor (mirrors the
+          // filterSearchResultsByRecallSafety fixpoint). Anchors grow
+          // through admitted chain links, so iterate to a fixpoint.
           const supersessionOptions = {
             enabled: lifecycleCaps.temporalSupersession,
             includeInRecall: this.deps.config.temporalSupersessionIncludeInRecall,
           };
-          const stateViewCandidateIds = stateViewActive
-            ? new Set(memories.flatMap((m) => (typeof m.frontmatter.id === "string" && m.frontmatter.id ? [m.frontmatter.id] : [])))
-            : null;
           // PR #713: when `as_of` is active, pass superseded candidates
           // through here — boostSearchResults's `[valid_at, invalid_at)`
           // evaluation is the authoritative historical gate. Other
           // non-active statuses stay excluded.
           const asOfActive =
             typeof asOfMs === "number" && Number.isFinite(asOfMs);
-          const activeMemories = memories.filter(
-            (m) => {
-              if (isGenericRecallExcludedPath(m.path, this.deps.config)) return false;
-              const status = m.frontmatter.status;
-              if (!status || status === "active") return true;
-              if (status === "superseded") {
-                if (asOfActive) return true;
-                if (stateViewCandidateIds !== null && stateViewCandidateIds.has(m.frontmatter.supersededBy ?? "")) return true;
-                // Include superseded memory only if the canonical gate says
-                // NOT to filter it (kill switch off or audit mode on).
-                return !shouldFilterSupersededFromRecall(m.frontmatter, supersessionOptions);
+          let stateViewAdmittedIds: Set<string> | null = null;
+          if (stateViewActive && !asOfActive) {
+            stateViewAdmittedIds = new Set(
+              memories
+                .filter(
+                  (m) =>
+                    !isGenericRecallExcludedPath(m.path, this.deps.config) &&
+                    m.frontmatter.status !== "superseded" &&
+                    !shouldFilterSupersededFromRecall(m.frontmatter, supersessionOptions),
+                )
+                .map((m) => m.frontmatter.id)
+                .filter((id): id is string => typeof id === "string" && id.length > 0),
+            );
+            for (let progress = true; progress; ) {
+              progress = false;
+              for (const m of memories) {
+                const id = m.frontmatter.id;
+                if (typeof id !== "string" || id.length === 0) continue;
+                if (stateViewAdmittedIds.has(id)) continue;
+                if (isGenericRecallExcludedPath(m.path, this.deps.config)) continue;
+                if (m.frontmatter.status !== "superseded") continue;
+                if (!shouldFilterSupersededFromRecall(m.frontmatter, supersessionOptions)) continue;
+                if (stateViewAdmittedIds.has(m.frontmatter.supersededBy ?? "")) {
+                  stateViewAdmittedIds.add(id);
+                  progress = true;
+                }
               }
-              // Other non-active statuses (archived, retired, etc.) are
-              // excluded from the recent-scan path by default.
-              return false;
-            },
-          );
+            }
+          }
+          const activeMemories = memories.filter((m) => {
+            if (isGenericRecallExcludedPath(m.path, this.deps.config)) return false;
+            const status = m.frontmatter.status;
+            if (!status || status === "active") return true;
+            if (status === "superseded") {
+              if (asOfActive) return true;
+              const id = m.frontmatter.id;
+              if (
+                stateViewAdmittedIds !== null &&
+                typeof id === "string" &&
+                stateViewAdmittedIds.has(id)
+              ) {
+                return true;
+              }
+              // Include superseded memory only if the canonical gate says
+              // NOT to filter it (kill switch off or audit mode on).
+              return !shouldFilterSupersededFromRecall(m.frontmatter, supersessionOptions);
+            }
+            // Other non-active statuses (archived, retired, etc.) are
+            // excluded from the recent-scan path by default.
+            return false;
+          });
           // Convert to QmdSearchResult with recency baseline, then boost so
           // temporal/tag boosts match the QMD path. Cap AFTER boosting, and
           // pass a pre-populated memoryByPath to skip redundant disk reads.
@@ -4517,6 +4554,7 @@ export class RecallInternalCoordinator {
                   truncated: identityInjectionTruncated,
                 },
               stateViewActive,
+              asOfMs,
               trustByPath: recallTrustByPath,
               });
               recalledMemoryPaths = longTerm
@@ -4645,6 +4683,7 @@ export class RecallInternalCoordinator {
                   truncated: identityInjectionTruncated,
                 },
               stateViewActive,
+              asOfMs,
               trustByPath: recallTrustByPath,
               });
               recalledMemoryPaths = recent
@@ -4700,6 +4739,7 @@ export class RecallInternalCoordinator {
                     truncated: identityInjectionTruncated,
                   },
                 stateViewActive,
+                asOfMs,
                 trustByPath: recallTrustByPath,
                 });
                 recalledMemoryPaths = longTerm
@@ -4757,6 +4797,7 @@ export class RecallInternalCoordinator {
                 truncated: identityInjectionTruncated,
               },
             stateViewActive,
+            asOfMs,
             trustByPath: recallTrustByPath,
             });
             recalledMemoryPaths = longTerm
@@ -5057,7 +5098,7 @@ export class RecallInternalCoordinator {
         // boostSearchResults annotated before surfacing to xray.
         // #1952: label the captured branch through the same inject-seam annotator.
         const xrayResultByPath = new Map<string, QmdSearchResult>(
-          applyRecallStateViews(xrayRecalledResults, retrievalQuery, this.deps.config, stateViewActive).map((xr) => [`${xr.namespace ?? ""}\0${xr.path}`, xr]),
+          applyRecallStateViews(xrayRecalledResults, retrievalQuery, this.deps.config, stateViewActive, asOfMs).map((xr) => [`${xr.namespace ?? ""}\0${xr.path}`, xr]),
         );
         const results: RecallXrayResult[] = [];
         for (let xrayIdx = 0; xrayIdx < recalledMemoryPaths.length; xrayIdx += 1) {

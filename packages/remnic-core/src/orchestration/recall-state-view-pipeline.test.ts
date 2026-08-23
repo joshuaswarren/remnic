@@ -130,3 +130,82 @@ test("state view does NOT admit a superseded candidate whose successor is absent
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("a successor rejected by the status gate cannot anchor its superseded row (no slot consumed)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-sv-anchor-status-"));
+  try {
+    const coordinator = await makeCoordinator(memoryDir);
+    const OTHER = "facts/unrelated.md";
+    const results = [result(OLD, 0.9), result(NEW, 0.8), result(OTHER, 0.7)];
+    const memories = new Map<string, MemoryFile>([
+      [
+        OLD,
+        memory(OLD, {
+          id: "m-old",
+          status: "superseded",
+          supersededBy: "m-new",
+          supersededAt: "2026-08-01",
+        }),
+      ],
+      // In memoryByPath (pre-filter) but rejected by the forgotten-status
+      // gate — pre-fix this id anchored m-old and admitted it.
+      [NEW, memory(NEW, { id: "m-new", status: "forgotten" })],
+      [OTHER, memory(OTHER, { id: "m-other", status: "active" })],
+    ]);
+    const safe = coordinator.filterSearchResultsByRecallSafety(results, memories, {
+      stateViewActive: true,
+    });
+    assert.deepEqual(
+      safe.map((r) => r.path),
+      [OTHER],
+      "a filter-rejected successor must not anchor its superseded row, and the orphaned row must not consume a slot",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a successor rejected by the dedicated-surface gate cannot anchor its superseded row", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-sv-anchor-surface-"));
+  try {
+    const coordinator = await makeCoordinator(memoryDir);
+    const results = [result(OLD, 0.9), result(NEW, 0.8)];
+    const memories = new Map<string, MemoryFile>([
+      [
+        OLD,
+        memory(OLD, {
+          id: "m-old",
+          status: "superseded",
+          supersededBy: "m-new",
+          supersededAt: "2026-08-01",
+        }),
+      ],
+      [NEW, memory(NEW, { id: "m-new", status: "active", memoryKind: "dream" })],
+    ]);
+    const safe = coordinator.filterSearchResultsByRecallSafety(results, memories, {
+      stateViewActive: true,
+    });
+    assert.deepEqual(safe, [], "dream-surface successors must not anchor superseded rows");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an anchored predecessor keeps its rank position when admitted", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-sv-anchor-order-"));
+  try {
+    const coordinator = await makeCoordinator(memoryDir);
+    const { results, memories } = corpus();
+    const safe = coordinator.filterSearchResultsByRecallSafety(results, memories, {
+      stateViewActive: true,
+    });
+    assert.deepEqual(
+      safe.map((r) => r.path),
+      [NEW, OLD],
+      "admission must not reorder candidates relative to their incoming rank",
+    );
+    assert.equal(safe[1]?.supersededBy, "m-new", "admitted row carries the chain fields");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

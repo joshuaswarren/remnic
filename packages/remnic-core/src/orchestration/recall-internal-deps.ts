@@ -337,6 +337,8 @@ export interface RecallInternalDeps {
      * semantics, issue #1952).
      */
     stateViewActive?: boolean;
+    /** #1952 — historical recall pin (epoch ms); asOf-mode annotation. */
+    asOfMs?: number;
   }): void;
   readonly qmd: SearchBackend;
   queueEvalShadowRecall(

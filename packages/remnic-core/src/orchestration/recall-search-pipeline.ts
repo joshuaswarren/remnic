@@ -1131,16 +1131,33 @@ export class RecallSearchPipelineCoordinator {
       stateViewActive?: boolean;
     },
   ): QmdSearchResult[] {
-    // #1952: memory ids of the whole candidate set — the state-view
-    // admission rule anchors a superseded row on its successor's presence.
-    const stateViewCandidateIds =
-      options?.stateViewActive === true
-        ? new Set(
-            Array.from(memoryByPath.values())
-              .map((m) => m.frontmatter.id)
-              .filter((id): id is string => typeof id === "string" && id.length > 0),
-          )
-        : null;
+    // #1952 state-aware recall views. A superseded row is admitted only
+    // when its successor SURVIVES this filter — a successor rejected by
+    // the connector/lifecycle/validity/dedicated-surface/status gates
+    // must never anchor (or spend a result slot on) its superseded row.
+    // Anchors are therefore collected from rows that survive the pass
+    // below; superseded rows defer admission to the post-pass fixpoint.
+    const stateViewActive = options?.stateViewActive === true;
+    const stateViewSurvivorIds = stateViewActive ? new Set<string>() : null;
+    const stateViewDeferred: number[] = [];
+    const stateViewBuilt: (QmdSearchResult | null)[] | null = stateViewActive
+      ? new Array<QmdSearchResult | null>(results.length).fill(null)
+      : null;
+    const buildRecallRow = (r: QmdSearchResult, memory: MemoryFile | undefined): QmdSearchResult => ({
+      ...r,
+      sourceConnector: memory ? memory.frontmatter.sourceConnector : undefined,
+      origin: memory ? memory.frontmatter.origin : undefined,
+      // #1952: an active state view carries the chain fields the inject
+      // seam labels from (id/status/supersededBy/supersededAt).
+      ...(stateViewActive && memory
+        ? {
+            id: memory.frontmatter.id,
+            status: memory.frontmatter.status,
+            supersededBy: memory.frontmatter.supersededBy,
+            supersededAt: memory.frontmatter.supersededAt,
+          }
+        : {}),
+    });
     let stateViewAdmittedCount = 0;
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.deps.config);
     let lifecycleFilteredCount = 0;
@@ -1152,7 +1169,9 @@ export class RecallSearchPipelineCoordinator {
     let connectorPartitionFilteredCount = 0;
     let supportPassportFilteredCount = 0;
     const filtered: QmdSearchResult[] = [];
-    for (const r of results) {
+    for (let resultIdx = 0; resultIdx < results.length; resultIdx += 1) {
+      const r = results[resultIdx]!;
+      let stateViewPending = false;
       if (options?.blockedPaths && resultHasKey(options.blockedPaths, r)) {
         blockedPathFilteredCount += 1;
         continue;
@@ -1228,20 +1247,22 @@ export class RecallSearchPipelineCoordinator {
           // candidates, but superseded memories must still be filtered
           // unless temporalSupersessionIncludeInRecall is set.
           // #1952: an active state view ADMITS the superseded row when its
-          // successor is also in the candidate set — history never renders
-          // unanchored. Skipped entirely when `as_of` is active (above
-          // branch); isValidAsOf stays the authoritative historical gate.
+          // successor also survives this filter — history never renders
+          // unanchored, and a successor rejected by any gate here can
+          // never anchor. Admission defers to the post-pass fixpoint.
+          // Skipped entirely when `as_of` is active (above branch);
+          // isValidAsOf stays the authoritative historical gate.
           shouldFilterSupersededFromRecall(memory.frontmatter, {
             enabled: lifecycleCaps.temporalSupersession,
             includeInRecall: this.deps.config.temporalSupersessionIncludeInRecall,
-          }) &&
-          !(
-            stateViewCandidateIds !== null &&
-            stateViewCandidateIds.has(memory.frontmatter.supersededBy ?? "")
-          )
+          })
         ) {
-          temporalSupersededFilteredCount += 1;
-          continue;
+          if (stateViewActive) {
+            stateViewPending = true;
+          } else {
+            temporalSupersededFilteredCount += 1;
+            continue;
+          }
         }
         // Bi-temporal INJECTION filter (issue #1578): when the master gate
         // is on and the caller did NOT pin `as_of`, drop facts whose event-
@@ -1280,29 +1301,57 @@ export class RecallSearchPipelineCoordinator {
       }
       // Derive persisted provenance exclusively from hydrated frontmatter.
       // The formatter parses this value at the model-context render site.
-      // #1952: an active state view also carries the chain fields the inject
-      // seam labels from (id/status/supersededBy/supersededAt).
-      if (
-        stateViewCandidateIds !== null &&
-        memory &&
-        memory.frontmatter.status === "superseded" &&
-        stateViewCandidateIds.has(memory.frontmatter.supersededBy ?? "")
-      ) {
-        stateViewAdmittedCount += 1;
+      if (stateViewPending) {
+        // Survived every other gate; admission now hinges on the
+        // successor surviving too — decided by the fixpoint below.
+        stateViewDeferred.push(resultIdx);
+        continue;
       }
-      filtered.push({
-        ...r,
-        sourceConnector: memory ? memory.frontmatter.sourceConnector : undefined,
-        origin: memory ? memory.frontmatter.origin : undefined,
-        ...(stateViewCandidateIds !== null && memory
-          ? {
-              id: memory.frontmatter.id,
-              status: memory.frontmatter.status,
-              supersededBy: memory.frontmatter.supersededBy,
-              supersededAt: memory.frontmatter.supersededAt,
-            }
-          : {}),
-      });
+      const builtRow = buildRecallRow(r, memory);
+      if (stateViewBuilt !== null) {
+        stateViewBuilt[resultIdx] = builtRow;
+        if (memory) {
+          const id = memory.frontmatter.id;
+          if (typeof id === "string" && id.length > 0) stateViewSurvivorIds!.add(id);
+        }
+      }
+      filtered.push(builtRow);
+    }
+    if (stateViewDeferred.length > 0) {
+      // #1952 admission fixpoint: a deferred superseded row joins the
+      // output only when its successor is (or becomes) part of the
+      // filter-surviving set. An admitted row can itself anchor the next
+      // link of a chain, so iterate to a fixpoint.
+      const admitted = new Set<number>();
+      for (let progress = true; progress; ) {
+        progress = false;
+        for (const deferredIdx of stateViewDeferred) {
+          if (admitted.has(deferredIdx)) continue;
+          const deferredMemory = memoryForResult(memoryByPath, results[deferredIdx]!);
+          if (!deferredMemory) continue;
+          if (stateViewSurvivorIds!.has(deferredMemory.frontmatter.supersededBy ?? "")) {
+            admitted.add(deferredIdx);
+            const id = deferredMemory.frontmatter.id;
+            if (typeof id === "string" && id.length > 0) stateViewSurvivorIds!.add(id);
+            progress = true;
+          }
+        }
+      }
+      for (const deferredIdx of stateViewDeferred) {
+        const deferredMemory = memoryForResult(memoryByPath, results[deferredIdx]!);
+        if (admitted.has(deferredIdx) && deferredMemory) {
+          stateViewAdmittedCount += 1;
+          stateViewBuilt![deferredIdx] = buildRecallRow(results[deferredIdx]!, deferredMemory);
+        } else {
+          temporalSupersededFilteredCount += 1;
+        }
+      }
+      // Re-emit in the order candidates entered this filter so an
+      // admitted predecessor keeps its rank position (no slot swap).
+      filtered.length = 0;
+      for (const builtRow of stateViewBuilt!) {
+        if (builtRow) filtered.push(builtRow);
+      }
     }
     if (connectorPartitionFilteredCount > 0) {
       log.debug(

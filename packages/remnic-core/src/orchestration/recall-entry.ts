@@ -280,6 +280,12 @@ export class RecallEntryCoordinator {
      * still labels/widens when the global flag is false.
      */
     stateViewActive?: boolean;
+    /**
+     * #1952 — historical recall pin (epoch ms) for this call. Under a
+     * pin, annotation must not discard a predecessor whose successor is
+     * absent due to the asOf validity filter; see applyRecallStateViews.
+     */
+    asOfMs?: number;
   }): void {
     const sectionId = "memories";
     const trustByPath = options.trustByPath ?? null;
@@ -290,6 +296,7 @@ export class RecallEntryCoordinator {
       options.retrievalQuery,
       this.deps.config,
       options.stateViewActive === true,
+      options.asOfMs,
     );
     if (injectable.length === 0) return;
 

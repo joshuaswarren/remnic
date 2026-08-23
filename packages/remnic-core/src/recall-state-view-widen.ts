@@ -27,6 +27,15 @@ export function widenRecallStateViews<T extends StateViewResult>(
    * omit it keep the legacy config-only behavior.
    */
   stateViewActive?: boolean,
+  /**
+   * #1952 — historical recall pin (epoch ms). When set, the pool is
+   * never widened (pool rows did not survive the asOf validity filter,
+   * so pulling a not-yet-valid successor into a historical snapshot
+   * would be wrong) and annotation runs in asOf mode: a predecessor is
+   * kept and labeled relative to the snapshot without requiring its
+   * successor.
+   */
+  asOfMs?: number,
 ): T[] {
   const raw =
     typeof config === "object" && config !== null && "recallStateViews" in config
@@ -34,6 +43,7 @@ export function widenRecallStateViews<T extends StateViewResult>(
       : undefined;
   const enabled = stateViewActive === true || parseRecallStateViews(raw);
   if (!enabled || !isChangeOrientedQuery(query)) return results;
+  const asOfActive = typeof asOfMs === "number" && Number.isFinite(asOfMs);
 
   const candidateIds = new Set<string>();
   for (const result of results) {
@@ -43,15 +53,18 @@ export function widenRecallStateViews<T extends StateViewResult>(
 
   const seen = new Set(candidateIds);
   const extra: T[] = [];
-  for (const item of pool) {
-    const id = resultStateViewId(item);
-    if (!id || seen.has(id)) continue;
-    if (!shouldWidenSuperseded(item.supersededBy, candidateIds)) continue;
-    extra.push(item);
-    seen.add(id);
+  if (!asOfActive) {
+    for (const item of pool) {
+      const id = resultStateViewId(item);
+      if (!id || seen.has(id)) continue;
+      if (!shouldWidenSuperseded(item.supersededBy, candidateIds)) continue;
+      extra.push(item);
+      seen.add(id);
+    }
   }
 
   return annotateStateView(extra.length > 0 ? results.concat(extra) : results, query, [], {
     enabled: true,
+    ...(asOfActive ? { asOfMs } : {}),
   });
 }

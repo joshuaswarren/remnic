@@ -3451,6 +3451,8 @@ export class Orchestrator {
      * semantics, issue #1952).
      */
     stateViewActive?: boolean;
+    /** #1952 — historical recall pin (epoch ms); asOf-mode annotation. */
+    asOfMs?: number;
   }): void {
     return (this.recallEntryCoordinator ?? new RecallEntryCoordinator(
       selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),

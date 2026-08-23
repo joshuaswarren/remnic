@@ -102,3 +102,35 @@ test("#1952 override true on a non-change query stays identity (change gate appl
   assert.equal(applyRecallStateViews(input, NON_CHANGE, { recallStateViews: false }, true), input);
   assert.equal(input[0]?.stateLabel, undefined);
 });
+
+test("asOf mode keeps a pin-filtered predecessor and never widens the pool (#1952)", () => {
+  const pin = Date.parse("2026-08-05T00:00:00.000Z");
+  const predecessor = fact("old-job", {
+    status: "superseded",
+    supersededBy: "new-job",
+    supersededAt: "2026-08-10T00:00:00.000Z",
+  });
+  const labeled = widenRecallStateViews(
+    [predecessor],
+    CHANGE,
+    ON,
+    [CURRENT, HISTORICAL],
+    undefined,
+    pin,
+  );
+  assert.equal(labeled.length, 1, "pool rows must not enter a historical snapshot");
+  assert.equal(labeled[0]?.id, "old-job");
+  assert.equal(labeled[0]?.stateLabel, "current");
+});
+
+test("asOf mode threads through applyRecallStateViews without emptying the result (#1952)", () => {
+  const pin = Date.parse("2026-08-05T00:00:00.000Z");
+  const predecessor = fact("old-job", {
+    status: "superseded",
+    supersededBy: "new-job",
+    supersededAt: "2026-08-10T00:00:00.000Z",
+  });
+  const labeled = applyRecallStateViews([predecessor], CHANGE, ON, true, pin);
+  assert.equal(labeled.length, 1);
+  assert.equal(labeled[0]?.stateLabel, "current");
+});

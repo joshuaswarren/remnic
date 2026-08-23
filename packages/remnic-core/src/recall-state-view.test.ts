@@ -52,6 +52,96 @@ test("change-intent conjugations fire the annotator", () => {
   }
 });
 
+test("change-intent phrase matching uses token boundaries, not substrings", () => {
+  const positives = [
+    "When did we move offices?",
+    "we used to live in Austin",
+    "when  did   the vendor change",
+  ];
+  const negatives = [
+    "when Didi arrives", // proper noun must not fire "when did"
+    "I was confused to hear that", // "used to" inside "confused to"
+  ];
+  for (const query of positives) {
+    assert.equal(isChangeOrientedQuery(query), true, query);
+  }
+  for (const query of negatives) {
+    assert.equal(isChangeOrientedQuery(query), false, query);
+  }
+});
+
+test("bare before/after sequencing is not change intent; event-pointing is", () => {
+  const positives = [
+    "before the move",
+    "after the cutover",
+    "after a migration",
+    "before the migration",
+  ];
+  const negatives = [
+    "before lunch",
+    "after install",
+    "restart before dinner",
+    "shut down after setup",
+    "the aftermath report",
+  ];
+  for (const query of positives) {
+    assert.equal(isChangeOrientedQuery(query), true, query);
+  }
+  for (const query of negatives) {
+    assert.equal(isChangeOrientedQuery(query), false, query);
+  }
+});
+
+test("asOf mode keeps a predecessor whose successor the pin filtered out", () => {
+  const predecessor = fact("old-job", {
+    status: "superseded",
+    supersededBy: "new-job",
+    supersededAt: "2026-08-10T00:00:00.000Z",
+  });
+  const labeled = annotateStateView([predecessor], "when did the job title change", [], {
+    enabled: true,
+    asOfMs: Date.parse("2026-08-05T00:00:00.000Z"),
+  });
+  assert.equal(labeled.length, 1, "a valid asOf result must never be emptied");
+  assert.equal(
+    labeled[0]?.stateLabel,
+    "current",
+    "the pin predates the supersession, so the row was the live fact at the snapshot",
+  );
+});
+
+test("asOf mode labels a predecessor historical when the supersession predates the pin", () => {
+  const predecessor = fact("old-job", {
+    status: "superseded",
+    supersededBy: "new-job",
+    supersededAt: "2026-08-01T00:00:00.000Z",
+  });
+  const labeled = annotateStateView([predecessor], "when did the job title change", [], {
+    enabled: true,
+    asOfMs: Date.parse("2026-08-05T00:00:00.000Z"),
+  });
+  assert.equal(labeled.length, 1);
+  assert.equal(labeled[0]?.stateLabel, "historical");
+});
+
+test("asOf mode keeps pair semantics when both rows are valid at the pin", () => {
+  const rows = [
+    fact("new-job", { status: "active" }),
+    fact("old-job", { status: "superseded", supersededBy: "new-job", supersededAt: "2026-03-01" }),
+  ];
+  const labeled = annotateStateView(rows, "when did the job title change", [], {
+    enabled: true,
+    asOfMs: Date.parse("2026-08-05T00:00:00.000Z"),
+  });
+  assert.deepEqual(
+    labeled.map((row) => [row.id, row.stateLabel]),
+    [
+      ["new-job", "current"],
+      ["old-job", "historical"],
+    ],
+  );
+});
+
 test("non-change query is identical (same array reference, no labels)", () => {
   const input = PAIR_RESULTS.map((row) => ({ ...row }));
   const out = annotateStateView(input, "what is the current job title", PAIR, { enabled: true });
