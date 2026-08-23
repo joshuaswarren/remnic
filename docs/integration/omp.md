@@ -111,14 +111,15 @@ logs (and the extension silently never loads):
 
 ```text
 Failed to load extension: ResolveMessage: Cannot find module
-'@sinclair/typebox' from
+'@remnic/core/utils/path' from
 '~/.omp/agent/extensions/remnic/node_modules/@remnic/plugin-pi/dist/index.js'
 ```
 
-omp's extension loader has a compat shim that rewrites bare
-`@sinclair/typebox` imports onto its host-bundled copy, but the rewrite does
-not reach files under the extension's `node_modules`, and plain resolution
-from those files fails inside omp's compiled binary.
+Even specifiers omp knows about fail there: its extension loader has a
+compat shim that rewrites bare `@sinclair/typebox` imports onto its
+host-bundled copy, but the rewrite does not reach files under the extension's
+`node_modules`, and plain resolution from those files fails inside omp's
+compiled binary.
 
 **Workaround — pre-bundle the extension so nothing resolves at runtime.**
 

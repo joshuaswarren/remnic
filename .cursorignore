@@ -36,10 +36,6 @@ package-lock.json
 # Generated docs and changelogs
 CHANGELOG.md
 
-# Eval data (downloaded, not authored)
-evals/datasets/
-evals/results/
-
 # Admin console (separate concern)
 admin-console/
 

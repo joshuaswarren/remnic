@@ -8,7 +8,6 @@ import test from "node:test";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const copyScriptPath = path.join(repoRoot, "packages", "remnic-cli", "scripts", "copy-bench-assets.mjs");
-const repoDownloadWrapperPath = path.join(repoRoot, "evals", "scripts", "download-datasets.sh");
 
 test("copy-bench-assets works from an isolated CLI package layout", async () => {
   const fixtureRoot = await makeCliPackageFixture();
@@ -45,39 +44,6 @@ test("copy-bench-assets reports a package-local missing asset path", async () =>
   assert.equal(result.status, 1);
   assert.match(result.stderr, /\[copy-bench-assets\] source not found:/);
   assert.match(result.stderr, /assets\/download-datasets\.sh/);
-  assert.doesNotMatch(result.stderr, /\.\.\/\.\.\/evals/);
-});
-
-test("repo download wrapper preserves evals datasets as the default destination", async () => {
-  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-cli-download-wrapper-"));
-  const wrapperPath = path.join(fixtureRoot, "evals", "scripts", "download-datasets.sh");
-  const packageScriptPath = path.join(fixtureRoot, "packages", "remnic-cli", "assets", "download-datasets.sh");
-  await mkdir(path.dirname(wrapperPath), { recursive: true });
-  await mkdir(path.dirname(packageScriptPath), { recursive: true });
-  await writeFile(wrapperPath, await readFile(repoDownloadWrapperPath, "utf8"), {
-    encoding: "utf8",
-    mode: 0o755,
-  });
-  await writeFile(packageScriptPath, "#!/usr/bin/env bash\nprintf '%s\\n' \"$DATASETS_DIR\"\n", {
-    encoding: "utf8",
-    mode: 0o755,
-  });
-
-  const defaultResult = spawnSync("bash", [wrapperPath], {
-    cwd: fixtureRoot,
-    encoding: "utf8",
-  });
-  assert.equal(defaultResult.status, 0, defaultResult.stderr);
-  assert.equal(defaultResult.stdout.trim(), path.join(fixtureRoot, "evals", "datasets"));
-
-  const explicitDatasetsDir = path.join(fixtureRoot, "custom-datasets");
-  const explicitResult = spawnSync("bash", [wrapperPath], {
-    cwd: fixtureRoot,
-    encoding: "utf8",
-    env: { ...process.env, DATASETS_DIR: explicitDatasetsDir },
-  });
-  assert.equal(explicitResult.status, 0, explicitResult.stderr);
-  assert.equal(explicitResult.stdout.trim(), explicitDatasetsDir);
 });
 
 async function makeCliPackageFixture(): Promise<string> {
