@@ -28,15 +28,23 @@ export interface ExtractedFactSpanRef {
   charEnd: number;
   /** ≤ 15 generated words making the span self-contained (resolves deixis). */
   frame: string;
+  /** Optional prompt-source identity; when present it must match the captured stamp. */
+  sourceHash?: string;
+  sourceLength?: number;
 }
 
 export const EXTRACTION_SPAN_MODES = ["off", "shadow", "on"] as const;
 
 export function parseExtractionSpanConfig(raw: unknown): ExtractionSpanConfig {
-  const block =
-    raw && typeof raw === "object" && !Array.isArray(raw)
-      ? (raw as Record<string, unknown>)
-      : {};
+  if (raw === undefined) {
+    return { spanMode: "off" };
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(
+      `extraction must be an object with optional spanMode (got ${JSON.stringify(raw)}). Omit the key for the default "off".`,
+    );
+  }
+  const block = raw as Record<string, unknown>;
   const spanMode = block.spanMode;
   if (spanMode === undefined) {
     return { spanMode: "off" };

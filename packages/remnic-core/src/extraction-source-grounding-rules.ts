@@ -29,6 +29,7 @@ import {
 export interface ExtractionSourceGroundingOptions {
   sourceGrounding: boolean;
   anchorTemporalExpressions: boolean;
+  spanMode?: "off" | "shadow" | "on";
 }
 
 export function applyExtractionSourceGrounding(
@@ -60,6 +61,7 @@ export function applyExtractionSourceGrounding(
     anchorSource(assertionSourceText),
     anchoredRoleSources,
     options.anchorTemporalExpressions ? anchorSource : undefined,
+    options.spanMode ?? "off",
   );
 }
 
@@ -653,18 +655,22 @@ function filterGroundedFact(
   assertionSource: string | undefined,
   roleAssertionSources: ExtractionGroundingRoleSources | undefined,
   eventTimeNormalizer: ((eventTime: string) => string) | undefined,
+  spanMode: "off" | "shadow" | "on" = "off",
 ): ExtractionResult["facts"][number] | undefined {
   // Span-materialized content (issue #2333) is "frame: verbatim slice". The
-  // frame label is generated deixis resolution, not source text, so the whole
-  // content can fail the clause-anchor gate even though the fact is verbatim-
-  // grounded by construction. When the fact carries its slice as `quote` and
-  // that slice is embedded in the content, gate on the slice instead — the
-  // slice IS the evidence. Zero effect on facts without an embedded quote.
-  const embeddedQuote = typeof fact.quote === "string" && fact.quote.trim().length > 0
-    && fact.content !== fact.quote
-    && fact.content.includes(fact.quote)
-    ? fact.quote
-    : undefined;
+  // frame is generated deixis, so full-content gating would drop a verbatim
+  // fact. Only on/shadow facts whose content is that materialized shape may
+  // fall back to the slice. Off mode stays zero-diff.
+  const quote = typeof fact.quote === "string" ? fact.quote : "";
+  const materializedPrefix = quote.length > 0 && fact.content.endsWith(quote) && fact.content !== quote
+    ? fact.content.slice(0, fact.content.length - quote.length)
+    : "";
+  const embeddedQuote =
+    (spanMode === "on" || spanMode === "shadow")
+    && quote.trim().length > 0
+    && (materializedPrefix.endsWith(": ") || /[:—-]\s$/.test(materializedPrefix))
+      ? quote
+      : undefined;
   const contentContext = selectGroundingContext(
     fact.content,
     resolveGroundingContext(fact.content, source, assertionSource, roleAssertionSources),
@@ -1097,6 +1103,7 @@ export function filterExtractionResultBySource(
   assertionSource?: string,
   roleAssertionSources?: ExtractionGroundingRoleSources,
   eventTimeNormalizer?: (eventTime: string) => string,
+  spanMode: "off" | "shadow" | "on" = "off",
 ): ExtractionResult {
   if (source.trim().length === 0) {
     return {
@@ -1117,6 +1124,7 @@ export function filterExtractionResultBySource(
       assertionSource,
       roleAssertionSources,
       eventTimeNormalizer,
+      spanMode,
     );
     return grounded === undefined ? [] : [grounded];
   });

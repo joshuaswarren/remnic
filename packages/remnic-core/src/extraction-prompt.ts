@@ -45,9 +45,19 @@ export const EXTRACTION_RESPONSE_SHAPE = `{
   "episodeTitle": "<six-to-eight word conversation segment title>",
   "relationships": [{"source": "<normalized-name>", "target": "<normalized-name>", "label": "<source-grounded relationship>"}]
 }`;
+export function extractionResponseShape(spanMode: "off" | "shadow" | "on" = "off"): string {
+  if (spanMode === "off") return EXTRACTION_RESPONSE_SHAPE;
+  return EXTRACTION_RESPONSE_SHAPE.replace(
+    `"eventTime": "<optional source temporal expression>"`,
+    `"eventTime": "<optional source temporal expression>",
+    "span": {"sourceMessageIndex": <message number>, "charStart": <number>, "charEnd": <number>, "frame": "<at most 15 words>"}`,
+  );
+}
 export const EXTRACTION_RESPONSE_PLACEHOLDERS: Record<string, true> = {};
-for (const placeholder of EXTRACTION_RESPONSE_SHAPE.match(/<[^<>\r\n]+>/g) ?? []) {
-  EXTRACTION_RESPONSE_PLACEHOLDERS[placeholder] = true;
+for (const shape of [EXTRACTION_RESPONSE_SHAPE, extractionResponseShape("on")]) {
+  for (const placeholder of shape.match(/<[^<>\r\n]+>/g) ?? []) {
+    EXTRACTION_RESPONSE_PLACEHOLDERS[placeholder] = true;
+  }
 }
 export const CUE_ANCHOR_PROMPT_INSTRUCTION = `- For each fact, emit at most 3 "cueAnchors".
 - Each cue anchor value must be a source-grounded search hook of at most 120 characters, in the form "<main entity or topic> <key aspect>".

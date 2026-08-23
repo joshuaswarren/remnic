@@ -23,6 +23,20 @@ test("same model + seed is byte-identical across runs, both modes", () => {
   }
 });
 
+test("printed char count and hash bind the indexed message text, not the prefixed line", () => {
+  const segment = renderSegment(CONV);
+  assert.match(segment.prompt, /after the speaker prefix/);
+  for (const message of segment.messages) {
+    const prefixed = `[${message.index}] ${message.speaker}: ${message.text}`;
+    assert.notEqual(message.text.length, prefixed.length);
+    assert.match(
+      segment.prompt,
+      new RegExp(`\\(${message.text.length} chars, hash ${message.stamp.hash}, length ${message.stamp.length}\\)`),
+    );
+    assert.doesNotMatch(segment.prompt, new RegExp(`\\(${prefixed.length} chars\\)`));
+  }
+});
+
 test("every fixture quote is a verbatim substring of its message (span invariants hold)", () => {
   for (const conversation of SPAN_BENCH_FIXTURE) {
     for (const fact of conversation.facts) {

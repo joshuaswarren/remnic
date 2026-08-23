@@ -107,3 +107,12 @@ test("cost ledger sums both modes' modeled output tokens", async () => {
   assert.equal(result.cost.outputTokens, summed);
   assert.equal(result.cost.inputTokens, 0);
 });
+
+test("meanQueryLatencyMs excludes the span-phase-gate bookkeeping task", async () => {
+  const result = await runExtractionSpanModeBenchmark(options({ mode: "full" }));
+  const measured = result.results.tasks.filter((task) => task.taskId !== "span-phase-gate");
+  assert.ok(measured.length > 0);
+  assert.ok(result.results.tasks.length > measured.length);
+  assert.equal(result.cost.meanQueryLatencyMs, result.cost.totalLatencyMs / measured.length);
+  assert.notEqual(result.cost.meanQueryLatencyMs, result.cost.totalLatencyMs / result.results.tasks.length);
+});

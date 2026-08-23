@@ -215,6 +215,7 @@ export async function runExtractionSpanModeBenchmark(
     acc.current.outputTokens.reduce((a, b) => a + b, 0) + acc.span.outputTokens.reduce((a, b) => a + b, 0);
   const totalWallClockMs =
     acc.current.wallClockMs.reduce((a, b) => a + b, 0) + acc.span.wallClockMs.reduce((a, b) => a + b, 0);
+  const measuredTaskCount = acc.current.wallClockMs.length + acc.span.wallClockMs.length;
 
   return {
     meta: {
@@ -247,7 +248,7 @@ export async function runExtractionSpanModeBenchmark(
       outputTokens: totalOutputTokens,
       estimatedCostUsd: 0,
       totalLatencyMs: totalWallClockMs,
-      meanQueryLatencyMs: tasks.length > 0 ? totalWallClockMs / tasks.length : 0,
+      meanQueryLatencyMs: measuredTaskCount > 0 ? totalWallClockMs / measuredTaskCount : 0,
     },
     results: {
       tasks,

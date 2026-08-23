@@ -94,7 +94,10 @@ test("listBenchmarks exposes the published and remnic benchmark catalog from @re
     ],
   );
   assert.equal(
-    "ama-bench,memory-arena,amemgym,longmemeval,locomo,beam,personamem,membench,memoryagentbench,taxonomy-accuracy,extraction-judge-calibration,extraction-span-mode,enrichment-fidelity,entity-consolidation,page-versioning,retrieval-personalization,retrieval-temporal,retrieval-direct-answer,retrieval-graph,retrieval-reasoning-trace,coding-recall,procedural-recall,ingestion-entity-recall,ingestion-schema-completeness,ingestion-backlink-f1,ingestion-setup-friction,ingestion-citation-accuracy,assistant-morning-brief,assistant-meeting-prep,assistant-next-best-action,assistant-synthesis,buffer-surprise-trigger,contradiction-detection,retention-aged-dataset,memcorrect-v1,bounded-memory-contracts,staged-memory-synthetic-v1",
+    benchmarks
+      .filter((benchmark) => benchmark.runnerAvailable)
+      .map((benchmark) => benchmark.id)
+      .join(","),
     "ama-bench,memory-arena,amemgym,longmemeval,locomo,beam,personamem,membench,memoryagentbench,taxonomy-accuracy,extraction-judge-calibration,extraction-span-mode,enrichment-fidelity,entity-consolidation,page-versioning,retrieval-personalization,retrieval-temporal,retrieval-direct-answer,retrieval-graph,retrieval-reasoning-trace,coding-recall,procedural-recall,ingestion-entity-recall,ingestion-schema-completeness,ingestion-backlink-f1,ingestion-setup-friction,ingestion-citation-accuracy,assistant-morning-brief,assistant-meeting-prep,assistant-next-best-action,assistant-synthesis,buffer-surprise-trigger,contradiction-detection,retention-aged-dataset,memcorrect-v1,bounded-memory-contracts,staged-memory-synthetic-v1",
   );
   // The synthetic ingestion adapter wires all built-in ingestion benchmarks.

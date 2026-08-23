@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { stampSpanSource } from "./extraction-span-source-hash.js";
 import {
+  applyExtractionSpanMaterialization,
   buildSpanMaterializeTurns,
   factCarriesSpan,
   materializeFactSpan,
@@ -36,12 +37,17 @@ function fact(overrides: {
   frame?: string;
   content?: string;
   sourceMessageIndex?: number;
+  sourceHash?: string;
+  sourceLength?: number;
 }): ExtractedFact {
   const span: ExtractedFactSpanRef = {
     sourceMessageIndex: overrides.sourceMessageIndex ?? 0,
     charStart: overrides.charStart,
     charEnd: overrides.charEnd,
     frame: overrides.frame ?? "Maya's relocation",
+    ...(overrides.sourceHash !== undefined && overrides.sourceLength !== undefined
+      ? { sourceHash: overrides.sourceHash, sourceLength: overrides.sourceLength }
+      : {}),
   };
   return {
     category: "fact",
@@ -211,6 +217,42 @@ test("config: extraction.spanMode default off, valid values accepted, unknown re
 });
 
 test("config: extraction block must be an object, not an array or scalar", () => {
-  assert.equal(parseConfig({ extraction: [] }).extraction.spanMode, "off");
-  assert.equal(parseConfig({ extraction: "on" }).extraction.spanMode, "off");
+  assert.throws(() => parseConfig({ extraction: [] }), /extraction must be an object/);
+  assert.throws(() => parseConfig({ extraction: "on" }), /extraction must be an object/);
+  assert.throws(() => parseConfig({ extraction: null }), /extraction must be an object/);
+});
+
+test("applyExtractionSpanMaterialization uses captured prompt stamps, not a restamp", () => {
+  const generated = "Maya moved to Seattle last spring for a new senior role.";
+  const result = {
+    facts: [fact({ charStart: 0, charEnd: 4, content: generated })],
+    entities: [],
+    questions: [],
+    profileUpdates: [],
+  };
+  const captured = buildSpanMaterializeTurns([TURN_TEXT]);
+  const ok = applyExtractionSpanMaterialization(result, captured, "on");
+  assert.equal(ok.facts[0]?.content, "Maya's relocation: Maya");
+
+  const drifted = [{ text: TURN_TEXT, stamp: stampSpanSource("different prompt text") }];
+  const fallback = applyExtractionSpanMaterialization(result, drifted, "on");
+  assert.equal(fallback.facts[0]?.content, generated);
+});
+
+test("span sourceHash/sourceLength must match the captured prompt stamp", () => {
+  const captured = buildSpanMaterializeTurns([TURN_TEXT]);
+  const stamp = captured[0]?.stamp;
+  assert.ok(stamp);
+  const matching = materializeFactSpan(
+    fact({ charStart: 0, charEnd: 4, sourceHash: stamp.hash, sourceLength: stamp.length }),
+    captured,
+    "on",
+  );
+  assert.equal(matching.outcome, "span");
+  const mismatched = materializeFactSpan(
+    fact({ charStart: 0, charEnd: 4, sourceHash: "0".repeat(64), sourceLength: stamp.length }),
+    captured,
+    "on",
+  );
+  assert.equal(mismatched.outcome, "fallback");
 });

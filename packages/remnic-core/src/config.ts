@@ -2303,7 +2303,7 @@ export function parseConfig(
         : 15_000,
     activeRecallModel:
       typeof cfg.activeRecallModel === "string" && cfg.activeRecallModel.trim().length > 0
-        ? cfg.activeRecallModel
+        ? cfg.activeRecallModel.trim()
         : null,
     activeRecallModelFallbackPolicy:
       cfg.activeRecallModelFallbackPolicy === "resolved-only"

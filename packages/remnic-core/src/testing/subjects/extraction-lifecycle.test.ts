@@ -73,6 +73,7 @@ function namespacedConfig(memoryDir: string): PluginConfig {
       { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
       { name: "bob", readPrincipals: ["bob"], writePrincipals: ["bob"] },
     ],
+    extraction: { spanMode: "on" },
   });
 }
 
@@ -98,6 +99,7 @@ function rememberedBindingConfig(memoryDir: string): PluginConfig {
     principalFromSessionKeyMode: "map",
     principalFromSessionKeyRules: [{ match: REMEMBERED_SESSION, principal: "alice" }],
     namespacePolicies: [{ name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+    extraction: { spanMode: "on" },
   });
 }
 
@@ -106,6 +108,20 @@ const NAMESPACE_ROWS: Partial<Record<MatrixRowId, true>> = {
   "sparse-metadata-with-binding": true,
   "provider-rebinding": true,
 };
+
+function spanBearingResult(turns: BufferTurn[]) {
+  const result = singleFactResult(turns.map((turn) => turn.content).join(" | "));
+  const first = turns[0]?.content ?? "";
+  const fact = result.facts[0];
+  if (fact === undefined) return result;
+  fact.span = {
+    sourceMessageIndex: 0,
+    charStart: 0,
+    charEnd: first.length,
+    frame: "Lifecycle probe",
+  };
+  return result;
+}
 
 async function assertHarmonicEpisode(memoryDir: string, sessionKey?: string): Promise<void> {
   const status = await harmonicNodeStoreStatus(memoryDir);
@@ -141,7 +157,7 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
               // before_reset, …) must pass with `extraction.spanMode: "on"`.
               : makeHarmonicLifecycleConfig(memoryDir, { extraction: { spanMode: "on" } });
       primary = new Orchestrator(cfg);
-      const calls = stubExtraction(primary, (turns) => singleFactResult(turns.map((turn) => turn.content).join(" | ")));
+      const calls = stubExtraction(primary, (turns) => spanBearingResult(turns));
       return { memoryDir, cfg, orchestrators: [primary], calls };
     } catch (err) {
       // Transactional setup: a partial build must not leak the orchestrator or temp dir.
@@ -221,11 +237,9 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         );
         await primary.destroy();
         state.orchestrators.length = 0;
-        const second = new Orchestrator(makeHarmonicLifecycleConfig(state.memoryDir));
+        const second = new Orchestrator(makeHarmonicLifecycleConfig(state.memoryDir, { extraction: { spanMode: "on" } }));
         state.orchestrators.push(second);
-        state.restartCalls = stubExtraction(second, (turns) =>
-          singleFactResult(turns.map((turn) => turn.content).join(" | "))
-        );
+        state.restartCalls = stubExtraction(second, (turns) => spanBearingResult(turns));
         // Drain the buffer that survived the restart (state/buffer.json).
         await second.flushSession("session-parked", { reason: "session_end" });
         return;
@@ -255,7 +269,7 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         // Rewire the seam: extraction succeeds but trips the abort mid-flight.
         state.abortFlushCalls = stubExtraction(primary, (turns) => {
           controller.abort();
-          return singleFactResult(turns.map((turn) => turn.content).join(" | "));
+          return spanBearingResult(turns);
         });
         let abortRejected = false;
         await primary
@@ -272,9 +286,7 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         // A fresh, non-aborted flush must find the turn still buffered AND must
         // itself succeed — swallowing its failure would let a recovery-flush
         // regression pass vacuously (the extraction call still bumps the count).
-        state.secondFlushCalls = stubExtraction(primary, (turns) =>
-          singleFactResult(turns.map((turn) => turn.content).join(" | "))
-        );
+        state.secondFlushCalls = stubExtraction(primary, (turns) => spanBearingResult(turns));
         await primary.flushSession("session-reset", { reason: "before_reset" });
         // The recovery flush must PERSIST the preserved turn as a fact...
         state.recoveredFactCount = (

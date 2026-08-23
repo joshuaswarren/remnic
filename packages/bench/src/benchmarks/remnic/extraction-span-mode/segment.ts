@@ -31,21 +31,24 @@ export interface RenderedSegment {
 
 export function renderSegment(conversation: SpanBenchConversation): RenderedSegment {
   const lines: string[] = [
-    "Numbered conversation segment. Character offsets index each message text",
-    "exactly as printed below (offsets are [charStart, charEnd), end-exclusive).",
+    "Numbered conversation segment. Character offsets index each message's text",
+    "after the speaker prefix (offsets are [charStart, charEnd), end-exclusive).",
+    "The printed char count and source hash/length identify that message text.",
     "For each memory, return sourceMessageIndex plus a verbatim supporting",
     "span's charStart/charEnd, and a frame of at most 15 words that makes the",
     "span self-contained (resolve pronouns, name the subject).",
     "",
   ];
   const messages = conversation.messages.map<SegmentMessage>((message, index) => {
-    const line = `[${index}] ${message.speaker}: ${message.text}`;
-    lines.push(`(${line.length} chars) ${line}`);
+    const stamp = stampSpanSource(message.text);
+    lines.push(
+      `[${index}] ${message.speaker} (${message.text.length} chars, hash ${stamp.hash}, length ${stamp.length}): ${message.text}`,
+    );
     return {
       index,
       speaker: message.speaker,
       text: message.text,
-      stamp: stampSpanSource(message.text),
+      stamp,
     };
   });
   return { messages, prompt: lines.join("\n") };

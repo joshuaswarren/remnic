@@ -89,7 +89,7 @@ export function materializeFactSpan<T extends SpanMaterializeFact>(
   if (span === null) {
     return { fact, outcome: "fallback" };
   }
-  const { sourceMessageIndex, charStart, charEnd, frame } = span;
+  const { sourceMessageIndex, charStart, charEnd, frame, sourceHash, sourceLength } = span;
   const turn = turns[sourceMessageIndex];
   if (
     !Number.isInteger(sourceMessageIndex) ||
@@ -101,6 +101,12 @@ export function materializeFactSpan<T extends SpanMaterializeFact>(
   }
   const stampCheck = verifySpanSource(turn.text, turn.stamp);
   if (!stampCheck.ok) {
+    return { fact: stripSpan(fact), outcome: "fallback" };
+  }
+  if (
+    (sourceHash !== undefined && sourceHash !== turn.stamp.hash) ||
+    (sourceLength !== undefined && sourceLength !== turn.stamp.length)
+  ) {
     return { fact: stripSpan(fact), outcome: "fallback" };
   }
   const offsetCheck = validateSpanOffsets({ start: charStart, end: charEnd, textLength: turn.text.length });
@@ -149,7 +155,7 @@ export function spanAgreesWithContent(materialized: string, content: string): bo
  */
 export function applyExtractionSpanMaterialization(
   result: ExtractionResult,
-  turns: ReadonlyArray<{ content: string }>,
+  turns: readonly SpanMaterializeTurn[],
   mode: SpanMode,
 ): ExtractionResult {
   const anySpan = result.facts.some(factCarriesSpan);
@@ -161,7 +167,6 @@ export function applyExtractionSpanMaterialization(
     // without validation (storage format unchanged either way).
     return { ...result, facts: stripUntrustedFactSpans(result.facts) };
   }
-  const segment = buildSpanMaterializeTurns(turns.map((turn) => turn.content));
   let attempts = 0;
   let fallbacks = 0;
   let agreements = 0;
@@ -172,7 +177,7 @@ export function applyExtractionSpanMaterialization(
     attempts += 1;
     const { fact: materialized, outcome, materialized: text } = materializeFactSpan(
       fact,
-      segment,
+      turns,
       mode,
     );
     if (outcome === "fallback") {

@@ -43,7 +43,7 @@ import { AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT, clampAmbientCaptureConfidence }
 import {
   CONSOLIDATION_RESPONSE_SCHEMA,
   CUE_ANCHOR_PROMPT_INSTRUCTION,
-  EXTRACTION_RESPONSE_SHAPE,
+  extractionResponseShape,
   OUTPUT_LANGUAGE_POLICY,
   PROFILE_CONSOLIDATION_RESPONSE_SCHEMA,
   buildConsolidationSystemPrompt,
@@ -63,7 +63,9 @@ import {
 export { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 import {
   applyExtractionSpanMaterialization,
+  buildSpanMaterializeTurns,
   stripUntrustedFactSpans,
+  type SpanMaterializeTurn,
 } from "./extraction-span-materialize.js";
 import { resolveLocalLlmCapabilities, resolveMemoryLifecycleCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 type ExtractionQuestion = ExtractionResult["questions"][number];
@@ -109,7 +111,7 @@ function normalizeQuestion(question: ExtractionQuestion): ExtractionQuestion {
 
 function normalizeExtractedSpanRef(value: unknown): ExtractedFactSpanRef | undefined {
   if (!isPlainRecord(value)) return undefined;
-  const { sourceMessageIndex, charStart, charEnd, frame } = value;
+  const { sourceMessageIndex, charStart, charEnd, frame, sourceHash, sourceLength } = value;
   if (
     typeof sourceMessageIndex !== "number" ||
     typeof charStart !== "number" ||
@@ -118,7 +120,15 @@ function normalizeExtractedSpanRef(value: unknown): ExtractedFactSpanRef | undef
   ) {
     return undefined;
   }
-  return { sourceMessageIndex, charStart, charEnd, frame };
+  return {
+    sourceMessageIndex,
+    charStart,
+    charEnd,
+    frame,
+    ...(typeof sourceHash === "string" && typeof sourceLength === "number"
+      ? { sourceHash, sourceLength }
+      : {}),
+  };
 }
 
 function normalizeFactKey(fact: Pick<ExtractedFactResult, "category" | "content">): string {
@@ -222,11 +232,11 @@ export class ExtractionEngine {
    */
   private applySpanMaterialization(
     result: ExtractionResult,
-    turns: readonly BufferTurn[],
+    spanTurns: readonly SpanMaterializeTurn[],
   ): ExtractionResult {
     return applyExtractionSpanMaterialization(
       result,
-      turns,
+      spanTurns,
       this.config.extraction?.spanMode ?? "off",
     );
   }
@@ -1128,6 +1138,7 @@ export class ExtractionEngine {
       ? resolvedConnector
       : undefined;
     const { conversation, renderedConversation } = renderExtractionConversation(boundedTurns, headerConnector(sourceConnector));
+    const spanTurns = buildSpanMaterializeTurns(boundedTurns.map((turn) => turn.content));
 
     const groundingSource = boundedTurns
       .map((turn) => turn.content)
@@ -1217,7 +1228,7 @@ export class ExtractionEngine {
           this.profiler.endSpan("local-llm", extractionTraceId);
           this.emit({ kind: "llm_end", traceId, model: this.config.localLlmModel, operation: "extraction", durationMs });
           log.debug(`extraction: used local LLM — ${localResult.facts.length} facts, ${localResult.entities.length} entities`);
-          const sanitized = this.sanitizeExtractionResult(this.applySpanMaterialization(localResult, boundedTurns), messageTimestamp);
+          const sanitized = this.sanitizeExtractionResult(this.applySpanMaterialization(localResult, spanTurns), messageTimestamp);
           const grounded = applyGroundingWithConnector(this.config, sanitized, groundingContext);
           const finalResult = await this.applyProactiveQuestionPass(conversation, grounded, groundingContext, signal);
           return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector, ambientCapture);
@@ -1266,7 +1277,7 @@ export class ExtractionEngine {
           this.profiler.endSpan("direct-client", extractionTraceId);
           this.emit({ kind: "llm_end", traceId, model: this.config.model, operation: "extraction", durationMs });
           log.debug(`extraction: used direct client (${this.config.model}) — ${directResult.facts.length} facts, ${directResult.entities.length} entities`);
-          const sanitized = this.sanitizeExtractionResult(this.applySpanMaterialization(directResult, boundedTurns), messageTimestamp);
+          const sanitized = this.sanitizeExtractionResult(this.applySpanMaterialization(directResult, spanTurns), messageTimestamp);
           const grounded = applyGroundingWithConnector(this.config, sanitized, groundingContext);
           const finalResult = await this.applyProactiveQuestionPass(conversation, grounded, groundingContext, signal);
           return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector, ambientCapture);
@@ -1329,7 +1340,7 @@ export class ExtractionEngine {
           role: "system" as const,
           content:
             buildExtractionInstructions(this.config, existingEntities, ambientCapture) +
-            `\n\nReturn only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:\n${EXTRACTION_RESPONSE_SHAPE}`,
+            `\n\nReturn only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:\n${extractionResponseShape(this.config.extraction?.spanMode ?? "off")}`,
         },
         { role: "user" as const, content: conversation },
       ];
@@ -1364,7 +1375,7 @@ export class ExtractionEngine {
           `extracted ${result.facts.length} facts, ${result.entities.length} entities, ${(result.questions ?? []).length} questions via fallback (${detailed.modelUsed})`,
         );
         const normalized = this.normalizeExtractionResultPayload(result);
-        const sanitized = this.sanitizeExtractionResult(this.applySpanMaterialization(normalized, boundedTurns), messageTimestamp);
+        const sanitized = this.sanitizeExtractionResult(this.applySpanMaterialization(normalized, spanTurns), messageTimestamp);
         const grounded = applyGroundingWithConnector(this.config, sanitized, groundingContext);
         const finalResult = await this.applyProactiveQuestionPass(conversation, grounded, groundingContext, signal);
         return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector, ambientCapture);
@@ -1477,7 +1488,7 @@ ${CUE_ANCHOR_PROMPT_INSTRUCTION}\n- Include at most five durable relationships.$
 - Set each fact subject to "user" when it models the person (preferences, relationships, biography, moments, commitments about their life) or "agent" when it is reusable operating knowledge (procedures, principles, tool-usage lessons, debugging strategies, environment facts with no personal content).` : ""}${ambientCapture ? AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT : ""}
 ${eventTimePromptInstruction(this.config)}${spanModePromptSection(this.config.extraction?.spanMode ?? "off")}
 Return only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:
-${EXTRACTION_RESPONSE_SHAPE}
+${extractionResponseShape(this.config.extraction?.spanMode ?? "off")}
 
 Conversation:
 ${truncatedConversation}`;
@@ -1568,7 +1579,7 @@ ${truncatedConversation}`;
             role: "system",
             content:
               buildExtractionInstructions(this.config, existingEntities, ambientCapture) +
-              `\n\nReturn only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:\n${EXTRACTION_RESPONSE_SHAPE}`,
+              `\n\nReturn only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:\n${extractionResponseShape(this.config.extraction?.spanMode ?? "off")}`,
           },
           { role: "user", content: conversation },
         ],
