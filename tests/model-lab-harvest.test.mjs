@@ -766,6 +766,110 @@ test(
 );
 
 test(
+  "harvest: custom citation suffixes harvest only on exact template inversion (#2896)",
+  { skip: skipReason },
+  () => {
+    // Innocuous-looking suffix (no '=', '/', '@'): without the configured
+    // template it can never be inverted exactly, so the row is skipped as
+    // private instead of emitting the identifiers.
+    const input = tmpDir("cust-in");
+    memoryWithVerdict(
+      input,
+      "fact-cust-001",
+      "entailed",
+      "synthetic quote cust innocuous",
+      "Synthetic fact cust one. [src agent session ts]",
+    );
+    const out = tmpDir("out-cust1");
+    const res = runHarvest([
+      "--task", "faithfulness-gate", "--input", input, "--out", out, "--consent", "--quiet",
+    ]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(readJsonl(path.join(out, "harvest-faithfulness-gate.jsonl")).length, 0);
+    const manifest = readManifest(out, "faithfulness-gate");
+    assert.equal(manifest.skipped.private, 1);
+    assert.equal(manifest.labelCounts.entailed, 0);
+    assertNoPrivateLeak(out);
+
+    // With the configured template: an exact inversion strips and emits;
+    // a near-match (separator missing) and a leftover private suffix skip.
+    const template = "[src:{agent}-{sessionId}]";
+    const input2 = tmpDir("cust2-in");
+    memoryWithVerdict(
+      input2,
+      "fact-cust-101",
+      "entailed",
+      "synthetic quote cust exact",
+      "Synthetic fact cust exact. [src:planner-sess-PRIVATE-value]",
+    );
+    memoryWithVerdict(
+      input2,
+      "fact-cust-102",
+      "contradicted",
+      "synthetic quote cust near",
+      "Synthetic fact cust near. [src:plannersessprivate]",
+    );
+    memoryWithVerdict(
+      input2,
+      "fact-cust-103",
+      "unsupported",
+      "synthetic quote cust leftover",
+      "Synthetic fact cust leftover. [note PRIVATE extra] [src:planner-sess-B]",
+    );
+    const out2 = tmpDir("out-cust2");
+    const res2 = runHarvest([
+      "--task", "faithfulness-gate", "--input", input2, "--out", out2, "--consent", "--quiet",
+      "--citation-template", template,
+    ]);
+    assert.equal(res2.status, 0, res2.stderr);
+    const rows = readJsonl(path.join(out2, "harvest-faithfulness-gate.jsonl"));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].factText, "Synthetic fact cust exact.");
+    const datasetText = fs.readFileSync(
+      path.join(out2, "harvest-faithfulness-gate.jsonl"),
+      "utf8",
+    );
+    assert.ok(!datasetText.includes("plannersessprivate"));
+    assert.ok(!datasetText.includes("note PRIVATE"));
+    assert.ok(!datasetText.includes("sess-PRIVATE"));
+    const manifest2 = readManifest(out2, "faithfulness-gate");
+    assert.equal(manifest2.skipped.private, 2);
+    assert.equal(manifest2.labelCounts.entailed, 1);
+    assert.equal(manifest2.labelCounts.contradicted, 0);
+    assert.equal(manifest2.labelCounts.unsupported, 0);
+    assertNoPrivateLeak(out2);
+
+    // Counters are deterministic: an identical rerun yields identical bytes.
+    const out3 = tmpDir("out-cust3");
+    const res3 = runHarvest([
+      "--task", "faithfulness-gate", "--input", input2, "--out", out3, "--consent", "--quiet",
+      "--citation-template", template,
+    ]);
+    assert.equal(res3.status, 0, res3.stderr);
+    assert.equal(
+      fs.readFileSync(path.join(out3, "harvest-faithfulness-gate.jsonl"), "utf8"),
+      fs.readFileSync(path.join(out2, "harvest-faithfulness-gate.jsonl"), "utf8"),
+    );
+    assert.deepEqual(
+      readManifest(out3, "faithfulness-gate").skipped,
+      manifest2.skipped,
+    );
+
+    // Blank template and wrong-task template are refused, never ignored.
+    const resBlank = runHarvest([
+      "--task", "faithfulness-gate", "--input", input, "--out", tmpDir("out-cust-blank"),
+      "--consent", "--quiet", "--citation-template", "  ",
+    ]);
+    assert.equal(resBlank.status, 2);
+    const resWrongTask = runHarvest([
+      "--task", "correction-intent", "--input", input, "--out", tmpDir("out-cust-wrong"),
+      "--consent", "--quiet", "--citation-template", template,
+    ]);
+    assert.equal(resWrongTask.status, 2);
+  },
+);
+
+test(
   "harvest: invalid UTF-8 counts malformed, never emits replacement chars (#2886)",
   { skip: skipReason },
   () => {

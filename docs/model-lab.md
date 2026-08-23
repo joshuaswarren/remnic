@@ -191,6 +191,11 @@ a model-backed detector lands in the consuming child.
   UTF-8 (strict decode, never U+FFFD replacement text) as malformed, derives
   polarity and assertion from the action, reconstructs gated `factText` by
   stripping the persist-time attribute suffix and default inline citation,
+  inverts a custom attribution template exactly when the operator supplies
+  the configured `inlineSourceAttributionFormat` via `--citation-template`
+  (anchored literals plus in-order separators), and skips any other
+  trailing attribution-shaped suffix as private — no punctuation
+  heuristics (#2896),
   skips child files that persist `parentId` plus `chunkIndex` with an inherited
   whole-fact verdict, streams reads (one payload resident at a time, fingerprint
   chained per-file in walk order, row set bounded by `--max-records`),

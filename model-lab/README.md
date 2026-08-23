@@ -117,7 +117,13 @@ U+FFFD replacement text (#2886). Polarity and `correctedAssertion` come from
 the validated action (a `retract` stays a retract even when the request text
 looks like an update). Faithfulness `factText` is the pre-persist gated
 body: the `[Attributes: …]` suffix and default `[Source: …]` citation are
-stripped; leftover custom attribution is skipped as private. Child files
+stripped. A custom attribution template is honored only through
+`--citation-template` (the `inlineSourceAttributionFormat` configured where
+the telemetry was persisted): the trailing marker is stripped when the
+template inverts it exactly — matching leading/trailing literals with every
+interior separator present in order — and any other trailing
+attribution-shaped suffix (including innocuous-looking ones with no `=`,
+`/`, or `@`) is skipped as private (#2896). Child files
 with persisted `parentId` and `chunkIndex` inherit the whole-fact verdict
 and are skipped; a whole fact or independently judged body still emits.
 Nothing in the daemon, build, or CI ever invokes it.
@@ -125,7 +131,8 @@ Nothing in the daemon, build, or CI ever invokes it.
 ```bash
 # faithfulness-gate: memory .md files carrying the #1576 faithfulness: verdict
 python3 model-lab/harvest.py --task faithfulness-gate \
-    --input <your-memory-dir> --out model-lab/faithfulness-gate/data/harvest --consent
+    --input <your-memory-dir> --out model-lab/faithfulness-gate/data/harvest --consent \
+    --citation-template '<your inlineSourceAttributionFormat, if customized>'
 # → harvest-faithfulness-gate.jsonl (+ .manifest.json + dataset.sha256)
 
 # correction-intent: persisted correction plans (state/corrections/pending/)

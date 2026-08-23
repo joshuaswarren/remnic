@@ -118,6 +118,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--citation-template",
+        default=None,
+        help=(
+            "The inlineSourceAttributionFormat string configured where the "
+            "telemetry was persisted (faithfulness-gate only). Custom "
+            "attribution suffixes are stripped only when this template "
+            "inverts them exactly; anything else trailing is skipped as "
+            "private (#2896)."
+        ),
+    )
+    parser.add_argument(
         "--yes",
         action="store_true",
         help="Write into a non-empty --out directory without asking.",
@@ -145,6 +156,15 @@ def main(argv: list[str] | None = None) -> int:
             "your own persisted memory telemetry from --input and turns it\n"
             "into local training records. Nothing was read."
         )
+    citation_template = args.citation_template
+    if citation_template is not None:
+        if args.task != "faithfulness-gate":
+            return _refuse(
+                "--citation-template applies only to --task faithfulness-gate"
+            )
+        citation_template = citation_template.strip()
+        if not citation_template:
+            return _refuse("--citation-template must not be blank")
 
     try:
         require_input_dir(args.input)
@@ -184,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
             args.out,
             max_records=args.max_records,
             max_text_bytes=args.max_text_bytes,
+            citation_template=citation_template,
         )
     except (ValueError, NotADirectoryError) as err:
         return _refuse(f"harvest refused: {err}")

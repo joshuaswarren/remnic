@@ -7,11 +7,14 @@ model-lab tasks:
   verdict (#1576) plus every verified ``sources[].quote`` span (#1575),
   joined with a newline in persisted order (same as the gate). ``factText``
   is the pre-persist gated body: the ``[Attributes: …]`` suffix and default
-  inline citation are stripped from the already-bounded source bytes.
-  Child files with persisted ``parentId`` and ``chunkIndex`` inherit the
-  whole-fact verdict; they are skipped so a chunk body is not labeled as
-  the gated fact. A whole fact, or a file judged on its own body without
-  those chunk fields, still emits.
+  inline citation are stripped from the already-bounded source bytes. A
+  configured custom attribution template (``citation_template``) is inverted
+  exactly — anchored leading/trailing literals plus in-order interior
+  separators — and any other trailing attribution-shaped suffix is skipped
+  as private (#2896). Child files with persisted ``parentId`` and
+  ``chunkIndex`` inherit the whole-fact verdict; they are skipped so a
+  chunk body is not labeled as the gated fact. A whole fact, or a file
+  judged on its own body without those chunk fields, still emits.
 * ``correction-intent`` — persisted correction-plan JSON (#1581 durable output).
   ``confidence`` must be finite and in ``[0, 1]``. Every action is validated
   against the product kind/field contract. Polarity and assertion come from
@@ -33,8 +36,10 @@ Contract (issue #2852):
   schema version, action kind/fields, or a confidence outside ``[0, 1]``
   count as malformed, never as a positive label. Input decodes strictly as
   UTF-8: invalid bytes count as malformed and never surface as U+FFFD
-  replacement text (#2886). A body that still carries unstrippable inline
-  attribution is skipped as private.
+  replacement text (#2886). A body that still carries an unterminated known
+  citation marker or any trailing single-line bracketed suffix the
+  configured template cannot invert exactly is skipped as private (#2896);
+  no punctuation heuristics decide it.
 * Deterministic and idempotent: same input tree → byte-identical dataset AND
   manifest (no clocks, no absolute paths). Rows dedup on the training payload
   and emit in canonical-JSON order.
@@ -61,6 +66,7 @@ import heapq
 import json
 import math
 import os
+import re
 import stat
 import sys
 from collections import Counter
@@ -123,7 +129,12 @@ SOURCE_ID_SALT = "remnic-harvest-v1"
 ATTRIBUTES_MARKER = "\n[Attributes: "
 DEFAULT_CITATION_OPEN = "[Source:"
 MAX_CITATION_INNER = 1024
-
+# Citation template placeholders ({agent}, {session}, {sessionId}, {ts}, {date}).
+PLACEHOLDER_TOKEN_RE = re.compile(r"\{[A-Za-z][A-Za-z0-9]*\}")
+# Production appends exactly one marker per attach; merged bodies can carry
+# a couple. Anything beyond this bound leaves a trailing bracket, which the
+# unrecognized-citation check then skips as private.
+MAX_CUSTOM_CITATIONS = 8
 
 def dataset_filename(task: str) -> str:
     return f"harvest-{task}.jsonl"
@@ -358,8 +369,80 @@ def _strip_default_citations(text: str) -> str:
     return "".join(pieces).strip()
 
 
-def _has_unstrippable_attribution(text: str) -> bool:
-    if DEFAULT_CITATION_OPEN in text:
+def _citation_template_prefix(template: str) -> str:
+    """Literal the formatted marker must start with ("" when unanchorable)."""
+    if not PLACEHOLDER_TOKEN_RE.search(template):
+        # Fully-literal template: the marker IS the template verbatim.
+        return template
+    parts = PLACEHOLDER_TOKEN_RE.split(template)
+    return parts[0]
+
+
+def _strip_custom_citation_once(
+    text: str, template: str
+) -> tuple[str, bool]:
+    """Invert one trailing marker of ``template`` exactly (#2896).
+
+    Production appends the formatted template at the trimmed end of the fact
+    body, so an exact inversion must: end with the template's trailing
+    literal, start at the template's leading literal, and carry every
+    interior separator literal in order inside the value region. Anything
+    else is not this template's marker and is left in place.
+    """
+    stripped = text.rstrip()
+    if not PLACEHOLDER_TOKEN_RE.search(template):
+        if stripped.endswith(template) and len(stripped) > len(template):
+            return stripped[: len(stripped) - len(template)].rstrip(), True
+        return text, False
+    parts = PLACEHOLDER_TOKEN_RE.split(template)
+    prefix, inner, suffix = parts[0], parts[1:-1], parts[-1]
+    # Without a literal frame on both sides the marker's span is ambiguous
+    # and can never be inverted exactly.
+    if not prefix or not suffix:
+        return text, False
+    if not stripped.endswith(suffix):
+        return text, False
+    start = stripped.rfind(prefix)
+    if start <= 0:
+        return text, False
+    marker = stripped[start:]
+    value = marker[len(prefix) : len(marker) - len(suffix)]
+    if "\n" in marker or len(marker) > MAX_CITATION_INNER:
+        return text, False
+    if not value or "[" in value or "]" in value:
+        return text, False
+    cursor = 0
+    for separator in inner:
+        if not separator:
+            continue
+        found = value.find(separator, cursor)
+        if found == -1:
+            return text, False
+        cursor = found + len(separator)
+    return stripped[:start].rstrip(), True
+
+
+def _strip_custom_citations(text: str, template: str) -> str:
+    """Strip every trailing marker the template inverts exactly."""
+    for _ in range(MAX_CUSTOM_CITATIONS):
+        stripped, removed = _strip_custom_citation_once(text, template)
+        if not removed:
+            return text
+        text = stripped
+    return text
+
+
+def _has_unrecognized_citation(
+    text: str, citation_prefixes: tuple[str, ...] = ()
+) -> bool:
+    """True when attribution-shaped content we cannot invert remains (#2896).
+
+    No punctuation heuristics: a known citation prefix that survived
+    stripping (unterminated marker) or ANY trailing single-line bracketed
+    segment within the citation bound is treated as unrecognized inline
+    attribution. Facts without a trailing citation suffix emit unchanged.
+    """
+    if any(prefix and prefix in text for prefix in citation_prefixes):
         return True
     trimmed = text.rstrip()
     if not trimmed.endswith("]"):
@@ -368,9 +451,7 @@ def _has_unstrippable_attribution(text: str) -> bool:
     if open_at == -1:
         return False
     inner = trimmed[open_at + 1 : -1]
-    if "\n" in inner or len(inner) > MAX_CITATION_INNER:
-        return False
-    return any(token in inner for token in ("=", "/", "@"))
+    return "\n" not in inner and len(inner) <= MAX_CITATION_INNER
 
 
 def _inherited_whole_fact_chunk(scalars: dict[str, str]) -> bool:
@@ -388,13 +469,22 @@ def _inherited_whole_fact_chunk(scalars: dict[str, str]) -> bool:
     return index >= 0
 
 
-def _reconstruct_gated_fact(body: str) -> tuple[str | None, str | None]:
+def _reconstruct_gated_fact(
+    body: str,
+    citation_template: str | None = None,
+) -> tuple[str | None, str | None]:
     """Recover the fact text the gate evaluated, or skip the row."""
     without_attributes = _strip_attributes_suffix(body)
     fact_text = _strip_default_citations(without_attributes)
+    prefixes = [DEFAULT_CITATION_OPEN]
+    if citation_template:
+        fact_text = _strip_custom_citations(fact_text, citation_template)
+        template_prefix = _citation_template_prefix(citation_template)
+        if template_prefix:
+            prefixes.append(template_prefix)
     if not fact_text:
         return None, "malformed"
-    if _has_unstrippable_attribution(fact_text):
+    if _has_unrecognized_citation(fact_text, tuple(prefixes)):
         return None, "private"
     return fact_text, None
 
@@ -486,6 +576,7 @@ def _corrections_from_actions(
 
 def build_faithfulness_record(
     markdown_text: str,
+    citation_template: str | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     parsed = parse_frontmatter(markdown_text)
     if parsed is None:
@@ -510,7 +601,7 @@ def build_faithfulness_record(
     quote = _joined_verified_quotes(scalars.get("sources"))
     if not quote:
         return None, "no_quote"
-    fact_text, fact_reason = _reconstruct_gated_fact(body)
+    fact_text, fact_reason = _reconstruct_gated_fact(body, citation_template)
     if fact_reason is not None:
         return None, fact_reason
     approved = {
@@ -641,6 +732,7 @@ def harvest(
     input_dir: Path,
     max_records: int = DEFAULT_MAX_RECORDS,
     max_text_bytes: int = DEFAULT_MAX_TEXT_BYTES,
+    citation_template: str | None = None,
 ) -> HarvestResult:
     if task not in TASKS:
         raise ValueError(f"unknown task {task!r}; expected one of {TASKS}")
@@ -680,7 +772,7 @@ def harvest(
             skips["malformed"] += 1
             continue
         if task == "faithfulness-gate":
-            row, reason = build_faithfulness_record(text)
+            row, reason = build_faithfulness_record(text, citation_template)
         else:
             try:
                 plan = json.loads(text)
@@ -765,8 +857,11 @@ def run_harvest(
     out_dir: Path,
     max_records: int = DEFAULT_MAX_RECORDS,
     max_text_bytes: int = DEFAULT_MAX_TEXT_BYTES,
+    citation_template: str | None = None,
 ) -> tuple[str, Path, HarvestResult]:
-    result = harvest(task, input_dir, max_records, max_text_bytes)
+    result = harvest(
+        task, input_dir, max_records, max_text_bytes, citation_template
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     dataset_path = out_dir / dataset_filename(task)
     if result.rows:
