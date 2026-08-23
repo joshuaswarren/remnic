@@ -325,6 +325,15 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
       }
     }
   }
+  if (/\bawait\s+respondBriefingHttp\(/.test(source)) {
+    const briefingSource = readFileSync(
+      new URL("./access-http-briefing.ts", import.meta.url),
+      "utf-8",
+    );
+    if (briefingSource.includes('getOperation("briefing")')) {
+      routeOps.set("POST /engram/v1/briefing", new Set(["briefing"]));
+    }
+  }
   if (/\bawait\s+this\.handleReviewDeckRequest\(/.test(source)) {
     const deckSource = readFileSync(
       new URL("./review/review-deck-http-base.ts", import.meta.url),
