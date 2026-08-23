@@ -64,6 +64,7 @@ import type {
   SyncIncrementalResult,
 } from "./framework.js";
 import { isTransientHttpError } from "./transient-errors.js";
+import { throwIfAborted } from "../../abort-error.js";
 
 /**
  * Stable connector id. Lives in the registry under this exact string.
@@ -414,10 +415,10 @@ export function createGoogleDriveConnector(
     async syncIncremental(args: SyncIncrementalArgs): Promise<SyncIncrementalResult> {
       // Re-validate on every pass: a JS caller could mutate it between passes.
       const config = validateGoogleDriveConfig(args.config);
-      throwIfAborted(args.abortSignal);
+      throwIfAborted(args.abortSignal, "googleDrive: sync aborted");
 
       const client = await clientFactory(config);
-      throwIfAborted(args.abortSignal);
+      throwIfAborted(args.abortSignal, "googleDrive: sync aborted");
 
       // Cursor bootstrap. On the very first pass (cursor=null) we ask Drive
       // for a page token but DO NOT consume any changes — this aligns with
@@ -455,7 +456,7 @@ export function createGoogleDriveConnector(
       // Page through `changes.list` until we run out, hit the per-pass cap,
       // or get aborted.
       while (true) {
-        throwIfAborted(args.abortSignal);
+        throwIfAborted(args.abortSignal, "googleDrive: sync aborted");
         const remaining = MAX_CHANGES_PER_PASS - consumed;
         if (remaining <= 0) {
           // Hit the cap — persist whatever we have. The next pass resumes
@@ -467,7 +468,7 @@ export function createGoogleDriveConnector(
         const page = await client.listChanges({ pageToken, pageSize });
 
         for (const change of page.changes) {
-          throwIfAborted(args.abortSignal);
+          throwIfAborted(args.abortSignal, "googleDrive: sync aborted");
           consumed++;
           const decision = decideChange(change, folderScope);
           switch (decision.kind) {
@@ -538,7 +539,7 @@ async function fetchDocument(
   fetchedAt: string,
   abortSignal: AbortSignal | undefined,
 ): Promise<ConnectorDocument | null> {
-  throwIfAborted(abortSignal);
+  throwIfAborted(abortSignal, "googleDrive: sync aborted");
   const file = decision.file;
   let body: string;
   try {
@@ -579,14 +580,6 @@ async function fetchDocument(
       fetchedAt,
     },
   };
-}
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) {
-    const err = new Error("googleDrive: sync aborted");
-    err.name = "AbortError";
-    throw err;
-  }
 }
 
 /**

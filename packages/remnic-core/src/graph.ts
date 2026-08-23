@@ -30,6 +30,7 @@ import {
   withGraphWriteLock,
   yieldForLockHeartbeat,
 } from "./graph-write-lock.js";
+import { isErrnoCode } from "./utils/errno.js";
 
 export type GraphType = "entity" | "time" | "causal";
 
@@ -143,9 +144,6 @@ export async function appendEdge(memoryDir: string, edge: GraphEdge): Promise<vo
     confidence: typeof edge.confidence === "number" ? edge.confidence : 1.0,
   });
 }
-function isNodeError(err: unknown): err is NodeJS.ErrnoException {
-  return typeof err === "object" && err !== null && "code" in err;
-}
 
 function parseEdgesJsonl(raw: string, expectedType: GraphType): GraphEdge[] {
   const edges: GraphEdge[] = [];
@@ -213,7 +211,7 @@ export async function readEdgesStrict(memoryDir: string, type: GraphType): Promi
     const raw = await readFile(filePath, "utf8");
     return await parseEdgesJsonlYielding(raw, type);
   } catch (err) {
-    if (isNodeError(err) && err.code === "ENOENT") {
+    if (isErrnoCode(err, "ENOENT")) {
       return [];
     }
     throw err;

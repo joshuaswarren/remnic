@@ -25,6 +25,7 @@ import type { StorageManager } from "../storage.js";
 import type { MemoryFile } from "../types.js";
 import { markProjectedMemoryPathInvalid } from "../memory-projection-store.js";
 import type { SearchBackend } from "../search/port.js";
+import { isErrnoCode } from "../utils/errno.js";
 
 export type PurgeTierFilter = "cold" | "all";
 
@@ -85,10 +86,6 @@ export interface PurgeMemoriesResult {
   alreadyAbsentCount: number;
   errorCount: number;
   errors: Array<{ id: string; path: string; error: string }>;
-}
-
-function hasErrorCode(err: unknown, code: string): boolean {
-  return typeof err === "object" && err !== null && "code" in err && (err as { code?: unknown }).code === code;
 }
 
 function resolveTimestamp(memory: MemoryFile): string {
@@ -247,7 +244,7 @@ export async function purgeMemories(
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (hasErrorCode(err, "ENOENT")) {
+      if (isErrnoCode(err, "ENOENT")) {
         alreadyAbsent.push(candidate);
         addCollectionForCandidate(candidate);
         markProjectedMemoryPathInvalid(storage.dir, candidate.id);
