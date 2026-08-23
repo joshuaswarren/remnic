@@ -533,6 +533,17 @@ export class TombstoneBlockedCaptureIndex {
     await this.failOpen("invalidateMemory", () => this.rebuildIfLoaded(ownedMarker));
   }
 
+  /**
+   * Drop an already-committed write marker without re-reading the corpus. The
+   * offline-sync mutation path commits its marker around the file write, then
+   * must clear it even when the write cannot have changed the blocked key set
+   * (neither side tombstone-blocked) — otherwise the marker lingers until some
+   * later rebuild clears it. Mirrors the tail of `add`/`sync`.
+   */
+  async clearCommittedWriteMarker(rebuildMarker: string): Promise<void> {
+    await this.clearRebuildRequired([rebuildMarker]);
+  }
+
   async syncUpdatedMemory(
     before: MemoryFile,
     frontmatter: MemoryFrontmatter,
