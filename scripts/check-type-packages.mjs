@@ -71,21 +71,39 @@ export function runCheckTypePackages(packagesDir = join(repoRoot, "packages")) {
   return result.status ?? 1;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const mode = process.argv[2] ?? "--list";
-  const packagesDirFlag = process.argv.indexOf("--packages-dir");
-  const packagesDir = packagesDirFlag !== -1 ? process.argv[packagesDirFlag + 1] : join(repoRoot, "packages");
+const USAGE =
+  "usage: check-type-packages.mjs [--list | --list-manifests | --run] [--packages-dir <dir>]";
 
-  let names;
-  if (mode === "--list") {
-    names = checkTypePackageDirs(packagesDir);
-  } else if (mode === "--list-manifests") {
-    names = manifestPackageDirs(packagesDir);
-  } else if (mode === "--run") {
-    process.exit(runCheckTypePackages(packagesDir));
-  } else {
-    console.error("usage: check-type-packages.mjs [--list | --list-manifests | --run] [--packages-dir <dir>]");
+function parseCliArgs(argv) {
+  const mode = argv[0] ?? "--list";
+  if (mode !== "--list" && mode !== "--list-manifests" && mode !== "--run") return null;
+  let packagesDir;
+  let sawPackagesDir = false;
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] !== "--packages-dir") continue;
+    const value = argv[i + 1];
+    if (sawPackagesDir || value === undefined || value.startsWith("-") || value.trim() === "") {
+      return null;
+    }
+    packagesDir = value;
+    sawPackagesDir = true;
+    i += 1;
+  }
+  return { mode, packagesDir: packagesDir ?? join(repoRoot, "packages") };
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  const parsed = parseCliArgs(process.argv.slice(2));
+  if (!parsed) {
+    console.error(USAGE);
     process.exit(2);
   }
+  if (parsed.mode === "--run") {
+    process.exit(runCheckTypePackages(parsed.packagesDir));
+  }
+  const names =
+    parsed.mode === "--list-manifests"
+      ? manifestPackageDirs(parsed.packagesDir)
+      : checkTypePackageDirs(parsed.packagesDir);
   for (const name of names) console.log(name);
 }

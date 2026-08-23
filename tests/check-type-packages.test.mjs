@@ -170,4 +170,42 @@ exit "\${STUB_EXIT:-0}"
   }
 }
 
+// CLI --packages-dir: reject incomplete values before enumeration (#2856).
+{
+  const spawnCli = (args) => spawnSync(process.execPath, [modulePath, ...args], { encoding: "utf8" });
+  const assertUsageReject = (args) => {
+    const result = spawnCli(args);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /usage: check-type-packages\.mjs/);
+    assert.equal(result.stdout, "");
+  };
+
+  assertUsageReject(["--list", "--packages-dir"]);
+  assertUsageReject(["--run", "--packages-dir"]);
+  assertUsageReject(["--list", "--packages-dir", "--run"]);
+  assertUsageReject(["--list", "--packages-dir", ""]);
+  assertUsageReject(["--list", "--packages-dir", "   "]);
+  assertUsageReject([
+    "--list",
+    "--packages-dir",
+    join(tmpdir(), "check-type-packages-a"),
+    "--packages-dir",
+    join(tmpdir(), "check-type-packages-b"),
+  ]);
+
+  const listDir = mkdtempSync(join(tmpdir(), "check-type-packages-list-"));
+  try {
+    const packagesDir = writeWorkspace(listDir, { shuffled: false, hydrated: false });
+    const listed = spawnCli(["--list", "--packages-dir", packagesDir]);
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.deepEqual(listed.stdout.trim().split(/\r?\n/), [
+      "aaa-early-omega",
+      "import-like-optional",
+      "zzz-late-alpha",
+    ]);
+  } finally {
+    rmSync(listDir, { recursive: true, force: true });
+  }
+}
+
 console.log("check-type-packages scope passed: deterministic manifest enumeration and run wiring");
