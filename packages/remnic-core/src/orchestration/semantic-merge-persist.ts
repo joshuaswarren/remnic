@@ -847,10 +847,9 @@ export async function applySemanticMergeAtPersist(
     // merged body, so content comparison would misattribute their commit,
     // and the revert below would CAS-replace their valid merge with the
     // pre-merge body while their patched provenance stood.
-    //   - receipt present → OUR write landed (throw after commit) → the
-    //     committed-update handling below applies: revert, else degraded
-    //     success;
-    //   - no receipt, merged body standing → a concurrent writer's commit —
+    //   - receipt present → OUR write landed (throw after commit) → revert,
+    //     else degraded success — and the rollback verifies the standing
+    //     record still carries the receipt's revision (#2813 P1, round 2);
     //     clean up OUR staged duplicate, leave theirs untouched, report the
     //     degraded merged outcome (never `created`: storage already holds
     //     these claims);
@@ -899,7 +898,34 @@ export async function applySemanticMergeAtPersist(
         return { action: "created", reason: "update_failed" };
       }
     }
-    if (landed && !(await revertMergedContent(options.storage, target, committedContent))) {
+    // #2813 (P1, round 2): the receipt was used only as a boolean — never
+    // compared with the standing record — so writer B's identical commit
+    // after our lock released was reverted as ours. Equal revision → ours,
+    // safe to roll back; advanced → B's — the same handling as the no-receipt
+    // other-writer branch above; never revert theirs.
+    const revert = landed
+      ? await revertMergedContent(options.storage, target, committedContent, committedRevision)
+      : undefined;
+    if (revert === "superseded") {
+      await discardMergedTargetSnapshot(
+        target.path,
+        versioning,
+        options.storage.dir,
+        decision.targetId,
+        versionId,
+      );
+      await repairIndexes(committedMergedFactHash(deps, options.category, committedContent));
+      log.warn(
+        `semantic-merge: update failed for ${decision.targetId} (the standing merged body advanced past this writer's commit receipt — another writer's identical commit stands; snapshot ${versionId} discarded, the concurrent commit left untouched): ${detail}`,
+      );
+      return {
+        action: "merged",
+        targetId: decision.targetId,
+        mergedContent: committedContent,
+        provenancePatched: false,
+      };
+    }
+    if (landed && revert !== "reverted") {
       log.error(
         `semantic-merge: ${decision.targetId} holds merged content without provenance metadata and the rollback failed (${detail}); snapshot ${versionId} holds the pre-merge state — recover with revertToVersion. Not creating a duplicate fact.`,
       );

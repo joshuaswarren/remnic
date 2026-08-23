@@ -529,7 +529,7 @@ async function harness(
      * deterministic merged body before this writer's lock acquisition
      * fails, so the throw carries no receipt.
      */
-    contentCasThrows?: "before" | "after" | "concurrent";
+    contentCasThrows?: "before" | "after" | "concurrent" | "after-concurrent";
   } = {},
 ): Promise<MergeHarness> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-"));
@@ -580,8 +580,17 @@ async function harness(
     reindexed: [],
     lookupStorages: [],
   };
-  const commit = async (content: string): Promise<void> => {
-    state = { ...state, content };
+  const commit = async (content: string, revision?: string): Promise<void> => {
+    state = {
+      ...state,
+      content,
+      // Signature-faithful to updateMemoryFromCurrent: the durable write
+      // stamps frontmatter.updated, and the CAS receipt (below) carries that
+      // same revision (#2813 P1).
+      ...(revision !== undefined
+        ? { frontmatter: { ...state.frontmatter, updated: revision } }
+        : {}),
+    };
     await writeFile(targetPath, `---\nid: fact-target\ncategory: fact\n---\n\n${content}\n`, "utf8");
   };
   // Live state: reads come off the file, so a stub can neither invent a
@@ -641,11 +650,27 @@ async function harness(
       }
       if (overrides.contentCasThrows === "after" && options?.actor === "semantic-merge") {
         calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: options?.actor });
-        await commit(content);
+        const revision = "2026-08-22T00:00:00.000Z";
+        await commit(content, revision);
         // Signature-faithful to the real CAS: the durable write landed, so
         // storage stamps the post-commit throw with the commit receipt.
         const err = new Error("lock release failed after the content write committed");
-        markCasCommittedRevision(err, "2026-08-22T00:00:00.000Z");
+        markCasCommittedRevision(err, revision);
+        throw err;
+      }
+      if (overrides.contentCasThrows === "after-concurrent" && options?.actor === "semantic-merge") {
+        // #2813 (P1, round 2): THIS writer's CAS commits the merged body and
+        // its post-commit work throws with the commit receipt stamped — then
+        // a concurrent writer commits the IDENTICAL deterministic merged body
+        // under a LATER revision after the lock is released, before this
+        // writer's catch path performs its rollback.
+        calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: options?.actor });
+        const revision = "2026-08-22T00:00:00.000Z";
+        await commit(content, revision);
+        calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: "other-writer" });
+        await commit(content, "2026-08-22T00:00:01.000Z");
+        const err = new Error("lock release failed after the content write committed");
+        markCasCommittedRevision(err, revision);
         throw err;
       }
       if (!(await unchanged(expected))) return false;
@@ -3653,6 +3678,65 @@ test("applySemanticMergeAtPersist: a concurrent identical commit is never claime
     ).versions.length,
     0,
     "this writer's staged duplicate snapshot is cleaned up, not finalized into history",
+  );
+});
+
+test("applySemanticMergeAtPersist: a rollback never reverts a concurrent identical commit that landed after this writer's receipt (#2813 P1)", async () => {
+  // The round-2 P1 hole — the receipt used only as a boolean. This writer's
+  // CAS COMMITS the merged body and its post-commit work throws with the
+  // commit receipt stamped; before the catch path runs its rollback, a
+  // concurrent writer commits the IDENTICAL deterministic merged body under a
+  // later revision. Body equality cannot tell the two commits apart, so the
+  // old rollback reread "the merged body standing", CAS-restored the
+  // pre-merge body over the concurrent writer's valid merge, and discarded
+  // the snapshot while their provenance update may already have landed. The
+  // rollback now compares the standing record's revision with the receipt:
+  // equal → ours, safe to revert; advanced → theirs — the other-writer
+  // handling from the previous fix (discard our staged duplicate, repair
+  // indexes for the standing body, report the degraded merge; never revert
+  // theirs).
+  const h = await harness({ contentCasThrows: "after-concurrent" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, {
+    action: "merged",
+    targetId: "fact-target",
+    mergedContent: MERGED,
+    provenancePatched: false,
+  });
+  const body = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(
+    body?.content,
+    MERGED,
+    "the concurrent writer's identical commit stands — never reverted to the pre-merge body",
+  );
+  assert.deepEqual(
+    h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [
+      { content: MERGED, actor: "semantic-merge" },
+      { content: MERGED, actor: "other-writer" },
+    ],
+    "no semantic-merge-rollback write runs — the pre-merge restore must never fire against another writer's commit",
+  );
+  assert.equal(
+    h.calls.hashRegistrations.length,
+    1,
+    "the degraded path repairs the hash indexes for the standing merged body",
+  );
+  assert.equal(
+    (
+      await listVersions(
+        h.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        h.storage.dir,
+      )
+    ).versions.length,
+    0,
+    "this writer's staged duplicate snapshot is discarded, not finalized into history",
   );
 });
 

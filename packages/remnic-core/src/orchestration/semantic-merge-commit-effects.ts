@@ -137,31 +137,50 @@ export async function readTargetSnapshot(
 
 /**
  * Undo a merged body whose provenance patch never landed, and report what is
- * actually true of storage afterwards: `true` means the target no longer holds
- * unprovenanced merged text, so the caller may honestly create the fact.
+ * actually true of storage afterwards:
+ *  - "reverted" — the target no longer holds this merge's unprovenanced text
+ *    (ours was restored away, or another writer already replaced the body
+ *    outright), so the caller may honestly create the fact;
+ *  - "superseded" — the standing merged body is ANOTHER writer's commit
+ *    (#2813 P1): `committedRevision` names the revision OUR CAS landed, the
+ *    reread holds a different one, and a concurrent writer's deterministic
+ *    merge is byte-for-byte our merged text — so only the revision can
+ *    attribute the standing record. Never revert theirs; the caller discards
+ *    its own staged duplicate and reports the degraded merge;
+ *  - "stands" — unverifiable (unreadable target), or the restore lost its
+ *    race, so assume the merged text stands and refuse to create a duplicate.
  *
- * Three states, because only one of them is ours to undo:
- *  - the body is still our merged text → restore the pre-merge body under a
- *    compare-and-swap on the re-read snapshot;
- *  - another writer already replaced it → nothing of ours remains, so the
- *    restore is skipped rather than clobbering that writer's body;
- *  - the target is unreadable → unverifiable, so assume the merged text stands
- *    and refuse to create a duplicate.
+ * `committedRevision` is the CAS commit receipt (markCasCommittedRevision —
+ * the frontmatter.updated the write stamped). Callers without identity omit
+ * it and keep the body-equality classification above.
  */
+export type RevertMergedContentResult = "reverted" | "superseded" | "stands";
+
 export async function revertMergedContent(
   storage: StorageManager,
   target: MemoryFile,
   mergedContent: string,
-): Promise<boolean> {
+  committedRevision?: string,
+): Promise<RevertMergedContentResult> {
   try {
     const current = await readTargetSnapshot(storage, target);
-    if (!current) return false;
-    if (current.content !== mergedContent) return true;
-    return await storage.updateMemoryIfUnchanged(current, target.content, {
+    if (!current) return "stands";
+    if (current.content !== mergedContent) return "reverted";
+    // #2813 (P1): the merged body standing is provably OURS only while the
+    // record still carries the revision our CAS stamped. A different
+    // revision means a concurrent writer committed the same deterministic
+    // body after our lock was released — reverting would delete their valid
+    // merge while their provenance patch may already have landed.
+    if (committedRevision !== undefined && current.frontmatter.updated !== committedRevision) {
+      return "superseded";
+    }
+    return (await storage.updateMemoryIfUnchanged(current, target.content, {
       actor: "semantic-merge-rollback",
-    });
+    }))
+      ? "reverted"
+      : "stands";
   } catch {
-    return false;
+    return "stands";
   }
 }
 
