@@ -106,8 +106,10 @@ and explicit local `--input`/`--out` paths, reads exactly the named directory
 skipped), strips every private field (session keys, principals, namespaces,
 memory ids, model ids) by building records from an allowlist, derives
 `sourceId` as a hash of those approved fields plus a task salt, and skips
-redacted/never-store plans outright. Unknown correction classification,
-status, or schema version counts as malformed, never as a positive label.
+redacted/never-store plans outright. Faithfulness rows keep every verified
+source quote, joined with a newline in persisted order (same as the gate).
+Unknown correction classification, status, schema version, or a confidence
+outside `[0, 1]` counts as malformed, never as a positive label.
 Nothing in the daemon, build, or CI ever invokes it.
 
 ```bash
@@ -124,8 +126,11 @@ python3 model-lab/harvest.py --task correction-intent \
 Deterministic and idempotent: the same input tree yields byte-identical
 dataset AND manifest (records dedup on training payload, emit in canonical
 order; the manifest carries an input fingerprint + dataset sha256 and no
-clocks or absolute paths). `--max-records` and `--max-text-bytes` bound the
-run; oversize text is skipped, never truncated. Labels emitted:
+clocks or absolute paths). `--max-records` caps emitted rows.
+`--max-text-bytes` is enforced with fstat plus a bounded stream
+*before* a file is read or fingerprinted; oversized files are counted and
+skipped without a full allocation. Oversize text is skipped, never truncated.
+Labels emitted:
 `entailed|contradicted|unsupported` (teacher verdicts only —
 `skipped_no_span`/`unchecked` are not labels) and `correction` (persisted
 plans; `none` negatives stay synthetic-only). Guarded by

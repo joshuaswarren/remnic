@@ -4,8 +4,10 @@ Turns persisted shadow telemetry into labeled training records for the two
 model-lab tasks:
 
 * ``faithfulness-gate`` — memory markdown with a ``faithfulness:`` frontmatter
-  verdict (#1576) plus a verified ``sources[].quote`` span (#1575).
+  verdict (#1576) plus every verified ``sources[].quote`` span (#1575),
+  joined with a newline in persisted order (same as the gate).
 * ``correction-intent`` — persisted correction-plan JSON (#1581 durable output).
+  ``confidence`` must be finite and in ``[0, 1]``.
 
 Contract (issue #2852):
 
@@ -19,13 +21,16 @@ Contract (issue #2852):
   Session keys, principals, namespaces, memory ids, model ids, and timestamps
   stay behind. ``sourceId`` is a hash of sanitized approved fields plus a
   task salt — never a frontmatter id, plan id, or filename. Redacted (#1678)
-  and never-store plans are skipped. Unknown classification, status, or
-  schema version count as malformed, never as a positive label.
+  and never-store plans are skipped. Unknown classification, status,
+  schema version, or a confidence outside ``[0, 1]`` count as malformed,
+  never as a positive label.
 * Deterministic and idempotent: same input tree → byte-identical dataset AND
   manifest (no clocks, no absolute paths). Rows dedup on the training payload
   and emit in canonical-JSON order.
-* Bounded: ``max_records`` caps the dataset; oversize text is skipped, never
-  truncated.
+* Bounded: ``max_records`` caps the dataset. ``max_text_bytes`` is checked
+  with fstat plus a bounded stream *before* a full read or fingerprint.
+  Oversized files are counted and skipped without allocating their bytes.
+  Oversize text fields are skipped, never truncated.
 
 Pure stdlib. The correction-intent schema is imported lazily so ``common/``
 keeps no static dependency on a task directory.
@@ -110,6 +115,7 @@ class HarvestResult:
     input_fingerprint: str
     deduped: int
     truncated: bool
+    bytes_read: int
 
 
 def _canonical(row: dict[str, Any]) -> str:
@@ -186,8 +192,47 @@ def _iter_input_files(input_dir: Path, suffix: str) -> list[Path]:
     return found
 
 
-def _input_fingerprint(files: list[Path]) -> str:
-    parts = sorted(sha256_bytes(path.read_bytes()) for path in files)
+def _open_nofollow(path: Path) -> int:
+    flags = os.O_RDONLY
+    flags |= int(getattr(os, "O_NOFOLLOW", 0))
+    flags |= int(getattr(os, "O_CLOEXEC", 0))
+    return os.open(path, flags)
+
+
+def _read_bounded(path: Path, max_bytes: int) -> tuple[bytes | None, str | None]:
+    """Load at most ``max_bytes``. fstat first; never slurp an oversized file."""
+    try:
+        fd = _open_nofollow(path)
+    except OSError:
+        return None, "malformed"
+    try:
+        info = os.fstat(fd)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            return None, "malformed"
+        if info.st_size > max_bytes:
+            return None, "oversize"
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, min(65_536, max_bytes - total + 1))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                return None, "oversize"
+            chunks.append(chunk)
+        raced = os.fstat(fd)
+        if raced.st_size > max_bytes:
+            return None, "oversize"
+        if raced.st_size != info.st_size or raced.st_size != total:
+            return None, "malformed"
+        return b"".join(chunks), None
+    finally:
+        os.close(fd)
+
+
+def _fingerprint_payloads(payloads: list[bytes]) -> str:
+    parts = sorted(sha256_bytes(payload) for payload in payloads)
     return sha256_bytes("\n".join(parts).encode("utf-8"))
 
 
@@ -208,7 +253,8 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str] | None:
     return None
 
 
-def _first_verified_quote(raw_sources: str | None) -> str:
+def _joined_verified_quotes(raw_sources: str | None) -> str:
+    """Join every approved source quote, same order as the faithfulness gate."""
     if not raw_sources:
         return ""
     try:
@@ -217,13 +263,14 @@ def _first_verified_quote(raw_sources: str | None) -> str:
         return ""
     if not isinstance(sources, list):
         return ""
+    quotes: list[str] = []
     for source in sources:
         if not isinstance(source, dict):
             continue
         quote = source.get("quote")
         if isinstance(quote, str) and quote.strip():
-            return quote.strip()
-    return ""
+            quotes.append(quote.strip())
+    return "\n".join(quotes)
 
 
 def build_faithfulness_record(
@@ -246,7 +293,7 @@ def build_faithfulness_record(
     label = TEACHER_VERDICT_TO_LABEL.get(str(verdict) if verdict is not None else "")
     if label is None:
         return None, "non_teacher_verdict"
-    quote = _first_verified_quote(scalars.get("sources"))
+    quote = _joined_verified_quotes(scalars.get("sources"))
     if not quote:
         return None, "no_quote"
     fact_text = body.strip()
@@ -332,6 +379,8 @@ def build_correction_record(
         isinstance(confidence, bool)
         or not isinstance(confidence, (int, float))
         or not math.isfinite(confidence)
+        or confidence < 0
+        or confidence > 1
     ):
         return None, "malformed"
     cleaned = text.strip()
@@ -388,19 +437,29 @@ def harvest(
         raise ValueError("max_text_bytes must be >= 1")
 
     files = _iter_input_files(input_dir, TASK_INPUT_SUFFIX[task])
-    fingerprint = _input_fingerprint(files)
 
     skips: Counter[str] = Counter()
-    rows: list[dict[str, Any]] = []
+    payloads: list[bytes] = []
+    bytes_read = 0
     for path in files:
+        data, reason = _read_bounded(path, max_text_bytes)
+        if reason is not None:
+            skips[reason] += 1
+            continue
+        assert data is not None
+        bytes_read += len(data)
+        payloads.append(data)
+    fingerprint = _fingerprint_payloads(payloads)
+
+    rows: list[dict[str, Any]] = []
+    for data in payloads:
+        text = data.decode("utf-8", errors="replace")
         if task == "faithfulness-gate":
-            row, reason = build_faithfulness_record(
-                path.read_text(encoding="utf-8", errors="replace")
-            )
+            row, reason = build_faithfulness_record(text)
         else:
             try:
-                plan = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-            except (json.JSONDecodeError, ValueError, OSError):
+                plan = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
                 row, reason = None, "malformed"
             else:
                 row, reason = build_correction_record(plan)
@@ -444,6 +503,7 @@ def harvest(
         input_fingerprint=fingerprint,
         deduped=deduped,
         truncated=truncated,
+        bytes_read=bytes_read,
     )
 
 

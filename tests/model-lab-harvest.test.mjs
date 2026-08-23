@@ -56,10 +56,11 @@ const CORRECTION_KEYS = new Set([
   "sourceId",
 ]);
 
-function runHarvest(args) {
+function runHarvest(args, opts = {}) {
   return spawnSync(pythonBin, [harvestCli, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
+    ...opts,
   });
 }
 
@@ -102,6 +103,27 @@ function memoryWithVerdict(dir, id, verdict, quote, body) {
   ]
     .filter(Boolean)
     .join("\n");
+  writeMemory(dir, `facts/2026-01-01/${id}.md`, fm, body);
+}
+
+function memoryWithSources(dir, id, verdict, quotes, body) {
+  const sources = quotes.map((quote, index) => ({
+    sessionKey: "sess-PRIVATE-marker",
+    observedAt: "2026-01-01T00:00:00Z",
+    quote,
+    charStart: index * 32,
+    charEnd: index * 32 + quote.length,
+  }));
+  const fm = [
+    `id: ${id}`,
+    "category: fact",
+    `faithfulness: ${JSON.stringify({
+      verdict,
+      model: "synthetic-teacher-model",
+      at: "2026-01-01T00:00:00Z",
+    })}`,
+    `sources: ${JSON.stringify(sources)}`,
+  ].join("\n");
   writeMemory(dir, `facts/2026-01-01/${id}.md`, fm, body);
 }
 
@@ -511,5 +533,100 @@ test(
     assertNoPrivateLeak(out1);
     assertNoPrivateLeak(out2);
     assertNoPrivateLeak(replay);
+  },
+);
+
+test(
+  "harvest: faithfulness keeps every source quote, not only the first",
+  { skip: skipReason },
+  () => {
+    const input = tmpDir("multi-src");
+    memoryWithSources(
+      input,
+      "fact-composite-001",
+      "entailed",
+      ["Alice lives in", "Berlin."],
+      "Alice lives in Berlin.",
+    );
+    const out = tmpDir("out-multi-src");
+    const res = runHarvest([
+      "--task", "faithfulness-gate", "--input", input, "--out", out, "--consent", "--quiet",
+    ]);
+    assert.equal(res.status, 0, res.stderr);
+    const rows = readJsonl(path.join(out, "harvest-faithfulness-gate.jsonl"));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].label, "entailed");
+    assert.equal(rows[0].quote, "Alice lives in\nBerlin.");
+    assert.notEqual(rows[0].quote, "Alice lives in", "must not label a composite from the first span only");
+    assertNoPrivateLeak(out);
+  },
+);
+
+test(
+  "harvest: oversized files are skipped before read; counters increment",
+  { skip: skipReason },
+  () => {
+    const input = tmpDir("oversize-in");
+    memoryWithVerdict(input, "fact-tiny-001", "entailed", "tiny quote", "Tiny fact.");
+    const hugePath = path.join(input, "facts/2026-01-01/huge.md");
+    const fd = fs.openSync(hugePath, "w");
+    fs.ftruncateSync(fd, 64 * 1024 * 1024);
+    fs.closeSync(fd);
+    const out = tmpDir("oversize-out");
+    const res = runHarvest(
+      ["--task", "faithfulness-gate", "--input", input, "--out", out, "--consent", "--quiet"],
+      { timeout: 15_000 },
+    );
+    assert.equal(res.status, 0, res.stderr);
+    const rows = readJsonl(path.join(out, "harvest-faithfulness-gate.jsonl"));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].factText, "Tiny fact.");
+    const manifest = readManifest(out, "faithfulness-gate");
+    assert.equal(manifest.skipped.oversize, 1);
+    assert.equal(manifest.inputFiles, 2);
+    const bytesRead = Number(res.stdout.match(/HARVEST_BYTES_READ=(\d+)/)?.[1]);
+    assert.ok(Number.isFinite(bytesRead), res.stdout);
+    assert.ok(
+      bytesRead < 1024 * 1024,
+      `oversized file must not be read; bytesRead=${bytesRead}`,
+    );
+    assertNoPrivateLeak(out);
+  },
+);
+
+test(
+  "harvest: correction confidence must be finite and inside [0, 1]",
+  { skip: skipReason },
+  () => {
+    const dir = tmpDir("conf-range");
+    writePlan(dir, "neg.json", planBase({
+      confidence: -1,
+      request: { text: "negative confidence plan" },
+    }));
+    writePlan(dir, "high.json", planBase({
+      confidence: 2.5,
+      request: { text: "too-high confidence plan" },
+    }));
+    writePlan(dir, "zero.json", planBase({
+      confidence: 0,
+      request: { text: "zero confidence plan" },
+    }));
+    writePlan(dir, "one.json", planBase({
+      confidence: 1,
+      request: { text: "unit confidence plan" },
+    }));
+    const out = tmpDir("out-conf-range");
+    const res = runHarvest([
+      "--task", "correction-intent", "--input", dir, "--out", out, "--consent",
+    ]);
+    assert.equal(res.status, 0, res.stderr);
+    const rows = readJsonl(path.join(out, "harvest-correction-intent.jsonl"));
+    assert.equal(rows.length, 2);
+    const confidences = rows.map((row) => row.corrections[0].confidence).sort();
+    assert.deepEqual(confidences, [0, 1]);
+    const manifest = readManifest(out, "correction-intent");
+    assert.equal(manifest.skipped.malformed, 2);
+    assert.equal(manifest.labelCounts.correction, 2);
+    assertNoPrivateLeak(out);
   },
 );

@@ -110,7 +110,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_TEXT_BYTES,
         help=(
-            "Records with any text field over this many UTF-8 bytes are "
+            "Skip any input file larger than this many bytes before reading "
+            "or hashing it. Records whose text fields exceed it are also "
             f"skipped, never truncated (default {DEFAULT_MAX_TEXT_BYTES})."
         ),
     )
@@ -194,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"HARVEST_SHA256={digest}")
     print(f"HARVEST_PATH={dataset_path}")
     print(f"HARVEST_RECORDS={len(result.rows)}")
+    print(f"HARVEST_BYTES_READ={result.bytes_read}")
     print(f"HARVEST_TASK={args.task}")
     return 0
 
