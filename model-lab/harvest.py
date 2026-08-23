@@ -15,8 +15,9 @@ Hard gates, all enforced BEFORE anything is read:
 1. ``--consent`` — explicit, informed, per-invocation opt-in. Without it the
    tool exits 2 without touching the input.
 2. ``--input`` / ``--out`` — explicit local paths. The input must be an
-   existing directory; the tool walks exactly that directory (no vault scan,
-   no home-dir discovery) and writes exactly the out directory.
+   existing directory (lstat; a symlink root is refused). The tool walks
+   exactly that directory, skips descendant symlinks, and refuses a path
+   that escapes the root. No vault scan, no home-dir discovery.
 3. ``--out`` must differ from ``--input`` and must be empty or ``--yes``.
 
 Outputs under ``--out`` (all deterministic; same input tree → same bytes):
@@ -45,6 +46,7 @@ from common.harvest import (
     DEFAULT_MAX_RECORDS,
     DEFAULT_MAX_TEXT_BYTES,
     TASKS,
+    require_input_dir,
     run_harvest,
 )
 
@@ -75,7 +77,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Local directory of persisted telemetry to read (.md memory files "
             "for faithfulness-gate, plan .json files for correction-intent). "
-            "Exactly this directory is walked; nothing else is read."
+            "Exactly this directory is walked; a symlink root is refused."
         ),
     )
     parser.add_argument(
@@ -141,9 +143,10 @@ def main(argv: list[str] | None = None) -> int:
             "into local training records. Nothing was read."
         )
 
-    # Gate 2: explicit local paths, input must exist and be a directory.
-    if not args.input.is_dir():
-        return _refuse(f"--input must be an existing local directory: {args.input}")
+    try:
+        require_input_dir(args.input)
+    except (ValueError, NotADirectoryError) as err:
+        return _refuse(str(err))
     if args.out.resolve() == args.input.resolve():
         return _refuse("--out must be a different directory from --input")
     if args.out.exists() and not args.out.is_dir():

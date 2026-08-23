@@ -12,11 +12,15 @@ Contract (issue #2852):
 * Opt-in, local-only, consent-gated. The CLI requires ``--consent`` plus
   explicit local ``--input`` / ``--out`` paths. Nothing here runs from the
   daemon, the build, or CI.
-* Walks exactly the named directory. No vault scan, no home-dir discovery,
-  no symlink follow.
+* Walks exactly the named directory. No vault scan, no home-dir discovery.
+* The input root is lstat'd and refused when it is a symlink. Descendant
+  symlinks are skipped. Any path that escapes the root refuses the run.
 * Privacy by projection: records are built field-by-field from an allowlist.
   Session keys, principals, namespaces, memory ids, model ids, and timestamps
-  stay behind. Redacted (#1678) and never-store plans are skipped.
+  stay behind. ``sourceId`` is a hash of sanitized approved fields plus a
+  task salt — never a frontmatter id, plan id, or filename. Redacted (#1678)
+  and never-store plans are skipped. Unknown classification, status, or
+  schema version count as malformed, never as a positive label.
 * Deterministic and idempotent: same input tree → byte-identical dataset AND
   manifest (no clocks, no absolute paths). Rows dedup on the training payload
   and emit in canonical-JSON order.
@@ -32,6 +36,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import stat
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -70,9 +75,19 @@ REDACTED_TEXT_PREFIX = "[redacted"
 SENSITIVE_CLASSIFICATIONS: frozenset[str] = frozenset({"never_store"})
 SENSITIVE_ACTION_KINDS: frozenset[str] = frozenset({"redaction_rule"})
 
-HARVESTABLE_PLAN_STATUSES: frozenset[str] = frozenset(
-    {"pending", "applying", "applied", "applied", "partial"}
+#: Exact #1581 product enum. Unknown values (e.g. ``banana``) are malformed.
+CORRECTION_CLASSIFICATIONS: frozenset[str] = frozenset(
+    {"wrong", "outdated", "incomplete", "wrong_scope", "never_store"}
 )
+CORRECTION_PLAN_STATUSES: frozenset[str] = frozenset(
+    {"pending", "applying", "applied", "discarded", "partial"}
+)
+HARVESTABLE_PLAN_STATUSES: frozenset[str] = frozenset(
+    {"pending", "applying", "applied", "partial"}
+)
+SUPPORTED_PLAN_SCHEMA_VERSIONS: frozenset[int] = frozenset({1})
+DEFAULT_PLAN_SCHEMA_VERSION = 1
+SOURCE_ID_SALT = "remnic-harvest-v1"
 
 
 def dataset_filename(task: str) -> str:
@@ -105,26 +120,74 @@ def _payload_key(row: dict[str, Any]) -> str:
     return _canonical({k: v for k, v in row.items() if k != "sourceId"})
 
 
+def require_input_dir(input_dir: Path) -> Path:
+    """lstat the harvest root. Refuse a symlink or a non-directory."""
+    try:
+        info = input_dir.lstat()
+    except OSError as err:
+        raise NotADirectoryError(
+            f"input must be an existing directory: {input_dir}"
+        ) from err
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError(f"refusing symlinked input root: {input_dir}")
+    if not stat.S_ISDIR(info.st_mode):
+        raise NotADirectoryError(
+            f"input must be an existing directory: {input_dir}"
+        )
+    return input_dir
+
+
+def _is_contained(root: Path, candidate: Path) -> bool:
+    try:
+        rel = os.path.relpath(os.fspath(candidate), os.fspath(root))
+    except ValueError:
+        return False
+    return rel != ".." and not rel.startswith(f"..{os.sep}") and not os.path.isabs(rel)
+
+
+def _unlinkable_source_id(task: str, approved: dict[str, Any]) -> str:
+    payload = {"salt": SOURCE_ID_SALT, "task": task, "fields": approved}
+    return sha256_bytes(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def _plan_schema_version(plan: dict[str, Any]) -> Any:
+    if "schemaVersion" in plan:
+        return plan["schemaVersion"]
+    if "version" in plan:
+        return plan["version"]
+    return DEFAULT_PLAN_SCHEMA_VERSION
+
+
 def _iter_input_files(input_dir: Path, suffix: str) -> list[Path]:
     found: list[Path] = []
     for root, dirnames, filenames in os.walk(input_dir, followlinks=False):
-        dirnames[:] = sorted(
-            d for d in dirnames if not (Path(root) / d).is_symlink()
-        )
+        root_path = Path(root)
+        if not _is_contained(input_dir, root_path):
+            raise ValueError(f"input walk escaped harvest root: {root_path}")
+        kept: list[str] = []
+        for name in sorted(dirnames):
+            child = root_path / name
+            if child.is_symlink():
+                continue
+            if not _is_contained(input_dir, child):
+                raise ValueError(f"input walk escaped harvest root: {child}")
+            kept.append(name)
+        dirnames[:] = kept
         for name in sorted(filenames):
-            path = Path(root) / name
+            path = root_path / name
             if path.suffix != suffix or path.is_symlink():
                 continue
+            if not _is_contained(input_dir, path):
+                raise ValueError(f"input walk escaped harvest root: {path}")
             found.append(path)
     found.sort(key=lambda p: p.relative_to(input_dir).as_posix())
     return found
 
 
-def _input_fingerprint(files: list[Path], input_dir: Path) -> str:
-    parts = [
-        f"{path.relative_to(input_dir).as_posix()}:{sha256_bytes(path.read_bytes())}"
-        for path in files
-    ]
+def _input_fingerprint(files: list[Path]) -> str:
+    parts = sorted(sha256_bytes(path.read_bytes()) for path in files)
     return sha256_bytes("\n".join(parts).encode("utf-8"))
 
 
@@ -164,7 +227,7 @@ def _first_verified_quote(raw_sources: str | None) -> str:
 
 
 def build_faithfulness_record(
-    markdown_text: str, fallback_id: str
+    markdown_text: str,
 ) -> tuple[dict[str, Any] | None, str | None]:
     parsed = parse_frontmatter(markdown_text)
     if parsed is None:
@@ -189,13 +252,20 @@ def build_faithfulness_record(
     fact_text = body.strip()
     if not fact_text:
         return None, "malformed"
+    approved = {
+        "factText": fact_text,
+        "quote": quote,
+        "context": "",
+        "label": label,
+        "perturbation": PROVENANCE_TAG,
+    }
     record = FaithfulnessRecord(
         factText=fact_text,
         quote=quote,
         context="",
         label=label,
         perturbation=PROVENANCE_TAG,
-        sourceId=scalars.get("id") or fallback_id,
+        sourceId=_unlinkable_source_id("faithfulness-gate", approved),
     )
     if validate_faithfulness_record(record):
         return None, "malformed"
@@ -225,16 +295,22 @@ def _load_morphology_module() -> Any:
 
 
 def build_correction_record(
-    plan: Any, fallback_id: str
+    plan: Any,
 ) -> tuple[dict[str, Any] | None, str | None]:
     if not isinstance(plan, dict):
         return None, "malformed"
+    if _plan_schema_version(plan) not in SUPPORTED_PLAN_SCHEMA_VERSIONS:
+        return None, "malformed"
     status = plan.get("status")
+    if status not in CORRECTION_PLAN_STATUSES:
+        return None, "malformed"
+    if status == "discarded":
+        return None, "discarded"
     if status not in HARVESTABLE_PLAN_STATUSES:
-        return None, "discarded" if status == "discarded" else "malformed"
+        return None, "malformed"
     classification = plan.get("classification")
     actions = plan.get("actions")
-    if not isinstance(classification, str) or not isinstance(actions, list):
+    if classification not in CORRECTION_CLASSIFICATIONS or not isinstance(actions, list):
         return None, "malformed"
     if classification in SENSITIVE_CLASSIFICATIONS:
         return None, "sensitive"
@@ -259,20 +335,28 @@ def build_correction_record(
     ):
         return None, "malformed"
     cleaned = text.strip()
+    corrections = [
+        {
+            "targetHint": cleaned[:80],
+            "correctedAssertion": cleaned[:200],
+            "polarity": "update",
+            "confidence": float(confidence),
+        }
+    ]
+    turns = [{"role": "user", "content": cleaned}]
+    approved = {
+        "turns": turns,
+        "label": "correction",
+        "corrections": corrections,
+        "morphology": PROVENANCE_TAG,
+    }
     morphology = _load_morphology_module()
     record = morphology.ConversationRecord(
-        turns=[{"role": "user", "content": cleaned}],
+        turns=turns,
         label="correction",
-        corrections=[
-            {
-                "targetHint": cleaned[:80],
-                "correctedAssertion": cleaned[:200],
-                "polarity": "update",
-                "confidence": float(confidence),
-            }
-        ],
+        corrections=corrections,
         morphology=PROVENANCE_TAG,
-        sourceId=str(plan.get("planId") or fallback_id),
+        sourceId=_unlinkable_source_id("correction-intent", approved),
     )
     if morphology.validate_record(record):
         return None, "malformed"
@@ -297,22 +381,21 @@ def harvest(
 ) -> HarvestResult:
     if task not in TASKS:
         raise ValueError(f"unknown task {task!r}; expected one of {TASKS}")
-    if not input_dir.is_dir():
-        raise NotADirectoryError(f"input must be an existing directory: {input_dir}")
+    require_input_dir(input_dir)
     if max_records < 0:
         raise ValueError("max_records must be >= 0")
     if max_text_bytes < 1:
         raise ValueError("max_text_bytes must be >= 1")
 
     files = _iter_input_files(input_dir, TASK_INPUT_SUFFIX[task])
-    fingerprint = _input_fingerprint(files, input_dir)
+    fingerprint = _input_fingerprint(files)
 
     skips: Counter[str] = Counter()
     rows: list[dict[str, Any]] = []
     for path in files:
         if task == "faithfulness-gate":
             row, reason = build_faithfulness_record(
-                path.read_text(encoding="utf-8", errors="replace"), path.stem
+                path.read_text(encoding="utf-8", errors="replace")
             )
         else:
             try:
@@ -320,7 +403,7 @@ def harvest(
             except (json.JSONDecodeError, ValueError, OSError):
                 row, reason = None, "malformed"
             else:
-                row, reason = build_correction_record(plan, path.stem)
+                row, reason = build_correction_record(plan)
         if reason is not None:
             skips[reason] += 1
             continue

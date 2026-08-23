@@ -102,10 +102,13 @@ python model-lab/faithfulness-gate/eval.py --version-tag v1             # → ma
 `harvest.py` turns an operator's OWN persisted shadow telemetry into labeled
 training records for either classifier. It refuses to run without `--consent`
 and explicit local `--input`/`--out` paths, reads exactly the named directory
-(no vault scan), strips every private field (session keys, principals,
-namespaces, memory ids, model ids) by building records from an allowlist, and
-skips redacted/never-store plans outright. Nothing in the daemon, build, or CI
-ever invokes it.
+(no vault scan; a symlink `--input` root is refused; descendant symlinks are
+skipped), strips every private field (session keys, principals, namespaces,
+memory ids, model ids) by building records from an allowlist, derives
+`sourceId` as a hash of those approved fields plus a task salt, and skips
+redacted/never-store plans outright. Unknown correction classification,
+status, or schema version counts as malformed, never as a positive label.
+Nothing in the daemon, build, or CI ever invokes it.
 
 ```bash
 # faithfulness-gate: memory .md files carrying the #1576 faithfulness: verdict

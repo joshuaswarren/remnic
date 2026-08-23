@@ -6,11 +6,14 @@
  * REMNIC_REQUIRE_CAPABILITY_TESTS=1 to forbid the skip. All fixtures are
  * SYNTHETIC — no real telemetry, no real sessions, no real memory content.
  *
- * Coverage required by #2852:
+ * Coverage required by #2852 / #2861:
  *  - consent refusal (exit 2, nothing written, no output dir)
  *  - both task mappings (faithfulness verdicts → teacher labels; plans →
  *    correction records)
  *  - private-field stripping + malformed-input tolerance (skipped, counted)
+ *  - symlink --input root refused; descendant symlinks skipped
+ *  - banana/forward classification counted malformed, never positive
+ *  - sourceId is a deterministic unlinkable hash (no raw memory/file ids)
  *  - deterministic ordering/dedup + idempotent bytes (same input → same
  *    dataset sha256 AND same manifest)
  *  - bounded record/text limits (truncate + oversize skip)
@@ -211,9 +214,18 @@ function assertNoPrivateLeak(outDir) {
       "ns-PRIVATE-marker",
       "mem-PRIVATE-marker",
       "synthetic-teacher-model",
+      "fact-synthetic-",
+      "corr-synthetic-",
+      "mem-UNIQUE-",
     ]) {
       assert.ok(!text.includes(marker), `${file} leaked private marker ${marker}`);
     }
+  }
+}
+
+function assertUnlinkableSourceIds(rows) {
+  for (const row of rows) {
+    assert.match(row.sourceId, /^[0-9a-f]{64}$/, "sourceId must be a hex hash");
   }
 }
 
@@ -250,6 +262,7 @@ test(
       assert.equal(row.context, "", "context is transient and never persisted");
       assert.ok(row.factText.length > 0 && row.quote.length > 0);
     }
+    assertUnlinkableSourceIds(rows);
     const manifest = readManifest(out, "faithfulness-gate");
     assert.equal(manifest.emitted, 3);
     assert.equal(manifest.deduped, 1);
@@ -285,6 +298,7 @@ test(
       assert.ok(row.corrections.length >= 1);
       assert.equal(row.morphology, "harvest-shadow-telemetry");
     }
+    assertUnlinkableSourceIds(rows);
     const manifest = readManifest(out, "correction-intent");
     assert.equal(manifest.labelCounts.correction, 2);
     assert.equal(manifest.labelCounts.none, 0, "harvest emits positives only; negatives stay synthetic");
@@ -390,5 +404,112 @@ test(
       const text = fs.readFileSync(path.join(workflowsDir, file), "utf8");
       assert.ok(!text.includes("harvest.py"), `workflow ${file} must not run harvest.py`);
     }
+  },
+);
+
+test(
+  "harvest: refuses a symlinked --input root (exit 2, nothing written)",
+  { skip: skipReason },
+  () => {
+    const real = buildFaithfulnessInput();
+    const parent = tmpDir("symlink-parent");
+    const linked = path.join(parent, "linked-input");
+    fs.symlinkSync(real, linked);
+    const out = path.join(parent, "out");
+    const res = runHarvest([
+      "--task", "faithfulness-gate", "--input", linked, "--out", out, "--consent",
+    ]);
+    assert.equal(res.status, 2, `expected refusal exit 2, got ${res.status}: ${res.stderr}`);
+    assert.match(res.stderr, /symlink/i);
+    assert.ok(!fs.existsSync(out), "symlink-root refusal must not create --out");
+  },
+);
+
+test(
+  "harvest: skips descendant symlinks and does not follow them out of root",
+  { skip: skipReason },
+  () => {
+    const input = buildFaithfulnessInput();
+    const outside = tmpDir("outside");
+    memoryWithVerdict(outside, "mem-UNIQUE-escape", "entailed", "escaped quote", "Escaped fact.");
+    fs.symlinkSync(path.join(outside, "facts"), path.join(input, "escaped-facts"));
+    fs.symlinkSync(
+      path.join(outside, "facts/2026-01-01/mem-UNIQUE-escape.md"),
+      path.join(input, "facts/2026-01-01/escaped.md"),
+    );
+    const out = tmpDir("out-escape");
+    const res = runHarvest([
+      "--task", "faithfulness-gate", "--input", input, "--out", out, "--consent",
+    ]);
+    assert.equal(res.status, 0, res.stderr);
+    const blob = fs.readdirSync(out).map((file) => fs.readFileSync(path.join(out, file), "utf8")).join("\n");
+    assert.ok(!blob.includes("Escaped fact."), "descendant symlink content must not be harvested");
+    assert.ok(!blob.includes("mem-UNIQUE-escape"));
+    assertNoPrivateLeak(out);
+  },
+);
+
+test(
+  "harvest: banana/forward/corrupt classification counts malformed, never positive",
+  { skip: skipReason },
+  () => {
+    const dir = tmpDir("bad-class");
+    writePlan(dir, "banana.json", planBase({ classification: "banana" }));
+    writePlan(dir, "forward-version.json", planBase({ schemaVersion: 2 }));
+    writePlan(dir, "forward-status.json", planBase({ status: "forward" }));
+    writePlan(dir, "corrupt.json", { classification: "outdated", status: "applied" });
+    const out = tmpDir("out-bad-class");
+    const res = runHarvest([
+      "--task", "correction-intent", "--input", dir, "--out", out, "--consent",
+    ]);
+    assert.equal(res.status, 0, res.stderr);
+    const rows = readJsonl(path.join(out, "harvest-correction-intent.jsonl"));
+    assert.equal(rows.length, 0, "unknown labels must not emit positives");
+    const manifest = readManifest(out, "correction-intent");
+    assert.equal(manifest.labelCounts.correction, 0);
+    assert.equal(manifest.skipped.malformed, 4);
+    assertNoPrivateLeak(out);
+  },
+);
+
+test(
+  "harvest: sourceId is a deterministic unlinkable hash, not a memory or file id",
+  { skip: skipReason },
+  () => {
+    const firstDir = tmpDir("id-a");
+    const secondDir = tmpDir("id-b");
+    memoryWithVerdict(firstDir, "mem-UNIQUE-alpha", "entailed", "same quote", "same fact");
+    memoryWithVerdict(secondDir, "mem-UNIQUE-beta", "entailed", "same quote", "same fact");
+    const out1 = tmpDir("out-id-a");
+    const out2 = tmpDir("out-id-b");
+    const first = runHarvest([
+      "--task", "faithfulness-gate", "--input", firstDir, "--out", out1, "--consent", "--quiet",
+    ]);
+    const second = runHarvest([
+      "--task", "faithfulness-gate", "--input", secondDir, "--out", out2, "--consent", "--quiet",
+    ]);
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(second.status, 0, second.stderr);
+    const rows1 = readJsonl(path.join(out1, "harvest-faithfulness-gate.jsonl"));
+    const rows2 = readJsonl(path.join(out2, "harvest-faithfulness-gate.jsonl"));
+    assert.equal(rows1.length, 1);
+    assert.equal(rows2.length, 1);
+    assertUnlinkableSourceIds(rows1);
+    assertUnlinkableSourceIds(rows2);
+    assert.equal(rows1[0].sourceId, rows2[0].sourceId, "same approved fields must hash the same");
+    const replay = tmpDir("out-id-replay");
+    const replayed = runHarvest([
+      "--task", "faithfulness-gate", "--input", firstDir, "--out", replay, "--consent", "--quiet",
+    ]);
+    assert.equal(replayed.status, 0, replayed.stderr);
+    const rowsReplay = readJsonl(path.join(replay, "harvest-faithfulness-gate.jsonl"));
+    assert.equal(rowsReplay[0].sourceId, rows1[0].sourceId, "sourceId hash must be deterministic");
+    assert.equal(
+      fs.readFileSync(path.join(out1, "harvest-faithfulness-gate.jsonl"), "utf8"),
+      fs.readFileSync(path.join(replay, "harvest-faithfulness-gate.jsonl"), "utf8"),
+    );
+    assertNoPrivateLeak(out1);
+    assertNoPrivateLeak(out2);
+    assertNoPrivateLeak(replay);
   },
 );

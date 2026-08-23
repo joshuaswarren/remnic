@@ -180,10 +180,12 @@ a model-backed detector lands in the consuming child.
   and local-only (issue #2852). `model-lab/harvest.py` requires an explicit
   `--consent` flag plus explicit local `--input`/`--out` paths, prints exactly
   what it will read, and refuses otherwise (exit 2, nothing read). It walks
-  exactly the named directory — no vault scan — strips session keys,
-  principals, namespaces, memory ids, and model ids by projecting records
-  field-by-field from an allowlist, skips redacted/never-store plans, and
-  never runs from the daemon, build, or CI. See `model-lab/README.md`
+  exactly the named directory — no vault scan, no symlink `--input` root, no
+  descendant symlink follow — strips session keys, principals, namespaces,
+  memory ids, and model ids by projecting records field-by-field from an
+  allowlist, emits an unlinkable hashed `sourceId`, skips redacted/never-store
+  plans, treats unknown classification/status/version as malformed, and never
+  runs from the daemon, build, or CI. See `model-lab/README.md`
   ("Harvesting shadow-telemetry labels") for the command recipe.
 - **No committed dataset contains harvested data.** Both v1 datasets are
   synthetic-only; any harvested dataset lives under the gitignored
