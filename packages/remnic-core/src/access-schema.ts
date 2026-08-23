@@ -4,6 +4,7 @@
 
 import { z } from "zod";
 import { isMemoryCategory, MEMORY_CATEGORY_NAMES } from "./write-envelope.js";
+import type { MemoryCategory } from "./types.js";
 import {
   ACTION_CONFIDENCE_CONTEXT_READINESS,
   ACTION_CONFIDENCE_RISK_CATEGORIES,
@@ -313,17 +314,19 @@ export function reapplyCategoryCoercion<T extends { categoryCoercion?: CategoryA
   return rest as T;
 }
 
-const categorySchema = z
-  .string()
-  .superRefine((value, ctx) => {
-    if (isMemoryCategory(value)) return;
-    if (PROJECT_CATEGORY_ALIASES[value] === true) return;
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `category must be one of: ${MEMORY_CATEGORY_NAMES.join(", ")}; for project state/facts use "fact"`,
-    });
-  })
-  .optional();
+const categorySchema = (
+  z
+    .string()
+    .superRefine((value, ctx) => {
+      if (isMemoryCategory(value)) return;
+      if (PROJECT_CATEGORY_ALIASES[value] === true) return;
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `category must be one of: ${MEMORY_CATEGORY_NAMES.join(", ")}; for project state/facts use "fact"`,
+      });
+    })
+    .optional() as unknown as z.ZodType<MemoryCategory | undefined, z.ZodTypeDef, MemoryCategory | undefined>
+);
 const confidenceSchema = z.number().min(0).max(1).optional();
 const tagsSchema = z.array(z.string().max(256)).max(50).optional();
 const entityRefSchema = z.string().trim().max(512).optional();

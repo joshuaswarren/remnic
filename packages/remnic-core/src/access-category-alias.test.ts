@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { memoryStoreRequestSchema } from "./access-schema.js";
+import { memoryStoreRequestSchema, type MemoryStoreRequest, type SuggestionSubmitRequest } from "./access-schema.js";
 import { EngramAccessService } from "./access-service.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { SealedMemoryEnvelope } from "./write-envelope.js";
@@ -192,4 +192,25 @@ test("idempotent replay recomputes the coercion note from the current request's 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+test("MemoryStoreRequest and SuggestionSubmitRequest category are finite canonical unions (compile-time)", () => {
+  const invalidMemoryStore: MemoryStoreRequest = {
+    content: "durable synthetic content for type test",
+    // @ts-expect-error "projection" near-miss is rejected at compile time
+    category: "projection",
+  };
+  void invalidMemoryStore;
+
+  const invalidSuggestion: SuggestionSubmitRequest = {
+    content: "durable synthetic content for type test",
+    // @ts-expect-error "projection" near-miss is rejected at compile time
+    category: "projection",
+  };
+  void invalidSuggestion;
+
+  const validMemoryStore: MemoryStoreRequest = {
+    content: "durable synthetic content for type test",
+    category: "fact",
+  };
+  assert.equal(validMemoryStore.category, "fact");
 });
