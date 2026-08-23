@@ -33,6 +33,14 @@ function applyDocumentedCoercions(summary: BenchResultSummary): BenchResultSumma
       // Canonical task latencyMs is a number; absent upgrades to 0.
       latencyMs: task.latencyMs ?? 0,
     })),
+    // Mean-only legacy aggregates normalize median/min/max to mean and stdDev to 0.
+    aggregateMetrics: summary.aggregateMetrics.map((agg) => ({
+      ...agg,
+      median: agg.median ?? agg.mean,
+      stdDev: agg.stdDev ?? 0,
+      min: agg.min ?? agg.mean,
+      max: agg.max ?? agg.mean,
+    })),
   };
   return coerced;
 }
@@ -50,7 +58,7 @@ const legacyArtifacts: Array<{ name: string; id: string; artifact: Record<string
       },
       cost: { totalLatencyMs: 1234, meanQueryLatencyMs: 617 },
       results: {
-        tasks: [{ taskId: "task-1" }, { taskId: "task-2" }, { notATask: true }],
+        tasks: [{ taskId: "task-1" }, { notATask: true }],
         aggregates: {
           accuracy: { mean: 0.75 },
           f1: { mean: 0.63 },
@@ -150,6 +158,58 @@ test("artifacts the old UI skipped as malformed stay rejected with a reason", as
       () => loadBenchmarkResult(filePath),
       /Invalid benchmark result file: .+ \(meta\.mode must be "quick" or "full" when present\)/,
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("summarizeBenchmarkResult uses persisted custom canaryFloor (0.08 vs 0.05 case)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-ui-floor-parity-"));
+  try {
+    const artifact = {
+      meta: {
+        id: "custom-floor-run",
+        benchmark: "longmemeval",
+        timestamp: "2026-04-18T10:00:00.000Z",
+        mode: "quick",
+        canaryScore: 0.08,
+        canaryFloor: 0.05,
+      },
+      results: {
+        tasks: [{ taskId: "task-1" }],
+        aggregates: { accuracy: { mean: 0.75 } },
+      },
+    };
+
+    const filePath = path.join(dir, "custom-floor-run.json");
+    await writeFile(filePath, JSON.stringify(artifact), "utf8");
+
+    const loaded = await loadBenchmarkResult(filePath);
+    assert.equal(loaded.meta.canaryFloor, 0.05);
+
+    const summary = summarizeBenchmarkResult(loaded);
+    assert.equal(summary.integrity.canaryFloor, 0.05);
+    assert.equal(summary.integrity.canaryScore, 0.08);
+    assert.equal(summary.integrity.canaryUnderFloor, false);
+
+    // Contrast with default floor 0.1 when canaryFloor is absent.
+    const defaultFloorArtifact = {
+      ...artifact,
+      meta: {
+        ...artifact.meta,
+        id: "default-floor-run",
+        canaryFloor: undefined,
+      },
+    };
+    const defaultFilePath = path.join(dir, "default-floor-run.json");
+    await writeFile(defaultFilePath, JSON.stringify(defaultFloorArtifact), "utf8");
+
+    const defaultLoaded = await loadBenchmarkResult(defaultFilePath);
+    assert.equal(defaultLoaded.meta.canaryFloor, undefined);
+
+    const defaultSummary = summarizeBenchmarkResult(defaultLoaded);
+    assert.equal(defaultSummary.integrity.canaryFloor, 0.1);
+    assert.equal(defaultSummary.integrity.canaryScore, 0.08);
+    assert.equal(defaultSummary.integrity.canaryUnderFloor, true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

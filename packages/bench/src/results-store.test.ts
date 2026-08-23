@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { loadBenchmarkResult } from "./results-store.js";
+import { loadBenchmarkResult, renderBenchmarkResultExport } from "./results-store.js";
 import type { BenchmarkResult } from "./types.js";
 
 test("loadBenchmarkResult upgrades legacy files missing newer required meta fields", async () => {
@@ -299,7 +299,7 @@ function validResult(): BenchmarkResult {
           tokens: { input: 0, output: 0 },
         },
       ],
-      aggregates: {},
+      aggregates: { exact_match: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 } },
     },
     environment: {
       os: "darwin",
@@ -308,3 +308,36 @@ function validResult(): BenchmarkResult {
     },
   };
 }
+test("renderBenchmarkResultExport renders HTML and CSV without undefined numerics for upgraded mean-only legacy aggregate", async () => {
+  const legacyArtifact = {
+    meta: {
+      id: "legacy-export-run",
+      benchmark: "sample",
+      timestamp: "2026-05-21T00:00:00.000Z",
+      mode: "quick",
+    },
+    results: {
+      tasks: [{ taskId: "task-1" }],
+      aggregates: { accuracy: { mean: 0.85 } },
+    },
+  };
+
+  await withResultFile(legacyArtifact, async (filePath) => {
+    const loaded = await loadBenchmarkResult(filePath);
+    assert.deepEqual(loaded.results.aggregates.accuracy, {
+      mean: 0.85,
+      median: 0.85,
+      stdDev: 0,
+      min: 0.85,
+      max: 0.85,
+    });
+
+    const htmlOutput = renderBenchmarkResultExport(loaded, "html");
+    assert.ok(typeof htmlOutput === "string" && htmlOutput.includes("0.85"));
+    assert.ok(!htmlOutput.includes("undefined"));
+
+    const csvOutput = renderBenchmarkResultExport(loaded, "csv");
+    assert.ok(typeof csvOutput === "string" && csvOutput.includes("accuracy,0.85,0.85,0,0.85,0.85"));
+    assert.ok(!csvOutput.includes("undefined"));
+  });
+});

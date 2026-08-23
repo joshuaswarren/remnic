@@ -27,7 +27,7 @@
  *   pre-#2800 UI skipped unidentifiable task rows.
  */
 
-import type { BenchmarkMode, BenchmarkResult, BenchmarkTier, ProviderConfig, TaskResult } from "./types.js";
+import type { AggregateMetrics, BenchmarkMode, BenchmarkResult, BenchmarkTier, MetricAggregate, ProviderConfig, TaskResult } from "./types.js";
 
 /**
  * Recognized legacy shape version. Shape 1 is the pre-#2800 bench-ui
@@ -122,6 +122,83 @@ function optionalSeeds(where: string, value: unknown): number[] | undefined {
   }
   return value;
 }
+function normalizeMetricAggregate(
+  where: string,
+  raw: unknown,
+  taskCount: number,
+): MetricAggregate {
+  if (
+    isRecord(raw) &&
+    isFiniteNumber(raw.mean) &&
+    isFiniteNumber(raw.median) &&
+    isFiniteNumber(raw.stdDev) &&
+    isFiniteNumber(raw.min) &&
+    isFiniteNumber(raw.max)
+  ) {
+    return raw as unknown as MetricAggregate;
+  }
+
+  let mean: number | undefined;
+  let rawMedian: number | undefined;
+  let rawStdDev: number | undefined;
+  let rawMin: number | undefined;
+  let rawMax: number | undefined;
+
+  if (isFiniteNumber(raw)) {
+    mean = raw;
+  } else if (isRecord(raw)) {
+    if (isFiniteNumber(raw.mean)) {
+      mean = raw.mean;
+    }
+    if (isFiniteNumber(raw.median)) {
+      rawMedian = raw.median;
+    }
+    if (isFiniteNumber(raw.stdDev)) {
+      rawStdDev = raw.stdDev;
+    }
+    if (isFiniteNumber(raw.min)) {
+      rawMin = raw.min;
+    }
+    if (isFiniteNumber(raw.max)) {
+      rawMax = raw.max;
+    }
+  }
+
+  if (mean === undefined) {
+    reject(`${where} must be a finite number or an object with a finite mean number`);
+  }
+
+  const hasAllFields =
+    rawMedian !== undefined &&
+    rawStdDev !== undefined &&
+    rawMin !== undefined &&
+    rawMax !== undefined;
+
+  if (hasAllFields) {
+    return {
+      mean,
+      median: rawMedian,
+      stdDev: rawStdDev,
+      min: rawMin,
+      max: rawMax,
+    };
+  }
+
+  if (taskCount <= 1) {
+    return {
+      mean,
+      median: rawMedian ?? mean,
+      stdDev: rawStdDev ?? 0,
+      min: rawMin ?? mean,
+      max: rawMax ?? mean,
+    };
+  }
+
+  reject(
+    `${where} missing required multi-sample fields (median, stdDev, min, max) for multi-task run (taskCount=${taskCount})`,
+  );
+}
+
 
 function upgradeMeta(legacy: JsonRecord, recognizedTaskCount: number): BenchmarkResult["meta"] {
   if (!isRecord(legacy.meta)) {
@@ -168,11 +245,22 @@ function upgradeMeta(legacy: JsonRecord, recognizedTaskCount: number): Benchmark
     "judgePromptHash",
     "datasetHash",
     "canaryScore",
+    "canaryFloor",
     "status",
     "failureReason",
   ] as const) {
     if (key in meta) {
-      metaExtras[key] = meta[key];
+      if (key === "canaryFloor") {
+        const floorVal = optionalFiniteNumber("meta.canaryFloor", meta, "canaryFloor");
+        if (floorVal !== undefined) {
+          if (floorVal < 0) {
+            reject("meta.canaryFloor must be a non-negative number when present");
+          }
+          metaExtras[key] = floorVal;
+        }
+      } else {
+        metaExtras[key] = meta[key];
+      }
     }
   }
 
@@ -315,18 +403,42 @@ function upgradeResults(legacy: JsonRecord): BenchmarkResult["results"] {
     if (!isRecord(results.aggregates)) {
       reject("results.aggregates must be an object when present");
     }
-    // Aggregate entries pass through verbatim: the canonical validator
-    // only requires record-ness, and summary consumers defensively
-    // coerce missing statistics to null — so mean-only legacy
-    // aggregates stay mean-only, matching the pre-#2800 UI exactly.
-    upgraded.aggregates = results.aggregates as BenchmarkResult["results"]["aggregates"];
+    const normalizedAggregates: AggregateMetrics = {};
+    for (const [metricName, rawValue] of Object.entries(results.aggregates)) {
+      normalizedAggregates[metricName] = normalizeMetricAggregate(
+        `results.aggregates.${metricName}`,
+        rawValue,
+        upgraded.tasks.length,
+      );
+    }
+    upgraded.aggregates = normalizedAggregates;
   }
 
   const resultsExtras = upgraded as unknown as JsonRecord;
-  for (const key of ["statistics", "categoryAggregates"] as const) {
-    if (key in results) {
-      resultsExtras[key] = results[key];
+  if ("categoryAggregates" in results && results.categoryAggregates !== undefined) {
+    if (!isRecord(results.categoryAggregates)) {
+      reject("results.categoryAggregates must be an object when present");
     }
+    const normalizedCategoryAggregates: Record<string, AggregateMetrics> = {};
+    for (const [catName, catAggs] of Object.entries(results.categoryAggregates)) {
+      if (!isRecord(catAggs)) {
+        reject(`results.categoryAggregates.${catName} must be an object`);
+      }
+      const catNormalized: AggregateMetrics = {};
+      for (const [metricName, rawVal] of Object.entries(catAggs)) {
+        catNormalized[metricName] = normalizeMetricAggregate(
+          `results.categoryAggregates.${catName}.${metricName}`,
+          rawVal,
+          upgraded.tasks.length,
+        );
+      }
+      normalizedCategoryAggregates[catName] = catNormalized;
+    }
+    resultsExtras.categoryAggregates = normalizedCategoryAggregates;
+  }
+
+  if ("statistics" in results) {
+    resultsExtras.statistics = results.statistics;
   }
 
   return upgraded;

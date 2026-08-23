@@ -44,7 +44,7 @@ function minimalLegacyArtifact(): Record<string, unknown> {
       meanQueryLatencyMs: 617,
     },
     results: {
-      tasks: [{ taskId: "task-1" }, { taskId: "task-2" }, { notATask: true }],
+      tasks: [{ taskId: "task-1" }, { notATask: true }],
       aggregates: {
         accuracy: { mean: 0.75 },
         f1: { mean: 0.63 },
@@ -171,8 +171,8 @@ test("recognizeLegacyBenchmarkArtifact upgrades the minimal pre-#2800 shape with
   assert.equal(meta.remnicVersion, "unknown");
   assert.equal(meta.gitSha, "unknown");
   assert.deepEqual(meta.seeds, []);
-  // runCount absent -> task count (2 recognizable rows, 1 skipped row).
-  assert.equal(meta.runCount, 2);
+  // runCount absent -> task count (1 recognizable row, 1 skipped row).
+  assert.equal(meta.runCount, 1);
 
   // Provider/adapter defaults from the old UI.
   assert.equal(config.systemProvider, null);
@@ -202,21 +202,12 @@ test("recognizeLegacyBenchmarkArtifact upgrades the minimal pre-#2800 shape with
       latencyMs: 0,
       tokens: { input: 0, output: 0 },
     },
-    {
-      taskId: "task-2",
-      question: "",
-      expected: "",
-      actual: "",
-      scores: {},
-      latencyMs: 0,
-      tokens: { input: 0, output: 0 },
-    },
   ]);
 
-  // Aggregates pass through verbatim: mean-only stays mean-only.
+  // Aggregates normalized to single-sample MetricAggregate.
   assert.deepEqual(results.aggregates, {
-    accuracy: { mean: 0.75 },
-    f1: { mean: 0.63 },
+    accuracy: { mean: 0.75, median: 0.75, stdDev: 0, min: 0.75, max: 0.75 },
+    f1: { mean: 0.63, median: 0.63, stdDev: 0, min: 0.63, max: 0.63 },
   });
 
   // Environment unknown, not invented.
@@ -309,6 +300,16 @@ test("recognizeLegacyBenchmarkArtifact rejects malformed and ambiguous shapes wi
       },
       /cost\.totalTokens must be a finite number/,
     ],
+    [
+      {
+        ...minimalLegacyArtifact(),
+        results: {
+          tasks: [{ taskId: "t1" }, { taskId: "t2" }],
+          aggregates: { accuracy: { mean: 0.75 } },
+        },
+      },
+      /missing required multi-sample fields/,
+    ],
   ];
 
   for (const [artifact, pattern] of rejections) {
@@ -324,8 +325,8 @@ test("loadBenchmarkResult loads legacy artifacts through the canonical-first ent
     const loaded = await loadBenchmarkResult(filePath);
     assert.equal(loaded.meta.id, "latest-run");
     assert.equal(loaded.meta.gitSha, "unknown");
-    assert.equal(loaded.meta.runCount, 2);
-    assert.equal(loaded.results.tasks.length, 2);
+    assert.equal(loaded.meta.runCount, 1);
+    assert.equal(loaded.results.tasks.length, 1);
   });
 
   await withResultFile(preProvenanceLegacyArtifact(), async (filePath) => {
@@ -374,6 +375,22 @@ test("loadBenchmarkResult surfaces the legacy rejection reason for malformed fil
       /Invalid benchmark result file: .+ \(meta\.mode must be "quick" or "full" when present\)/,
     );
   });
+});
+test("recognizeLegacyBenchmarkArtifact preserves meta.canaryFloor when present", () => {
+  const recognition = recognizeLegacyBenchmarkArtifact({
+    meta: {
+      id: "run-floor",
+      benchmark: "ama-bench",
+      timestamp: "2026-03-01T00:00:00.000Z",
+      canaryScore: 0.08,
+      canaryFloor: 0.05,
+    },
+  });
+
+  assert.equal(recognition.ok, true);
+  if (!recognition.ok) return;
+  assert.equal(recognition.result.meta.canaryFloor, 0.05);
+  assert.equal(recognition.result.meta.canaryScore, 0.08);
 });
 
 test("upgraded legacy results stay classified as missing-integrity for publishing", async () => {

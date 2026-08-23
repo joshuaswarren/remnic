@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { BenchmarkMode, BenchmarkResult } from "./types.js";
+import type { BenchmarkMode, BenchmarkResult, MetricAggregate } from "./types.js";
 import {
   assertIntegrityMetaPresent,
   integrityMetaIsComplete,
@@ -280,6 +280,17 @@ function isTaskAttributionWitnessLike(
   }
   return true;
 }
+function isMetricAggregate(value: unknown): value is MetricAggregate {
+  return (
+    isObjectRecord(value) &&
+    isFiniteNumber(value.mean) &&
+    isFiniteNumber(value.median) &&
+    isFiniteNumber(value.stdDev) &&
+    isFiniteNumber(value.min) &&
+    isFiniteNumber(value.max)
+  );
+}
+
 
 function isBenchmarkResult(value: unknown): value is BenchmarkResult {
   if (!isObjectRecord(value)) {
@@ -304,7 +315,8 @@ function isBenchmarkResult(value: unknown): value is BenchmarkResult {
     isBenchmarkMode(meta.mode) &&
     isFiniteNumber(meta.runCount) &&
     Array.isArray(meta.seeds) &&
-    meta.seeds.every(isFiniteNumber);
+    meta.seeds.every(isFiniteNumber) &&
+    (meta.canaryFloor === undefined || (isFiniteNumber(meta.canaryFloor) && meta.canaryFloor >= 0));
   if (!hasValidMeta) {
     return false;
   }
@@ -340,9 +352,21 @@ function isBenchmarkResult(value: unknown): value is BenchmarkResult {
     !isObjectRecord(results) ||
     !Array.isArray(results.tasks) ||
     !results.tasks.every(isTaskResultLike) ||
-    !isObjectRecord(results.aggregates)
+    !isObjectRecord(results.aggregates) ||
+    !Object.values(results.aggregates).every(isMetricAggregate)
   ) {
     return false;
+  }
+
+  if (results.categoryAggregates !== undefined) {
+    if (!isObjectRecord(results.categoryAggregates)) {
+      return false;
+    }
+    for (const catAgg of Object.values(results.categoryAggregates)) {
+      if (!isObjectRecord(catAgg) || !Object.values(catAgg).every(isMetricAggregate)) {
+        return false;
+      }
+    }
   }
 
   const environment = value.environment;
