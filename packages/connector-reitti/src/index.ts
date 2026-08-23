@@ -27,7 +27,7 @@ import {
 import {
   ReittiApiError,
   ReittiClient,
-  assertValidIanaTimezone,
+  assertReittiTimezone,
   normalizeReittiBaseUrl,
   type ReittiAuthMode,
 } from "./client.js";
@@ -39,6 +39,7 @@ export {
   REITTI_AUTH_MODES,
   REITTI_PLACE_TYPES,
   REITTI_TRANSPORT_MODES,
+  assertReittiTimezone,
   assertValidIanaTimezone,
   normalizeReittiBaseUrl,
 } from "./client.js";
@@ -89,7 +90,7 @@ export function createReittiProvider(options: ReittiProviderOptions): LocationPr
   if (typeof options.token !== "string" || options.token.trim().length === 0) {
     throw new TypeError("Reitti provider requires a non-empty token (resolve the secret reference first)");
   }
-  assertValidIanaTimezone(options.timezone);
+  assertReittiTimezone(options.timezone);
   if (options.visitsFallback !== undefined && typeof options.visitsFallback !== "boolean") {
     throw new TypeError("Reitti visitsFallback must be a boolean");
   }

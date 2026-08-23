@@ -213,3 +213,32 @@ test("equal durations sort by categoryId ascending", () => {
     ["beta", "development", "alpha"],
   );
 });
+
+test("a card is attributed to exactly one daily total across an entirely skipped civil date", () => {
+  // Pacific/Apia skipped local 2011-12-30 at the date-line jump. The
+  // skipped date owns a zero-width window, so it appears as no day entry,
+  // and the 31st's card lands on exactly one daily total — never also on
+  // the skipped date, which pre-fix shared the 31st's interval.
+  const summary = buildWeeklyActivitySummary(
+    [
+      // Dec 29 10:00-11:00 local (-10:00).
+      card({ id: "before-jump", startUtc: "2011-12-29T20:00:00.000Z", endUtc: "2011-12-29T21:00:00.000Z" }),
+      // Dec 31 02:00-03:00 local (+14:00).
+      card({ id: "after-jump", startUtc: "2011-12-30T12:00:00.000Z", endUtc: "2011-12-30T13:00:00.000Z" }),
+    ],
+    options({
+      timezone: "Pacific/Apia",
+      weekStartUtc: "2011-12-26T10:00:00.000Z",
+      weekEndUtc: "2012-01-02T10:00:00.000Z",
+    }),
+  );
+  assert.equal(summary.days.some((day) => day.date === "2011-12-30"), false);
+  const activeDays = summary.days.filter((day) => day.activeMs > 0);
+  assert.deepEqual(
+    activeDays.map((day) => [day.date, day.activeMs]),
+    [
+      ["2011-12-29", HOUR],
+      ["2011-12-31", HOUR],
+    ],
+  );
+});

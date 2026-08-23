@@ -1,6 +1,6 @@
 /**
  * Normalize Fireflies.ai transcripts into Remnic's provider-agnostic
- * `WearableConversation` shape, plus the timezone-aware day-window helpers
+ * `WearableConversation` shape, plus the timezone-aware day-window helper
  * the Fireflies `transcripts(fromDate, toDate)` filter needs.
  *
  * Fireflies sentences carry `start_time`/`end_time` as second-offsets from the
@@ -12,78 +12,27 @@
  * day-anchored recall material.
  */
 
-import type {
-  WearableConversation,
-  WearableTranscriptSegment,
+import {
+  activityDayWindow,
+  type WearableConversation,
+  type WearableTranscriptSegment,
 } from "@remnic/core";
 
 import type { FirefliesTranscript } from "./client.js";
 
 export const FIREFLIES_SOURCE_ID = "fireflies";
 
-/** "GMT+05:30" → "+05:30"; plain "GMT" → "+00:00". */
-export function timezoneOffsetIso(instant: Date, timezone: string): string {
-  try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone,
-      timeZoneName: "longOffset",
-    }).formatToParts(instant);
-    const name = parts.find((part) => part.type === "timeZoneName")?.value ?? "GMT";
-    const match = name.match(/GMT([+-]\d{2}:\d{2})?/);
-    return match?.[1] ?? "+00:00";
-  } catch {
-    return "+00:00";
-  }
-}
-
-/** ISO instant for local midnight of `date` in `timezone`. */
-export function zonedDayStartIso(date: string, timezone: string): string {
-  // Two-pass offset resolution: guess from midday (stable away from DST
-  // transitions), then re-derive at the candidate midnight itself.
-  let offset = timezoneOffsetIso(new Date(`${date}T12:00:00Z`), timezone);
-  const candidate = new Date(`${date}T00:00:00${offset}`);
-  const refined = timezoneOffsetIso(candidate, timezone);
-  if (refined !== offset) {
-    offset = refined;
-  }
-  return `${date}T00:00:00${offset}`;
-}
-
-export function nextIsoDate(date: string): string {
-  const parsed = new Date(`${date}T00:00:00Z`);
-  parsed.setUTCDate(parsed.getUTCDate() + 1);
-  return parsed.toISOString().slice(0, 10);
-}
-
-/**
- * Reject an invalid/unsupported IANA timezone loudly. `Intl.DateTimeFormat`
- * throws a RangeError for an unknown zone; without this guard a typo'd
- * timezone would silently coerce to UTC and shift every meeting's day window
- * and timestamps (AGENTS.md §39 — reject, don't silently default).
- */
-function assertValidTimezone(timezone: string): void {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: timezone });
-  } catch {
-    throw new RangeError(
-      `Invalid IANA timezone "${timezone}" for the Fireflies connector — check wearables.timezone.`,
-    );
-  }
-}
-
 /**
  * Half-open [fromDate, toDate) UTC ISO bounds of a local day — the window the
- * Fireflies `transcripts` query filters on.
+ * Fireflies `transcripts` query filters on. Field names map to the Fireflies
+ * API; the DST-aware window math is core's `activityDayWindow`.
  */
 export function firefliesDayWindow(
   date: string,
   timezone: string,
 ): { fromDate: string; toDate: string } {
-  assertValidTimezone(timezone);
-  return {
-    fromDate: new Date(zonedDayStartIso(date, timezone)).toISOString(),
-    toDate: new Date(zonedDayStartIso(nextIsoDate(date), timezone)).toISOString(),
-  };
+  const { startUtc, endUtc } = activityDayWindow(date, timezone);
+  return { fromDate: startUtc, toDate: endUtc };
 }
 
 /** Meeting start as epoch ms, from Fireflies' epoch-ms Float or ISO string. */

@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { activityDayWindow } from "@remnic/core";
 import {
   conversationToWearable,
   memoryToNativeMemory,
   nextIsoDate,
+  omiDayWindow,
   timezoneOffsetIso,
   zonedDayBounds,
+  zonedDayStartIso,
 } from "./normalize.js";
 
 test("timezoneOffsetIso resolves fixed and DST offsets", () => {
@@ -27,13 +30,69 @@ test("nextIsoDate handles month and year boundaries", () => {
   assert.equal(nextIsoDate("2028-02-28"), "2028-02-29");
 });
 
-test("zonedDayBounds produces a half-open local-day window", () => {
-  const bounds = zonedDayBounds("2026-06-10", "America/Chicago");
+test("omiDayWindow produces a half-open local-day window", () => {
+  const bounds = omiDayWindow("2026-06-10", "America/Chicago");
   assert.equal(bounds.startIso, "2026-06-10T00:00:00-05:00");
   assert.equal(bounds.endIso, "2026-06-11T00:00:00-05:00");
-  const utc = zonedDayBounds("2026-06-10", "UTC");
+  const utc = omiDayWindow("2026-06-10", "UTC");
   assert.equal(utc.startIso, "2026-06-10T00:00:00+00:00");
   assert.equal(utc.endIso, "2026-06-11T00:00:00+00:00");
+});
+
+test("omiDayWindow handles the spring-forward DST boundary", () => {
+  // 2026-03-08 is the US spring-forward day: local midnight is CST (UTC-6)
+  // and the next day's midnight is CDT (UTC-5).
+  const bounds = omiDayWindow("2026-03-08", "America/Chicago");
+  assert.equal(bounds.startIso, "2026-03-08T00:00:00-06:00");
+  assert.equal(bounds.endIso, "2026-03-09T00:00:00-05:00");
+});
+
+test("omiDayWindow preserves resolved instants when local midnight is skipped", () => {
+  // Africa/Cairo restarts DST on 2026-04-24 at 00:00 (00:00 → 01:00), so
+  // local midnight never occurs and core resolves the day start to 01:00
+  // local (2026-04-23T22:00:00Z). Pre-fix, rebuilding the bounds as
+  // `T00:00:00` produced 2026-04-24T00:00:00+03:00 (= 21:00Z), pulling an
+  // hour of the previous local day into the window.
+  const core = activityDayWindow("2026-04-24", "Africa/Cairo");
+  const bounds = omiDayWindow("2026-04-24", "Africa/Cairo");
+  assert.equal(bounds.startIso, "2026-04-24T01:00:00+03:00");
+  assert.equal(bounds.endIso, "2026-04-25T00:00:00+03:00");
+  assert.equal(Date.parse(bounds.startIso), Date.parse(core.startUtc));
+  assert.equal(Date.parse(bounds.endIso), Date.parse(core.endUtc));
+  // The prior local day ENDS on the skipped midnight; its end bound must
+  // equal core's end instant too, or the final hour gets truncated.
+  const priorCore = activityDayWindow("2026-04-23", "Africa/Cairo");
+  const prior = omiDayWindow("2026-04-23", "Africa/Cairo");
+  assert.equal(prior.endIso, "2026-04-24T01:00:00+03:00");
+  assert.equal(Date.parse(prior.endIso), Date.parse(priorCore.endUtc));
+});
+
+test("omiDayWindow keeps the never-throw zone contract: unknown zone is a UTC day", () => {
+  // Pre-refactor zonedDayBounds never threw on a bad zone (the offset helper
+  // falls back to +00:00); delegating to core's fail-fast assertValidTimezone
+  // made this path throw RangeError. An unknown zone must resolve to UTC.
+  const bounds = omiDayWindow("2026-06-10", "Not/AZone");
+  assert.deepEqual(bounds, omiDayWindow("2026-06-10", "UTC"));
+});
+
+test("legacy day-window names warn once per process", async () => {
+  const warnings: Array<string | undefined> = [];
+  const onWarning = (warning: Error & { code?: string }) => warnings.push(warning.code);
+  process.on("warning", onWarning);
+  try {
+    zonedDayBounds("2026-06-10", "UTC");
+    zonedDayStartIso("2026-06-10", "UTC");
+    // Second calls must not re-warn.
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+  } finally {
+    process.off("warning", onWarning);
+  }
+  assert.deepEqual(warnings.sort(), [
+    "REMNIC_DEP_OMI_ZONEDDAYBOUNDS",
+    "REMNIC_DEP_OMI_ZONEDDAYSTARTISO",
+  ]);
 });
 
 const CONVERSATION = {

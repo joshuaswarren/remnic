@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  activityDateInTimezone,
   activityDayWindow,
   activityDigestPath,
   composeActivityDigestBody,
@@ -160,6 +161,39 @@ test("activityDayWindow does not backdate a skipped local midnight", () => {
     hour12: false,
   }).format(new Date(w.startUtc));
   assert.ok(local.startsWith("2026-04-24"), local);
+});
+
+test("activityDayWindow keeps the last real day whole across an entirely skipped civil date", () => {
+  // Pacific/Apia jumped the date line at 2011-12-29 23:59:59-10:00 →
+  // 2011-12-31 00:00:00+14:00, so local 2011-12-30 never existed. Pre-fix,
+  // the skipped date's day start backdated into 2011-12-29, collapsing the
+  // 29th's window to identical bounds — a `wearables sync --date
+  // 2011-12-29` then dropped every Fireflies transcript of the day.
+  const w = activityDayWindow("2011-12-29", "Pacific/Apia");
+  assert.equal(w.startUtc, "2011-12-29T10:00:00.000Z"); // 2011-12-29 00:00 -10:00
+  assert.equal(w.endUtc, "2011-12-30T10:00:00.000Z"); // the jump instant
+  assert.ok(Date.parse(w.endUtc) > Date.parse(w.startUtc), "window must be non-degenerate");
+  // Attribution is exact: every instant in the window is locally the 29th.
+  assert.equal(activityDateInTimezone(new Date(w.startUtc), "Pacific/Apia"), "2011-12-29");
+  assert.equal(activityDateInTimezone(new Date(Date.parse(w.endUtc) - 1), "Pacific/Apia"), "2011-12-29");
+});
+
+test("activityDayWindow gives an entirely skipped civil date no interval", () => {
+  // 2011-12-30 never occurred in Pacific/Apia: the date-line jump went
+  // 2011-12-29 23:59:59-10:00 → 2011-12-31 00:00:00+14:00. The skipped
+  // date's nominal start and 2011-12-31's start both resolve to that jump
+  // instant, so its window is zero-width [jump, jump). A date that never
+  // occurred owns no interval: it must not adopt 2011-12-31's, which
+  // double-attributed the 31st's cards to two daily totals and made
+  // connector syncs for the skipped date fetch the 31st's records.
+  const w = activityDayWindow("2011-12-30", "Pacific/Apia");
+  assert.equal(w.startUtc, "2011-12-30T10:00:00.000Z"); // the jump instant
+  assert.equal(w.endUtc, w.startUtc); // zero-width: syncs nothing
+  // The 31st keeps its OWN window; no interval is shared with the skip.
+  const dec31 = activityDayWindow("2011-12-31", "Pacific/Apia");
+  assert.equal(dec31.startUtc, "2011-12-30T10:00:00.000Z");
+  assert.equal(dec31.endUtc, "2011-12-31T10:00:00.000Z");
+  assert.notDeepEqual(w, dec31);
 });
 
 test("timeline keeps a second machine's span even with the same app/window", () => {

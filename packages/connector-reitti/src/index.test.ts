@@ -11,6 +11,7 @@ import {
 import {
   REITTI_PROVIDER_ID,
   REITTI_VISITS_CURSOR,
+  assertValidIanaTimezone,
   createReittiProvider,
   ensureReittiProviderRegistered,
 } from "./index.js";
@@ -217,4 +218,24 @@ test("verify rethrows a caller abort instead of reporting the provider unavailab
     provider.verify(controller.signal),
     (err: unknown) => err instanceof Error && err.name === "AbortError",
   );
+});
+
+test("legacy assertValidIanaTimezone still resolves and validates identically", async () => {
+  // Pre-rename consumers import assertValidIanaTimezone from the package
+  // entry; it must keep resolving with the same throw behavior and warn
+  // about the rename exactly once per process.
+  const warnings: Array<string | undefined> = [];
+  const onWarning = (warning: Error & { code?: string }) => warnings.push(warning.code);
+  process.on("warning", onWarning);
+  try {
+    assertValidIanaTimezone("Europe/Helsinki");
+    assert.throws(() => assertValidIanaTimezone(""), TypeError);
+    assert.throws(() => assertValidIanaTimezone("Also/Bogus"), RangeError);
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setImmediate(resolve);
+    await promise;
+  } finally {
+    process.off("warning", onWarning);
+  }
+  assert.deepEqual(warnings, ["REMNIC_DEP_REITTI_ASSERT_VALID_IANA_TIMEZONE"]);
 });

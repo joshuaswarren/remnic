@@ -5,7 +5,7 @@ import {
   REITTI_AUTH_MODES,
   ReittiApiError,
   ReittiClient,
-  assertValidIanaTimezone,
+  assertReittiTimezone,
   normalizeReittiBaseUrl,
 } from "./client.js";
 
@@ -87,7 +87,7 @@ test("fetchTimeline validates the date and timezone before any request", async (
   await assert.rejects(client.fetchTimeline({ date: "2026-13-40", timezone: "UTC" }), RangeError);
   await assert.rejects(client.fetchTimeline({ date: "2026-08-17", timezone: "Not/AZone" }), RangeError);
   assert.equal(requests.length, 0);
-  assert.throws(() => assertValidIanaTimezone("Also/Bogus"), RangeError);
+  assert.throws(() => assertReittiTimezone("Also/Bogus"), RangeError);
 });
 
 const visitRow = (overrides: Record<string, unknown> = {}) => ({
