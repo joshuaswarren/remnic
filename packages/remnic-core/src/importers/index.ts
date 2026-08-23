@@ -19,3 +19,8 @@ export {
   type RunImporterResult,
   type RunImportOptions,
 } from "./base.js";
+export {
+  defineFileImporterAdapter,
+  type FileImporterDefinition,
+  type FileImporterParseArgs,
+} from "./base.js";

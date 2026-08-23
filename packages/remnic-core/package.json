@@ -1215,6 +1215,16 @@
       "remnic-source": "./src/importers/index.ts",
       "import": "./dist/importers/index.js"
     },
+    "./importers/test-utils": {
+      "types": "./dist/importers/test-utils.d.ts",
+      "remnic-source": "./src/importers/test-utils.ts",
+      "import": "./dist/importers/test-utils.js"
+    },
+    "./importers/test-utils.js": {
+      "types": "./dist/importers/test-utils.d.ts",
+      "remnic-source": "./src/importers/test-utils.ts",
+      "import": "./dist/importers/test-utils.js"
+    },
     "./intent": {
       "types": "./dist/intent.d.ts",
       "remnic-source": "./src/intent.ts",
