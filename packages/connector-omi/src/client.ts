@@ -19,11 +19,16 @@
  * messages.
  */
 
+import {
+  ConnectorApiError,
+  describeNetworkError,
+  retryingFetch,
+  stripTrailingSlashes,
+} from "@remnic/core/http-retry";
+
 export const OMI_DEFAULT_BASE_URL = "https://api.omi.me";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const MAX_RETRIES = 3;
-const MAX_RETRY_DELAY_MS = 30_000;
 /** Page size for both conversations and memories (API max is 1000). */
 const PAGE_SIZE = 100;
 
@@ -85,14 +90,13 @@ export interface OmiClientOptions {
 
 type OmiApiMode = "developer" | "integration";
 
-export class OmiApiError extends Error {
+export class OmiApiError extends ConnectorApiError {
   constructor(
     message: string,
-    readonly status?: number,
-    /** FastAPI `detail` string when the body carried one. */
-    readonly detail?: string,
+    status?: number,
+    detail?: string,
   ) {
-    super(message);
+    super(message, status, detail);
     this.name = "OmiApiError";
   }
 }
@@ -304,78 +308,42 @@ export class OmiClient {
   }
 
   private async requestJson(pathAndQuery: string, signal?: AbortSignal): Promise<unknown> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      signal?.throwIfAborted();
-      const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-      const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-      let response: Response;
-      try {
-        response = await this.fetchImpl(`${this.baseUrl}${pathAndQuery}`, {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            Accept: "application/json",
-          },
-          signal: combined,
-        });
-      } catch (err) {
-        if (signal?.aborted) throw err;
-        lastError = err;
-        if (attempt < MAX_RETRIES) {
-          await this.sleep(backoffMs(attempt));
-          continue;
-        }
-        throw new OmiApiError(
-          `Omi API request failed after ${MAX_RETRIES + 1} attempts: ${describeNetworkError(err)}`,
-        );
-      }
-
-      if (response.status === 429 || response.status >= 500) {
-        lastError = new OmiApiError(
-          `Omi API responded ${response.status}`,
-          response.status,
-          await readDetail(response),
-        );
-        if (attempt < MAX_RETRIES) {
-          await this.sleep(retryDelayMs(response, attempt));
-          continue;
-        }
-        throw lastError;
-      }
-      if (!response.ok) {
-        throw new OmiApiError(
-          `Omi API responded ${response.status} for ${pathAndQuery.split("?")[0]}`,
-          response.status,
-          await readDetail(response),
-        );
-      }
-      try {
-        return await response.json();
-      } catch {
-        throw new OmiApiError("Omi API returned a non-JSON body");
-      }
+    const response = await retryingFetch(`${this.baseUrl}${pathAndQuery}`, {
+      init: {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          Accept: "application/json",
+        },
+      },
+      fetchImpl: this.fetchImpl,
+      sleep: this.sleep,
+      signal,
+      timeoutMs: this.timeoutMs,
+      networkError: (err, attempts) =>
+        new OmiApiError(
+          `Omi API request failed after ${attempts} attempts: ${describeNetworkError(err)}`,
+        ),
+      retryableError: async (retryable) =>
+        new OmiApiError(
+          `Omi API responded ${retryable.status}`,
+          retryable.status,
+          await readDetail(retryable),
+        ),
+    });
+    if (!response.ok) {
+      throw new OmiApiError(
+        `Omi API responded ${response.status} for ${pathAndQuery.split("?")[0]}`,
+        response.status,
+        await readDetail(response),
+      );
     }
-    throw lastError instanceof Error ? lastError : new OmiApiError("Omi API request failed");
+    try {
+      return await response.json();
+    } catch {
+      throw new OmiApiError("Omi API returned a non-JSON body");
+    }
   }
-}
-
-/**
- * Network/timeout failures wrap Node error text that can carry loader
- * paths or stack fragments; sync errors reach MCP clients verbatim, so
- * only the error name + code survive.
- */
-function describeNetworkError(err: unknown): string {
-  if (!(err instanceof Error)) return "unexpected non-Error failure";
-  const code = (err as NodeJS.ErrnoException).code;
-  return typeof code === "string" && code.length > 0 ? `${err.name} (${code})` : err.name;
-}
-
-/** Loop instead of `/\/+$/` — CodeQL js/polynomial-redos on user-set URLs. */
-function stripTrailingSlashes(value: string): string {
-  let end = value.length;
-  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end--;
-  return value.slice(0, end);
 }
 
 function startsInsideHalfOpenWindow(
@@ -413,19 +381,4 @@ async function readDetail(response: Response): Promise<string | undefined> {
   } catch {
     return undefined;
   }
-}
-
-function backoffMs(attempt: number): number {
-  return Math.min(MAX_RETRY_DELAY_MS, 1_000 * 2 ** attempt);
-}
-
-function retryDelayMs(response: Response, attempt: number): number {
-  const headerValue = response.headers.get("retry-after");
-  if (headerValue !== null) {
-    const parsed = Number(headerValue);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return Math.min(MAX_RETRY_DELAY_MS, Math.ceil(parsed * 1_000));
-    }
-  }
-  return backoffMs(attempt);
 }

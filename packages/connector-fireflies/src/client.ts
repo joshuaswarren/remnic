@@ -17,6 +17,12 @@
  * failure; those are surfaced as FirefliesApiError (a backend failure), never
  * as an empty result (AGENTS.md §22).
  */
+import {
+  ConnectorApiError,
+  describeNetworkError,
+  retryingFetch,
+  stripTrailingSlashes,
+} from "@remnic/core/http-retry";
 
 export const FIREFLIES_DEFAULT_ENDPOINT = "https://api.fireflies.ai/graphql";
 
@@ -24,9 +30,6 @@ export const FIREFLIES_DEFAULT_ENDPOINT = "https://api.fireflies.ai/graphql";
 export const TRANSCRIPTS_MAX_PAGE_SIZE = 50;
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const MAX_RETRIES = 3;
-/** Backoff cap so a hostile retryAfter can't stall a sync for minutes. */
-const MAX_RETRY_DELAY_MS = 30_000;
 
 const TRANSCRIPTS_QUERY = `query RemnicTranscripts($fromDate: DateTime, $toDate: DateTime, $limit: Int, $skip: Int) {
   transcripts(fromDate: $fromDate, toDate: $toDate, limit: $limit, skip: $skip) {
@@ -95,12 +98,12 @@ export interface FirefliesClientOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-export class FirefliesApiError extends Error {
+export class FirefliesApiError extends ConnectorApiError {
   constructor(
     message: string,
-    readonly status?: number,
+    status?: number,
   ) {
-    super(message);
+    super(message, status);
     this.name = "FirefliesApiError";
   }
 }
@@ -113,9 +116,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export class FirefliesClient {
   private readonly apiKey: string;
   private readonly endpoint: string;
-  private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
-  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly fetchImpl: typeof fetch;
+  private readonly sleep: ((ms: number) => Promise<void>) | undefined;
 
   constructor(options: FirefliesClientOptions) {
     if (typeof options.apiKey !== "string" || options.apiKey.trim().length === 0) {
@@ -129,7 +132,7 @@ export class FirefliesClient {
     this.endpoint = stripTrailingSlashes(options.baseUrl ?? FIREFLIES_DEFAULT_ENDPOINT);
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.sleep = options.sleep ?? defaultSleep;
+    this.sleep = options.sleep;
   }
 
   /** One page of transcripts created inside the [fromDate, toDate) window. */
@@ -179,66 +182,48 @@ export class FirefliesClient {
     variables: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<unknown> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      signal?.throwIfAborted();
-      const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-      const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-      let response: Response;
-      try {
-        response = await this.fetchImpl(this.endpoint, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body: JSON.stringify({ query, variables }),
-          signal: combined,
-        });
-      } catch (err) {
-        if (signal?.aborted) throw err;
-        lastError = err;
-        if (attempt < MAX_RETRIES) {
-          await this.sleep(backoffMs(attempt));
-          continue;
-        }
-        throw new FirefliesApiError(
-          `Fireflies API request failed after ${MAX_RETRIES + 1} attempts: ${describeNetworkError(err)}`,
-        );
-      }
-
-      if (response.status === 429 || response.status >= 500) {
-        lastError = new FirefliesApiError(`Fireflies API responded ${response.status}`, response.status);
-        if (attempt < MAX_RETRIES) {
-          await this.sleep(await retryDelayMs(response, attempt));
-          continue;
-        }
-        throw lastError;
-      }
-      if (response.status === 401 || response.status === 403) {
-        throw new FirefliesApiError(`Fireflies API responded ${response.status}`, response.status);
-      }
-      let body: unknown;
-      try {
-        body = await response.json();
-      } catch {
-        throw new FirefliesApiError("Fireflies API returned a non-JSON body");
-      }
-      // GraphQL returns 200 with an `errors` array on failure. That is a
-      // backend failure, not an empty result (AGENTS.md §22): surface it so
-      // an expired token never reads as a quiet day.
-      const errors = isRecord(body) ? body.errors : undefined;
-      if (Array.isArray(errors) && errors.length > 0) {
-        throw graphqlError(errors[0]);
-      }
-      const data = isRecord(body) ? body.data : undefined;
-      if (data === undefined || data === null) {
-        throw new FirefliesApiError("Fireflies API returned no data and no errors");
-      }
-      return data;
+    const response = await retryingFetch(this.endpoint, {
+      init: {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ query, variables }),
+      },
+      fetchImpl: this.fetchImpl,
+      sleep: this.sleep,
+      signal,
+      timeoutMs: this.timeoutMs,
+      networkError: (err, attempts) =>
+        new FirefliesApiError(
+          `Fireflies API request failed after ${attempts} attempts: ${describeNetworkError(err)}`,
+        ),
+      retryableError: (retryable) =>
+        new FirefliesApiError(`Fireflies API responded ${retryable.status}`, retryable.status),
+    });
+    if (response.status === 401 || response.status === 403) {
+      throw new FirefliesApiError(`Fireflies API responded ${response.status}`, response.status);
     }
-    throw lastError instanceof Error ? lastError : new FirefliesApiError("Fireflies API request failed");
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new FirefliesApiError("Fireflies API returned a non-JSON body");
+    }
+    // GraphQL returns 200 with an `errors` array on failure. That is a
+    // backend failure, not an empty result (AGENTS.md §22): surface it so
+    // an expired token never reads as a quiet day.
+    const errors = isRecord(body) ? body.errors : undefined;
+    if (Array.isArray(errors) && errors.length > 0) {
+      throw graphqlError(errors[0]);
+    }
+    const data = isRecord(body) ? body.data : undefined;
+    if (data === undefined || data === null) {
+      throw new FirefliesApiError("Fireflies API returned no data and no errors");
+    }
+    return data;
   }
 }
 
@@ -252,50 +237,4 @@ function graphqlError(first: unknown): FirefliesApiError {
     code === "forbidden" ||
     /unauthor|forbidden|invalid.*(token|api key)|expired/i.test(message);
   return new FirefliesApiError(`Fireflies GraphQL error: ${message}`, authLike ? 401 : undefined);
-}
-
-function defaultSleep(ms: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
-}
-
-/**
- * Network/timeout failures wrap Node error text that can carry loader
- * paths or stack fragments; sync errors reach MCP clients verbatim, so
- * only the error name + code survive.
- */
-function describeNetworkError(err: unknown): string {
-  if (isRecord(err)) {
-    const name = typeof err.name === "string" ? err.name : "Error";
-    const code = err.code;
-    return typeof code === "string" ? `${name} (${code})` : name;
-  }
-  return "network error";
-}
-
-/** Loop instead of `/\/+$/` — CodeQL js/polynomial-redos on user-set URLs. */
-function stripTrailingSlashes(value: string): string {
-  let end = value.length;
-  while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
-  return value.slice(0, end);
-}
-
-function backoffMs(attempt: number): number {
-  return Math.min(MAX_RETRY_DELAY_MS, 1_000 * 2 ** attempt);
-}
-
-async function retryDelayMs(response: Response, attempt: number): Promise<number> {
-  const header = response.headers.get("retry-after");
-  if (header) {
-    const seconds = Number(header);
-    if (Number.isFinite(seconds) && seconds >= 0) {
-      return Math.min(MAX_RETRY_DELAY_MS, seconds * 1_000);
-    }
-    const when = Date.parse(header);
-    if (Number.isFinite(when)) {
-      return Math.min(MAX_RETRY_DELAY_MS, Math.max(0, when - Date.now()));
-    }
-  }
-  return backoffMs(attempt);
 }
