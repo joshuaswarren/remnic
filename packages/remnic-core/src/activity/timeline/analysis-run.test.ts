@@ -417,3 +417,85 @@ test("adapter pins the call-time provider verbatim with no chain fallback", asyn
   });
   assert.deepEqual(seen, ["anthropic/claude-4_1"]);
 });
+
+test("remote failureDiag preserves a rate-limited failure as retryable (issue #2891)", async () => {
+  const cards = sampleCards();
+  const remoteLlm: TimelineAnalysisRemoteLlm = {
+    chatCompletion: async (_messages, options) => {
+      assert.ok(options.failureDiag, "adapter must pass a failureDiag out-box");
+      options.failureDiag.lastError = Object.assign(new Error("provider throttled"), { status: 429 });
+      return null;
+    },
+  };
+  const result = await runTimelineCardAnalysis({
+    date: DATE,
+    timezone: TZ,
+    cards,
+    observations: [observation()],
+    config: ENABLED,
+    deps: { remoteLlm },
+  });
+  assert.equal(result.status, "provider_failed");
+  assert.equal(result.failure?.kind, "rate_limited");
+  assert.equal(result.failure?.retryable, true);
+  assert.equal(result.failure?.preservesDeterministic, true);
+  assert.equal(result.cards, cards);
+});
+
+test("local failureDiag preserves a rate-limited failure (issue #2891)", async () => {
+  const localLlm: TimelineAnalysisLocalLlm = {
+    chatCompletion: async (_messages, options) => {
+      assert.ok(options.failureDiag, "adapter must pass a failureDiag out-box");
+      options.failureDiag.lastError = Object.assign(new Error("local backend throttled"), { status: 429 });
+      return null;
+    },
+  };
+  const result = await runTimelineCardAnalysis({
+    date: DATE,
+    timezone: TZ,
+    cards: sampleCards(),
+    observations: [observation()],
+    config: { enabled: true, provider: "local", model: "local-test" },
+    deps: { localLlm },
+  });
+  assert.equal(result.status, "provider_failed");
+  assert.equal(result.failure?.kind, "rate_limited");
+  assert.equal(result.failure?.retryable, true);
+});
+
+test("failureDiag without a rate limit still classifies as provider_unavailable", async () => {
+  const remoteLlm: TimelineAnalysisRemoteLlm = {
+    chatCompletion: async (_messages, options) => {
+      options.failureDiag!.lastError = Object.assign(new Error("server error"), { status: 500 });
+      return null;
+    },
+  };
+  const result = await runTimelineCardAnalysis({
+    date: DATE,
+    timezone: TZ,
+    cards: sampleCards(),
+    observations: [observation()],
+    config: ENABLED,
+    deps: { remoteLlm },
+  });
+  assert.equal(result.status, "provider_failed");
+  assert.equal(result.failure?.kind, "provider_unavailable");
+  assert.equal(result.failure?.retryable, true);
+});
+
+test("a null completion with no recorded cause keeps the generic kind", async () => {
+  const remoteLlm: TimelineAnalysisRemoteLlm = {
+    chatCompletion: async () => null,
+  };
+  const result = await runTimelineCardAnalysis({
+    date: DATE,
+    timezone: TZ,
+    cards: sampleCards(),
+    observations: [observation()],
+    config: ENABLED,
+    deps: { remoteLlm },
+  });
+  assert.equal(result.status, "provider_failed");
+  assert.equal(result.failure?.kind, "provider_unavailable");
+  assert.equal(result.failure?.retryable, true);
+});

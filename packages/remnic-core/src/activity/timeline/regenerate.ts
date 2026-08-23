@@ -191,12 +191,18 @@ function resolveClients(input: RegenerateTimelineDayInput): TimelineAnalysisClie
 }
 
 function sourceHash(input: {
+  timezone: string;
   observations: readonly TimelineObservation[];
   analysis: ActivityTimelineAnalysisConfig;
   corrections: readonly TimelineCorrection[];
 }): string {
   return hashActivityBody(
     JSON.stringify({
+      // The timezone is a day-window determinant (it bounds which
+      // observations the day sees), so it belongs to the source identity:
+      // identical observations under a different timezone must not reuse
+      // the cached day (issue #2891).
+      timezone: input.timezone,
       observations: input.observations.map((observation) => ({
         id: observation.id,
         contentHash: observation.contentHash,
@@ -311,7 +317,7 @@ async function regenerateUncached(input: RegenerateTimelineDayInput): Promise<Re
       buildTimelineDay({ date, timezone, observations }).cards,
       corrections,
     );
-    const hash = sourceHash({ observations, analysis: input.analysis, corrections });
+    const hash = sourceHash({ timezone, observations, analysis: input.analysis, corrections });
     const prior = readPersisted(filePath);
     if (prior !== null && prior.sourceHash === hash && isCachedDayFinal(prior.status, input.analysis.enabled)) {
       return toResult(filePath, false, false, prior);

@@ -3,6 +3,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { FallbackLlmClient, gatewayTaskChainOptions } from "./fallback-llm.js";
+import { classifyAnalysisProviderError } from "./activity/timeline/analysis-provider.js";
 import { __codexCliFallbackTestHooks } from "./cli-fallback.js";
 import { initLogger, resetLogger } from "./logger.js";
 import { clearModelsJsonCache, __setModelsJsonForTest } from "./models-json.js";
@@ -1892,6 +1893,33 @@ test("fallback llm retries without responsesJsonSchema when the Responses API re
     assert.ok((bodies[0] as { text?: { format?: unknown } }).text?.format);
     assert.equal((bodies[1] as { text?: { format?: unknown } }).text?.format, undefined);
     assert.equal((bodies[2] as { text?: { format?: unknown } }).text?.format, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("chatCompletionDetailed preserves a 429 rate-limit failure cause (issue #2891)", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+  const llm = new FallbackLlmClient({
+    agents: { defaults: { model: { primary: "openai/test-model" } } },
+    models: { providers: { openai: { baseUrl: "https://openai.example/v1", api: "openai-completions", apiKey: "key", models: [] } } },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ error: { message: "rate limit exceeded" } }), { status: 429 })) as typeof fetch;
+  try {
+    const failureDiag: { lastError?: unknown } = {};
+    assert.equal(
+      await llm.chatCompletion([{ role: "user", content: "test" }], { failureDiag }),
+      null,
+    );
+    const lastError = failureDiag.lastError;
+    assert.ok(lastError instanceof Error, "expected the terminal provider error to survive the chain");
+    assert.equal("status" in lastError ? lastError.status : undefined, 429);
+    assert.equal(classifyAnalysisProviderError(lastError), "rate_limited");
   } finally {
     globalThis.fetch = originalFetch;
     clearModelsJsonCache();

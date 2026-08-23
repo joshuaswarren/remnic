@@ -46,6 +46,13 @@ export interface FallbackLlmOptions {
   agentId?: string;
   /** Reject a transport-successful response and continue through the configured model chain. */
   acceptResponse?: (response: FallbackLlmResponse) => boolean;
+  /**
+   * Optional out-box for the terminal failure cause (issue #2891): when every
+   * model in the chain fails, the last thrown provider error is recorded here
+   * so callers can classify it (e.g. HTTP 429 → rate-limited) in memory
+   * instead of seeing only null. Never logged.
+   */
+  failureDiag?: { lastError?: unknown };
 }
 
 export interface FallbackLlmAvailabilityOptions {
@@ -230,6 +237,7 @@ export class FallbackLlmClient {
     ): Promise<FallbackLlmResponse | null> => {
       let runOptions = initialOptions;
       let lastRejectedResponse: FallbackLlmResponse | null = null;
+      let lastError: unknown;
       // Try each model in the chain
       for (let i = 0; i < models.length; i++) {
         if (runOptions.signal?.aborted) {
@@ -260,6 +268,7 @@ export class FallbackLlmClient {
           if (runOptions.signal?.aborted) {
             throw abortReason(runOptions.signal);
           }
+          lastError = err;
           if (
             (runOptions.jsonSchema || runOptions.responsesJsonSchema) &&
             isUnsupportedJsonSchemaError(err)
@@ -290,6 +299,7 @@ export class FallbackLlmClient {
               }
             } catch (retryError) {
               if (runOptions.signal?.aborted) throw abortReason(runOptions.signal);
+              lastError = retryError;
               const retryErrorMsg = runOptions.redactProviderErrors
                 ? "provider error details redacted"
                 : retryError instanceof Error
@@ -312,6 +322,9 @@ export class FallbackLlmClient {
       }
 
       log.warn(`fallback LLM: all ${models.length} models in chain failed`);
+      if (options.failureDiag && lastError !== undefined && !lastRejectedResponse) {
+        options.failureDiag.lastError = lastError;
+      }
       return lastRejectedResponse;
     };
 
@@ -338,9 +351,12 @@ export class FallbackLlmClient {
           new Promise<null>((resolve) => {
             timeoutHandle = setTimeout(() => {
               log.warn(`fallback LLM: timed out after ${options.timeoutMs}ms`);
-              controller.abort(
+              const timeoutError = Object.assign(
                 new Error(`fallback LLM timed out after ${options.timeoutMs}ms`),
+                { name: "TimeoutError" },
               );
+              controller.abort(timeoutError);
+              if (options.failureDiag) options.failureDiag.lastError = timeoutError;
               resolve(null);
             }, options.timeoutMs);
           }),
@@ -831,7 +847,7 @@ export class FallbackLlmClient {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`OpenAI API error: ${response.status} ${error}`);
+      throw Object.assign(new Error(`OpenAI API error: ${response.status} ${error}`), { status: response.status });
     }
 
     const data = (await response.json()) as {
@@ -903,7 +919,7 @@ export class FallbackLlmClient {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Ollama API error: ${response.status} ${error}`);
+      throw Object.assign(new Error(`Ollama API error: ${response.status} ${error}`), { status: response.status });
     }
 
     const data = (await response.json()) as {
@@ -1001,7 +1017,7 @@ export class FallbackLlmClient {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`OpenAI Responses API error: ${response.status} ${error}`);
+      throw Object.assign(new Error(`OpenAI Responses API error: ${response.status} ${error}`), { status: response.status });
     }
 
     const data = (await response.json()) as {
@@ -1093,7 +1109,7 @@ export class FallbackLlmClient {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Anthropic API error: ${response.status} ${error}`);
+      throw Object.assign(new Error(`Anthropic API error: ${response.status} ${error}`), { status: response.status });
     }
 
     const data = (await response.json()) as {
