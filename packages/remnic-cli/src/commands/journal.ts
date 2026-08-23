@@ -1,23 +1,39 @@
 /**
  * `remnic journal` command (issues #1984, #1987).
  *
- * show | edit-path | seed [--date] [--force]. The mode branch is
+ * show | edit-path | seed | extract [--date] [--force]. The mode branch is
  * centralized in runJournalCommand: `timeline.journal.source` decides where
- * journal text lives. Vault mode is READ-ONLY — show prints the vault
- * section with a provenance header, edit-path prints the vault note path,
- * seed refuses (the vault note template owns scaffolding; #1985 ownership
- * rule). Journal extraction (extractionMode "review") is a library pass in
- * @remnic/core (activity/journal-extract.ts) wired by maintenance surfaces;
- * this command surface stays read-only.
+ * journal text lives. `timeline.journal.enabled` is the master gate — when
+ * false every action refuses before any journal byte (vault note or
+ * memoryDir day file) is read. An omitted `--date` means "today" in the
+ * configured `activity.timezone`, not in the host's local zone.
+ *
+ * Vault notes stay READ-ONLY: show prints the vault section with a
+ * provenance header, edit-path prints the vault note path, seed refuses
+ * (the vault note template owns scaffolding; #1985 ownership rule).
+ * extract runs the #1987 review-only pass from @remnic/core
+ * (activity/journal-extract.ts): candidates land `pending_review` only,
+ * never auto-approved, and unchanged days hash-skip.
  */
 import fs from "node:fs";
 import {
+  ExtractionEngine,
+  StorageManager,
+  activityDateInTimezone,
+  createJournalMemoryWriter,
+  hashJournalText,
   journalPath,
+  journalUnchanged,
   parseConfig,
   readJournalForDate,
+  readTimelineState,
   resolveRemnicConfigRecord,
+  runJournalReviewExtraction,
   seedJournal,
-  todayJournalDate,
+  setJournalHash,
+  writeTimelineState,
+  type BufferTurn,
+  type JournalExtractionDeps,
   type PluginConfig,
 } from "@remnic/core";
 import { resolveConfigPath } from "../config-path.js";
@@ -25,6 +41,30 @@ import { resolveConfigPath } from "../config-path.js";
 export interface JournalCommandIo {
   out(line: string): void;
   err(line: string): void;
+}
+
+/** Injectable seam: note reads, extraction-pass deps, and the clock. */
+export interface JournalCommandDeps {
+  readJournal: typeof readJournalForDate;
+  /** Built lazily — only the `extract` action pays for storage + engine. */
+  extractionDeps(): Promise<JournalExtractionDeps>;
+  now(): Date;
+}
+
+function defaultDeps(config: PluginConfig): JournalCommandDeps {
+  return {
+    readJournal: readJournalForDate,
+    async extractionDeps() {
+      const storage = new StorageManager(config.memoryDir);
+      await storage.ensureDirectories();
+      const engine = new ExtractionEngine(config);
+      return {
+        extract: (turns: BufferTurn[]) => engine.extract(turns),
+        writer: createJournalMemoryWriter(storage),
+      };
+    },
+    now: () => new Date(),
+  };
 }
 
 function takeFlag(rest: string[], name: string): string | undefined {
@@ -35,13 +75,19 @@ function takeFlag(rest: string[], name: string): string | undefined {
   return value;
 }
 
-function journalHelp(): string {
-  return `Usage: remnic journal <show|edit-path|seed> [--date YYYY-MM-DD] [--force]
 
-  show       Print the journal for the date (default: today). Vault mode
-             prints a provenance header naming the vault note first.
+function journalHelp(): string {
+  return `Usage: remnic journal <show|edit-path|seed|extract> [--date YYYY-MM-DD] [--force]
+
+  show       Print the journal for the date (default: today in
+             activity.timezone). Vault mode prints a provenance header
+             naming the vault note first.
   edit-path  Print the journal file path (vault mode: the vault note path).
   seed       Write the file only if it is absent (memoryDir mode only).
+  extract    Run the review-only extraction pass (requires
+             activity.timeline.journal.extractionMode "review").
+             Candidates land pending_review only — never auto-approved;
+             an unchanged day is hash-skipped.
 `;
 }
 
@@ -49,20 +95,30 @@ export async function runJournalCommand(
   config: PluginConfig,
   rest: string[],
   io: JournalCommandIo,
+  deps: JournalCommandDeps = defaultDeps(config),
 ): Promise<number> {
   if (rest.length === 0 || rest[0] === "--help" || rest[0] === "-h" || rest[0] === "help") {
     io.out(journalHelp().trimEnd());
     return 0;
   }
   const action = rest[0];
-  const date = takeFlag(rest, "--date") ?? todayJournalDate();
-  const force = rest.includes("--force");
   const journalConfig = config.activity.timeline.journal;
+  // Master gate (issue #1987 P2): when disabled, every action refuses
+  // before ANY journal read — vault note or memoryDir day file.
+  if (!journalConfig.enabled) {
+    io.err("journal: timeline.journal.enabled is false — enable the journal first.");
+    return 1;
+  }
+  // Default date derives from the configured activity timezone, not the
+  // host's local clock (issue #1987 P2): a host in Europe must not resolve
+  // "today" to yesterday for a Pacific user at their local midnight.
+  const date = takeFlag(rest, "--date") ?? activityDateInTimezone(deps.now(), config.activity.timezone);
+  const force = rest.includes("--force");
   const vaultMode = journalConfig.source === "vault";
 
   if (action === "edit-path") {
     if (vaultMode) {
-      const read = readJournalForDate({
+      const read = deps.readJournal({
         vault: config.activity.timeline.vault,
         date,
         timezone: config.activity.timezone,
@@ -76,7 +132,7 @@ export async function runJournalCommand(
 
   if (action === "show") {
     if (vaultMode) {
-      const read = readJournalForDate({
+      const read = deps.readJournal({
         vault: config.activity.timeline.vault,
         date,
         timezone: config.activity.timezone,
@@ -113,12 +169,76 @@ export async function runJournalCommand(
       );
       return 1;
     }
-    if (!journalConfig.enabled) {
-      io.err("journal: timeline.journal.enabled is false — enable the journal before seeding.");
-      return 1;
-    }
     const result = seedJournal({ memoryDir: config.memoryDir, date, force });
     io.out(result.wrote ? `wrote ${result.path}` : `unchanged ${result.path}`);
+    return 0;
+  }
+
+  if (action === "extract") {
+    if (journalConfig.extractionMode !== "review") {
+      io.err(
+        'journal: extract requires activity.timeline.journal.extractionMode "review" ' +
+          `(currently "${journalConfig.extractionMode}") — extraction is opt-in and review-only by design.`,
+      );
+      return 1;
+    }
+    let text: string;
+    if (vaultMode) {
+      const read = deps.readJournal({
+        vault: config.activity.timeline.vault,
+        date,
+        timezone: config.activity.timezone,
+      });
+      if (!read.ok) {
+        io.err(`journal: cannot read the vault note (${read.reason}): ${read.filePath}`);
+        return 1;
+      }
+      // A missing note/section is a legitimate no-journal day (§22): nothing
+      // to extract, no state write, exit 0.
+      if (!read.exists) {
+        io.out(`no journal ${date} (${read.reason})`);
+        return 0;
+      }
+      text = read.text;
+    } else {
+      const filePath = journalPath(config.memoryDir, date);
+      if (!fs.existsSync(filePath)) {
+        io.out(`no journal ${date} (missing_file)`);
+        return 0;
+      }
+      text = fs.readFileSync(filePath, "utf8");
+    }
+
+    // Hash-skip (journal-state.ts): an unchanged day is never re-extracted;
+    // a day edited weeks later re-extracts exactly once per content change.
+    const state = readTimelineState(config.memoryDir);
+    if (journalUnchanged(state, date, text)) {
+      io.out(`unchanged ${date} (hash-skip)`);
+      return 0;
+    }
+
+    // Review-only pass: candidates land pending_review ONLY. The judge is a
+    // maintenance-surface dep; without it every candidate survives to human
+    // review — the conservative direction for a one-shot command.
+    const result = await runJournalReviewExtraction({
+      date,
+      journalText: text,
+      source: vaultMode ? "vault" : "memoryDir",
+      journalConfig,
+      deps: await deps.extractionDeps(),
+    });
+    if (!result.completed) {
+      io.err(`journal: extraction did not complete for ${date} — the day retries on the next run.`);
+      return 1;
+    }
+    // Completed runs advance the day's hash so the same content never re-runs.
+    writeTimelineState(config.memoryDir, setJournalHash(state, date, hashJournalText(text)));
+    io.out(`pending_review: ${result.pendingReview}`);
+    io.out(`rejected_by_judge: ${result.rejectedByJudge}`);
+    io.out(`skipped: ${result.skipped}`);
+    for (const warning of result.warnings) {
+      io.err(`journal: ${warning}`);
+    }
     return 0;
   }
 
@@ -128,6 +248,13 @@ export async function runJournalCommand(
 }
 
 export async function runJournalBinaryCommand(rest: string[]): Promise<void> {
+  // Help short-circuits BEFORE config discovery and parse (issue #1987 P2):
+  // `remnic journal --help` prints usage and exits 0 even when the config
+  // file is malformed — a broken config must never hide the usage text.
+  if (rest.length === 0 || rest[0] === "--help" || rest[0] === "-h" || rest[0] === "help") {
+    console.log(journalHelp().trimEnd());
+    return;
+  }
   let config: PluginConfig;
   try {
     // Config failures get a constant message: parseConfig error strings can

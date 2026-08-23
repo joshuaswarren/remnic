@@ -13,7 +13,7 @@ Setting `source: "vault"` requires `activity.timeline.vault.enabled: true` and a
 
 ### Vault read-back is read-only
 
-Remnic never writes to the journal section — including `remnic journal seed`, which refuses with an explanation in vault mode. The vault note template owns scaffolding. `remnic journal show` prints the section with a provenance header naming the note file; `remnic journal edit-path` prints the note path. The #1985 publisher continues to own only its managed regions in the same file; publisher and read-back coexist byte-safely.
+Remnic never writes to the journal section — including `remnic journal seed`, which refuses with an explanation in vault mode. The vault note template owns scaffolding. `remnic journal show` prints the section with a provenance header naming the note file; `remnic journal edit-path` prints the note path. `remnic journal extract` writes review candidates to the memory store, never to the note. The #1985 publisher continues to own only its managed regions in the same file; publisher and read-back coexist byte-safely.
 
 ### Loop prevention
 
@@ -23,14 +23,14 @@ Text nested under the journal heading by other tools or agents is NOT stripped �
 
 ### Trust boundary
 
-Vault notes are the user's most sensitive corpus: synced from many devices, editable by other tools and agents. Text only enters the memory pipeline when BOTH `activity.timeline.journal.source: "vault"` (explicit redirection) AND `activity.timeline.journal.extractionMode: "review"` (explicit extraction, review-only) are set. There is no auto mode by design.
+Vault notes are the user's most sensitive corpus: synced from many devices, editable by other tools and agents. Text only enters the memory pipeline when BOTH `activity.timeline.journal.source: "vault"` (explicit redirection) AND `activity.timeline.journal.extractionMode: "review"` (explicit extraction, review-only) are set. There is no auto mode by design. `activity.timeline.journal.enabled` stays the master gate for every `remnic journal` action: when false, show, edit-path, seed, and extract all refuse before any journal byte is read.
 
-With `"review"` set, `remnic journal extract --date <day>` runs the pass:
+With `"review"` set, `remnic journal extract --date <day>` runs the pass. An omitted `--date` means today in `activity.timezone`, not in the host's local zone; the same rule covers show, edit-path, and seed. The command reports its counts (`pending_review`, `rejected_by_judge`, `skipped`) and prints `unchanged <date> (hash-skip)` when the day's stored hash already matches. An extraction that fails mid-run exits non-zero and leaves the day's hash unadvanced, so the next run retries:
 
-- Candidates land `pending_review` only — a journal-derived memory never reaches `active` without explicit review approval. A judge reject drops the candidate even in review mode.
+- Candidates land `pending_review` only — a journal-derived memory never reaches `active` without explicit review approval. A judge reject drops the candidate even in review mode (the one-shot CLI wires no judge, so every candidate survives to human review — the conservative direction).
 - Provenance rides every candidate: tags `journal` and `journal-day:<date>`, `valid_at` pinned to the day, and `structuredAttributes.journalSource` (`"vault"` or `"memoryDir"`) so review UI and audits can tell sources apart.
 - Standard sanitization applies before extraction; unsafe text extracts nothing.
 - Change detection: a per-day content hash of the post-strip section text is stored in `<memoryDir>/state/timeline.json`. An unchanged day is never re-extracted; a day edited weeks later re-extracts exactly once per content change.
-- After any candidate write, the search index is refreshed so the new candidates are discoverable.
+- After any candidate write the pass fires its §31 reindex hook when the host wires one; the one-shot CLI command relies on the next index update cycle.
 
 Vault journal text is never used as a timeline observation source: the timeline's own published output lives in the same note, and journal reflections about the timeline would feed back into card generation.
