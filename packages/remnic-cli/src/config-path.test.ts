@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { resolveConfigPath } from "./config-path.js";
 import {
   loadConvergeCommandConfig,
-  resolveConfigPath,
   resolveMemoryDir,
   resolveSyncSourceDir,
 } from "./index.js";

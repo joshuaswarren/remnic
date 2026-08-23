@@ -14,7 +14,7 @@ import {
   runMeetingsCliCommand,
   type MeetingsService,
 } from "@remnic/core";
-import { resolveConfigPath } from "../index.js";
+import { resolveConfigPath } from "../config-path.js";
 
 export async function runMeetingsBinaryCommand(rest: string[]): Promise<void> {
   const meetingsArgs =

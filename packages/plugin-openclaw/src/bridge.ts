@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isIPv4, isIPv6 } from "node:net";
 import { Worker, type WorkerOptions } from "node:worker_threads";
-import { expandTildePath } from "@remnic/core";
+import { expandTildePath, readCompatEnv } from "@remnic/core";
 
 import {
   HEALTH_WORKER_SOURCE,
@@ -221,16 +221,11 @@ function resolveHomeDir(): string {
   return readEnv("HOME") ?? readEnv("USERPROFILE") ?? "~";
 }
 
-function readCompatEnv(primary: string, legacy: string): string | undefined {
-  return readEnv(primary) ?? readEnv(legacy);
-}
-
 /**
  * Config discovery, in the SAME order the standalone server uses
- * (`resolveConfigPath` in packages/remnic-server/src/index.ts): explicit env
- * override, then cwd, then home. Probing a different file than the running
+ * (`discoverConfigPath` in @remnic/core): explicit env override, then cwd,
+ * then home. Probing a different file than the running
  * daemon booted from would read a different host/port — and under `auto` that
- * means starting a second orchestrator over the daemon's own corpus.
  */
 function configPathCandidates(): string[] {
   const envPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH");
