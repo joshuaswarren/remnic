@@ -459,10 +459,13 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
 }
 
 export async function executeConvergeApply(options: ConvergeApplyOptions = {}): Promise<ConvergeApplyResult> {
+  const rawConcurrency = Number(process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY ?? 8);
+  if (!Number.isInteger(rawConcurrency) || rawConcurrency < 1) {
+    throw new Error("converge: REMNIC_CONVERGE_TRANSFER_CONCURRENCY must be a positive integer");
+  }
   const conflictPolicy =
     options.conflictPolicy ?? options.config?.converge.conflictPolicy ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
   const plan = await computeConvergePlan({ ...options, conflictPolicy });
-
   if (plan.converged && !options.dryRun) {
     await updateCursorsForPlan(plan, options);
     return {
@@ -473,7 +476,6 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
       cursorUpdated: true,
     };
   }
-
   const unresolvedCount = plan.byNamespace.reduce((acc, report) => acc + report.unresolved, 0);
   if (unresolvedCount > 0) {
     // Every policy stops when its conflict rule cannot choose a safe resolution.
@@ -485,7 +487,6 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
       cursorUpdated: false,
     };
   }
-
   const plannedTransfers = {
     pulled: 0,
     pushed: 0,
@@ -493,7 +494,6 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     suppressed: 0,
     failed: 0,
   };
-
   for (const entry of plan.entries) {
     if (entry.action === "pull") plannedTransfers.pulled += 1;
     else if (entry.action === "push") plannedTransfers.pushed += 1;
@@ -557,9 +557,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     }
   }
 
-  for (const entry of plan.entries) {
-    if (entry.action === "identical") continue;
-
+  const executeTransferEntry = async (entry: (typeof plan.entries)[number]): Promise<void> => {
     let transferType: "pull" | "push" | "delete-local" | "delete-peer" | "suppress" | "none" = "none";
     if (entry.action === "pull") {
       transferType = "pull";
@@ -576,7 +574,6 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     }
     const localPath = entry.semanticAgreement?.local.path ?? entry.path;
     const peerPath = entry.semanticAgreement?.peer.path ?? entry.path;
-
     if (transferType === "pull") {
       const buffered = options.peerFileBuffers?.get(entry.namespace)?.get(peerPath);
       if (options.localFileBuffers) {
@@ -601,7 +598,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
         }
         if (!remoteFile || (entry.peerSha256 && remoteFile.sha256 !== entry.peerSha256)) {
           actualTransfers.failed += 1;
-          continue;
+          return;
         }
         let namespaceFiles = options.localFileBuffers.get(entry.namespace);
         if (!namespaceFiles) {
@@ -611,13 +608,12 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
         namespaceFiles.set(localPath, remoteFile.content);
         if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
         else actualTransfers.pulled += 1;
-        continue;
+        return;
       }
-
       const rootDir = rootMap.get(entry.namespace);
       if (!rootDir) {
         actualTransfers.failed += 1;
-        continue;
+        return;
       }
       const io = await createOfflineStorageIo(rootDir);
       const expectedLocalSha256 = entry.action === "conflict" ? entry.localSha256 : entry.baseSha256;
@@ -653,7 +649,6 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
           transferRejected = true;
         }
       };
-
       let metadata: Omit<PeerFileContent, "content"> | null = null;
       if (buffered) {
         const state = options.peerFilesByNamespace?.get(entry.namespace)?.find((file) => file.path === peerPath);
@@ -744,7 +739,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
                 while (chunkOffset < offset) {
                   const skipped = await chunks!.next();
                   if (skipped.done || chunkOffset + skipped.value.length > offset) {
-                    throw new Error(`cannot resume local file upload at offset ${offset}: ${localPath}`);
+                    throw new Error(`upload resume failed at ${offset}: ${localPath}`);
                   }
                   chunkOffset += skipped.value.length;
                 }
@@ -903,15 +898,20 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
       if (suppressed) actualTransfers.suppressed += 1;
       else actualTransfers.failed += 1;
     }
+  };
+  // Bounded batches overlap per-file IO waits; counters are commutative.
+  const TRANSFER_BATCH_SIZE = rawConcurrency;
+  const actionable = plan.entries.filter((entry) => entry.action !== "identical");
+  for (let i = 0; i < actionable.length; i += TRANSFER_BATCH_SIZE) {
+    const batch = actionable.slice(i, i + TRANSFER_BATCH_SIZE);
+    await Promise.all(batch.map((entry) => executeTransferEntry(entry)));
   }
-
   if (options.peerUrl && peerMutatedNamespaces.size > 0) {
     const namespaces = [...peerMutatedNamespaces].sort();
     if (!(await postPeerConvergenceComplete(options.peerUrl, namespaces, resolvedToken, fetchFn, timeoutMs))) {
       actualTransfers.failed += 1;
     }
   }
-
   let cursorUpdated = false;
   if (actualTransfers.failed === 0) {
     await updateCursorsForPlan(plan, options);
