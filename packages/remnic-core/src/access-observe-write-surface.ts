@@ -483,9 +483,10 @@ export class AccessObserveWriteSurface {
   }
 
   async memoryStore(
-    request: EngramAccessMemoryStoreRequest,
+    rawRequest: EngramAccessMemoryStoreRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> }
   ): Promise<EngramAccessWriteResponse> {
+    const request = rawRequest;
     const { canonical, categoryCoercion } = splitCanonicalWriteRequest(request);
     let namespace: string;
     try {
@@ -572,13 +573,15 @@ export class AccessObserveWriteSurface {
       beforeExecute: hooks?.enforceWriteQuota,
       execute,
     });
+    // #2780 fix B: rewrite a replayed coercion note from THIS request's raw category.
     return reapplyCategoryCoercion(response, categoryCoercion);
   }
 
   async suggestionSubmit(
-    request: EngramAccessSuggestionSubmitRequest,
+    rawRequest: EngramAccessSuggestionSubmitRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> }
   ): Promise<EngramAccessWriteResponse> {
+    const request = rawRequest;
     const { canonical, categoryCoercion } = splitCanonicalWriteRequest(request);
     let namespace: string;
     try {
@@ -660,6 +663,7 @@ export class AccessObserveWriteSurface {
       beforeExecute: hooks?.enforceWriteQuota,
       execute,
     });
+    // #2780 fix B: rewrite a replayed coercion note from THIS request's raw category.
     return reapplyCategoryCoercion(response, categoryCoercion);
   }
 
