@@ -5,6 +5,13 @@ MODE="${1:-full}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# Route every pnpm invocation through the repo wrapper (issue #2781): hosts
+# without a global `pnpm` get ENOENT from a bare call. `run`/`run_quiet`
+# resolve this function by command lookup, so existing call sites stay as-is.
+pnpm() {
+  node scripts/pnpm.mjs "$@"
+}
+
 case " ${NODE_OPTIONS:-} " in
   *" --conditions=remnic-source "*) ;;
   *) export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source" ;;

@@ -15,11 +15,15 @@ const cliPath = join(__dirname, "cli.ts");
 const builtCliPath = join(__dirname, "..", "dist", "cli.js");
 
 function buildConnectorCli(): void {
-  const result = spawnSync("pnpm", ["--filter", "@remnic/connector-weclone", "build"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    timeout: 30_000,
-  });
+  const result = spawnSync(
+    process.execPath,
+    [join(repoRoot, "scripts", "pnpm.mjs"), "--filter", "@remnic/connector-weclone", "build"],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 30_000,
+    },
+  );
 
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr || result.stdout);

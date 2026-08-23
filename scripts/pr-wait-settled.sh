@@ -48,6 +48,9 @@ strip_gh_banner() {
 }
 
 strip_leading_non_json() {
+  # Every gh-to-jq boundary in this script either uses `gh --jq` (parsing
+  # stays inside gh) or pipes through this filter, so a shim banner printed
+  # before the JSON cannot reach jq (issue #2781, after #2423).
   awk '
     !started {
       if ($0 ~ /^[[:space:]]*[\[{]/) started = 1
@@ -323,9 +326,13 @@ fetch_and_evaluate() {
     append_item "api:checks"
   else
     declare -A CHECK_STATES=()
+    local checks_rows=0
     while IFS=$'\t' read -r check_name check_state; do
-      [[ -n "$check_name" ]] || continue
+      # Shim banners prefixed to gh output carry no TSV columns; a data row
+      # always has name + state. Drop anything else (issue #2781).
+      [[ -n "$check_name" && -n "${check_state:-}" ]] || continue
       CHECK_STATES["$check_name"]+="${check_state^^}"$'\n'
+      checks_rows=$((checks_rows + 1))
     done < <(
       if [[ "$checks_raw" == *$'\t'* ]]; then
         printf '%s\n' "$checks_raw"
@@ -335,6 +342,13 @@ fetch_and_evaluate() {
         printf '%s\n' "$checks_raw"
       fi
     )
+    if (( checks_rows == 0 )); then
+      # Output that parsed to zero rows is shim noise, not an empty check
+      # set — treat it as an API error so the loop keeps waiting instead of
+      # falsely reporting settled.
+      API_ERRORS+=("checks")
+      append_item "api:checks"
+    fi
     for check_name in "${!CHECK_STATES[@]}"; do
       local has_pass=false first_state=""
       while IFS= read -r check_state; do
@@ -389,7 +403,9 @@ fetch_and_evaluate() {
   local check_suite_times reaction_raw
   if check_suite_times=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-suites" --paginate --jq '.check_suites[] | (.created_at // "")' 2>/dev/null); then
     while IFS= read -r created_at; do
-      [[ -n "$created_at" ]] || continue
+      # Only ISO timestamps count: a shim banner line would otherwise win the
+      # string-min comparison for HEAD_VISIBLE_AT (issue #2781).
+      [[ "$created_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || continue
       if [[ -z "$HEAD_VISIBLE_AT" || "$created_at" < "$HEAD_VISIBLE_AT" ]]; then
         HEAD_VISIBLE_AT="$created_at"
       fi
