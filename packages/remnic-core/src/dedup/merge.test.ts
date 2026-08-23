@@ -520,6 +520,13 @@ async function harness(
     frontmatterFails?: boolean;
     /** Force the automatic rollback of that committed content to fail. */
     rollbackFails?: boolean;
+    /**
+     * #2807: force `updateMemoryIfUnchanged` itself to THROW on the
+     * semantic-merge actor — "before" fails at lock acquisition (target
+     * untouched), "after" commits the merged body and then throws (lock
+     * release failure past the write).
+     */
+    contentCasThrows?: "before" | "after";
   } = {},
 ): Promise<MergeHarness> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-"));
@@ -615,8 +622,16 @@ async function harness(
       options?: { actor?: string },
     ) => {
       if (overrides.rollbackFails && options?.actor === "semantic-merge-rollback") return false;
+      if (overrides.contentCasThrows === "before" && options?.actor === "semantic-merge") {
+        throw new Error("storage lock acquisition timed out");
+      }
       if (overrides.mutateOnWrite !== undefined && options?.actor === "semantic-merge") {
         await commit(overrides.mutateOnWrite);
+      }
+      if (overrides.contentCasThrows === "after" && options?.actor === "semantic-merge") {
+        calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: options?.actor });
+        await commit(content);
+        throw new Error("lock release failed after the content write committed");
       }
       if (!(await unchanged(expected))) return false;
       calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: options?.actor });
@@ -2358,7 +2373,7 @@ test("applySemanticMergeAtPersist: the committed merged record carries the lower
   assert.equal(committed?.frontmatter.confidenceTier, "inferred");
   // The committed record is the promotion payload's sole source, so the
   // shared/profile copy stamps the downgraded value too.
-  const payload = await buildMergedTargetPromotionPayload(storage, {
+  const { payload } = await buildMergedTargetPromotionPayload(storage, {
     targetId: created.id,
     mergedContent: MERGED,
     provenancePatched: true,
@@ -2424,11 +2439,11 @@ test("buildMergedTargetPromotionPayload: never promotes from an inactive committ
     // Null, never a payload: the caller skips promoteMemoryToShared, so no
     // new active copy resurrects what the lifecycle operation retired.
     assert.equal(
-      await buildMergedTargetPromotionPayload(storage, {
+      (await buildMergedTargetPromotionPayload(storage, {
         targetId: created.id,
         mergedContent: MERGED,
     provenancePatched: true,
-      }),
+      })).payload,
       null,
       status,
     );
@@ -2438,7 +2453,7 @@ test("buildMergedTargetPromotionPayload: never promotes from an inactive committ
     await storage.updateMemoryFrontmatter(created.id, { status: "active" }),
     true,
   );
-  const payload = await buildMergedTargetPromotionPayload(storage, {
+  const { payload } = await buildMergedTargetPromotionPayload(storage, {
     targetId: created.id,
     mergedContent: MERGED,
     provenancePatched: true,
@@ -2489,7 +2504,7 @@ test("buildMergedTargetPromotionPayload: carries the committed tool-scope marker
     },
   );
   assert.equal(outcome.action, "merged");
-  const payload = await buildMergedTargetPromotionPayload(storage, {
+  const { payload } = await buildMergedTargetPromotionPayload(storage, {
     targetId: created.id,
     mergedContent: MERGED,
     provenancePatched: true,
@@ -2523,7 +2538,7 @@ test("buildMergedTargetPromotionPayload: an unscoped target promotes a payload w
     judgeCall: (options) => acceptingJudge(options),
   });
   assert.equal(outcome.action, "merged");
-  const payload = await buildMergedTargetPromotionPayload(storage, {
+  const { payload } = await buildMergedTargetPromotionPayload(storage, {
     targetId: created.id,
     mergedContent: MERGED,
     provenancePatched: true,
@@ -2883,7 +2898,7 @@ test("buildMergedTargetPromotionPayload: a degraded merge never yields a promoti
   if (degraded.action !== "merged") return;
   assert.equal(degraded.provenancePatched, false);
   assert.equal(
-    await buildMergedTargetPromotionPayload(h.storage, degraded),
+    (await buildMergedTargetPromotionPayload(h.storage, degraded)).payload,
     null,
     "no shared/profile copy may be built from an unpatched provenance record",
   );
@@ -2899,7 +2914,7 @@ test("buildMergedTargetPromotionPayload: a degraded merge never yields a promoti
   assert.equal(patched.action, "merged");
   if (patched.action !== "merged") return;
   assert.equal(patched.provenancePatched, true);
-  const payload = await buildMergedTargetPromotionPayload(ok.storage, patched);
+  const { payload } = await buildMergedTargetPromotionPayload(ok.storage, patched);
   assert.ok(payload);
   assert.equal(payload?.sourceMemoryId, "fact-target");
 });
@@ -2925,12 +2940,13 @@ test("buildMergedTargetPromotionPayload: a failed post-commit reread fails open 
         throw new Error("secure store locked");
       },
     } as unknown as StorageManager;
-    const payload = await buildMergedTargetPromotionPayload(lockedStore, {
+    const { payload, readFailed } = await buildMergedTargetPromotionPayload(lockedStore, {
       targetId: "fact-target",
       mergedContent: "merged body",
       provenancePatched: true,
     });
     assert.equal(payload, null, "a reread failure must resolve to null, not a rejection");
+    assert.equal(readFailed, true, "#2807: the null must be identifiable as a read failure, not a refusal");
     const line = entries.find(
       (e) => e.level === "warn" && e.message.includes("semantic-merge") && e.message.includes("fact-target"),
     )?.message;
@@ -3512,6 +3528,159 @@ test("runMergedTargetPostEffects: a THROWING build's rollback preserves the newe
   } finally {
     await chmod(timePath, 0o644);
   }
+});
+
+
+// ── #2807: deferred P2 follow-ups from the #2771 round cap ──────────────────
+
+test("applySemanticMergeAtPersist: a content CAS that throws before changing the target discards the staged snapshot (#2807)", async () => {
+  // Scenario A — the CAS throws at lock acquisition: the target was never
+  // touched, yet the old catch left the staged snapshot `pending` forever
+  // (pruneExcessVersions excludes pending entries), so repeated contention
+  // grew version history past maxVersionsPerPage with duplicates of an
+  // unchanged body. The reread confirms the pre-merge body → discard.
+  const before = await harness({ contentCasThrows: "before" });
+  const outcomeA = await applySemanticMergeAtPersist(before.deps, {
+    storage: before.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcomeA, { action: "created", reason: "update_failed" });
+  const bodyA = await before.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(bodyA?.content, EXISTING, "the throw preceded the write — the target is untouched");
+  assert.equal(
+    (
+      await listVersions(
+        before.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        before.storage.dir,
+      )
+    ).versions.length,
+    0,
+    "a snapshot of a body that never changed must not survive the aborted attempt",
+  );
+
+  // Scenario B — the CAS commits the merged body and THEN throws (lock
+  // release past the write): `contentCommitted` never flipped, so the old
+  // code both stranded the snapshot AND reported `created` while storage
+  // held the unprovenanced merged body (the duplicate-fact hazard the
+  // catch's own contract forbids). The reread must see the landed body,
+  // revert it, and drop the now-duplicate snapshot.
+  const after = await harness({ contentCasThrows: "after" });
+  const outcomeB = await applySemanticMergeAtPersist(after.deps, {
+    storage: after.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcomeB, { action: "created", reason: "update_failed" });
+  const bodyB = await after.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(bodyB?.content, EXISTING, "the landed merged body is rolled back before `created` is honest");
+  assert.deepEqual(
+    after.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [
+      { content: MERGED, actor: "semantic-merge" },
+      { content: EXISTING, actor: "semantic-merge-rollback" },
+    ],
+  );
+  assert.equal(
+    (
+      await listVersions(
+        after.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        after.storage.dir,
+      )
+    ).versions.length,
+    0,
+    "the reverted attempt leaves no snapshot: the recovery point would hold the body storage already returned to",
+  );
+});
+
+test("runMergedTargetPostEffects: a rolled-back edge rewrite invalidates the graph edge cache (#2807)", async () => {
+  // The warm-cache hole: the target had no prior generated rows (the
+  // removal is a disk no-op, so the cache baseline survives), the build's
+  // onMemoryWritten incrementally pushes the appended rows into
+  // GraphIndex.edgeCache, and a writer that advanced the target past the
+  // revision check triggers the rollback — which repairs only the JSONL
+  // files. Without invalidating the owning index, spreadingActivation kept
+  // serving the rolled-back edges for the full five-minute TTL.
+  const h = await postEffectsHarness();
+  const OTHER = "facts/2026-08-19/other.md";
+  const UNRELATED_FROM = "facts/2026-08-18/unrelated-a.md";
+  const UNRELATED_TO = "facts/2026-08-18/unrelated-b.md";
+  const unrelated: GraphEdge = {
+    from: UNRELATED_FROM, to: UNRELATED_TO, type: "entity", weight: 1,
+    label: "entity-unrelated", ts: "2026-08-18T00:00:00.000Z",
+  };
+  await seedGraphFile(h.dir, "entity", [unrelated]);
+  const NEWER_BODY = "Billing service deploys run on Tuesdays at 09:00 UTC, paging the on-call engineer.";
+  const targetPath = path.join(h.dir, h.targetRelPath);
+  let buildStarted = false;
+  const storage = {
+    dir: h.dir,
+    getMemoryByIdIncludingArchived: async (id: string) =>
+      id === "fact-target"
+        ? {
+            path: targetPath,
+            frontmatter: {
+              id,
+              category: "fact",
+              entityRef: "entity-billing-service",
+              ...(buildStarted ? { updated: "2026-08-22T01:00:00.000Z" } : {}),
+            },
+            content: buildStarted ? NEWER_BODY : MERGED,
+          }
+        : null,
+  } as unknown as StorageManager;
+  const graphConfig = parseConfig({ memoryDir: h.dir, multiGraphMemoryEnabled: true });
+  const graphIndex = new GraphIndex(h.dir, graphConfig);
+  const coordinator = new PersistenceIndexCoordinator({
+    config: graphConfig,
+    graphIndexFor: () => graphIndex,
+  } as unknown as ConstructorParameters<typeof PersistenceIndexCoordinator>[0]);
+  // Warm the cache from the seeded file BEFORE the rewrite runs.
+  await graphIndex.spreadingActivation([UNRELATED_FROM]);
+  const realBuild = coordinator.buildGraphEdge.bind(coordinator);
+  const sibling = {
+    path: path.join(h.dir, OTHER),
+    frontmatter: { id: "mem-sibling", category: "fact", entityRef: "entity-billing-service" },
+    content: "Sibling fact sharing the billing entity.",
+  } as unknown as MemoryFile;
+  const deps = {
+    ...h.deps,
+    buildGraphEdge: async (...args: Parameters<typeof realBuild>) => {
+      buildStarted = true;
+      return realBuild(...args);
+    },
+    invalidateGraphEdgeCache: () => graphIndex.invalidateEdgeCache(),
+  } as unknown as ExtractionPersistDeps;
+  await runMergedTargetPostEffects(
+    deps,
+    storage,
+    { targetId: "fact-target", mergedContent: MERGED },
+    {
+      category: "fact",
+      incomingContent: INCOMING,
+      incomingConfidence: 0.9,
+      namespace: "default",
+      graphCaps: { entityGraph: true, timeGraph: false, causalGraph: false, multiGraphMemory: true, graphWriteSessionAdjacency: false },
+      graphContext: { allMemsForGraph: [sibling], memoryPathById: new Map() },
+      threadIdForEdge: undefined,
+      threadEpisodeIdsForGraph: undefined,
+    },
+  );
+  assert.deepEqual(
+    await readGraphFile(h.dir, "entity"),
+    [unrelated],
+    "the superseded rewrite's rows are rolled back out of the entity file",
+  );
+  const served = await graphIndex.spreadingActivation([h.targetRelPath]);
+  assert.equal(
+    served.filter((result) => result.path === OTHER).length,
+    0,
+    `the cache must not serve the rolled-back target→sibling edge after the rollback (served: ${JSON.stringify(served)})`,
+  );
 });
 
 test("persistMergedTargetThreadEpisode: a re-merge moves an existing earlier target to the durable thread tail (round N+12 D)", async () => {

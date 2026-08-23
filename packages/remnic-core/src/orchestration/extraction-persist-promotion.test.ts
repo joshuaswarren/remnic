@@ -8,7 +8,7 @@ import path from "node:path";
 import { StorageManager } from "../index.js";
 import { parseConfig } from "../config.js";
 import { createBatchPromotedCopyProbe, mergeTargetHasPromotedCopies, promoteAndReconcileMergedTarget, retireStaleMergedTargetPromotionCopies } from "./extraction-persist-promotion.js";
-import { buildMergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
+import { buildMergedTargetPromotionPayload, type MergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 
 // Synthetic fixtures only — no real paths, hosts, or memory content.
@@ -433,7 +433,7 @@ test("promoteAndReconcileMergedTarget: abandons the cached promotion when the ta
     source: "test",
   });
   await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
-  const payload = await buildMergedTargetPromotionPayload(s.source, {
+  const { payload } = await buildMergedTargetPromotionPayload(s.source, {
     targetId: target.id,
     mergedContent: A_MERGED_BODY,
     provenancePatched: true,
@@ -480,7 +480,7 @@ test("promoteAndReconcileMergedTarget: reconciliation canonical is the re-read r
     source: "test",
   });
   await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
-  const payload = await buildMergedTargetPromotionPayload(s.source, {
+  const { payload } = await buildMergedTargetPromotionPayload(s.source, {
     targetId: target.id,
     mergedContent: A_MERGED_BODY,
     provenancePatched: true,
@@ -530,5 +530,70 @@ test("promoteAndReconcileMergedTarget: reconciliation canonical is the re-read r
     aRow?.frontmatter.supersededBy,
     target.id,
     "the supersession lands on the source target — the live canonical record",
+  );
+});
+
+test("promoteAndReconcileMergedTarget: an unreadable payload skips destructive reconciliation (#2807)", async () => {
+  // The payload builder's post-commit reread failed TRANSIENTLY (secure
+  // store locked, corpus read I/O error). A null from that path means
+  // "payload unknown", not "no promotion warranted" — but the caller
+  // conflated both, so reconciliation immediately reread successfully,
+  // interpreted the missing payload as an intentional no-promotion result,
+  // and superseded a concurrent writer's PRE-merge copy with no
+  // current-body replacement, removing an otherwise eligible memory from
+  // the shared layer. An unknown payload must skip the destructive pass;
+  // the next merge retries both.
+  const s = await makeStorages();
+  const target = await s.source.writeMemory("fact", PRE_MERGE_BODY, {
+    source: "test",
+  });
+  await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
+  // A concurrent writer published the PRE-merge body after the initial
+  // guard — the exact race reconciliation exists to clean up, but ONLY
+  // once the no-promotion outcome is confirmed intentional.
+  const staleCopy = await s.shared.writeMemory("fact", PRE_MERGE_BODY, {
+    source: "writer-b",
+    sourceMemoryId: target.id,
+  });
+  let reads = 0;
+  const lockedThenRecovered = {
+    dir: s.source.dir,
+    getMemoryByIdIncludingArchived: async (id: string) => {
+      reads += 1;
+      if (reads === 1) throw new Error("secure store locked");
+      return s.source.getMemoryByIdIncludingArchived(id);
+    },
+  } as unknown as StorageManager;
+  const built = (await buildMergedTargetPromotionPayload(lockedThenRecovered, {
+    targetId: target.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  })) as { payload: MergedTargetPromotionPayload | null; readFailed?: boolean } | null;
+  // Pre-#2807 the builder returned a bare null; the result object now
+  // preserves WHY. This normalization keeps the test runnable against
+  // both shapes.
+  const payload = built === null ? null : built.payload;
+  const readFailed = built !== null && built.readFailed === true;
+  let promotions = 0;
+  await promoteAndReconcileMergedTarget({
+    promote: async () => {
+      promotions += 1;
+      return `copy-${promotions}`;
+    },
+    config: parseConfig({ memoryDir: s.source.dir, sharedNamespace: "shared" }),
+    getStorageRouter: () => s.router,
+    scopeProfileWritePlan: null,
+    sourceStorage: s.source,
+    sourceMemoryId: target.id,
+    mergedPromotion: payload,
+    mergedPromotionReadFailed: readFailed,
+    normalize: (content: string) => content,
+  });
+  assert.equal(promotions, 0, "an unreadable payload promotes nothing");
+  const row = await s.shared.getMemoryByIdIncludingArchived(staleCopy.id);
+  assert.equal(
+    row?.frontmatter.status ?? "active",
+    "active",
+    "an unconfirmed no-promotion outcome must never retire copies — the next merge retries promotion and reconciliation",
   );
 });

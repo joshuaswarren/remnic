@@ -361,9 +361,24 @@ export async function promoteAndReconcileMergedTarget(args: {
   sourceMemoryId: string;
   /** Null = payload builder refused (degraded merge / target replaced mid-flight). */
   mergedPromotion: MergedTargetPromotionPayload | null;
+  /** #2807 (finding 1): the builder's post-commit reread FAILED — the payload is unknown, not refused. Skips the destructive reconciliation. */
+  mergedPromotionReadFailed?: boolean;
   normalize: (content: string) => string;
   onReconciled?: () => void;
 }): Promise<void> {
+  // #2807 (finding 1): an unreadable payload is not a no-promotion
+  // verdict. Reconciling anyway rereads the record successfully a moment
+  // later and interprets the missing payload as "no promotion warranted" —
+  // retiring a concurrently published PRE-merge copy with no current-body
+  // replacement and removing an otherwise eligible memory from the
+  // shared/profile layer. Skip the destructive pass; the next merge
+  // retries promotion and reconciliation against a readable record.
+  if (args.mergedPromotion === null && args.mergedPromotionReadFailed === true) {
+    log.warn(
+      `persistExtraction: merged-target promotion reconciliation skipped for ${args.sourceMemoryId} — the committed record was unreadable at payload-build time, so no promotion outcome is confirmed`,
+    );
+    return;
+  }
   let promotedCopyId: string | undefined;
   if (args.mergedPromotion) {
     const payload = args.mergedPromotion;

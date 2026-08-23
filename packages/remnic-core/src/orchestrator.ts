@@ -858,7 +858,8 @@ export class Orchestrator {
         storageDirNamespace: (storageDir) => this.storageDirNamespace(storageDir),
         indexPersistedMemory: (storage, memoryId) => this.indexPersistedMemory(storage, memoryId),
         buildGraphEdge: (storage, memoryRelPath, entityRef, memoryId, factContent, allMemsForGraph, memoryPathById, threadIdForEdge, threadEpisodeIdsForGraph, fallbackCausalPredecessor, graphCaps) =>
-          this.buildGraphEdge(storage, memoryRelPath, entityRef, memoryId, factContent, allMemsForGraph, memoryPathById, threadIdForEdge, threadEpisodeIdsForGraph, fallbackCausalPredecessor, graphCaps),
+          this.persistenceIndexCoordinator.buildGraphEdge(storage, memoryRelPath, entityRef, memoryId, factContent, allMemsForGraph, memoryPathById, threadIdForEdge, threadEpisodeIdsForGraph, fallbackCausalPredecessor, graphCaps),
+        invalidateGraphEdgeCache: (storage) => this.graphIndexFor(storage).invalidateEdgeCache(),
         updateTemporalTagIndexes: (storage, persistedIds) =>
           this.updateTemporalTagIndexes(storage, persistedIds),
       });
@@ -3226,34 +3227,6 @@ export class Orchestrator {
     return this.persistenceIndexCoordinator.indexPersistedMemory(
       storage,
       memoryId,
-    );
-  }
-
-  private async buildGraphEdge(
-    storage: StorageManager,
-    memoryRelPath: string,
-    entityRef: string | undefined,
-    memoryId: string,
-    factContent: string,
-    allMemsForGraph: import("./types.js").MemoryFile[] | null | undefined,
-    memoryPathById: Map<string, string>,
-    threadIdForEdge: string | undefined,
-    threadEpisodeIdsForGraph: string[] | undefined,
-    fallbackCausalPredecessor: string | undefined,
-    graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
-  ): Promise<GraphEdge[]> {
-    return this.persistenceIndexCoordinator.buildGraphEdge(
-      storage,
-      memoryRelPath,
-      entityRef,
-      memoryId,
-      factContent,
-      allMemsForGraph,
-      memoryPathById,
-      threadIdForEdge,
-      threadEpisodeIdsForGraph,
-      fallbackCausalPredecessor,
-      graphCaps,
     );
   }
 

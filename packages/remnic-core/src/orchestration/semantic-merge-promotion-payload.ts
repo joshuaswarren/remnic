@@ -75,27 +75,45 @@ export interface MergedTargetPromotionPayload {
 }
 
 /**
+ * #2807 (finding 1): the builder's null has two meanings the caller must
+ * not conflate. A REFUSED payload (degraded merge, target replaced
+ * mid-flight, retired record) means "no promotion is warranted" — the
+ * caller's destructive reconciliation may proceed on that conclusion. A
+ * payload that is UNKNOWN because the post-commit reread itself failed
+ * means no such conclusion was reached, so `readFailed` preserves the
+ * failure reason across the call boundary.
+ */
+export interface MergedTargetPromotionResult {
+  payload: MergedTargetPromotionPayload | null;
+  /** True only when `payload` is null because the reread threw — the payload is unknown, not refused. */
+  readFailed: boolean;
+}
+
+/**
  * Re-read the committed merge target (cold-aware id lookup — the same
  * resolver the merge itself used) and derive the promotion payload solely
- * from that record. Returns null when the record can no longer ground the
- * promotion (deleted, its body was replaced after the merge committed, or a
- * concurrent lifecycle operation archived/superseded it between the merge
- * commit and this reread — promoting from a retired record would resurrect
- * content that operation retired, final round B), and null for a degraded
- * merge whose provenance patch never landed (round N+7 A) — the gate every
- * trust-elevating consumer routes through; callers then skip the promotion
- * fail-open — the merge itself stands. Round N+18 (B): the reread itself is
- * isolated fail-open — a locked secure store or a corpus read I/O error
- * resolves to null with a logged warn rather than a rejection, because the
- * merge has already committed and the hash-index repair makes any retry
- * dedupe against the committed body; an uncaught throw here would strand
- * every remaining durable effect (thread episode, temporal/tag refresh,
- * harmonic construction, graph rebuild, behavior signals, artifact write).
+ * from that record. Returns a null payload when the record can no longer
+ * ground the promotion (deleted, its body was replaced after the merge
+ * committed, or a concurrent lifecycle operation archived/superseded it
+ * between the merge commit and this reread — promoting from a retired
+ * record would resurrect content that operation retired, final round B),
+ * and null for a degraded merge whose provenance patch never landed (round
+ * N+7 A) — the gate every trust-elevating consumer routes through; callers
+ * then skip the promotion fail-open — the merge itself stands. Round N+18
+ * (B): the reread itself is isolated fail-open — a locked secure store or
+ * a corpus read I/O error resolves to a null payload with `readFailed:
+ * true` and a logged warn rather than a rejection, because the merge has
+ * already committed and the hash-index repair makes any retry dedupe
+ * against the committed body; an uncaught throw here would strand every
+ * remaining durable effect (thread episode, temporal/tag refresh, harmonic
+ * construction, graph rebuild, behavior signals, artifact write). #2807:
+ * the failure reason rides out on the result so reconciliation can tell an
+ * unknown payload from a refused one.
  */
 export async function buildMergedTargetPromotionPayload(
   storage: StorageManager,
   merge: { targetId: string; mergedContent: string; provenancePatched: boolean },
-): Promise<MergedTargetPromotionPayload | null> {
+): Promise<MergedTargetPromotionResult> {
   // Round N+7 (A): a degraded merge's record still holds its pre-merge
   // confidence, provenance, sources, and hash — a copy built off it would
   // publish incoming claims under that stronger metadata. No promotion may
@@ -104,7 +122,7 @@ export async function buildMergedTargetPromotionPayload(
     log.warn(
       `semantic-merge: skipping merged-target promotion for ${merge.targetId} — provenance patch did not land; the record still holds pre-merge trust metadata`,
     );
-    return null;
+    return { payload: null, readFailed: false };
   }
   let committed: MemoryFile | null;
   try {
@@ -114,48 +132,53 @@ export async function buildMergedTargetPromotionPayload(
     log.warn(
       `semantic-merge: merged-target promotion reread failed for ${merge.targetId} (non-fatal; promotion skipped, the committed merge stands): ${err instanceof Error ? err.message : String(err)}`,
     );
-    return null;
+    return { payload: null, readFailed: true };
   }
-  if (!committed || committed.content !== merge.mergedContent) return null;
+  if (!committed || committed.content !== merge.mergedContent) {
+    return { payload: null, readFailed: false };
+  }
   // Final round (B): the including-archived lookup still returns a retired
   // record, and body equality alone cannot tell a concurrent archive or
   // supersede apart from a live target. Recompute the status from the
   // committed record itself and refuse to promote unless it is still
   // active.
   if (inferMemoryStatus(committed.frontmatter, committed.path) !== "active") {
-    return null;
+    return { payload: null, readFailed: false };
   }
   const fm = committed.frontmatter;
   return {
-    category: fm.category,
-    content: committed.content,
-    confidence: fm.confidence,
-    tags: fm.tags ?? [],
-    sourceMemoryId: fm.id,
-    origin: parseOriginClass(fm.origin),
-    source: fm.source,
-    ...(fm.entityRef !== undefined ? { entityRef: fm.entityRef } : {}),
-    ...(fm.structuredAttributes !== undefined
-      ? { structuredAttributes: { ...fm.structuredAttributes } }
-      : {}),
-    ...(fm.importance !== undefined ? { importance: fm.importance } : {}),
-    ...(fm.intentGoal !== undefined ? { intentGoal: fm.intentGoal } : {}),
-    ...(fm.intentActionType !== undefined ? { intentActionType: fm.intentActionType } : {}),
-    ...(fm.intentEntityTypes !== undefined
-      ? { intentEntityTypes: [...fm.intentEntityTypes] }
-      : {}),
-    ...(fm.memoryKind !== undefined ? { memoryKind: fm.memoryKind } : {}),
-    ...(fm.valid_at !== undefined ? { validAt: fm.valid_at } : {}),
-    ...(fm.invalid_at !== undefined ? { invalidAt: fm.invalid_at } : {}),
-    ...(fm.observedAt !== undefined ? { observedAt: fm.observedAt } : {}),
-    ...(fm.eventTimeSource !== undefined ? { eventTimeSource: fm.eventTimeSource } : {}),
-    ...(fm.sources && fm.sources.length > 0
-      ? { sources: fm.sources.map((source) => ({ ...source })) }
-      : {}),
-    ...(fm.provenance !== undefined ? { provenance: fm.provenance } : {}),
-    ...(fm.subject !== undefined ? { subject: fm.subject } : {}),
-    ...(fm.toolScoped === true ? { toolScoped: true as const } : {}),
-    ...(fm.sourceConnector !== undefined ? { sourceConnector: fm.sourceConnector } : {}),
-    ...(fm.updated !== undefined ? { committedRevision: fm.updated } : {}),
+    payload: {
+      category: fm.category,
+      content: committed.content,
+      confidence: fm.confidence,
+      tags: fm.tags ?? [],
+      sourceMemoryId: fm.id,
+      origin: parseOriginClass(fm.origin),
+      source: fm.source,
+      ...(fm.entityRef !== undefined ? { entityRef: fm.entityRef } : {}),
+      ...(fm.structuredAttributes !== undefined
+        ? { structuredAttributes: { ...fm.structuredAttributes } }
+        : {}),
+      ...(fm.importance !== undefined ? { importance: fm.importance } : {}),
+      ...(fm.intentGoal !== undefined ? { intentGoal: fm.intentGoal } : {}),
+      ...(fm.intentActionType !== undefined ? { intentActionType: fm.intentActionType } : {}),
+      ...(fm.intentEntityTypes !== undefined
+        ? { intentEntityTypes: [...fm.intentEntityTypes] }
+        : {}),
+      ...(fm.memoryKind !== undefined ? { memoryKind: fm.memoryKind } : {}),
+      ...(fm.valid_at !== undefined ? { validAt: fm.valid_at } : {}),
+      ...(fm.invalid_at !== undefined ? { invalidAt: fm.invalid_at } : {}),
+      ...(fm.observedAt !== undefined ? { observedAt: fm.observedAt } : {}),
+      ...(fm.eventTimeSource !== undefined ? { eventTimeSource: fm.eventTimeSource } : {}),
+      ...(fm.sources && fm.sources.length > 0
+        ? { sources: fm.sources.map((source) => ({ ...source })) }
+        : {}),
+      ...(fm.provenance !== undefined ? { provenance: fm.provenance } : {}),
+      ...(fm.subject !== undefined ? { subject: fm.subject } : {}),
+      ...(fm.toolScoped === true ? { toolScoped: true as const } : {}),
+      ...(fm.sourceConnector !== undefined ? { sourceConnector: fm.sourceConnector } : {}),
+      ...(fm.updated !== undefined ? { committedRevision: fm.updated } : {}),
+    },
+    readFailed: false,
   };
 }
