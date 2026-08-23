@@ -117,6 +117,8 @@ body: the `[Attributes: …]` suffix and default `[Source: …]` citation are
 stripped; leftover custom attribution is skipped as private. Child files
 with persisted `parentId` and `chunkIndex` inherit the whole-fact verdict
 and are skipped; a whole fact or independently judged body still emits.
+A post-gate sanitization rewrite is skipped when persist recorded that
+evidence or the stored content hash does not match the recovered bytes.
 Nothing in the daemon, build, or CI ever invokes it.
 
 ```bash

@@ -190,7 +190,9 @@ a model-backed detector lands in the consuming child.
   malformed, derives polarity and assertion from the action, reconstructs
   gated `factText` by stripping the persist-time attribute suffix and
   default inline citation, skips child files that persist `parentId` plus
-  `chunkIndex` with an inherited whole-fact verdict, stats-and-streams
+  `chunkIndex` with an inherited whole-fact verdict, skips a post-gate
+  sanitization rewrite when persist recorded that evidence or the stored
+  content hash does not match the recovered bytes, stats-and-streams
   `--max-text-bytes` before a full read, and never
   runs from the daemon, build, or CI. See `model-lab/README.md`
   ("Harvesting shadow-telemetry labels") for the command recipe.
