@@ -201,10 +201,12 @@ export async function buildReconcileManifestFile(
   citationTemplate = DEFAULT_CITATION_FORMAT
 ): Promise<ReconcileManifestFile> {
   let raw: Buffer | string | null = null;
+  let readFailed = false;
   if (isMemoryPath(file.path)) {
     try {
       raw = await readFile(file);
     } catch {
+      readFailed = true;
       raw = null;
     }
   }
@@ -212,6 +214,9 @@ export async function buildReconcileManifestFile(
     raw = null;
   }
   const memory = raw === null ? undefined : parsedMemoryIdentity(file.path, raw, parseMemory, citationTemplate);
+  // A thrown read is not a negative identity. Stamping versions here would
+  // make the next warm cycle treat the failure as "this file has no id".
+  if (readFailed) return { ...file };
   return {
     ...file,
     ...(memory

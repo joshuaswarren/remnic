@@ -125,10 +125,12 @@ export async function saveConvergeIdentityCache(
     sha256: file.sha256,
     ...(file.memory !== undefined
       ? { memory: file.memory }
-      : {
-          normalizerVersion: file.normalizerVersion ?? CONTENT_HASH_NORMALIZER_VERSION,
-          identityResolutionVersion: file.identityResolutionVersion ?? IDENTITY_RESOLUTION_VERSION,
-        }),
+      : file.normalizerVersion !== undefined && file.identityResolutionVersion !== undefined
+        ? {
+            normalizerVersion: file.normalizerVersion,
+            identityResolutionVersion: file.identityResolutionVersion,
+          }
+        : {}),
   }));
   for (const entry of files) {
     const classification = classifications?.get(entry.path);

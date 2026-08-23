@@ -314,14 +314,19 @@ export async function createOfflineSyncManifestStream(
           if (previous?.sha256 !== built.sha256 || (built.memory !== undefined && previous?.memory !== built.memory)) {
             cacheDirty = true;
           }
+          if (built.memory === undefined && built.normalizerVersion === undefined) {
+            // Read failed: do not persist a negative identity for this SHA.
+            yield built;
+            continue;
+          }
           persistedEntries.set(built.path, {
             path: built.path,
             sha256: built.sha256,
             ...(built.memory !== undefined
               ? { memory: built.memory }
               : {
-                  normalizerVersion: built.normalizerVersion ?? CONTENT_HASH_NORMALIZER_VERSION,
-                  identityResolutionVersion: built.identityResolutionVersion ?? IDENTITY_RESOLUTION_VERSION,
+                  normalizerVersion: built.normalizerVersion,
+                  identityResolutionVersion: built.identityResolutionVersion,
                 }),
           });
           applyClassification(built.path, built.sha256);

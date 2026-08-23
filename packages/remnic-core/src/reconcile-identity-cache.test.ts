@@ -350,3 +350,29 @@ test("a version-stamped sha-only cache entry is reused", async () => {
   assert.equal(warm.files[0]?.identityResolutionVersion, 2);
 });
 
+test("a thrown memory-file read is not cached as a reusable negative", async () => {
+  const sha = "a".repeat(64);
+  const first = await buildReconcileManifest({
+    files: [{ path: "facts/flaky.md", sha256: sha, mtimeMs: 1, bytes: 1 }],
+    parseMemory: parseFrontmatter,
+    readFile: async () => {
+      throw new Error("transient");
+    },
+  });
+  assert.equal(first.files[0]?.memory, undefined);
+  assert.equal(first.files[0]?.normalizerVersion, undefined);
+
+  let reads = 0;
+  await buildReconcileManifest({
+    files: [{ path: "facts/flaky.md", sha256: sha, mtimeMs: 1, bytes: 1 }],
+    parseMemory: parseFrontmatter,
+    cachedFiles: first.files,
+    readFile: async () => {
+      reads += 1;
+      return "---\nid: recovered\ncategory: fact\nstatus: active\n---\nbody\n";
+    },
+  });
+  assert.equal(reads, 1, "a failed read must not become a warm negative hit");
+});
+
+

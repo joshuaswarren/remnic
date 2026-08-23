@@ -140,7 +140,17 @@ test("negative identity results persist so warm runs skip them too", async () =>
   await withCacheFile(async (cachePath) => {
     const withNegative: ReconcileManifest = {
       ...manifest(),
-      files: [...manifest().files, { path: "facts/no-identity.md", sha256: "c".repeat(64), mtimeMs: 2, bytes: 3 }],
+      files: [
+        ...manifest().files,
+        {
+          path: "facts/no-identity.md",
+          sha256: "c".repeat(64),
+          mtimeMs: 2,
+          bytes: 3,
+          normalizerVersion: 4,
+          identityResolutionVersion: 2,
+        },
+      ],
     };
     await saveConvergeIdentityCache(cachePath, withNegative, TEMPLATE);
     const loaded = await loadConvergeIdentityCache(cachePath, TEMPLATE);
