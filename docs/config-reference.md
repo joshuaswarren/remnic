@@ -833,10 +833,23 @@ Behavior:
   `executable` (or `REMNIC_CODEX_EXECUTABLE` env), `reasoningEffort`
   (`low` | `medium` | `high` | `xhigh`, default `medium`), and
   `retryOptions.timeoutMs` (positive integer; the request deadline when the
-  caller does not set one — an explicit call timeout always wins).
+  caller does not set one — an explicit call timeout always wins). The
+  deadline covers the login precheck and the exec subprocess as one budget,
+  including waits on a login check another request already started: each
+  request times out on its own budget without cancelling the shared check.
 - Not logged in → the provider fails fast with `codex login` guidance; an
   expired or revoked session fails with re-auth guidance. Timeouts surface
-  as `TimeoutError`; caller cancellations keep their original abort reason.
+  as `TimeoutError` and survive the model chain (a sole/last
+  `codex-subscription` model propagates the typed error instead of an empty
+  result); caller cancellations keep their original abort reason. A cached
+  login is revalidated whenever the Codex auth store changes on disk, so a
+  later API-key login cannot be masked by an earlier ChatGPT cache entry.
+- Relative `HOME`/`CODEX_HOME` values resolve against the daemon's working
+  directory before either subprocess starts (same rule as the executable
+  path), so the login precheck and the exec child always see the same auth
+  home. Detached Codex child process groups are tracked and terminated on
+  parent SIGINT/SIGTERM/shutdown, so stopping Remnic stops in-flight
+  subscription requests too.
 - A host or benchmark run that registers its own `codex-cli` transport
   always wins; Remnic registers its subprocess transport only when the seam
   is free.

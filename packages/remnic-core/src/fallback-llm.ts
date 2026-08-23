@@ -15,6 +15,10 @@ import {
 } from "./resolve-provider-secret.js";
 import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
+  CodexSubscriptionAuthError,
+  CodexSubscriptionConfigError,
+  CodexSubscriptionTimeoutError,
+  assertNoApiKeyConfig,
   codexSubscriptionBuiltinProviderConfig,
   ensureCodexSubscriptionRunnerRegistered,
 } from "./providers/codex-subscription.js";
@@ -230,6 +234,7 @@ export class FallbackLlmClient {
     ): Promise<FallbackLlmResponse | null> => {
       let runOptions = initialOptions;
       let lastRejectedResponse: FallbackLlmResponse | null = null;
+      let terminalError: unknown;
       // Try each model in the chain
       for (let i = 0; i < models.length; i++) {
         if (runOptions.signal?.aborted) {
@@ -298,6 +303,9 @@ export class FallbackLlmClient {
               log.debug(
                 `fallback LLM: ${model.modelString} unstructured retry failed (${retryErrorMsg})`,
               );
+              if (isTerminalCodexSubscriptionError(retryError)) {
+                terminalError = retryError;
+              }
             }
             continue;
           }
@@ -307,11 +315,20 @@ export class FallbackLlmClient {
               ? err.message
               : String(err);
           log.debug(`fallback LLM: ${model.modelString} failed (${errorMsg}), trying next...`);
+          if (isTerminalCodexSubscriptionError(err)) {
+            terminalError = err;
+          }
           // Continue to next model in chain
         }
       }
 
       log.warn(`fallback LLM: all ${models.length} models in chain failed`);
+      // A terminal typed provider failure must reach the caller when the
+      // chain is exhausted — the documented timeout/re-login guidance
+      // depends on it (issue #2833).
+      if (terminalError !== undefined) {
+        throw terminalError;
+      }
       return lastRejectedResponse;
     };
 
@@ -386,7 +403,9 @@ export class FallbackLlmClient {
       // Caller aborts must propagate (e.g. recall planner cancellation) — do
       // not swallow them as a provider failure, or abort-driven callers lose
       // cancellation and treat it as an extraction error (codex review).
-      if (options.signal?.aborted) throw err;
+      // Terminal codex-subscription failures propagate for the same reason:
+      // their TimeoutError/auth guidance is the documented contract.
+      if (options.signal?.aborted || isTerminalCodexSubscriptionError(err)) throw err;
       log.warn("fallback LLM: chatCompletion threw during structured parse:", err);
       return { result: null, failureReason: "http_error" };
     }
@@ -643,6 +662,17 @@ export class FallbackLlmClient {
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
     options: FallbackLlmOptions,
   ): Promise<{ content: string; usage?: FallbackLlmResponse["usage"] } | null> {
+    // The codex-subscription provider promises never to read an API key, so
+    // reject a configured one (raw value or SecretRef) BEFORE generic secret
+    // resolution — otherwise an unresolvable ref throws a generic error and
+    // the provider's `codex login` guidance never surfaces (issue #2833).
+    if (
+      model.providerConfig.api === "codex-cli" &&
+      model.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
+    ) {
+      assertNoApiKeyConfig(model.providerConfig);
+    }
+
     // Try the gateway's native runtime auth first — it handles all provider-
     // specific transforms (OAuth exchange, base URL rewrite, etc.)
     const runtimeAuth = model.providerConfig.api === "codex-cli"
@@ -1128,6 +1158,20 @@ export class FallbackLlmClient {
 function abortReason(signal: AbortSignal | undefined): Error {
   const reason = signal?.reason;
   return reason instanceof Error ? reason : new Error("fallback LLM request aborted");
+}
+
+/**
+ * Terminal codex-subscription failures (timeout, auth, config contract).
+ * These carry documented caller guidance (`TimeoutError` name, `codex login`
+ * steps), so they must survive the chain instead of collapsing into a
+ * generic empty/http_error result (issue #2833).
+ */
+function isTerminalCodexSubscriptionError(error: unknown): boolean {
+  return (
+    error instanceof CodexSubscriptionTimeoutError ||
+    error instanceof CodexSubscriptionAuthError ||
+    error instanceof CodexSubscriptionConfigError
+  );
 }
 
 function normalizeRuntimePath(value: unknown): string | undefined {

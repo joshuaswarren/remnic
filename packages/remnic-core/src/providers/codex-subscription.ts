@@ -15,7 +15,7 @@
  * benchmark runner has claimed it first.
  */
 
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -43,6 +43,14 @@ const LOGIN_STATUS_TIMEOUT_MS = 10_000;
 const LOGIN_STATUS_CACHE_TTL_MS = 10 * 60_000;
 const STDIO_LIMIT = 64_000;
 const OUTPUT_SUMMARY_LIMIT = 500;
+const CODEX_PARENT_SIGNALS: NodeJS.Signals[] = ["SIGHUP", "SIGINT", "SIGTERM"];
+const CODEX_PARENT_FORCED_EXIT_MS = 1_000;
+/**
+ * Env keys whose value is a filesystem path. Relative values resolve against
+ * the original process cwd before either child launches, because the exec
+ * child runs with cwd = the ephemeral workspace (same rule as executables).
+ */
+const PATH_BEARING_ENV_KEYS: Readonly<Record<string, true>> = Object.freeze({ CODEX_HOME: true, HOME: true, USERPROFILE: true });
 
 /**
  * Environment keys forwarded to the codex child. Everything else — including
@@ -171,11 +179,13 @@ export interface CodexSubscriptionRunnerDeps {
   /** Runs `codex exec`. Default: isolated subprocess via launchProcess. */
   runCodexExec?: (request: CodexSubscriptionExecRequest) => Promise<CodexSubscriptionExecResult>;
   /** Runs `codex login status`. Default: isolated subprocess. Receives the
-   * login-status timeout budget (capped by the request deadline). */
+   * login-status timeout budget (capped by the request deadline) and the
+   * shared-check abort signal (fires when the last waiter leaves). */
   runLoginStatus?: (
     executable: string,
     env: NodeJS.ProcessEnv,
-    timeoutMs: number
+    timeoutMs: number,
+    signal?: AbortSignal
   ) => Promise<{ status: number | null; stdout: string; stderr: string }>;
   /** Environment the isolated child env is filtered from. Tests inject fakes. */
   env?: NodeJS.ProcessEnv;
@@ -190,7 +200,20 @@ interface CommandOutput {
   stderr: string;
 }
 
-const loginStatusCache = new Map<string, { at: number; promise: Promise<void> }>();
+interface LoginStatusCacheEntry {
+  at: number;
+  promise: Promise<void>;
+  /** Auth-store fingerprint at check time; a mismatch invalidates the entry. */
+  fingerprint: string | null;
+  /** Live waiters. The in-flight check aborts when the last waiter leaves. */
+  waiters: number;
+  settled: boolean;
+  controller: AbortController;
+}
+
+const loginStatusCache = new Map<string, LoginStatusCacheEntry>();
+const activeCodexChildPids = new Set<number>();
+let parentCleanupInstalled = false;
 let coreRunnerRegistered = false;
 
 export function createCodexSubscriptionRunner(deps: CodexSubscriptionRunnerDeps = {}): CodexCliFallbackRunner {
@@ -230,7 +253,15 @@ async function runCodexSubscriptionRequest(
   // consumes the same call/provider timeout budget, it is not additive.
   const now = deps.now ?? Date.now;
   const deadlineStartedAt = now();
-  await assertSubscriptionLogin(executable, env, deps, Math.min(LOGIN_STATUS_TIMEOUT_MS, timeoutMs));
+  if (request.options.signal?.aborted) {
+    throw abortErrorOf(request.options.signal);
+  }
+  await assertSubscriptionLogin(executable, env, deps, {
+    loginStatusTimeoutMs: Math.min(LOGIN_STATUS_TIMEOUT_MS, timeoutMs),
+    callerTimeoutMs: timeoutMs,
+    deadlineStartedAt,
+    signal: request.options.signal,
+  });
 
   if (request.options.signal?.aborted) {
     throw abortErrorOf(request.options.signal);
@@ -285,7 +316,7 @@ async function runCodexSubscriptionRequest(
  * configured apiKey is a configuration mistake — reject it without echoing
  * the value.
  */
-function assertNoApiKeyConfig(config: CodexCliFallbackConfig): void {
+export function assertNoApiKeyConfig(config: CodexCliFallbackConfig): void {
   if (config.apiKey !== undefined && config.apiKey !== "") {
     throw new CodexSubscriptionConfigError(
       `${CODEX_SUBSCRIPTION_PROVIDER_ID} does not accept apiKey configuration: it authenticates through the Codex CLI login. Remove the apiKey field and run \`codex login\` with a ChatGPT account instead.`
@@ -313,10 +344,26 @@ function buildIsolatedEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(source)) {
     if (value !== undefined && isAllowedEnvKey(key)) {
-      env[key] = value;
+      env[key] = PATH_BEARING_ENV_KEYS[key.toUpperCase()] === true
+        ? normalizePathEnvValue(value)
+        : value;
     }
   }
   return env;
+}
+
+/**
+ * The exec child runs with cwd = the ephemeral workspace while the login
+ * child runs with cwd = this process, so a relative HOME/CODEX_HOME would
+ * resolve differently per child. Anchor both to the original process cwd.
+ */
+function normalizePathEnvValue(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return value;
+  }
+  const expanded = expandTildePath(trimmed);
+  return path.isAbsolute(expanded) ? expanded : path.resolve(expanded);
 }
 
 function isAllowedEnvKey(key: string): boolean {
@@ -324,50 +371,173 @@ function isAllowedEnvKey(key: string): boolean {
   return CODEX_RUNTIME_ENV_ALLOWLIST[normalized] === true || normalized.startsWith("LC_");
 }
 
+interface LoginCheckContext {
+  /** Budget for the login-status subprocess itself. */
+  loginStatusTimeoutMs: number;
+  /** The caller's overall effective deadline (login + exec). */
+  callerTimeoutMs: number;
+  deadlineStartedAt: number;
+  signal?: AbortSignal;
+}
+
 /**
  * Verifies the operator's Codex subscription login via `codex login status`.
  * Success is cached briefly; failures are never cached so a re-login takes
- * effect on the next request.
+ * effect on the next request. A cached success is also invalidated when the
+ * auth store changes on disk (e.g. another process switches the same Codex
+ * home from a ChatGPT login to an API key), so the cache can never mask a
+ * later non-subscription login mode.
  */
 async function assertSubscriptionLogin(
   executable: string,
   env: NodeJS.ProcessEnv,
   deps: CodexSubscriptionRunnerDeps,
-  loginStatusTimeoutMs: number
+  ctx: LoginCheckContext
 ): Promise<void> {
   const now = deps.now ?? Date.now;
   const cacheKey = `${executable}\0${env.CODEX_HOME ?? env.HOME ?? ""}`;
   const cached = loginStatusCache.get(cacheKey);
-  if (cached && now() - cached.at < LOGIN_STATUS_CACHE_TTL_MS) {
-    await cached.promise;
+  if (
+    cached &&
+    now() - cached.at < LOGIN_STATUS_CACHE_TTL_MS &&
+    (await authStoreFingerprint(env)) === cached.fingerprint
+  ) {
+    await waitForLoginEntry(cached, cacheKey, ctx, now);
     return;
   }
-  const promise = (async () => {
-    const runLoginStatus = deps.runLoginStatus ?? runLoginStatusSubprocess;
-    const result = await runLoginStatus(executable, env, loginStatusTimeoutMs);
-    const output = `${result.stdout}\n${result.stderr}`.trim();
-    if (TIMEOUT_PATTERN.test(output)) {
-      // A login-status subprocess timeout is a deadline expiry, not an auth
-      // failure — never report it as "unauthenticated".
-      throw new CodexSubscriptionTimeoutError(loginStatusTimeoutMs);
+  loginStatusCache.delete(cacheKey);
+  if (ctx.signal?.aborted) {
+    throw abortErrorOf(ctx.signal);
+  }
+  const entry: LoginStatusCacheEntry = {
+    at: now(),
+    fingerprint: null,
+    waiters: 0,
+    settled: false,
+    controller: new AbortController(),
+    promise: Promise.resolve(undefined),
+  };
+  entry.promise = runLoginStatusCheck(executable, env, deps, ctx, entry);
+  entry.promise.then(
+    () => {
+      entry.settled = true;
+    },
+    () => {
+      entry.settled = true;
+      if (loginStatusCache.get(cacheKey) === entry) {
+        loginStatusCache.delete(cacheKey);
+      }
     }
-    if (result.status === 0 && LOGIN_OK_PATTERN.test(output)) {
-      return;
-    }
-    const apiKeyNote = LOGIN_API_KEY_PATTERN.test(output)
-      ? " The CLI currently reports an API-key login; subscription extraction needs a ChatGPT login."
-      : "";
-    throw new CodexSubscriptionAuthError(
-      "unauthenticated",
-      `codex-subscription: no ChatGPT-backed Codex login found. Run \`codex login\` and choose the ChatGPT account option, then retry.${apiKeyNote}`
-    );
-  })();
-  loginStatusCache.set(cacheKey, { at: now(), promise });
+  );
+  loginStatusCache.set(cacheKey, entry);
+  await waitForLoginEntry(entry, cacheKey, ctx, now);
+}
+
+async function runLoginStatusCheck(
+  executable: string,
+  env: NodeJS.ProcessEnv,
+  deps: CodexSubscriptionRunnerDeps,
+  ctx: LoginCheckContext,
+  entry: LoginStatusCacheEntry
+): Promise<void> {
+  const runLoginStatus = deps.runLoginStatus ?? runLoginStatusSubprocess;
+  const result = await runLoginStatus(executable, env, ctx.loginStatusTimeoutMs, entry.controller.signal);
+  const output = `${result.stdout}\n${result.stderr}`.trim();
+  if (TIMEOUT_PATTERN.test(output)) {
+    // A login-status subprocess timeout is a deadline expiry, not an auth
+    // failure — never report it as "unauthenticated".
+    throw new CodexSubscriptionTimeoutError(ctx.loginStatusTimeoutMs);
+  }
+  if (result.status === 0 && LOGIN_OK_PATTERN.test(output)) {
+    entry.fingerprint = await authStoreFingerprint(env);
+    return;
+  }
+  const apiKeyNote = LOGIN_API_KEY_PATTERN.test(output)
+    ? " The CLI currently reports an API-key login; subscription extraction needs a ChatGPT login."
+    : "";
+  throw new CodexSubscriptionAuthError(
+    "unauthenticated",
+    `codex-subscription: no ChatGPT-backed Codex login found. Run \`codex login\` and choose the ChatGPT account option, then retry.${apiKeyNote}`
+  );
+}
+
+/**
+ * Waits on a shared login check with this caller's own budget. A deadline or
+ * caller abort rejects immediately — without cancelling the shared check
+ * while other callers still wait on it. When the LAST waiter leaves an
+ * in-flight check, the subprocess is aborted and the entry dropped so a later
+ * caller starts a fresh check.
+ */
+async function waitForLoginEntry(
+  entry: LoginStatusCacheEntry,
+  cacheKey: string,
+  ctx: LoginCheckContext,
+  now: () => number
+): Promise<void> {
+  const remainingMs = ctx.callerTimeoutMs - (now() - ctx.deadlineStartedAt);
+  if (remainingMs <= 0) {
+    throw new CodexSubscriptionTimeoutError(ctx.callerTimeoutMs);
+  }
+  const signal = ctx.signal;
+  let rejectOnAbort!: (reason?: unknown) => void;
+  const abortWait = new Promise<never>((_resolve, reject) => {
+    rejectOnAbort = reject;
+  });
+  // Identity matters: the same reference is removed in the finally below.
+  const onAbort = (): void => {
+    if (signal === undefined) return;
+    rejectOnAbort(abortErrorOf(signal));
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  entry.waiters++;
+  // The deadline timer intentionally holds the event loop: this caller's
+  // await is backed by nothing else while the shared check is in flight.
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await promise;
+    await Promise.race([
+      entry.promise,
+      abortWait,
+      new Promise<never>((_resolve, reject) => {
+        deadlineTimer = setTimeout(
+          () => reject(new CodexSubscriptionTimeoutError(ctx.callerTimeoutMs)),
+          remainingMs
+        );
+      }),
+    ]);
   } catch (err) {
-    loginStatusCache.delete(cacheKey);
+    if (signal?.aborted) {
+      throw abortErrorOf(signal);
+    }
     throw err;
+  } finally {
+    clearTimeout(deadlineTimer);
+    signal?.removeEventListener("abort", onAbort);
+    entry.waiters--;
+    if (entry.waiters <= 0 && !entry.settled) {
+      entry.controller.abort();
+      if (loginStatusCache.get(cacheKey) === entry) {
+        loginStatusCache.delete(cacheKey);
+      }
+    }
+  }
+}
+
+/**
+ * `mtimeMs:size` of the Codex auth store, read as metadata only — the
+ * provider never reads the store's contents. A change between the cached
+ * check and now invalidates the cached login mode.
+ */
+async function authStoreFingerprint(env: NodeJS.ProcessEnv): Promise<string | null> {
+  const home = env.CODEX_HOME
+    ?? (env.HOME ? path.join(env.HOME, ".codex") : undefined);
+  if (!home) {
+    return null;
+  }
+  try {
+    const stats = await stat(path.join(home, "auth.json"));
+    return `${stats.mtimeMs}:${stats.size}`;
+  } catch {
+    return null;
   }
 }
 
@@ -485,6 +655,12 @@ function execFailureError(
   env: NodeJS.ProcessEnv
 ): Error {
   const combined = `${result.stderr}\n${result.stdout}`;
+  // The authoritative timeout marker wins over auth-pattern text: a timed-out
+  // exec may have already printed model/diagnostic output containing 401/403
+  // before the deadline fired (issue #2833).
+  if (TIMEOUT_PATTERN.test(combined)) {
+    return new CodexSubscriptionTimeoutError(timeoutMs);
+  }
   if (AUTH_FAILURE_PATTERN.test(combined)) {
     // Re-check login on the next request; the cached status is now stale.
     loginStatusCache.delete(`${executable}\0${env.CODEX_HOME ?? env.HOME ?? ""}`);
@@ -493,9 +669,6 @@ function execFailureError(
       "codex-subscription: the Codex CLI rejected the request as unauthenticated " +
         "(session expired or revoked). Run `codex login` again to re-authenticate, then retry."
     );
-  }
-  if (TIMEOUT_PATTERN.test(combined)) {
-    return new CodexSubscriptionTimeoutError(timeoutMs);
   }
   const exitLabel = result.signal ? `signal ${result.signal}` : `exit ${result.status ?? "unknown"}`;
   return new Error(
@@ -585,13 +758,15 @@ function appendBounded(existing: string, next: string): string {
 async function runLoginStatusSubprocess(
   executable: string,
   env: NodeJS.ProcessEnv,
-  timeoutMs: number
+  timeoutMs: number,
+  signal?: AbortSignal
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return await runSubprocess(executable, ["login", "status"], {
     env,
     stdin: undefined,
     timeoutMs,
     timeoutLabel: "login status",
+    signal,
   });
 }
 
@@ -635,6 +810,7 @@ async function runSubprocess(executable: string, args: string[], options: Subpro
       detached: process.platform !== "win32",
       windowsHide: true,
     });
+    registerActiveCodexChild(child.pid);
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -693,6 +869,7 @@ async function runSubprocess(executable: string, args: string[], options: Subpro
       clearTimeout(timeout);
       clearKillTimeout();
       options.signal?.removeEventListener("abort", onAbort);
+      unregisterActiveCodexChild(child.pid);
       fn();
     };
     child.on("error", (error) => {
@@ -710,7 +887,10 @@ async function runSubprocess(executable: string, args: string[], options: Subpro
     child.on("close", (status, signal) => {
       settle(() => {
         resolve({
-          status: timedOut ? (status ?? 124) : status,
+          // A timed-out child must never report success, even when it traps
+          // SIGTERM and exits 0 (issue #2833) — 124 is the canonical timeout
+          // status and post-timeout output is never treated as a result.
+          status: timedOut ? (status === null || status === 0 ? 124 : status) : status,
           signal: timedOut ? (signal ?? "SIGTERM") : signal,
           stdout,
           stderr,
@@ -732,6 +912,7 @@ function safeMessage(error: unknown): string {
 }
 
 export const __codexSubscriptionTestHooks = {
+  activeCodexChildCount: (): number => activeCodexChildPids.size,
   appendBounded,
   resetLoginStatusCache: (): void => {
     loginStatusCache.clear();
@@ -741,3 +922,84 @@ export const __codexSubscriptionTestHooks = {
     coreRunnerRegistered = false;
   },
 };
+
+function registerActiveCodexChild(pid: number | undefined): void {
+  if (pid === undefined) return;
+  installCodexParentCleanup();
+  activeCodexChildPids.add(pid);
+}
+
+function unregisterActiveCodexChild(pid: number | undefined): void {
+  if (pid === undefined) return;
+  activeCodexChildPids.delete(pid);
+}
+
+/**
+ * Codex children run detached (own process group) so a crashed parent cannot
+ * leave them half-killed — but the flip side is that the standalone server's
+ * `process.exit(0)` on SIGINT/SIGTERM would orphan an in-flight request that
+ * keeps consuming the subscription. Mirrors the bench provider: terminate the
+ * tracked groups on parent signals/exit, then force-kill and exit.
+ */
+function installCodexParentCleanup(): void {
+  if (parentCleanupInstalled) {
+    return;
+  }
+  parentCleanupInstalled = true;
+
+  process.once("exit", () => {
+    terminateActiveCodexChildren("SIGTERM");
+  });
+
+  for (const signal of CODEX_PARENT_SIGNALS) {
+    process.once(signal, () => {
+      const activeChildren = activeCodexChildPids.size;
+      terminateActiveCodexChildren(signal === "SIGINT" ? "SIGINT" : "SIGTERM");
+      process.exitCode = signalExitCode(signal);
+
+      setTimeout(
+        () => {
+          terminateActiveCodexChildren("SIGKILL");
+          process.exit(signalExitCode(signal));
+        },
+        activeChildren > 0 ? CODEX_PARENT_FORCED_EXIT_MS : 0,
+      );
+    });
+  }
+}
+
+function terminateActiveCodexChildren(signal: NodeJS.Signals): void {
+  for (const pid of activeCodexChildPids) {
+    terminateCodexChildPid(pid, signal);
+  }
+}
+
+function terminateCodexChildPid(pid: number, signal: NodeJS.Signals): void {
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // Fall back to killing the direct child below.
+    }
+  }
+
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // The child may already have exited.
+  }
+}
+
+function signalExitCode(signal: NodeJS.Signals): number {
+  switch (signal) {
+    case "SIGHUP":
+      return 129;
+    case "SIGINT":
+      return 130;
+    case "SIGTERM":
+      return 143;
+    default:
+      return 1;
+  }
+}
