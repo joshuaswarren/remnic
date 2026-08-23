@@ -1217,7 +1217,10 @@ export {
   validateImportRateLimit,
   importedMemoryToTurn,
   defaultWriteMemoriesToOrchestrator,
+  defineFileImporterAdapter,
   runImporter,
+  type FileImporterDefinition,
+  type FileImporterParseArgs,
   type ImportedMemory,
   type ImporterAdapter,
   type ImporterParseOptions,
@@ -1228,6 +1231,10 @@ export {
   type RunImporterResult,
   type RunImportOptions,
 } from "./importers/index.js";
+export {
+  loadImporterFixture,
+  makeImporterTestTarget,
+} from "./importers/test-utils.js";
 
 export {
   FallbackLlmClient,

@@ -19,3 +19,12 @@ export {
   type RunImporterResult,
   type RunImportOptions,
 } from "./base.js";
+export {
+  defineFileImporterAdapter,
+  type FileImporterDefinition,
+  type FileImporterParseArgs,
+} from "./base.js";
+export {
+  loadImporterFixture,
+  makeImporterTestTarget,
+} from "./test-utils.js";

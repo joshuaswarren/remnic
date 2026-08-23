@@ -1,37 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-import type { ImportTurn, ImporterWriteTarget } from "@remnic/core";
-import { runImporter } from "@remnic/core";
+import {
+  loadImporterFixture,
+  makeImporterTestTarget,
+  runImporter,
+} from "@remnic/core";
 
 import { adapter, chatgptAdapter } from "./adapter.js";
 
-const FIXTURE_DIR = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../fixtures",
-);
-
-function loadFixture(name: string): string {
-  return readFileSync(path.join(FIXTURE_DIR, name), "utf-8");
-}
-
-function makeTarget(): { target: ImporterWriteTarget; received: ImportTurn[][] } {
-  const received: ImportTurn[][] = [];
-  return {
-    target: {
-      async ingestBulkImportBatch(turns) {
-        received.push(turns.map((t) => ({ ...t })));
-      },
-      bulkImportWriteNamespace() {
-        return "default";
-      },
-    },
-    received,
-  };
-}
+const loadFixture = (name: string): string =>
+  loadImporterFixture(import.meta.url, name);
 
 describe("chatgpt adapter shape", () => {
   it("exports a canonical adapter + name-prefixed alias", () => {
@@ -44,7 +23,7 @@ describe("chatgpt adapter shape", () => {
   });
 
   it("drives runImporter end-to-end with a synthetic saved-memories fixture", async () => {
-    const { target, received } = makeTarget();
+    const { target, received } = makeImporterTestTarget();
     const result = await runImporter(
       adapter,
       loadFixture("saved-memories-2026.json"),
@@ -63,7 +42,7 @@ describe("chatgpt adapter shape", () => {
   });
 
   it("dry-run does not hit the target", async () => {
-    const { target, received } = makeTarget();
+    const { target, received } = makeImporterTestTarget();
     const result = await runImporter(
       adapter,
       loadFixture("saved-memories-2026.json"),
@@ -77,12 +56,12 @@ describe("chatgpt adapter shape", () => {
 
   it("skips conversations by default but imports them with --include-conversations", async () => {
     const conversations = loadFixture("conversations-mapping.json");
-    const target1 = makeTarget();
+    const target1 = makeImporterTestTarget();
     const result1 = await runImporter(adapter, conversations, target1.target);
     assert.equal(result1.memoriesPlanned, 0);
     assert.equal(target1.received.length, 0);
 
-    const target2 = makeTarget();
+    const target2 = makeImporterTestTarget();
     const result2 = await runImporter(adapter, conversations, target2.target, {
       transformOptions: { includeConversations: true },
     });

@@ -1,40 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-import type { ImportTurn, ImporterWriteTarget } from "@remnic/core";
-import { runImporter } from "@remnic/core";
+import {
+  loadImporterFixture,
+  makeImporterTestTarget,
+  runImporter,
+} from "@remnic/core";
 
 import { adapter, geminiAdapter } from "./adapter.js";
 
-const FIXTURE_DIR = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../fixtures",
-);
-
-function loadFixture(name: string): string {
-  return readFileSync(path.join(FIXTURE_DIR, name), "utf-8");
-}
-
-function makeTarget(): {
-  target: ImporterWriteTarget;
-  received: ImportTurn[][];
-} {
-  const received: ImportTurn[][] = [];
-  return {
-    target: {
-      async ingestBulkImportBatch(turns) {
-        received.push(turns.map((t) => ({ ...t })));
-      },
-      bulkImportWriteNamespace() {
-        return "default";
-      },
-    },
-    received,
-  };
-}
+const loadFixture = (name: string): string =>
+  loadImporterFixture(import.meta.url, name);
 
 describe("gemini adapter shape", () => {
   it("exports a canonical adapter + name-prefixed alias", () => {
@@ -47,7 +23,7 @@ describe("gemini adapter shape", () => {
   });
 
   it("drives runImporter end-to-end with a synthetic My Activity fixture", async () => {
-    const { target, received } = makeTarget();
+    const { target, received } = makeImporterTestTarget();
     const result = await runImporter(
       adapter,
       loadFixture("my-activity.json"),
@@ -70,7 +46,7 @@ describe("gemini adapter shape", () => {
   });
 
   it("passes Gemini-specific transform options through runImporter", async () => {
-    const { target, received } = makeTarget();
+    const { target, received } = makeImporterTestTarget();
     const result = await runImporter(
       adapter,
       JSON.stringify([
@@ -94,7 +70,7 @@ describe("gemini adapter shape", () => {
   });
 
   it("dry-run does not hit the target", async () => {
-    const { target, received } = makeTarget();
+    const { target, received } = makeImporterTestTarget();
     const result = await runImporter(
       adapter,
       loadFixture("my-activity.json"),
