@@ -128,6 +128,9 @@ test("resolveConfigPath expands home-relative env config paths", async () => {
 
     assert.equal(resolveConfigPath(), path.join(home, "remnic.json"));
 
+    process.env.REMNIC_CONFIG_PATH = "$HOME/remnic.json";
+    assert.equal(resolveConfigPath(), path.join(home, "remnic.json"));
+
     delete process.env.REMNIC_CONFIG_PATH;
     process.env.ENGRAM_CONFIG_PATH = "${HOME}/engram.json";
 

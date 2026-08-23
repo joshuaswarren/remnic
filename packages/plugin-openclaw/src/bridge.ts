@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isIPv4, isIPv6 } from "node:net";
 import { Worker, type WorkerOptions } from "node:worker_threads";
-import { expandTildePath, readCompatEnv } from "@remnic/core";
+import { configPathCandidates, readCompatEnv } from "@remnic/core";
 
 import {
   HEALTH_WORKER_SOURCE,
@@ -220,24 +220,6 @@ function readEnv(name: string): string | undefined {
 function resolveHomeDir(): string {
   return readEnv("HOME") ?? readEnv("USERPROFILE") ?? "~";
 }
-
-/**
- * Config discovery, in the SAME order the standalone server uses
- * (`discoverConfigPath` in @remnic/core): explicit env override, then cwd,
- * then home. Probing a different file than the running
- * daemon booted from would read a different host/port — and under `auto` that
- */
-function configPathCandidates(): string[] {
-  const envPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH");
-  return [
-    ...(envPath ? [path.resolve(expandTildePath(envPath))] : []),
-    path.join(process.cwd(), "remnic.config.json"),
-    path.join(process.cwd(), "engram.config.json"),
-    path.join(resolveHomeDir(), ".config", "remnic", "config.json"),
-    path.join(resolveHomeDir(), ".config", "engram", "config.json"),
-  ];
-}
-
 
 /**
  * The config path the INSTALLED daemon service is pinned to.

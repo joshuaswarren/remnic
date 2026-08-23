@@ -40,13 +40,31 @@ function expandHomeReference(p: string): string {
 }
 
 /**
- * Discover the Remnic config file path.
- *
- * A truthy `cliPath` wins, then the `REMNIC_CONFIG_PATH`/`ENGRAM_CONFIG_PATH`
- * env pair, then the first existing file among the cwd and home candidates,
- * then the home default. `explicit` marks operator-supplied paths whose
- * absence must fail loudly instead of falling through to auto-discovery.
+ * The ordered candidates every probing surface walks: the expanded
+ * `REMNIC_CONFIG_PATH`/`ENGRAM_CONFIG_PATH` value (if set), then the cwd
+ * files, then the home defaults. The standalone server and the CLI resolve to
+ * the single file `discoverConfigPath` picks; the OpenClaw bridge probes each
+ * candidate's endpoint. One list, so a daemon the server can discover is never
+ * invisible to the bridge.
  */
+export function configPathCandidates(): string[] {
+  const envPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH");
+  return [
+    ...(envPath ? [path.resolve(expandHomeReference(envPath))] : []),
+    ...autoDiscoveryCandidates(),
+  ];
+}
+
+function autoDiscoveryCandidates(): string[] {
+  const homeDir = resolveHomeDir();
+  return [
+    path.join(process.cwd(), "remnic.config.json"),
+    path.join(process.cwd(), "engram.config.json"),
+    path.join(homeDir, ".config", "remnic", "config.json"),
+    path.join(homeDir, ".config", "engram", "config.json"),
+  ];
+}
+
 export function discoverConfigPath(cliPath?: string): DiscoveredConfigPath {
   if (cliPath) {
     return { path: path.resolve(expandHomeReference(cliPath)), explicit: true, source: "--config" };
@@ -61,18 +79,12 @@ export function discoverConfigPath(cliPath?: string): DiscoveredConfigPath {
     };
   }
 
-  const homeDir = resolveHomeDir();
-  const candidates = [
-    path.join(process.cwd(), "remnic.config.json"),
-    path.join(process.cwd(), "engram.config.json"),
-    path.join(homeDir, ".config", "remnic", "config.json"),
-    path.join(homeDir, ".config", "engram", "config.json"),
-  ];
+  const candidates = autoDiscoveryCandidates();
   for (const candidate of candidates) {
     if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
       return { path: candidate, explicit: false, source: "auto-discovery" };
     }
   }
 
-  return { path: path.join(homeDir, ".config", "remnic", "config.json"), explicit: false, source: "auto-discovery" };
+  return { path: candidates[2], explicit: false, source: "auto-discovery" };
 }
