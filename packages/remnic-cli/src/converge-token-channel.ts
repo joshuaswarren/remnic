@@ -28,7 +28,7 @@ export type ConvergeTokenChannelResult =
  */
 export function resolveConvergeTokenChannel(
   input: ConvergeTokenChannelInput,
-  env: Pick<NodeJS.ProcessEnv, "REMNIC_CONVERGE_PEER_TOKEN">,
+  env: NodeJS.ProcessEnv
 ): ConvergeTokenChannelResult {
   const tokenFromArgv = input.argvToken !== undefined;
   if (!tokenFromArgv && input.tokenFile !== undefined) {

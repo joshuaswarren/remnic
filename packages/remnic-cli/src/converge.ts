@@ -1113,10 +1113,7 @@ Options:
     }
   }
 
-  const tokenChannel = resolveConvergeTokenChannel(
-    { argvToken: peerToken, tokenFile },
-    { REMNIC_CONVERGE_PEER_TOKEN: process.env.REMNIC_CONVERGE_PEER_TOKEN },
-  );
+  const tokenChannel = resolveConvergeTokenChannel({ argvToken: peerToken, tokenFile }, process.env);
   if (!tokenChannel.ok) {
     process.stderr.write(`converge: ${tokenChannel.error}\n`);
     process.exitCode = 2;
@@ -1125,7 +1122,7 @@ Options:
   peerToken = tokenChannel.token;
   if (tokenChannel.tokenFromArgv) {
     process.stderr.write(
-      "converge: note: --token places the credential on argv, where any process listing can read it; prefer --token-file <path> or REMNIC_CONVERGE_PEER_TOKEN\n"
+      "converge: note: --token is argv-visible; prefer --token-file <path> or REMNIC_CONVERGE_PEER_TOKEN\n"
     );
   }
 
