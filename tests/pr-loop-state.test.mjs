@@ -305,6 +305,58 @@ test("CLI rejects invalid PR numbers at the boundary", () => {
   }
 });
 
+test("CLI rejects count values outside the safe integer range", () => {
+  const dir = scratchDir();
+  try {
+    for (const flag of ["--required-non-pass", "--unresolved"]) {
+      for (const badCount of ["9007199254740992", "99999999999999999999", "9".repeat(400)]) {
+        const stateFile = path.join(dir, `pr-42-${flag}-${badCount.length}-state.json`);
+        const run = spawnSync(
+          process.execPath,
+          [
+            path.join(repoRoot, "scripts", "pr-loop-state.mjs"),
+            "--state-file", stateFile,
+            "--repo", "owner/repo",
+            "--pr", "42",
+            "--required-non-pass", "0",
+            "--cursor", "pass",
+            "--positive-verdict", "1",
+            "--unresolved", "0",
+            "--decision", "APPROVED",
+            flag, badCount,
+          ],
+          { cwd: repoRoot, encoding: "utf8" },
+        );
+        assert.notEqual(run.status, 0, `${flag} ${badCount} must fail`);
+        assert.match(run.stderr, /\[0, 9007199254740991\]/, `${flag} ${badCount} must name the valid range`);
+        assert.equal(existsSync(stateFile), false, `${flag} ${badCount} must not write state`);
+      }
+    }
+    const stateFile = path.join(dir, "pr-42-valid-count-state.json");
+    const run = spawnSync(
+      process.execPath,
+      [
+        path.join(repoRoot, "scripts", "pr-loop-state.mjs"),
+        "--state-file", stateFile,
+        "--repo", "owner/repo",
+        "--pr", "42",
+        "--required-non-pass", "3",
+        "--cursor", "fail",
+        "--positive-verdict", "0",
+        "--unresolved", "2",
+        "--decision", "APPROVED",
+      ],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+    assert.equal(run.status, 0, run.stderr);
+    const parsed = JSON.parse(readFileSync(stateFile, "utf8"));
+    assert.equal(parsed.required_non_pass, 3);
+    assert.equal(parsed.unresolved_cursor_threads, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("CLI still accepts a valid PR number and computes MERGE_READY", () => {
   const dir = scratchDir();
   const stateFile = path.join(dir, "pr-42-state.json");

@@ -72,11 +72,18 @@ export function detectRateLimit(value) {
 }
 
 function integerField(name, value, fields, failures) {
-  if (typeof value !== "string" || !/^\d+$/.test(value.trim()) ) {
+  if (typeof value !== "string" || !/^\d+$/.test(value.trim())) {
     failures.push(`${name} must be a non-negative integer, got: ${JSON.stringify(value)}`);
     return;
   }
-  fields[name] = Number.parseInt(value.trim(), 10);
+  const parsed = Number.parseInt(value.trim(), 10);
+  if (!Number.isSafeInteger(parsed)) {
+    failures.push(
+      `${name} must be a non-negative integer within [0, ${Number.MAX_SAFE_INTEGER}], got: ${JSON.stringify(value)}`,
+    );
+    return;
+  }
+  fields[name] = parsed;
 }
 
 /** Validate the gh-derived watcher fields; never mutates on failure. */
