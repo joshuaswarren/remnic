@@ -459,10 +459,13 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
 }
 
 export async function executeConvergeApply(options: ConvergeApplyOptions = {}): Promise<ConvergeApplyResult> {
+  const rawConcurrency = Number(process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY ?? 8);
+  if (!Number.isInteger(rawConcurrency) || rawConcurrency < 1) {
+    throw new Error("converge: REMNIC_CONVERGE_TRANSFER_CONCURRENCY must be a positive integer");
+  }
   const conflictPolicy =
     options.conflictPolicy ?? options.config?.converge.conflictPolicy ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
   const plan = await computeConvergePlan({ ...options, conflictPolicy });
-
   if (plan.converged && !options.dryRun) {
     await updateCursorsForPlan(plan, options);
     return {
@@ -473,7 +476,6 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
       cursorUpdated: true,
     };
   }
-
   const unresolvedCount = plan.byNamespace.reduce((acc, report) => acc + report.unresolved, 0);
   if (unresolvedCount > 0) {
     // Every policy stops when its conflict rule cannot choose a safe resolution.
@@ -485,7 +487,6 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
       cursorUpdated: false,
     };
   }
-
   const plannedTransfers = {
     pulled: 0,
     pushed: 0,
@@ -493,7 +494,6 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     suppressed: 0,
     failed: 0,
   };
-
   for (const entry of plan.entries) {
     if (entry.action === "pull") plannedTransfers.pulled += 1;
     else if (entry.action === "push") plannedTransfers.pushed += 1;
@@ -900,7 +900,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     }
   };
   // Bounded batches overlap per-file IO waits; counters are commutative.
-  const TRANSFER_BATCH_SIZE = Number(process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY ?? 8);
+  const TRANSFER_BATCH_SIZE = rawConcurrency;
   const actionable = plan.entries.filter((entry) => entry.action !== "identical");
   for (let i = 0; i < actionable.length; i += TRANSFER_BATCH_SIZE) {
     const batch = actionable.slice(i, i + TRANSFER_BATCH_SIZE);
