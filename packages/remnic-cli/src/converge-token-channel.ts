@@ -35,13 +35,18 @@ export function resolveConvergeTokenChannel(
   input: ConvergeTokenChannelInput,
   env: NodeJS.ProcessEnv
 ): ConvergeTokenChannelResult {
+  if (input.argvToken !== undefined && input.argvToken.length === 0) {
+    return { ok: false, error: "--token requires a non-empty value" };
+  }
   const tokenFromArgv = input.argvToken !== undefined;
   if (!tokenFromArgv && input.tokenFile !== undefined) {
     try {
       const stat = fs.statSync(input.tokenFile);
       // A group/world-readable credential file defeats the point of the
-      // channel; reject it instead of trusting the content.
-      if (stat.mode & 0o077) {
+      // channel; reject it instead of trusting the content. Windows mode bits
+      // are synthesized (readable files commonly present as 0666), so the
+      // check is POSIX-only.
+      if (process.platform !== "win32" && stat.mode & 0o077) {
         return { ok: false, error: `--token-file ${input.tokenFile} must not be group- or world-readable (chmod 600)` };
       }
       const token = fs.readFileSync(input.tokenFile, "utf8").trim();
@@ -54,6 +59,10 @@ export function resolveConvergeTokenChannel(
     }
   }
   if (!tokenFromArgv && input.tokenFile === undefined && env.REMNIC_CONVERGE_PEER_TOKEN !== undefined) {
+    // An empty env credential is a hard error, never a silent no-token run.
+    if (env.REMNIC_CONVERGE_PEER_TOKEN.length === 0) {
+      return { ok: false, error: "REMNIC_CONVERGE_PEER_TOKEN is set but empty" };
+    }
     return { ok: true, token: env.REMNIC_CONVERGE_PEER_TOKEN, tokenFromArgv: false };
   }
   return { ok: true, token: input.argvToken, tokenFromArgv };

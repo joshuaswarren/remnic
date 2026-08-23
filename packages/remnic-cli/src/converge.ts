@@ -1022,12 +1022,11 @@ export async function cmdConverge(
     console.log(`Usage: remnic converge <plan|apply|watch> [options]
 Subcommands:
   plan              Compute and display reconciliation plan
-  apply             Execute bidirectional converge transport (alias: transport, sync)
-  watch             Run apply on a cadence until stopped (scheduled replication)
+  apply/watch       Transport (aliases: transport, sync) / scheduled watch
 
   --peer <url>      Peer server URL (or --remote-url / --remote)
-  --token <token>   Peer auth token (argv-visible; prefer safe channels below)
-  --token-file <p> / REMNIC_CONVERGE_PEER_TOKEN  Non-argv token channels
+  --token <t> / --token-file <p> / REMNIC_CONVERGE_PEER_TOKEN  Credential
+                    channels (--token is argv-visible; prefer the other two)
   --conflict-policy <policy>  Override (newest-wins|manual; default newest-wins)
   --interval <seconds>  Watch cadence seconds (watch only; default 300)
   --timeout <seconds>  Peer HTTP timeout seconds (default 30; boot-scale 300+)
@@ -1060,11 +1059,15 @@ Subcommands:
         return;
       }
       i += 1;
-    } else if ((arg === "--peer" || arg === "--remote-url" || arg === "--remote") && rest[i + 1]) {
-      peerUrl = rest[i + 1];
-      i += 1;
     } else if (arg === "--token" && rest[i + 1]) {
       peerToken = rest[i + 1];
+      i += 1;
+    } else if (arg === "--token") {
+      process.stderr.write("converge: --token requires a value.\n");
+      process.exitCode = 2;
+      return;
+    } else if ((arg === "--peer" || arg === "--remote-url" || arg === "--remote") && rest[i + 1]) {
+      peerUrl = rest[i + 1];
       i += 1;
     } else if (arg === "--dry-run") {
       dryRun = true;
@@ -1166,7 +1169,6 @@ Subcommands:
     }
     return;
   }
-
   if (action === "plan") {
     const plan = await computeConvergePlan({
       config,
@@ -1182,7 +1184,6 @@ Subcommands:
     }
     return;
   }
-
   const result = await executeConvergeApply({
     peerUrl,
     peerToken,
@@ -1191,7 +1192,6 @@ Subcommands:
     config,
     ...(timeoutMsFlag !== undefined ? { peerRequestTimeoutMs: timeoutMsFlag } : {}),
   });
-
   if (json) {
     console.log(JSON.stringify(result, null, 2));
   } else {
