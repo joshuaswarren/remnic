@@ -14,8 +14,7 @@
  */
 
 import {
-  registerWearableConnector,
-  getWearableConnector,
+  selfRegisterWearableConnector,
   type WearableConnectorFactoryOptions,
   type WearableConnectorRegistration,
   type WearableFetchOptions,
@@ -145,12 +144,5 @@ export const wearableConnectorRegistration: WearableConnectorRegistration = {
  * this module registers it as a side effect; calling this again is safe
  * (returns false when already registered).
  */
-export function ensureOmiConnectorRegistered(): boolean {
-  if (getWearableConnector(OMI_SOURCE_ID) !== undefined) {
-    return false;
-  }
-  registerWearableConnector(wearableConnectorRegistration);
-  return true;
-}
-
-ensureOmiConnectorRegistered();
+export const ensureOmiConnectorRegistered =
+  selfRegisterWearableConnector(wearableConnectorRegistration);
