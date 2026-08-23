@@ -23,7 +23,7 @@ import { NamespaceCatalog } from "../namespaces/catalog.js";
 import { namespaceIdentityFromToken, namespaceIdentityToken, normalizeNamespaceIdentity } from "../namespaces/identity.js";
 import { NamespaceSearchRouter } from "../namespaces/search.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
-import { mergeArtifactRecallCandidates, tokenizeRecallQuery } from "./orchestrator-helpers.js";
+import { ARTIFACT_STATUS_CACHE_TTL_MS, mergeArtifactRecallCandidates, tokenizeRecallQuery } from "./orchestrator-helpers.js";
 import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
 import { qmdCollectionNamespaceFromPrefix as computeQmdCollectionNamespaceFromPrefix } from "./orchestrator-namespace-scope.js";
 import { resolveNamespaceFromStorageDir } from "../scopes/scope-plan.js";
@@ -31,9 +31,6 @@ import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-can
 import type { ArtifactRecallOptions } from "./recall-search-prefilter.js";
 import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions } from "../search/port.js";
 import type { MemoryFile, PluginConfig, QmdSearchResult } from "../types.js";
-import {
-  Orchestrator,
-} from "../orchestrator.js";
 
 export interface NamespaceReadFanoutDeps {
   readonly artifactSourceStatusCache: WeakMap<StorageManager, { loadedAtMs: number; statusVersion: number; statuses: Map<string, "active" | "superseded" | "archived" | "missing"> }>;
@@ -257,7 +254,7 @@ export class NamespaceReadFanoutCoordinator {
     const isFresh =
       snapshot !== undefined &&
       Date.now() - snapshot.loadedAtMs <=
-        Orchestrator.ARTIFACT_STATUS_CACHE_TTL_MS &&
+        ARTIFACT_STATUS_CACHE_TTL_MS &&
       snapshot.statusVersion === currentStatusVersion;
 
     const rebuildSnapshot = async () => {
