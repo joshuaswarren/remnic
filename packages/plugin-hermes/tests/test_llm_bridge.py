@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import logging
 import os
@@ -38,6 +39,47 @@ def _delegate_result() -> Any:
     )
 
 
+class FakePluginLlm:
+    """Production-shaped Hermes PluginLlm stand-in for register wiring tests."""
+
+    def __init__(self, plugin_id: str = "remnic") -> None:
+        self.plugin_id = plugin_id
+
+    def complete(self, messages: Any, *, purpose: str | None = None) -> Any:
+        return _delegate_result()
+
+    def complete_structured(self, *args: Any, **kwargs: Any) -> Any:
+        return None
+
+
+class UnpickleablePluginLlm:
+    """Bound-method owner that cannot be pickled, like a live PluginLlm facade."""
+
+    def __init__(self, plugin_id: str = "remnic") -> None:
+        self.plugin_id = plugin_id
+
+    def __getstate__(self) -> object:
+        raise TypeError("live PluginLlm facades are not pickleable")
+
+    def complete(self, messages: Any, *, purpose: str | None = None) -> Any:
+        return _delegate_result()
+
+    def complete_structured(self, *args: Any, **kwargs: Any) -> Any:
+        return None
+
+
+def _gated_complete(messages: list[dict[str, str]], gate_path: str | None = None) -> Any:
+    """Pickleable delegate used to prove the deadline kills child work."""
+    marker = gate_path or os.environ.get("REMNIC_LLM_BRIDGE_GATE")
+    if marker:
+        if os.path.exists(marker):
+            return _delegate_result()
+        with open(marker, "w", encoding="utf-8") as handle:
+            handle.write("started")
+        time.sleep(60)
+    return _delegate_result()
+
+
 class RecordingDelegate:
     """Delegate that records exactly how it was invoked."""
 
@@ -47,8 +89,11 @@ class RecordingDelegate:
         self._delay = delay
         self._error = error
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        self.calls.append({"args": args, "kwargs": kwargs})
+    def __getstate__(self) -> object:
+        raise TypeError("RecordingDelegate is local to the parent process")
+
+    def __call__(self, messages: Any) -> Any:
+        self.calls.append({"args": (messages,), "kwargs": {}})
         if self._delay:
             time.sleep(self._delay)
         if self._error is not None:
@@ -392,14 +437,29 @@ class TestBodyBoundsAndAbort:
         )
         assert delegate.calls == []
 
-    def test_delegate_deadline_returns_504(self) -> None:
-        delegate = RecordingDelegate(delay=1.0)
+    def test_delegate_deadline_returns_504(self, tmp_path: Any) -> None:
+        gate = tmp_path / "llm-bridge-gate"
+        complete = functools.partial(_gated_complete, gate_path=str(gate))
         with running_bridge(
-            BridgePolicy(enabled=True, timeout_seconds=0.15), delegate
+            BridgePolicy(enabled=True, timeout_seconds=2.0), complete
         ) as bridge:
-            status, body = _post(bridge.bound_port, '{"messages": [{"role": "user", "content": "x"}]}')
-        assert status == 504
-        assert body["error"]["message"] == "completion timed out"
+            status, body = _post(
+                bridge.bound_port,
+                '{"messages": [{"role": "user", "content": "x"}]}',
+                timeout=8.0,
+            )
+            assert status == 504
+            assert body["error"]["message"] == "completion timed out"
+            assert bridge.active_work == 0
+            assert gate.is_file()
+            status_next, body_next = _post(
+                bridge.bound_port,
+                '{"messages": [{"role": "user", "content": "y"}]}',
+                timeout=8.0,
+            )
+            assert status_next == 200
+            assert body_next["choices"][0]["message"]["content"] == "bridged answer"
+            assert bridge.active_work == 0
 
     def test_delegate_failure_returns_fixed_502_without_error_detail(self) -> None:
         delegate = RecordingDelegate(error=RuntimeError("boom secret detail /sk-key/"))
@@ -496,18 +556,91 @@ class TestRegisterWiring:
             self._register(ctx)
         server_cls.assert_not_called()
 
-    def test_register_with_enabled_bridge_uses_host_llm_facade(self) -> None:
+    def test_register_stuffed_collector_llm_does_not_start_bridge(self) -> None:
         ctx = self._ctx({"remnic": {"token": "t", "llm_bridge": {"enabled": True}}})
-        with patch("remnic_hermes.start_bridge_from_config") as starter:
+        with (
+            patch("remnic_hermes.llm_runtime._discover_plugin_llm_class", return_value=None),
+            patch("remnic_hermes.start_bridge_from_config") as starter,
+        ):
+            self._register(ctx)
+        starter.assert_not_called()
+
+    def test_register_with_enabled_bridge_uses_discovered_plugin_llm(self) -> None:
+        ctx = self._ctx(
+            {"remnic": {"token": "t", "llm_bridge": {"enabled": True}}},
+            with_llm=False,
+        )
+        with (
+            patch(
+                "remnic_hermes.llm_runtime._discover_plugin_llm_class",
+                return_value=FakePluginLlm,
+            ),
+            patch("remnic_hermes.start_bridge_from_config") as starter,
+        ):
             self._register(ctx)
         starter.assert_called_once()
         section, llm_complete = starter.call_args.args
         assert section == {"enabled": True}
-        assert llm_complete is ctx.llm.complete
+        assert llm_complete.__self__.plugin_id == "remnic"
+
+    def test_register_accepts_plugin_llm_shaped_runtime_facade(self) -> None:
+        ctx = self._ctx(
+            {"remnic": {"token": "t", "llm_bridge": {"enabled": True}}},
+            with_llm=False,
+        )
+        ctx.llm = FakePluginLlm()
+        with (
+            patch("remnic_hermes.llm_runtime._discover_plugin_llm_class", return_value=None),
+            patch("remnic_hermes.start_bridge_from_config") as starter,
+        ):
+            self._register(ctx)
+        starter.assert_called_once()
+        assert starter.call_args.args[1].__self__ is ctx.llm
+
+    def test_register_defers_until_plugin_llm_runtime_appears(self) -> None:
+        hooks: dict[str, list[Any]] = {}
+
+        def register_hook(name: str, handler: Any) -> None:
+            hooks.setdefault(name, []).append(handler)
+
+        ctx = self._ctx(
+            {"remnic": {"token": "t", "llm_bridge": {"enabled": True}}},
+            with_llm=False,
+        )
+        ctx.register_hook = register_hook
+        with (
+            patch("remnic_hermes.llm_runtime._discover_plugin_llm_class", return_value=None),
+            patch("remnic_hermes.start_bridge_from_config") as starter,
+        ):
+            self._register(ctx)
+            starter.assert_not_called()
+            assert "pre_llm_call" in hooks
+            with patch(
+                "remnic_hermes.llm_runtime._discover_plugin_llm_class",
+                return_value=FakePluginLlm,
+            ):
+                hooks["pre_llm_call"][0]()
+            starter.assert_called_once()
+            assert starter.call_args.args[0] == {"enabled": True}
+
+    def test_unpickleable_plugin_llm_complete_starts_bridge(self) -> None:
+        complete = UnpickleablePluginLlm().complete
+        with pytest.raises(Exception):
+            __import__("pickle").dumps(complete)
+        with running_bridge(BridgePolicy(enabled=True), complete) as bridge:
+            assert bridge.bound_port > 0
+            assert bridge.active_work == 0
 
     def test_register_swallows_bridge_setup_failures(self) -> None:
-        ctx = self._ctx({"remnic": {"llm_bridge": {"enabled": True}}})
-        with patch(
-            "remnic_hermes.start_bridge_from_config", side_effect=OSError("bind failed")
+        ctx = self._ctx({"remnic": {"llm_bridge": {"enabled": True}}}, with_llm=False)
+        with (
+            patch(
+                "remnic_hermes.resolve_completion_delegate",
+                return_value=lambda *a, **k: _delegate_result(),
+            ),
+            patch(
+                "remnic_hermes.start_bridge_from_config",
+                side_effect=OSError("bind failed"),
+            ),
         ):
             self._register(ctx)  # must not raise

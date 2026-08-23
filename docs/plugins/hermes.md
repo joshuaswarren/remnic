@@ -213,10 +213,14 @@ POST /v1/chat/completions   # chat completions (non-streaming)
 GET  /healthz               # supervision health check
 ```
 
-Completion is delegated to the existing Hermes runtime resolver (`ctx.llm`,
-the host's `PluginLlm` facade over `agent.auxiliary_client.call_llm`). The
-host keeps owning provider routing, auth resolution, timeouts, and fallback;
-the plugin never sees a raw API key or OAuth token.
+Completion is delegated to Hermes' installed `PluginLlm` runtime
+(`agent.plugin_llm.PluginLlm`, the host facade over
+`agent.auxiliary_client.call_llm`). Memory-provider discovery uses a
+collector that can register providers but does not carry that facade;
+the plugin resolves `PluginLlm` from the live Hermes runtime and defers
+listener start until it is importable. The host keeps owning provider
+routing, auth resolution, timeouts, and fallback; the plugin never sees
+a raw API key or OAuth token.
 
 ### Security properties
 
@@ -239,29 +243,42 @@ the plugin never sees a raw API key or OAuth token.
 
 ### Daemon configuration
 
-Point the Remnic daemon's optional background generation at the endpoint:
+Point the Remnic daemon at the generated credential-free client JSON by
+setting `llmBridgeClientConfigPath` to the same path as Hermes
+`remnic.llm_bridge.client_config_path`. `parseConfig` reads `endpoint`
+from that file and maps it onto the supported `openaiBaseUrl` field
+(stripping `/chat/completions` so the OpenAI client hits `/v1`). A
+placeholder `openaiApiKey` is supplied only when no key is already
+configured, because extraction requires a non-empty key even against this
+unauthenticated loopback listener.
 
 ```json
 {
-  "backgroundGeneration": {
-    "baseUrl": "http://127.0.0.1:8765",
-    "model": "any-label"
-  }
+  "llmBridgeClientConfigPath": "/path/to/llm-bridge-client.json"
 }
 ```
 
-The `model` value the daemon sends is ignored — it exists only to satisfy
-OpenAI-shaped clients. Prefer `client_config_path` so the plugin writes this
-file itself; then the daemon config can reference it without hand-copying
-host or port.
+Equivalent explicit fields, if you prefer not to generate the client file:
+
+```json
+{
+  "openaiBaseUrl": "http://127.0.0.1:8765/v1",
+  "openaiApiKey": "remnic-hermes-llm-bridge"
+}
+```
+
+There is no `backgroundGeneration` object. Unknown daemon keys are ignored;
+that discarded shape would not enable extraction. The `model` value a client
+sends is ignored by the bridge — it exists only to satisfy OpenAI-shaped
+callers. Prefer `client_config_path` on the Hermes side so the plugin writes
+the JSON the daemon actually consumes.
 
 ### Supervision
 
 The bridge runs on daemon threads inside the Hermes process and lives and
 dies with it — there is no separate service to supervise. Supervisors should
 watch the Hermes process itself and may probe `GET /healthz` on the bridge
-port for liveness. The bridge is **fail-open**: invalid config, a missing
-`ctx.llm` facade, or a failed bind logs a warning and leaves plugin
+port for liveness. The bridge is **fail-open**: invalid config, a missing Hermes `PluginLlm` runtime, or a failed bind logs a warning and leaves plugin
 registration, recall, and observation fully working.
 
 ### Background-only: never on the recall path

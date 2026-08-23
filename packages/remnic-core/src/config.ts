@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import type {
   CodexCompactionFlushMode,
@@ -507,6 +508,56 @@ function normalizeOpenaiBaseUrl(value: string | undefined, source: "config" | "e
   let url = parsed.toString();
   while (url.endsWith("/")) url = url.slice(0, -1);
   return url;
+}
+
+
+const LLM_BRIDGE_PLACEHOLDER_KEY = "remnic-hermes-llm-bridge";
+
+function deriveOpenaiBaseUrlFromBridgeEndpoint(endpoint: string): string {
+  let trimmed = endpoint.trim().replace(/\/+$/, "");
+  if (trimmed.endsWith("/chat/completions")) {
+    trimmed = trimmed.slice(0, -"/chat/completions".length);
+  }
+  const derived = normalizeOpenaiBaseUrl(trimmed, "config");
+  if (!derived) {
+    throw new Error("llmBridgeClientConfigPath endpoint must be an absolute HTTP or HTTPS URL");
+  }
+  return derived;
+}
+
+function applyLlmBridgeClientConfigPath(
+  cfg: Record<string, unknown>,
+  baseUrl: string | undefined,
+  apiKey: string | undefined,
+  openaiApiKeyDisabled: boolean,
+): { baseUrl: string | undefined; apiKey: string | undefined } {
+  const raw = cfg.llmBridgeClientConfigPath;
+  if (raw === undefined || raw === null || raw === "") {
+    return { baseUrl, apiKey };
+  }
+  if (typeof raw !== "string") {
+    throw new Error("llmBridgeClientConfigPath must be a string");
+  }
+  const expanded = expandTildePath(resolveEnvVars(raw.trim()));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(expanded, "utf8"));
+  } catch {
+    throw new Error(`llmBridgeClientConfigPath could not be read: ${expanded}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("llmBridgeClientConfigPath must contain a JSON object");
+  }
+  const record = parsed as Record<string, unknown>;
+  const endpoint = record.endpoint ?? record.url;
+  if (typeof endpoint !== "string" || endpoint.trim().length === 0) {
+    throw new Error("llmBridgeClientConfigPath JSON must include an endpoint URL");
+  }
+  const derived = deriveOpenaiBaseUrlFromBridgeEndpoint(endpoint);
+  return {
+    baseUrl: baseUrl ?? derived,
+    apiKey: apiKey !== undefined || openaiApiKeyDisabled ? apiKey : LLM_BRIDGE_PLACEHOLDER_KEY,
+  };
 }
 
 function normalizeMemoryRelativeDir(raw: unknown, fallback: string): string {
@@ -1472,6 +1523,12 @@ export function parseConfig(
   } else if (apiKey !== undefined) {
     baseUrl = normalizeOpenaiBaseUrl(readEnvVar("OPENAI_BASE_URL"), "env");
   }
+  ({ baseUrl, apiKey } = applyLlmBridgeClientConfigPath(
+    cfg,
+    baseUrl,
+    apiKey,
+    openaiApiKeyDisabled,
+  ));
 
   const sharedCrossSignalSemanticEnabled =
     cfg.sharedCrossSignalSemanticEnabled === true || cfg.crossSignalsSemanticEnabled === true;

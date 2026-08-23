@@ -10,7 +10,7 @@ background generation without ever seeing a provider credential:
   ``provider`` / routing fields in the request body are ignored and never
   forwarded; the delegate receives the messages and nothing else.
 - Completion is delegated to the existing Hermes runtime resolver
-  (``ctx.llm.complete`` — host-owned routing, auth, and fallback). No new
+  (Hermes ``PluginLlm.complete`` — host-owned routing, auth, and fallback). No new
   provider client or dependency is introduced: the server is stdlib-only.
 - The generated client config contains only the endpoint description and
   limits — by construction it has no field that can carry a token or key.
@@ -25,18 +25,20 @@ memory recall and observation are unaffected.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import ipaddress
 import itertools
 import json
 import logging
 import math
+import multiprocessing
 import os
+import pickle
 import socket
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Protocol, cast
@@ -179,6 +181,87 @@ def _bind_address(host: str) -> str:
     return address.compressed
 
 
+
+def _accepts_timeout(complete: Callable[..., Any]) -> bool:
+    """True only when ``timeout`` is an explicit parameter, not a bare ``**kwargs``."""
+    try:
+        parameters = inspect.signature(complete).parameters
+    except (TypeError, ValueError):
+        return False
+    return "timeout" in parameters
+
+
+def _plugin_id_of(complete: Callable[..., Any]) -> str | None:
+    owner = getattr(complete, "__self__", None)
+    if owner is None:
+        return None
+    plugin_id = getattr(owner, "plugin_id", None) or getattr(owner, "_plugin_id", None)
+    if type(owner).__name__ == "PluginLlm" or plugin_id or callable(
+        getattr(owner, "complete_structured", None)
+    ):
+        return str(plugin_id or "remnic")
+    return None
+
+
+def _plugin_llm_child_complete(
+    messages: list[dict[str, str]], plugin_id: str = "remnic"
+) -> Any:
+    """Reconstruct Hermes PluginLlm inside a killable worker (never pickle the live facade)."""
+    from remnic_hermes.llm_runtime import _discover_plugin_llm_class, _instantiate_plugin_llm
+
+    plugin_cls = _discover_plugin_llm_class()
+    if plugin_cls is None:
+        raise RuntimeError("PluginLlm is not importable in the llm_bridge worker")
+    instance = _instantiate_plugin_llm(plugin_cls, plugin_id)
+    if instance is None:
+        raise RuntimeError("PluginLlm could not be constructed in the llm_bridge worker")
+    complete = instance.complete
+    try:
+        return complete(messages, purpose="remnic-llm-bridge")
+    except TypeError:
+        return complete(messages)
+
+
+@dataclass(frozen=True)
+class _FrozenUsage:
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+
+@dataclass(frozen=True)
+class _FrozenResult:
+    text: str
+    model: str
+    usage: _FrozenUsage
+
+
+def _isolated_worker(
+    complete: Callable[..., Any],
+    messages: list[dict[str, str]],
+    conn: Any,
+) -> None:
+    try:
+        result = complete(messages)
+        usage = getattr(result, "usage", None)
+        conn.send(
+            (
+                "ok",
+                (
+                    str(getattr(result, "text", "")),
+                    str(getattr(result, "model", "")),
+                    int(getattr(usage, "input_tokens", 0) or 0),
+                    int(getattr(usage, "output_tokens", 0) or 0),
+                    int(getattr(usage, "total_tokens", 0) or 0),
+                ),
+            )
+        )
+    except Exception as exc:
+        conn.send(("err", type(exc).__name__))
+    finally:
+        conn.close()
+
+
 class HermesLlmBridge:
     """Loopback-only OpenAI-compatible completion bridge (opt-in)."""
 
@@ -188,9 +271,27 @@ class HermesLlmBridge:
         self._complete = complete
         self._server: _BridgeServer | None = None
         self._thread: threading.Thread | None = None
-        self._executor = ThreadPoolExecutor(
-            max_workers=_WORKERS, thread_name_prefix="remnic-llm-bridge"
-        )
+        self._slots = threading.BoundedSemaphore(_WORKERS)
+        self._inflight = 0
+        self._inflight_lock = threading.Lock()
+        self._live_procs: set[Any] = set()
+        self._use_timeout_kwarg = _accepts_timeout(complete)
+        self._use_process = False
+        if self._use_timeout_kwarg:
+            self._complete = complete
+        else:
+            plugin_id = _plugin_id_of(complete)
+            if plugin_id is not None:
+                self._complete = functools.partial(_plugin_llm_child_complete, plugin_id=plugin_id)
+                self._use_process = True
+            else:
+                try:
+                    pickle.dumps(complete)
+                except Exception:
+                    self._complete = complete
+                else:
+                    self._complete = complete
+                    self._use_process = True
 
     @property
     def bound_port(self) -> int:
@@ -221,7 +322,21 @@ class HermesLlmBridge:
         if server is not None:
             server.shutdown()
             server.server_close()
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        with self._inflight_lock:
+            procs = list(self._live_procs)
+            self._live_procs.clear()
+        for proc in procs:
+            if proc.is_alive():
+                proc.terminate()
+            proc.join(0.5)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(0.5)
+
+    @property
+    def active_work(self) -> int:
+        with self._inflight_lock:
+            return self._inflight
 
     def complete_with_deadline(self, messages: list[dict[str, str]]) -> BridgeCompletionResult:
         """Delegate to the host resolver under the policy deadline.
@@ -229,13 +344,66 @@ class HermesLlmBridge:
         The delegate receives only ``messages`` — the fixed policy means
         there is no code path that could forward a caller's model or
         provider choice even if the host config would allow the override.
+
+        Hosts that expose an explicit ``timeout=`` parameter are invoked
+        in-process so the runtime can abort the call. PluginLlm-shaped
+        facades are reconstructed in a killable child; other pickleable
+        callables run in a child too. Future.cancel is never the stop
+        mechanism. Unpickleable non-PluginLlm callables run in-process so
+        production start is never refused.
         """
-        future: Future[BridgeCompletionResult] = self._executor.submit(self._complete, messages)
+        if not self._slots.acquire(timeout=self.policy.timeout_seconds):
+            raise TimeoutError("bridge completion deadline exceeded")
+        with self._inflight_lock:
+            self._inflight += 1
         try:
-            return future.result(timeout=self.policy.timeout_seconds)
-        except FutureTimeoutError as err:
-            future.cancel()
-            raise TimeoutError("bridge completion deadline exceeded") from err
+            if self._use_timeout_kwarg:
+                return self._complete(messages, timeout=self.policy.timeout_seconds)
+            if self._use_process:
+                return self._run_in_killable_process(messages)
+            try:
+                return self._complete(messages, purpose="remnic-llm-bridge")
+            except TypeError:
+                return self._complete(messages)
+        finally:
+            with self._inflight_lock:
+                self._inflight -= 1
+            self._slots.release()
+
+    def _run_in_killable_process(
+        self, messages: list[dict[str, str]]
+    ) -> BridgeCompletionResult:
+        ctx = multiprocessing.get_context("spawn")
+        parent, child = ctx.Pipe(duplex=False)
+        proc = ctx.Process(
+            target=_isolated_worker,
+            args=(self._complete, messages, child),
+            daemon=True,
+        )
+        with self._inflight_lock:
+            self._live_procs.add(proc)
+        proc.start()
+        child.close()
+        try:
+            if parent.poll(self.policy.timeout_seconds):
+                status, payload = parent.recv()
+                if status == "ok":
+                    text, model, inp, out, tot = payload
+                    return _FrozenResult(text, model, _FrozenUsage(inp, out, tot))
+                raise RuntimeError(payload)
+            proc.terminate()
+            proc.join(0.5)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(0.5)
+            raise TimeoutError("bridge completion deadline exceeded")
+        finally:
+            parent.close()
+            with self._inflight_lock:
+                self._live_procs.discard(proc)
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(0.2)
 
     def client_config(self) -> dict[str, object]:
         """Credential-free connection description for downstream consumers.
@@ -414,11 +582,11 @@ def start_bridge_from_config(
 ) -> HermesLlmBridge | None:
     """Wire :class:`HermesLlmBridge` from the config section and host resolver.
 
-    ``llm_complete`` is the host's ``ctx.llm.complete`` (or None when the host
-    provides no LLM facade). Returns the started bridge, or None when the
-    bridge is not enabled or the host facade is missing. Invalid config or a
-    failed bind is reported to the log and swallowed — the bridge is
-    background-only and must never take plugin registration down.
+    ``llm_complete`` is a Hermes ``PluginLlm.complete`` bound method (or None
+    when no runtime facade is available). Returns the started bridge, or None
+    when the bridge is not enabled or the host facade is missing. Invalid
+    config or a failed bind is reported to the log and swallowed — the bridge
+    is background-only and must never take plugin registration down.
     """
     try:
         policy = BridgePolicy.from_config(section)
@@ -429,18 +597,12 @@ def start_bridge_from_config(
         return None
     if llm_complete is None:
         _log.warning(
-            "llm_bridge enabled but this Hermes host exposes no ctx.llm; bridge not started"
+            "llm_bridge enabled but no Hermes PluginLlm completion delegate is available; bridge not started"
         )
         return None
 
-    def complete(messages: list[dict[str, str]]) -> BridgeCompletionResult:
-        return cast(
-            BridgeCompletionResult,
-            llm_complete(messages, purpose="remnic-llm-bridge", timeout=policy.timeout_seconds),
-        )
-
     try:
-        bridge = HermesLlmBridge(policy, complete)
+        bridge = HermesLlmBridge(policy, llm_complete)
         bridge.start()
     except (OSError, ValueError) as err:
         _log.warning("llm_bridge failed to start (%s)", type(err).__name__)

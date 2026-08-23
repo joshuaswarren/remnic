@@ -277,8 +277,8 @@ LCM runs daemon-side and reaches Hermes through the `memory_provider` recall pat
 ## Policy-bound LLM bridge (opt-in)
 
 Set `remnic.llm_bridge.enabled: true` in Hermes `config.yaml` to expose one
-OpenAI-compatible completion endpoint on loopback, backed by the host's own
-`ctx.llm` runtime resolver. Provider credentials stay host-managed: the model
+OpenAI-compatible completion endpoint on loopback, backed by the host's
+`PluginLlm` runtime resolver. Provider credentials stay host-managed: the model
 policy is server-owned (request `model`/`provider` fields are discarded),
 the listener rejects any non-loopback bind, and the optional generated client
 config contains no tokens. The bridge serves optional background generation

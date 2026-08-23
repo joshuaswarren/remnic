@@ -5,6 +5,7 @@ import logging
 from remnic_hermes.client import RemnicClient
 from remnic_hermes.config import RemnicHermesConfig
 from remnic_hermes.llm_bridge import BridgePolicy, HermesLlmBridge, start_bridge_from_config
+from remnic_hermes.llm_runtime import arm_deferred_bridge_start, resolve_completion_delegate
 from remnic_hermes.provider import RemnicMemoryProvider
 
 # Legacy aliases — preserved for the Engram → Remnic compat window.
@@ -23,6 +24,8 @@ __all__ = [
     "RemnicHermesConfig",
     "RemnicMemoryProvider",
     "register",
+    "resolve_completion_delegate",
+    "start_bridge_from_config",
 ]
 
 def _register_tools_from_schemas(ctx, provider: RemnicMemoryProvider):  # type: ignore[no-untyped-def]
@@ -115,17 +118,28 @@ def _maybe_start_llm_bridge(ctx, config: dict[str, object]) -> HermesLlmBridge |
     """Start the opt-in policy-bound loopback LLM bridge (issue #2834).
 
     Disabled unless the ``remnic.llm_bridge.enabled`` config is true, so the
-    default plugin is unchanged. Requires the host's ``ctx.llm`` runtime
-    resolver; a missing facade only warns. Any failure is contained: the
-    bridge serves optional background generation, never recall.
+    default plugin is unchanged. The completion delegate is resolved from the
+    installed Hermes ``PluginLlm`` runtime, not from a collector ``ctx.llm``
+    attribute. Collector-only registration defers start until that facade is
+    importable. Any failure is contained: the bridge serves optional
+    background generation, never recall.
     """
     try:
-        llm = getattr(ctx, "llm", None)
-        llm_complete = getattr(llm, "complete", None) if llm is not None else None
-        return start_bridge_from_config(
-            config.get("llm_bridge") if isinstance(config, dict) else None,
-            llm_complete,
-        )
+        section = config.get("llm_bridge") if isinstance(config, dict) else None
+        try:
+            policy = BridgePolicy.from_config(section)
+        except (TypeError, ValueError):
+            return start_bridge_from_config(section, None)
+        if not policy.enabled:
+            return None
+        llm_complete = resolve_completion_delegate(ctx)
+        if llm_complete is None:
+            _log.warning(
+                "llm_bridge enabled but Hermes PluginLlm runtime is not available yet; deferring start"
+            )
+            arm_deferred_bridge_start(ctx, section)
+            return None
+        return start_bridge_from_config(section, llm_complete)
     except Exception:
         _log.warning("llm_bridge setup failed unexpectedly", exc_info=True)
         return None

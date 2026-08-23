@@ -2698,3 +2698,58 @@ test("parseConfig coerces string-typed sharedContextAllowBindingAuthority from t
     );
   }
 });
+
+test("parseConfig consumes llmBridgeClientConfigPath into openaiBaseUrl", () => {
+  withIsolatedConnectorsDir(false, () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "remnic-llm-bridge-client-"));
+    const previousKey = process.env.OPENAI_API_KEY;
+    const previousBase = process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+    try {
+      const file = path.join(dir, "client.json");
+      writeFileSync(
+        file,
+        JSON.stringify({
+          endpoint: "http://127.0.0.1:8765/v1/chat/completions",
+          health_endpoint: "http://127.0.0.1:8765/healthz",
+          bind: "127.0.0.1",
+          model_policy: "server-owned",
+          max_body_bytes: 524288,
+          timeout_seconds: 120,
+        }),
+      );
+      const parsed = parseConfig({ llmBridgeClientConfigPath: file });
+      assert.equal(parsed.openaiBaseUrl, "http://127.0.0.1:8765/v1");
+      assert.equal(parsed.openaiApiKey, "remnic-hermes-llm-bridge");
+
+      const explicit = parseConfig({
+        llmBridgeClientConfigPath: file,
+        openaiBaseUrl: "http://127.0.0.1:9999/v1",
+        openaiApiKey: "keep-me",
+      });
+      assert.equal(explicit.openaiBaseUrl, "http://127.0.0.1:9999/v1");
+      assert.equal(explicit.openaiApiKey, "keep-me");
+
+      const ignoredUnknown = parseConfig({
+        backgroundGeneration: { baseUrl: "http://127.0.0.1:8765", model: "any-label" },
+      });
+      assert.equal(ignoredUnknown.openaiBaseUrl, undefined);
+    } finally {
+      if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousKey;
+      if (previousBase === undefined) delete process.env.OPENAI_BASE_URL;
+      else process.env.OPENAI_BASE_URL = previousBase;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("parseConfig rejects an unreadable llmBridgeClientConfigPath", () => {
+  withIsolatedConnectorsDir(false, () => {
+    assert.throws(
+      () => parseConfig({ llmBridgeClientConfigPath: "/no/such/remnic-llm-bridge-client.json" }),
+      /llmBridgeClientConfigPath could not be read/,
+    );
+  });
+});
