@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.31] — 2026-08-23
+
+### Added
+
+- `remnic converge` accepts the peer credential via `--token-file <path>` (0600 file) or `REMNIC_CONVERGE_PEER_TOKEN`; `--token` still works but warns that argv credentials are visible to any process listing for the lifetime of the run (#2823).
+
 ## [v9.69.29] — 2026-08-23
 
 ### Changed
