@@ -29,7 +29,7 @@ import {
   type MemoryScopePlan,
   NamespaceNotWritableError,
 } from "./access-service.js";
-import { categoryAliasCoercion, reapplyCategoryCoercion } from "./access-schema.js";
+import { reapplyCategoryCoercion, splitCanonicalWriteRequest } from "./access-observe-write-category.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
 import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
@@ -486,11 +486,7 @@ export class AccessObserveWriteSurface {
     request: EngramAccessMemoryStoreRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> }
   ): Promise<EngramAccessWriteResponse> {
-    // #2829: the wire schema already canonicalized an alias category to
-    // "fact"; rawCategory retains the caller's spelling for the response
-    // note and must never reach the write candidate or the fingerprint.
-    const { rawCategory, ...canonical } = request;
-    const categoryCoercion = categoryAliasCoercion(rawCategory);
+    const { canonical, categoryCoercion } = splitCanonicalWriteRequest(request);
     let namespace: string;
     try {
       namespace = await this.deps.resolveCodingScopedWriteNamespace(canonical);
@@ -512,7 +508,7 @@ export class AccessObserveWriteSurface {
     const execute = async (): Promise<EngramAccessWriteResponse> => {
       const candidate = this.deps.validateWriteCandidate(canonical, namespace);
       if (canonical.dryRun === true) {
-        return {
+        return reapplyCategoryCoercion<EngramAccessWriteResponse>({
           schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
           operation: "memory_store",
           namespace,
@@ -521,8 +517,7 @@ export class AccessObserveWriteSurface {
           queued: false,
           status: "validated",
           idempotencyKey: canonical.idempotencyKey?.trim() || undefined,
-          ...(categoryCoercion ? { categoryCoercion } : {}),
-        };
+        }, categoryCoercion);
       }
       const result = await persistExplicitCapture(this.deps.orchestrator, candidate, "memory_store");
       // Seed the session's coding binding ONLY after a real write commits, and
@@ -537,7 +532,7 @@ export class AccessObserveWriteSurface {
       // (no active copy) — report it as queued_for_review so the HTTP/MCP caller
       // doesn't read it as a successfully stored active memory.
       const blocked = result.tombstoneBlocked === true && result.duplicateOf === undefined;
-      const response: EngramAccessWriteResponse = {
+      const response = reapplyCategoryCoercion<EngramAccessWriteResponse>({
         schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
         operation: "memory_store",
         namespace,
@@ -548,8 +543,7 @@ export class AccessObserveWriteSurface {
         memoryId: result.id,
         duplicateOf: result.duplicateOf,
         idempotencyKey: canonical.idempotencyKey?.trim() || undefined,
-        ...(categoryCoercion ? { categoryCoercion } : {}),
-      };
+      }, categoryCoercion);
       log.info(
         `access-write op=memory_store namespace=${namespace} dryRun=false status=${response.status} memoryId=${response.memoryId ?? "-"} idempotency=${response.idempotencyKey ? "yes" : "no"}`
       );
@@ -578,8 +572,6 @@ export class AccessObserveWriteSurface {
       beforeExecute: hooks?.enforceWriteQuota,
       execute,
     });
-    // #2829: a replay returns the first request's stored note; rebuild it
-    // from THIS request's spelling so the response names what this caller sent.
     return reapplyCategoryCoercion(response, categoryCoercion);
   }
 
@@ -587,9 +579,7 @@ export class AccessObserveWriteSurface {
     request: EngramAccessSuggestionSubmitRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> }
   ): Promise<EngramAccessWriteResponse> {
-    // #2829: same alias-retention funnel as memory_store.
-    const { rawCategory, ...canonical } = request;
-    const categoryCoercion = categoryAliasCoercion(rawCategory);
+    const { canonical, categoryCoercion } = splitCanonicalWriteRequest(request);
     let namespace: string;
     try {
       namespace = await this.deps.resolveCodingScopedWriteNamespace(canonical);
@@ -610,7 +600,7 @@ export class AccessObserveWriteSurface {
     const execute = async (): Promise<EngramAccessWriteResponse> => {
       const candidate = this.deps.validateWriteCandidate(canonical, namespace);
       if (canonical.dryRun === true) {
-        return {
+        return reapplyCategoryCoercion<EngramAccessWriteResponse>({
           schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
           operation: "suggestion_submit",
           namespace,
@@ -619,8 +609,7 @@ export class AccessObserveWriteSurface {
           queued: true,
           status: "validated",
           idempotencyKey: canonical.idempotencyKey?.trim() || undefined,
-          ...(categoryCoercion ? { categoryCoercion } : {}),
-        };
+        }, categoryCoercion);
       }
       const result = await queueExplicitCaptureForReview(
         this.deps.orchestrator,
@@ -632,7 +621,7 @@ export class AccessObserveWriteSurface {
       // (mirrors memory_store / recall; skips dryRun, replay, quota-reject, and
       // explicit-namespace writes — Codex review).
       await this.deps.attachCodingContextAfterScopedWrite(canonical);
-      const response: EngramAccessWriteResponse = {
+      const response = reapplyCategoryCoercion<EngramAccessWriteResponse>({
         schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
         operation: "suggestion_submit",
         namespace,
@@ -643,8 +632,7 @@ export class AccessObserveWriteSurface {
         memoryId: result.id,
         duplicateOf: result.duplicateOf,
         idempotencyKey: canonical.idempotencyKey?.trim() || undefined,
-        ...(categoryCoercion ? { categoryCoercion } : {}),
-      };
+      }, categoryCoercion);
       log.info(
         `access-write op=suggestion_submit namespace=${namespace} dryRun=false status=${response.status} memoryId=${response.memoryId ?? "-"} idempotency=${response.idempotencyKey ? "yes" : "no"}`
       );
@@ -672,7 +660,6 @@ export class AccessObserveWriteSurface {
       beforeExecute: hooks?.enforceWriteQuota,
       execute,
     });
-    // #2829: rebuild a replayed coercion note from THIS request's spelling.
     return reapplyCategoryCoercion(response, categoryCoercion);
   }
 

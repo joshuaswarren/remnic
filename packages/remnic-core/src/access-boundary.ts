@@ -509,9 +509,11 @@ export function getOperation(name: OperationName): BoundOperation | undefined {
 export function operationRequiresAuthorizedNamespace(name: OperationName): boolean {
   if (name === "namespace_writable") return false;
   if (IMPLICIT_HTTP_NAMESPACE_OPERATIONS.has(name)) return true;
-  const schema = registry.get(name)?.spec.schema;
-  const objectSchema = schema instanceof z.ZodEffects ? schema.innerType() : schema;
-  return objectSchema instanceof z.ZodObject && Object.hasOwn(objectSchema.shape, "namespace");
+  let schema: unknown = registry.get(name)?.spec.schema;
+  // preprocess/transform/refine each wrap ZodEffects. One unwrap left
+  // suggestion_submit looking namespace-free after the category transform.
+  while (schema instanceof z.ZodEffects) schema = schema.innerType();
+  return schema instanceof z.ZodObject && Object.hasOwn(schema.shape, "namespace");
 }
 
 /** Whether an operation resolves its namespace from the authenticated principal. */

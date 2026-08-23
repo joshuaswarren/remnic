@@ -331,19 +331,17 @@ export function retainedCategoryAlias(rawInput: unknown): MemoryCategoryAlias | 
  * CURRENT request's retained spelling so every response identifies what its
  * caller actually sent; the stored idempotent result is reused untouched.
  */
-export function reapplyCategoryCoercion<T extends { categoryCoercion?: CategoryAliasCoercion }>(
+export function reapplyCategoryCoercion<T extends object>(
   response: T,
   categoryCoercion: CategoryAliasCoercion | undefined,
-): T {
+): T & { categoryCoercion?: CategoryAliasCoercion } {
+  const restamped: T & { categoryCoercion?: CategoryAliasCoercion } = { ...response };
   if (categoryCoercion !== undefined) {
-    return { ...response, categoryCoercion };
+    restamped.categoryCoercion = categoryCoercion;
+  } else {
+    delete restamped.categoryCoercion;
   }
-  if (response.categoryCoercion === undefined) {
-    return response;
-  }
-  const withoutNote = { ...response };
-  delete withoutNote.categoryCoercion;
-  return withoutNote;
+  return restamped;
 }
 
 const categoryWireSchema = z.enum([...MEMORY_CATEGORY_CANONICAL_INPUT, ...MEMORY_CATEGORY_ALIAS_INPUT]);

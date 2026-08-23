@@ -32,7 +32,8 @@ import {
   type MemoryStoreRequest,
 } from "./access-schema.js";
 import { memoryStoreOperation } from "./access-operations.js";
-import { getOperation } from "./access-boundary.js";
+import { getOperation, operationRequiresAuthorizedNamespace } from "./access-boundary.js";
+import { authorizationProbeNamespaces } from "./access-authorization-probe.js";
 import {
   EngramAccessInputError,
   EngramAccessService,
@@ -448,3 +449,47 @@ test("#2829 an ACL-rejected aliased write parks canonical + rawCategory for repl
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Authorization probe — nested preprocess/transform still requires namespace
+// ---------------------------------------------------------------------------
+
+test("#2829/#2866 transformed write schemas still require an authorized namespace", () => {
+  assert.equal(
+    memoryStoreRequestSchema instanceof z.ZodEffects,
+    true,
+    "memory_store schema is a category transform",
+  );
+  const suggestion = getOperation("suggestion_submit");
+  assert.ok(suggestion);
+  assert.ok(
+    suggestion.spec.schema instanceof z.ZodEffects,
+    "suggestion_submit wraps preprocess around the transform",
+  );
+  const inner = suggestion.spec.schema.innerType();
+  assert.equal(
+    inner instanceof z.ZodEffects,
+    true,
+    "one unwrap still lands on the category transform, not the object",
+  );
+  assert.equal(inner instanceof z.ZodObject, false);
+
+  for (const operation of ["memory_store", "suggestion_submit"] as const) {
+    assert.equal(
+      operationRequiresAuthorizedNamespace(operation),
+      true,
+      `${operation} must stay namespace-required after the category transform`,
+    );
+    assert.deepEqual(
+      authorizationProbeNamespaces([operation], undefined),
+      [undefined],
+      `${operation} probe must authorize the missing/default namespace`,
+    );
+    assert.deepEqual(
+      authorizationProbeNamespaces([operation], "other"),
+      ["other"],
+      `${operation} probe must authorize the requested namespace`,
+    );
+  }
+});
+

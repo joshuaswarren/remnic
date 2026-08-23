@@ -5043,6 +5043,177 @@ test("HTTP authorization probe verifies requested operation grants without invok
   }
 });
 
+test("HTTP authorization probe fails closed for transformed suggestion/memory schemas (#2866)", async () => {
+  const service = {
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-http-write-authorization-probe",
+      defaultNamespace: "default",
+    }),
+    memoryStore: () => {
+      throw new Error("authorization probe must not invoke memory_store");
+    },
+    suggestionSubmit: () => {
+      throw new Error("authorization probe must not invoke suggestion_submit");
+    },
+  } as unknown as EngramAccessService;
+  const writeOperations = ["memory_store", "suggestion_submit"] as const;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      {
+        token: "scoped-write-token",
+        capabilities: {
+          version: 1,
+          ops: [...writeOperations],
+          namespaces: ["other"],
+        },
+      },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const probe = (operation: string, namespace?: string) => {
+    const query = new URLSearchParams({ op: operation });
+    if (namespace !== undefined) query.set("namespace", namespace);
+    return fetch(`http://127.0.0.1:${status.port}/engram/v1/authorization?${query}`, {
+      headers: { authorization: "Bearer scoped-write-token" },
+    });
+  };
+  try {
+    for (const operation of writeOperations) {
+      const missing = await probe(operation);
+      assert.equal(
+        missing.status,
+        403,
+        `${operation} probe must deny the missing/default namespace`,
+      );
+      await missing.text();
+
+      const wrong = await probe(operation, "default");
+      assert.equal(
+        wrong.status,
+        403,
+        `${operation} probe must deny a namespace outside the token scope`,
+      );
+      await wrong.text();
+
+      const allowed = await probe(operation, "other");
+      assert.equal(allowed.status, 200, `${operation} probe must allow the scoped namespace`);
+      assert.deepEqual(await allowed.json(), {
+        authorized: true,
+        operations: [operation],
+      });
+    }
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP-MCP tools/call fails closed for memory_store/suggestion_submit aliases (#2866)", async () => {
+  const calls: Array<{ op: string; args: Record<string, unknown> }> = [];
+  const service = {
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-mcp-write-authorization-probe",
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    }),
+    memoryStore: async (args: Record<string, unknown>) => {
+      calls.push({ op: "memory_store", args });
+      return {
+        schemaVersion: 1,
+        operation: "memory_store",
+        namespace: args.namespace ?? "default",
+        dryRun: true,
+        accepted: true,
+        queued: false,
+        status: "validated",
+      };
+    },
+    suggestionSubmit: async (args: Record<string, unknown>) => {
+      calls.push({ op: "suggestion_submit", args });
+      return {
+        schemaVersion: 1,
+        operation: "suggestion_submit",
+        namespace: args.namespace ?? "default",
+        dryRun: true,
+        accepted: true,
+        queued: false,
+        status: "validated",
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      {
+        token: "scoped-write-token",
+        capabilities: {
+          version: 1,
+          ops: ["memory_store", "suggestion_submit"],
+          namespaces: ["ns_a"],
+        },
+      },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const mcpCall = (name: string, args: Record<string, unknown>) =>
+    fetch(`http://127.0.0.1:${status.port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer scoped-write-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: args },
+      }),
+    });
+  const aliases = [
+    "engram.memory_store",
+    "remnic.memory_store",
+    "engram.suggestion_submit",
+    "remnic.suggestion_submit",
+  ] as const;
+  try {
+    for (const name of aliases) {
+      const wrong = await mcpCall(name, {
+        content: "aliased write",
+        category: "project_state",
+        namespace: "ns_b",
+        dryRun: true,
+      });
+      assert.equal(wrong.status, 403, `${name} must deny a namespace outside the token scope`);
+      await wrong.text();
+
+      const missing = await mcpCall(name, {
+        content: "aliased write",
+        category: "project_update",
+        dryRun: true,
+      });
+      assert.equal(missing.status, 403, `${name} must deny the missing/default namespace`);
+      await missing.text();
+    }
+    assert.equal(calls.length, 0, "denied MCP writes must not reach the handler");
+
+    const allowed = await mcpCall("engram.memory_store", {
+      content: "aliased write",
+      category: "project",
+      namespace: "ns_a",
+      dryRun: true,
+    });
+    assert.notEqual(allowed.status, 403, "the allowed namespace must proceed past the gate");
+    assert.equal(calls.at(-1)?.op, "memory_store");
+    assert.equal(calls.at(-1)?.args.namespace, "ns_a");
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP authorization probe checks the principal-derived support passport namespace", async () => {
   let namespaceResolutions = 0;
   const service = {
