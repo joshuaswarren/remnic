@@ -17,8 +17,11 @@ export interface RetryingFetchOptions {
   /** Request init for every attempt. Ignored when `buildInit` is set. */
   init?: RequestInit;
   /**
-   * Per-attempt init builder. Used when headers must be rebuilt each
-   * attempt (e.g. a refreshed bearer token); overrides `init`.
+   * Init builder invoked ONCE, before the retry loop. Request
+   * construction (e.g. token acquisition) must stay outside the
+   * transport retry boundary: a deterministic provider failure —
+   * missing grant, revoked grant, unpersistable token file — runs once
+   * and propagates unwrapped, never retried or vendor-wrapped.
    */
   buildInit?: () => RequestInit | Promise<RequestInit>;
   fetchImpl?: typeof fetch;
@@ -135,6 +138,12 @@ export async function retryingFetch(
     Math.min(maxRetryDelayMs, backoffBaseMs * 2 ** attempt);
   const attempts = maxRetries + 1;
 
+  // Request construction runs once, outside the retry boundary: only
+  // fetch/network/HTTP-retryable failures retry, so initializer/token
+  // provider errors execute once and propagate unchanged (issue #2792).
+  options.signal?.throwIfAborted();
+  const init = options.buildInit ? await options.buildInit() : options.init;
+
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     options.signal?.throwIfAborted();
@@ -144,7 +153,6 @@ export async function retryingFetch(
       : timeoutSignal;
     let response: Response;
     try {
-      const init = options.buildInit ? await options.buildInit() : options.init;
       response = await fetchImpl(url, { ...init, signal: combined });
     } catch (err) {
       // The caller's abort always propagates unwrapped and unretried.

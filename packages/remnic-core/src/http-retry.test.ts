@@ -193,7 +193,7 @@ test("non-retryable statuses are returned to the caller untouched", async () => 
   assert.equal(calls(), 1);
 });
 
-test("buildInit runs per attempt so refreshed tokens reach retries", async () => {
+test("buildInit runs once; retries reuse the same init", async () => {
   const tokens: string[] = [];
   const { fetchImpl } = scriptFetch([
     () => jsonResponse({}, 429),
@@ -219,7 +219,30 @@ test("buildInit runs per attempt so refreshed tokens reach retries", async () =>
     networkError: () => new ConnectorApiError("network"),
     retryableError: (r) => new ConnectorApiError(`responded ${r.status}`, r.status),
   });
-  assert.deepEqual(seenAuth, ["Bearer tok-0", "Bearer tok-1"]);
+  assert.deepEqual(seenAuth, ["Bearer tok-0", "Bearer tok-0"]);
+  assert.equal(tokens.length, 1);
+});
+
+test("buildInit failures run once, propagate unwrapped, and never fetch", async () => {
+  const failure = new ConnectorApiError("grant revoked: re-authorize");
+  let builds = 0;
+  const { fetchImpl, calls } = scriptFetch([]);
+  await assert.rejects(
+    retryingFetch("https://api.example.invalid", {
+      fetchImpl,
+      sleep: async () => {},
+      buildInit: async () => {
+        builds += 1;
+        throw failure;
+      },
+      networkError: (err, attempts) =>
+        new ConnectorApiError(`network after ${attempts}: ${String(err)}`),
+      retryableError: (r) => new ConnectorApiError(`responded ${r.status}`, r.status),
+    }),
+    (err: unknown) => err === failure,
+  );
+  assert.equal(builds, 1);
+  assert.equal(calls(), 0);
 });
 
 test("backoffBaseMs, maxRetries, and maxRetryDelayMs are honored", async () => {
