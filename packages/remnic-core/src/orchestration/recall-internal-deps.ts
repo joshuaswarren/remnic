@@ -35,11 +35,7 @@ import type { TrustZoneSearchResult } from "../trust-zones.js";
 import type { CodingContext, EngramTraceEvent, IdentityInjectionMode, MemoryFile, MemoryIntent, PluginConfig, QmdSearchResult, RecallPlanMode, RecallSectionConfig } from "../types.js";
 import type { VerifiedEpisodeResult } from "../verified-recall.js";
 import type { WorkProductLedgerSearchResult } from "../work-product-ledger.js";
-import type { GraphRecallRankedResult, GraphRecallShadowComparison } from "./graph-recall-coordinator.js";
-import type {
-  GraphRecallExpansionOptions,
-  GraphRecallExpansionResult,
-} from "./graph-recall-seam.js";
+import type { GraphRecallExpansionOptions, GraphRecallExpansionResult, GraphRecallRankedResult, GraphRecallShadowComparison } from "./graph-recall-coordinator.js";
 import type { RecallRerankCoordinator, RecallResultPartitionSink } from "./recall-rerank-coordinator.js";
 import type { ArtifactRecallOptions } from "./recall-search-prefilter.js";
 import type { RecallSectionAppendOptions, RecallSectionBuckets } from "./recall-section-coordinator.js";
