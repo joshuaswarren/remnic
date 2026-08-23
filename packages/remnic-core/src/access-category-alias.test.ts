@@ -146,6 +146,19 @@ test("#2829 retainedCategoryAlias reads the transform-minted spelling from a raw
   assert.equal(categoryAliasCoercion(undefined), undefined);
 });
 
+test("#2889 retainedCategoryAlias recovers the spelling from a single-parse envelope's category", () => {
+  // Single-parse callers (CLI store command, direct op.run) hand the op the
+  // raw envelope: the alias sits on `category`, no `rawCategory` exists yet.
+  assert.equal(retainedCategoryAlias({ content: "x", category: "project_state" }), "project_state");
+  assert.equal(retainedCategoryAlias({ content: "x", category: "project-state" }), "project-state");
+  // Canonical and near-miss categories never mint a retained spelling.
+  assert.equal(retainedCategoryAlias({ content: "x", category: "fact" }), undefined);
+  assert.equal(retainedCategoryAlias({ content: "x", category: "projection" }), undefined);
+  assert.equal(retainedCategoryAlias({ content: "x" }), undefined);
+  // A transform-minted rawCategory outranks the raw category spelling.
+  assert.equal(retainedCategoryAlias({ category: "project_update", rawCategory: "project" }), "project");
+});
+
 // ---------------------------------------------------------------------------
 // Type-level regressions (enforced by tsc via check-types)
 // ---------------------------------------------------------------------------
@@ -298,6 +311,10 @@ function makePersistService(memoryDir: string): PersistProbe {
       writes.push({ category, content });
       return { id: `mem-${writes.length}`, duplicateOf: undefined };
     },
+    // The suggestion review-queue path re-reads and re-stamps the queued
+    // memory (explicit-capture.ts queueExplicitCaptureForReview).
+    getMemoryById: async (id: string) => ({ id, status: "active" }),
+    writeMemoryFrontmatter: async () => {},
   });
   return { service: new EngramAccessService(orch), writes };
 }
@@ -402,6 +419,84 @@ test("#2829 peek idempotency ignores the retained spelling", async () => {
       idempotencyKey: "peek-2829",
     });
     assert.deepEqual(withAlias, canonical, "the fingerprint must hash the canonical category only");
+  });
+});
+
+test("#2889 single-pass op.run retains the alias through canonical validation and replay", async () => {
+  // The CLI store command's path (PR #2866 review): the raw envelope carries
+  // the alias on `category` and op.run performs the ONLY schema parse. The
+  // boundary must still retain the spelling, and a same-key replay with a
+  // different accepted spelling must report THIS caller's alias while the
+  // stored result stays canonical and untouched.
+  await withPersistService(async ({ service, writes }) => {
+    const base = {
+      content: "single-pass aliased idempotent write",
+      confidence: 0.9,
+      tags: [] as string[],
+      idempotencyKey: "k-2889",
+    };
+    const first = await memoryStoreOperation.run(
+      { ...base, category: "project_state" },
+      { service },
+    );
+    assert.equal(first.result.status, "stored");
+    assert.deepEqual(first.result.categoryCoercion, { from: "project_state", to: "fact" });
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0]?.category, "fact", "the persisted memory stays canonical");
+
+    const second = await memoryStoreOperation.run(
+      { ...base, category: "project-state" },
+      { service },
+    );
+    assert.equal(second.result.idempotencyReplay, true, "alias spellings share the canonical fingerprint");
+    assert.deepEqual(second.result.categoryCoercion, { from: "project-state", to: "fact" });
+    assert.equal(first.result.categoryCoercion?.from, "project_state", "the replay never mutates the stored note");
+    assert.equal(writes.length, 1, "the replay persists nothing");
+
+    const third = await memoryStoreOperation.run(
+      { ...base, category: "fact" },
+      { service },
+    );
+    assert.equal(third.result.idempotencyReplay, true);
+    assert.equal("categoryCoercion" in third.result, false, "a canonical replay reports no coercion");
+    assert.equal(writes.length, 1);
+  });
+});
+
+test("#2889 a single-pass dry run reports the coercion note and persists nothing", async () => {
+  await withPersistService(async ({ service, writes }) => {
+    const output = await memoryStoreOperation.run(
+      { content: "single-pass dry-run alias", category: "project_update", confidence: 0.9, tags: [], dryRun: true },
+      { service },
+    );
+    assert.equal(output.result.status, "validated");
+    assert.deepEqual(output.result.categoryCoercion, { from: "project_update", to: "fact" });
+    assert.equal(writes.length, 0);
+  });
+});
+
+test("#2889 suggestion_submit reports the coercion and queues the canonical category", async () => {
+  await withPersistService(async ({ service, writes }) => {
+    const aliased = await service.suggestionSubmit({
+      content: "suggested aliased fact",
+      category: "fact",
+      confidence: 0.9,
+      tags: [],
+      rawCategory: "project_update",
+    });
+    assert.equal(aliased.status, "queued_for_review");
+    assert.deepEqual(aliased.categoryCoercion, { from: "project_update", to: "fact" });
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0]?.category, "fact", "the queued review memory stays canonical");
+
+    const canonical = await service.suggestionSubmit({
+      content: "suggested canonical fact",
+      category: "preference",
+      confidence: 0.9,
+      tags: [],
+    });
+    assert.equal(canonical.status, "queued_for_review");
+    assert.equal("categoryCoercion" in canonical, false, "a no-alias submit reports no coercion");
   });
 });
 
