@@ -1890,3 +1890,46 @@ test("converge --timeout rounds fractional seconds before integer normalization 
   // Sub-millisecond values normalize-reject (positive integer required).
   assert.throws(() => convergeTimeoutFlagToMs(0.0001), /--timeout/);
 });
+
+test("converge --token-file with a missing file exits 2 before any plan work (#2823)", async () => {
+  process.exitCode = undefined;
+  await cmdConverge("plan", ["--peer", "http://127.0.0.1:1", "--token-file", "/nonexistent/peer.token"], true);
+  assert.equal(process.exitCode, 2);
+  process.exitCode = undefined;
+});
+
+test("converge --token-file rejects permissive modes and missing values (#2823 round 1)", async () => {
+  const { mkdtemp, writeFile, chmod, rm } = await import("node:fs/promises");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "token-mode-"));
+  try {
+    const permissive = path.join(dir, "open.token");
+    await writeFile(permissive, "x".repeat(64) + "\n");
+    await chmod(permissive, 0o644);
+    process.exitCode = undefined;
+    await cmdConverge("plan", ["--peer", "http://127.0.0.1:1", "--token-file", permissive], true);
+    // Windows synthesizes POSIX mode bits (readable files present as 0666),
+    // so the permissive rejection is only observable on POSIX.
+    if (process.platform !== "win32") assert.equal(process.exitCode, 2);
+    process.exitCode = undefined;
+    await cmdConverge("plan", ["--peer", "http://127.0.0.1:1", "--token-file"], true);
+    assert.equal(process.exitCode, 2);
+    process.exitCode = undefined;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("converge rejects invalid REMNIC_CONVERGE_TRANSFER_CONCURRENCY (#2832)", async () => {
+  const prev = process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY;
+  try {
+    for (const bad of ["0", "-1", "2.5", "abc", "Infinity"]) {
+      process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = bad;
+      await assert.rejects(() => executeConvergeApply({}), /TRANSFER_CONCURRENCY must be a positive integer/);
+    }
+  } finally {
+    if (prev === undefined) delete process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY;
+    else process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = prev;
+  }
+});
