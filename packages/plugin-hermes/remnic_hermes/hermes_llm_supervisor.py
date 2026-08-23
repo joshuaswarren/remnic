@@ -29,20 +29,8 @@ _DAEMON_ENV_KEYS = frozenset(
         "XDG_DATA_HOME",
     }
 )
-_DAEMON_REMNIC_ENV_KEYS = frozenset(
-    {
-        "REMNIC_CONFIG_PATH",
-        "ENGRAM_CONFIG_PATH",
-        "REMNIC_MEMORY_DIR",
-        "ENGRAM_MEMORY_DIR",
-        "REMNIC_AUTH_TOKEN",
-        "ENGRAM_AUTH_TOKEN",
-        "REMNIC_HOST",
-        "ENGRAM_HOST",
-        "REMNIC_PORT",
-        "ENGRAM_PORT",
-    }
-)
+_DAEMON_ENV_PREFIXES = ("REMNIC_", "ENGRAM_")
+_DAEMON_EXCLUDED_ENV_KEYS = frozenset({_READY_TOKEN_ENV})
 
 
 def build_child_commands(
@@ -79,13 +67,17 @@ def build_child_commands(
 
 
 def _daemon_environment(parent: Mapping[str, str], request_token: str) -> dict[str, str]:
-    """Give Remnic runtime basics and documented daemon settings, never provider env."""
+    """Give Remnic runtime basics and supported Remnic/Engram settings, never provider env."""
     if not request_token:
         raise ValueError("bridge request token is required")
     environment = {
         key: value
         for key, value in parent.items()
-        if key in _DAEMON_ENV_KEYS | _DAEMON_REMNIC_ENV_KEYS and value
+        if (
+            key in _DAEMON_ENV_KEYS
+            or (key.startswith(_DAEMON_ENV_PREFIXES) and key not in _DAEMON_EXCLUDED_ENV_KEYS)
+        )
+        and value
     }
     environment[_REQUEST_TOKEN_ENV] = request_token
     return environment

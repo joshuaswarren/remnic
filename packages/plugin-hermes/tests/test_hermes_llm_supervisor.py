@@ -399,6 +399,10 @@ def test_daemon_environment_preserves_documented_remnic_runtime_settings_without
         "ENGRAM_HOST": "127.0.0.1",
         "REMNIC_PORT": "4318",
         "ENGRAM_PORT": "4319",
+        "REMNIC_OAUTH_CLIENT_SECRET": "oauth-client-secret",
+        "ENGRAM_ADMIN_CONSOLE_ENABLED": "true",
+        "REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS": "1800",
+        "REMNIC_HERMES_BRIDGE_READY_TOKEN": "ready-secret-must-not-reach-daemon",
         "OPENAI_API_KEY": "provider-key-must-not-reach-daemon",
         "XAI_API_KEY": "other-provider-key-must-not-reach-daemon",
     }
@@ -416,9 +420,13 @@ def test_daemon_environment_preserves_documented_remnic_runtime_settings_without
         "ENGRAM_HOST",
         "REMNIC_PORT",
         "ENGRAM_PORT",
+        "REMNIC_OAUTH_CLIENT_SECRET",
+        "ENGRAM_ADMIN_CONSOLE_ENABLED",
+        "REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS",
     ):
         assert daemon_env[key] == parent_env[key]
     assert daemon_env[_REQUEST_TOKEN_ENV] == "bridge-request-token"
+    assert _READY_TOKEN_ENV not in daemon_env
     assert "OPENAI_API_KEY" not in daemon_env
     assert "XAI_API_KEY" not in daemon_env
 
