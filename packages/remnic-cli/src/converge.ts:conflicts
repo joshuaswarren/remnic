@@ -1,0 +1,8 @@
+ @theirs
+ import { ConvergePlanCache, convergePlanScopeKey, type ConvergePlanProgressEvent } from "./converge-plan-cache.js";
+ import { planLocalNamespaceCensus } from "./converge-local-census.js";
+ import { planPeerNamespaceCensus } from "./converge-peer-census.js";
+ @ours
+ @ours
+ @ours
+ @ours

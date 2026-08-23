@@ -39,7 +39,8 @@ export interface PeerCensusArgs {
   timeoutMs: number;
   /** Peer advertised the streaming manifest route (capabilities). */
   manifestStream: boolean;
-  citationTemplate: string | undefined;
+  /** Peer-advertised manifest revision; `undefined` = unversioned peer. */
+  peerManifestRevision: string | undefined;
   /** Warm per-file cache from the local manifest, for the per-file fallback path. */
   localManifestFiles: readonly ReconcileManifestFile[] | undefined;
   cache: ConvergePlanCache | null;
@@ -57,10 +58,20 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
   args.signal?.throwIfAborted();
   const peerData = await fetchPeerSnapshot(peerUrl, ns, args.resolvedToken, args.fetchFn, args.timeoutMs);
   const priorPeerEntry = args.cache ? await args.cache.readEntry("peer", ns) : null;
-  const priorPeerFiles = priorPeerEntry?.files;
+  // Peer-manifest reuse is keyed on the peer's ADVERTISED manifest revision
+  // (#2803 review): identical file bytes can carry identities built by a
+  // different peer implementation. An unversioned peer, or one whose
+  // advertised revision changed, gets no watermark reuse — and its cached
+  // rows are not trusted as the per-file warm base either, because streamed
+  // rows carry the PEER's identity semantics, not this client's.
+  const revisionTrusted =
+    args.peerManifestRevision !== undefined &&
+    priorPeerEntry?.peerManifestRevision === args.peerManifestRevision;
+  const reusableEntry = revisionTrusted ? priorPeerEntry : null;
+  const priorPeerFiles = reusableEntry?.files;
   const watermark = censusWatermark(peerData.files);
   let peerManifest: ReconcileManifest | null = null;
-  if (priorPeerEntry && priorPeerEntry.watermark === watermark && priorPeerEntry.fileCount === peerData.files.length) {
+  if (reusableEntry && reusableEntry.watermark === watermark && reusableEntry.fileCount === peerData.files.length) {
     // Cache hit: the peer census is byte-identical to the one this manifest
     // was built from. Overlay fresh mtime/bytes (newest-wins conflict
     // resolution reads them) and skip the manifest fetch.
@@ -182,6 +193,9 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
       fileCount: peerManifests.files.length,
       capturedAtMs: Date.now(),
       savedAt: new Date().toISOString(),
+      ...(args.peerManifestRevision !== undefined
+        ? { peerManifestRevision: args.peerManifestRevision }
+        : {}),
       files: peerManifests.files,
     });
   }

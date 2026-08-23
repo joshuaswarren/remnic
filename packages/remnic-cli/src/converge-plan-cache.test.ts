@@ -89,12 +89,21 @@ interface PeerMock {
   onSnapshot?: (namespace: string) => void;
 }
 
-function createPeerMock(filesByNamespace: Map<string, FixtureFile[]>): PeerMock {
+function createPeerMock(
+  filesByNamespace: Map<string, FixtureFile[]>,
+  /** Advertised peer manifest revision; `undefined` models an unversioned peer. */
+  manifestRevision: string | undefined = "rev-1"
+): PeerMock {
   const mock: PeerMock = {
     fetchImpl: async (input) => {
       const url = new URL(String(input));
       if (url.pathname.endsWith("/offline-sync/capabilities")) {
-        return Response.json({ version: 1, convergenceFinalization: true, manifestStream: true });
+        return Response.json({
+          version: 1,
+          convergenceFinalization: true,
+          manifestStream: true,
+          ...(manifestRevision !== undefined ? { manifestRevision } : {}),
+        });
       }
       const namespace = url.searchParams.get("namespace") ?? "";
       if (url.pathname.endsWith("/offline-sync/snapshot")) {
@@ -360,6 +369,57 @@ test("converge plan: cache entries never contain the peer token or file bodies (
       assert.equal(content.includes(PEER_TOKEN), false, `token leaked into ${path.basename(entryPath)}`);
       assert.equal(content.includes(secretBody), false, `file body leaked into ${path.basename(entryPath)}`);
     }
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: an unopenable plan-cache root degrades to an uncached plan instead of failing (#2803)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-rocache-"));
+  try {
+    const corpus = convergedCorpus();
+    await writeLocalCorpus(memoryDir, corpus);
+    // Plant a FILE where the cache root directory must live: open() cannot
+    // mkdir through it (ENOTDIR) — the read-only/broken audit deployment.
+    const cacheRoot = convergePlanCacheRoot(memoryDir);
+    await fs.mkdir(path.dirname(cacheRoot), { recursive: true });
+    await fs.writeFile(cacheRoot, "not-a-directory");
+    const mock = createPeerMock(corpus);
+    const plan = await convergedPlan(memoryDir, mock);
+    assert.equal(plan.converged, true);
+    // No cache ⇒ no resume: every namespace computes its manifest live.
+    assert.deepEqual(mock.manifestStreamNamespaces, NAMESPACES);
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: peer cache entries are keyed by the peer's advertised manifest revision (#2803)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-peerrev-"));
+  try {
+    const corpus = convergedCorpus();
+    await writeLocalCorpus(memoryDir, corpus);
+
+    // Warm the cache against a versioned peer.
+    await convergedPlan(memoryDir, createPeerMock(corpus, "rev-1"));
+    // Same advertised revision: entries are trusted, nothing refetches.
+    const same = createPeerMock(corpus, "rev-1");
+    await convergedPlan(memoryDir, same);
+    assert.deepEqual(same.manifestStreamNamespaces, []);
+
+    // The peer upgrades its manifest implementation without rewriting
+    // stored files: identical watermark, different semantics. Every peer
+    // entry is untrusted and must be rebuilt from the wire.
+    const upgraded = createPeerMock(corpus, "rev-2");
+    const plan = await convergedPlan(memoryDir, upgraded);
+    assert.equal(plan.converged, true);
+    assert.deepEqual(upgraded.manifestStreamNamespaces, NAMESPACES);
+
+    // An unversioned peer never gets streamed-manifest reuse, no matter
+    // what ran against this memory dir before it.
+    const unversioned = createPeerMock(corpus, undefined);
+    await convergedPlan(memoryDir, unversioned);
+    assert.deepEqual(unversioned.manifestStreamNamespaces, NAMESPACES);
   } finally {
     await fs.rm(memoryDir, { recursive: true, force: true });
   }

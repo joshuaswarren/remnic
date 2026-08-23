@@ -45,6 +45,12 @@ export interface PeerSyncCapabilities {
   manifestStream: boolean;
   /** Peer's process.platform when advertised (older peers omit it). */
   platform?: string;
+  /**
+   * Peer-advertised identity of the manifest implementation that builds its
+   * streamed manifests (#2803 review). Older peers omit it — clients must
+   * not reuse cached peer manifests from an unversioned peer.
+   */
+  manifestRevision?: string;
 }
 
 export async function fetchPeerSyncCapabilities(
@@ -77,10 +83,13 @@ export async function fetchPeerSyncCapabilities(
       throw new Error("peer capability response was malformed");
     }
     const platform = "platform" in payload && typeof payload.platform === "string" ? payload.platform : undefined;
+    const manifestRevision =
+      "manifestRevision" in payload && typeof payload.manifestRevision === "string" ? payload.manifestRevision : undefined;
     return {
       convergenceFinalization: payload.convergenceFinalization,
       manifestStream: payload.manifestStream,
       ...(platform !== undefined ? { platform } : {}),
+      ...(manifestRevision !== undefined && manifestRevision.length > 0 ? { manifestRevision } : {}),
     };
   }
   return null;
@@ -220,7 +229,9 @@ export async function streamPeerFileContent(
   onChunk: (chunk: PeerFileChunk) => Promise<void>,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS
+  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  /** Apply-phase cancellation (#2803 review): aborts the in-flight request. */
+  signal?: AbortSignal
 ): Promise<Omit<PeerFileContent, "content"> | null> {
   assertTransferablePeerPath(filePath);
   const base = normalizePeerBaseUrl(peerUrl);
@@ -253,6 +264,7 @@ export async function streamPeerFileContent(
               offset,
               length: OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
             }),
+            ...(signal ? { signal } : {}),
           },
           timeoutMs
         );
@@ -325,7 +337,8 @@ export async function fetchPeerFileContent(
   filePath: string,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS
+  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  signal?: AbortSignal
 ): Promise<PeerFileContent | null> {
   const chunks: Buffer[] = [];
   const metadata = await streamPeerFileContent(
@@ -337,7 +350,8 @@ export async function fetchPeerFileContent(
     },
     token,
     fetchImpl,
-    timeoutMs
+    timeoutMs,
+    signal
   );
   if (!metadata) return null;
   return {
@@ -361,7 +375,8 @@ export async function postPeerFileContent(
   source: PeerFileSource,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS
+  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  signal?: AbortSignal
 ): Promise<"applied" | "skipped" | false> {
   assertTransferablePeerPath(filePath);
   const base = normalizePeerBaseUrl(peerUrl);
@@ -403,6 +418,7 @@ export async function postPeerFileContent(
             method: "POST",
             headers,
             body: new Uint8Array(chunk),
+            ...(signal ? { signal } : {}),
           },
           timeoutMs
         );
@@ -446,7 +462,8 @@ export async function postPeerConvergenceComplete(
   namespaces: readonly string[],
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS
+  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  signal?: AbortSignal
 ): Promise<boolean> {
   const base = normalizePeerBaseUrl(peerUrl);
   const query = namespaces.map((namespace) => `namespace=${encodeURIComponent(namespace)}`).join("&");
@@ -461,6 +478,7 @@ export async function postPeerConvergenceComplete(
           "x-remnic-source-id": encodeURIComponent("remnic-converge"),
           ...(token ? { authorization: `Bearer ${token}` } : {}),
         },
+        ...(signal ? { signal } : {}),
       },
       timeoutMs
     ).catch(() => null);
@@ -489,7 +507,8 @@ export async function postPeerFileDeletion(
   baseSha256: string,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS
+  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  signal?: AbortSignal
 ): Promise<"applied" | "skipped" | false> {
   assertTransferablePeerPath(filePath);
   const base = normalizePeerBaseUrl(peerUrl);
@@ -518,6 +537,7 @@ export async function postPeerFileDeletion(
               changes: [{ type: "delete", path: filePath, baseSha256 }],
             },
           }),
+          ...(signal ? { signal } : {}),
         },
         timeoutMs
       );

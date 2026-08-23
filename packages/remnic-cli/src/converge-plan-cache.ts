@@ -79,6 +79,13 @@ export interface ConvergePlanCacheEntry {
    */
   capturedAtMs: number;
   savedAt: string;
+  /**
+   * Peer-ADVERTISED manifest revision this entry's identities were built
+   * with (#2803 review). Absent on local-side entries and on entries
+   * written against unversioned peers — both are exactly the cases where
+   * peer-side reuse must not happen.
+   */
+  peerManifestRevision?: string;
   files: ReconcileManifestFile[];
 }
 
@@ -216,6 +223,7 @@ function normalizeEntry(
     fileCount: files.length,
     capturedAtMs: raw.capturedAtMs,
     savedAt: raw.savedAt,
+    ...(typeof raw.peerManifestRevision === "string" ? { peerManifestRevision: raw.peerManifestRevision } : {}),
     files,
   };
 }

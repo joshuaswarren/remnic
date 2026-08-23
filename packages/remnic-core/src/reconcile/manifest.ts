@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { computeLegacyContentHash, normalizeLegacyContent } from "../content-hash.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
-import { ContentHashIndex, type ContentHashPathEntry } from "../storage/content-hash-index.js";
 import { DEFAULT_CITATION_FORMAT, stripCitationForTemplate } from "../source-attribution.js";
+import { ContentHashIndex, type ContentHashPathEntry } from "../storage/content-hash-index.js";
 import { storedContentIdentityCandidates } from "../structured-attributes.js";
 import type { MemoryFrontmatter, MemoryStatus } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
@@ -30,6 +30,18 @@ export const CONTENT_HASH_NORMALIZER_VERSION = 4;
  */
 export const IDENTITY_RESOLUTION_VERSION = 2;
 
+/**
+ * Identity of the manifest-affecting implementation this peer builds
+ * STREAMED manifests with. Advertised via offline-sync capabilities so the
+ * client can key peer-side plan caches on it: a peer that upgrades its
+ * normalization logic without rewriting stored files keeps the same file
+ * hashes, and only this revision invalidates the stale cached identities
+ * (#2803 review).
+ */
+export function peerManifestRevision(): string {
+  return `schema=${RECONCILE_MANIFEST_SCHEMA_VERSION};normalizer=${CONTENT_HASH_NORMALIZER_VERSION};identity=${IDENTITY_RESOLUTION_VERSION}`;
+}
+
 export interface ReconcileMemoryIdentity {
   id: string;
   category: string;
@@ -49,6 +61,9 @@ export interface ReconcileMemoryIdentity {
 
 export interface ReconcileManifestFile extends ReconcileFileState {
   memory?: ReconcileMemoryIdentity;
+  /** Present on sha-only (negative) entries so an upgrade re-parses them. */
+  normalizerVersion?: number;
+  identityResolutionVersion?: number;
 }
 
 type ActiveFactManifestFile = ReconcileManifestFile & { memory: ReconcileMemoryIdentity };
@@ -132,6 +147,65 @@ function parsedMemoryIdentity(
   };
 }
 
+/**
+ * Stable fingerprint of the citation template that `parsedMemoryIdentity` uses
+ * to strip inline attribution before hashing. A persisted identity cache is
+ * only reusable while this matches: identical file content under a different
+ * template yields a different `contentHash`, which would silently change
+ * duplicate and conflict decisions on a warm plan.
+ */
+export function citationTemplateFingerprint(citationTemplate?: string): string {
+  return createHash("sha256")
+    .update(citationTemplate ?? DEFAULT_CITATION_FORMAT)
+    .digest("hex")
+    .slice(0, 16);
+}
+
+/**
+ * Structural guard for identities read back from an on-disk cache. A cache file
+ * is untrusted JSON: without this an entry carrying `memory: null` survives the
+ * loader's cast and then throws when the hit path dereferences
+ * `memory.normalizerVersion`, aborting a manifest build that should instead
+ * fall back to a cold parse.
+ */
+export function isReconcileMemoryIdentity(value: unknown): value is ReconcileMemoryIdentity {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const memory = value as Record<string, unknown>;
+  if (typeof memory.id !== "string") return false;
+  if (typeof memory.category !== "string") return false;
+  if (typeof memory.contentHash !== "string" || !SHA256_PATTERN.test(memory.contentHash)) return false;
+  if (typeof memory.status !== "string") return false;
+  if (memory.normalizerVersion !== undefined && typeof memory.normalizerVersion !== "number") return false;
+  if (memory.identityResolutionVersion !== undefined && typeof memory.identityResolutionVersion !== "number") {
+    return false;
+  }
+  if (
+    memory.contentHashAliases !== undefined &&
+    (!Array.isArray(memory.contentHashAliases) ||
+      memory.contentHashAliases.some((alias) => typeof alias !== "string" || !SHA256_PATTERN.test(alias)))
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** A cache hit is valid only when the entry was built by the current parser.
+ * Positive hits carry versions on `memory`; sha-only negatives stamp the same
+ * versions on the entry itself. Unversioned negatives are pre-upgrade leftovers
+ * and must miss so a newer parser can recognize an identity it previously skipped. */
+export function isCachedIdentityReusable(cached: ReconcileManifestFile): boolean {
+  if (cached.memory !== undefined) {
+    return (
+      cached.memory.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION &&
+      cached.memory.identityResolutionVersion === IDENTITY_RESOLUTION_VERSION
+    );
+  }
+  return (
+    cached.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION &&
+    cached.identityResolutionVersion === IDENTITY_RESOLUTION_VERSION
+  );
+}
+
 export async function buildReconcileManifestFile(
   file: ReconcileFileState,
   readFile: (file: ReconcileFileState) => Promise<Buffer | string | null>,
@@ -139,10 +213,12 @@ export async function buildReconcileManifestFile(
   citationTemplate = DEFAULT_CITATION_FORMAT
 ): Promise<ReconcileManifestFile> {
   let raw: Buffer | string | null = null;
+  let readFailed = false;
   if (isMemoryPath(file.path)) {
     try {
       raw = await readFile(file);
     } catch {
+      readFailed = true;
       raw = null;
     }
   }
@@ -150,7 +226,18 @@ export async function buildReconcileManifestFile(
     raw = null;
   }
   const memory = raw === null ? undefined : parsedMemoryIdentity(file.path, raw, parseMemory, citationTemplate);
-  return { ...file, ...(memory ? { memory } : {}) };
+  // A thrown read is not a negative identity. Stamping versions here would
+  // make the next warm cycle treat the failure as "this file has no id".
+  if (readFailed) return { ...file };
+  return {
+    ...file,
+    ...(memory
+      ? { memory }
+      : {
+          normalizerVersion: CONTENT_HASH_NORMALIZER_VERSION,
+          identityResolutionVersion: IDENTITY_RESOLUTION_VERSION,
+        }),
+  };
 }
 
 /** Read-batch size for manifest builds. Uncached files are independent (a
@@ -168,23 +255,33 @@ export async function buildReconcileManifest(options: BuildReconcileManifestOpti
     cachedByPath.set(cached.path, cached);
   }
 
-  const files: ReconcileManifestFile[] = [];
+  const allFiles = [...options.files];
+  // Every result — cache hit or rebuild — is stored at its own input index.
+  // Pushing hits onto a dense array while rebuilds are assigned by index
+  // silently drops entries whenever a miss precedes a hit: the rebuild lands
+  // on the slot the hit already occupied.
+  const files: ReconcileManifestFile[] = new Array(allFiles.length);
   // Cache hits stay on a synchronous fast path (no promise allocation, no
   // Promise.all — a fully-cached rebuild must not regress); only the uncached
-  // entries ride the bounded batches. Order is preserved by index.
+  // entries ride the bounded batches.
   const uncached: Array<{ index: number; file: ReconcileFileState }> = [];
-  const allFiles = [...options.files];
   for (let i = 0; i < allFiles.length; i += 1) {
     const file = allFiles[i]!;
     const cached = cachedByPath.get(file.path);
     if (
       cached !== undefined &&
       cached.sha256.toLowerCase() === file.sha256.toLowerCase() &&
-      (cached.memory === undefined ||
-        (cached.memory.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION &&
-          cached.memory.identityResolutionVersion === IDENTITY_RESOLUTION_VERSION))
+      isCachedIdentityReusable(cached)
     ) {
-      files.push({ ...file, ...(cached.memory ? { memory: cached.memory } : {}) });
+      files[i] = {
+        ...file,
+        ...(cached.memory
+          ? { memory: cached.memory }
+          : {
+              normalizerVersion: cached.normalizerVersion,
+              identityResolutionVersion: cached.identityResolutionVersion,
+            }),
+      };
     } else {
       uncached.push({ index: i, file });
     }

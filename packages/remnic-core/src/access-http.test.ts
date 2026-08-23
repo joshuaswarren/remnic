@@ -1528,11 +1528,26 @@ test("HTTP offline sync capabilities advertise manifest streaming", async () => 
       { headers: { authorization: "Bearer test-token" } },
     );
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), {
-      version: 1,
-      convergenceFinalization: true,
-      manifestStream: true,
-    });
+    const payload = (await response.json()) as {
+      version?: unknown;
+      convergenceFinalization?: unknown;
+      manifestStream?: unknown;
+      manifestRevision?: unknown;
+    };
+    assert.deepEqual(
+      {
+        version: payload.version,
+        convergenceFinalization: payload.convergenceFinalization,
+        manifestStream: payload.manifestStream,
+      },
+      {
+        version: 1,
+        convergenceFinalization: true,
+        manifestStream: true,
+      }
+    );
+    assert.equal(typeof payload.manifestRevision, "string", "capabilities must advertise a manifest revision");
+    assert.ok((payload.manifestRevision as string).length > 0);
   } finally {
     await server.stop();
   }
