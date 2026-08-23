@@ -8,6 +8,7 @@
 # Large generated or data-heavy files that bloat the index
 tests/fixtures/
 tests/compat-fixtures/
+evals/
 
 # Vendor/third-party code
 packages/plugin-hermes/remnic_hermes/
