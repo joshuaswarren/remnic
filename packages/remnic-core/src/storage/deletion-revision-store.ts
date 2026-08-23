@@ -102,31 +102,24 @@ export function nextCasRevisionIso(previous: string | undefined, now = new Date(
 
 /**
  * #2813 P1 (#2807 CI repair): whether a durable frontmatter rewrite changed
- * anything SEMANTIC. Access telemetry (`accessCount`/`lastAccessed` —
- * exactly the fields the CAS fingerprint strips) is not semantic: an access
- * bump must not advance the target's CAS revision token, or it would
- * invalidate every pending conditional write. Every other change — status
- * flips, caller-supplied `updated`, provenance — is a semantic mutation and
- * mints a new token at the write chokepoint, so a receipt issued before it
- * can never "recognise" the record afterwards (#2807 round 5).
+ * anything SEMANTIC. Comparison is STRUCTURAL, through the same
+ * canonicalizing fingerprint the invalidation proof uses — a `!==` field
+ * loop would flag every array-valued field (tags, lineage, sources) because
+ * two parses of identical bytes are never reference-equal. Access
+ * telemetry (`accessCount`/`lastAccessed` — exactly the fields the
+ * fingerprint strips) is not semantic: an access bump must not advance the
+ * target's CAS revision token, or it would invalidate every pending
+ * conditional write. Every other change — status flips, caller-supplied
+ * `updated`, provenance — is a semantic mutation and mints a new token at
+ * the write chokepoint, so a receipt issued before it can never
+ * "recognise" the record afterwards (#2807 round 5).
  */
-const ACCESS_ONLY_FRONTMATTER_FIELDS: Record<string, true> = {
-  accessCount: true,
-  lastAccessed: true,
-};
-
 export function isSemanticFrontmatterChange(
   before: MemoryFrontmatter,
   after: MemoryFrontmatter,
 ): boolean {
-  const beforeRecord = before as unknown as Record<string, unknown>;
-  const afterRecord = after as unknown as Record<string, unknown>;
-  for (const key of new Set([...Object.keys(beforeRecord), ...Object.keys(afterRecord)])) {
-    if (ACCESS_ONLY_FRONTMATTER_FIELDS[key] !== true && beforeRecord[key] !== afterRecord[key]) {
-      return true;
-    }
-  }
-  return false;
+  return invalidationCommitFingerprint({ content: "", frontmatter: before })
+    !== invalidationCommitFingerprint({ content: "", frontmatter: after });
 }
 
 /**

@@ -4781,6 +4781,41 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     checkCorpusReadAbort(options);
     return memories;
   }
+  private async readWindowUpdatedMs(filePath: string): Promise<number | null> {
+    try {
+      const raw = await readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
+      const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+      if (!match) return null;
+      const frontmatterBlock = match[1];
+      const rawUpdated =
+        frontmatterBlock.match(/^[ \t]*updated:[ \t]*"?([^"\r\n]*)"?/m)?.[1] ||
+        frontmatterBlock.match(/^[ \t]*created:[ \t]*"?([^"\r\n]*)"?/m)?.[1] ||
+        null;
+      const updatedMs = rawUpdated ? Date.parse(rawUpdated.trim()) : Number.NaN;
+      return Number.isFinite(updatedMs) ? updatedMs : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async filterWindowPathsByUpdatedAfter(filePaths: string[], updatedAfterMs: number): Promise<string[]> {
+    const results = await Promise.all(
+      filePaths.map(async (filePath) => {
+        const updatedMs = await this.readWindowUpdatedMs(filePath);
+        if (updatedMs !== null) {
+          return updatedMs >= updatedAfterMs ? filePath : null;
+        }
+        try {
+          const fileStat = await stat(filePath);
+          return fileStat.mtimeMs >= updatedAfterMs ? filePath : null;
+        } catch {
+          return filePath;
+        }
+      })
+    );
+    return results.filter((filePath): filePath is string => filePath !== null);
+  }
+
 
   private orderWindowPaths(filePaths: string[]): string[] {
     const correctionPaths: string[] = [];
