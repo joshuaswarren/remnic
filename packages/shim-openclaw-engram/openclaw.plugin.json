@@ -462,6 +462,36 @@
         "default": false,
         "description": "If enabled, Engram may auto-promote selected categories to shared (reserved; conservative)."
       },
+      "backgroundGeneration": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Chat-only Hermes loopback bridge. Consumed only by hourly background generation. Never assigned to openaiBaseUrl.",
+        "properties": {
+          "endpoint": {
+            "type": "string",
+            "description": "Full chat-completions URL for the Hermes loopback bridge."
+          },
+          "token": {
+            "type": "string",
+            "description": "Loopback bearer from the generated client file."
+          },
+          "timeoutSeconds": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "default": 120,
+            "description": "Absolute deadline in seconds for one background-generation request."
+          },
+          "timeout_seconds": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Snake-case alias of timeoutSeconds used by the generated Hermes client file."
+          }
+        },
+        "required": [
+          "endpoint",
+          "token"
+        ]
+      },
       "beforeResetTimeoutMs": {
         "type": "integer",
         "minimum": 100,
@@ -3231,6 +3261,10 @@
         "type": "number",
         "default": 0.65,
         "description": "Decay threshold for lifecycle demotion to stale."
+      },
+      "llmBridgeClientConfigPath": {
+        "type": "string",
+        "description": "Path to the Hermes loopback-bridge client JSON. Parsed into backgroundGeneration only. Never copied onto openaiBaseUrl."
       },
       "localLlm400CooldownMs": {
         "type": "number",

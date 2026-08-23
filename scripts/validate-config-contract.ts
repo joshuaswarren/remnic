@@ -293,6 +293,9 @@ function main() {
     "openclawHostEmbeddingProviderEnabled",
     "openclawHostEmbeddingProviderId",
     "openclawHostEmbeddingProviderModel",
+    // Input-only path: parseConfig reads the generated Hermes client JSON into
+    // backgroundGeneration and does not keep this path on PluginConfig.
+    "llmBridgeClientConfigPath",
   ]);
   const expectedParseMissing = new Set<string>(["providerApiKeyResolver", "runtimeAuthForModelResolver"]);
 

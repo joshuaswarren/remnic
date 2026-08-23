@@ -11,6 +11,8 @@ import type { ContradictionLocalizationConfig, ContradictionScanConfig } from ".
 import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 export type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
 export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
+export type { BackgroundGenerationConfig } from "./background-generation-config.js";
+import type { BackgroundGenerationConfig } from "./background-generation-config.js";
 import type {
   DriftDetectionSettings,
   MemoryDriftProvenance,
@@ -682,15 +684,6 @@ export interface SemanticChunkingConfigShape {
   embeddingBatchSize: number;
   fallbackToRecursive: boolean;
 }
-
-export interface BackgroundGenerationConfig {
-  /** Full chat-completions URL. Never used as the global OpenAI base URL. */
-  endpoint: string;
-  /** Loopback bearer from the generated client file. */
-  token: string;
-  timeoutSeconds: number;
-}
-
 export interface PluginConfig
   extends BoundedJsonlStateConfig,
     SecurityConfig,
@@ -699,10 +692,6 @@ export interface PluginConfig
     DeepRecallSettings {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
-  /**
-   * Chat-only Hermes loopback bridge. Consumed only by background generation.
-   * Never assigned to openaiBaseUrl.
-   */
   backgroundGeneration?: BackgroundGenerationConfig;
   model: string;
   reasoningEffort: ReasoningEffort;
@@ -3891,7 +3880,6 @@ export interface HourlySummary {
 // ============================================================================
 // Dreams Pipeline Telemetry (issue #678 PR 3/4)
 // ============================================================================
-
 // Re-export from the authoritative source to avoid duplicate definitions.
 // dreams-ledger.ts is the single source of truth; types.ts re-exports so
 // callers that import from types.js continue to work unchanged.

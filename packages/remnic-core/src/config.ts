@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import type {
   CodexCompactionFlushMode,
@@ -15,7 +14,7 @@ import type {
   MemoryOsPresetName,
   AgentPersonaModelConfig,
   PluginConfig,
-  BackgroundGenerationConfig,
+  PrincipalRule,
   RecallPipelineConfig,
   RecallSectionConfig,
   ReasoningEffort,
@@ -26,6 +25,7 @@ import type {
   TriggerMode,
   TrustWeights,
 } from "./types.js";
+import { parseBackgroundGeneration } from "./background-generation-config.js";
 import { parseConvergeConfig } from "./converge-config.js";
 import { parseExternalWikiRecallGuard } from "./external-wiki-guard.js";
 import { log } from "./logger.js";
@@ -510,87 +510,6 @@ function normalizeOpenaiBaseUrl(value: string | undefined, source: "config" | "e
   return url;
 }
 
-
-function parseBackgroundEndpoint(value: string, keyName: string): string {
-  const trimmed = value.trim().replace(/\/+$/, "");
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    throw new Error(`${keyName} must be an absolute HTTP or HTTPS URL`);
-  }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new Error(`${keyName} must use HTTP or HTTPS`);
-  }
-  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw new Error(
-      `${keyName} must not include credentials, query parameters, or fragments`,
-    );
-  }
-  return trimmed;
-}
-
-function parseBackgroundGenerationObject(
-  raw: unknown,
-  keyName: string,
-): BackgroundGenerationConfig {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error(`${keyName} must be an object`);
-  }
-  const record = raw as Record<string, unknown>;
-  const endpointRaw = record.endpoint ?? record.url;
-  if (typeof endpointRaw !== "string" || endpointRaw.trim().length === 0) {
-    throw new Error(`${keyName} must include an endpoint URL`);
-  }
-  const tokenRaw = record.token;
-  if (typeof tokenRaw !== "string" || tokenRaw.length === 0) {
-    throw new Error(`${keyName} must include a token`);
-  }
-  const timeoutRaw = record.timeoutSeconds ?? record.timeout_seconds;
-  let timeoutSeconds = 120;
-  if (timeoutRaw !== undefined) {
-    const parsed = typeof timeoutRaw === "number" ? timeoutRaw : Number(timeoutRaw);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      throw new Error(`${keyName} timeoutSeconds must be a finite number > 0`);
-    }
-    timeoutSeconds = parsed;
-  }
-  return {
-    endpoint: parseBackgroundEndpoint(endpointRaw, `${keyName}.endpoint`),
-    token: tokenRaw,
-    timeoutSeconds,
-  };
-}
-function parseBackgroundGeneration(
-  cfg: Record<string, unknown>,
-): BackgroundGenerationConfig | undefined {
-  const pathRaw = cfg.llmBridgeClientConfigPath;
-  let fromFile: BackgroundGenerationConfig | undefined;
-  if (pathRaw !== undefined && pathRaw !== null && pathRaw !== "") {
-    if (typeof pathRaw !== "string") {
-      throw new Error("llmBridgeClientConfigPath must be a string");
-    }
-    const expanded = expandTildePath(resolveEnvVars(pathRaw.trim()));
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(expanded, "utf8"));
-    } catch {
-      throw new Error(`llmBridgeClientConfigPath could not be read: ${expanded}`);
-    }
-    fromFile = parseBackgroundGenerationObject(parsed, "llmBridgeClientConfigPath");
-  }
-  const explicitRaw = cfg.backgroundGeneration;
-  const fromExplicit =
-    explicitRaw === undefined || explicitRaw === null
-      ? undefined
-      : parseBackgroundGenerationObject(explicitRaw, "backgroundGeneration");
-  if (!fromFile && !fromExplicit) return undefined;
-  return {
-    endpoint: fromExplicit?.endpoint ?? fromFile!.endpoint,
-    token: fromExplicit?.token ?? fromFile!.token,
-    timeoutSeconds: fromExplicit?.timeoutSeconds ?? fromFile!.timeoutSeconds,
-  };
-}
 
 function normalizeMemoryRelativeDir(raw: unknown, fallback: string): string {
   if (typeof raw !== "string") return fallback;
@@ -1555,7 +1474,7 @@ export function parseConfig(
   } else if (apiKey !== undefined) {
     baseUrl = normalizeOpenaiBaseUrl(readEnvVar("OPENAI_BASE_URL"), "env");
   }
-  const backgroundGeneration = parseBackgroundGeneration(cfg);
+  const backgroundGeneration = parseBackgroundGeneration(cfg, resolveEnvVars);
 
   const sharedCrossSignalSemanticEnabled =
     cfg.sharedCrossSignalSemanticEnabled === true || cfg.crossSignalsSemanticEnabled === true;

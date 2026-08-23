@@ -2793,3 +2793,63 @@ test("parseConfig rejects a bridge client file without a token", () => {
     }
   });
 });
+
+test("parseConfig keeps env openaiBaseUrl isolated from the Hermes bridge", () => {
+  withIsolatedConnectorsDir(false, () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "remnic-llm-bridge-env-"));
+    const previousKey = process.env.OPENAI_API_KEY;
+    const previousBase = process.env.OPENAI_BASE_URL;
+    process.env.OPENAI_API_KEY = "env-openai-key";
+    process.env.OPENAI_BASE_URL = "http://127.0.0.1:9999/v1";
+    try {
+      const file = path.join(dir, "client.json");
+      writeFileSync(
+        file,
+        JSON.stringify({
+          endpoint: "http://127.0.0.1:8765/v1/chat/completions",
+          token: "bridge-token-fixture",
+          timeout_seconds: 45,
+        }),
+      );
+      const parsed = parseConfig({ llmBridgeClientConfigPath: file });
+      assert.equal(parsed.openaiBaseUrl, "http://127.0.0.1:9999/v1");
+      assert.equal(parsed.openaiApiKey, "env-openai-key");
+      assert.deepEqual(parsed.backgroundGeneration, {
+        endpoint: "http://127.0.0.1:8765/v1/chat/completions",
+        token: "bridge-token-fixture",
+        timeoutSeconds: 45,
+      });
+    } finally {
+      if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousKey;
+      if (previousBase === undefined) delete process.env.OPENAI_BASE_URL;
+      else process.env.OPENAI_BASE_URL = previousBase;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("parseConfig rejects a non-object backgroundGeneration value", () => {
+  withIsolatedConnectorsDir(false, () => {
+    assert.throws(
+      () => parseConfig({ backgroundGeneration: "http://127.0.0.1:8765/v1/chat/completions" }),
+      /backgroundGeneration must be an object/,
+    );
+  });
+});
+
+test("parseConfig strips a slash-rich bridge endpoint without regex", () => {
+  withIsolatedConnectorsDir(false, () => {
+    const parsed = parseConfig({
+      backgroundGeneration: {
+        endpoint: `http://127.0.0.1:8765/v1/chat/completions${"/".repeat(10_000)}`,
+        token: "bridge-token-fixture",
+      },
+    });
+    assert.equal(
+      parsed.backgroundGeneration?.endpoint,
+      "http://127.0.0.1:8765/v1/chat/completions",
+    );
+    assert.equal(parsed.openaiBaseUrl, undefined);
+  });
+});
