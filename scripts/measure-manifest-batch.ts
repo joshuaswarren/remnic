@@ -12,6 +12,7 @@ import { buildReconcileManifest } from "../packages/remnic-core/src/reconcile/ma
 import type { ReconcileFileState } from "../packages/remnic-core/src/reconcile/plan.js";
 
 const N = Number(process.argv[2] ?? 2000);
+const contentByPath = new Map<string, string>();
 const root = path.join(tmpdir(), "manifest-bench-" + Date.now());
 mkdirSync(root, { recursive: true });
 
@@ -20,6 +21,7 @@ for (let i = 0; i < N; i++) {
   const rel = `facts/2026-01-01/f-${i}.md`;
   const body = `---\nid: m-${i}\ncategory: fact\nstatus: active\n---\nFact body number ${i} with some content to parse.\n`;
   writeFileSync(path.join(root, "f-" + i + ".md"), body);
+  contentByPath.set(rel, body);
   files.push({
     path: rel,
     sha256: createHash("sha256").update(body).digest("hex"),
@@ -28,10 +30,12 @@ for (let i = 0; i < N; i++) {
   });
 }
 
-// A readFile with the real per-file async shape (two awaited hops).
+// readFile with the real per-file async shape (two awaited hops) returning
+// each file's ACTUAL content from disk, so the sha matches and the manifest
+// builder exercises the full pipeline: read -> sha verify -> parse -> identity.
 const readFile = async (file: ReconcileFileState): Promise<string> => {
   const { promise: rawPromise, resolve: resolveRaw } = Promise.withResolvers<Buffer>();
-  setImmediate(() => resolveRaw(Buffer.from(`---\nid: x\ncategory: fact\nstatus: active\n---\n`)));
+  setImmediate(() => resolveRaw(Buffer.from(contentByPath.get(file.path) ?? "")));
   const raw = await rawPromise;
   const { promise: tick, resolve: resolveTick } = Promise.withResolvers<void>();
   setImmediate(resolveTick);
