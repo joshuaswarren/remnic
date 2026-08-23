@@ -277,12 +277,13 @@ test("PID reuse cannot keep a lock live", async () => {
       })}\n`,
     );
     assert.equal(isLockHeldByLiveProcess(lockDir), false);
-    assert.equal(acquireLockDir(lockDir), true);
+    const handle = acquireLockDir(lockDir);
+    assert.ok(handle);
     const owner = JSON.parse(fsSync.readFileSync(path.join(lockDir, "owner.json"), "utf8"));
     assert.equal(owner.pid, process.pid);
     assert.notEqual(owner.nonce, "reused-pid");
     assert.notEqual(owner.startTicks, -1);
-    releaseLockDir(lockDir);
+    releaseLockDir(handle);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -345,6 +346,124 @@ test("two stale-lock reclaimers leave exactly one owner", async () => {
     const log = await readFile(buildLog, "utf8");
     assert.equal(log.trim().split("\n").filter((line) => line.length > 0).length, 1);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("release removes the lock identity it owns and leaves no aside leftovers", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-build-staleness-release-"));
+  try {
+    const lockRoot = path.join(root, "node_modules", ".cache", "remnic-build-locks");
+    const lockDir = path.join(lockRoot, "scope-release-pkg");
+    await mkdir(lockRoot, { recursive: true });
+
+    const handle = acquireLockDir(lockDir);
+    assert.ok(handle);
+    releaseLockDir(handle);
+
+    assert.equal(fsSync.existsSync(lockDir), false, "owned lock must be removed");
+    assert.deepEqual(fsSync.readdirSync(lockRoot), [], "no .released- aside dirs may remain");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("release is a no-op when the live lock owner no longer matches the handle", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-build-staleness-tampered-"));
+  try {
+    const lockRoot = path.join(root, "node_modules", ".cache", "remnic-build-locks");
+    const lockDir = path.join(lockRoot, "scope-tampered-pkg");
+    await mkdir(lockRoot, { recursive: true });
+
+    const handle = acquireLockDir(lockDir);
+    assert.ok(handle);
+    const tampered = { ...handle.owner, nonce: "tampered-nonce" };
+    await writeFile(path.join(lockDir, "owner.json"), `${JSON.stringify(tampered)}\n`);
+
+    releaseLockDir(handle);
+
+    assert.equal(fsSync.existsSync(lockDir), true, "a foreign identity on the live path must survive release");
+    const observed = JSON.parse(fsSync.readFileSync(path.join(lockDir, "owner.json"), "utf8"));
+    assert.equal(observed.nonce, "tampered-nonce");
+    assert.deepEqual(fsSync.readdirSync(lockRoot), [path.basename(lockDir)]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("long build outlives stale reclaim: late release leaves the new owner's lock intact", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-build-staleness-late-release-"));
+  let child = null;
+  try {
+    const lockRoot = path.join(root, "node_modules", ".cache", "remnic-build-locks");
+    const lockDir = path.join(lockRoot, "scope-late-release-pkg");
+    await mkdir(lockRoot, { recursive: true });
+    const acquiredFlag = path.join(root, "acquired");
+    const goFlag = path.join(root, "go");
+
+    // Original owner: acquires, then holds past the stale bound until told to
+    // finish — the exact shape of a build longer than the lock timeout.
+    const driverPath = path.join(root, "late-release-driver.mjs");
+    await writeFile(
+      driverPath,
+      [
+        'import fs from "node:fs";',
+        `import { acquireLockDir, releaseLockDir } from ${JSON.stringify(buildStalenessModuleUrl)};`,
+        "const [lockDirArg, acquiredArg, goArg] = process.argv.slice(2);",
+        "const handle = acquireLockDir(lockDirArg);",
+        "if (!handle) process.exit(2);",
+        "fs.writeFileSync(acquiredArg, String(process.pid));",
+        "while (!fs.existsSync(goArg)) {",
+        "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);",
+        "}",
+        "releaseLockDir(handle);",
+      ].join("\n"),
+    );
+
+    child = spawn(process.execPath, [driverPath, lockDir, acquiredFlag, goFlag], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.resume();
+    child.stderr.resume();
+    const childExit = new Promise((resolve) => child.on("close", (code) => resolve(code)));
+    while (!fsSync.existsSync(acquiredFlag)) {
+      await sleep(10);
+    }
+
+    const previousTimeout = process.env.REMNIC_BUILD_LOCK_TIMEOUT_MS;
+    process.env.REMNIC_BUILD_LOCK_TIMEOUT_MS = "50";
+    try {
+      await sleep(100); // The original owner's lock is now older than the stale bound.
+      const waiterHandle = acquireLockDir(lockDir); // Waiter quarantines + reacquires.
+      assert.ok(waiterHandle);
+      assert.notEqual(waiterHandle.owner.pid, Number(fsSync.readFileSync(acquiredFlag, "utf8")));
+
+      await writeFile(goFlag, ""); // Original owner finishes its build and releases.
+      assert.equal(await childExit, 0);
+
+      assert.equal(
+        fsSync.existsSync(lockDir),
+        true,
+        "the original owner's late release must not remove the new owner's lock",
+      );
+      const observed = JSON.parse(fsSync.readFileSync(path.join(lockDir, "owner.json"), "utf8"));
+      assert.deepEqual(observed, waiterHandle.owner);
+
+      releaseLockDir(waiterHandle);
+      assert.equal(fsSync.existsSync(lockDir), false);
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.REMNIC_BUILD_LOCK_TIMEOUT_MS;
+      } else {
+        process.env.REMNIC_BUILD_LOCK_TIMEOUT_MS = previousTimeout;
+      }
+    }
+  } finally {
+    if (child !== null && child.exitCode === null) {
+      child.kill("SIGKILL");
+    }
     await rm(root, { recursive: true, force: true });
   }
 });

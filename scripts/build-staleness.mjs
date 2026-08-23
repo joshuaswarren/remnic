@@ -169,11 +169,12 @@ function withBuildLock(repoRoot, pkgName, fn) {
   const lockDir = path.join(lockRoot, lockSlug(pkgName));
   const deadline = Date.now() + lockTimeoutMs();
   for (;;) {
-    if (acquireLockDir(lockDir)) {
+    const handle = acquireLockDir(lockDir);
+    if (handle) {
       try {
         return fn();
       } finally {
-        releaseLockDir(lockDir);
+        releaseLockDir(handle);
       }
     }
     if (Date.now() >= deadline) {
@@ -192,7 +193,11 @@ function lockTimeoutMs() {
   return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_LOCK_TIMEOUT_MS;
 }
 
+// Returns a handle owning the exact lock identity written, or null when the
+// lock is held by a live owner (or the reclaim race was lost). The handle is
+// the only thing releaseLockDir will remove.
 export function acquireLockDir(lockDir) {
+  let owner = null;
   try {
     fs.mkdirSync(lockDir);
   } catch (error) {
@@ -201,24 +206,25 @@ export function acquireLockDir(lockDir) {
     }
     const observed = readLockOwner(lockDir);
     if (isOwnerLive(observed)) {
-      return false;
+      return null;
     }
     if (!quarantineLockIfOwnerMatches(lockDir, observed)) {
-      return false;
+      return null;
     }
     try {
       fs.mkdirSync(lockDir);
     } catch {
-      return false; // Lost the reclaim race; retry.
+      return null; // Lost the reclaim race; retry.
     }
   }
   try {
-    writeLockOwner(lockDir);
+    owner = writeLockOwner(lockDir);
   } catch {
     // Holding the directory is the lock; a missing owner file only disables
-    // stale reclaim until the holder exits.
+    // stale reclaim until the holder exits. The handle keeps owner null so
+    // release still removes the identity-less dir this process holds.
   }
-  return true;
+  return { lockDir, owner };
 }
 
 export function isLockHeldByLiveProcess(lockDir) {
@@ -310,6 +316,7 @@ function writeLockOwner(lockDir) {
   const tempPath = `${ownerPath}.tmp-${process.pid}`;
   fs.writeFileSync(tempPath, `${JSON.stringify(owner)}\n`);
   fs.renameSync(tempPath, ownerPath);
+  return owner;
 }
 
 function ownersMatch(left, right) {
@@ -341,11 +348,42 @@ function readProcessStartTicks(pid) {
   }
 }
 
-export function releaseLockDir(lockDir) {
+// Release only the identity the handle owns. A long build whose lock was
+// quarantined and reacquired after the stale-age bound must not delete the
+// new owner's lock: the live path is never rmSync'd directly — the dir is
+// renamed aside and removed only when the aside copy still matches the
+// handle's identity. Any mismatch is a no-op (or a restore, if the rename
+// caught a swapped-in owner).
+export function releaseLockDir(handle) {
+  if (!handle || typeof handle.lockDir !== "string") {
+    return;
+  }
+  const { lockDir, owner } = handle;
+  const observedLive = readLockOwner(lockDir);
+  const owned = owner === null ? observedLive === null : ownersMatch(owner, observedLive);
+  if (!owned) {
+    return; // Reclaimed and reacquired by another process — not ours to remove.
+  }
+  const asideDir = `${lockDir}.released-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
   try {
-    fs.rmSync(lockDir, { recursive: true, force: true });
+    fs.renameSync(lockDir, asideDir);
   } catch {
-    // Best effort; a leaked lock dir is reclaimed via its owner file.
+    return; // Live path gone: already reclaimed or released.
+  }
+  const observedAside = readLockOwner(asideDir);
+  const stillOurs = owner === null ? observedAside === null : ownersMatch(owner, observedAside);
+  if (!stillOurs) {
+    try {
+      fs.renameSync(asideDir, lockDir);
+    } catch {
+      // Another acquirer already recreated lockDir; the aside dir is inert.
+    }
+    return;
+  }
+  try {
+    fs.rmSync(asideDir, { recursive: true, force: true });
+  } catch {
+    // Aside is off the lock path; leftover bytes are not a live lock.
   }
 }
 
