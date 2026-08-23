@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { isAnySourceNewerThan } from "./build-staleness.mjs";
+import { ensurePackageBuild } from "./build-staleness.mjs";
 import { appendNodeOption } from "./root-test-runner-env.mjs";
 import { buildTestSpawnPlan } from "./test-spawn-plan.mjs";
 import { shouldBuildBench } from "./test-file-deps.mjs";
@@ -40,13 +40,16 @@ const files = fileArgs.map((fileArg) => {
 });
 
 function ensureBuild(pkgName, distPath, sourcePaths) {
-  if (existsSync(distPath) && !isAnySourceNewerThan(sourcePaths, distPath)) return;
-  const build = spawnSync(
-    process.execPath,
-    [join(repoRoot, "scripts", "pnpm.mjs"), "--filter", pkgName, "build"],
-    { cwd: repoRoot, stdio: "inherit" },
-  );
-  if (build.status !== 0) process.exit(build.status ?? 1);
+  ensurePackageBuild(repoRoot, pkgName, distPath, sourcePaths, {
+    runBuild: () => {
+      const build = spawnSync(
+        process.execPath,
+        [join(repoRoot, "scripts", "pnpm.mjs"), "--filter", pkgName, "build"],
+        { cwd: repoRoot, stdio: "inherit" },
+      );
+      if (build.status !== 0) process.exit(build.status ?? 1);
+    },
+  });
 }
 
 ensureBuild(

@@ -135,8 +135,8 @@ if (selectedShard !== null) {
 // exists here so the fallback never fires in the test path. This makes the
 // runner self-sufficient: `pnpm test` and a direct
 // `node scripts/run-root-tests.mjs` both work without a prior
-// `check-types`/`build` side-effect. Idempotent — skips instantly when dist
-// exists and no source is newer.
+// build side-effect. Idempotent — skips when dist exists and the recorded
+// source-tree fingerprint is unchanged (#2849).
 ensurePackageBuild(
   repoRoot,
   "@remnic/bench",
