@@ -13,6 +13,11 @@ import {
   type GetRuntimeAuthForModelFn,
   type ResolveApiKeyFn,
 } from "./resolve-provider-secret.js";
+import {
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
+  codexSubscriptionBuiltinProviderConfig,
+  ensureCodexSubscriptionRunnerRegistered,
+} from "./providers/codex-subscription.js";
 import { loadModelsJsonProviders } from "./models-json.js";
 import { callCodexCliFallback } from "./cli-fallback.js";
 import { resolveHomeDir } from "./runtime/env.js";
@@ -160,6 +165,10 @@ const BUILT_IN_PROVIDER_FALLBACKS: Record<string, ModelProviderConfig> = {
     models: [],
     [PROVIDER_API_KEY_FIELD]: MANAGED_SECRETREF_MARKER,
   },
+  // Subscription-OAuth extraction provider (issue #2784): no apiKey — the
+  // codex CLI login authenticates, via the runner the codex-subscription
+  // module registers on this same seam.
+  [CODEX_SUBSCRIPTION_PROVIDER_ID]: codexSubscriptionBuiltinProviderConfig(),
 };
 
 /**
@@ -667,6 +676,9 @@ export class FallbackLlmClient {
     }
 
     if (model.providerConfig.api === "codex-cli") {
+      // Registers the core subprocess transport only when no host/benchmark
+      // runner claimed the seam, so daemon/plugin runtimes work out of the box.
+      ensureCodexSubscriptionRunnerRegistered();
       return await callCodexCliFallback(
         effectiveConfig,
         model.modelId,
