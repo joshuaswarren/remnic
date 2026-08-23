@@ -32,9 +32,6 @@ src/CLAUDE.md
 scripts/CLAUDE.md
 .claude/
 
-# Eval datasets (downloaded via script, not committed)
-evals/datasets/
-
 # Published-benchmark datasets (LongMemEval, LoCoMo) — run
 # `scripts/bench/fetch-datasets.sh --help` to set up.
 bench-datasets/
@@ -49,6 +46,11 @@ packages/plugin-openclaw/reports/
 # Published-benchmark datasets (LongMemEval, LoCoMo). Download via
 # `scripts/bench/fetch-datasets.sh --help`. Never commit raw dataset files.
 bench-datasets/
+
+# Legacy eval dataset location — keep ignored for existing developer checkouts
+# after the tracked evals/ runner was removed (#2798).
+evals/datasets/
+evals/results/
 
 # Git worktrees
 .worktrees/
