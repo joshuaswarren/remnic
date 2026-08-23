@@ -10,14 +10,23 @@
  *
  * - a rate-limited read writes an explicit `terminal: "RATE_LIMITED"` record
  *   (valid JSON, `ready: false`) instead of the error body;
- * - any other malformed read refuses to overwrite the last good state.
+ * - any other malformed read refuses to overwrite the last good state;
+ * - `terminal: "MERGE_READY"` is never taken from the caller: it is computed
+ *   from the validated fields, and `--terminal MERGE_READY` while a blocking
+ *   field remains is rejected, because the supervisor stops on that exact
+ *   value. Terminal values describing conditions (RATE_LIMITED etc.) may
+ *   still be supplied;
+ * - the PR number must be a complete positive integer, so `--pr abc` or
+ *   `12junk` is rejected instead of parsed into null / a prefix number;
+ * - writes go to a sibling temp file renamed over the destination, so a
+ *   crash mid-write leaves the previous valid state intact.
  *
  * A RATE_LIMITED record is recoverable: the next healthy iteration overwrites
  * it. The supervisor stop-grep only matches MERGE_READY, so a rate-limited
  * watcher keeps looping and heals itself once the window resets.
  */
 
-import { realpathSync, writeFileSync } from "node:fs";
+import { realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export const TERMINAL_RATE_LIMITED = "RATE_LIMITED";
@@ -35,6 +44,13 @@ function parseMaybeJson(value) {
   } catch {
     return null;
   }
+}
+
+/** Parse a PR number; the COMPLETE argument must be a positive integer. */
+export function parsePrNumber(value) {
+  const text = typeof value === "number" ? String(value) : value;
+  if (typeof text !== "string" || !/^[1-9]\d*$/.test(text.trim())) return null;
+  return Number.parseInt(text.trim(), 10);
 }
 
 /** True when a gh read returned a rate-limit error body or message. */
@@ -117,10 +133,10 @@ function mergeReady(fields) {
 }
 
 /**
- * Validate the gh-derived fields, then write the state file atomically.
+ * Validate the PR number and gh-derived fields, then write the state file.
  * Returns `{ wrote, terminal }`; on a rate-limited read the file receives a
- * TERMINAL_RATE_LIMITED record, and on other invalid reads the last good
- * state file is left untouched.
+ * TERMINAL_RATE_LIMITED record, and on invalid input the last good state
+ * file is left untouched.
  */
 export function writePrLoopState({
   stateFile,
@@ -130,16 +146,32 @@ export function writePrLoopState({
   timestamp = new Date().toISOString(),
   ...rawFields
 }) {
+  const prNumber = parsePrNumber(pr);
+  if (prNumber === null) {
+    return {
+      wrote: false,
+      reason: `pr must be a complete positive integer (e.g. --pr 1234), got: ${JSON.stringify(pr)}`,
+    };
+  }
   const validation = validateStateFields(rawFields);
+  const ready = validation.ok ? mergeReady(validation.fields) : false;
+  if (terminal === "MERGE_READY" && !ready) {
+    return {
+      wrote: false,
+      reason:
+        "terminal MERGE_READY conflicts with the validated fields (ready=false): " +
+        "MERGE_READY is computed from required_non_pass/cursor/positive_verdict/" +
+        "unresolved/decision, never caller-supplied",
+    };
+  }
   if (validation.ok) {
-    const ready = mergeReady(validation.fields);
     const { fields } = validation;
     // Keys mirror the legacy watcher state file exactly, so records written
     // by the helper and by the fallback heredoc stay interchangeable.
     const record = {
       timestamp,
       repo: String(repo),
-      pr: Number.parseInt(String(pr), 10),
+      pr: prNumber,
       terminal: ready ? "MERGE_READY" : terminal,
       required_non_pass: fields.requiredNonPass,
       cursor: fields.cursor,
@@ -148,22 +180,38 @@ export function writePrLoopState({
       review_decision: fields.decision,
       ready,
     };
-    writeFileSync(stateFile, `${JSON.stringify(record, null, 2)}\n`);
+    writeStateAtomically(stateFile, record);
     return { wrote: true, terminal: record.terminal };
   }
   if (validation.rateLimited) {
     const record = {
       timestamp,
       repo: String(repo),
-      pr: Number.parseInt(String(pr), 10),
+      pr: prNumber,
       terminal: TERMINAL_RATE_LIMITED,
       rateLimited: true,
       ready: false,
     };
-    writeFileSync(stateFile, `${JSON.stringify(record, null, 2)}\n`);
+    writeStateAtomically(stateFile, record);
     return { wrote: true, terminal: TERMINAL_RATE_LIMITED };
   }
   return { wrote: false, reason: validation.reason };
+}
+
+/** Write to a sibling temp file, then rename over the destination. */
+function writeStateAtomically(stateFile, record) {
+  const tmpFile = `${stateFile}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmpFile, `${JSON.stringify(record, null, 2)}\n`);
+    renameSync(tmpFile, stateFile);
+  } catch (error) {
+    try {
+      rmSync(tmpFile, { force: true });
+    } catch {
+      // Best-effort cleanup; the previous state file was never touched.
+    }
+    throw error;
+  }
 }
 
 function usage() {
