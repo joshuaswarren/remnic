@@ -28,6 +28,9 @@
  *   those payloads; never fabricate empty results for them.
  * - Task entries without a usable `taskId` are skipped, exactly as the
  *   pre-#2800 UI skipped unidentifiable task rows.
+ * - Mean-only aggregates upgrade only when exactly one recognized task
+ *   proves single-sample semantics. Zero recognized tasks, skipped-ID
+ *   rows, and multi-task runs reject incomplete aggregates.
  */
 
 import type { AggregateMetrics, BenchmarkMode, BenchmarkResult, BenchmarkTier, MetricAggregate, ProviderConfig, TaskResult } from "./types.js";
@@ -193,7 +196,7 @@ function normalizeMetricAggregate(
     };
   }
 
-  if (taskCount <= 1) {
+  if (taskCount === 1) {
     return {
       mean,
       median: rawMedian ?? mean,
@@ -201,6 +204,12 @@ function normalizeMetricAggregate(
       min: rawMin ?? mean,
       max: rawMax ?? mean,
     };
+  }
+
+  if (taskCount === 0) {
+    reject(
+      `${where} missing required fields (median, stdDev, min, max); mean-only upgrade requires exactly one recognized task`,
+    );
   }
 
   reject(

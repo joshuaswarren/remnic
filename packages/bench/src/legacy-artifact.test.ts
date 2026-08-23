@@ -354,6 +354,93 @@ test("recognizeLegacyBenchmarkArtifact rejects malformed and ambiguous shapes wi
   }
 });
 
+test("recognizeLegacyBenchmarkArtifact rejects mean-only aggregates when no task proves one sample", () => {
+  const cases: Array<[unknown, RegExp]> = [
+    [
+      {
+        ...minimalLegacyArtifact(),
+        results: {
+          aggregates: { accuracy: { mean: 0.75 } },
+        },
+      },
+      /results\.aggregates\.accuracy missing required fields.*exactly one recognized task/,
+    ],
+    [
+      {
+        ...minimalLegacyArtifact(),
+        results: {
+          tasks: [{ notATask: true }, { taskId: "   " }],
+          aggregates: { accuracy: { mean: 0.75 } },
+        },
+      },
+      /results\.aggregates\.accuracy missing required fields.*exactly one recognized task/,
+    ],
+  ];
+
+  for (const [artifact, pattern] of cases) {
+    const recognition = recognizeLegacyBenchmarkArtifact(artifact);
+    assert.equal(recognition.ok, false, `expected rejection for ${JSON.stringify(artifact)}`);
+    if (recognition.ok) continue;
+    assert.match(recognition.reason, pattern);
+  }
+});
+
+test("recognizeLegacyBenchmarkArtifact upgrades mean-only aggregates when one task proves single-sample semantics", () => {
+  const recognition = recognizeLegacyBenchmarkArtifact({
+    ...minimalLegacyArtifact(),
+    results: {
+      tasks: [{ taskId: "only" }],
+      aggregates: { accuracy: { mean: 0.5 } },
+    },
+  });
+
+  assert.equal(recognition.ok, true);
+  if (!recognition.ok) return;
+  assert.deepEqual(recognition.result.results.aggregates.accuracy, {
+    mean: 0.5,
+    median: 0.5,
+    stdDev: 0,
+    min: 0.5,
+    max: 0.5,
+  });
+});
+
+test("recognizeLegacyBenchmarkArtifact keeps complete aggregates when no tasks are present", () => {
+  const recognition = recognizeLegacyBenchmarkArtifact({
+    ...minimalLegacyArtifact(),
+    results: {
+      aggregates: {
+        accuracy: { mean: 0.4, median: 0.4, stdDev: 0.1, min: 0.2, max: 0.6 },
+      },
+    },
+  });
+
+  assert.equal(recognition.ok, true);
+  if (!recognition.ok) return;
+  assert.deepEqual(recognition.result.results.aggregates.accuracy, {
+    mean: 0.4,
+    median: 0.4,
+    stdDev: 0.1,
+    min: 0.2,
+    max: 0.6,
+  });
+});
+
+test("loadBenchmarkResult rejects aggregate-only mean-only legacy artifacts", async () => {
+  await withResultFile(
+    {
+      ...minimalLegacyArtifact(),
+      results: { aggregates: { accuracy: { mean: 0.75 } } },
+    },
+    async (filePath) => {
+      await assert.rejects(
+        () => loadBenchmarkResult(filePath),
+        /missing required fields.*exactly one recognized task/,
+      );
+    },
+  );
+});
+
 test("loadBenchmarkResult loads legacy artifacts through the canonical-first entry", async () => {
   await withResultFile(minimalLegacyArtifact(), async (filePath) => {
     const loaded = await loadBenchmarkResult(filePath);
