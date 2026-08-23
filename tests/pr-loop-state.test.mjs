@@ -279,7 +279,7 @@ test("interrupted mid-write leaves the previous valid state intact", () => {
 test("CLI rejects invalid PR numbers at the boundary", () => {
   const dir = scratchDir();
   try {
-    for (const badPr of ["abc", "12junk", "-1", "0"]) {
+    for (const badPr of ["abc", "12junk", "-1", "0", "9007199254740992", "99999999999999999999"]) {
       const stateFile = path.join(dir, `pr-${badPr}-state.json`);
       const run = spawnSync(
         process.execPath,

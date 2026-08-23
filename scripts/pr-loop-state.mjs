@@ -16,8 +16,11 @@
  *   field remains is rejected, because the supervisor stops on that exact
  *   value. Terminal values describing conditions (RATE_LIMITED etc.) may
  *   still be supplied;
- * - the PR number must be a complete positive integer, so `--pr abc` or
- *   `12junk` is rejected instead of parsed into null / a prefix number;
+ * - the PR number must be a complete positive integer within
+ *   Number.MAX_SAFE_INTEGER, so `--pr abc` or `12junk` is rejected instead
+ *   of parsed into null / a prefix number, and an all-digit argument like
+ *   99999999999999999999 is rejected instead of serializing with precision
+ *   loss that attributes state to the wrong PR;
  * - writes go to a sibling temp file renamed over the destination, so a
  *   crash mid-write leaves the previous valid state intact.
  *
@@ -46,11 +49,14 @@ function parseMaybeJson(value) {
   }
 }
 
-/** Parse a PR number; the COMPLETE argument must be a positive integer. */
+/** Parse a PR number; the COMPLETE argument must be a positive safe integer. */
 export function parsePrNumber(value) {
   const text = typeof value === "number" ? String(value) : value;
-  if (typeof text !== "string" || !/^[1-9]\d*$/.test(text.trim())) return null;
-  return Number.parseInt(text.trim(), 10);
+  if (typeof text !== "string") return null;
+  const trimmed = text.trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 /** True when a gh read returned a rate-limit error body or message. */
@@ -150,7 +156,7 @@ export function writePrLoopState({
   if (prNumber === null) {
     return {
       wrote: false,
-      reason: `pr must be a complete positive integer (e.g. --pr 1234), got: ${JSON.stringify(pr)}`,
+      reason: `pr must be a complete positive integer between 1 and 9007199254740991 (Number.MAX_SAFE_INTEGER), e.g. --pr 1234, got: ${JSON.stringify(pr)}`,
     };
   }
   const validation = validateStateFields(rawFields);
