@@ -8,7 +8,7 @@
     "predev": "node ../../scripts/ensure-cli-bench-build-deps.mjs",
     "dev": "vite",
     "pretest": "node ../../scripts/ensure-cli-bench-build-deps.mjs",
-    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" find src \\( -name '*.test.ts' -o -name '*.test.tsx' \\) -print | sort | xargs tsx --test",
+    "test": "find src \\( -name '*.test.ts' -o -name '*.test.tsx' \\) -print | sort | xargs env NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test",
     "precheck-types": "node ../../scripts/ensure-cli-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
     "prebuild": "node ../../scripts/ensure-cli-bench-build-deps.mjs",

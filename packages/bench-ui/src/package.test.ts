@@ -12,5 +12,6 @@ test("bench-ui prepares @remnic/bench for every direct entry command", async () 
   for (const hook of ["predev", "pretest", "precheck-types", "prebuild"]) {
     assert.equal(pkg.scripts?.[hook], prepareBench, `${hook} must prepare @remnic/bench in a clean checkout`);
   }
-  assert.match(pkg.scripts?.test ?? "", /--conditions=remnic-source/);
+  assert.ok(pkg.scripts?.test?.includes("xargs env NODE_OPTIONS="));
+  assert.ok(pkg.scripts?.test?.includes("--conditions=remnic-source"));
 });
