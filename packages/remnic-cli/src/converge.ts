@@ -313,7 +313,12 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       }
       localManifests.set(ns, manifest);
       localTombstones.set(ns, tombstonedFileDigests(evidence, manifest));
-      await saveConvergeIdentityCache(identityCachePath, manifest, config.inlineSourceAttributionFormat);
+      await saveConvergeIdentityCache(
+        identityCachePath,
+        manifest,
+        config.inlineSourceAttributionFormat,
+        identityCache
+      );
     }
   }
   const peerUrl = options.peerUrl;

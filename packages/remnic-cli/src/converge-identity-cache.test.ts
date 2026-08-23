@@ -91,3 +91,40 @@ test("a missing or corrupt cache loads empty rather than throwing", async () => 
     assert.equal((await loadConvergeIdentityCache(undefined, TEMPLATE)).size, 0);
   });
 });
+
+test("an unchanged warm run does not rewrite the cache file", async () => {
+  await withCacheFile(async (cachePath) => {
+    await saveConvergeIdentityCache(cachePath, manifest(), TEMPLATE);
+    const loaded = await loadConvergeIdentityCache(cachePath, TEMPLATE);
+
+    // Marker: if the next save rewrites the file, the marker disappears.
+    const raw = JSON.parse(await fs.promises.readFile(cachePath, "utf8")) as Record<string, unknown>;
+    raw.marker = "untouched";
+    await fs.promises.writeFile(cachePath, JSON.stringify(raw));
+
+    // Rebuild the manifest from the loaded entries the way a warm
+    // buildReconcileManifest run does: same memory object references.
+    const warmManifest: ReconcileManifest = {
+      ...manifest(),
+      files: manifest().files.map((file) =>
+        file.memory === undefined ? file : { ...file, memory: loaded.get(file.path)?.memory ?? file.memory }
+      ),
+    };
+    await saveConvergeIdentityCache(cachePath, warmManifest, TEMPLATE, loaded);
+
+    const after = JSON.parse(await fs.promises.readFile(cachePath, "utf8")) as Record<string, unknown>;
+    assert.equal(after.marker, "untouched", "an unchanged cache must not be rewritten");
+
+    // A real change (a rebuilt identity gets a fresh object) must still write.
+    const changedManifest: ReconcileManifest = {
+      ...warmManifest,
+      files: warmManifest.files.map((file) =>
+        file.memory === undefined ? file : { ...file, memory: { ...file.memory, contentHash: "f".repeat(64) } }
+      ),
+    };
+    await saveConvergeIdentityCache(cachePath, changedManifest, TEMPLATE, loaded);
+    const afterChange = JSON.parse(await fs.promises.readFile(cachePath, "utf8")) as Record<string, unknown>;
+    assert.equal(afterChange.marker, undefined, "a changed cache must be rewritten");
+    assert.equal(afterChange.files?.length, 1);
+  });
+});

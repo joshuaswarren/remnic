@@ -61,16 +61,33 @@ export async function loadConvergeIdentityCache(
  * The manifest carries every file in the namespace — cache hits re-yielded
  * with their cached identity as well as freshly parsed ones — so writing it
  * whole preserves hits instead of shrinking the cache to the files that
- * happened to change on this run. */
+ * happened to change on this run.
+ *
+ * A warm run with zero misses re-yields the loaded entries verbatim — same
+ * object references, since `buildReconcileManifest` copies the cached identity
+ * through — so an unchanged corpus would otherwise re-serialize and rewrite a
+ * potentially multi-megabyte file on every plan/watch cycle. Pass the loaded
+ * cache and the write is skipped when nothing changed. */
 export async function saveConvergeIdentityCache(
   cachePath: string | undefined,
   manifest: ReconcileManifest,
-  citationTemplate?: string
+  citationTemplate?: string,
+  loaded?: ReadonlyMap<string, ConvergeIdentityCacheEntry>
 ): Promise<void> {
   if (!cachePath) return;
   const files: ConvergeIdentityCacheEntry[] = manifest.files
     .filter((file) => file.memory !== undefined)
     .map((file) => ({ path: file.path, sha256: file.sha256, memory: file.memory }));
+  if (
+    loaded !== undefined &&
+    loaded.size === files.length &&
+    files.every((entry) => {
+      const previous = loaded.get(entry.path);
+      return previous?.sha256 === entry.sha256 && previous?.memory === entry.memory;
+    })
+  ) {
+    return;
+  }
   const tmp = `${cachePath}.tmp`;
   try {
     await fs.promises.mkdir(path.dirname(cachePath), { recursive: true });
