@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- `remnic-hermes` now provides an opt-in, policy-bound IPv4-loopback LLM bridge and supervisor for deferred Remnic generation through Hermes-managed providers. The bridge owns no provider credential, authenticates its supervised local caller with a launch-scoped token, ignores client model selection, and leaves recall-critical rerank/planner paths independent (#2834).
+- `remnic-hermes` now provides an opt-in, policy-bound IPv4-loopback LLM bridge and supervisor for deferred Remnic generation through Hermes-managed providers. The bridge owns no provider credential, authenticates its supervised local caller with a launch-scoped token, gives the daemon no provider environment variables, ignores client model selection, and fails closed if either supervised child exits unexpectedly; recall-critical rerank/planner paths remain independent (#2834).
 
 ## [v9.69.31] — 2026-08-23
 

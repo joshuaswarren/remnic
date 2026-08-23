@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable, Mapping
 import os
 import secrets
 import signal
@@ -12,6 +13,19 @@ from urllib.request import Request, urlopen
 
 
 _REQUEST_TOKEN_ENV = "REMNIC_HERMES_BRIDGE_TOKEN"
+_DAEMON_ENV_KEYS = frozenset(
+    {
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "PATH",
+        "TMPDIR",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+    }
+)
 
 
 def build_child_commands(
@@ -47,6 +61,19 @@ def build_child_commands(
     )
 
 
+def _daemon_environment(parent: Mapping[str, str], request_token: str) -> dict[str, str]:
+    """Give Remnic only runtime basics plus the bridge caller token, never provider env."""
+    if not request_token:
+        raise ValueError("bridge request token is required")
+    environment = {
+        key: value
+        for key, value in parent.items()
+        if key in _DAEMON_ENV_KEYS and value
+    }
+    environment[_REQUEST_TOKEN_ENV] = request_token
+    return environment
+
+
 def _wait_for_bridge(port: int, ready_token: str, seconds: float = 10) -> bool:
     """Require a nonce-authenticated readiness response from this bridge instance."""
     deadline = time.monotonic() + seconds
@@ -76,12 +103,39 @@ def _stop(process: subprocess.Popen[str] | None) -> None:
         process.wait(timeout=4)
 
 
+def _forward_signal(process: subprocess.Popen[str] | None, signum: int) -> None:
+    """Forward a supervisor signal while preserving its meaning for the child."""
+    if process is None or process.poll() is not None:
+        return
+    process.send_signal(signum)
+
+
+def _wait_for_children(
+    bridge: subprocess.Popen[str],
+    daemon: subprocess.Popen[str],
+    *,
+    is_stopping: Callable[[], bool],
+) -> int:
+    """Treat an unexpected child exit as a failed lifecycle unit and stop its peer."""
+    while True:
+        if is_stopping():
+            return 0
+        if bridge.poll() is not None:
+            _stop(daemon)
+            return 70
+        if daemon.poll() is not None:
+            _stop(bridge)
+            return 70
+        time.sleep(0.1)
+
+
 def run_supervised(*, python: str, policy: str, remnic_bin: str, port: int) -> int:
     """Start the bridge before the daemon and stop both on all exit paths."""
     ready_token = secrets.token_urlsafe(32)
     request_token = secrets.token_urlsafe(32)
-    child_env = os.environ.copy()
-    child_env[_REQUEST_TOKEN_ENV] = request_token
+    bridge_env = os.environ.copy()
+    bridge_env[_REQUEST_TOKEN_ENV] = request_token
+    daemon_env = _daemon_environment(os.environ, request_token)
     bridge_cmd, remnic_cmd = build_child_commands(
         python=python,
         policy=policy,
@@ -93,22 +147,24 @@ def run_supervised(*, python: str, policy: str, remnic_bin: str, port: int) -> i
     daemon: subprocess.Popen[str] | None = None
     stopping = False
 
-    def request_stop(_signum: int, _frame: object) -> None:
+    def request_stop(signum: int, _frame: object) -> None:
         nonlocal stopping
         stopping = True
-        _stop(daemon)
-        _stop(bridge)
+        _forward_signal(daemon, signum)
+        _forward_signal(bridge, signum)
 
     old_term = signal.signal(signal.SIGTERM, request_stop)
     old_int = signal.signal(signal.SIGINT, request_stop)
     try:
-        bridge = subprocess.Popen(bridge_cmd, text=True, env=child_env)
+        bridge = subprocess.Popen(bridge_cmd, text=True, env=bridge_env)
         if not _wait_for_bridge(port, ready_token):
-            return 70
-        daemon = subprocess.Popen(remnic_cmd, text=True, env=child_env)
-        assert daemon is not None
-        status = daemon.wait()
-        return 0 if stopping else status
+            return 0 if stopping else 70
+        if stopping:
+            return 0
+        daemon = subprocess.Popen(remnic_cmd, text=True, env=daemon_env)
+        if stopping:
+            return 0
+        return _wait_for_children(bridge, daemon, is_stopping=lambda: stopping)
     finally:
         _stop(daemon)
         _stop(bridge)

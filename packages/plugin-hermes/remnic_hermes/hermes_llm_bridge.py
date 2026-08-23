@@ -165,6 +165,8 @@ def make_handler(
     """Build a handler bound to policy, Hermes routing, and a local caller token."""
     if not request_token:
         raise ValueError("bridge request token is required")
+    if readiness_token == "":
+        raise ValueError("bridge readiness token must not be empty")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *_args: Any) -> None:

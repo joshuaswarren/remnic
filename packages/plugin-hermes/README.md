@@ -91,7 +91,7 @@ Loopback hosts use HTTP. Other hosts use HTTPS by default. Existing remote HTTP 
 For deferred Remnic LLM work, `remnic-hermes` also provides two opt-in commands:
 
 - `remnic-hermes-bridge` exposes one policy-selected Hermes provider as a **loopback-only** OpenAI-compatible endpoint.
-- `remnic-hermes-supervisor` starts that bridge, authenticates the supervised Remnic daemon with a launch-scoped request token, proves the exact bridge instance is ready with a separate per-launch secret, then stops both together.
+- `remnic-hermes-supervisor` starts that bridge, authenticates the supervised Remnic daemon with a launch-scoped request token, proves the exact bridge instance is ready with a separate per-launch secret, gives the daemon no provider environment variables, and stops the peer if either child exits.
 
 The policy has exactly three fields — `provider`, `model`, and `timeout_seconds`. It must not contain a provider API key or OAuth token: each request is resolved by Hermes' own `agent.auxiliary_client.call_llm()` routing and auth machinery.
 

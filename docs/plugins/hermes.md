@@ -176,7 +176,7 @@ No other fields are read. Fields documented elsewhere, such as `recall_top_k`, `
 
 `remnic-hermes` can expose a Hermes-resolved provider to Remnic through a small **loopback-only** OpenAI-compatible bridge. This is opt-in and intended for deferred extraction, consolidation, and summary jobs — not recall-critical work with a short latency budget.
 
-The bridge never receives or stores a provider API key or OAuth token. The supervisor generates a separate, launch-scoped **bridge request token** and passes it only to its bridge and Remnic daemon children through their environment; it is used solely for `Authorization: Bearer ...` between those local processes. Hermes remains the sole resolver and owner of provider credentials.
+The bridge never receives or stores a provider API key or OAuth token. The supervisor generates a separate, launch-scoped **bridge request token** and passes it only to its bridge and Remnic daemon children; it is used solely for `Authorization: Bearer ...` between those local processes. The daemon child receives only basic runtime variables plus that request token, so provider environment variables are not forwarded to it. Hermes remains the sole resolver and owner of provider credentials.
 
 ### Policy
 
@@ -205,13 +205,14 @@ In the **Remnic daemon configuration** (not the `remnic:` block in Hermes' `conf
     "localLlmApiKey": "${REMNIC_HERMES_BRIDGE_TOKEN}",
     "localLlmAuthHeader": true,
     "localLlmFallback": false,
+    "openaiApiKey": false,
     "rerankEnabled": false,
     "recallPlannerLlmEnabled": false
   }
 }
 ```
 
-Keep `rerankEnabled` and `recallPlannerLlmEnabled` off unless the chosen provider has been measured against their synchronous recall budget. Their deterministic/QMD retrieval path remains independent of this bridge.
+The explicit `openaiApiKey: false` disables Remnic's fallback inheritance of `OPENAI_API_KEY`; it is required even on hosts that currently have no direct provider key. Keep `rerankEnabled` and `recallPlannerLlmEnabled` off unless the chosen provider has been measured against their synchronous recall budget. Their deterministic/QMD retrieval path remains independent of this bridge.
 
 ### Lifecycle
 
@@ -224,7 +225,7 @@ remnic-hermes-supervisor \
   --remnic-bin "$(command -v remnic-server)"
 ```
 
-The supervisor starts the bridge first, generates the bridge request token, requires a separate per-launch secret readiness response from that exact bridge instance, then starts the daemon with the request token in its child environment. A different process that already owns the port cannot satisfy the readiness check, and a local process without the request token cannot use the provider-facing endpoints. Do not run the daemon outside this supervisor when using the `${REMNIC_HERMES_BRIDGE_TOKEN}` configuration above. On daemon exit or `SIGTERM`/`SIGINT`, it stops both children.
+The supervisor starts the bridge first, generates the bridge request token, requires a separate per-launch secret readiness response from that exact bridge instance, then starts the daemon with a restricted child environment containing only runtime basics and the request token. A different process that already owns the port cannot satisfy the readiness check, and a local process without the request token cannot use the provider-facing endpoints. An unexpected exit from either child stops its peer and makes the supervisor fail. Do not run the daemon outside this supervisor when using the `${REMNIC_HERMES_BRIDGE_TOKEN}` configuration above. On `SIGTERM` or `SIGINT`, it forwards the received signal to both children before final cleanup.
 
 ---
 

@@ -196,11 +196,13 @@ def test_invoke_completion_rejects_nonfinite_temperature(tmp_path):
 
 def test_run_server_rejects_missing_request_token_and_non_ipv4_loopback_listener_values(tmp_path):
     """Manual bridge launches fail closed instead of exposing an unauthenticated endpoint."""
-    from remnic_hermes.hermes_llm_bridge import run_server
+    from remnic_hermes.hermes_llm_bridge import make_handler, run_server
 
     policy_path = _policy_path(tmp_path)
     with pytest.raises(ValueError, match="request token"):
         run_server(policy_path, request_token="")
+    with pytest.raises(ValueError, match="readiness token"):
+        make_handler(policy_path, request_token=BRIDGE_REQUEST_TOKEN, readiness_token="")
     with pytest.raises(ValueError, match="loopback"):
         run_server(policy_path, host="::1", request_token=BRIDGE_REQUEST_TOKEN)
 

@@ -34,12 +34,14 @@ remnic-hermes-supervisor = "remnic_hermes.hermes_llm_supervisor:main"
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21.0",
+    "tomli>=2.0; python_version < '3.11'",
     "mypy>=1.0",
     "ruff>=0.15.22,<0.16",
 ]
 test = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21.0",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.urls]
