@@ -281,3 +281,126 @@ def test_supervisor_interrupts_readiness_when_shutdown_arrives():
     assert popen.call_count == 1
     assert bridge.received_signals == [signal.SIGTERM]
     assert bridge.terminate_calls == 0
+
+
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_supervisor_replays_a_shutdown_signal_received_while_starting_the_bridge(signum: int):
+    """A bridge created during Popen still receives the shutdown signal that raced it."""
+    from remnic_hermes.hermes_llm_supervisor import run_supervised
+
+    bridge = Process()
+    handlers: dict[int, object] = {}
+
+    def register(received_signum: int, handler: object) -> object:
+        handlers[received_signum] = handler
+        return signal.SIG_DFL
+
+    def bridge_start_with_shutdown(*_args: object, **_kwargs: object) -> Process:
+        handler = handlers[signum]
+        assert callable(handler)
+        handler(signum, None)
+        return bridge
+
+    with patch(
+        "remnic_hermes.hermes_llm_supervisor.secrets.token_urlsafe",
+        side_effect=["ready-token", "request-token"],
+    ):
+        with patch("remnic_hermes.hermes_llm_supervisor.signal.signal", side_effect=register):
+            with patch("remnic_hermes.hermes_llm_supervisor._wait_for_bridge", return_value=True):
+                with patch(
+                    "remnic_hermes.hermes_llm_supervisor.subprocess.Popen",
+                    side_effect=bridge_start_with_shutdown,
+                ) as popen:
+                    assert run_supervised(
+                        python="/opt/hermes-python",
+                        policy="/tmp/policy.json",
+                        remnic_bin="/opt/remnic-server",
+                        port=4329,
+                    ) == 0
+
+    assert popen.call_count == 1
+    assert bridge.received_signals == [signum]
+
+
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_supervisor_replays_a_shutdown_signal_received_while_starting_the_daemon(signum: int):
+    """A daemon created during Popen still receives the shutdown signal that raced it."""
+    from remnic_hermes.hermes_llm_supervisor import run_supervised
+
+    bridge = Process()
+    daemon = Process()
+    handlers: dict[int, object] = {}
+    launches = 0
+
+    def register(received_signum: int, handler: object) -> object:
+        handlers[received_signum] = handler
+        return signal.SIG_DFL
+
+    def launch_child(*_args: object, **_kwargs: object) -> Process:
+        nonlocal launches
+        launches += 1
+        if launches == 1:
+            return bridge
+        handler = handlers[signum]
+        assert callable(handler)
+        handler(signum, None)
+        return daemon
+
+    with patch(
+        "remnic_hermes.hermes_llm_supervisor.secrets.token_urlsafe",
+        side_effect=["ready-token", "request-token"],
+    ):
+        with patch("remnic_hermes.hermes_llm_supervisor.signal.signal", side_effect=register):
+            with patch("remnic_hermes.hermes_llm_supervisor._wait_for_bridge", return_value=True):
+                with patch("remnic_hermes.hermes_llm_supervisor.subprocess.Popen", side_effect=launch_child) as popen:
+                    assert run_supervised(
+                        python="/opt/hermes-python",
+                        policy="/tmp/policy.json",
+                        remnic_bin="/opt/remnic-server",
+                        port=4329,
+                    ) == 0
+
+    assert popen.call_count == 2
+    assert bridge.received_signals == [signum]
+    assert daemon.received_signals == [signum]
+
+
+def test_daemon_environment_preserves_documented_remnic_runtime_settings_without_provider_env():
+    """Daemon routing and storage settings survive credential isolation unchanged."""
+    from remnic_hermes.hermes_llm_supervisor import _daemon_environment
+
+    parent_env = {
+        "HOME": "/tmp/remnic-home",
+        "PATH": "/usr/bin:/bin",
+        "REMNIC_CONFIG_PATH": "/tmp/remnic.json",
+        "ENGRAM_CONFIG_PATH": "/tmp/engram.json",
+        "REMNIC_MEMORY_DIR": "/tmp/remnic-memory",
+        "ENGRAM_MEMORY_DIR": "/tmp/engram-memory",
+        "REMNIC_AUTH_TOKEN": "remnic-daemon-token",
+        "ENGRAM_AUTH_TOKEN": "engram-daemon-token",
+        "REMNIC_HOST": "127.0.0.1",
+        "ENGRAM_HOST": "127.0.0.1",
+        "REMNIC_PORT": "4318",
+        "ENGRAM_PORT": "4319",
+        "OPENAI_API_KEY": "provider-key-must-not-reach-daemon",
+        "XAI_API_KEY": "other-provider-key-must-not-reach-daemon",
+    }
+
+    daemon_env = _daemon_environment(parent_env, "bridge-request-token")
+
+    for key in (
+        "REMNIC_CONFIG_PATH",
+        "ENGRAM_CONFIG_PATH",
+        "REMNIC_MEMORY_DIR",
+        "ENGRAM_MEMORY_DIR",
+        "REMNIC_AUTH_TOKEN",
+        "ENGRAM_AUTH_TOKEN",
+        "REMNIC_HOST",
+        "ENGRAM_HOST",
+        "REMNIC_PORT",
+        "ENGRAM_PORT",
+    ):
+        assert daemon_env[key] == parent_env[key]
+    assert daemon_env[_REQUEST_TOKEN_ENV] == "bridge-request-token"
+    assert "OPENAI_API_KEY" not in daemon_env
+    assert "XAI_API_KEY" not in daemon_env

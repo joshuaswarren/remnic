@@ -263,6 +263,7 @@ def run_server(
     if not 1 <= port <= 65535:
         raise ValueError("bridge port out of range")
     load_policy(policy_path)
+    _resolve_hermes_call_llm()
     ThreadingHTTPServer(
         (host, port),
         make_handler(

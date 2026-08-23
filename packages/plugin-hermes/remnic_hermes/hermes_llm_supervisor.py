@@ -26,6 +26,20 @@ _DAEMON_ENV_KEYS = frozenset(
         "XDG_DATA_HOME",
     }
 )
+_DAEMON_REMNIC_ENV_KEYS = frozenset(
+    {
+        "REMNIC_CONFIG_PATH",
+        "ENGRAM_CONFIG_PATH",
+        "REMNIC_MEMORY_DIR",
+        "ENGRAM_MEMORY_DIR",
+        "REMNIC_AUTH_TOKEN",
+        "ENGRAM_AUTH_TOKEN",
+        "REMNIC_HOST",
+        "ENGRAM_HOST",
+        "REMNIC_PORT",
+        "ENGRAM_PORT",
+    }
+)
 
 
 def build_child_commands(
@@ -62,13 +76,13 @@ def build_child_commands(
 
 
 def _daemon_environment(parent: Mapping[str, str], request_token: str) -> dict[str, str]:
-    """Give Remnic only runtime basics plus the bridge caller token, never provider env."""
+    """Give Remnic runtime basics and documented daemon settings, never provider env."""
     if not request_token:
         raise ValueError("bridge request token is required")
     environment = {
         key: value
         for key, value in parent.items()
-        if key in _DAEMON_ENV_KEYS and value
+        if key in _DAEMON_ENV_KEYS | _DAEMON_REMNIC_ENV_KEYS and value
     }
     environment[_REQUEST_TOKEN_ENV] = request_token
     return environment
@@ -175,22 +189,44 @@ def run_supervised(*, python: str, policy: str, remnic_bin: str, port: int) -> i
     bridge: subprocess.Popen[str] | None = None
     daemon: subprocess.Popen[str] | None = None
     stopping = False
+    starting_bridge = False
+    starting_daemon = False
+    bridge_start_signals: list[int] = []
+    daemon_start_signals: list[int] = []
 
     def request_stop(signum: int, _frame: object) -> None:
         nonlocal stopping
         stopping = True
-        _forward_signal(daemon, signum)
-        _forward_signal(bridge, signum)
+        if starting_daemon:
+            daemon_start_signals.append(signum)
+        else:
+            _forward_signal(daemon, signum)
+        if starting_bridge:
+            bridge_start_signals.append(signum)
+        else:
+            _forward_signal(bridge, signum)
 
     old_term = signal.signal(signal.SIGTERM, request_stop)
     old_int = signal.signal(signal.SIGINT, request_stop)
     try:
-        bridge = subprocess.Popen(bridge_cmd, text=True, env=bridge_env)
+        starting_bridge = True
+        try:
+            bridge = subprocess.Popen(bridge_cmd, text=True, env=bridge_env)
+        finally:
+            starting_bridge = False
+        for signum in bridge_start_signals:
+            _forward_signal(bridge, signum)
         if not _wait_for_bridge(port, ready_token, is_stopping=lambda: stopping):
             return 0 if stopping else 70
         if stopping:
             return 0
-        daemon = subprocess.Popen(remnic_cmd, text=True, env=daemon_env)
+        starting_daemon = True
+        try:
+            daemon = subprocess.Popen(remnic_cmd, text=True, env=daemon_env)
+        finally:
+            starting_daemon = False
+        for signum in daemon_start_signals:
+            _forward_signal(daemon, signum)
         if stopping:
             return 0
         return _wait_for_children(bridge, daemon, is_stopping=lambda: stopping)

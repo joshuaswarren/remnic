@@ -245,3 +245,19 @@ def test_default_hermes_resolver_reports_a_missing_runtime_without_trying_a_comp
     with patch("importlib.import_module", side_effect=missing_runtime):
         with pytest.raises(PolicyError, match="Hermes runtime is unavailable"):
             _default_call_llm()
+
+
+def test_run_server_rejects_a_missing_hermes_runtime_before_opening_the_listener(tmp_path):
+    """Readiness cannot succeed when the selected Python lacks the Hermes runtime."""
+    from remnic_hermes.hermes_llm_bridge import PolicyError, run_server
+
+    missing_runtime = PolicyError("Hermes runtime is unavailable")
+    with patch(
+        "remnic_hermes.hermes_llm_bridge._resolve_hermes_call_llm",
+        side_effect=missing_runtime,
+    ):
+        with patch("remnic_hermes.hermes_llm_bridge.ThreadingHTTPServer") as server:
+            with pytest.raises(PolicyError, match="Hermes runtime is unavailable"):
+                run_server(_policy_path(tmp_path), request_token=BRIDGE_REQUEST_TOKEN)
+
+    server.assert_not_called()
