@@ -11,6 +11,16 @@
       "remnic-source": "./src/index.ts",
       "import": "./dist/index.js"
     },
+    "./activity/digest": {
+      "types": "./dist/activity/digest.d.ts",
+      "remnic-source": "./src/activity/digest.ts",
+      "import": "./dist/activity/digest.js"
+    },
+    "./activity/digest.js": {
+      "types": "./dist/activity/digest.d.ts",
+      "remnic-source": "./src/activity/digest.ts",
+      "import": "./dist/activity/digest.js"
+    },
     "./maintenance/atomic-file": {
       "types": "./dist/maintenance/atomic-file.d.ts",
       "remnic-source": "./src/maintenance/atomic-file.ts",

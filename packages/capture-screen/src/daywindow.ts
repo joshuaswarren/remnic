@@ -7,7 +7,7 @@
  * unchanged.
  */
 
-import { activityDayWindow as coreDayWindow } from "@remnic/core";
+import { activityDayWindow as coreDayWindow } from "@remnic/core/activity/digest";
 
 import { CaptureInputError } from "./errors.js";
 
