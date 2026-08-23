@@ -10,42 +10,25 @@
  * `speaker_name`/`speaker_id` instead; normalize both shapes.
  */
 
-import type {
-  WearableConversation,
-  WearableNativeMemory,
-  WearableTranscriptSegment,
+import {
+  activityDayWindow,
+  timezoneOffsetIso as resolveTimezoneOffset,
+  type WearableConversation,
+  type WearableNativeMemory,
+  type WearableTranscriptSegment,
 } from "@remnic/core";
 
 import type { OmiConversation, OmiMemory } from "./client.js";
 
 export const OMI_SOURCE_ID = "omi";
 
-/** "GMT+05:30" → "+05:30"; plain "GMT" → "+00:00". */
+/** "GMT+05:30" → "+05:30"; an unknown zone falls back to "+00:00" so a bad config never crashes the sync. */
 export function timezoneOffsetIso(instant: Date, timezone: string): string {
   try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone,
-      timeZoneName: "longOffset",
-    }).formatToParts(instant);
-    const name = parts.find((part) => part.type === "timeZoneName")?.value ?? "GMT";
-    const match = name.match(/GMT([+-]\d{2}:\d{2})?/);
-    return match?.[1] ?? "+00:00";
+    return resolveTimezoneOffset(instant, timezone);
   } catch {
     return "+00:00";
   }
-}
-
-/** ISO instant for local midnight of `date` in `timezone`. */
-export function zonedDayStartIso(date: string, timezone: string): string {
-  // Two-pass offset resolution: guess from midday (stable away from DST
-  // transitions), then re-derive at the candidate midnight itself.
-  let offset = timezoneOffsetIso(new Date(`${date}T12:00:00Z`), timezone);
-  const candidate = new Date(`${date}T00:00:00${offset}`);
-  const refined = timezoneOffsetIso(candidate, timezone);
-  if (refined !== offset) {
-    offset = refined;
-  }
-  return `${date}T00:00:00${offset}`;
 }
 
 export function nextIsoDate(date: string): string {
@@ -54,14 +37,20 @@ export function nextIsoDate(date: string): string {
   return parsed.toISOString().slice(0, 10);
 }
 
-/** Half-open [start, end) ISO bounds of a local day. */
-export function zonedDayBounds(
+/**
+ * Half-open [start, end) local-midnight ISO bounds of a local day, in the
+ * offset-datetime form the Omi API's date filters expect. Field names and
+ * format map to the Omi API; the DST-aware window math is core's
+ * `activityDayWindow`.
+ */
+export function omiDayWindow(
   date: string,
   timezone: string,
 ): { startIso: string; endIso: string } {
+  const { startUtc, endUtc } = activityDayWindow(date, timezone);
   return {
-    startIso: zonedDayStartIso(date, timezone),
-    endIso: zonedDayStartIso(nextIsoDate(date), timezone),
+    startIso: `${date}T00:00:00${timezoneOffsetIso(new Date(startUtc), timezone)}`,
+    endIso: `${nextIsoDate(date)}T00:00:00${timezoneOffsetIso(new Date(endUtc), timezone)}`,
   };
 }
 

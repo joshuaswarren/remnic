@@ -17,6 +17,7 @@
  * and never advance any state (the client is stateless).
  */
 
+import { assertValidTimezone } from "@remnic/core";
 import { isValidLocationDate } from "@remnic/core/location";
 
 export type ReittiAuthMode = "x-api-token" | "bearer";
@@ -163,16 +164,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
 }
 
-/** Validate an IANA timezone by constructing a formatter (throws RangeError). */
-export function assertValidIanaTimezone(timezone: string): void {
+/**
+ * Validate an IANA timezone for Reitti requests: non-string/empty input is a
+ * TypeError; an unknown zone is a RangeError from core's `assertValidTimezone`.
+ */
+export function assertReittiTimezone(timezone: string): void {
   if (typeof timezone !== "string" || timezone.length === 0) {
     throw new TypeError("Reitti timezone must be a non-empty IANA zone string");
   }
-  try {
-    new Intl.DateTimeFormat("en-CA", { timeZone: timezone });
-  } catch {
-    throw new RangeError(`Reitti timezone "${timezone}" is not a valid IANA zone`);
-  }
+  assertValidTimezone(timezone);
 }
 
 /**
@@ -326,7 +326,7 @@ export class ReittiClient {
 
   /** Every VISIT/TRIP entry overlapping the local day (primary source). */
   async fetchTimeline(request: ReittiDayRequest): Promise<ReittiTimelineEntry[]> {
-    assertValidIanaTimezone(request.timezone);
+    assertReittiTimezone(request.timezone);
     if (!isValidLocationDate(request.date)) {
       throw new RangeError(`Reitti date "${request.date}" must be a real YYYY-MM-DD day`);
     }
@@ -342,7 +342,7 @@ export class ReittiClient {
 
   /** Processed visits grouped by place (fallback/enrichment source). */
   async fetchVisits(request: ReittiDayRequest): Promise<ReittiPlaceVisitSummary[]> {
-    assertValidIanaTimezone(request.timezone);
+    assertReittiTimezone(request.timezone);
     if (!isValidLocationDate(request.date)) {
       throw new RangeError(`Reitti date "${request.date}" must be a real YYYY-MM-DD day`);
     }

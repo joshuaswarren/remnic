@@ -5,8 +5,8 @@ import {
   conversationToWearable,
   memoryToNativeMemory,
   nextIsoDate,
+  omiDayWindow,
   timezoneOffsetIso,
-  zonedDayBounds,
 } from "./normalize.js";
 
 test("timezoneOffsetIso resolves fixed and DST offsets", () => {
@@ -27,13 +27,21 @@ test("nextIsoDate handles month and year boundaries", () => {
   assert.equal(nextIsoDate("2028-02-28"), "2028-02-29");
 });
 
-test("zonedDayBounds produces a half-open local-day window", () => {
-  const bounds = zonedDayBounds("2026-06-10", "America/Chicago");
+test("omiDayWindow produces a half-open local-day window", () => {
+  const bounds = omiDayWindow("2026-06-10", "America/Chicago");
   assert.equal(bounds.startIso, "2026-06-10T00:00:00-05:00");
   assert.equal(bounds.endIso, "2026-06-11T00:00:00-05:00");
-  const utc = zonedDayBounds("2026-06-10", "UTC");
+  const utc = omiDayWindow("2026-06-10", "UTC");
   assert.equal(utc.startIso, "2026-06-10T00:00:00+00:00");
   assert.equal(utc.endIso, "2026-06-11T00:00:00+00:00");
+});
+
+test("omiDayWindow handles the spring-forward DST boundary", () => {
+  // 2026-03-08 is the US spring-forward day: local midnight is CST (UTC-6)
+  // and the next day's midnight is CDT (UTC-5).
+  const bounds = omiDayWindow("2026-03-08", "America/Chicago");
+  assert.equal(bounds.startIso, "2026-03-08T00:00:00-06:00");
+  assert.equal(bounds.endIso, "2026-03-09T00:00:00-05:00");
 });
 
 const CONVERSATION = {
