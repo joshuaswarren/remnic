@@ -123,7 +123,10 @@ test("an unchanged warm run does not rewrite the cache file", async () => {
       ),
     };
     await saveConvergeIdentityCache(cachePath, changedManifest, TEMPLATE, loaded);
-    const afterChange = JSON.parse(await fs.promises.readFile(cachePath, "utf8")) as Record<string, unknown>;
+    const afterChange = JSON.parse(await fs.promises.readFile(cachePath, "utf8")) as {
+      files?: unknown[];
+      marker?: string;
+    };
     assert.equal(afterChange.marker, undefined, "a changed cache must be rewritten");
     assert.equal(afterChange.files?.length, 1);
   });
