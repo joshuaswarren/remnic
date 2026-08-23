@@ -267,10 +267,9 @@ test("readCasRevisionStatus distinguishes present, absent, and unavailable recei
     assert.equal(await storage.writeMemoryFrontmatter(memory, { status: "archived" }), true);
     const standing = await storage.readCasRevision(memory.path);
     assert.ok(standing);
-    assert.deepEqual(await storage.readCasRevisionStatus(memory.path), {
-      status: "present",
-      revision: standing,
-    });
+    const archived = await storage.readCasRevisionStatus(memory.path);
+    assert.equal(archived.status, "present");
+    assert.equal(archived.revision, standing);
 
     // A torn shard write: the receipt EXISTS but cannot be read. That is
     // unavailability — never absence — while the fail-open read keeps
@@ -555,10 +554,9 @@ test("a receipt publication failure after the memory write recovers from recorde
     // next read — not a manual reconcile — decisively publishes the
     // reserved token. The marker was never ownership and never absence
     // until this evidence spoke.
-    assert.deepEqual(await storage.readCasRevisionStatus(before.path), {
-      status: "present",
-      revision: reserved,
-    });
+    const published = await storage.readCasRevisionStatus(before.path);
+    assert.equal(published.status, "present");
+    assert.equal(published.revision, reserved);
     assert.equal(
       await storage.updateMemory(created.id, "Second body after evidence recovery."),
       true,
@@ -675,9 +673,9 @@ test("restart after a crash between write and commit publishes the reserved rece
     StorageManager.clearAllStaticCaches();
 
     const restarted = new StorageManager(dir);
-    assert.deepEqual(
-      await restarted.readCasRevisionStatus(memory.path),
-      { status: "present", revision: reserved },
+    const restartedStatus = await restarted.readCasRevisionStatus(memory.path);
+    assert.ok(
+      restartedStatus.status === "present" && restartedStatus.revision === reserved,
       "the first read after restart publishes the reserved token from the recorded evidence",
     );
     assert.equal(
@@ -731,8 +729,8 @@ test("restart with an ambiguous durable change fails closed with actionable reco
     assert.equal(status.status, "unavailable", "an ambiguous marker reads as unavailable, never as presence or absence");
     assert.match(
       status.status === "unavailable" ? status.reason : "",
-      /ambiguous[\s\S]*Refusing to guess/,
-      "the reason names the ambiguity and the refusal",
+      /pending finalization \(recovery needed\)/,
+      "the unlocked read defers the evidenced marker — recovery is demanded, never guessed",
     );
     await assert.rejects(
       restarted.updateMemory(created.id, "Write into an ambiguous target."),

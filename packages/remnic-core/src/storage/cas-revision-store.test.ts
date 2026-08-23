@@ -226,6 +226,7 @@ test("an evidenced gated recovery defers a reserve-only marker to the path-locke
       status: "present",
       revision: b.pendingRevision,
       committedDigest: store.digestContent("landed bytes"),
+      committedSemanticFingerprint: store.digestContent("landed bytes"),
     });
   });
 });
@@ -258,6 +259,7 @@ test("recoverPendingRevision publishes a crashed reservation whose write landed 
       status: "present",
       revision: b.pendingRevision,
       committedDigest: store.digestContent("new durable bytes"),
+      committedSemanticFingerprint: store.digestContent("new durable bytes"),
     });
     assert.equal(await store.recoverPendingRevision(target), "committed", "idempotent");
   });
@@ -278,7 +280,7 @@ test("recoverPendingRevision fails closed on an ambiguous durable change (#2807)
     // fingerprint nor the baseline can explain the current bytes.
     await writeFile(target, "unexplained third state", "utf8");
 
-    await assert.rejects(store.recoverPendingRevision(target), /ambiguous[\s\S]*Refusing to guess/);
+    await assert.rejects(store.recoverPendingRevision(target), /ambiguous[\s\S]{0,512}Refusing to guess/);
     assert.equal((await store.readRevisionStatus(target)).status, "unavailable");
     await assert.rejects(store.beginRevisionTransaction(target), /ambiguous/, "new reservations refuse");
     assert.equal(
@@ -306,7 +308,7 @@ test("recoverPendingRevision never guesses on a legacy pending marker without ev
       "utf8",
     );
 
-    await assert.rejects(store.recoverPendingRevision(target), /no crash evidence[\s\S]*Refusing to guess/);
+    await assert.rejects(store.recoverPendingRevision(target), /no crash evidence[\s\S]{0,512}Refusing to guess/);
     assert.equal((await store.readRevisionStatus(target)).status, "unavailable");
   });
 });
@@ -355,6 +357,7 @@ test("beginRevisionTransaction with expectedContent persists expectedDigest in p
       status: "present",
       revision: txn2.pendingRevision,
       committedDigest: store.digestContent(expectedContent),
+      committedSemanticFingerprint: store.digestContent(expectedContent),
     });
   });
 });

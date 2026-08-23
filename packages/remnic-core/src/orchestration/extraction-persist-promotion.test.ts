@@ -756,3 +756,225 @@ test("buildMergedTargetPromotionPayload and promotion refuse when interleaving w
     "promotion must be abandoned when standing receipt digest/revision changes due to same-body metadata update",
   );
 });
+
+// ── #2870: access-only telemetry vs semantic metadata in the promotion binding ──
+
+type RawFileMutator = (raw: string) => string;
+
+const withFrontmatterLine = (line: string): RawFileMutator => (raw) =>
+  raw.replace("\n---\n", `\n${line}\n---\n`);
+
+/** Rewrite the durable file directly — a writer that changes semantics
+ * WITHOUT minting a CAS receipt (hand edit, legacy tool). Exactly the
+ * writer class the semantic-fingerprint clause must catch. */
+async function rewriteDurableWithoutReceipt(
+  storage: StorageManager,
+  memoryId: string,
+  mutate: RawFileMutator,
+): Promise<void> {
+  const row = await storage.getMemoryByIdIncludingArchived(memoryId);
+  assert.ok(row);
+  const before = await readFile(row.path, "utf8");
+  await writeFile(row.path, mutate(before), "utf8");
+}
+async function flushAccess(
+  storage: StorageManager,
+  memoryId: string,
+  newCount: number,
+): Promise<number> {
+  return await storage.flushAccessTracking([
+    { memoryId, newCount, lastAccessed: "2026-08-23T00:00:00.000Z" },
+  ]);
+}
+
+async function runPromotion(
+  s: { source: StorageManager; router: { storageFor: (namespace: string) => Promise<StorageManager> } },
+  payload: MergedTargetPromotionPayload | null,
+  sourceMemoryId: string,
+): Promise<number> {
+  let promotions = 0;
+  await promoteAndReconcileMergedTarget({
+    promote: async () => {
+      promotions += 1;
+      return `copy-${promotions}`;
+    },
+    config: parseConfig({ memoryDir: s.source.dir, sharedNamespace: "shared" }),
+    getStorageRouter: () => s.router,
+    scopeProfileWritePlan: null,
+    sourceStorage: s.source,
+    sourceMemoryId,
+    mergedPromotion: payload,
+    normalize: (content: string) => content,
+  });
+  return promotions;
+}
+
+test("access flush between merge commit and payload build still promotes (#2870)", async () => {
+  const s = await makeStorages();
+  const target = await s.source.writeMemory("fact", PRE_MERGE_BODY, {
+    source: "test",
+    confidence: 0.5,
+  });
+  await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
+  const committed = await s.source.getMemoryByIdIncludingArchived(target.id);
+  assert.ok(committed);
+  const shardPath = casShardPath(s.source.dir, committed.path);
+  const receiptBefore = JSON.parse(await readFile(shardPath, "utf8")) as { revision: string };
+  const bytesBefore = await readFile(committed.path, "utf8");
+
+  assert.equal(await flushAccess(s.source, target.id, 3), 1, "the access flush landed");
+
+  // Prove the interleaving is real: bytes changed, receipt did not re-mint.
+  assert.notEqual(await readFile(committed.path, "utf8"), bytesBefore, "the flush rewrote the durable file");
+  const receiptAfter = JSON.parse(await readFile(shardPath, "utf8")) as { revision: string };
+  assert.equal(receiptAfter.revision, receiptBefore.revision, "an access flush mints no receipt");
+
+  const { payload, readFailed } = await buildMergedTargetPromotionPayload(s.source, {
+    targetId: target.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.equal(readFailed, false);
+  assert.ok(payload, "an access-only flush must not refuse the payload");
+  assert.ok(payload?.committedSemanticFingerprint, "the payload carries the semantic binding");
+
+  assert.equal(await runPromotion(s, payload, target.id), 1, "the flushed-but-unchanged semantics still promote");
+});
+
+test("access flush between payload build and promotion still promotes (#2870)", async () => {
+  const s = await makeStorages();
+  const target = await s.source.writeMemory("fact", PRE_MERGE_BODY, {
+    source: "test",
+    confidence: 0.5,
+  });
+  await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
+  const { payload } = await buildMergedTargetPromotionPayload(s.source, {
+    targetId: target.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.ok(payload);
+  assert.equal(await flushAccess(s.source, target.id, 7), 1, "the access flush lands after the build");
+
+  assert.equal(await runPromotion(s, payload, target.id), 1, "the final guard confirms the flushed record's semantics");
+});
+
+test("payload build refuses a semantic mutation that minted no receipt (#2870)", async () => {
+  const s = await makeStorages();
+  const target = await s.source.writeMemory("fact", PRE_MERGE_BODY, {
+    source: "test",
+    confidence: 0.5,
+  });
+  await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
+  await rewriteDurableWithoutReceipt(
+    s.source,
+    target.id,
+    (raw) => raw.replace(/^confidence: .*$/m, "confidence: 0.99"),
+  );
+  const { payload, readFailed } = await buildMergedTargetPromotionPayload(s.source, {
+    targetId: target.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.equal(payload, null, "a same-body confidence change must refuse the payload");
+  assert.equal(readFailed, true, "the refusal is an unknown outcome, not a no-promotion verdict");
+});
+
+test("final guard refuses each semantic field mutation that minted no receipt (#2870)", async () => {
+  const mutations: Array<[label: string, mutate: RawFileMutator]> = [
+    ["confidence", (raw) => raw.replace(/^confidence: .*$/m, "confidence: 0.99")],
+    ["tags", (raw) => raw.replace(/^tags: .*$/m, 'tags: ["mutated"]')],
+    ["status", withFrontmatterLine("status: superseded")],
+    ["provenance", withFrontmatterLine("provenance: unverified")],
+    ["tool scope", withFrontmatterLine("toolScoped: true")],
+    ["body", (raw) => `${raw}\nmutated body suffix`],
+  ];
+  for (const [label, mutate] of mutations) {
+    const s = await makeStorages();
+    const target = await s.source.writeMemory("fact", PRE_MERGE_BODY, {
+      source: "test",
+      confidence: 0.5,
+    });
+    await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
+    const { payload } = await buildMergedTargetPromotionPayload(s.source, {
+      targetId: target.id,
+      mergedContent: A_MERGED_BODY,
+      provenancePatched: true,
+    });
+    assert.ok(payload, `payload builds before the ${label} mutation`);
+    await rewriteDurableWithoutReceipt(s.source, target.id, mutate);
+
+    assert.equal(
+      await runPromotion(s, payload, target.id),
+      0,
+      `a ${label} mutation without a receipt must refuse promotion`,
+    );
+  }
+});
+
+test("a PENDING receipt marker between build and promotion abandons it (#2870)", async () => {
+  const s = await makeStorages();
+  const target = await s.source.writeMemory("fact", PRE_MERGE_BODY, {
+    source: "test",
+    confidence: 0.5,
+  });
+  await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
+  const { payload } = await buildMergedTargetPromotionPayload(s.source, {
+    targetId: target.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.ok(payload);
+  const committed = await s.source.getMemoryByIdIncludingArchived(target.id);
+  assert.ok(committed);
+  const shardPath = casShardPath(s.source.dir, committed.path);
+  const relative = path.relative(s.source.dir, committed.path).split(path.sep).join("/");
+  // A pending marker whose expected digest matches nothing: lazy recovery
+  // cannot decide it, so the receipt reads UNAVAILABLE and the promotion
+  // must refuse rather than confirm against an unknown identity.
+  await writeFile(
+    shardPath,
+    `${JSON.stringify({
+      version: 1,
+      path: relative,
+      revision: "2026-08-23T00:00:00.001Z",
+      state: "pending",
+      previous: payload.committedRevision ?? "2026-08-23T00:00:00.000Z",
+      baselineDigest: "0".repeat(64),
+      expectedDigest: "1".repeat(64),
+    })}\n`,
+    "utf8",
+  );
+
+  assert.equal(
+    await runPromotion(s, payload, target.id),
+    0,
+    "a pending (recovery-needed) receipt must not confirm the payload",
+  );
+});
+
+test("a legacy shard without a stored semantic fingerprint keeps the conservative digest refusal (#2870)", async () => {
+  const s = await makeStorages();
+  const target = await s.source.writeMemory("fact", PRE_MERGE_BODY, {
+    source: "test",
+    confidence: 0.5,
+  });
+  await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
+  const committed = await s.source.getMemoryByIdIncludingArchived(target.id);
+  assert.ok(committed);
+  // Downgrade the shard to its pre-#2870 shape: committed digest, no
+  // semantic fingerprint.
+  const shardPath = casShardPath(s.source.dir, committed.path);
+  const shard = JSON.parse(await readFile(shardPath, "utf8")) as Record<string, unknown>;
+  delete shard.committedSemanticFingerprint;
+  await writeFile(shardPath, `${JSON.stringify(shard)}\n`, "utf8");
+
+  assert.equal(await flushAccess(s.source, target.id, 4), 1, "the access flush lands on the legacy shard");
+  const { payload, readFailed } = await buildMergedTargetPromotionPayload(s.source, {
+    targetId: target.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.equal(payload, null, "legacy shards keep the full-digest binding until the next semantic write");
+  assert.equal(readFailed, true);
+});
