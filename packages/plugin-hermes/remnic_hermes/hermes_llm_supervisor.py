@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping
+import hashlib
+import hmac
 import os
 import secrets
 import signal
@@ -13,6 +15,7 @@ from urllib.request import Request, urlopen
 
 
 _REQUEST_TOKEN_ENV = "REMNIC_HERMES_BRIDGE_TOKEN"
+_READY_TOKEN_ENV = "REMNIC_HERMES_BRIDGE_READY_TOKEN"
 _DAEMON_ENV_KEYS = frozenset(
     {
         "HOME",
@@ -68,8 +71,8 @@ def build_child_commands(
             str(port),
             "--request-token-env",
             _REQUEST_TOKEN_ENV,
-            "--ready-token",
-            ready_token,
+            "--readiness-token-env",
+            _READY_TOKEN_ENV,
         ],
         [remnic_bin],
     )
@@ -97,16 +100,23 @@ def _wait_for_bridge(
 ) -> bool:
     """Require a nonce-authenticated readiness response from this bridge instance."""
     deadline = time.monotonic() + seconds
+    challenge = secrets.token_urlsafe(32)
+    expected_proof = hmac.new(
+        ready_token.encode("utf-8"),
+        challenge.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
     while time.monotonic() < deadline:
         if is_stopping():
             return False
         request = Request(
             f"http://127.0.0.1:{port}/healthz",
-            headers={"X-Remnic-Bridge-Ready": ready_token},
+            headers={"X-Remnic-Bridge-Challenge": challenge},
         )
         try:
             with urlopen(request, timeout=0.25) as response:  # noqa: S310 -- fixed loopback URL
-                if response.status == 204:
+                proof = response.headers.get("X-Remnic-Bridge-Proof", "")
+                if response.status == 204 and hmac.compare_digest(proof, expected_proof):
                     return True
         except OSError:
             pass
@@ -178,6 +188,7 @@ def run_supervised(*, python: str, policy: str, remnic_bin: str, port: int) -> i
     request_token = secrets.token_urlsafe(32)
     bridge_env = os.environ.copy()
     bridge_env[_REQUEST_TOKEN_ENV] = request_token
+    bridge_env[_READY_TOKEN_ENV] = ready_token
     daemon_env = _daemon_environment(os.environ, request_token)
     bridge_cmd, remnic_cmd = build_child_commands(
         python=python,

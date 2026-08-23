@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 from http.server import ThreadingHTTPServer
 from threading import Thread
@@ -207,7 +209,7 @@ def test_run_server_rejects_missing_request_token_and_non_ipv4_loopback_listener
         run_server(policy_path, host="::1", request_token=BRIDGE_REQUEST_TOKEN)
 
 
-def test_readiness_endpoint_requires_the_supervisor_secret(tmp_path):
+def test_readiness_endpoint_proves_knowledge_of_the_supervisor_secret(tmp_path):
     """A port listener is ready only when it proves it is this bridge instance."""
     from remnic_hermes.hermes_llm_bridge import make_handler
 
@@ -228,9 +230,15 @@ def test_readiness_endpoint_requires_the_supervisor_secret(tmp_path):
             urlopen(url, timeout=2)  # noqa: S310 -- test server is loopback-only
         assert error.value.code == 404
 
-        request = Request(url, headers={"X-Remnic-Bridge-Ready": "expected-readiness-token"})
+        challenge = "supervisor-challenge"
+        request = Request(url, headers={"X-Remnic-Bridge-Challenge": challenge})
         with urlopen(request, timeout=2) as response:  # noqa: S310 -- test server is loopback-only
             assert response.status == 204
+            assert response.headers["X-Remnic-Bridge-Proof"] == hmac.new(
+                b"expected-readiness-token",
+                challenge.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
     finally:
         server.shutdown()
         server.server_close()

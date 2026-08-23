@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import hashlib
 import hmac
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -201,9 +202,17 @@ def make_handler(
         def do_GET(self) -> None:  # noqa: N802
             requested_path = self.path.rstrip("/")
             if requested_path == "/healthz":
-                received_token = self.headers.get("X-Remnic-Bridge-Ready", "")
-                if readiness_token is not None and hmac.compare_digest(received_token, readiness_token):
-                    self._send_empty(HTTPStatus.NO_CONTENT)
+                challenge = self.headers.get("X-Remnic-Bridge-Challenge", "")
+                if readiness_token is not None and challenge:
+                    proof = hmac.new(
+                        readiness_token.encode("utf-8"),
+                        challenge.encode("utf-8"),
+                        hashlib.sha256,
+                    ).hexdigest()
+                    self.send_response(HTTPStatus.NO_CONTENT)
+                    self.send_header("X-Remnic-Bridge-Proof", proof)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
                 else:
                     self._send_json(HTTPStatus.NOT_FOUND, {"error": {"message": "not found"}})
                 return
@@ -280,19 +289,24 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=4329)
     parser.add_argument("--request-token-env", required=True)
-    parser.add_argument("--ready-token")
+    parser.add_argument("--readiness-token-env", required=True)
     args = parser.parse_args()
     if not _ENV_NAME_RE.fullmatch(args.request_token_env):
         parser.error("--request-token-env must name a conventional environment variable")
+    if not _ENV_NAME_RE.fullmatch(args.readiness_token_env):
+        parser.error("--readiness-token-env must name a conventional environment variable")
     request_token = os.environ.get(args.request_token_env)
     if not request_token:
         parser.error(f"environment variable {args.request_token_env} is required")
+    readiness_token = os.environ.get(args.readiness_token_env)
+    if not readiness_token:
+        parser.error(f"environment variable {args.readiness_token_env} is required")
     run_server(
         args.policy,
         host=args.host,
         port=args.port,
         request_token=request_token,
-        readiness_token=args.ready_token,
+        readiness_token=readiness_token,
     )
 
 

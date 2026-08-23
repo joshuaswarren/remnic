@@ -10,6 +10,7 @@ import pytest
 
 
 _REQUEST_TOKEN_ENV = "REMNIC_HERMES_BRIDGE_TOKEN"
+_READY_TOKEN_ENV = "REMNIC_HERMES_BRIDGE_READY_TOKEN"
 
 
 class Process:
@@ -36,6 +37,18 @@ class Process:
 
     def send_signal(self, signum: int) -> None:
         self.received_signals.append(signum)
+
+
+class ReadinessResponse:
+    def __init__(self, proof: str = "") -> None:
+        self.status = 204
+        self.headers = {"X-Remnic-Bridge-Proof": proof}
+
+    def __enter__(self) -> "ReadinessResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
 
 
 def test_supervisor_starts_the_daemon_after_the_loopback_bridge_and_stops_the_bridge():
@@ -77,13 +90,14 @@ def test_supervisor_starts_the_daemon_after_the_loopback_bridge_and_stops_the_br
         "4329",
         "--request-token-env",
         _REQUEST_TOKEN_ENV,
-        "--ready-token",
-        "first-ready-token",
+        "--readiness-token-env",
+        _READY_TOKEN_ENV,
     ]
     assert popen.call_args_list[1].args[0] == ["/opt/remnic-server"]
     bridge_env = popen.call_args_list[0].kwargs["env"]
     daemon_env = popen.call_args_list[1].kwargs["env"]
     assert bridge_env[_REQUEST_TOKEN_ENV] == "first-request-token"
+    assert bridge_env[_READY_TOKEN_ENV] == "first-ready-token"
     assert daemon_env[_REQUEST_TOKEN_ENV] == "first-request-token"
     assert bridge_env["OPENAI_API_KEY"] == "provider-key-must-not-reach-daemon"
     assert "OPENAI_API_KEY" not in daemon_env
@@ -91,6 +105,8 @@ def test_supervisor_starts_the_daemon_after_the_loopback_bridge_and_stops_the_br
     assert daemon_env["PATH"] == "/usr/bin:/bin"
     assert daemon_env["HOME"] == "/tmp/hermes-home"
     assert "first-request-token" not in popen.call_args_list[0].args[0]
+    assert "first-ready-token" not in popen.call_args_list[0].args[0]
+    assert _READY_TOKEN_ENV not in daemon_env
     assert bridge.terminate_calls == 1
 
 
@@ -115,8 +131,9 @@ def test_supervisor_passes_an_instance_secret_to_the_readiness_probe_before_daem
                     ) == 0
 
     assert wait_for_bridge.call_args.args == (4329, "unique-ready-token")
-    assert popen.call_args_list[0].args[0][-2:] == ["--ready-token", "unique-ready-token"]
+    assert popen.call_args_list[0].args[0][-2:] == ["--readiness-token-env", _READY_TOKEN_ENV]
     assert popen.call_args_list[0].kwargs["env"][_REQUEST_TOKEN_ENV] == "unique-request-token"
+    assert popen.call_args_list[0].kwargs["env"][_READY_TOKEN_ENV] == "unique-ready-token"
 
 
 def test_supervisor_never_launches_the_daemon_when_instance_readiness_fails():
@@ -404,3 +421,18 @@ def test_daemon_environment_preserves_documented_remnic_runtime_settings_without
     assert daemon_env[_REQUEST_TOKEN_ENV] == "bridge-request-token"
     assert "OPENAI_API_KEY" not in daemon_env
     assert "XAI_API_KEY" not in daemon_env
+
+
+def test_readiness_probe_rejects_a_port_squatter_that_returns_only_204():
+    """A bridge is ready only when its response proves knowledge of the launch secret."""
+    from remnic_hermes.hermes_llm_supervisor import _wait_for_bridge
+
+    with patch("remnic_hermes.hermes_llm_supervisor.secrets.token_urlsafe", return_value="challenge"):
+        with patch("remnic_hermes.hermes_llm_supervisor.urlopen", return_value=ReadinessResponse()) as open_url:
+            with patch("remnic_hermes.hermes_llm_supervisor.time.monotonic", side_effect=[0.0, 0.0, 11.0]):
+                with patch("remnic_hermes.hermes_llm_supervisor.time.sleep"):
+                    assert not _wait_for_bridge(4329, "readiness-secret", is_stopping=lambda: False)
+
+    request = open_url.call_args.args[0]
+    assert request.headers["X-remnic-bridge-challenge"] == "challenge"
+    assert "readiness-secret" not in request.headers.values()
