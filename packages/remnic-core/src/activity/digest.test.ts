@@ -220,6 +220,18 @@ test("activityDayWindow resolves second-granularity transitions exactly (Asia/Ma
   assert.equal(activityDateInTimezone(new Date(Date.parse(before.endUtc) - 1), "Asia/Manila"), "1844-12-30");
 });
 
+test("activityDayWindow pads pre-1000 years before the local-date comparison", () => {
+  // Intl.DateTimeFormat formats years before 1000 unpadded: the year 0999
+  // comes back as "999". Pre-fix, `localStamp` rejected the valid midnight
+  // ("999-01-01T00:00:00" ≠ "0999-01-01T00:00:00") and the fallback's
+  // lexicographic comparison treated "998-12-31" as ≥ "0999-01-01", so
+  // activityDayWindow("0999-01-01", "UTC") resolved its start to
+  // 0998-12-31T00:00:00.000Z — fetching and attributing an extra day.
+  const w = activityDayWindow("0999-01-01", "UTC");
+  assert.equal(w.startUtc, "0999-01-01T00:00:00.000Z");
+  assert.equal(w.endUtc, "0999-01-02T00:00:00.000Z");
+});
+
 test("timeline keeps a second machine's span even with the same app/window", () => {
   const a = snap({ machine: "A", capturedAtUtc: "2026-03-10T14:00:00.000Z", app: "Chrome", windowTitle: "Doc", contentHash: "a1", text: "" });
   const b = snap({ machine: "B", capturedAtUtc: "2026-03-10T14:00:30.000Z", app: "Chrome", windowTitle: "Doc", contentHash: "b1", text: "" });

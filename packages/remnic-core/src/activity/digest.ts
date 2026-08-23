@@ -85,7 +85,11 @@ function zonedDayStartIso(date: string, timezone: string): string {
   const localStamp = (ms: number): string => {
     const parts = wall.formatToParts(new Date(ms));
     const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? "";
-    return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}`;
+    // Intl formats pre-1000 years unpadded ("999" for 0999). Pad back to the
+    // four-digit form the equality and ordering comparisons below assume,
+    // or "998-12-31" compares greater than "0999-01-01".
+    const year = get("year").padStart(4, "0");
+    return `${year}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}`;
   };
   const localDate = (ms: number): string => localStamp(ms).slice(0, 10);
   const prevDate = shiftIsoDate(date, -1);
