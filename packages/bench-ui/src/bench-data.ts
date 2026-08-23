@@ -1,119 +1,33 @@
+import type {
+  BenchAggregateMetric,
+  BenchAssistantTaskDetails,
+  BenchIntegritySplit,
+  BenchIntegritySummary,
+  BenchMetricHighlight,
+  BenchPerSeedScore,
+  BenchResultFileWarning,
+  BenchResultSummary,
+  BenchResultSummaryPayload,
+  BenchTaskScoreEntry,
+  BenchTaskSummary,
+} from "@remnic/bench";
 import { compareMetricNames, compareStrings, compareTimestampedRuns } from "./sort-utils";
 
-export interface BenchMetricHighlight {
-  name: string;
-  mean: number;
-}
-
-export interface BenchAggregateMetric {
-  name: string;
-  mean: number | null;
-  median: number | null;
-  stdDev: number | null;
-  min: number | null;
-  max: number | null;
-  ciLower: number | null;
-  ciUpper: number | null;
-  ciLevel: number | null;
-  effectSize: number | null;
-  effectInterpretation: string | null;
-}
-
-export interface BenchTaskScoreEntry {
-  name: string;
-  value: number;
-}
-
-export interface BenchPerSeedScore {
-  seed: number;
-  identityAccuracy: number | null;
-  stanceCoherence: number | null;
-  novelty: number | null;
-  calibration: number | null;
-  parseOk: boolean;
-  notes: string;
-  latencyMs: number | null;
-}
-
-export interface BenchAssistantTaskDetails {
-  focus: string | null;
-  rubricId: string | null;
-  rubricSha256: string | null;
-  perSeedScores: BenchPerSeedScore[];
-  judgeParseFailures: number | null;
-}
-
-export interface BenchTaskSummary {
-  taskId: string;
-  question: string;
-  expected: string;
-  actual: string;
-  latencyMs: number | null;
-  totalTokens: number;
-  primaryScore: number | null;
-  scoreEntries: BenchTaskScoreEntry[];
-  assistantDetails?: BenchAssistantTaskDetails | null;
-}
-
-export type BenchIntegritySplit = "public" | "holdout" | "unknown";
-
-export interface BenchIntegritySummary {
-  /** Which split produced this result. `unknown` on legacy results. */
-  split: BenchIntegritySplit;
-  /** True when qrels/judge/dataset hashes are all present and well-formed. */
-  sealsPresent: boolean;
-  /** True when the canary score is non-null and sits at or below the floor. */
-  canaryUnderFloor: boolean | null;
-  /** The canary score recorded with the result, when present. */
-  canaryScore: number | null;
-  /** The canary floor applied — defaults to 0.1. */
-  canaryFloor: number;
-  /** Truncated hashes for display (first 12 chars). */
-  qrelsSealedHashShort: string | null;
-  judgePromptHashShort: string | null;
-  datasetHashShort: string | null;
-}
-
-export interface BenchResultSummary {
-  id: string;
-  benchmark: string;
-  benchmarkTier: string;
-  timestamp: string;
-  mode: string;
-  totalLatencyMs: number | null;
-  meanQueryLatencyMs: number | null;
-  taskCount: number;
-  metricHighlights: BenchMetricHighlight[];
-  primaryMetric: string | null;
-  primaryScore: number | null;
-  runCount: number;
-  estimatedCostUsd: number | null;
-  totalTokens: number | null;
-  inputTokens: number | null;
-  outputTokens: number | null;
-  systemProvider: string;
-  judgeProvider: string;
-  providerKey: string;
-  adapterMode: string;
-  aggregateMetrics: BenchAggregateMetric[];
-  taskSummaries: BenchTaskSummary[];
-  integrity: BenchIntegritySummary;
-  assistantRubricId?: string | null;
-  assistantRubricSha256?: string | null;
-  assistantRunId?: string | null;
-  filePath: string;
-}
-
-export interface BenchResultSummaryPayload {
-  resultsDir: string;
-  summaries: BenchResultSummary[];
-  skippedFiles?: BenchResultFileWarning[];
-}
-
-export interface BenchResultFileWarning {
-  filePath: string;
-  reason: string;
-}
+// Artifact-shaped summary types are owned by @remnic/bench; re-exported
+// here so existing component imports keep resolving.
+export type {
+  BenchAggregateMetric,
+  BenchAssistantTaskDetails,
+  BenchIntegritySplit,
+  BenchIntegritySummary,
+  BenchMetricHighlight,
+  BenchPerSeedScore,
+  BenchResultFileWarning,
+  BenchResultSummary,
+  BenchResultSummaryPayload,
+  BenchTaskScoreEntry,
+  BenchTaskSummary,
+};
 
 export type TrendRange = "7d" | "30d" | "90d" | "all";
 
