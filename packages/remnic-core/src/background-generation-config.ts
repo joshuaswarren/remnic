@@ -56,11 +56,10 @@ function parseBackgroundGenerationObject(
   const timeoutRaw = record.timeoutSeconds ?? record.timeout_seconds;
   let timeoutSeconds = 120;
   if (timeoutRaw !== undefined) {
-    const parsed = typeof timeoutRaw === "number" ? timeoutRaw : Number(timeoutRaw);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
+    if (typeof timeoutRaw !== "number" || !Number.isFinite(timeoutRaw) || timeoutRaw <= 0) {
       throw new Error(`${keyName} timeoutSeconds must be a finite number > 0`);
     }
-    timeoutSeconds = parsed;
+    timeoutSeconds = timeoutRaw;
   }
   return {
     endpoint: parseBackgroundEndpoint(endpointRaw, `${keyName}.endpoint`),

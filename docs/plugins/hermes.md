@@ -153,7 +153,7 @@ remnic:
   # llm_bridge:
   #   enabled: true
   #   host: "127.0.0.1"
-  #   port: 8765          # 0 = pick a free ephemeral port
+  #   port: 8765          # 0 = pick a free ephemeral port (a fixed port is REQUIRED when client_config_path is set)
   #   max_body_bytes: 524288
   #   timeout_seconds: 120.0
   #   client_config_path: ""   # set to write the 0600 client JSON (includes a loopback bearer)
@@ -238,7 +238,10 @@ a raw API key or OAuth token.
   written with `0600` permissions. It never copies a host provider
   credential. Every request, including `/healthz`, is checked with a
   constant-time compare. Local callers without the bearer are denied.
-  The token is never logged.
+  The token is never logged. Generating the file requires a fixed
+  `port` (an ephemeral port would move the endpoint on every restart),
+  and the bearer is reused across restarts, so a daemon that read the
+  file once keeps working across Hermes restarts.
 - **Bounded and quiet.** Bodies above `max_body_bytes` get `413`;
   queue wait and delegate work share one `timeout_seconds` deadline.
   A depleted queue budget starts no delegate. Request bodies are never

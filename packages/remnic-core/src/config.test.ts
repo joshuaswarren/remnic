@@ -2829,6 +2829,56 @@ test("parseConfig keeps env openaiBaseUrl isolated from the Hermes bridge", () =
   });
 });
 
+test("parseConfig rejects nonnumeric bridge timeout values", () => {
+  withIsolatedConnectorsDir(false, () => {
+    assert.throws(
+      () =>
+        parseConfig({
+          backgroundGeneration: {
+            endpoint: "http://127.0.0.1:8765/v1/chat/completions",
+            token: "t",
+            timeoutSeconds: true,
+          },
+        }),
+      /timeoutSeconds must be a finite number/,
+    );
+    assert.throws(
+      () =>
+        parseConfig({
+          backgroundGeneration: {
+            endpoint: "http://127.0.0.1:8765/v1/chat/completions",
+            token: "t",
+            timeout_seconds: "45",
+          },
+        }),
+      /timeoutSeconds must be a finite number/,
+    );
+  });
+});
+
+test("parseConfig rejects a bridge client file with a nonnumeric timeout", () => {
+  withIsolatedConnectorsDir(false, () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "remnic-llm-bridge-badtimeout-"));
+    try {
+      const file = path.join(dir, "client.json");
+      writeFileSync(
+        file,
+        JSON.stringify({
+          endpoint: "http://127.0.0.1:8765/v1/chat/completions",
+          token: "bridge-token-fixture",
+          timeout_seconds: "45",
+        }),
+      );
+      assert.throws(
+        () => parseConfig({ llmBridgeClientConfigPath: file }),
+        /timeoutSeconds must be a finite number/,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 test("parseConfig rejects a non-object backgroundGeneration value", () => {
   withIsolatedConnectorsDir(false, () => {
     assert.throws(

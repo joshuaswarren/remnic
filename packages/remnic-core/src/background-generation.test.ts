@@ -83,11 +83,13 @@ test("HourlySummarizer uses backgroundGeneration and not openaiBaseUrl", async (
         timeoutSeconds: 12,
       },
     });
-    globalThis.fetch = (async (url) => {
+    let sentBody: string | undefined;
+    globalThis.fetch = (async (url, init) => {
       calls.push(String(url));
       if (String(url) !== "http://127.0.0.1:8765/v1/chat/completions") {
         return new Response("not the bridge", { status: 404 });
       }
+      sentBody = String(init?.body);
       return new Response(
         JSON.stringify({
           choices: [{ message: { content: '{"bullets":["bridge-only"]}' } }],
@@ -114,6 +116,13 @@ test("HourlySummarizer uses backgroundGeneration and not openaiBaseUrl", async (
     assert.deepEqual(summary?.bullets, ["bridge-only"]);
     assert.deepEqual(calls, ["http://127.0.0.1:8765/v1/chat/completions"]);
     assert.equal(config.openaiBaseUrl, "http://127.0.0.1:9999/v1");
+    // The bridge prompt must spell out the required JSON shape; without it a
+    // literal host model returns {"summary": "..."} and the schema rejects it.
+    const sent = JSON.parse(String(sentBody)) as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const system = sent.messages.find((message) => message.role === "system")?.content ?? "";
+    assert.match(system, /"bullets"/);
   } finally {
     globalThis.fetch = previousFetch;
     if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;

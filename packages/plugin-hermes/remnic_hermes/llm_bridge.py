@@ -13,7 +13,9 @@ background generation without ever seeing a provider credential:
   (Hermes ``PluginLlm.complete``). No new provider client is introduced.
 - The generated client config describes the endpoint and a generated
   loopback bearer. It never copies a host provider credential. The file
-  is written with ``0600`` permissions.
+  is written with ``0600`` permissions. Generating it requires a fixed
+  port, and the bearer is reused across restarts, so a daemon that read
+  the file once keeps working across Hermes restarts.
 - Every request is authenticated with that bearer using a constant-time
   compare. Unauthenticated local callers are denied. The token is never
   logged.
@@ -152,13 +154,20 @@ class BridgePolicy:
             raise TypeError(
                 f"remnic llm_bridge client_config_path must be a string, got {client_config_path!r}"
             )
+        client_config_path = client_config_path.strip()
+        if client_config_path and port == 0:
+            raise ValueError(
+                "remnic llm_bridge client_config_path requires a fixed port: port 0 "
+                "picks a new ephemeral port on every restart while the running "
+                "daemon keeps the previously generated endpoint"
+            )
         return cls(
             enabled=_parse_bool("llm_bridge.enabled", section.get("enabled", False)),
             host=host.strip(),
             port=port,
             max_body_bytes=max_body_bytes,
             timeout_seconds=timeout_seconds,
-            client_config_path=client_config_path.strip(),
+            client_config_path=client_config_path,
         )
 
 
@@ -188,13 +197,13 @@ def _bind_address(host: str) -> str:
 
 
 
-def _accepts_timeout(complete: Callable[..., Any]) -> bool:
-    """True only when ``timeout`` is an explicit parameter, not a bare ``**kwargs``."""
+def _accepts_kwarg(complete: Callable[..., Any], name: str) -> bool:
+    """True only when ``name`` is an explicit parameter, not a bare ``**kwargs``."""
     try:
         parameters = inspect.signature(complete).parameters
     except (TypeError, ValueError):
         return False
-    return "timeout" in parameters
+    return name in parameters
 
 
 def _plugin_id_of(complete: Callable[..., Any]) -> str | None:
@@ -222,10 +231,9 @@ def _plugin_llm_child_complete(
     if instance is None:
         raise RuntimeError("PluginLlm could not be constructed in the llm_bridge worker")
     complete = instance.complete
-    try:
+    if _accepts_kwarg(complete, "purpose"):
         return complete(messages, purpose="remnic-llm-bridge")
-    except TypeError:
-        return complete(messages)
+    return complete(messages)
 
 
 @dataclass(frozen=True)
@@ -268,6 +276,27 @@ def _isolated_worker(
         conn.close()
 
 
+def _persisted_auth_token(policy: BridgePolicy) -> str | None:
+    """Reuse the bearer recorded in an existing generated client config.
+
+    The Remnic daemon reads the client file once while building its runtime
+    configuration; minting a fresh token on every Hermes restart would 401 a
+    still-running daemon until it restarts too. The file is a 0600 artifact
+    this bridge wrote, so reuse keeps auth stable across this side's restarts.
+    """
+    if not policy.client_config_path:
+        return None
+    try:
+        with open(policy.client_config_path, encoding="utf-8") as handle:
+            existing = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    token = existing.get("token") if isinstance(existing, dict) else None
+    if isinstance(token, str) and token:
+        return token
+    return None
+
+
 class HermesLlmBridge:
     """Loopback-only OpenAI-compatible completion bridge (opt-in)."""
 
@@ -275,14 +304,14 @@ class HermesLlmBridge:
         self._bind = _bind_address(policy.host)  # rejects before any socket exists
         self.policy = policy
         self._complete = complete
-        self._auth_token = secrets.token_urlsafe(32)
+        self._auth_token = _persisted_auth_token(policy) or secrets.token_urlsafe(32)
         self._server: _BridgeServer | None = None
         self._thread: threading.Thread | None = None
         self._slots = threading.BoundedSemaphore(_WORKERS)
         self._inflight = 0
         self._inflight_lock = threading.Lock()
         self._live_procs: set[Any] = set()
-        self._use_timeout_kwarg = _accepts_timeout(complete)
+        self._use_timeout_kwarg = _accepts_kwarg(complete, "timeout")
         self._use_process = False
         if self._use_timeout_kwarg:
             self._complete = complete
@@ -294,11 +323,17 @@ class HermesLlmBridge:
             else:
                 try:
                     pickle.dumps(complete)
-                except Exception:
-                    self._complete = complete
-                else:
-                    self._complete = complete
-                    self._use_process = True
+                except Exception as err:
+                    # A delegate with no explicit timeout parameter that cannot
+                    # run in a killable worker would execute unbounded in the
+                    # request thread and ignore timeout_seconds entirely.
+                    raise ValueError(
+                        "llm_bridge delegate cannot be deadline-isolated: it has no "
+                        "explicit timeout parameter, is not a PluginLlm facade, and "
+                        "cannot be pickled into a killable worker"
+                    ) from err
+                self._complete = complete
+                self._use_process = True
 
     @property
     def auth_token(self) -> str:
@@ -368,12 +403,7 @@ class HermesLlmBridge:
                 raise TimeoutError("bridge completion deadline exceeded")
             if self._use_timeout_kwarg:
                 return self._complete(messages, timeout=remaining)
-            if self._use_process:
-                return self._run_in_killable_process(messages, remaining)
-            try:
-                return self._complete(messages, purpose="remnic-llm-bridge")
-            except TypeError:
-                return self._complete(messages)
+            return self._run_in_killable_process(messages, remaining)
         finally:
             with self._inflight_lock:
                 self._inflight -= 1
@@ -636,7 +666,7 @@ def start_bridge_from_config(
         bridge = HermesLlmBridge(policy, llm_complete)
         bridge.start()
     except (OSError, ValueError) as err:
-        _log.warning("llm_bridge failed to start (%s)", type(err).__name__)
+        _log.warning("llm_bridge failed to start: %s", err)
         return None
     if policy.client_config_path:
         try:
