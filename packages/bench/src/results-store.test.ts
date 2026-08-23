@@ -7,7 +7,7 @@ import test from "node:test";
 import { loadBenchmarkResult } from "./results-store.js";
 import type { BenchmarkResult } from "./types.js";
 
-test("loadBenchmarkResult rejects files missing required BenchmarkResult meta fields", async () => {
+test("loadBenchmarkResult upgrades legacy files missing newer required meta fields", async () => {
   await withResultFile(
     {
       ...validResult(),
@@ -19,15 +19,34 @@ test("loadBenchmarkResult rejects files missing required BenchmarkResult meta fi
       },
     },
     async (filePath) => {
+      // Issue #2850: pre-validator artifacts upgrade with documented
+      // defaults instead of being skipped.
+      const loaded = await loadBenchmarkResult(filePath);
+      assert.equal(loaded.meta.benchmarkTier, "custom");
+      assert.equal(loaded.meta.version, "unknown");
+      assert.equal(loaded.meta.remnicVersion, "unknown");
+      assert.equal(loaded.meta.gitSha, "unknown");
+      assert.deepEqual(loaded.meta.seeds, []);
+    },
+  );
+});
+
+test("loadBenchmarkResult still rejects files missing the legacy identity floor", async () => {
+  await withResultFile(
+    {
+      ...validResult(),
+      meta: { benchmark: "sample", timestamp: "2026-05-21T00:00:00.000Z" },
+    },
+    async (filePath) => {
       await assert.rejects(
         () => loadBenchmarkResult(filePath),
-        /Invalid benchmark result file/,
+        /Invalid benchmark result file: .+ \(meta\.id must be a non-empty string\)/,
       );
     },
   );
 });
 
-test("loadBenchmarkResult rejects files missing required cost fields", async () => {
+test("loadBenchmarkResult upgrades legacy files missing cost fields to zero-cost", async () => {
   const result: Record<string, unknown> = { ...validResult() };
   result.cost = {
     inputTokens: 0,
@@ -38,10 +57,10 @@ test("loadBenchmarkResult rejects files missing required cost fields", async () 
   };
 
   await withResultFile(result, async (filePath) => {
-    await assert.rejects(
-      () => loadBenchmarkResult(filePath),
-      /Invalid benchmark result file/,
-    );
+    // Absent cost accounting upgrades to zero, never to a guess.
+    const loaded = await loadBenchmarkResult(filePath);
+    assert.equal(loaded.cost.totalTokens, 0);
+    assert.equal(loaded.cost.inputTokens, 0);
   });
 });
 

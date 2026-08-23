@@ -1,0 +1,391 @@
+/**
+ * Legacy benchmark artifact compatibility (issue #2850).
+ *
+ * Artifacts written before the canonical `isBenchmarkResult` validator
+ * existed carry fewer required fields. The pre-#2800 bench-ui parser
+ * accepted them with per-field display defaults; the canonical loader
+ * rejects them, so historical runs vanished from result listings once
+ * tooling moved to `loadBenchmarkResult`.
+ *
+ * This module recognizes that legacy envelope and upgrades it to a
+ * canonical `BenchmarkResult`. The recognition rule is deliberate and
+ * narrow:
+ *
+ * - ABSENT optional fields get the documented default below (the same
+ *   default the pre-#2800 bench-ui parser displayed).
+ * - PRESENT fields must already be canonical-valid for every field the
+ *   canonical validator checks. A present-but-invalid value is never
+ *   coerced, dropped, or guessed — the artifact is rejected with a
+ *   reason naming the field, or by the canonical re-validation the
+ *   loader runs on the upgraded result.
+ * - Integrity and provenance are never fabricated: seals, split type,
+ *   and canary score stay absent when the artifact lacks them, so
+ *   downstream integrity gates (publish, leaderboard) still classify
+ *   these results as `missing-integrity`. Unknown version, Remnic
+ *   version, and git SHA upgrade to the explicit marker `"unknown"`.
+ * - Task entries without a usable `taskId` are skipped, exactly as the
+ *   pre-#2800 UI skipped unidentifiable task rows.
+ */
+
+import type { BenchmarkMode, BenchmarkResult, BenchmarkTier, ProviderConfig, TaskResult } from "./types.js";
+
+/**
+ * Recognized legacy shape version. Shape 1 is the pre-#2800 bench-ui
+ * envelope: `meta.id`, `meta.benchmark`, and `meta.timestamp` present;
+ * every other canonical field optional.
+ */
+export const LEGACY_ARTIFACT_SHAPE_VERSION = 1 as const;
+
+export type LegacyArtifactRecognition =
+  | { ok: true; shapeVersion: typeof LEGACY_ARTIFACT_SHAPE_VERSION; result: BenchmarkResult }
+  | { ok: false; reason: string };
+
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+class ArtifactRejected extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+  }
+}
+
+function reject(reason: string): never {
+  throw new ArtifactRejected(reason);
+}
+
+/** Read an optional string field; rejects non-strings, keeps empty strings (empty is a legal display value). */
+function optionalString(where: string, container: JsonRecord, key: string): string | undefined {
+  if (!(key in container)) {
+    return undefined;
+  }
+  if (typeof container[key] !== "string") {
+    reject(`${where} must be a string when present`);
+  }
+  return container[key];
+}
+
+/** Read an optional finite-number field; rejects non-numbers and non-finite values. */
+function optionalFiniteNumber(where: string, container: JsonRecord, key: string): number | undefined {
+  if (!(key in container)) {
+    return undefined;
+  }
+  if (!isFiniteNumber(container[key])) {
+    reject(`${where} must be a finite number when present`);
+  }
+  return container[key];
+}
+
+function optionalMode(where: string, container: JsonRecord): BenchmarkMode | undefined {
+  if (!("mode" in container)) {
+    return undefined;
+  }
+  if (container.mode !== "quick" && container.mode !== "full") {
+    reject(`${where} must be "quick" or "full" when present`);
+  }
+  return container.mode;
+}
+
+function optionalTier(where: string, container: JsonRecord): BenchmarkTier | undefined {
+  if (!("benchmarkTier" in container)) {
+    return undefined;
+  }
+  const value = container.benchmarkTier;
+  if (value !== "published" && value !== "remnic" && value !== "custom") {
+    reject(`${where} must be "published", "remnic", or "custom" when present`);
+  }
+  return value;
+}
+
+function optionalProviderConfig(where: string, value: unknown): ProviderConfig | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (!isRecord(value) || typeof value.provider !== "string" || typeof value.model !== "string") {
+    reject(`${where} must be a provider config ({ provider, model }) or null when present`);
+  }
+  return value as unknown as ProviderConfig;
+}
+
+function optionalSeeds(where: string, value: unknown): number[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || !value.every(isFiniteNumber)) {
+    reject(`${where} must be an array of finite numbers when present`);
+  }
+  return value;
+}
+
+function upgradeMeta(legacy: JsonRecord, recognizedTaskCount: number): BenchmarkResult["meta"] {
+  if (!isRecord(legacy.meta)) {
+    reject("meta with non-empty id, benchmark, and timestamp strings is required");
+  }
+  const meta = legacy.meta;
+  for (const key of ["id", "benchmark", "timestamp"] as const) {
+    const value = meta[key];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      reject(`meta.${key} must be a non-empty string`);
+    }
+  }
+
+  const taskCount = recognizedTaskCount;
+  const upgraded: BenchmarkResult["meta"] = {
+    id: meta.id as string,
+    benchmark: meta.benchmark as string,
+    timestamp: meta.timestamp as string,
+    // Old UI display default for an absent tier.
+    benchmarkTier: optionalTier("meta.benchmarkTier", meta) ?? "custom",
+    // Provenance is not knowable from a legacy artifact; mark it unknown
+    // instead of inventing a plausible value.
+    version: optionalString("meta.version", meta, "version") ?? "unknown",
+    remnicVersion: optionalString("meta.remnicVersion", meta, "remnicVersion") ?? "unknown",
+    gitSha: optionalString("meta.gitSha", meta, "gitSha") ?? "unknown",
+    // Old UI display default for an absent mode.
+    mode: optionalMode("meta.mode", meta) ?? "quick",
+    // Old UI fell back to the task count when runCount was absent.
+    runCount: optionalFiniteNumber("meta.runCount", meta, "runCount") ?? taskCount,
+    seeds: optionalSeeds("meta.seeds", meta.seeds) ?? [],
+  };
+
+  // Optional pass-through fields the canonical validator may check
+  // (goldMemories-adjacent witnesses, hardware); anything invalid here
+  // is caught by the canonical re-validation in the loader, never
+  // silently coerced.
+  const metaExtras = upgraded as unknown as JsonRecord;
+  for (const key of [
+    "runId",
+    "gitDirty",
+    "gitDirtyEntryCount",
+    "splitType",
+    "qrelsSealedHash",
+    "judgePromptHash",
+    "datasetHash",
+    "canaryScore",
+    "status",
+    "failureReason",
+  ] as const) {
+    if (key in meta) {
+      metaExtras[key] = meta[key];
+    }
+  }
+
+  return upgraded;
+}
+
+function upgradeConfig(legacy: JsonRecord): BenchmarkResult["config"] {
+  if (!("config" in legacy)) {
+    // Old UI display defaults: no providers configured, adapter unknown.
+    return {
+      systemProvider: null,
+      judgeProvider: null,
+      adapterMode: "unknown",
+      remnicConfig: {},
+    };
+  }
+  if (!isRecord(legacy.config)) {
+    reject("config must be an object when present");
+  }
+  const config = legacy.config;
+
+  const upgraded: BenchmarkResult["config"] = {
+    systemProvider: optionalProviderConfig("config.systemProvider", config.systemProvider),
+    judgeProvider: optionalProviderConfig("config.judgeProvider", config.judgeProvider),
+    // Old UI display default for an absent adapter mode.
+    adapterMode: optionalString("config.adapterMode", config, "adapterMode") ?? "unknown",
+    remnicConfig: {},
+  };
+
+  if ("remnicConfig" in config) {
+    if (!isRecord(config.remnicConfig)) {
+      reject("config.remnicConfig must be an object when present");
+    }
+    upgraded.remnicConfig = config.remnicConfig;
+  }
+  if ("internalProvider" in config && config.internalProvider !== undefined) {
+    upgraded.internalProvider = optionalProviderConfig("config.internalProvider", config.internalProvider);
+  }
+  const configExtras = upgraded as unknown as JsonRecord;
+  for (const key of ["runtimeProfile", "benchmarkOptions"] as const) {
+    if (key in config) {
+      configExtras[key] = config[key];
+    }
+  }
+
+  return upgraded;
+}
+
+function upgradeCost(legacy: JsonRecord): BenchmarkResult["cost"] {
+  if (!("cost" in legacy)) {
+    // Canonical cost accounting is additive; a legacy artifact that
+    // recorded no usage upgrades to zero, never to a guess.
+    return {
+      totalTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      estimatedCostUsd: 0,
+      totalLatencyMs: 0,
+      meanQueryLatencyMs: 0,
+    };
+  }
+  if (!isRecord(legacy.cost)) {
+    reject("cost must be an object when present");
+  }
+  const cost = legacy.cost;
+
+  const upgraded: BenchmarkResult["cost"] = {
+    totalTokens: optionalFiniteNumber("cost.totalTokens", cost, "totalTokens") ?? 0,
+    inputTokens: optionalFiniteNumber("cost.inputTokens", cost, "inputTokens") ?? 0,
+    outputTokens: optionalFiniteNumber("cost.outputTokens", cost, "outputTokens") ?? 0,
+    estimatedCostUsd: optionalFiniteNumber("cost.estimatedCostUsd", cost, "estimatedCostUsd") ?? 0,
+    totalLatencyMs: optionalFiniteNumber("cost.totalLatencyMs", cost, "totalLatencyMs") ?? 0,
+    meanQueryLatencyMs: optionalFiniteNumber("cost.meanQueryLatencyMs", cost, "meanQueryLatencyMs") ?? 0,
+  };
+  if ("judgeModelCalls" in cost) {
+    upgraded.judgeModelCalls = optionalFiniteNumber("cost.judgeModelCalls", cost, "judgeModelCalls");
+  }
+  return upgraded;
+}
+
+function upgradeTask(where: string, task: unknown): TaskResult | null {
+  if (!isRecord(task) || typeof task.taskId !== "string" || task.taskId.trim().length === 0) {
+    // Pre-#2800 UI parity: a task row without a usable taskId has no
+    // identity to display and is skipped, not fatal.
+    return null;
+  }
+
+  if ("scores" in task && (!isRecord(task.scores) || !Object.values(task.scores).every(isFiniteNumber))) {
+    reject(`${where}.scores must map metric names to finite numbers when present`);
+  }
+  if ("tokens" in task && !isRecord(task.tokens)) {
+    reject(`${where}.tokens must be an object when present`);
+  }
+  const tokensSource = isRecord(task.tokens) ? task.tokens : {};
+
+  const upgraded: TaskResult = {
+    taskId: task.taskId,
+    // Old UI display defaults for absent task text fields.
+    question: optionalString(`${where}.question`, task, "question") ?? "",
+    expected: optionalString(`${where}.expected`, task, "expected") ?? "",
+    actual: optionalString(`${where}.actual`, task, "actual") ?? "",
+    scores: (isRecord(task.scores) ? task.scores : {}) as TaskResult["scores"],
+    latencyMs: optionalFiniteNumber(`${where}.latencyMs`, task, "latencyMs") ?? 0,
+    tokens: {
+      input: optionalFiniteNumber(`${where}.tokens.input`, tokensSource, "input") ?? 0,
+      output: optionalFiniteNumber(`${where}.tokens.output`, tokensSource, "output") ?? 0,
+    },
+  };
+
+  const taskExtras = upgraded as unknown as JsonRecord;
+  for (const key of ["goldMemories", "attributionWitness", "details"] as const) {
+    if (key in task) {
+      taskExtras[key] = task[key];
+    }
+  }
+
+  return upgraded;
+}
+
+function upgradeResults(legacy: JsonRecord): BenchmarkResult["results"] {
+  const upgraded: BenchmarkResult["results"] = { tasks: [], aggregates: {} };
+  if (!("results" in legacy)) {
+    return upgraded;
+  }
+  if (!isRecord(legacy.results)) {
+    reject("results must be an object when present");
+  }
+  const results = legacy.results;
+
+  if ("tasks" in results) {
+    if (!Array.isArray(results.tasks)) {
+      reject("results.tasks must be an array when present");
+    }
+    upgraded.tasks = results.tasks
+      .map((task, index) => upgradeTask(`results.tasks[${index}]`, task))
+      .filter((task): task is TaskResult => task !== null);
+  }
+
+  if ("aggregates" in results) {
+    if (!isRecord(results.aggregates)) {
+      reject("results.aggregates must be an object when present");
+    }
+    // Aggregate entries pass through verbatim: the canonical validator
+    // only requires record-ness, and summary consumers defensively
+    // coerce missing statistics to null — so mean-only legacy
+    // aggregates stay mean-only, matching the pre-#2800 UI exactly.
+    upgraded.aggregates = results.aggregates as BenchmarkResult["results"]["aggregates"];
+  }
+
+  const resultsExtras = upgraded as unknown as JsonRecord;
+  for (const key of ["statistics", "categoryAggregates"] as const) {
+    if (key in results) {
+      resultsExtras[key] = results[key];
+    }
+  }
+
+  return upgraded;
+}
+
+function upgradeEnvironment(legacy: JsonRecord): BenchmarkResult["environment"] {
+  if (!("environment" in legacy)) {
+    return { os: "unknown", nodeVersion: "unknown" };
+  }
+  if (!isRecord(legacy.environment)) {
+    reject("environment must be an object when present");
+  }
+  const environment = legacy.environment;
+
+  const upgraded: BenchmarkResult["environment"] = {
+    os: optionalString("environment.os", environment, "os") ?? "unknown",
+    nodeVersion: optionalString("environment.nodeVersion", environment, "nodeVersion") ?? "unknown",
+  };
+  if ("hardware" in environment) {
+    // Pass through verbatim; the canonical re-validation in the loader
+    // rejects a present-but-invalid value instead of dropping it.
+    upgraded.hardware = environment.hardware as string;
+  }
+  return upgraded;
+}
+
+/**
+ * Recognize and upgrade a legacy benchmark artifact (shape version 1).
+ * Callers invoke this only after the canonical validator rejected the
+ * payload; `ok: false` carries the reason for every rejection, so
+ * malformed and ambiguous artifacts stay skipped with an explanation.
+ */
+export function recognizeLegacyBenchmarkArtifact(value: unknown): LegacyArtifactRecognition {
+  if (!isRecord(value)) {
+    return { ok: false, reason: "artifact is not a JSON object" };
+  }
+
+  try {
+    return {
+      ok: true,
+      shapeVersion: LEGACY_ARTIFACT_SHAPE_VERSION,
+      result: (() => {
+        const results = upgradeResults(value);
+        return {
+          meta: upgradeMeta(value, results.tasks.length),
+          config: upgradeConfig(value),
+          cost: upgradeCost(value),
+          results,
+          environment: upgradeEnvironment(value),
+        };
+      })(),
+    };
+  } catch (error) {
+    if (error instanceof ArtifactRejected) {
+      return { ok: false, reason: error.reason };
+    }
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : "legacy artifact upgrade failed",
+    };
+  }
+}

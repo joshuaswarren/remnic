@@ -16,6 +16,7 @@ import {
   renderMemoryReportCard,
   type ReportCardProvenanceContext,
 } from "./report-card.js";
+import { recognizeLegacyBenchmarkArtifact } from "./legacy-artifact.js";
 
 export interface StoredBenchmarkResultSummary {
   id: string;
@@ -465,10 +466,21 @@ function toBaselineSummary(
 export async function loadBenchmarkResult(filePath: string): Promise<BenchmarkResult> {
   const content = await readFile(filePath, "utf8");
   const parsed: unknown = JSON.parse(content);
-  if (!isBenchmarkResult(parsed)) {
-    throw new Error(`Invalid benchmark result file: ${filePath}`);
+  if (isBenchmarkResult(parsed)) {
+    return parsed;
   }
-  return parsed;
+
+  // Canonical-first, then legacy upgrade (issue #2850): artifacts from
+  // before the canonical schema get one chance to upgrade with
+  // documented defaults. Present-but-invalid values never coerce; the
+  // re-validation below is the belt that keeps the return type honest.
+  const legacy = recognizeLegacyBenchmarkArtifact(parsed);
+  if (legacy.ok && isBenchmarkResult(legacy.result)) {
+    return legacy.result;
+  }
+  throw new Error(
+    `Invalid benchmark result file: ${filePath}${legacy.ok ? " (legacy artifact failed canonical re-validation)" : ` (${legacy.reason})`}`,
+  );
 }
 
 export async function listBenchmarkResults(
