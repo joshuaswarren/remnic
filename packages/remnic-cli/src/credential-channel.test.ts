@@ -6,16 +6,19 @@
  *
  *   - presence-tracked precedence: --token > --token-file > env chain, where
  *     an EMPTY higher source is a hard error and never falls through
- *   - token-file safety: 0600 regular file, no symlinks, no directories;
- *     validate+read share one inode so a mid-read symlink swap cannot
- *     return an attacker token
+ *   - token-file safety: 0600 regular file, no symlinks, no directories,
+ *     no FIFO/socket/device; open is O_NONBLOCK|O_NOFOLLOW so a FIFO
+ *     without a writer rejects instead of hanging; validate+read share
+ *     one inode so a mid-read symlink swap cannot return an attacker token
  *   - argv tokens resolve but are flagged tokenFromArgv so callers warn once
  *     without echoing the value
  *   - the offline CLI routes all four subcommands through the channel
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
@@ -155,6 +158,75 @@ test("a directory passed as --token-file is rejected as non-regular", async () =
     assert.match(!result.ok ? result.error : "", /nested must be a regular file/);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a FIFO token file with no writer is rejected without blocking", { timeout: 2_000 }, async () => {
+  if (process.platform === "win32") return;
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-token-file-"));
+  try {
+    const fifo = path.join(dir, "pipe.token");
+    execFileSync("mkfifo", [fifo]);
+    const result = resolveCredentialChannel(
+      { argvToken: undefined, tokenFile: fifo, envNames: OFFLINE_ENV },
+      {}
+    );
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.error : "", /pipe\.token must be a regular file/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a socket token file is rejected without blocking", { timeout: 2_000 }, async () => {
+  if (process.platform === "win32") return;
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-token-file-"));
+  const sock = path.join(dir, "sock.token");
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(sock, resolve);
+  });
+  try {
+    const result = resolveCredentialChannel(
+      { argvToken: undefined, tokenFile: sock, envNames: OFFLINE_ENV },
+      {}
+    );
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.error : "", /sock\.token must be a regular file/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a device token file is rejected without blocking", { timeout: 2_000 }, () => {
+  const tokenFile = process.platform === "win32" ? "NUL" : "/dev/null";
+  const result = resolveCredentialChannel(
+    { argvToken: undefined, tokenFile, envNames: OFFLINE_ENV },
+    {}
+  );
+  assert.equal(result.ok, false);
+  assert.match(!result.ok ? result.error : "", /must be a regular file/);
+});
+
+test("a Windows named pipe token file is rejected without blocking", { timeout: 2_000 }, async () => {
+  if (process.platform !== "win32") return;
+  const pipe = `\\\\.\\pipe\\remnic-cred-${process.pid}`;
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(pipe, resolve);
+  });
+  try {
+    const result = resolveCredentialChannel(
+      { argvToken: undefined, tokenFile: pipe, envNames: OFFLINE_ENV },
+      {}
+    );
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.error : "", /must be a regular file|could not be read/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
 

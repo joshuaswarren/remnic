@@ -35,9 +35,10 @@ export function parseTokenFileFlag(raw: string | undefined): string | null {
 
 /**
  * Bind type/mode/symlink checks and the token read to one inode.
- * POSIX: O_NOFOLLOW open, fstat regular+0600, read that fd, re-fstat identity.
- * Windows: open with O_NOFOLLOW when present, then the existing post-open
- * path↔fd identity pairing — never lstat then pathname readFile.
+ * POSIX: O_NONBLOCK|O_NOFOLLOW open so a FIFO/device cannot block before
+ * fstat; then regular+0600 and a same-fd read. Windows: reject a non-regular
+ * lstat before open (named pipes block); O_NOFOLLOW when present; post-open
+ * path↔fd identity — never lstat then pathname readFile.
  */
 function readTokenFileSameInode(
   tokenFile: string,
@@ -45,13 +46,33 @@ function readTokenFileSameInode(
 ): CredentialChannelResult {
   let fd: number | undefined;
   try {
-    fd = fs.openSync(tokenFile, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    if (process.platform === "win32") {
+      const pre = fs.lstatSync(tokenFile);
+      if (pre.isSymbolicLink()) {
+        return { ok: false, error: `--token-file ${tokenFile} must be a regular file, not a symlink` };
+      }
+      if (!pre.isFile()) {
+        return { ok: false, error: `--token-file ${tokenFile} must be a regular file` };
+      }
+    }
+    fd = fs.openSync(
+      tokenFile,
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0)
+    );
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ELOOP") {
       return { ok: false, error: `--token-file ${tokenFile} must be a regular file, not a symlink` };
     }
-    if (code === "EISDIR" || code === "ENOTDIR") {
+    if (
+      code === "EISDIR" ||
+      code === "ENOTDIR" ||
+      code === "ENXIO" ||
+      code === "EAGAIN" ||
+      code === "EWOULDBLOCK" ||
+      code === "EOPNOTSUPP" ||
+      code === "ENOTSUP"
+    ) {
       return { ok: false, error: `--token-file ${tokenFile} must be a regular file` };
     }
     return { ok: false, error: `--token-file ${tokenFile} could not be read: ${err}` };
@@ -76,7 +97,10 @@ function readTokenFileSameInode(
       }
     }
     afterValidate?.();
-    const token = fs.readFileSync(fd, "utf8").trim();
+    const size = opened.size;
+    const buf = Buffer.alloc(size);
+    const got = size > 0 ? fs.readSync(fd, buf, 0, size, 0) : 0;
+    const token = buf.subarray(0, got).toString("utf8").trim();
     const after = fs.fstatSync(fd);
     if (opened.dev !== after.dev || opened.ino !== after.ino || !after.isFile()) {
       return { ok: false, error: `--token-file ${tokenFile} could not be read: file changed during read` };
