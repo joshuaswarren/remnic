@@ -166,14 +166,15 @@ async function readBriefingMemories(
     const result = await storage.readMemoriesWindow!({ updatedAfter: window.from });
     return result.memories;
   }
-  // Refuse legacy adapters that explicitly declare no signal support (#2827).
+  // Refuse legacy adapters that do not explicitly declare cancellation support (#2827).
+  // Require affirmative cancellation support (`true` on one explicit marker) before fallback.
   // Do not rely on Function.length, which is zero for default/rest/bound functions.
   const isCancellable =
-    storage.supportsAbortSignal ??
-    storage.supportsCancellation ??
-    storage.cancellable ??
-    storage.readAllMemories?.supportsAbortSignal;
-  if (isCancellable === false) {
+    storage.supportsAbortSignal === true ||
+    storage.supportsCancellation === true ||
+    storage.cancellable === true ||
+    storage.readAllMemories?.supportsAbortSignal === true;
+  if (!isCancellable) {
     throw new LegacyReadUnsupported();
   }
   const deadlineMs = options.fallbackDeadlineMs ?? BRIEFING_FULL_READ_FALLBACK_MS;

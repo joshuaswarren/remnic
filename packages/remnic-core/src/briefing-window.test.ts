@@ -108,6 +108,7 @@ test("safeReadMemories falls back to a signal-aware readAllMemories and logs exa
     let fullReadCalls = 0;
     let receivedSignal: AbortSignal | undefined;
     const storage = {
+      supportsAbortSignal: true,
       readAllMemories: async (options?: CorpusReadOptions): Promise<MemoryFile[]> => {
         fullReadCalls += 1;
         receivedSignal = options?.abortSignal;
@@ -145,9 +146,7 @@ test("safeReadMemories aborts a slow signal-aware fallback read: no rows after d
     let abortChecks = 0;
     let readSettled = false;
     const storage = {
-      // Signal-aware slow double (the #2307 contract): checks the abort
-      // signal before producing each row, so stopping at the deadline is
-      // observable row by row.
+      supportsAbortSignal: true,
       readAllMemories: async (options?: CorpusReadOptions): Promise<MemoryFile[]> => {
         sawSignal = options?.abortSignal instanceof AbortSignal;
         const memories: MemoryFile[] = [];
@@ -171,8 +170,6 @@ test("safeReadMemories aborts a slow signal-aware fallback read: no rows after d
     assert.ok(sawSignal, "the deadline must reach the read as an abort signal");
     assert.ok(rowsProduced > 0 && rowsProduced < TOTAL_ROWS, "read must stop mid-corpus, not run to completion");
     assert.ok(abortChecks > 0, "the double must observe the aborted signal");
-    // Direct-await protocol (finding A): safeReadMemories only returns after
-    // the read itself settled, so nothing is left scanning in the background.
     assert.ok(readSettled, "no active read work remains once safeReadMemories returns");
     const marks = discriminators(lines);
     assert.equal(marks.length, 1, "exactly one discriminator per read");
@@ -186,7 +183,34 @@ test("safeReadMemories aborts a slow signal-aware fallback read: no rows after d
   }
 });
 
-test("safeReadMemories refuses a signal-blind legacy full read instead of starting an unbounded scan", async () => {
+test("safeReadMemories refuses an unmarked legacy adapter before readAllMemories call", async () => {
+  const { lines, restore } = captureLogs();
+  try {
+    let fullReadCalls = 0;
+    const storage = {
+      readAllMemories: () => {
+        fullReadCalls += 1;
+        return new Promise<MemoryFile[]>(() => {});
+      },
+    };
+
+    const memories = await safeReadMemories(storage, WINDOW, { fallbackDeadlineMs: 25 });
+
+    assert.deepEqual(memories, [], "unmarked fallback fails open with an empty read");
+    assert.equal(fullReadCalls, 0, "an unmarked legacy readAllMemories must never be called");
+    assert.ok(
+      lines.some((line) => line.includes("refused")),
+      "the refusal must tell the operator which adapter upgrade unblocks it",
+    );
+    const marks = discriminators(lines);
+    assert.equal(marks.length, 1, "exactly one discriminator per read");
+    assert.match(marks[0]!, /mode=full-read-fallback durationMs=\d+ outcome=error err=LegacyReadUnsupported$/);
+  } finally {
+    restore();
+  }
+});
+
+test("safeReadMemories refuses an adapter with explicit false cancellation support before readAllMemories call", async () => {
   const { lines, restore } = captureLogs();
   try {
     let fullReadCalls = 0;
@@ -201,7 +225,7 @@ test("safeReadMemories refuses a signal-blind legacy full read instead of starti
     const memories = await safeReadMemories(storage, WINDOW, { fallbackDeadlineMs: 25 });
 
     assert.deepEqual(memories, [], "refused fallback fails open with an empty read");
-    assert.equal(fullReadCalls, 0, "an unbounded, uncancellable full read must never be started");
+    assert.equal(fullReadCalls, 0, "an uncancellable full read must never be started");
     assert.ok(
       lines.some((line) => line.includes("refused")),
       "the refusal must tell the operator which adapter upgrade unblocks it",
@@ -211,6 +235,56 @@ test("safeReadMemories refuses a signal-blind legacy full read instead of starti
     assert.match(marks[0]!, /mode=full-read-fallback durationMs=\d+ outcome=error err=LegacyReadUnsupported$/);
   } finally {
     restore();
+  }
+});
+
+test("safeReadMemories invokes fallback for each explicit capability marker when marker is true", async () => {
+  type ReaderFn = (options?: CorpusReadOptions) => Promise<MemoryFile[]>;
+  const cases: Array<{
+    label: string;
+    makeStorage: (fn: ReaderFn) => Parameters<typeof safeReadMemories>[0];
+  }> = [
+    {
+      label: "storage.supportsAbortSignal",
+      makeStorage: (fn) => ({ supportsAbortSignal: true, readAllMemories: fn }),
+    },
+    {
+      label: "storage.supportsCancellation",
+      makeStorage: (fn) => ({ supportsCancellation: true, readAllMemories: fn }),
+    },
+    {
+      label: "storage.cancellable",
+      makeStorage: (fn) => ({ cancellable: true, readAllMemories: fn }),
+    },
+    {
+      label: "readAllMemories.supportsAbortSignal",
+      makeStorage: (fn) => {
+        const readFn = fn as ReaderFn & { supportsAbortSignal?: boolean };
+        readFn.supportsAbortSignal = true;
+        return { readAllMemories: readFn };
+      },
+    },
+  ];
+
+  for (const { label, makeStorage } of cases) {
+    const { lines, restore } = captureLogs();
+    try {
+      let fullReadCalls = 0;
+      let receivedSignal: AbortSignal | undefined;
+      const storage = makeStorage(async (options?: CorpusReadOptions) => {
+        fullReadCalls += 1;
+        receivedSignal = options?.abortSignal;
+        return [makeMemory("2026-04-10T01:00:00.000Z")];
+      });
+
+      const memories = await safeReadMemories(storage, WINDOW);
+
+      assert.equal(fullReadCalls, 1, `readAllMemories must be invoked when ${label} is true`);
+      assert.ok(receivedSignal instanceof AbortSignal, `abort signal must reach readAllMemories for ${label}`);
+      assert.equal(memories.length, 1);
+    } finally {
+      restore();
+    }
   }
 });
 
@@ -243,6 +317,7 @@ test("fallback rejection emits exactly one error discriminator — class only, n
   const { lines, restore } = captureLogs();
   try {
     const storage = {
+      supportsAbortSignal: true,
       readAllMemories: async (_options?: CorpusReadOptions): Promise<MemoryFile[]> => {
         throw new Error("corpus read exploded");
       },
@@ -268,6 +343,7 @@ test("safeReadMemories cancels readAllMemories declared with default parameters"
   try {
     let sawSignal = false;
     const storage = {
+      supportsAbortSignal: true,
       readAllMemories: async (options = {} as CorpusReadOptions): Promise<MemoryFile[]> => {
         sawSignal = options?.abortSignal instanceof AbortSignal;
         if (options?.abortSignal) {
@@ -299,6 +375,7 @@ test("safeReadMemories cancels readAllMemories declared with rest parameters", a
   try {
     let sawSignal = false;
     const storage = {
+      supportsCancellation: true,
       readAllMemories: async (...args: [CorpusReadOptions?]): Promise<MemoryFile[]> => {
         const options = args[0];
         sawSignal = options?.abortSignal instanceof AbortSignal;
@@ -342,8 +419,10 @@ test("safeReadMemories cancels readAllMemories when bound function is passed", a
       }
       return [];
     };
+    const readAllMemories = fn.bind(null) as typeof fn & { supportsAbortSignal?: boolean };
+    readAllMemories.supportsAbortSignal = true;
     const storage = {
-      readAllMemories: fn.bind(null),
+      readAllMemories,
     };
 
     const memories = await safeReadMemories(storage, WINDOW, { fallbackDeadlineMs: 25 });
@@ -362,6 +441,7 @@ test("errorClass sanitizes malicious or backend-controlled Error.name to safe bo
   const { lines, restore } = captureLogs();
   try {
     const storage = {
+      supportsAbortSignal: true,
       readAllMemories: async (_options?: CorpusReadOptions): Promise<MemoryFile[]> => {
         const err = new Error("leak secret payload");
         err.name = "MaliciousError\nLOG_INJECTION\nsecret_token_12345";
@@ -398,14 +478,10 @@ test("buildBriefing over a large-corpus fake completes without full-corpus mater
       readMemoriesWindow: async (options: { updatedAfter?: Date }) => {
         windowCalls += 1;
         assert.ok(options.updatedAfter instanceof Date);
-        // Only the in-window slice is materialized — the rest of the corpus
-        // stays on "disk" as far as this harness is concerned.
         return { memories: [makeMemory("2026-04-10T01:00:00.000Z")], filePaths: [] };
       },
       readAllMemories: async () => {
         fullReadCalls += 1;
-        // If a regression reintroduces the full read, this counter flips and
-        // the assertion below fails — no slow benchmark needed.
         return Array.from({ length: CORPUS_SIZE }, () => makeMemory("2026-01-01T00:00:00.000Z"));
       },
       readAllEntityFiles: async () => [],
