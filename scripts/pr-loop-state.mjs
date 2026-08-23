@@ -15,7 +15,10 @@
  *   from the validated fields, and `--terminal MERGE_READY` while a blocking
  *   field remains is rejected, because the supervisor stops on that exact
  *   value. Terminal values describing conditions (RATE_LIMITED etc.) may
- *   still be supplied;
+ *   still be supplied, but only from the explicit TERMINAL_STATES allow-list;
+ *   a typo like `--terminal MERGE_RAEDY` is rejected instead of persisted,
+ *   because consumers match these exact strings and a malformed record can
+ *   keep polling alive indefinitely;
  * - the PR number must be a complete positive integer within
  *   Number.MAX_SAFE_INTEGER, so `--pr abc` or `12junk` is rejected instead
  *   of parsed into null / a prefix number, and an all-digit argument like
@@ -33,6 +36,9 @@ import { realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export const TERMINAL_RATE_LIMITED = "RATE_LIMITED";
+
+/** Every terminal value this module may persist; nothing else is written. */
+export const TERMINAL_STATES = new Set(["MERGE_READY", TERMINAL_RATE_LIMITED, "RUNNING"]);
 
 const RATE_LIMIT_TEXT_PATTERN = /rate.?limit/i;
 
@@ -164,6 +170,12 @@ export function writePrLoopState({
     return {
       wrote: false,
       reason: `pr must be a complete positive integer between 1 and 9007199254740991 (Number.MAX_SAFE_INTEGER), e.g. --pr 1234, got: ${JSON.stringify(pr)}`,
+    };
+  }
+  if (!TERMINAL_STATES.has(terminal)) {
+    return {
+      wrote: false,
+      reason: `terminal must be one of ${[...TERMINAL_STATES].join("|")}, got: ${JSON.stringify(terminal)}`,
     };
   }
   const validation = validateStateFields(rawFields);

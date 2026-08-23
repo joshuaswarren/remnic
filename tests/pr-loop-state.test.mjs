@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   TERMINAL_RATE_LIMITED,
+  TERMINAL_STATES,
   detectRateLimit,
   validateStateFields,
   writePrLoopState,
@@ -211,6 +212,76 @@ test("caller-supplied terminal MERGE_READY with a blocking field is rejected", (
       before,
       "no MERGE_READY record may be written while ready=false",
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("unknown terminal values are rejected against the allow-list", () => {
+  const dir = scratchDir();
+  const stateFile = path.join(dir, "pr-1234-state.json");
+  const allowed = [...TERMINAL_STATES].join("|");
+  try {
+    writePrLoopState({ stateFile, repo: "owner/repo", pr: 1234, terminal: "RUNNING", ...VALID_FIELDS });
+    const before = readFileSync(stateFile, "utf8");
+    const outcome = writePrLoopState({
+      stateFile,
+      repo: "owner/repo",
+      pr: 1234,
+      terminal: "MERGE_RAEDY",
+      ...VALID_FIELDS,
+      cursor: "pending",
+    });
+    assert.equal(outcome.wrote, false);
+    assert.match(outcome.reason, new RegExp(allowed));
+    assert.match(outcome.reason, /MERGE_RAEDY/);
+    assert.equal(readFileSync(stateFile, "utf8"), before, "a typo terminal must not reach the state file");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI rejects a typo terminal and still accepts every allow-listed terminal", () => {
+  const dir = scratchDir();
+  const allowed = [...TERMINAL_STATES].join("|");
+  const cli = (stateFile, terminal, blocking) =>
+    spawnSync(
+      process.execPath,
+      [
+        path.join(repoRoot, "scripts", "pr-loop-state.mjs"),
+        "--state-file", stateFile,
+        "--repo", "owner/repo",
+        "--pr", "42",
+        "--required-non-pass", blocking ? "1" : "0",
+        "--cursor", blocking ? "fail" : "pass",
+        "--positive-verdict", blocking ? "0" : "1",
+        "--unresolved", blocking ? "2" : "0",
+        "--decision", blocking ? "CHANGES_REQUESTED" : "APPROVED",
+        "--terminal", terminal,
+      ],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+  try {
+    const good = path.join(dir, "pr-42-good-state.json");
+    cli(good, "RUNNING", true);
+    const before = readFileSync(good, "utf8");
+    const rejected = cli(good, "MERGE_RAEDY", true);
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, new RegExp(allowed));
+    assert.equal(readFileSync(good, "utf8"), before);
+
+    const cases = [
+      ["MERGE_READY", false, "MERGE_READY"],
+      ["RUNNING", true, "RUNNING"],
+      [TERMINAL_RATE_LIMITED, true, TERMINAL_RATE_LIMITED],
+    ];
+    for (const [supplied, blocking, persisted] of cases) {
+      const stateFile = path.join(dir, `pr-42-${supplied}-state.json`);
+      const run = cli(stateFile, supplied, blocking);
+      assert.equal(run.status, 0, `${supplied} must be accepted: ${run.stderr}`);
+      const parsed = JSON.parse(readFileSync(stateFile, "utf8"));
+      assert.equal(parsed.terminal, persisted);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
