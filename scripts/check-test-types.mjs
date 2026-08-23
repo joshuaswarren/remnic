@@ -2,7 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -173,9 +173,21 @@ export function isDirectRunPath(argvPath, moduleUrl = import.meta.url) {
 }
 
 function main() {
+  // Route pnpm through the repo wrapper: fleet hosts have no global `pnpm`
+  // and a bare spawn dies with ENOENT at the last step of `check-types`
+  // (issue #2781). The wrapper forwards stdio, so piped output still works.
   const result = spawnSync(
-    "pnpm",
-    ["exec", "tsc", "--noEmit", "--project", "tsconfig.tests.json", "--pretty", "false"],
+    process.execPath,
+    [
+      join(scriptDir, "pnpm.mjs"),
+      "exec",
+      "tsc",
+      "--noEmit",
+      "--project",
+      "tsconfig.tests.json",
+      "--pretty",
+      "false",
+    ],
     {
       cwd: repoRoot,
       encoding: "utf8",
