@@ -3,7 +3,10 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-import { loadBenchmarkResultSummaries } from "./results";
+import {
+  loadBenchmarkResultSummaries,
+  loadBenchResultSummaries,
+} from "./results";
 import { validResultFixture } from "./testing/result-fixture";
 import { withTempDir } from "./testing/tmp-dir";
 
@@ -151,6 +154,24 @@ test("loadBenchmarkResultSummaries produces the full UI summary for a conformant
       assistantRunId: "amb-run-1",
       filePath,
     });
+  });
+});
+
+test("loadBenchResultSummaries compatibility export matches the parser output", async () => {
+  await withTempDir("results", async (resultsDir) => {
+    await writeFile(
+      path.join(resultsDir, "compat.json"),
+      JSON.stringify(validResultFixture("run-compat")),
+      "utf8",
+    );
+    await writeFile(path.join(resultsDir, "malformed.json"), "{not-json", "utf8");
+
+    const viaCompatExport = await loadBenchResultSummaries(resultsDir);
+
+    assert.deepEqual(viaCompatExport, await loadBenchmarkResultSummaries(resultsDir));
+    assert.equal(viaCompatExport.summaries.length, 1);
+    assert.equal(viaCompatExport.summaries[0]?.id, "run-compat");
+    assert.equal(viaCompatExport.skippedFiles?.length, 1);
   });
 });
 
