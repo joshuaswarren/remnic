@@ -48,6 +48,8 @@ export {
   omiDayWindow,
   OMI_SOURCE_ID,
   timezoneOffsetIso,
+  zonedDayBounds,
+  zonedDayStartIso,
 } from "./normalize.js";
 
 export function resolveOmiApiKey(

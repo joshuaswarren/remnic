@@ -40,6 +40,7 @@ export {
   REITTI_PLACE_TYPES,
   REITTI_TRANSPORT_MODES,
   assertReittiTimezone,
+  assertValidIanaTimezone,
   normalizeReittiBaseUrl,
 } from "./client.js";
 export type {

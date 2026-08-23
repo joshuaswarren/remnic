@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { activityDayWindow } from "@remnic/core";
 import {
   conversationToWearable,
   memoryToNativeMemory,
@@ -42,6 +43,26 @@ test("omiDayWindow handles the spring-forward DST boundary", () => {
   const bounds = omiDayWindow("2026-03-08", "America/Chicago");
   assert.equal(bounds.startIso, "2026-03-08T00:00:00-06:00");
   assert.equal(bounds.endIso, "2026-03-09T00:00:00-05:00");
+});
+
+test("omiDayWindow preserves resolved instants when local midnight is skipped", () => {
+  // Africa/Cairo restarts DST on 2026-04-24 at 00:00 (00:00 → 01:00), so
+  // local midnight never occurs and core resolves the day start to 01:00
+  // local (2026-04-23T22:00:00Z). Pre-fix, rebuilding the bounds as
+  // `T00:00:00` produced 2026-04-24T00:00:00+03:00 (= 21:00Z), pulling an
+  // hour of the previous local day into the window.
+  const core = activityDayWindow("2026-04-24", "Africa/Cairo");
+  const bounds = omiDayWindow("2026-04-24", "Africa/Cairo");
+  assert.equal(bounds.startIso, "2026-04-24T01:00:00+03:00");
+  assert.equal(bounds.endIso, "2026-04-25T00:00:00+03:00");
+  assert.equal(Date.parse(bounds.startIso), Date.parse(core.startUtc));
+  assert.equal(Date.parse(bounds.endIso), Date.parse(core.endUtc));
+  // The prior local day ENDS on the skipped midnight; its end bound must
+  // equal core's end instant too, or the final hour gets truncated.
+  const priorCore = activityDayWindow("2026-04-23", "Africa/Cairo");
+  const prior = omiDayWindow("2026-04-23", "Africa/Cairo");
+  assert.equal(prior.endIso, "2026-04-24T01:00:00+03:00");
+  assert.equal(Date.parse(prior.endIso), Date.parse(priorCore.endUtc));
 });
 
 const CONVERSATION = {

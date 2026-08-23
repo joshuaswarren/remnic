@@ -11,6 +11,7 @@ import {
 import {
   REITTI_PROVIDER_ID,
   REITTI_VISITS_CURSOR,
+  assertValidIanaTimezone,
   createReittiProvider,
   ensureReittiProviderRegistered,
 } from "./index.js";
@@ -217,4 +218,12 @@ test("verify rethrows a caller abort instead of reporting the provider unavailab
     provider.verify(controller.signal),
     (err: unknown) => err instanceof Error && err.name === "AbortError",
   );
+});
+
+test("legacy assertValidIanaTimezone still resolves and validates identically", () => {
+  // Pre-rename consumers import assertValidIanaTimezone from the package
+  // entry; it must keep resolving with the same throw behavior.
+  assertValidIanaTimezone("Europe/Helsinki");
+  assert.throws(() => assertValidIanaTimezone(""), TypeError);
+  assert.throws(() => assertValidIanaTimezone("Also/Bogus"), RangeError);
 });

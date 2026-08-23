@@ -49,9 +49,49 @@ export function omiDayWindow(
 ): { startIso: string; endIso: string } {
   const { startUtc, endUtc } = activityDayWindow(date, timezone);
   return {
-    startIso: `${date}T00:00:00${timezoneOffsetIso(new Date(startUtc), timezone)}`,
-    endIso: `${nextIsoDate(date)}T00:00:00${timezoneOffsetIso(new Date(endUtc), timezone)}`,
+    startIso: instantToOffsetIso(new Date(startUtc), timezone),
+    endIso: instantToOffsetIso(new Date(endUtc), timezone),
   };
+}
+
+/**
+ * Render a resolved instant as an offset datetime in `timezone`. Formatting
+ * the wall-clock at that instant (not `T00:00:00`) is what preserves skipped
+ * local midnights: a 00:00→01:00 spring-forward resolves to 01:00 local, and
+ * rebuilding `T00:00:00` would move the instant an hour into the prior day.
+ */
+function instantToOffsetIso(instant: Date, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(instant);
+  const field = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((part) => part.type === type)?.value ?? "00";
+  const day = `${field("year")}-${field("month")}-${field("day")}`;
+  const time = `${field("hour")}:${field("minute")}:${field("second")}`;
+  return `${day}T${time}${timezoneOffsetIso(instant, timezone)}`;
+}
+
+/**
+ * @deprecated Compatibility wrapper (pre-core-refactor export); delegates to
+ * `omiDayWindow`. Returns the resolved start bound, not a rebuilt midnight.
+ */
+export function zonedDayStartIso(date: string, timezone: string): string {
+  return omiDayWindow(date, timezone).startIso;
+}
+
+/** @deprecated Compatibility wrapper (pre-core-refactor export); delegates to `omiDayWindow`. */
+export function zonedDayBounds(
+  date: string,
+  timezone: string,
+): { startIso: string; endIso: string } {
+  return omiDayWindow(date, timezone);
 }
 
 export function conversationToWearable(

@@ -176,6 +176,14 @@ export function assertReittiTimezone(timezone: string): void {
 }
 
 /**
+ * @deprecated Alias of `assertReittiTimezone`, kept so pre-rename imports from
+ * this published package keep resolving. Same TypeError/RangeError behavior.
+ */
+export function assertValidIanaTimezone(timezone: string): void {
+  assertReittiTimezone(timezone);
+}
+
+/**
  * Validate and normalize the base URL: absolute HTTP(S), trailing slashes
  * stripped without touching path semantics (a sub-path install keeps its
  * prefix). Loop instead of a `/\/+$/` regex — CodeQL polynomial-redos.
