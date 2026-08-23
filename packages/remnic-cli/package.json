@@ -1,6 +1,6 @@
 {
   "name": "@remnic/cli",
-  "version": "9.69.23",
+  "version": "9.69.33",
   "description": "CLI for Remnic memory — init, query, doctor, daemon management",
   "type": "module",
   "main": "dist/index.js",
@@ -29,7 +29,7 @@
     "build": "tsup --config tsup.config.ts && node scripts/copy-bench-assets.mjs",
     "precheck-types": "node ../../scripts/ensure-cli-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
-    "test": "cd ../.. && tsx --test packages/remnic-cli/src/*.test.ts packages/remnic-cli/src/testing/*.test.ts tests/remnic-cli-bin-wrapper.test.ts tests/evals-engram-adapter-buffering.test.ts tests/shim-openclaw-engram-package.test.ts tests/engram-access-bin-errors.test.ts tests/remnic-cli-bench-surface.test.ts tests/remnic-cli-bench-ui-surface.test.ts tests/bench-remnic-deterministic-runners.test.ts tests/bench-remnic-stateful-runners.test.ts",
+    "test": "cd ../.. && tsx --test packages/remnic-cli/src/*.test.ts packages/remnic-cli/src/testing/*.test.ts tests/remnic-cli-bin-wrapper.test.ts tests/shim-openclaw-engram-package.test.ts tests/engram-access-bin-errors.test.ts tests/remnic-cli-bench-surface.test.ts tests/remnic-cli-bench-ui-surface.test.ts tests/bench-remnic-deterministic-runners.test.ts tests/bench-remnic-stateful-runners.test.ts",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
@@ -39,21 +39,21 @@
     "yaml": "^2.4.2"
   },
   "peerDependencies": {
-    "@remnic/bench": "^9.69.23",
-    "@remnic/plugin-openclaw": "^9.69.23",
-    "@remnic/export-weclone": "^9.69.23",
-    "@remnic/import-weclone": "^9.69.23",
-    "@remnic/import-chatgpt": "^9.69.23",
-    "@remnic/import-claude": "^9.69.23",
-    "@remnic/import-gemini": "^9.69.23",
-    "@remnic/import-lossless-claw": "^9.69.23",
-    "@remnic/import-mem0": "^9.69.23",
-    "@remnic/import-supermemory": "^9.69.23",
-    "@remnic/import-okf": "^9.69.23",
-    "@remnic/connector-limitless": "^9.69.23",
-    "@remnic/connector-bee": "^9.69.23",
-    "@remnic/connector-omi": "^9.69.23",
-    "@remnic/capture-audio": "^9.69.23"
+    "@remnic/bench": "^9.69.33",
+    "@remnic/plugin-openclaw": "^9.69.33",
+    "@remnic/export-weclone": "^9.69.33",
+    "@remnic/import-weclone": "^9.69.33",
+    "@remnic/import-chatgpt": "^9.69.33",
+    "@remnic/import-claude": "^9.69.33",
+    "@remnic/import-gemini": "^9.69.33",
+    "@remnic/import-lossless-claw": "^9.69.33",
+    "@remnic/import-mem0": "^9.69.33",
+    "@remnic/import-supermemory": "^9.69.33",
+    "@remnic/import-okf": "^9.69.33",
+    "@remnic/connector-limitless": "^9.69.33",
+    "@remnic/connector-bee": "^9.69.33",
+    "@remnic/connector-omi": "^9.69.33",
+    "@remnic/capture-audio": "^9.69.33"
   },
   "peerDependenciesMeta": {
     "@remnic/bench": {

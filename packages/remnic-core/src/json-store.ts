@@ -13,17 +13,14 @@ import {
   type FileHandle,
 } from "node:fs/promises";
 import path from "node:path";
-
-function hasErrorCode(error: unknown, code: string): boolean {
-  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === code;
-}
+import { isErrnoCode } from "./utils/errno.js";
 
 async function listJsonFilesStrictInner(dir: string, allowMissingDirectory: boolean): Promise<string[]> {
   let entries: Dirent[];
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch (error) {
-    if (allowMissingDirectory && hasErrorCode(error, "ENOENT")) return [];
+    if (allowMissingDirectory && isErrnoCode(error, "ENOENT")) return [];
     throw error;
   }
   const out: string[] = [];
@@ -107,7 +104,7 @@ function jsonStoreLockTimeoutMs(): number {
 async function closeAndRemoveJsonStoreReclaimGuard(reclaimPath: string, reclaimHandle: FileHandle): Promise<void> {
   await reclaimHandle.close().catch(() => undefined);
   await unlink(reclaimPath).catch((error) => {
-    if (!hasErrorCode(error, "ENOENT")) throw error;
+    if (!isErrnoCode(error, "ENOENT")) throw error;
   });
 }
 
@@ -116,7 +113,7 @@ async function removeStaleJsonStoreReclaimGuard(reclaimPath: string): Promise<vo
   try {
     initial = await readJsonStoreLockState(reclaimPath);
   } catch (error) {
-    if (hasErrorCode(error, "ENOENT")) return;
+    if (isErrnoCode(error, "ENOENT")) return;
     throw error;
   }
   if (Date.now() - initial.mtimeMs <= jsonStoreLockStaleMs()) return;
@@ -134,12 +131,12 @@ async function removeStaleJsonStoreReclaimGuard(reclaimPath: string): Promise<vo
   try {
     confirmed = await readJsonStoreLockState(reclaimPath);
   } catch (error) {
-    if (hasErrorCode(error, "ENOENT")) return;
+    if (isErrnoCode(error, "ENOENT")) return;
     throw error;
   }
   if (!sameJsonStoreLockState(initial, confirmed)) return;
   await unlink(reclaimPath).catch((error) => {
-    if (!hasErrorCode(error, "ENOENT")) throw error;
+    if (!isErrnoCode(error, "ENOENT")) throw error;
   });
 }
 
@@ -147,12 +144,12 @@ async function acquireJsonStoreReclaimGuard(reclaimPath: string): Promise<FileHa
   try {
     return await open(reclaimPath, "wx", 0o600);
   } catch (error) {
-    if (!hasErrorCode(error, "EEXIST")) throw error;
+    if (!isErrnoCode(error, "EEXIST")) throw error;
     await removeStaleJsonStoreReclaimGuard(reclaimPath);
     try {
       return await open(reclaimPath, "wx", 0o600);
     } catch (retryError) {
-      if (hasErrorCode(retryError, "EEXIST")) return undefined;
+      if (isErrnoCode(retryError, "EEXIST")) return undefined;
       throw retryError;
     }
   }
@@ -169,7 +166,7 @@ function processIsRunning(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return !hasErrorCode(error, "ESRCH");
+    return !isErrnoCode(error, "ESRCH");
   }
 }
 
@@ -208,7 +205,7 @@ async function removeJsonStoreMutationLockIfOwned(lockPath: string, token: strin
     const metadata = JSON.parse(state.content) as { token?: unknown };
     if (metadata.token === token) await unlink(lockPath);
   } catch (error) {
-    if (!hasErrorCode(error, "ENOENT") && !(error instanceof SyntaxError)) throw error;
+    if (!isErrnoCode(error, "ENOENT") && !(error instanceof SyntaxError)) throw error;
   }
 }
 
@@ -224,7 +221,7 @@ async function removeStaleJsonStoreLock(lockPath: string): Promise<void> {
     try {
       initial = await readJsonStoreLockState(lockPath);
     } catch (error) {
-      if (hasErrorCode(error, "ENOENT")) return;
+      if (isErrnoCode(error, "ENOENT")) return;
       throw error;
     }
     if (Date.now() - initial.mtimeMs <= jsonStoreLockStaleMs()) return;
@@ -241,12 +238,12 @@ async function removeStaleJsonStoreLock(lockPath: string): Promise<void> {
     try {
       confirmed = await readJsonStoreLockState(lockPath);
     } catch (error) {
-      if (hasErrorCode(error, "ENOENT")) return;
+      if (isErrnoCode(error, "ENOENT")) return;
       throw error;
     }
     if (!sameJsonStoreLockState(initial, confirmed)) return;
     await unlink(lockPath).catch((error) => {
-      if (!hasErrorCode(error, "ENOENT")) throw error;
+      if (!isErrnoCode(error, "ENOENT")) throw error;
     });
   } finally {
     await closeAndRemoveJsonStoreReclaimGuard(reclaimPath, reclaimHandle);
@@ -272,7 +269,7 @@ async function confirmJsonStoreMutationLockOwnership(
         const metadata = JSON.parse(state.content) as { token?: unknown };
         return metadata.token === token;
       } catch (error) {
-        if (hasErrorCode(error, "ENOENT") || error instanceof SyntaxError) return false;
+        if (isErrnoCode(error, "ENOENT") || error instanceof SyntaxError) return false;
         throw error;
       }
     } finally {
@@ -291,9 +288,9 @@ async function acquireJsonStoreMutationFileLock(key: string): Promise<() => Prom
     try {
       handle = await open(lockPath, "wx", 0o600);
     } catch (error) {
-      if (!hasErrorCode(error, "EEXIST")) throw error;
+      if (!isErrnoCode(error, "EEXIST")) throw error;
       await removeStaleJsonStoreLock(lockPath).catch((staleError) => {
-        if (!hasErrorCode(staleError, "ENOENT")) throw staleError;
+        if (!isErrnoCode(staleError, "ENOENT")) throw staleError;
       });
       if (Date.now() >= deadline) {
         throw new Error(`Timed out acquiring JSON store mutation lock: ${lockPath}`);
@@ -338,7 +335,7 @@ async function acquireJsonStoreMutationFileLock(key: string): Promise<() => Prom
         const metadata = JSON.parse(await readFile(lockPath, "utf8")) as { token?: unknown };
         if (metadata.token === token) await unlink(lockPath);
       } catch (error) {
-        if (!hasErrorCode(error, "ENOENT")) throw error;
+        if (!isErrnoCode(error, "ENOENT")) throw error;
       }
     };
   }

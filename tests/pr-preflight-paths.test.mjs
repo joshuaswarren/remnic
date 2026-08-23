@@ -70,7 +70,10 @@ const rootConfigScope = packageScope("tsconfig.json");
 assert.equal(rootConfigScope.status, 0, rootConfigScope.stderr);
 assert.match(rootConfigScope.stdout, /Quick package scope: all packages/);
 assert.match(rootConfigScope.stdout, /Checked packages:.*remnic-cli/);
-assert.match(rootConfigScope.stdout, /Skipped packages:\s*$/m);
+// #2851: CI may classify optional import packages differently, but root
+// config changes must always include the core runtime in quick checks.
+assert.match(rootConfigScope.stdout, /Checked packages:.*remnic-core/);
+assert.doesNotMatch(rootConfigScope.stdout, /Skipped packages:.*remnic-core/);
 
 const workspaceConfigScope = packageScope("pnpm-workspace.yaml");
 assert.equal(workspaceConfigScope.status, 0, workspaceConfigScope.stderr);

@@ -2,6 +2,7 @@ import path from "node:path";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
+import { isErrnoCode } from "../utils/errno.js";
 
 export interface IndexableDocument {
   /** Memory ID from frontmatter or filename stem */
@@ -83,17 +84,13 @@ async function scanDir(dir: string, memoryRootReal: string): Promise<IndexableDo
       }
     }
   } catch (err) {
-    if (isNodeError(err) && err.code === "ENOENT") {
+    if (isErrnoCode(err, "ENOENT")) {
       // Optional category directories may not exist yet.
       return docs;
     }
     throw err;
   }
   return docs;
-}
-
-function isNodeError(err: unknown): err is NodeJS.ErrnoException {
-  return typeof err === "object" && err !== null && "code" in err;
 }
 
 /**
@@ -114,7 +111,7 @@ export async function scanMemoryDir(memoryDir: string): Promise<IndexableDocumen
   try {
     memoryRootReal = await realpath(memoryDir);
   } catch (err) {
-    if (isNodeError(err) && err.code === "ENOENT") {
+    if (isErrnoCode(err, "ENOENT")) {
       return [];
     }
     throw err;

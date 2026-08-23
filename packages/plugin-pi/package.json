@@ -1,6 +1,6 @@
 {
   "name": "@remnic/plugin-pi",
-  "version": "9.69.23",
+  "version": "9.69.33",
   "description": "Remnic memory extension for Pi Coding Agent",
   "type": "module",
   "main": "dist/index.js",
@@ -50,8 +50,7 @@
     "prepublishOnly": "npm run check-packed-imports"
   },
   "dependencies": {
-    "@remnic/core": "workspace:^",
-    "@sinclair/typebox": "^0.34.0"
+    "@remnic/core": "workspace:^"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.69.23",
+  "version": "9.69.33",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -10,6 +10,16 @@
       "types": "./dist/index.d.ts",
       "remnic-source": "./src/index.ts",
       "import": "./dist/index.js"
+    },
+    "./activity/digest": {
+      "types": "./dist/activity/digest.d.ts",
+      "remnic-source": "./src/activity/digest.ts",
+      "import": "./dist/activity/digest.js"
+    },
+    "./activity/digest.js": {
+      "types": "./dist/activity/digest.d.ts",
+      "remnic-source": "./src/activity/digest.ts",
+      "import": "./dist/activity/digest.js"
     },
     "./maintenance/atomic-file": {
       "types": "./dist/maintenance/atomic-file.d.ts",
@@ -30,6 +40,16 @@
       "types": "./dist/salvage-envelope.d.ts",
       "remnic-source": "./src/salvage-envelope.ts",
       "import": "./dist/salvage-envelope.js"
+    },
+    "./http-retry": {
+      "types": "./dist/http-retry.d.ts",
+      "remnic-source": "./src/http-retry.ts",
+      "import": "./dist/http-retry.js"
+    },
+    "./http-retry.js": {
+      "types": "./dist/http-retry.d.ts",
+      "remnic-source": "./src/http-retry.ts",
+      "import": "./dist/http-retry.js"
     },
     "./abort-error.js": {
       "types": "./dist/abort-error.d.ts",
@@ -1214,6 +1234,16 @@
       "types": "./dist/importers/index.d.ts",
       "remnic-source": "./src/importers/index.ts",
       "import": "./dist/importers/index.js"
+    },
+    "./importers/test-utils": {
+      "types": "./dist/importers/test-utils.d.ts",
+      "remnic-source": "./src/importers/test-utils.ts",
+      "import": "./dist/importers/test-utils.js"
+    },
+    "./importers/test-utils.js": {
+      "types": "./dist/importers/test-utils.d.ts",
+      "remnic-source": "./src/importers/test-utils.ts",
+      "import": "./dist/importers/test-utils.js"
     },
     "./intent": {
       "types": "./dist/intent.d.ts",
@@ -3234,7 +3264,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^9.69.23"
+    "@remnic/coding-graph": "^9.69.33"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {

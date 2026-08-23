@@ -253,7 +253,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
 
   async withMemorySnapshotsIfUnchanged<T>(
     expected: readonly MemoryFile[],
-    task: (memories: MemoryFile[]) => Promise<T>,
+    task: (memories: MemoryFile[]) => Promise<T>
   ): Promise<T | null> {
     if (expected.length === 0) return await task([]);
     const pathnames = [...new Set(expected.map((memory) => memory.path))];
@@ -505,7 +505,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   private async invalidateAfterOfflineSyncMutation(
     filePath: string,
     ownedMarker?: string,
-    archiveChanged = true
+    archiveChanged = true,
+    blockedKeySetMayHaveChanged = true
   ): Promise<void> {
     this.invalidateAllMemoriesCache();
     this.invalidateKnowledgeIndexCache();
@@ -513,7 +514,22 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     if (filePath.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
     }
-    await this.rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath, ownedMarker);
+    if (blockedKeySetMayHaveChanged) {
+      await this.rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath, ownedMarker);
+    } else if (ownedMarker !== undefined) {
+      // The index only holds tombstone-blocked explicit-capture keys, so a
+      // write where neither side is blocked cannot have changed it. Rebuilding
+      // here re-reads the whole corpus per replicated file — measured 15-31s
+      // per write against a ~190k-file corpus, which turns a boot-scale
+      // `converge apply` into a multi-week run. Clear the committed marker and
+      // keep the index as-is.
+      try {
+        await this.getTombstoneBlockedCaptureIndex().clearCommittedWriteMarker(ownedMarker);
+      } catch (err) {
+        this.getTombstoneBlockedCaptureIndex().markUntrusted();
+        log.warn(`storage.offlineSyncFile committed write succeeded; marker cleanup failed: ${err}`);
+      }
+    }
     if (filePath.includes(`${path.sep}artifacts${path.sep}`)) {
       this.bumpArtifactWriteVersion();
     }
@@ -690,7 +706,12 @@ export abstract class TombstoneBlockedCaptureIndexHost {
               log.warn(`storage.offlineSyncFile committed write marker failed: ${err}`);
             }
           }
-          await this.invalidateAfterOfflineSyncMutation(target, marker, changed !== false);
+          await this.invalidateAfterOfflineSyncMutation(
+            target,
+            marker,
+            changed !== false,
+            this.isTombstoneBlockedMemory(current) || this.isTombstoneBlockedMemory(after)
+          );
         } catch (err) {
           if (marker && !durable) {
             try {
@@ -719,10 +740,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     const options = this.tombstoneBlockedCaptureIndexOptions();
     const after = options.parseMemory?.(target, content) ?? null;
     await withRawEntityPageMutation(path.dirname(options.stateDir), target, async () => {
-      await this.runTombstoneBlockedOfflineSyncMutation(
-        target,
-        after,
-        () => this.writeManagedStorageFile(target, () => this.writeStorageSecureFile(target, content))
+      await this.runTombstoneBlockedOfflineSyncMutation(target, after, () =>
+        this.writeManagedStorageFile(target, () => this.writeStorageSecureFile(target, content))
       );
     });
   }

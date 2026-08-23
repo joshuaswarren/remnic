@@ -21,6 +21,7 @@ import path from "node:path";
 
 import { writeFileAtomically } from "../maintenance/atomic-file.js";
 import { pathIsInside } from "../utils/path-containment.js";
+import { isErrnoCode } from "../utils/errno.js";
 import { isValidLocationDate, placeDurations } from "./intervals.js";
 import type { LocationSegment } from "./types.js";
 
@@ -375,10 +376,6 @@ export function parseLocationDaySummary(raw: string): LocationDaySummary | null 
 }
 
 // ── Containment-checked day-file IO ─────────────────────────────────────────
-
-function isErrnoCode(err: unknown, code: string): boolean {
-  return err instanceof Error && (err as NodeJS.ErrnoException).code === code;
-}
 
 async function assertNotSymlink(target: string, kind: "directory" | "day file"): Promise<void> {
   let stat: { isSymbolicLink(): boolean };

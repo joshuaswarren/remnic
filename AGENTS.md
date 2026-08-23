@@ -680,9 +680,9 @@ Node.js `fs` functions do NOT expand `~`. Multiple PRs had path-related bugs.
 Changing a function signature is a high-risk operation that consistently
 required follow-up fixes.
 
-- **Search ALL code including evals, tests, and adapters** — when changing
+- **Search ALL code including tests and adapters** — when changing
   `addTurn(role, content)` to `addTurn(sessionId, turn)`, search not just `src/`
-  but `evals/`, `tests/`, and `packages/*/` for old-form call sites.
+  but `tests/`, and `packages/*/` for old-form call sites.
 - **Add a deprecation path for public APIs** — if the function is exported,
   add a compatibility wrapper that maps old args to new with a deprecation log,
   rather than breaking silently.
@@ -2364,7 +2364,7 @@ grep "\[engram\]" ~/.openclaw/logs/gateway.log
 11. **Scope globals per plugin ID** — runtime orchestrator mirrors, CLI dedupe guards, and capability caches must be keyed by `serviceId` when multiple instances can coexist.
 12. **Write rollback data before success markers** — if a migration writes `.migrated-from-engram`, the `.rollback.json` must be written first so failures don't leave a false success marker.
 13. **Wrap external service calls in try-catch** — token generation, daemon health probes, and filesystem writes must not crash the primary install/remove/config flow. Fail gracefully and surface a user-facing note instead.
-20. **Search ALL code when changing function signatures** — when changing `addTurn(role, content)` to `addTurn(sessionId, turn)`, search `evals/`, `tests/`, and `packages/*/` — not just `src/`. Missed call sites in adapters/evals were a recurring source of post-merge fixes.
+20. **Search ALL code when changing function signatures** — when changing `addTurn(role, content)` to `addTurn(sessionId, turn)`, search `tests/`, and `packages/*/` — not just `src/`. Missed call sites in adapters were a recurring source of post-merge fixes.
 21. **Interactive prompts must gate actual mutations** — if a migration prompt asks "migrate legacy config?" and the user says "no", the code must skip the actual config mutations, not just print different console messages while still writing the new config.
 23. **Hash operations must use consistent content form** — if writes hash `rawContent`, reads and dedup checks must also hash `rawContent`, not the timestamped `citedContent`. Mixing forms silently breaks dedup.
 25. **Don't destroy old state before confirming new state succeeds** — rotate tokens AFTER config write succeeds, clean up old profiles AFTER new profile is confirmed. PR #400 had 20+ review rounds on this pattern alone.

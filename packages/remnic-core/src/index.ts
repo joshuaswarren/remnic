@@ -18,6 +18,8 @@ export { resolvePluginEntry, type PluginEntryResolverOptions } from "./plugin-en
 
 export { parseConfig, isOpenaiApiKeyDisabled, resolveEnvVars } from "./config.js";
 export { resolveRemnicConfigRecord } from "./config-record.js";
+export { readCompatEnv } from "./runtime/env.js";
+export { configPathCandidates, discoverConfigPath, type DiscoveredConfigPath } from "./config-discovery.js";
 export * from "./external-wiki.js";
 export * from "./external-wiki-cli.js";
 export {
@@ -1217,7 +1219,10 @@ export {
   validateImportRateLimit,
   importedMemoryToTurn,
   defaultWriteMemoriesToOrchestrator,
+  defineFileImporterAdapter,
   runImporter,
+  type FileImporterDefinition,
+  type FileImporterParseArgs,
   type ImportedMemory,
   type ImporterAdapter,
   type ImporterParseOptions,

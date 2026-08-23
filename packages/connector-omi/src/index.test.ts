@@ -7,8 +7,11 @@ import type { WearableSourceSettings } from "@remnic/core";
 import {
   createOmiConnector,
   ensureOmiConnectorRegistered,
+  omiDayWindow,
   resolveOmiApiKey,
   wearableConnectorRegistration,
+  zonedDayBounds,
+  zonedDayStartIso,
 } from "./index.js";
 
 function settings(overrides: Partial<WearableSourceSettings> = {}): WearableSourceSettings {
@@ -173,4 +176,13 @@ test("fetchNativeMemories maps Omi memories and skips empty content", async () =
   } finally {
     stub.restore();
   }
+});
+
+test("legacy day-window export names still resolve from the entry point", () => {
+  // Pre-refactor consumers import zonedDayBounds/zonedDayStartIso from the
+  // package entry; removing them breaks module loading. Both must keep
+  // resolving and behave identically to omiDayWindow.
+  const bounds = omiDayWindow("2026-06-10", "America/Chicago");
+  assert.deepEqual(zonedDayBounds("2026-06-10", "America/Chicago"), bounds);
+  assert.equal(zonedDayStartIso("2026-06-10", "America/Chicago"), bounds.startIso);
 });

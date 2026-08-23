@@ -72,6 +72,7 @@ import type {
   SyncIncrementalResult,
 } from "./framework.js";
 import { isTransientHttpError } from "./transient-errors.js";
+import { throwIfAborted } from "../../abort-error.js";
 
 // ---------------------------------------------------------------------------
 // Public constants
@@ -586,18 +587,6 @@ export function pruneSkippedIds(
 }
 
 // ---------------------------------------------------------------------------
-// Cooperative cancellation
-// ---------------------------------------------------------------------------
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) {
-    const err = new Error("gmail: sync aborted");
-    err.name = "AbortError";
-    throw err;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Gmail API client helpers
 // ---------------------------------------------------------------------------
 
@@ -671,7 +660,7 @@ async function exchangeRefreshToken(
   config: GmailConnectorConfig,
   signal: AbortSignal | undefined,
 ): Promise<string> {
-  throwIfAborted(signal);
+  throwIfAborted(signal, "gmail: sync aborted");
   const body = new URLSearchParams({
     client_id: config.clientId,
     client_secret: config[CLIENT_SECRET_FIELD],
@@ -860,11 +849,11 @@ export function createGmailConnector(
 
     async syncIncremental(args: SyncIncrementalArgs): Promise<SyncIncrementalResult> {
       const config = validateGmailConfig(args.config);
-      throwIfAborted(args.abortSignal);
+      throwIfAborted(args.abortSignal, "gmail: sync aborted");
 
       // Exchange credentials for a short-lived access token.
       const accessToken = await exchangeRefreshToken(fetchFn, config, args.abortSignal);
-      throwIfAborted(args.abortSignal);
+      throwIfAborted(args.abortSignal, "gmail: sync aborted");
 
       // First-sync bootstrap: record "now" as the watermark and return
       // without importing anything. Mirrors Drive's getStartPageToken pattern.
@@ -981,7 +970,7 @@ async function incrementalSync(
 
   // Page through messages.list until exhausted, aborted, or per-pass cap hit.
   while (true) {
-    throwIfAborted(signal);
+    throwIfAborted(signal, "gmail: sync aborted");
 
     // Build the list URL.
     let listPath = `/users/${encodeURIComponent(config.userId)}/messages?maxResults=${LIST_PAGE_SIZE}&q=${encodeURIComponent(listQuery)}`;
@@ -1013,7 +1002,7 @@ async function incrementalSync(
         throw listErr;
       }
     }
-    throwIfAborted(signal);
+    throwIfAborted(signal, "gmail: sync aborted");
 
     const listPage = listData as {
       messages?: GmailMessageRef[];
@@ -1026,7 +1015,7 @@ async function incrementalSync(
     let capHitMidPage = false;
 
     for (const ref of messages) {
-      throwIfAborted(signal);
+      throwIfAborted(signal, "gmail: sync aborted");
 
       // Thread 2: if this id was permanently skipped in a prior pass, skip
       // it again without consuming the per-pass cap. The message is immutable
@@ -1232,7 +1221,7 @@ async function fetchMessageDocument(
   fetchedAt: string,
   signal: AbortSignal | undefined,
 ): Promise<ConnectorDocument | SkippedWithDate | "inaccessible" | null> {
-  throwIfAborted(signal);
+  throwIfAborted(signal, "gmail: sync aborted");
 
   let message: GmailMessage;
   try {

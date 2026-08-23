@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { XCreditsDepletedError, XMcpClient, XMcpError, parseSseData } from "./mcp-client.js";
+import { XRefreshChainBrokenError, XTokenError } from "./token-store.js";
 
 interface FetchCall {
   method: string;
@@ -175,4 +176,31 @@ test("requires a tokenProvider", () => {
     () => new XMcpClient({ tokenProvider: undefined as unknown as () => Promise<string> }),
     /tokenProvider/
   );
+});
+
+test("token-provider failure runs once, propagates as XTokenError, never fetches", async () => {
+  const failure = new XRefreshChainBrokenError("grant revoked");
+  let tokenCalls = 0;
+  let fetchCalls = 0;
+  const client = new XMcpClient({
+    tokenProvider: async () => {
+      tokenCalls += 1;
+      throw failure;
+    },
+    fetchImpl: (async () => {
+      fetchCalls += 1;
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch,
+    sleep: async () => {},
+  });
+  await assert.rejects(
+    client.callTool("get_users_bookmarks", {}),
+    (err: unknown): boolean =>
+      err instanceof XTokenError &&
+      err instanceof XRefreshChainBrokenError &&
+      err === failure &&
+      err.message === failure.message,
+  );
+  assert.equal(tokenCalls, 1);
+  assert.equal(fetchCalls, 0);
 });
