@@ -1,6 +1,8 @@
 import type { AdapterContext, EngramAdapter, ResolvedIdentity } from "./types.js";
 import { ClaudeCodeAdapter } from "./claude-code.js";
 import { CodexAdapter } from "./codex.js";
+import { GrokAdapter } from "./grok.js";
+import { OpenCodeAdapter } from "./opencode.js";
 import { ReplitAdapter } from "./replit.js";
 import { HermesAdapter } from "./hermes.js";
 
@@ -18,6 +20,8 @@ export class AdapterRegistry {
       new ReplitAdapter(),
       new CodexAdapter(),
       new ClaudeCodeAdapter(),
+      new GrokAdapter(),
+      new OpenCodeAdapter(),
     ];
   }
 
