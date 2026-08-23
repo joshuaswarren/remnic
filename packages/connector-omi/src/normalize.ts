@@ -93,6 +93,7 @@ function instantToOffsetIso(instant: Date, timezone: string): string {
  * `omiDayWindow`. Returns the resolved start bound, not a rebuilt midnight.
  */
 export function zonedDayStartIso(date: string, timezone: string): string {
+  warnLegacyDayWindow("zonedDayStartIso");
   return omiDayWindow(date, timezone).startIso;
 }
 
@@ -101,7 +102,19 @@ export function zonedDayBounds(
   date: string,
   timezone: string,
 ): { startIso: string; endIso: string } {
+  warnLegacyDayWindow("zonedDayBounds");
   return omiDayWindow(date, timezone);
+}
+
+const warnedLegacyDayWindow = new Set<string>();
+
+function warnLegacyDayWindow(name: "zonedDayBounds" | "zonedDayStartIso"): void {
+  if (warnedLegacyDayWindow.has(name)) return;
+  warnedLegacyDayWindow.add(name);
+  process.emitWarning(
+    `@remnic/connector-omi: ${name} is deprecated; use omiDayWindow instead.`,
+    { type: "DeprecationWarning", code: `REMNIC_DEP_OMI_${name.toUpperCase()}` },
+  );
 }
 
 export function conversationToWearable(

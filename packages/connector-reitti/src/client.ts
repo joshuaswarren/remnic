@@ -180,7 +180,19 @@ export function assertReittiTimezone(timezone: string): void {
  * this published package keep resolving. Same TypeError/RangeError behavior.
  */
 export function assertValidIanaTimezone(timezone: string): void {
+  warnLegacyTimezoneValidator();
   assertReittiTimezone(timezone);
+}
+
+let warnedLegacyTimezoneValidator = false;
+
+function warnLegacyTimezoneValidator(): void {
+  if (warnedLegacyTimezoneValidator) return;
+  warnedLegacyTimezoneValidator = true;
+  process.emitWarning(
+    "@remnic/connector-reitti: assertValidIanaTimezone is deprecated; use assertReittiTimezone instead.",
+    { type: "DeprecationWarning", code: "REMNIC_DEP_REITTI_ASSERT_VALID_IANA_TIMEZONE" },
+  );
 }
 
 /**

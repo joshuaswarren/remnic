@@ -220,10 +220,22 @@ test("verify rethrows a caller abort instead of reporting the provider unavailab
   );
 });
 
-test("legacy assertValidIanaTimezone still resolves and validates identically", () => {
+test("legacy assertValidIanaTimezone still resolves and validates identically", async () => {
   // Pre-rename consumers import assertValidIanaTimezone from the package
-  // entry; it must keep resolving with the same throw behavior.
-  assertValidIanaTimezone("Europe/Helsinki");
-  assert.throws(() => assertValidIanaTimezone(""), TypeError);
-  assert.throws(() => assertValidIanaTimezone("Also/Bogus"), RangeError);
+  // entry; it must keep resolving with the same throw behavior and warn
+  // about the rename exactly once per process.
+  const warnings: Array<string | undefined> = [];
+  const onWarning = (warning: Error & { code?: string }) => warnings.push(warning.code);
+  process.on("warning", onWarning);
+  try {
+    assertValidIanaTimezone("Europe/Helsinki");
+    assert.throws(() => assertValidIanaTimezone(""), TypeError);
+    assert.throws(() => assertValidIanaTimezone("Also/Bogus"), RangeError);
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setImmediate(resolve);
+    await promise;
+  } finally {
+    process.off("warning", onWarning);
+  }
+  assert.deepEqual(warnings, ["REMNIC_DEP_REITTI_ASSERT_VALID_IANA_TIMEZONE"]);
 });

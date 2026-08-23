@@ -8,6 +8,8 @@ import {
   nextIsoDate,
   omiDayWindow,
   timezoneOffsetIso,
+  zonedDayBounds,
+  zonedDayStartIso,
 } from "./normalize.js";
 
 test("timezoneOffsetIso resolves fixed and DST offsets", () => {
@@ -71,6 +73,26 @@ test("omiDayWindow keeps the never-throw zone contract: unknown zone is a UTC da
   // made this path throw RangeError. An unknown zone must resolve to UTC.
   const bounds = omiDayWindow("2026-06-10", "Not/AZone");
   assert.deepEqual(bounds, omiDayWindow("2026-06-10", "UTC"));
+});
+
+test("legacy day-window names warn once per process", async () => {
+  const warnings: Array<string | undefined> = [];
+  const onWarning = (warning: Error & { code?: string }) => warnings.push(warning.code);
+  process.on("warning", onWarning);
+  try {
+    zonedDayBounds("2026-06-10", "UTC");
+    zonedDayStartIso("2026-06-10", "UTC");
+    // Second calls must not re-warn.
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+  } finally {
+    process.off("warning", onWarning);
+  }
+  assert.deepEqual(warnings.sort(), [
+    "REMNIC_DEP_OMI_ZONEDDAYBOUNDS",
+    "REMNIC_DEP_OMI_ZONEDDAYSTARTISO",
+  ]);
 });
 
 const CONVERSATION = {
