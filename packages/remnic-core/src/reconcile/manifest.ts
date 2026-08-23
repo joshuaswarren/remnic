@@ -169,26 +169,35 @@ export async function buildReconcileManifest(options: BuildReconcileManifestOpti
   }
 
   const files: ReconcileManifestFile[] = [];
+  // Cache hits stay on a synchronous fast path (no promise allocation, no
+  // Promise.all — a fully-cached rebuild must not regress); only the uncached
+  // entries ride the bounded batches. Order is preserved by index.
+  const uncached: Array<{ index: number; file: ReconcileFileState }> = [];
   const allFiles = [...options.files];
-  for (let i = 0; i < allFiles.length; i += MANIFEST_BUILD_BATCH_SIZE) {
-    const batch = allFiles.slice(i, i + MANIFEST_BUILD_BATCH_SIZE);
+  for (let i = 0; i < allFiles.length; i += 1) {
+    const file = allFiles[i]!;
+    const cached = cachedByPath.get(file.path);
+    if (
+      cached !== undefined &&
+      cached.sha256.toLowerCase() === file.sha256.toLowerCase() &&
+      (cached.memory === undefined ||
+        (cached.memory.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION &&
+          cached.memory.identityResolutionVersion === IDENTITY_RESOLUTION_VERSION))
+    ) {
+      files.push({ ...file, ...(cached.memory ? { memory: cached.memory } : {}) });
+    } else {
+      uncached.push({ index: i, file });
+    }
+  }
+  for (let i = 0; i < uncached.length; i += MANIFEST_BUILD_BATCH_SIZE) {
+    const batch = uncached.slice(i, i + MANIFEST_BUILD_BATCH_SIZE);
     const results = await Promise.all(
-      batch.map(async (file: ReconcileFileState) => {
-        const cached = cachedByPath.get(file.path);
-        if (
-          cached !== undefined &&
-          cached.sha256.toLowerCase() === file.sha256.toLowerCase() &&
-          (cached.memory === undefined ||
-            (cached.memory.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION &&
-              cached.memory.identityResolutionVersion === IDENTITY_RESOLUTION_VERSION))
-        ) {
-          return { ...file, ...(cached.memory ? { memory: cached.memory } : {}) } as ReconcileManifestFile;
-        }
-        return buildReconcileManifestFile(file, options.readFile, options.parseMemory, options.citationTemplate);
-      })
+      batch.map(({ file }) =>
+        buildReconcileManifestFile(file, options.readFile, options.parseMemory, options.citationTemplate)
+      )
     );
-    for (const result of results) {
-      files.push(result);
+    for (let j = 0; j < batch.length; j += 1) {
+      files[batch[j]!.index] = results[j]!;
     }
   }
   files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
