@@ -343,14 +343,14 @@ test("offline status with no credential anywhere still succeeds", async () => {
 });
 
 test("offline argv token warns exactly once and never echoes the value", async () => {
-  const result = await runCli(["offline", "status", "--token", "synthetic-argv-secret-2831"], {
+  const result = await runCli(["offline", "status", "--token", "x-test"], {
     env: NO_TOKEN_ENV,
   });
   assert.equal(result.exitCode, 0);
   const warnings = result.stderr.match(/argv-visible/g) ?? [];
   assert.equal(warnings.length, 1, `expected exactly one argv warning, got: ${result.stderr}`);
-  assert.equal(result.stderr.includes("synthetic-argv-secret-2831"), false);
-  assert.equal(result.stdout.includes("synthetic-argv-secret-2831"), false);
+  assert.equal(result.stderr.includes("x-test"), false);
+  assert.equal(result.stdout.includes("x-test"), false);
 });
 
 test("offline prepare with an unreadable token file fails before any network call", async () => {
