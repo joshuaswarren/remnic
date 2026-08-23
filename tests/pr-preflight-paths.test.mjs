@@ -1,11 +1,22 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { checkTypePackageDirs, noCheckTypePackageDirs } from "../scripts/check-type-packages.mjs";
+
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const preflightScript = resolve(rootDir, "scripts/pr-preflight.sh");
+const coveredPackages = checkTypePackageDirs();
+const noCheckTypePackages = noCheckTypePackageDirs();
+
+function scopeList(stdout, label) {
+  const prefix = `[preflight] ${label} packages:`;
+  const line = stdout.split("\n").find((candidate) => candidate.startsWith(prefix));
+  if (!line) return null;
+  return line.slice(prefix.length).trim().split(/\s+/).filter(Boolean);
+}
 
 const guardedPaths = [
   "src/orchestrator.ts",
@@ -69,11 +80,33 @@ assert.match(coreScope.stdout, /Skipped packages:.*bench-ui/);
 const rootConfigScope = packageScope("tsconfig.json");
 assert.equal(rootConfigScope.status, 0, rootConfigScope.stderr);
 assert.match(rootConfigScope.stdout, /Quick package scope: all packages/);
-assert.match(rootConfigScope.stdout, /Checked packages:.*remnic-cli/);
-// #2851: CI may classify optional import packages differently, but root
-// config changes must always include the core runtime in quick checks.
-assert.match(rootConfigScope.stdout, /Checked packages:.*remnic-core/);
-assert.doesNotMatch(rootConfigScope.stdout, /Skipped packages:.*remnic-core/);
+// Generated from package manifests (#2851): every workspace package that
+// declares scripts.check-types is checked, and only the documented
+// no-check-type packages may skip.
+assert.deepEqual(scopeList(rootConfigScope.stdout, "Checked"), coveredPackages);
+assert.deepEqual(scopeList(rootConfigScope.stdout, "Skipped"), noCheckTypePackages);
+assert.ok(
+  coveredPackages.includes("import-weclone"),
+  "import-weclone declares scripts.check-types and must always be checked"
+);
+
+// Clean CI vs hydrated local (#2851): node_modules and package build output
+// must not change the quick package scope. Only simulate hydration with
+// markers this run created, so a real checkout is never mutated.
+const nodeModulesDir = resolve(rootDir, "node_modules");
+const importWecloneDistDir = resolve(rootDir, "packages/import-weclone/dist");
+const hadNodeModules = existsSync(nodeModulesDir);
+const hadDist = existsSync(importWecloneDistDir);
+try {
+  if (!hadNodeModules) mkdirSync(nodeModulesDir, { recursive: true });
+  if (!hadDist) mkdirSync(importWecloneDistDir, { recursive: true });
+  const hydratedScope = packageScope("tsconfig.json");
+  assert.equal(hydratedScope.status, 0, hydratedScope.stderr);
+  assert.equal(hydratedScope.stdout, rootConfigScope.stdout);
+} finally {
+  if (!hadNodeModules) rmSync(nodeModulesDir, { recursive: true, force: true });
+  if (!hadDist) rmSync(importWecloneDistDir, { recursive: true, force: true });
+}
 
 const workspaceConfigScope = packageScope("pnpm-workspace.yaml");
 assert.equal(workspaceConfigScope.status, 0, workspaceConfigScope.stderr);

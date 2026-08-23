@@ -1001,7 +1001,7 @@
     "build": "node scripts/pnpm.mjs --filter @remnic/core build && node scripts/pnpm.mjs --filter @remnic/plugin-openclaw build && node scripts/pnpm.mjs run check:openclaw-plugin-sync && tsup && node scripts/copy-admin-console.mjs",
     "dev": "node scripts/pnpm.mjs --filter @remnic/plugin-openclaw build && node scripts/pnpm.mjs --parallel --filter remnic-workspace --filter @remnic/plugin-openclaw run dev:watch",
     "dev:watch": "tsup --watch",
-    "check-types": "node scripts/pnpm.mjs --filter @remnic/core build && tsc --noEmit && node scripts/pnpm.mjs --recursive --if-present --filter=\"./packages/*\" run check-types && node scripts/check-test-types.mjs",
+    "check-types": "node scripts/pnpm.mjs --filter @remnic/core build && tsc --noEmit && node scripts/check-type-packages.mjs --run && node scripts/check-test-types.mjs",
     "check-config-contract": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx scripts/validate-config-contract.ts",
     "test": "node scripts/pnpm.mjs --filter @remnic/core build && node scripts/run-root-tests.mjs",
     "test:file": "node scripts/test-file.mjs",
