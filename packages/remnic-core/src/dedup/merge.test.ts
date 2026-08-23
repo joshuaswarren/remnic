@@ -47,7 +47,7 @@ import {
   type MergeJudgeRawVerdict,
 } from "./merge.js";
 import type { SemanticDedupHit } from "./semantic.js";
-import { frontmatterWriteRevision, invalidationCommitFingerprint, markCasCommittedRevision, nextCasRevisionIso } from "../storage/deletion-revision-store.js";
+import { invalidationCommitFingerprint, isSemanticFrontmatterChange, markCasCommittedRevision, nextCasRevisionIso } from "../storage/deletion-revision-store.js";
 
 // The merge snapshot trigger must stay a literal union: a widened
 // `VersionTrigger` (e.g. annotated `readonly string[]`) would let an unknown
@@ -590,6 +590,10 @@ async function harness(
   // Live state: the CAS compares against what is on disk NOW, so a stub that
   // returned the original snapshot forever could never fail a compare.
   let state: MemoryFile = { ...target };
+  // #2807: the dedicated CAS receipt identity — a sidecar simulation,
+  // exactly like StorageManager's CasRevisionStore. Public
+  // `frontmatter.updated` is business time and never carries it.
+  let casRevision: string | undefined;
 
   const calls: MergeHarness["calls"] = {
     contentUpdates: [],
@@ -602,19 +606,24 @@ async function harness(
     commitRevisions: [],
   };
   const commit = async (content: string, revision?: string): Promise<string> => {
-    // Signature-faithful to updateMemoryFromCurrent: the durable write stamps
-    // frontmatter.updated with a strictly-monotonic per-target revision
-    // (nextCasRevisionIso), and the CAS receipt carries that same revision
-    // (#2813 P1) — unique per commit even inside one millisecond.
-    const stamped = revision ?? nextCasRevisionIso(state.frontmatter.updated);
-    calls.commitRevisions.push(stamped);
+    // Signature-faithful to updateMemoryFromCurrent (#2807): the durable
+    // write stamps public `updated` with the wall clock (business time,
+    // monotonic within the fake so two same-millisecond commits stay
+    // fingerprint-distinct, as real milliseconds are) and mints the receipt
+    // from the per-target sidecar token (nextCasRevisionIso) — unique per
+    // commit even inside one millisecond.
+    casRevision = revision ?? nextCasRevisionIso(casRevision);
+    calls.commitRevisions.push(casRevision);
     state = {
       ...state,
       content,
-      frontmatter: { ...state.frontmatter, updated: stamped },
+      frontmatter: {
+        ...state.frontmatter,
+        updated: nextCasRevisionIso(state.frontmatter.updated),
+      },
     };
     await writeFile(targetPath, `---\nid: fact-target\ncategory: fact\n---\n\n${content}\n`, "utf8");
-    return stamped;
+    return casRevision;
   };
   // Live state: reads come off the file, so a stub can neither invent a
   // restore that never touched storage nor compare a snapshot against itself.
@@ -715,27 +724,31 @@ async function harness(
       // through the production boundary exactly as
       // StorageManager.writeMemoryFrontmatter stamps it.
       if (overrides.retireAtPatch) {
-        const stamped = frontmatterWriteRevision(state.frontmatter.updated, {
+        // #2807: the patch applies VERBATIM (business time untouched — no
+        // `updated` rewrite) and, being semantic, mints the next sidecar
+        // token exactly as StorageManager.writeMemoryFrontmatter's
+        // chokepoint does.
+        const retired: MemoryFrontmatter = {
+          ...state.frontmatter,
           status: "superseded",
           supersededBy: "fact-replacement",
-        });
-        state = {
-          ...state,
-          frontmatter: {
-            ...state.frontmatter,
-            status: "superseded",
-            supersededBy: "fact-replacement",
-            updated: stamped,
-          },
         };
+        if (isSemanticFrontmatterChange(state.frontmatter, retired)) {
+          casRevision = nextCasRevisionIso(casRevision);
+        }
+        state = { ...state, frontmatter: retired };
       }
       if (!(await unchanged(expected))) return false;
       calls.frontmatterPatches.push({ id: expected.frontmatter.id, patch, actor: options?.actor });
-      // #2813 (P1, round 3): the accepted patch becomes the standing
-      // record's frontmatter — INCLUDING `updated`, mirroring
-      // StorageManager.writeMemoryFrontmatter's {...frontmatter, ...patch}.
+      // #2807: the accepted patch becomes the standing record's frontmatter
+      // VERBATIM (including caller `updated`), and a semantic change mints
+      // the next sidecar token — mirroring StorageManager.writeMemoryFrontmatter.
       if (overrides.applyFrontmatterPatches) {
-        state = { ...state, frontmatter: { ...state.frontmatter, ...patch } };
+        const merged = { ...state.frontmatter, ...patch };
+        if (isSemanticFrontmatterChange(state.frontmatter, merged)) {
+          casRevision = nextCasRevisionIso(casRevision);
+        }
+        state = { ...state, frontmatter: merged };
       }
       return overrides.frontmatterFails !== true;
     },
@@ -748,6 +761,7 @@ async function harness(
     registerFactContentHash: async (id: string, hash: string, _expectedContent: string) => {
       calls.hashRegistrations.push({ id, hash });
     },
+    readCasRevision: async (p: string) => (p === targetPath ? casRevision : undefined),
   } as unknown as StorageManager;
 
   const config = parseConfig({
@@ -3146,6 +3160,9 @@ async function postEffectsHarness(options: {
             content: MERGED,
           }
         : null,
+    // #2807: static token — these fixtures drive the rollback paths, not
+    // ownership attribution.
+    readCasRevision: async () => "2026-08-20T00:00:00.000Z",
   } as unknown as StorageManager;
   const deps = {
     config: parseConfig({ memoryDir: dir }),
@@ -3476,14 +3493,17 @@ test("runMergedTargetPostEffects: a stale writer's rollback preserves the newer 
               id,
               category: "fact",
               entityRef: "entity-billing-service",
-              // B's commit flips both the body and the revision once A's
-              // rebuild has begun: the initial committed-body check sees A's
-              // state, everything from the build onward sees B's.
-              ...(buildStarted ? { updated: "2026-08-22T01:00:00.000Z" } : {}),
+              // B's commit flips the body once A's rebuild has begun: the
+              // initial committed-body check sees A's state, everything from
+              // the build onward sees B's.
             },
             content: buildStarted ? NEWER_BODY : MERGED,
           }
         : null,
+    // #2807: B's mid-rebuild commit mints a NEW token — the identity the
+    // revision guard compares (public `updated` no longer carries it).
+    readCasRevision: async () =>
+      buildStarted ? "2026-08-22T01:00:00.001Z" : "2026-08-20T00:00:00.000Z",
   } as unknown as StorageManager;
   const graphConfig = parseConfig({ memoryDir: h.dir });
   const graphIndex = new GraphIndex(h.dir, graphConfig);
@@ -3876,11 +3896,12 @@ test("applySemanticMergeAtPersist: a timestamp-less retirement between the conte
   // identity the rollback compares.
   const receipt = h.calls.commitRevisions[0];
   assert.ok(receipt, "the content CAS stamped a receipt");
-  assert.ok(body.frontmatter.updated, "the retirement stamped a revision");
-  assert.notEqual(body.frontmatter.updated, receipt);
+  const standingToken = await h.storage.readCasRevision(h.target.path);
+  assert.ok(standingToken, "the retirement minted a new token");
+  assert.notEqual(standingToken, receipt, "the timestamp-less retirement retired the CAS's receipt token");
   assert.ok(
-    new Date(body.frontmatter.updated as string).getTime() > new Date(receipt).getTime(),
-    "the timestamp-less retirement advanced the revision strictly past the CAS receipt",
+    new Date(standingToken).getTime() > new Date(receipt).getTime(),
+    "the timestamp-less retirement advanced the token strictly past the CAS receipt",
   );
   assert.deepEqual(
     h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
@@ -3911,20 +3932,15 @@ test("applySemanticMergeAtPersist: the monotonic receipt survives the metadata p
   // a successful writer REGRESSED frontmatter.updated below the receipt its
   // own CAS had just issued. Three writers merging into the same target
   // inside one millisecond (target seeded at T, every writer's clock T):
-  //   A CAS → T+1 (receipt), A's patch then fails post-commit;
-  //   B CAS → T+2, B's patch writes `updated` back to T  ← the regression;
-  //   C CAS → nextCasRevisionIso(T) = T+1 — A's RETIRED receipt, reused.
-  // A's rollback then read the standing record carrying T+1, matched its own
-  // receipt, and CAS-restored the pre-merge body over C's valid commit.
-  //
   // The seed sits AHEAD of the real wall clock on purpose: the fake's commit
   // stamps via nextCasRevisionIso against the real clock, so a future seed
   // forces every stamp into the +1ms monotonic branch — the sequence is
   // pinned to T+n exactly as inside the finding's single millisecond.
-  // The patch now stamps nextCasRevisionIso(over the issued receipt), so the
-  // persisted revision never sits below a receipt already issued and every
-  // later stamp steps past all prior ones — C lands at T+4, A classifies the
-  // standing record as superseded, and C's commit survives A's failure.
+  // #2807: the patch now stamps business time (mergePatch.updated) verbatim;
+  // monotonicity lives in the sidecar token, minted by storage's write
+  // chokepoint — never in `frontmatter.updated`. C's token lands past every
+  // prior receipt, A classifies the standing record as superseded, and C's
+  // commit survives A's failure.
   const T = new Date(Date.now() + 60_000);
   const h = await harness({
     targetUpdated: T.toISOString(),
@@ -4007,9 +4023,18 @@ test("applySemanticMergeAtPersist: the monotonic receipt survives the metadata p
   );
   assert.equal(
     body?.frontmatter.updated,
-    new Date(T.getTime() + 5).toISOString(),
-    "the revision advanced past every issued receipt: A T+1, B T+2, B's patch T+3, C T+4, C's patch T+5",
+    T.toISOString(),
+    "#2807: the metadata patch stamps business time (mergePatch.updated) verbatim — never a revision",
   );
+  const standingToken = await h.storage.readCasRevision(h.target.path);
+  const [aReceipt, bReceipt, cReceipt2] = h.calls.commitRevisions;
+  assert.ok(aReceipt && bReceipt && cReceipt2);
+  assert.ok(aReceipt < bReceipt && bReceipt < cReceipt2, "A, B, C receipts are unique and strictly increasing");
+  assert.ok(
+    standingToken !== undefined && standingToken > cReceipt2,
+    "the standing token advanced past every issued CAS receipt through the metadata patches",
+  );
+  assert.notEqual(standingToken, aReceipt, "A's retired receipt no longer matches the standing token");
   assert.deepEqual(
     h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
     [

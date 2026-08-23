@@ -65,11 +65,13 @@ export interface MergedTargetPromotionPayload {
   toolScoped?: true;
   sourceConnector?: string;
   /**
-   * The committed record's `updated` revision at payload-build time (round
-   * N+15 A). The payload is a CACHE: before promoting it, the caller re-reads
-   * the record and confirms the revision AND body still match — a writer that
-   * merged the same target again in between makes this payload stale, and a
-   * stale body must never be promoted or become the reconciliation canon.
+   * The committed record's CAS revision token at payload-build time (round
+   * N+15 A, #2807) — the dedicated sidecar identity, never public
+   * `frontmatter.updated`. The payload is a CACHE: before promoting it, the
+   * caller re-reads the record and confirms the token AND body still match —
+   * a writer that merged the same target again in between makes this
+   * payload stale, and a stale body must never be promoted or become the
+   * reconciliation canon.
    */
   committedRevision?: string;
 }
@@ -146,6 +148,9 @@ export async function buildMergedTargetPromotionPayload(
     return { payload: null, readFailed: false };
   }
   const fm = committed.frontmatter;
+  // #2807: receipt identity is the sidecar token, not `fm.updated`
+  // (business/event time).
+  const committedRevision = await storage.readCasRevision(committed.path);
   return {
     payload: {
       category: fm.category,
@@ -177,7 +182,7 @@ export async function buildMergedTargetPromotionPayload(
       ...(fm.subject !== undefined ? { subject: fm.subject } : {}),
       ...(fm.toolScoped === true ? { toolScoped: true as const } : {}),
       ...(fm.sourceConnector !== undefined ? { sourceConnector: fm.sourceConnector } : {}),
-      ...(fm.updated !== undefined ? { committedRevision: fm.updated } : {}),
+      ...(committedRevision !== undefined ? { committedRevision } : {}),
     },
     readFailed: false,
   };

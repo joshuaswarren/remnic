@@ -46,7 +46,8 @@ import {
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
-import { DeletionRevisionStore, frontmatterWriteRevision, invalidationCommitFingerprint, nextCasRevisionIso, withCasCommitReceipt } from "./storage/deletion-revision-store.js";
+import { DeletionRevisionStore, invalidationCommitFingerprint, withCasCommitReceipt } from "./storage/deletion-revision-store.js";
+import { CasRevisionStore } from "./storage/cas-revision-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import * as entityMigration from "./storage/entity-canonical-id-migration.js";
 import * as entityRefs from "./storage/entity-canonical-id-references.js";
@@ -115,8 +116,6 @@ import {
   type ConsolidationOperator,
 } from "./consolidation-operator.js";
 import {
-  matchEntitySchemaSection,
-  normalizeEntityStructuredSection,
   sortStructuredSectionsBySchema,
 } from "./entity-schema.js";
 import {
@@ -177,7 +176,6 @@ import type {
   ExtractionFailureClass,
   CompressionGuidelineOptimizerState,
   PluginConfig,
-  ScoredEntity,
   TopicScore,
   FileHygieneConfig,
   ProvenanceSource,
@@ -1757,6 +1755,7 @@ export type SealedWriteExtras = Omit<
 export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private knowledgeIndexCache: { result: string; builtAt: number } | null = null;
   private readonly deletionRevisionStore: DeletionRevisionStore;
+  private readonly casRevisions: CasRevisionStore;
   private artifactIndexCache: { memories: MemoryFile[]; loadedAtMs: number; writeVersion: number } | null = null;
   private projectionLedgerLagManager = new ProjectionLedgerLagManager();
   private static readonly loadedMemorySnapshots = new WeakMap<MemoryFile, string>();
@@ -2230,6 +2229,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       deletionRevisionLockPath: path.join(baseDir, ".offline-sync", "deletion-revisions.v1.json.lock"),
       assertManagedStoragePath: (filePath, method) => this.assertManagedStoragePath(filePath, method),
     });
+    this.casRevisions = new CasRevisionStore(baseDir);
     this.hotMemoriesCacheEnabled =
       hotMemoriesCacheEnabledOverride ??
       StorageManager.hotMemoriesCacheDefaultByDir.get(baseDir) ??
@@ -2713,6 +2713,15 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     memory: Pick<MemoryFile, "content" | "frontmatter">,
   ): Promise<boolean> {
     return this.deletionRevisionStore.hasCommittedInvalidation(memory);
+  }
+
+  /** Standing CAS revision token — receipt identity, never public `updated` (#2807). */
+  async readCasRevision(filePath: string): Promise<string | undefined> {
+    return await this.casRevisions.readRevision(filePath);
+  }
+
+  protected override async commitDurableMemoryRevision(pathname: string): Promise<string> {
+    return await this.casRevisions.commitRevision(pathname);
   }
   private async recordCommittedInvalidation(memory: MemoryFile): Promise<void> {
     return this.deletionRevisionStore.recordCommittedInvalidation(memory);
@@ -4768,41 +4777,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return memories;
   }
 
-  private async readWindowUpdatedMs(filePath: string): Promise<number | null> {
-    try {
-      const raw = await readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
-      const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-      if (!match) return null;
-      const frontmatterBlock = match[1];
-      const rawUpdated =
-        frontmatterBlock.match(/^[ \t]*updated:[ \t]*"?([^"\r\n]*)"?/m)?.[1] ||
-        frontmatterBlock.match(/^[ \t]*created:[ \t]*"?([^"\r\n]*)"?/m)?.[1] ||
-        null;
-      const updatedMs = rawUpdated ? Date.parse(rawUpdated.trim()) : Number.NaN;
-      return Number.isFinite(updatedMs) ? updatedMs : null;
-    } catch {
-      return null;
-    }
-  }
-
-  private async filterWindowPathsByUpdatedAfter(filePaths: string[], updatedAfterMs: number): Promise<string[]> {
-    const results = await Promise.all(
-      filePaths.map(async (filePath) => {
-        const updatedMs = await this.readWindowUpdatedMs(filePath);
-        if (updatedMs !== null) {
-          return updatedMs >= updatedAfterMs ? filePath : null;
-        }
-        try {
-          const fileStat = await stat(filePath);
-          return fileStat.mtimeMs >= updatedAfterMs ? filePath : null;
-        } catch {
-          return filePath;
-        }
-      })
-    );
-    return results.filter((filePath): filePath is string => filePath !== null);
-  }
-
   private orderWindowPaths(filePaths: string[]): string[] {
     const correctionPaths: string[] = [];
     const factPaths: string[] = [];
@@ -5288,9 +5262,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     });
   }
 
-  /** Commit the new body and return the revision it stamped — the CAS commit
-   * receipt (#2813 P1): a strictly-monotonic per-target stamp
-   * (nextCasRevisionIso), unique per commit, so the reread comparison attributes the commit exactly. */
+  /** Commit the new body and return the CAS commit receipt — the sidecar
+   * revision token, never `frontmatter.updated` (#2813 P1, #2807). */
   private async updateMemoryFromCurrent(
     memory: MemoryFile,
     newContent: string,
@@ -5301,7 +5274,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
       {
         ...memory.frontmatter,
-        updated: nextCasRevisionIso(memory.frontmatter.updated),
+        updated: new Date().toISOString(),
         supersedes: options?.supersedes ?? memory.frontmatter.supersedes,
         lineage: mergedLineage.length > 0 ? mergedLineage : undefined,
         ...(memory.frontmatter.sourceConnector === undefined && options?.sourceConnector
@@ -5315,11 +5288,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       log.warn(`updated memory content sanitized for ${memory.frontmatter.id}; violations=${sanitized.violations.join(", ")}`);
     }
     const fileContent = `${serializeFrontmatter(this.withOkfType(updated))}\n\n${sanitized.text}\n`;
-    await this.writeTombstoneBlockedUpdate(memory, fileContent, updated, sanitized.text, async () => {
+    const receipt = await this.writeTombstoneBlockedUpdate(memory, fileContent, updated, sanitized.text, async () => {
       this.invalidateAllMemoriesCache();
       if (this.isColdOrArchiveTierPath(memory.path)) this.invalidateColdMemoriesCache();
     });
-    return await withCasCommitReceipt(updated.updated, async () => {
+    if (receipt === undefined) throw new Error(`CAS revision receipt unavailable for ${memory.frontmatter.id}`);
+    return await withCasCommitReceipt(receipt, async () => {
       if (typeof memory.frontmatter.entityRef === "string") {
         await this.entityRefRepair.repair(memory.path, updated, memory.frontmatter.entityRef, refIdsAtWrite, sanitized.text, { onFailRestore: memory });
       }
@@ -5337,7 +5311,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         ],
       });
       log.debug(`updated memory ${memory.frontmatter.id}`);
-      return updated.updated;
+      return receipt;
     });
   }
 
@@ -5353,8 +5327,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   /** CAS content update: false when the record moved past `expected`; on
-   * success the commit receipt — the unique per-commit revision this write
-   * stamped (#2813 P1); the only identity that can attribute a standing body later. */
+   * success the commit receipt — the only identity that can attribute a standing body later (#2813 P1, #2807). */
   async updateMemoryIfUnchanged(
     expected: MemoryFile,
     newContent: string,
@@ -5392,13 +5365,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const beforeStatus = memory.frontmatter.status ?? "active";
     // Canonicalize the EFFECTIVE merged entityRef (issue #2213) — an
     // unrelated patch must not rewrite an inherited legacy ref back out.
+    // #2807: `patch.updated` is business time, persisted VERBATIM.
     const resolveIds = this.currentHistoricalIds();
-    // #2813 P1: the persisted revision is clamped against the CURRENT on-disk
-    // record — never the caller's snapshot or wall clock — so a frontmatter
-    // write can never lower or reuse a standing revision (CAS receipts).
-    const standingUpdated = (await this.readMemoryByPath(memory.path))?.frontmatter.updated ?? memory.frontmatter.updated;
     const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
-      { ...memory.frontmatter, ...patch, updated: frontmatterWriteRevision(standingUpdated, patch) },
+      { ...memory.frontmatter, ...patch },
       resolveIds
     );
     const refIds = typeof updated.entityRef === "string" ? resolveIds : null;

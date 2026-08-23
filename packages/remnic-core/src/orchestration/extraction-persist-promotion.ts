@@ -389,7 +389,9 @@ export async function promoteAndReconcileMergedTarget(args: {
       !current ||
       inferMemoryStatus(current.frontmatter, current.path) !== "active" ||
       current.content !== payload.content ||
-      (current.frontmatter.updated ?? undefined) !== (payload.committedRevision ?? undefined)
+      // #2807: the dedicated CAS revision token — never public `updated`.
+      (await args.sourceStorage.readCasRevision(current.path).catch(() => undefined)) !==
+        (payload.committedRevision ?? undefined)
     ) {
       log.warn(
         `persistExtraction: merged-target promotion abandoned for ${args.sourceMemoryId} — the committed record advanced past the cached payload, so the newer writer's copy stands`,

@@ -81,7 +81,7 @@ import type {
 } from "../types.js";
 import { normalizeConnectorScope } from "../dedup/connector-scope.js";
 import type { StorageManager } from "../index.js";
-import { casCommittedRevisionOf, nextCasRevisionIso } from "../storage/deletion-revision-store.js";
+import { casCommittedRevisionOf } from "../storage/deletion-revision-store.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
 
 export type SemanticMergeCreateReason =
@@ -789,9 +789,9 @@ export async function applySemanticMergeAtPersist(
     const patched = await options.storage.writeMemoryFrontmatterIfUnchanged(
       merged,
       {
-        // #2813 (P1, round 3): mergePatch.updated is a PRE-CAS clock — stamping it would regress
-        // the revision below the issued receipt (retired-receipt reuse); stay at/after the receipt.
-        updated: nextCasRevisionIso(casRevision, options.now ? options.now() : new Date()),
+        // #2807: business/event time, exactly what an ordinary write would
+        // stamp — receipt identity is the sidecar token storage mints.
+        updated: mergePatch.updated,
         derived_via: mergePatch.derived_via,
         reinforcement_count: mergePatch.reinforcement_count,
         sources: mergePatch.sources,
@@ -1164,7 +1164,8 @@ export async function runMergedTargetPostEffects(
       targetId: merge.targetId,
       memoryRelPath,
       mergedContent: merge.mergedContent,
-      revisionChecked: committed.frontmatter.updated,
+      // #2807: the dedicated CAS revision token, not public `updated`.
+      revisionChecked: await storage.readCasRevision(committed.path),
       rewriteTypes,
       build: () =>
         deps.buildGraphEdge(

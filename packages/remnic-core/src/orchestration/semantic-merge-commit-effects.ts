@@ -140,21 +140,21 @@ export async function readTargetSnapshot(
  * actually true of storage afterwards:
  *  - "reverted" — the target no longer holds this merge's unprovenanced text
  *    (ours was restored away, or another writer already replaced the body
- *    outright), so the caller may honestly create the fact;
  *  - "superseded" — the standing merged body is ANOTHER writer's commit
- *    (#2813 P1): `committedRevision` names the revision OUR CAS landed, the
- *    reread holds a different one, and a concurrent writer's deterministic
- *    merge is byte-for-byte our merged text — so only the revision can
- *    attribute the standing record. Never revert theirs; the caller discards
- *    its own staged duplicate and reports the degraded merge;
+ *    (#2813 P1): `committedRevision` names the receipt token OUR CAS minted,
+ *    the reread holds a different standing token, and a concurrent writer's
+ *    deterministic merge is byte-for-byte our merged text — so only the
+ *    token can attribute the standing record. Never revert theirs; the
+ *    caller discards its own staged duplicate and reports the degraded merge;
  *  - "stands" — unverifiable (unreadable target), or the restore lost its
  *    race, so assume the merged text stands and refuse to create a duplicate.
  *
  * `committedRevision` is the CAS commit receipt (markCasCommittedRevision,
- * or the successful CAS's return value): the strictly-monotonic per-target
- * `frontmatter.updated` revision the write stamped (nextCasRevisionIso) —
- * unique per commit even within one millisecond. Callers without identity
- * omit it and keep the body-equality classification above.
+ * or the successful CAS's return value): the dedicated per-target revision
+ * token from the durable sidecar (#2807) — unique per commit even within one
+ * millisecond. Public `frontmatter.updated` never identifies a commit.
+ * Callers without identity omit it and keep the body-equality
+ * classification above.
  */
 export type RevertMergedContentResult = "reverted" | "superseded" | "stands";
 
@@ -169,12 +169,15 @@ export async function revertMergedContent(
     if (!current) return "stands";
     if (current.content !== mergedContent) return "reverted";
     // #2813 (P1): the merged body standing is provably OURS only while the
-    // record still carries the revision our CAS stamped. A different
-    // revision means a concurrent writer committed the same deterministic
+    // target still carries the revision token our CAS minted. A different
+    // token means a concurrent writer committed the same deterministic
     // body after our lock was released — reverting would delete their valid
     // merge while their provenance patch may already have landed.
-    if (committedRevision !== undefined && current.frontmatter.updated !== committedRevision) {
-      return "superseded";
+    if (committedRevision !== undefined) {
+      const standingRevision = await storage.readCasRevision(target.path);
+      if (standingRevision !== committedRevision) {
+        return "superseded";
+      }
     }
     return (await storage.updateMemoryIfUnchanged(current, target.content, {
       actor: "semantic-merge-rollback",
@@ -246,12 +249,13 @@ export async function rewriteMergedTargetGraphEdges(
   storage: {
     dir: string;
     getMemoryByIdIncludingArchived: (id: string) => Promise<MemoryFile | null>;
+    readCasRevision: (filePath: string) => Promise<string | undefined>;
   },
   input: {
     targetId: string;
     memoryRelPath: string;
     mergedContent: string;
-    /** The frontmatter `updated` value the committed-body check validated. */
+    /** The CAS revision token the committed-body check observed. */
     revisionChecked: string | undefined;
     rewriteTypes: readonly GraphType[];
     build: () => Promise<GraphEdge[] | void>;
@@ -268,10 +272,11 @@ export async function rewriteMergedTargetGraphEdges(
   try {
     appended = (await input.build()) ?? undefined;
     const committedNow = await storage.getMemoryByIdIncludingArchived(input.targetId);
+    const committedRevision = committedNow === null ? undefined : await storage.readCasRevision(committedNow.path);
     if (
       !committedNow ||
       committedNow.content !== input.mergedContent ||
-      committedNow.frontmatter.updated !== input.revisionChecked
+      committedRevision !== input.revisionChecked
     ) {
       await rollbackNodeEdgeRewrite(storage.dir, input.memoryRelPath, input.rewriteTypes, removedEdges, input.targetId, appended);
       return false;

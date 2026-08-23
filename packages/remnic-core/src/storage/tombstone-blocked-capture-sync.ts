@@ -11,7 +11,7 @@ import { pathMayCarryEntityRefs, requestEntityCanonicalIdReconcile } from "./ent
 import { withRawEntityPageMutation } from "./entity-canonical-id-lock.js";
 import { readMaybeEncryptedFileFromChunks, writeMaybeEncryptedFileFromChunks } from "../secure-store/secure-fs.js";
 import * as archiveMutation from "../archive-mutation-version.js";
-import { invalidationCommitFingerprint } from "./deletion-revision-store.js";
+import { invalidationCommitFingerprint, isSemanticFrontmatterChange } from "./deletion-revision-store.js";
 import {
   buildExplicitCaptureDedupKey,
   buildCapturePathLockIdentity,
@@ -212,6 +212,14 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   protected abstract deleteManagedStorageFile(filePath: string, deletionMtimeMs?: number | null): Promise<boolean>;
   protected abstract writeManagedStorageFile(filePath: string, write: () => Promise<void>): Promise<void>;
 
+  /** #2813 (P1, #2807 CI repair): mint the target's next durable CAS
+   * revision token once a semantic write has landed. Receipt identity lives
+   * in the per-target sidecar, never in public `frontmatter.updated`. The
+   * default host keeps no receipt identity; StorageManager records it. */
+  protected async commitDurableMemoryRevision(_pathname: string): Promise<string | undefined> {
+    return undefined;
+  }
+
   private async writeStorageSecureFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
     const options = this.tombstoneBlockedCaptureIndexOptions();
     await writeMaybeEncryptedFileFromChunks(
@@ -400,7 +408,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     frontmatter: MemoryFrontmatter,
     content: string,
     beforeIndexUpdate?: () => Promise<void>
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     await this.writeTombstoneBlockedMutation(
       tombstoneBlocked(before.frontmatter) || tombstoneBlocked(frontmatter),
       before.path,
@@ -420,6 +428,9 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       beforeIndexUpdate,
       true
     );
+    // The commit receipt (#2813 P1): minted after the durable write, inside
+    // the caller's per-path lock, so [write, mint] is atomic per target.
+    return await this.commitDurableMemoryRevision(before.path);
   }
 
   protected async writeTombstoneBlockedFrontmatter(
@@ -427,7 +438,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     fileContent: string,
     frontmatter: MemoryFrontmatter,
     beforeIndexUpdate?: () => Promise<void>
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     await this.writeTombstoneBlockedMutation(
       tombstoneBlocked(before.frontmatter) || tombstoneBlocked(frontmatter),
       before.path,
@@ -442,6 +453,12 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       beforeIndexUpdate,
       true
     );
+    // Access-only rewrites keep the standing revision token; every semantic
+    // change mints a new one, retiring any receipt a CAS issued earlier.
+    if (isSemanticFrontmatterChange(before.frontmatter, frontmatter)) {
+      return await this.commitDurableMemoryRevision(before.path);
+    }
+    return undefined;
   }
 
   private isTombstoneBlockedMemory(memory: MemoryFile | null): memory is MemoryFile {

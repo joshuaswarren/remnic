@@ -84,14 +84,13 @@ export function casCommittedRevisionOf(err: unknown): string | undefined {
 }
 
 /**
- * #2813 (P1, round 3): the CAS receipt identity — the revision the next
- * content write stamps into `frontmatter.updated`. NOT a bare wall-clock
- * read: the stamp is strictly greater than the standing record's previous
- * revision (max(clock, prev + 1ms)), and because it is persisted IN the
- * record each serialized CAS re-reads its predecessor's stamp and steps past
- * it, two commits to the same target can never share a receipt — not within
- * one millisecond, not across a backward clock step. It is a per-target
- * monotonic sequence wearing ISO-8601 clothes.
+ * #2813 (P1, round 3): the CAS receipt mint — the token the next durable
+ * content write records in the per-target sidecar (CasRevisionStore). NOT a
+ * bare wall-clock read: the stamp is strictly greater than the target's
+ * previous token (max(clock, prev + 1ms)), so two commits to the same target
+ * can never share a receipt — not within one millisecond, not across a
+ * backward clock step. It is a per-target monotonic sequence wearing
+ * ISO-8601 clothes; public `frontmatter.updated` never carries it (#2807).
  */
 export function nextCasRevisionIso(previous: string | undefined, now = new Date()): string {
   const previousMs = previous !== undefined ? new Date(previous).getTime() : Number.NaN;
@@ -102,52 +101,32 @@ export function nextCasRevisionIso(previous: string | undefined, now = new Date(
 }
 
 /**
- * #2813 P1 (round 5, #2807): the revision EVERY semantic frontmatter write
- * persists. `writeMemoryFrontmatter` merges caller patches via
- * `{...frontmatter, ...patch}`, and `patch.updated` is ADVISORY event
- * time — never revision identity. A semantic patch that omits it
- * (correction retirement, lifecycle status flips) still mutates the
- * record, so it still advances the revision: a timestamp-less write that
- * preserved the standing revision left a retired record carrying a live
- * CAS receipt, and the receipt's owner "recognised" the foreign record
- * during rollback and restored its body over the retirement metadata.
- * Access telemetry (`accessCount`/`lastAccessed` — exactly the fields the
- * CAS fingerprint strips) is NOT semantic: it preserves the standing
- * revision so an access bump cannot invalidate a pending conditional
- * write. The clamp keeps the on-disk sequence monotonic:
- *   - no proposed revision, access-only (or empty) patch → the standing
- *     revision stands (a non-semantic write moves nothing);
- *   - no proposed revision, any semantic field → `nextCasRevisionIso` over
- *     the standing revision: every semantic mutation is a new revision;
- *   - a proposal strictly past the standing revision → honored exactly;
- *   - anything else (stale, equal, unparseable) → `nextCasRevisionIso`
- *     over the standing revision: strictly past it, never lower, never
- *     a reuse of a receipt any CAS already issued.
- * `standing` must be the record's CURRENT on-disk revision, never the
- * caller's (possibly pre-CAS) snapshot.
+ * #2813 P1 (#2807 CI repair): whether a durable frontmatter rewrite changed
+ * anything SEMANTIC. Access telemetry (`accessCount`/`lastAccessed` —
+ * exactly the fields the CAS fingerprint strips) is not semantic: an access
+ * bump must not advance the target's CAS revision token, or it would
+ * invalidate every pending conditional write. Every other change — status
+ * flips, caller-supplied `updated`, provenance — is a semantic mutation and
+ * mints a new token at the write chokepoint, so a receipt issued before it
+ * can never "recognise" the record afterwards (#2807 round 5).
  */
 const ACCESS_ONLY_FRONTMATTER_FIELDS: Record<string, true> = {
   accessCount: true,
   lastAccessed: true,
 };
 
-export function frontmatterWriteRevision(
-  standing: string | undefined,
-  patch: Partial<MemoryFrontmatter>,
-  now = new Date(),
-): string {
-  const { updated: proposed } = patch;
-  if (proposed === undefined) {
-    const keys = Object.keys(patch);
-    const nonSemantic = keys.every((key) => ACCESS_ONLY_FRONTMATTER_FIELDS[key] === true);
-    return nonSemantic ? (standing ?? nextCasRevisionIso(standing, now)) : nextCasRevisionIso(standing, now);
+export function isSemanticFrontmatterChange(
+  before: MemoryFrontmatter,
+  after: MemoryFrontmatter,
+): boolean {
+  const beforeRecord = before as unknown as Record<string, unknown>;
+  const afterRecord = after as unknown as Record<string, unknown>;
+  for (const key of new Set([...Object.keys(beforeRecord), ...Object.keys(afterRecord)])) {
+    if (ACCESS_ONLY_FRONTMATTER_FIELDS[key] !== true && beforeRecord[key] !== afterRecord[key]) {
+      return true;
+    }
   }
-  const standingMs = standing !== undefined ? new Date(standing).getTime() : Number.NaN;
-  const proposedMs = new Date(proposed).getTime();
-  if (Number.isFinite(proposedMs) && (!Number.isFinite(standingMs) || proposedMs > standingMs)) {
-    return proposed;
-  }
-  return nextCasRevisionIso(standing, now);
+  return false;
 }
 
 /**
@@ -182,7 +161,7 @@ function isValidMemoryId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && !value.includes("\0");
 }
 
-function isValidDeletionRevisionPath(value: unknown): value is string {
+export function isValidManagedStoragePath(value: unknown): value is string {
   return (
     typeof value === "string" &&
     value.length > 0 &&
@@ -269,7 +248,7 @@ export class DeletionRevisionStore {
       const entry = rawEntry as Record<string, unknown>;
       if (
         Object.keys(entry).sort().join(",") !== "mtimeMs,path" ||
-        !isValidDeletionRevisionPath(entry.path) ||
+        !isValidManagedStoragePath(entry.path) ||
         typeof entry.mtimeMs !== "number" ||
         !Number.isFinite(entry.mtimeMs) ||
         entry.mtimeMs < 0 ||
@@ -530,7 +509,7 @@ export class DeletionRevisionStore {
     ) {
       throw new Error("Deletion revision timestamp is invalid.");
     }
-    if (!isValidDeletionRevisionPath(relativePath)) {
+    if (!isValidManagedStoragePath(relativePath)) {
       throw new Error("Deletion revision path is invalid.");
     }
     await this.withDeletionRevisionLock(async (lock) => {
@@ -554,7 +533,7 @@ export class DeletionRevisionStore {
 
   async writeManagedStorageFile(filePath: string, write: () => Promise<void>): Promise<void> {
     const { relativePath } = await this.resolveManagedStoragePath(filePath, "storage.writeManagedStorageFile");
-    if (!isValidDeletionRevisionPath(relativePath)) {
+    if (!isValidManagedStoragePath(relativePath)) {
       throw new Error("Deletion revision path is invalid.");
     }
     await this.withDeletionRevisionLock(async (lock) => {
@@ -594,7 +573,7 @@ export class DeletionRevisionStore {
         if (isErrnoCode(error, "ENOENT")) return false;
         throw error;
       }
-      if (!isValidDeletionRevisionPath(relativePath)) {
+      if (!isValidManagedStoragePath(relativePath)) {
         throw new Error("Deletion revision path is invalid.");
       }
       const revision = deletionMtimeMs === null ? undefined : (deletionMtimeMs ?? Date.now());
