@@ -17,12 +17,13 @@ class Process:
         self.returncode = returncode
         self.terminate_calls = 0
         self.received_signals: list[int] = []
+        self.wait_timeouts: list[float | None] = []
 
     def poll(self) -> int | None:
         return self.returncode
 
     def wait(self, timeout: float | None = None) -> int:
-        del timeout
+        self.wait_timeouts.append(timeout)
         self.returncode = 0
         return 0
 
@@ -35,7 +36,6 @@ class Process:
 
     def send_signal(self, signum: int) -> None:
         self.received_signals.append(signum)
-        self.returncode = 0
 
 
 def test_supervisor_starts_the_daemon_after_the_loopback_bridge_and_stops_the_bridge():
@@ -198,6 +198,8 @@ def test_supervisor_forwards_shutdown_signal_to_both_children(signum: int):
 
     assert daemon.received_signals == [signum]
     assert bridge.received_signals == [signum]
+    assert daemon.terminate_calls == 0
+    assert bridge.terminate_calls == 0
 
 
 def test_supervisor_does_not_start_the_daemon_if_shutdown_arrives_after_readiness():
@@ -211,7 +213,7 @@ def test_supervisor_does_not_start_the_daemon_if_shutdown_arrives_after_readines
         handlers[received_signum] = handler
         return signal.SIG_DFL
 
-    def ready_then_shutdown(*_args: object) -> bool:
+    def ready_then_shutdown(*_args: object, **_kwargs: object) -> bool:
         handler = handlers[signal.SIGTERM]
         assert callable(handler)
         handler(signal.SIGTERM, None)
@@ -233,3 +235,49 @@ def test_supervisor_does_not_start_the_daemon_if_shutdown_arrives_after_readines
 
     assert popen.call_count == 1
     assert bridge.received_signals == [signal.SIGTERM]
+
+
+def test_supervisor_interrupts_readiness_when_shutdown_arrives():
+    """A shutdown during bridge startup does not wait out the full readiness timeout."""
+    from remnic_hermes.hermes_llm_supervisor import run_supervised
+
+    bridge = Process()
+    handlers: dict[int, object] = {}
+
+    def register(received_signum: int, handler: object) -> object:
+        handlers[received_signum] = handler
+        return signal.SIG_DFL
+
+    def stop_aware_readiness(
+        _port: int,
+        _ready_token: str,
+        _seconds: float = 10,
+        *,
+        is_stopping: object,
+    ) -> bool:
+        handler = handlers[signal.SIGTERM]
+        assert callable(handler)
+        handler(signal.SIGTERM, None)
+        assert callable(is_stopping)
+        return not is_stopping()
+
+    with patch(
+        "remnic_hermes.hermes_llm_supervisor.secrets.token_urlsafe",
+        side_effect=["ready-token", "request-token"],
+    ):
+        with patch("remnic_hermes.hermes_llm_supervisor.signal.signal", side_effect=register):
+            with patch(
+                "remnic_hermes.hermes_llm_supervisor._wait_for_bridge",
+                side_effect=stop_aware_readiness,
+            ):
+                with patch("remnic_hermes.hermes_llm_supervisor.subprocess.Popen", return_value=bridge) as popen:
+                    assert run_supervised(
+                        python="/opt/hermes-python",
+                        policy="/tmp/policy.json",
+                        remnic_bin="/opt/remnic-server",
+                        port=4329,
+                    ) == 0
+
+    assert popen.call_count == 1
+    assert bridge.received_signals == [signal.SIGTERM]
+    assert bridge.terminate_calls == 0

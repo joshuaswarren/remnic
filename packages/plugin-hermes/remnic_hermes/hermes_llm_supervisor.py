@@ -74,10 +74,18 @@ def _daemon_environment(parent: Mapping[str, str], request_token: str) -> dict[s
     return environment
 
 
-def _wait_for_bridge(port: int, ready_token: str, seconds: float = 10) -> bool:
+def _wait_for_bridge(
+    port: int,
+    ready_token: str,
+    seconds: float = 10,
+    *,
+    is_stopping: Callable[[], bool],
+) -> bool:
     """Require a nonce-authenticated readiness response from this bridge instance."""
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
+        if is_stopping():
+            return False
         request = Request(
             f"http://127.0.0.1:{port}/healthz",
             headers={"X-Remnic-Bridge-Ready": ready_token},
@@ -88,6 +96,8 @@ def _wait_for_bridge(port: int, ready_token: str, seconds: float = 10) -> bool:
                     return True
         except OSError:
             pass
+        if is_stopping():
+            return False
         time.sleep(0.1)
     return False
 
@@ -108,6 +118,25 @@ def _forward_signal(process: subprocess.Popen[str] | None, signum: int) -> None:
     if process is None or process.poll() is not None:
         return
     process.send_signal(signum)
+
+
+def _wait_for_graceful_exit(
+    processes: tuple[subprocess.Popen[str] | None, ...],
+    *,
+    seconds: float = 8,
+) -> None:
+    """Allow concurrently signaled children one shared grace window before fallback stop."""
+    deadline = time.monotonic() + seconds
+    for process in processes:
+        if process is None or process.poll() is not None:
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        try:
+            process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def _wait_for_children(
@@ -157,7 +186,7 @@ def run_supervised(*, python: str, policy: str, remnic_bin: str, port: int) -> i
     old_int = signal.signal(signal.SIGINT, request_stop)
     try:
         bridge = subprocess.Popen(bridge_cmd, text=True, env=bridge_env)
-        if not _wait_for_bridge(port, ready_token):
+        if not _wait_for_bridge(port, ready_token, is_stopping=lambda: stopping):
             return 0 if stopping else 70
         if stopping:
             return 0
@@ -166,6 +195,8 @@ def run_supervised(*, python: str, policy: str, remnic_bin: str, port: int) -> i
             return 0
         return _wait_for_children(bridge, daemon, is_stopping=lambda: stopping)
     finally:
+        if stopping:
+            _wait_for_graceful_exit((daemon, bridge))
         _stop(daemon)
         _stop(bridge)
         signal.signal(signal.SIGTERM, old_term)
