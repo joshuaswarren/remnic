@@ -145,6 +145,13 @@ export const recallRequestSchema = z.object({
    * recall traversal (issue #681). Defaults to false.
    */
   includeLowConfidence: z.boolean().optional(),
+  /**
+   * #1952 — per-call opt-in to state-aware recall views for this recall.
+   * ORs with the `recallStateViews` config flag; a change-intent query
+   * (e.g. "when did", "used to", "switched") is still required for any
+   * effect, so this can never perturb ordinary recalls.
+   */
+  stateView: z.boolean().optional(),
 });
 
 export const recallExplainRequestSchema = z.object({
