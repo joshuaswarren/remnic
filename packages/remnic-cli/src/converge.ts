@@ -899,8 +899,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
       else actualTransfers.failed += 1;
     }
   };
-  // Bounded batches overlap per-file IO waits (independent, sha-verified
-  // transfers); counters are commutative. Mirrors the manifest batching.
+  // Bounded batches overlap per-file IO waits; counters are commutative.
   const TRANSFER_BATCH_SIZE = Number(process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY ?? 8);
   const actionable = plan.entries.filter((entry) => entry.action !== "identical");
   for (let i = 0; i < actionable.length; i += TRANSFER_BATCH_SIZE) {
