@@ -72,7 +72,9 @@ function zonedDayStartIso(date: string, timezone: string): string {
   // several instants across the day to collect every offset in play, keep an
   // offset only if constructing local midnight with it lands on an exact
   // local midnight, then take the EARLIEST such instant — the FIRST 00:00
-  // across a DST fall-back that repeats local midnight.
+  // across a rollback that repeats local midnight (America/Cancun dropped
+  // LMT −05:47:04 for −06:00 exactly at local midnight 1922-01-01, so 00:00
+  // occurred twice; the day must start at the first one).
   // Probe the previous UTC day too: for zones east of UTC the requested date's
   // UTC instants all fall after local midnight, so the pre-transition offset
   // valid at the real local 00:00 is only observable on the prior UTC day.
@@ -96,25 +98,36 @@ function zonedDayStartIso(date: string, timezone: string): string {
     return `${year}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}`;
   };
   const localDate = (ms: number): string => localStamp(ms).slice(0, 10);
+  // Derive each probe's offset at FULL precision (seconds included) from the
+  // rendered wall clock, never from a longOffset string: those strings
+  // truncate to whole minutes while historical LMT offsets carry seconds
+  // (America/Cancun was −05:47:04; Asia/Manila −15:56:08). A candidate built
+  // from a truncated offset lands off the true midnight instant, the
+  // exact-stamp check below rejects it, and a midnight repeated by a
+  // rollback silently resolves to the later occurrence under the new
+  // whole-minute offset — misattributing the gap between the two.
+  const offsetMs = (ms: number): number | null => {
+    const wallAsUtc = Date.parse(`${localStamp(ms)}Z`);
+    return Number.isFinite(wallAsUtc) ? wallAsUtc - ms : null;
+  };
+  const midnightUtc = Date.parse(`${date}T00:00:00Z`);
   const prevDate = shiftIsoDate(date, -1);
-  const probeOffsets = new Set(
-    [
-      `${prevDate}T12:00:00Z`,
-      `${prevDate}T23:00:00Z`,
-      `${date}T00:00:00Z`,
-      `${date}T12:00:00Z`,
-      `${date}T23:00:00Z`,
-    ].map((iso) => timezoneOffsetIso(new Date(iso), timezone)),
-  );
   let best: number | null = null;
-  for (const offset of probeOffsets) {
-    const candidate = Date.parse(`${date}T00:00:00${offset}`);
+  for (const iso of [
+    `${prevDate}T12:00:00Z`,
+    `${prevDate}T23:00:00Z`,
+    `${date}T00:00:00Z`,
+    `${date}T12:00:00Z`,
+    `${date}T23:00:00Z`,
+  ]) {
+    const offset = offsetMs(Date.parse(iso));
+    if (offset === null) continue;
+    const candidate = midnightUtc - offset;
     if (!Number.isFinite(candidate)) continue;
     // Accept only an EXACT local midnight. This rejects a wall-clock midnight
-    // that never occurred (spring-forward at 00:00), and — because offset
-    // strings truncate to whole minutes while historical LMT offsets carry
-    // seconds (Asia/Manila was −15:56:08 until 1844) — a candidate built from
-    // the truncated offset, which lands off the true midnight instant.
+    // that never occurred (spring-forward at 00:00, Egypt 2026) and one whose
+    // instant the transition already carried past (Asia/Manila's LMT midnight
+    // of 1844-12-31 lands on the post-transition clock as 1845-01-01).
     if (localStamp(candidate) !== `${date}T00:00:00`) continue;
     if (best === null || candidate < best) best = candidate;
   }
@@ -131,7 +144,7 @@ function zonedDayStartIso(date: string, timezone: string): string {
     // by up to 59s and hands the skipped date a window of its own. The
     // bracket is safe: `<date>T00:00Z − 24h` is always locally before
     // `date`, and `<date>T00:00Z + 24h` is always locally on/after it.
-    let lo = Date.parse(`${date}T00:00:00Z`) - 24 * 3_600_000;
+    let lo = midnightUtc - 24 * 3_600_000;
     let hi = lo + 48 * 3_600_000;
     while (lo < hi) {
       const mid = lo + Math.floor((hi - lo) / 2);

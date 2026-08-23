@@ -208,28 +208,86 @@ test("activityDayWindow gives an entirely skipped civil date no interval", () =>
   assert.notDeepEqual(w, dec31);
 });
 
+// Read the local wall clock and offset directly through Intl so these
+// historical-LMT tests derive every expectation from the runtime's own tzdata
+// instead of hard-coding one tzdata release's seconds: ICU bundles differ
+// (Asia/Manila's 1844 LMT is −15:56:08 on recent tzdata, −15:56:00 on older
+// ones), and a hard-coded instant fails the bundle that lacks it.
+function localStampAt(ms: number, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(ms));
+  const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? "";
+  return `${get("year").padStart(4, "0")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}`;
+}
+
+function offsetMsAt(ms: number, timezone: string): number {
+  return Date.parse(`${localStampAt(ms, timezone)}Z`) - ms;
+}
+
 test("activityDayWindow resolves second-granularity transitions exactly (Asia/Manila 1844)", () => {
-  // Manila's 1844 date-line change carried seconds: LMT −15:56:08 ran until
-  // 1844-12-31T15:56:08Z, then the wall clock read 1845-01-01T00:00:00 —
-  // civil 1844-12-31 never existed. Offsets with a seconds component must not
-  // truncate to whole minutes: pre-fix, the skipped date owned a 60000 ms
-  // window starting locally on 1844-12-30, and the neighbors' bounds missed
-  // the true transition by up to a minute.
-  const transition = "1844-12-31T15:56:08.000Z";
-  const skip = activityDayWindow("1844-12-31", "Asia/Manila");
-  assert.equal(skip.startUtc, transition); // zero-width: syncs nothing
-  assert.equal(skip.endUtc, transition);
-  const before = activityDayWindow("1844-12-30", "Asia/Manila");
-  assert.equal(before.startUtc, "1844-12-30T15:56:08.000Z"); // local midnight at LMT −15:56:08
-  assert.equal(before.endUtc, transition);
-  const after = activityDayWindow("1845-01-01", "Asia/Manila");
-  assert.equal(after.startUtc, transition);
-  assert.equal(after.endUtc, "1845-01-01T15:56:08.000Z");
+  // Manila's 1844 date-line change carried seconds where tzdata records them
+  // (LMT −15:56:08 on recent ICU bundles): the wall clock jumped from
+  // 1844-12-31T00:00:00 straight to 1845-01-01, so civil 1844-12-31 never
+  // existed and no midnight of it occurred. Offsets with a seconds component
+  // must not truncate to whole minutes: pre-fix, the skipped date owned a
+  // 60000 ms window starting locally on 1844-12-30.
+  const tz = "Asia/Manila";
+  const lmt = offsetMsAt(Date.parse("1844-12-15T12:00:00Z"), tz); // LMT in force mid-December
+  const after = offsetMsAt(Date.parse("1845-06-01T12:00:00Z"), tz); // post-change LMT in force mid-1845
+  const iso = (ms: number): string => new Date(ms).toISOString();
+  const skip = activityDayWindow("1844-12-31", tz);
+  assert.equal(skip.endUtc, skip.startUtc); // zero-width: the day never existed, syncs nothing
+  assert.equal(skip.startUtc, iso(Date.parse("1844-12-31T00:00:00Z") - lmt)); // the transition instant this tzdata carries
+  const before = activityDayWindow("1844-12-30", tz);
+  assert.equal(before.startUtc, iso(Date.parse("1844-12-30T00:00:00Z") - lmt)); // exact local midnight at the seconds-carrying LMT
+  assert.equal(Date.parse(before.endUtc) - Date.parse(before.startUtc), 24 * 3_600_000); // one LMT offset the whole day
+  assert.equal(before.endUtc, skip.startUtc); // contiguous into the skip
+  const next = activityDayWindow("1845-01-01", tz);
+  assert.equal(next.startUtc, skip.startUtc); // no interval shared with the skip
+  assert.equal(next.endUtc, iso(Date.parse("1845-01-02T00:00:00Z") - after));
   // Consistency at the skip instant: the transition is the first instant of
   // 1845-01-01, and the last pre-transition instant still belongs to Dec 30.
-  assert.equal(activityDateInTimezone(new Date(transition), "Asia/Manila"), "1845-01-01");
-  assert.equal(activityDateInTimezone(new Date(Date.parse(transition) - 1), "Asia/Manila"), "1844-12-30");
-  assert.equal(activityDateInTimezone(new Date(Date.parse(before.endUtc) - 1), "Asia/Manila"), "1844-12-30");
+  assert.equal(activityDateInTimezone(new Date(skip.startUtc), tz), "1845-01-01");
+  assert.equal(activityDateInTimezone(new Date(Date.parse(skip.startUtc) - 1), tz), "1844-12-30");
+  assert.equal(activityDateInTimezone(new Date(Date.parse(before.endUtc) - 1), tz), "1844-12-30");
+});
+
+test("activityDayWindow keeps the first midnight across a rollback that repeats it", () => {
+  // America/Cancun dropped LMT −05:47:04 for −06:00 exactly at local midnight
+  // 1922-01-01T00:00:00, rolling the clock back to 1921-12-31T23:47:04: local
+  // midnight occurred twice. The day must start at the FIRST one, not at the
+  // later repeated midnight under the new whole-minute offset — pre-fix, the
+  // minute-truncated LMT candidate failed the exact-stamp check and 12m56s of
+  // the day were misattributed to the prior date.
+  const tz = "America/Cancun";
+  const lmt = offsetMsAt(Date.parse("1921-12-15T12:00:00Z"), tz); // LMT in force mid-December
+  const after = offsetMsAt(Date.parse("1922-06-01T12:00:00Z"), tz); // whole-minute offset in force mid-1922
+  const iso = (ms: number): string => new Date(ms).toISOString();
+  const firstMidnight = Date.parse("1922-01-01T00:00:00Z") - lmt;
+  const repeatedMidnight = Date.parse("1922-01-01T00:00:00Z") - after;
+  const w = activityDayWindow("1922-01-01", tz);
+  // The start is an exact local midnight whichever occurrence this tzdata renders.
+  assert.equal(localStampAt(Date.parse(w.startUtc), tz), "1922-01-01T00:00:00");
+  // When this tzdata carries the seconds-exact LMT midnight (it exists as a
+  // real instant), it is the earlier occurrence and must win.
+  if (localStampAt(firstMidnight, tz) === "1922-01-01T00:00:00") {
+    assert.equal(w.startUtc, iso(firstMidnight));
+    assert.ok(Date.parse(w.startUtc) < repeatedMidnight); // not the later repeated midnight
+  }
+  assert.equal(w.endUtc, iso(Date.parse("1922-01-02T00:00:00Z") - after));
+  // The rolled-back stretch stays inside Jan 1, and Dec 31 keeps its own day,
+  // ending at the first instant whose local stamp reaches Jan 1.
+  const dec31 = activityDayWindow("1921-12-31", tz);
+  assert.equal(dec31.endUtc, w.startUtc);
+  assert.equal(Date.parse(dec31.endUtc) - Date.parse(dec31.startUtc), 24 * 3_600_000);
 });
 
 test("activityDayWindow pads pre-1000 years before the local-date comparison", () => {
