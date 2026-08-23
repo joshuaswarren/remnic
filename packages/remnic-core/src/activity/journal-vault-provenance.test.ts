@@ -35,7 +35,9 @@ test("every structured attribute value is a string", () => {
 });
 
 test("unknown source throws RangeError naming source", () => {
-  for (const source of ["file", "vault ", "Vault", ""]) {
+  // "file" is a documented legacy alias of "memoryDir" (journal-source.ts),
+  // covered in journal-source.test.ts — it must NOT throw here.
+  for (const source of ["vault ", "Vault", ""]) {
     assert.throws(
       () => buildJournalMemoryProvenance({ source, date: "2026-08-01" }),
       RangeError,
