@@ -97,7 +97,6 @@ def test_loopback_bridge_exposes_only_the_policy_model_and_routes_chat_completio
         ]
         assert calls == [
             {
-                "task": "remnic_bridge",
                 "provider": "openai-codex",
                 "model": "gpt-5.6-terra",
                 "messages": [{"role": "user", "content": "extract durable facts"}],

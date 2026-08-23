@@ -114,7 +114,6 @@ def invoke_completion(
         raise PolicyError("max_tokens must be an integer from 1 through 8192")
 
     response = call_llm(
-        task="remnic_bridge",
         provider=policy.provider,
         model=policy.model,
         messages=messages,
