@@ -283,6 +283,7 @@ function resolveEffectiveServerRuntimeConfig(
   const cliServerConfig: Partial<ServerConfig["server"]> = {};
   if (options?.host !== undefined) cliServerConfig.host = options.host;
   if (options?.authToken !== undefined) cliServerConfig.authToken = options.authToken;
+  if (options?.port !== undefined) cliServerConfig.port = options.port;
   // User-facing config (server.port, REMNIC_PORT, --port) stays 1-65535 so
   // runServerHealthcheck's configured-port probe never targets port 0.
   // allowEphemeralPort bypasses the parser AFTER validation instead.
