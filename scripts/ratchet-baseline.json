@@ -55,7 +55,7 @@
       "packages/remnic-core/src/orchestration/extraction-persist.ts": 3031,
       "packages/remnic-core/src/orchestration/recall-internal.ts": 5344,
       "packages/remnic-core/src/orchestration/recall-search-pipeline.ts": 1719,
-      "packages/remnic-core/src/orchestrator.ts": 3979,
+      "packages/remnic-core/src/orchestrator.ts": 3977,
       "packages/remnic-core/src/peers/storage.ts": 1435,
       "packages/remnic-core/src/qmd.ts": 2995,
       "packages/remnic-core/src/relay/mission.ts": 1725,
