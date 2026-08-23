@@ -26,6 +26,7 @@ import {
   type ReconcileSemanticAgreement,
 } from "@remnic/core/reconcile/plan.js";
 import {
+  convergeIdentityCachePath,
   defaultConvergeCursorPath,
   deriveConvergeCursorBase,
   readConvergeCursor,
@@ -41,6 +42,7 @@ import {
 import { createOfflineStorageIo } from "./offline-storage-io.js";
 import { convergeWatch, type ConvergeWatchOutcome } from "./converge-watch.js";
 import { parseConvergeTokenFileFlag, resolveConvergeTokenChannel } from "./converge-token-channel.js";
+import { loadConvergeIdentityCache, saveConvergeIdentityCache } from "./converge-identity-cache.js";
 import { resolveAgentAccessAuthToken } from "@remnic/core/resolve-auth-token.js";
 import {
   DEFAULT_PEER_REQUEST_TIMEOUT_MS,
@@ -162,7 +164,7 @@ async function discoverCursorNamespaces(memoryDir: string, peerUrl: string): Pro
   }
   const namespaces = new Set<string>();
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    if (!entry.isFile() || !entry.name.endsWith(".json") || entry.name.startsWith("identity-")) continue;
     const cursor = await readConvergeCursor(path.join(cursorDir, entry.name));
     if (!cursor) throw new Error(`invalid converge cursor: ${entry.name}`);
     if (path.basename(defaultConvergeCursorPath(memoryDir, peerUrl, cursor.namespace)) !== entry.name) continue;
@@ -279,15 +281,20 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       localMap.set(ns, files);
       const evidence = await readLocalTombstoneEvidence(rootInfo.rootDir);
       let manifestReadFailed = false;
+      const identityCachePath = memoryDir
+        ? convergeIdentityCachePath(memoryDir, options.peerUrl ?? "local", ns)
+        : undefined;
+      const identityCache = await loadConvergeIdentityCache(identityCachePath);
       const manifest = await buildReconcileManifest({
         files,
         parseMemory: parseFrontmatter,
         citationTemplate: config.inlineSourceAttributionFormat,
+        ...(identityCache.size > 0 ? { cachedFiles: [...identityCache.values()] } : {}),
         readFile: async (file) => {
           const readFile = io.readFile;
           if (!readFile) {
             manifestReadFailed = true;
-            throw new Error("offline storage cannot read reconciliation manifest files");
+            throw new Error("offline storage io cannot read manifest files");
           }
           try {
             return await readFile({
@@ -306,9 +313,9 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       }
       localManifests.set(ns, manifest);
       localTombstones.set(ns, tombstonedFileDigests(evidence, manifest));
+      await saveConvergeIdentityCache(identityCachePath, manifest);
     }
   }
-
   const peerUrl = options.peerUrl;
   if (memoryDir && peerUrl) {
     for (const namespace of await discoverCursorNamespaces(memoryDir, peerUrl)) {
@@ -407,7 +414,6 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       peerTombstones.set(ns, mapped);
     }
   }
-
   if (memoryDir && options.peerUrl && (!options.baseFilesByNamespace || !options.semanticAgreementsByNamespace)) {
     for (const ns of namespacesToPlan) {
       const cursorPath = defaultConvergeCursorPath(memoryDir, options.peerUrl, ns);
@@ -433,7 +439,6 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       }
     }
   }
-
   const inputs: ReconcileNamespaceInput[] = [];
   for (const ns of [...namespacesToPlan].sort()) {
     const baseFiles = baseMap.get(ns);
@@ -452,12 +457,10 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       peerTombstonedFileSha256: peerTombstones.get(ns) ?? [],
     });
   }
-
   const conflictPolicy = options.conflictPolicy ?? config?.converge.conflictPolicy ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
   const plan = planReconciliation(inputs, { conflictPolicy, peerPlatform });
   return collapseActiveFactDuplicates(plan, localManifests, peerManifests, semanticAgreementMap);
 }
-
 export async function executeConvergeApply(options: ConvergeApplyOptions = {}): Promise<ConvergeApplyResult> {
   const rawConcurrency = Number(process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY ?? 8);
   if (!Number.isInteger(rawConcurrency) || rawConcurrency < 1) {
@@ -500,7 +503,6 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     else if (entry.action === "conflict") plannedTransfers.conflictsResolved += 1;
     else if (entry.action === "suppress") plannedTransfers.suppressed += 1;
   }
-
   if (options.dryRun) {
     return {
       converged: plan.converged,
@@ -510,7 +512,6 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
       cursorUpdated: false,
     };
   }
-
   const actualTransfers = {
     pulled: 0,
     pushed: 0,
@@ -519,7 +520,6 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     failed: 0,
   };
   const peerMutatedNamespaces = new Set<string>();
-
   let resolvedToken: string | undefined;
   if (options.peerToken) {
     try {
