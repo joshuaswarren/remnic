@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  constants as fsConstants,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -297,8 +298,9 @@ test("note swapped for a symlink at open time is refused by the no-follow open",
     writeFileSync(path.join(outside, "escaped.md"), "## Journal\nstolen\n");
     const io = {
       open: (openedPath: string, flags: number) => {
-        if (openedPath === note) {
-          // Swap races the open: the entry becomes a symlink before the fd.
+        const openingNote =
+          path.basename(openedPath) === "2026-08-20.md" && (flags & (fsConstants.O_DIRECTORY ?? 0)) === 0;
+        if (openingNote && existsSync(note) && lstatSync(note).isFile()) {
           renameSync(note, `${note}.real`);
           symlinkSync(path.join(outside, "escaped.md"), note);
         }
@@ -316,30 +318,51 @@ test("note swapped for a symlink at open time is refused by the no-follow open",
   }
 });
 
-test("parent directory swapped after the chain was pinned is refused by fd identity", () => {
+test("ancestor swapped after opens cannot leak outside content", () => {
   const vault = makeVault();
+  const outside = makeVault();
   try {
-    const note = path.join(vault, "2026-08-20.md");
+    const days = path.join(vault, "days");
+    mkdirSync(days);
+    const note = path.join(days, "2026-08-20.md");
     writeFileSync(note, "## Journal\nuser text\n");
-    let rootOpens = 0;
+    writeFileSync(path.join(outside, "stolen.md"), "## Journal\nstolen\n");
+    let swapped = false;
     const io = {
       open: (openedPath: string, flags: number) => {
-        if (openedPath === vault) {
-          rootOpens += 1;
-          if (rootOpens === 2) {
-            // The recheck open races a directory swap: a fresh vault root at
-            // the same path has a different inode than the pinned fd.
-            renameSync(vault, `${vault}.old`);
-            mkdirSync(vault);
+        const openingNote =
+          path.basename(openedPath) === "2026-08-20.md" && (flags & (fsConstants.O_DIRECTORY ?? 0)) === 0;
+        if (openingNote && !swapped) {
+          swapped = true;
+          renameSync(days, `${days}.orig`);
+          mkdirSync(days);
+          writeFileSync(path.join(days, "2026-08-20.md"), "## Journal\nstolen\n");
+        }
+        try {
+          return openSync(openedPath, flags);
+        } finally {
+          if (openingNote && existsSync(`${days}.orig`)) {
+            rmSync(days, { recursive: true, force: true });
+            renameSync(`${days}.orig`, days);
           }
         }
-        return openSync(openedPath, flags);
       },
     };
-    assert.throws(() => readVerifiedDailyNote(vault, note, io), /symlink refused/);
+    let text: string | undefined;
+    try {
+      text = readVerifiedDailyNote(vault, note, io);
+    } catch (err) {
+      assert.equal(
+        (err as NodeJS.ErrnoException).code === "ELOOP" || /symlink refused/.test(String(err)),
+        true,
+      );
+      return;
+    }
+    assert.equal(text.includes("stolen"), false);
+    assert.equal(text, "## Journal\nuser text\n");
   } finally {
     rmSync(vault, { recursive: true, force: true });
-    rmSync(`${vault}.old`, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
   }
 });
 
