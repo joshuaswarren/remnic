@@ -65,6 +65,14 @@ test("omiDayWindow preserves resolved instants when local midnight is skipped", 
   assert.equal(Date.parse(prior.endIso), Date.parse(priorCore.endUtc));
 });
 
+test("omiDayWindow keeps the never-throw zone contract: unknown zone is a UTC day", () => {
+  // Pre-refactor zonedDayBounds never threw on a bad zone (the offset helper
+  // falls back to +00:00); delegating to core's fail-fast assertValidTimezone
+  // made this path throw RangeError. An unknown zone must resolve to UTC.
+  const bounds = omiDayWindow("2026-06-10", "Not/AZone");
+  assert.deepEqual(bounds, omiDayWindow("2026-06-10", "UTC"));
+});
+
 const CONVERSATION = {
   id: "omi-1",
   created_at: "2026-06-10T14:00:05+00:00",

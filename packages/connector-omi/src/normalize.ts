@@ -12,6 +12,7 @@
 
 import {
   activityDayWindow,
+  assertValidTimezone,
   timezoneOffsetIso as resolveTimezoneOffset,
   type WearableConversation,
   type WearableNativeMemory,
@@ -47,10 +48,19 @@ export function omiDayWindow(
   date: string,
   timezone: string,
 ): { startIso: string; endIso: string } {
-  const { startUtc, endUtc } = activityDayWindow(date, timezone);
+  // Keep this package's documented never-throw zone contract (see
+  // `timezoneOffsetIso`): an unknown zone resolves to a UTC day instead of
+  // surfacing core's fail-fast RangeError.
+  let zone = timezone;
+  try {
+    assertValidTimezone(timezone);
+  } catch {
+    zone = "UTC";
+  }
+  const { startUtc, endUtc } = activityDayWindow(date, zone);
   return {
-    startIso: instantToOffsetIso(new Date(startUtc), timezone),
-    endIso: instantToOffsetIso(new Date(endUtc), timezone),
+    startIso: instantToOffsetIso(new Date(startUtc), zone),
+    endIso: instantToOffsetIso(new Date(endUtc), zone),
   };
 }
 
