@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { type Orchestrator, parseConfig } from "@remnic/core";
 
-import { createSupportPassportServerRuntime } from "./support-passport-runtime.js";
+import { createSupportPassportServerRuntime } from "./index.js";
 
 test("plugin model mode exposes a fail-closed passport gateway bridge", async () => {
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-passport-runtime-"));

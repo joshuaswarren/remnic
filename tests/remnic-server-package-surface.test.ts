@@ -52,10 +52,6 @@ test("@remnic/server build emits and advertises TypeScript declarations", async 
     true
   );
   assert.equal(
-    packResult[0]?.files?.some((file) => file.path === "src/support-passport-runtime.ts"),
-    true
-  );
-  assert.equal(
     packResult[0]?.files?.some((file) => file.path?.endsWith(".test.ts") === true),
     false
   );

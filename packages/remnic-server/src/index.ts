@@ -14,7 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch } from "@remnic/core";
+import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler } from "@remnic/core";
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
 import { envOverrides } from "./server-env.js";
@@ -25,7 +25,6 @@ import {
   runStartupSearchWarmup,
   type StartupReadinessState,
 } from "./startup-readiness.js";
-import { createSupportPassportServerRuntime } from "./support-passport-runtime.js";
 import { parseAdminConsoleConfig, parseOptionalBoolean, parseOptionalString, type AdminConsoleServerFields, type ParsedAdminConsoleConfig } from "./admin-console-config.js";
 export { envOverrides };
 export {
@@ -701,6 +700,30 @@ async function cleanupFailedStartup(
   } catch (err) {
     log.warn(`HTTP startup failure cleanup could not destroy orchestrator: ${err}`);
   }
+}
+
+export interface SupportPassportServerRuntime {
+  service: EngramAccessService;
+  externalRequestHandler: SupportPassportExternalRequestHandler;
+  close(): void;
+}
+
+export function createSupportPassportServerRuntime(
+  orchestrator: Orchestrator,
+  config: PluginConfig,
+  fallbackHandler?: SupportPassportExternalRequestHandler,
+  accessOptions?: { reviewDeckEnabled?: boolean },
+): SupportPassportServerRuntime {
+  const bridge = config.supportPassport.enabled ? new SupportPassportModelBridge() : null;
+  const serviceOptions = {
+    supportPassportGatewayRoute: bridge?.route,
+    reviewDeckEnabled: accessOptions?.reviewDeckEnabled === true,
+  };
+  return {
+    service: new EngramAccessService(orchestrator, serviceOptions),
+    externalRequestHandler: composeSupportPassportExternalRequestHandlers(bridge?.requestHandler, fallbackHandler),
+    close: () => bridge?.close(),
+  };
 }
 
 // ── Server startup ──────────────────────────────────────────────────────────

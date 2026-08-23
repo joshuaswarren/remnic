@@ -65,7 +65,6 @@
       "packages/remnic-core/src/temporal-index.ts": 1599,
       "packages/remnic-core/src/transcript.ts": 1253,
       "packages/remnic-core/src/types.ts": 3891,
-      "packages/remnic-server/src/index.ts": 1207,
       "src/index.ts": 6166,
       "src/openclaw-flush-plan-lifecycle.ts": 1573,
       "src/tools.ts": 3280
