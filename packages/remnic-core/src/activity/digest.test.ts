@@ -196,6 +196,30 @@ test("activityDayWindow gives an entirely skipped civil date no interval", () =>
   assert.notDeepEqual(w, dec31);
 });
 
+test("activityDayWindow resolves second-granularity transitions exactly (Asia/Manila 1844)", () => {
+  // Manila's 1844 date-line change carried seconds: LMT −15:56:08 ran until
+  // 1844-12-31T15:56:08Z, then the wall clock read 1845-01-01T00:00:00 —
+  // civil 1844-12-31 never existed. Offsets with a seconds component must not
+  // truncate to whole minutes: pre-fix, the skipped date owned a 60000 ms
+  // window starting locally on 1844-12-30, and the neighbors' bounds missed
+  // the true transition by up to a minute.
+  const transition = "1844-12-31T15:56:08.000Z";
+  const skip = activityDayWindow("1844-12-31", "Asia/Manila");
+  assert.equal(skip.startUtc, transition); // zero-width: syncs nothing
+  assert.equal(skip.endUtc, transition);
+  const before = activityDayWindow("1844-12-30", "Asia/Manila");
+  assert.equal(before.startUtc, "1844-12-30T15:56:08.000Z"); // local midnight at LMT −15:56:08
+  assert.equal(before.endUtc, transition);
+  const after = activityDayWindow("1845-01-01", "Asia/Manila");
+  assert.equal(after.startUtc, transition);
+  assert.equal(after.endUtc, "1845-01-01T15:56:08.000Z");
+  // Consistency at the skip instant: the transition is the first instant of
+  // 1845-01-01, and the last pre-transition instant still belongs to Dec 30.
+  assert.equal(activityDateInTimezone(new Date(transition), "Asia/Manila"), "1845-01-01");
+  assert.equal(activityDateInTimezone(new Date(Date.parse(transition) - 1), "Asia/Manila"), "1844-12-30");
+  assert.equal(activityDateInTimezone(new Date(Date.parse(before.endUtc) - 1), "Asia/Manila"), "1844-12-30");
+});
+
 test("timeline keeps a second machine's span even with the same app/window", () => {
   const a = snap({ machine: "A", capturedAtUtc: "2026-03-10T14:00:00.000Z", app: "Chrome", windowTitle: "Doc", contentHash: "a1", text: "" });
   const b = snap({ machine: "B", capturedAtUtc: "2026-03-10T14:00:30.000Z", app: "Chrome", windowTitle: "Doc", contentHash: "b1", text: "" });
