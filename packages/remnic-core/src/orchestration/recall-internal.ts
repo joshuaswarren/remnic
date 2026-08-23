@@ -69,7 +69,6 @@ import type { SearchDegradation } from "../search/port.js";
 import { type VerifiedSemanticRuleResult, compareVerifiedSemanticRuleResults, searchVerifiedSemanticRules } from "../semantic-rule-verifier.js";
 import { isDisagreementPrompt } from "../signal.js";
 import { buildTargetedFactRecallSection, shouldRecallTargetedFactEvidence } from "../targeted-fact-recall.js";
-import { shouldFilterSupersededFromRecall } from "../temporal-supersession.js";
 import { queryTemporalTimelineAsync } from "../temporal-index.js";
 import { type TrustStageResultItem, projectTrustForXray } from "../trust-score-stage.js";
 import { isValidAsOf } from "../temporal-validity.js";
@@ -99,10 +98,9 @@ import {
   type RecallInvocationOptions,
 } from "../orchestrator.js";
 import { isGenericRecallExcludedPath } from "./generic-recall-paths.js";
-import { isChangeOrientedQuery } from "../recall-state-view.js";
 import {
-  admitStateViewRecentMemories,
-  stateViewPacketActive as stateViewPacketActiveHelper,
+  filterRecentScanMemories,
+  resolveRecallStateViewFlags,
 } from "../recall-state-view-anchors.js";
 import { applyRecallStateViews } from "../recall-state-view-wire.js";
 import type { RecallSectionBuckets } from "./recall-section-coordinator.js";
@@ -250,12 +248,12 @@ export class RecallInternalCoordinator {
     });
     // #1952 state views: config flag OR per-call override, gated on change intent; computed once for all branches.
     const retrievalQuery = queryPolicy.retrievalQuery || prompt;
-    const stateViewActive =
-      (options.stateView === true || this.deps.config.recallStateViews === true) &&
-      isChangeOrientedQuery(retrievalQuery);
-    // #2859: packet semantics are off under a historical asOf pin
-    // (see stateViewPacketActive).
-    const stateViewPacketActive = stateViewPacketActiveHelper(stateViewActive, asOfMs);
+    const { stateViewActive, stateViewPacketActive } = resolveRecallStateViewFlags(
+      options.stateView,
+      this.deps.config.recallStateViews,
+      retrievalQuery,
+      asOfMs,
+    );
     const retrievalQueryHash = createHash("sha256")
       .update(retrievalQuery)
       .digest("hex");
@@ -4445,47 +4443,14 @@ export class RecallInternalCoordinator {
           [] as MemoryFile[],
         );
         if (memories.length > 0) {
-          // Superseded-status filtering delegates to
-          // shouldFilterSupersededFromRecall so recent-scan and the QMD
-          // safety filter share semantics (kill switch, audit mode, PR #402).
-          // #1952: an active state view admits a superseded memory whose
-          // successor ALSO survives this admission filter (fixpoint below).
-          const supersessionOptions = {
-            enabled: lifecycleCaps.temporalSupersession,
-            includeInRecall: this.deps.config.temporalSupersessionIncludeInRecall,
-          };
-          // PR #713: when `as_of` is active, pass superseded candidates
-          // through here — boostSearchResults's `[valid_at, invalid_at)`
-          // evaluation is the authoritative historical gate. Other
-          // non-active statuses stay excluded.
-          const asOfActive =
-            typeof asOfMs === "number" && Number.isFinite(asOfMs);
-          // #2859: namespace-qualified anchors with the supersedes
-          // back-pointer — mirrors the safety-filter fixpoint.
-          const stateViewAnchors =
-            stateViewActive && !asOfActive
-              ? admitStateViewRecentMemories(memories, {
-                  namespaceOf: (p) => this.deps.namespaceFromPath(p),
-                  isExcluded: (p) => isGenericRecallExcludedPath(p, this.deps.config),
-                  supersessionOptions,
-                })
-              : null;
-          const activeMemories = memories.filter((m) => {
-            if (isGenericRecallExcludedPath(m.path, this.deps.config)) return false;
-            const status = m.frontmatter.status;
-            if (!status || status === "active") return true;
-            if (status === "superseded") {
-              if (asOfActive) return true;
-              if (stateViewAnchors?.has(this.deps.namespaceFromPath(m.path), m.frontmatter)) {
-                return true;
-              }
-              // Include superseded memory only if the canonical gate says
-              // NOT to filter it (kill switch off or audit mode on).
-              return !shouldFilterSupersededFromRecall(m.frontmatter, supersessionOptions);
-            }
-            // Other non-active statuses (archived, retired, etc.) are
-            // excluded from the recent-scan path by default.
-            return false;
+          const activeMemories = filterRecentScanMemories(memories, {
+            stateViewActive, asOfMs,
+            namespaceOf: (p) => this.deps.namespaceFromPath(p),
+            isExcluded: (p) => isGenericRecallExcludedPath(p, this.deps.config),
+            supersessionOptions: {
+              enabled: lifecycleCaps.temporalSupersession,
+              includeInRecall: this.deps.config.temporalSupersessionIncludeInRecall,
+            },
           });
           // Convert to QmdSearchResult with recency baseline, then boost so
           // temporal/tag boosts match the QMD path. Cap AFTER boosting, and

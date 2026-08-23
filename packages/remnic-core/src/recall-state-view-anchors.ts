@@ -1,4 +1,4 @@
-import { stateViewKey } from "./recall-state-view.js";
+import { isChangeOrientedQuery, stateViewKey } from "./recall-state-view.js";
 /**
  * State-view anchor admission (#2859).
  *
@@ -25,6 +25,21 @@ export interface StateViewAnchorFrontmatter {
  */
 export function stateViewPacketActive(stateViewActive: boolean | undefined, asOfMs: number | undefined): boolean {
   return stateViewActive === true && !(typeof asOfMs === "number" && Number.isFinite(asOfMs));
+}
+
+/**
+ * #1952/#2859 — config flag OR per-call override, gated on change intent.
+ * Packet semantics are off under a historical asOf pin (see stateViewPacketActive).
+ */
+export function resolveRecallStateViewFlags(
+  optionFlag: boolean | undefined,
+  configFlag: boolean | undefined,
+  retrievalQuery: string,
+  asOfMs: number | undefined,
+): { stateViewActive: boolean; stateViewPacketActive: boolean } {
+  const stateViewActive =
+    (optionFlag === true || configFlag === true) && isChangeOrientedQuery(retrievalQuery);
+  return { stateViewActive, stateViewPacketActive: stateViewPacketActive(stateViewActive, asOfMs) };
 }
 
 export class StateViewAnchorTracker {
@@ -99,4 +114,50 @@ export function admitStateViewRecentMemories(
     }
   }
   return tracker;
+}
+
+export interface RecentScanMemoryFilterDeps extends StateViewRecentAdmissionDeps {
+  stateViewActive: boolean;
+  asOfMs: number | undefined;
+}
+
+/**
+ * Recent-scan admission for the fallback path.
+ *
+ * Superseded-status filtering delegates to
+ * shouldFilterSupersededFromRecall so recent-scan and the QMD
+ * safety filter share semantics (kill switch, audit mode, PR #402).
+ * #1952: an active state view admits a superseded memory whose
+ * successor ALSO survives this admission filter (fixpoint below).
+ * PR #713: when `as_of` is active, pass superseded candidates
+ * through here — boostSearchResults's `[valid_at, invalid_at)`
+ * evaluation is the authoritative historical gate. Other
+ * non-active statuses stay excluded.
+ * #2859: namespace-qualified anchors with the supersedes
+ * back-pointer — mirrors the safety-filter fixpoint.
+ */
+export function filterRecentScanMemories(
+  memories: readonly MemoryFile[],
+  deps: RecentScanMemoryFilterDeps,
+): MemoryFile[] {
+  const asOfActive = typeof deps.asOfMs === "number" && Number.isFinite(deps.asOfMs);
+  const stateViewAnchors =
+    deps.stateViewActive && !asOfActive ? admitStateViewRecentMemories(memories, deps) : null;
+  return memories.filter((m) => {
+    if (deps.isExcluded(m.path)) return false;
+    const status = m.frontmatter.status;
+    if (!status || status === "active") return true;
+    if (status === "superseded") {
+      if (asOfActive) return true;
+      if (stateViewAnchors?.has(deps.namespaceOf(m.path), m.frontmatter)) {
+        return true;
+      }
+      // Include superseded memory only if the canonical gate says
+      // NOT to filter it (kill switch off or audit mode on).
+      return !shouldFilterSupersededFromRecall(m.frontmatter, deps.supersessionOptions);
+    }
+    // Other non-active statuses (archived, retired, etc.) are
+    // excluded from the recent-scan path by default.
+    return false;
+  });
 }
