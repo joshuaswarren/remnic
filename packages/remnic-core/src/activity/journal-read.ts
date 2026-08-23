@@ -138,15 +138,12 @@ function symlinkRejected(): NodeJS.ErrnoException {
 }
 
 /**
- * Open the daily note through a descriptor-bound, /proc-free parent chain
- * (issue #2872): every ancestor from the vault root down is opened with
- * O_NOFOLLOW|O_DIRECTORY, pinned by fd, and checked for fd↔lstat identity at
- * each step; the note itself is opened O_NOFOLLOW with the same identity
- * check, and the deepest pinned directory fd is re-compared by path after the
- * note open so a swapped parent directory between the walk and the read
- * changes the inode and is refused. Works on Linux, macOS, and Windows — no
- * /proc/self/fd resolution (absent outside Linux). Exactly one readFile of
- * the verified fd.
+ * Open the daily note through a descriptor-bound parent chain (issue #2872).
+ * The vault root is pinned by fd; every later name is opened relative to that
+ * held descriptor, then bound by inode identity. Absolute paths are not
+ * re-resolved after the pin, so an ancestor rename or swap cannot redirect
+ * the note fd. Platforms without a descriptor filesystem fail closed.
+ * Exactly one readFile of the verified fd.
  */
 export interface VerifiedDailyNoteIo {
   /**
@@ -166,46 +163,33 @@ export function readVerifiedDailyNote(
   const dirFlags = fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0) | nofollow;
   const relative = path.relative(root, filePath);
   const parts = relative.split(path.sep).filter((part) => part.length > 0 && part !== ".");
+  if (parts.length === 0) throw symlinkRejected();
   const held: number[] = [];
   try {
-    // Root: the caller already verified it is a non-symlink directory; pin it
-    // by fd so the identity checks below compare against a stable inode.
     const rootLstat = lstatSync(root);
     if (rootLstat.isSymbolicLink() || !rootLstat.isDirectory()) throw symlinkRejected();
     const rootFd = open(root, dirFlags);
     held.push(rootFd);
     if (!sameNode(fstatSync(rootFd), rootLstat)) throw symlinkRejected();
 
-    // Intermediate directories: lstat non-symlink dir, open no-follow, pin.
     for (let depth = 0; depth < parts.length - 1; depth += 1) {
-      const childPath = path.join(root, ...parts.slice(0, depth + 1));
-      const childLstat = lstatSync(childPath);
-      if (childLstat.isSymbolicLink() || !childLstat.isDirectory()) throw symlinkRejected();
-      const childFd = open(childPath, dirFlags);
+      const childFd = openPinnedChild(open, held[held.length - 1]!, parts[depth]!, dirFlags);
       held.push(childFd);
-      if (!sameNode(fstatSync(childFd), childLstat)) throw symlinkRejected();
+      const child = fstatSync(childFd);
+      if (!child.isDirectory() || child.ino === 0) throw symlinkRejected();
     }
 
-    // The note: lstat a regular non-symlink file, open no-follow, and bind
-    // the opened fd to that same inode.
-    const noteLstat = lstatSync(filePath);
-    if (noteLstat.isSymbolicLink() || !noteLstat.isFile()) throw symlinkRejected();
-    const fd = open(filePath, fsConstants.O_RDONLY | nofollow);
+    const noteName = parts[parts.length - 1]!;
+    const parentFd = held[held.length - 1]!;
+    const fd = openPinnedChild(open, parentFd, noteName, fsConstants.O_RDONLY | nofollow);
     try {
       const opened = fstatSync(fd);
-      if (!opened.isFile()) throw symlinkRejected();
-      if (!sameNode(opened, noteLstat)) throw symlinkRejected();
-      // The deepest pinned directory is the note's parent. Re-open it by
-      // path and compare inodes: a directory swapped in between the walk and
-      // the note open no longer matches the pinned fd and is refused. A
-      // parent that vanished mid-read is tampering, not a missing day.
-      const parentFd = openParentOrFail(open, path.dirname(filePath), dirFlags);
+      if (!opened.isFile() || opened.ino === 0) throw symlinkRejected();
+      const verifyFd = openPinnedChild(open, parentFd, noteName, fsConstants.O_RDONLY | nofollow);
       try {
-        if (!sameNode(fstatSync(parentFd), fstatSync(held[held.length - 1]!))) {
-          throw symlinkRejected();
-        }
+        if (!sameNode(fstatSync(verifyFd), opened)) throw symlinkRejected();
       } finally {
-        closeSync(parentFd);
+        closeSync(verifyFd);
       }
       return readFileSync(fd, "utf8");
     } finally {
@@ -216,26 +200,36 @@ export function readVerifiedDailyNote(
   }
 }
 
-function openParentOrFail(
-  open: (filePath: string, flags: number) => number,
-  parent: string,
-  dirFlags: number,
-): number {
-  try {
-    return open(parent, dirFlags);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP") throw symlinkRejected();
-    throw err;
+function descriptorRoot(): string {
+  if (process.platform === "linux") return "/proc/self/fd";
+  if (process.platform === "darwin" || process.platform === "freebsd" || process.platform === "openbsd") {
+    return "/dev/fd";
   }
+  throw symlinkRejected();
 }
 
-/**
- * Inode identity between an fd's fstat and a path's lstat. On filesystems
- * without stable node ids both sides read zero and this check is vacuous —
- * containment then rests on the no-follow opens and the symlink lstat
- * refusals, the same guarantees the /proc variant had off Linux.
- */
+function openPinnedChild(
+  open: (filePath: string, flags: number) => number,
+  parentFd: number,
+  name: string,
+  flags: number,
+): number {
+  if (name.length === 0 || name === "." || name === ".." || name.includes("/") || name.includes("\\") || name.includes("\0")) {
+    throw symlinkRejected();
+  }
+  const held = fstatSync(parentFd);
+  if (!held.isDirectory() || held.ino === 0) throw symlinkRejected();
+  const desc = `${descriptorRoot()}/${String(parentFd)}`;
+  let pinned;
+  try {
+    pinned = statSync(desc);
+  } catch {
+    throw symlinkRejected();
+  }
+  if (!pinned.isDirectory() || !sameNode(pinned, held)) throw symlinkRejected();
+  return open(`${desc}/${name}`, flags);
+}
+
 function sameNode(a: { ino: number; dev: number }, b: { ino: number; dev: number }): boolean {
-  return a.ino === b.ino && a.dev === b.dev;
+  return a.ino !== 0 && b.ino !== 0 && a.ino === b.ino && a.dev === b.dev;
 }
