@@ -170,10 +170,12 @@ export interface CodexSubscriptionExecResult {
 export interface CodexSubscriptionRunnerDeps {
   /** Runs `codex exec`. Default: isolated subprocess via launchProcess. */
   runCodexExec?: (request: CodexSubscriptionExecRequest) => Promise<CodexSubscriptionExecResult>;
-  /** Runs `codex login status`. Default: isolated subprocess. */
+  /** Runs `codex login status`. Default: isolated subprocess. Receives the
+   * login-status timeout budget (capped by the request deadline). */
   runLoginStatus?: (
     executable: string,
-    env: NodeJS.ProcessEnv
+    env: NodeJS.ProcessEnv,
+    timeoutMs: number
   ) => Promise<{ status: number | null; stdout: string; stderr: string }>;
   /** Environment the isolated child env is filtered from. Tests inject fakes. */
   env?: NodeJS.ProcessEnv;
@@ -199,14 +201,14 @@ export function createCodexSubscriptionRunner(deps: CodexSubscriptionRunnerDeps 
 /**
  * Registers the core subprocess transport on the codex-cli seam, but only
  * when no runner is registered yet — a host or benchmark runner that claimed
- * the seam first always wins. Idempotent.
+ * the seam first always wins. If the seam was cleared afterwards
+ * (setCodexCliFallbackRunnerForProcess(undefined)), the core runner is
+ * re-registered so the next call still routes. Idempotent.
  */
 export function ensureCodexSubscriptionRunnerRegistered(deps: CodexSubscriptionRunnerDeps = {}): boolean {
   if (isCodexCliFallbackRunnerRegistered()) return false;
-  if (!coreRunnerRegistered) {
-    setCodexCliFallbackRunnerForProcess(createCodexSubscriptionRunner(deps));
-    coreRunnerRegistered = true;
-  }
+  setCodexCliFallbackRunnerForProcess(createCodexSubscriptionRunner(deps));
+  coreRunnerRegistered = true;
   return true;
 }
 
@@ -220,16 +222,24 @@ async function runCodexSubscriptionRequest(
   const executable = resolveExecutable(config, envSource);
   const env = buildIsolatedEnv(envSource);
 
-  await assertSubscriptionLogin(executable, env, deps);
+  const providerTimeoutMs = config.retryOptions?.timeoutMs !== undefined
+    ? normalizeCodexCliTimeoutMs(config.retryOptions.timeoutMs)
+    : undefined;
+  const timeoutMs = request.options.timeoutMs ?? providerTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // The effective deadline starts BEFORE the login-status precheck: login
+  // consumes the same call/provider timeout budget, it is not additive.
+  const now = deps.now ?? Date.now;
+  const deadlineStartedAt = now();
+  await assertSubscriptionLogin(executable, env, deps, Math.min(LOGIN_STATUS_TIMEOUT_MS, timeoutMs));
 
   if (request.options.signal?.aborted) {
     throw abortErrorOf(request.options.signal);
   }
 
-  const providerTimeoutMs = config.retryOptions?.timeoutMs !== undefined
-    ? normalizeCodexCliTimeoutMs(config.retryOptions.timeoutMs)
-    : undefined;
-  const timeoutMs = request.options.timeoutMs ?? providerTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const remainingTimeoutMs = timeoutMs - (now() - deadlineStartedAt);
+  if (remainingTimeoutMs <= 0) {
+    throw new CodexSubscriptionTimeoutError(timeoutMs);
+  }
   let tempDir: string | undefined;
   try {
     tempDir = await mkdtemp(path.join(deps.tmpdir?.() ?? os.tmpdir(), "remnic-codex-sub-"));
@@ -245,7 +255,7 @@ async function runCodexSubscriptionRequest(
       env,
       outputPath,
       workspacePath,
-      timeoutMs,
+      timeoutMs: remainingTimeoutMs,
       signal: request.options.signal,
     });
 
@@ -253,7 +263,7 @@ async function runCodexSubscriptionRequest(
       throw abortErrorOf(request.options.signal);
     }
     if (result.status !== 0) {
-      throw execFailureError(result, timeoutMs, executable, env);
+      throw execFailureError(result, remainingTimeoutMs, executable, env);
     }
 
     const content = result.outputText.trim();
@@ -289,6 +299,13 @@ function resolveExecutable(config: CodexCliFallbackConfig, env: NodeJS.ProcessEn
   if (expanded.trim().length === 0) {
     throw new CodexSubscriptionConfigError(`${CODEX_EXECUTABLE_ENV} / executable must not be empty`);
   }
+  // The exec child runs with cwd = the temp workspace, and spawn resolves a
+  // relative executable against the CHILD cwd. Resolve relative paths against
+  // the original process cwd now so `./codex` stays valid; bare names keep
+  // PATH lookup.
+  if (expanded.includes("/") || expanded.includes("\\")) {
+    return path.resolve(expanded);
+  }
   return expanded;
 }
 
@@ -315,7 +332,8 @@ function isAllowedEnvKey(key: string): boolean {
 async function assertSubscriptionLogin(
   executable: string,
   env: NodeJS.ProcessEnv,
-  deps: CodexSubscriptionRunnerDeps
+  deps: CodexSubscriptionRunnerDeps,
+  loginStatusTimeoutMs: number
 ): Promise<void> {
   const now = deps.now ?? Date.now;
   const cacheKey = `${executable}\0${env.CODEX_HOME ?? env.HOME ?? ""}`;
@@ -326,8 +344,13 @@ async function assertSubscriptionLogin(
   }
   const promise = (async () => {
     const runLoginStatus = deps.runLoginStatus ?? runLoginStatusSubprocess;
-    const result = await runLoginStatus(executable, env);
+    const result = await runLoginStatus(executable, env, loginStatusTimeoutMs);
     const output = `${result.stdout}\n${result.stderr}`.trim();
+    if (TIMEOUT_PATTERN.test(output)) {
+      // A login-status subprocess timeout is a deadline expiry, not an auth
+      // failure — never report it as "unauthenticated".
+      throw new CodexSubscriptionTimeoutError(loginStatusTimeoutMs);
+    }
     if (result.status === 0 && LOGIN_OK_PATTERN.test(output)) {
       return;
     }
@@ -436,14 +459,21 @@ function readReasoningEffort(config: CodexCliFallbackConfig): CodexCliReasoningE
   return undefined;
 }
 
+/**
+ * One JSON object per message: role boundaries are structural (JSON string
+ * escaping), so literal `[system]`/role-marker text inside message content
+ * can never forge another role's turn. Content stays model-visible verbatim.
+ */
 function buildPrompt(messages: readonly CodexCliFallbackMessage[]): string {
-  const transcript = messages.map((message) => `[${message.role}]\n${message.content}`).join("\n\n");
+  const transcript = messages
+    .map((message) => JSON.stringify({ role: message.role, content: message.content }))
+    .join("\n");
   return [
     "You are acting as an LLM completion endpoint for a memory-extraction pipeline, not as a coding agent.",
     "Answer the request in the transcript below. Do not inspect files, run commands, browse, or use tools.",
     "Return only the final answer text. If the request asks for JSON, return raw JSON only.",
     "",
-    "TRANSCRIPT:",
+    'TRANSCRIPT (JSON Lines: one {"role":"...","content":"..."} object per message; newlines inside content are escaped):',
     transcript,
   ].join("\n");
 }
@@ -473,12 +503,15 @@ function execFailureError(
   );
 }
 
-/** Bounded, secret-redacted tail of child output — the only child text that
- * ever reaches a thrown error. */
+/** Secret-redacted, then bounded tail of child output — the only child text
+ * that ever reaches a thrown error. Redaction runs BEFORE bounding so a
+ * secret straddling the cutoff cannot survive as an unmatchable fragment. */
 function summarizeOutput(stderr: string, stdout: string): string {
   const summary = [stderr.trim(), stdout.trim()].filter((part) => part.length > 0).join("\n");
-  const bounded = summary.length > 0 ? summary.slice(-OUTPUT_SUMMARY_LIMIT) : "no process output";
-  return redactSecretEchoes(bounded);
+  if (summary.length === 0) {
+    return "no process output";
+  }
+  return redactSecretEchoes(summary).slice(-OUTPUT_SUMMARY_LIMIT);
 }
 
 export function redactSecretEchoes(value: string): string {
@@ -541,22 +574,23 @@ function abortErrorOf(signal: AbortSignal): Error {
   return new DOMException("The operation was aborted.", "AbortError");
 }
 
+/** Bounds streamed child output to STDIO_LIMIT, keeping the TAIL — codex
+ * prints its final error or turn.completed result last. Secrets are redacted
+ * BEFORE bounding so one straddling the cutoff cannot leak a fragment. */
 function appendBounded(existing: string, next: string): string {
-  let combined = existing + next;
-  if (combined.length > STDIO_LIMIT) {
-    combined = combined.slice(0, STDIO_LIMIT);
-  }
-  return combined;
+  const redacted = redactSecretEchoes(existing + next);
+  return redacted.length > STDIO_LIMIT ? redacted.slice(-STDIO_LIMIT) : redacted;
 }
 
 async function runLoginStatusSubprocess(
   executable: string,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return await runSubprocess(executable, ["login", "status"], {
     env,
     stdin: undefined,
-    timeoutMs: LOGIN_STATUS_TIMEOUT_MS,
+    timeoutMs,
     timeoutLabel: "login status",
   });
 }
@@ -698,6 +732,7 @@ function safeMessage(error: unknown): string {
 }
 
 export const __codexSubscriptionTestHooks = {
+  appendBounded,
   resetLoginStatusCache: (): void => {
     loginStatusCache.clear();
   },
