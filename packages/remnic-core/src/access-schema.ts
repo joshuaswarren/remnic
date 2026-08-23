@@ -3,6 +3,7 @@
 // field-level detail so consumers get clear feedback on malformed requests.
 
 import { z } from "zod";
+import { isMemoryCategory, MEMORY_CATEGORY_NAMES } from "./write-envelope.js";
 import {
   ACTION_CONFIDENCE_CONTEXT_READINESS,
   ACTION_CONFIDENCE_RISK_CATEGORIES,
@@ -258,12 +259,42 @@ export const deepRecallRequestSchema = z.object({
 // ---------------------------------------------------------------------------
 
 const writeContentSchema = z.string().min(1, "content is required").max(50000);
+/**
+ * #2780: the canonical category set stays authoritative (`isMemoryCategory`),
+ * with one admitted input-compat alias class — project-shaped guesses
+ * (`project`, `project_state`, `project-update`, …) that fleet callers send
+ * despite no project-shaped category existing. Aliases are NOT enum members:
+ * the write-surface funnel coerces them to "fact" and reports the coercion on
+ * the response. Everything else rejects naming the full valid set plus a
+ * "use fact" hint so callers learn the canonical name.
+ */
+export const PROJECT_CATEGORY_ALIAS_RE = /^project[-_a-z]*$/;
+
+export interface CategoryAliasCoercion {
+  from: string;
+  to: "fact";
+}
+
+export function coerceProjectCategoryAlias<T extends { category?: string }>(
+  request: T,
+): { request: T; categoryCoercion?: CategoryAliasCoercion } {
+  const category = request.category;
+  if (category === undefined || !PROJECT_CATEGORY_ALIAS_RE.test(category)) {
+    return { request };
+  }
+  return { request: { ...request, category: "fact" }, categoryCoercion: { from: category, to: "fact" } };
+}
+
 const categorySchema = z
-  .enum([
-    "fact", "preference", "correction", "entity", "decision",
-    "relationship", "principle", "commitment", "moment", "skill", "rule", "procedure",
-    "reasoning_trace",
-  ])
+  .string()
+  .superRefine((value, ctx) => {
+    if (isMemoryCategory(value)) return;
+    if (PROJECT_CATEGORY_ALIAS_RE.test(value)) return;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `category must be one of: ${MEMORY_CATEGORY_NAMES.join(", ")}; for project state/facts use "fact"`,
+    });
+  })
   .optional();
 const confidenceSchema = z.number().min(0).max(1).optional();
 const tagsSchema = z.array(z.string().max(256)).max(50).optional();

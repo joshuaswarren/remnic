@@ -30,6 +30,7 @@ import {
   NamespaceNotWritableError,
 } from "./access-service.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
+import { coerceProjectCategoryAlias } from "./access-schema.js";
 import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import {
@@ -482,9 +483,13 @@ export class AccessObserveWriteSurface {
   }
 
   async memoryStore(
-    request: EngramAccessMemoryStoreRequest,
+    rawRequest: EngramAccessMemoryStoreRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> }
   ): Promise<EngramAccessWriteResponse> {
+    // #2780: the boundary schema admits project-shaped category guesses;
+    // this funnel (MCP/HTTP/CLI all dispatch here) coerces them to the
+    // canonical "fact" once and reports the coercion on the response.
+    const { request, categoryCoercion } = coerceProjectCategoryAlias(rawRequest);
     let namespace: string;
     try {
       namespace = await this.deps.resolveCodingScopedWriteNamespace(request);
@@ -513,6 +518,7 @@ export class AccessObserveWriteSurface {
           queued: false,
           status: "validated",
           idempotencyKey: request.idempotencyKey?.trim() || undefined,
+          ...(categoryCoercion ? { categoryCoercion } : {}),
         };
       }
       const result = await persistExplicitCapture(this.deps.orchestrator, candidate, "memory_store");
@@ -539,6 +545,7 @@ export class AccessObserveWriteSurface {
         memoryId: result.id,
         duplicateOf: result.duplicateOf,
         idempotencyKey: request.idempotencyKey?.trim() || undefined,
+        ...(categoryCoercion ? { categoryCoercion } : {}),
       };
       log.info(
         `access-write op=memory_store namespace=${namespace} dryRun=false status=${response.status} memoryId=${response.memoryId ?? "-"} idempotency=${response.idempotencyKey ? "yes" : "no"}`
@@ -569,9 +576,11 @@ export class AccessObserveWriteSurface {
   }
 
   async suggestionSubmit(
-    request: EngramAccessSuggestionSubmitRequest,
+    rawRequest: EngramAccessSuggestionSubmitRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> }
   ): Promise<EngramAccessWriteResponse> {
+    // #2780: same alias funnel as memory_store — one shared coercion point.
+    const { request, categoryCoercion } = coerceProjectCategoryAlias(rawRequest);
     let namespace: string;
     try {
       namespace = await this.deps.resolveCodingScopedWriteNamespace(request);
@@ -599,6 +608,7 @@ export class AccessObserveWriteSurface {
           queued: true,
           status: "validated",
           idempotencyKey: request.idempotencyKey?.trim() || undefined,
+          ...(categoryCoercion ? { categoryCoercion } : {}),
         };
       }
       const result = await queueExplicitCaptureForReview(
@@ -622,6 +632,7 @@ export class AccessObserveWriteSurface {
         memoryId: result.id,
         duplicateOf: result.duplicateOf,
         idempotencyKey: request.idempotencyKey?.trim() || undefined,
+        ...(categoryCoercion ? { categoryCoercion } : {}),
       };
       log.info(
         `access-write op=suggestion_submit namespace=${namespace} dryRun=false status=${response.status} memoryId=${response.memoryId ?? "-"} idempotency=${response.idempotencyKey ? "yes" : "no"}`
