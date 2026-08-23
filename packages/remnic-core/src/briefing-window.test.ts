@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { initLogger } from "./logger.js";
 import { BRIEFING_FULL_READ_FALLBACK_MS, safeReadMemories } from "./briefing-window.js";
+import type { CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { buildBriefing, type ParsedBriefingWindow } from "./briefing.js";
 import type { StorageManager } from "./storage.js";
 import type { MemoryFile } from "./types.js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Issue #2779 — briefing memory-read discriminator + bounded legacy fallback
+// Issue #2779 — briefing memory-read discriminator + cancellable fallback
 // ──────────────────────────────────────────────────────────────────────────
 
 function makeMemory(updated: string): MemoryFile {
@@ -52,7 +53,24 @@ function captureLogs(): { lines: string[]; restore: () => void } {
   };
 }
 
-test("safeReadMemories prefers readMemoriesWindow and logs the windowed discriminator metric", async () => {
+/**
+ * The slow-double test below deliberately exercises the REAL abort-timer
+ * protocol (AbortController armed by production setTimeout) against the
+ * platform clock; mock timers cannot drive a deadline the code under test
+ * arms itself.
+ */
+function delay(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
+
+/** The structured discriminator line(s): info lines carrying an outcome= field. */
+function discriminators(lines: string[]): string[] {
+  return lines.filter((line) => line.includes("briefing: memory read") && line.includes("outcome="));
+}
+
+test("safeReadMemories prefers readMemoriesWindow and logs exactly one windowed success discriminator", async () => {
   const { lines, restore } = captureLogs();
   try {
     let windowOptions: { updatedAfter?: Date } | undefined;
@@ -73,22 +91,26 @@ test("safeReadMemories prefers readMemoriesWindow and logs the windowed discrimi
     assert.equal(memories.length, 1);
     assert.equal(windowOptions?.updatedAfter, WINDOW.from, "window start must reach the adapter");
     assert.equal(fullReadCalls, 0, "full corpus read must never run when the adapter can window");
+    const marks = discriminators(lines);
+    assert.equal(marks.length, 1, "exactly one discriminator per read");
     assert.match(
-      lines.find((line) => line.includes("mode=windowed")) ?? "",
-      /briefing: memory read mode=windowed durationMs=\d+ count=1/,
+      marks[0]!,
+      /briefing: memory read mode=windowed durationMs=\d+ count=1 outcome=success$/,
     );
   } finally {
     restore();
   }
 });
 
-test("safeReadMemories legacy double falls back to readAllMemories and logs the fallback discriminator", async () => {
+test("safeReadMemories falls back to a signal-aware readAllMemories and logs exactly one success discriminator", async () => {
   const { lines, restore } = captureLogs();
   try {
     let fullReadCalls = 0;
+    let receivedSignal: AbortSignal | undefined;
     const storage = {
-      readAllMemories: async () => {
+      readAllMemories: async (options?: CorpusReadOptions): Promise<MemoryFile[]> => {
         fullReadCalls += 1;
+        receivedSignal = options?.abortSignal;
         return [
           makeMemory("2026-04-10T01:00:00.000Z"),
           makeMemory("2026-04-10T02:00:00.000Z"),
@@ -100,31 +122,144 @@ test("safeReadMemories legacy double falls back to readAllMemories and logs the 
     const memories = await safeReadMemories(storage, WINDOW);
 
     assert.equal(fullReadCalls, 1);
-    assert.equal(memories.length, 3, "legacy double keeps its full-read behavior (backward compat)");
+    assert.ok(receivedSignal instanceof AbortSignal, "deadline must reach the read as an abort signal");
+    assert.ok(!receivedSignal.aborted, "deadline timer must be cleared after a successful read");
+    assert.equal(memories.length, 3, "signal-aware double keeps its full-read behavior (backward compat)");
+    const marks = discriminators(lines);
+    assert.equal(marks.length, 1, "exactly one discriminator per read");
     assert.match(
-      lines.find((line) => line.includes("mode=full-read-fallback")) ?? "",
-      /briefing: memory read mode=full-read-fallback durationMs=\d+ count=3/,
+      marks[0]!,
+      /briefing: memory read mode=full-read-fallback durationMs=\d+ count=3 outcome=success$/,
     );
   } finally {
     restore();
   }
 });
 
-test("safeReadMemories bounds a hung legacy full read: fails open instead of blocking past the deadline", async () => {
+test("safeReadMemories aborts a slow signal-aware fallback read: no rows after deadline, no active work remains", async () => {
   const { lines, restore } = captureLogs();
   try {
+    const TOTAL_ROWS = 200;
+    let sawSignal = false;
+    let rowsProduced = 0;
+    let abortChecks = 0;
+    let readSettled = false;
     const storage = {
-      // A compatibility double whose full read never settles — the >60s corpus
-      // read shape from the issue. The race must return, not hang.
-      readAllMemories: () => new Promise<MemoryFile[]>(() => {}),
+      // Signal-aware slow double (the #2307 contract): checks the abort
+      // signal before producing each row, so stopping at the deadline is
+      // observable row by row.
+      readAllMemories: async (options?: CorpusReadOptions): Promise<MemoryFile[]> => {
+        sawSignal = options?.abortSignal instanceof AbortSignal;
+        const memories: MemoryFile[] = [];
+        for (let i = 0; i < TOTAL_ROWS; i++) {
+          if (options?.abortSignal?.aborted) {
+            abortChecks += 1;
+            break;
+          }
+          rowsProduced += 1;
+          memories.push(makeMemory("2026-04-10T01:00:00.000Z"));
+          await delay(5);
+        }
+        readSettled = true;
+        return memories;
+      },
     };
 
     const memories = await safeReadMemories(storage, WINDOW, { fallbackDeadlineMs: 25 });
 
-    assert.deepEqual(memories, [], "bounded fallback fails open with an empty read");
-    const timeoutLine = lines.find((line) => line.includes("timed out after 25ms"));
-    assert.ok(timeoutLine, "timeout must be diagnosable from the log");
-    assert.match(timeoutLine!, /mode=full-read-fallback timed out/);
+    assert.deepEqual(memories, [], "aborted fallback fails open with an empty read");
+    assert.ok(sawSignal, "the deadline must reach the read as an abort signal");
+    assert.ok(rowsProduced > 0 && rowsProduced < TOTAL_ROWS, "read must stop mid-corpus, not run to completion");
+    assert.ok(abortChecks > 0, "the double must observe the aborted signal");
+    // Direct-await protocol (finding A): safeReadMemories only returns after
+    // the read itself settled, so nothing is left scanning in the background.
+    assert.ok(readSettled, "no active read work remains once safeReadMemories returns");
+    const marks = discriminators(lines);
+    assert.equal(marks.length, 1, "exactly one discriminator per read");
+    assert.match(marks[0]!, /mode=full-read-fallback durationMs=\d+ outcome=timeout$/);
+    assert.ok(
+      lines.some((line) => line.includes("timed out after 25ms")),
+      "timeout must be diagnosable from the log",
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("safeReadMemories refuses a signal-blind legacy full read instead of starting an unbounded scan", async () => {
+  const { lines, restore } = captureLogs();
+  try {
+    let fullReadCalls = 0;
+    const storage = {
+      // Legacy double (pre-windowed, pre-signal): takes no options, so it can
+      // never observe the deadline. Launching it would be uncancellable
+      // unbounded I/O that keeps scanning after the briefing returned.
+      readAllMemories: () => {
+        fullReadCalls += 1;
+        return new Promise<MemoryFile[]>(() => {});
+      },
+    };
+
+    const memories = await safeReadMemories(storage, WINDOW, { fallbackDeadlineMs: 25 });
+
+    assert.deepEqual(memories, [], "refused fallback fails open with an empty read");
+    assert.equal(fullReadCalls, 0, "an unbounded, uncancellable full read must never be started");
+    assert.ok(
+      lines.some((line) => line.includes("refused")),
+      "the refusal must tell the operator which adapter upgrade unblocks it",
+    );
+    const marks = discriminators(lines);
+    assert.equal(marks.length, 1, "exactly one discriminator per read");
+    assert.match(marks[0]!, /mode=full-read-fallback durationMs=\d+ outcome=error err=LegacyReadUnsupported$/);
+  } finally {
+    restore();
+  }
+});
+
+test("windowed rejection emits exactly one error discriminator — class only, never the message", async () => {
+  const { lines, restore } = captureLogs();
+  try {
+    const storage = {
+      readMemoriesWindow: async (): Promise<{ memories: MemoryFile[] }> => {
+        throw new TypeError("boom-sync-window");
+      },
+      readAllMemories: async () => [],
+    };
+
+    const memories = await safeReadMemories(storage, WINDOW);
+
+    assert.deepEqual(memories, [], "read failure fails open with an empty read");
+    const marks = discriminators(lines);
+    assert.equal(marks.length, 1, "exactly one discriminator per read, rejection included");
+    assert.match(marks[0]!, /mode=windowed durationMs=\d+ outcome=error err=TypeError$/);
+    assert.ok(
+      !lines.some((line) => line.includes("boom-sync-window")),
+      "error message content must never reach the log",
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("fallback rejection emits exactly one error discriminator — class only, never the message", async () => {
+  const { lines, restore } = captureLogs();
+  try {
+    const storage = {
+      readAllMemories: async (_options?: CorpusReadOptions): Promise<MemoryFile[]> => {
+        throw new Error("corpus read exploded");
+      },
+    };
+
+    const memories = await safeReadMemories(storage, WINDOW);
+
+    assert.deepEqual(memories, [], "read failure fails open with an empty read");
+    const marks = discriminators(lines);
+    assert.equal(marks.length, 1, "exactly one discriminator per read, rejection included");
+    assert.match(marks[0]!, /mode=full-read-fallback durationMs=\d+ outcome=error err=Error$/);
+    assert.ok(
+      !lines.some((line) => line.includes("corpus read exploded")),
+      "error message content must never reach the log",
+    );
   } finally {
     restore();
   }
@@ -168,11 +303,10 @@ test("buildBriefing over a large-corpus fake completes without full-corpus mater
     assert.equal(windowCalls, 1, "exactly one windowed read serves the briefing");
     assert.equal(fullReadCalls, 0, "briefing must never materialize the full corpus");
     assert.match(
-      lines.find((line) => line.includes("mode=windowed")) ?? "",
-      /durationMs=\d+ count=1/,
+      discriminators(lines)[0] ?? "",
+      /mode=windowed durationMs=\d+ count=1 outcome=success/,
     );
   } finally {
     restore();
   }
 });
-
