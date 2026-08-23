@@ -47,7 +47,7 @@ import {
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { DeletionRevisionStore, invalidationCommitFingerprint, withCasCommitReceipt } from "./storage/deletion-revision-store.js";
-import { CasRevisionStore, type CasRevisionReadStatus } from "./storage/cas-revision-store.js";
+import { CasRevisionStore, type CasRevisionReadStatus, type CasRevisionTransaction } from "./storage/cas-revision-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import * as entityMigration from "./storage/entity-canonical-id-migration.js";
 import * as entityRefs from "./storage/entity-canonical-id-references.js";
@@ -2734,8 +2734,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return await this.casRevisions.readRevisionStatus(filePath);
   }
 
-  protected override async commitDurableMemoryRevision(pathname: string): Promise<string> {
-    return await this.casRevisions.commitRevision(pathname);
+  protected override async beginDurableMemoryRevision(pathname: string): Promise<CasRevisionTransaction> {
+    return await this.casRevisions.beginRevisionTransaction(pathname);
   }
   private async recordCommittedInvalidation(memory: MemoryFile): Promise<void> {
     return this.deletionRevisionStore.recordCommittedInvalidation(memory);

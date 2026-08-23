@@ -4,6 +4,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
+import type { CasRevisionTransaction } from "./cas-revision-store.js";
 const TOMBSTONE_CAPTURE_WRITE_LOCK_STALE_MS = 60_000;
 const CAPTURE_WRITE_LOCK_MAX_ATTEMPTS = 3;
 const CAPTURE_WRITE_LOCK_RETRY_BASE_MS = 25;
@@ -196,7 +197,7 @@ export type TombstoneBlockedMutationHost = {
   writeStorageSecureFile: (pathname: string, fileContent: string) => Promise<void>;
   withCaptureWriteLock: (task: () => Promise<void>, identity: string | readonly string[]) => Promise<void>;
   logWarning: (message: string) => void;
-  commitDurableMemoryRevision?: (pathname: string) => Promise<string | undefined>;
+  beginDurableMemoryRevision?: (pathname: string) => Promise<CasRevisionTransaction | undefined>;
 };
 
 export type TombstoneBlockedMutation = {
@@ -231,28 +232,61 @@ export async function runTombstoneBlockedMutation(
         }
       }
       const rebuildMarker = mutation.blocked || currentBlocked ? await host.prepareWrite() : undefined;
-      try {
-        // #2813 (P1 B): reserve the receipt BEFORE the durable file
-        // publish, inside this same path lock. A failed mint must leave the
-        // memory file untouched — never a mutated record without a receipt.
-        // A later file-write failure may strand a skipped receipt (token
-        // minted, record unchanged), which retires no earlier receipt and
-        // attributes no false ownership.
-        if (mutation.shouldMintRevision?.(current)) {
-          mintedRevision = await host.commitDurableMemoryRevision?.(mutation.pathname);
+      const discardRebuildMarker = async (): Promise<void> => {
+        if (!rebuildMarker) return;
+        try {
+          await host.discardWrite(rebuildMarker);
+        } catch (cleanupError) {
+          host.markUntrusted();
+          host.logWarning(`storage.tombstoneBlocked failed to clear write marker: ${cleanupError}`);
         }
+      };
+      let transaction: CasRevisionTransaction | undefined;
+      try {
+        // #2813 (P1 C): a two-phase receipt transaction under this same
+        // path lock. The PENDING reservation is minted BEFORE the durable
+        // file publish, so a failed reservation leaves the memory file
+        // untouched — never a mutated record without a receipt. The
+        // COMMITTED receipt publishes only AFTER the write lands, so a
+        // failed write can never leave the reservation posing as
+        // ownership.
+        transaction = mutation.shouldMintRevision?.(current)
+          ? await host.beginDurableMemoryRevision?.(mutation.pathname)
+          : undefined;
         await host.writeStorageSecureFile(mutation.pathname, mutation.fileContent);
       } catch (err) {
-        if (rebuildMarker) {
+        // The memory write failed (or never ran): abort the reservation so
+        // no pending marker survives a write that did not land. A failed
+        // abort keeps the marker — ambiguity, recovered later.
+        if (transaction) {
           try {
-            await host.discardWrite(rebuildMarker);
-          } catch (cleanupError) {
-            host.markUntrusted();
-            host.logWarning(`storage.tombstoneBlocked failed to clear write marker: ${cleanupError}`);
+            await transaction.abort();
+          } catch (abortError) {
+            host.logWarning(
+              `storage.tombstoneBlocked failed to abort the reserved receipt (pending marker preserved): ${abortError}`,
+            );
           }
         }
+        await discardRebuildMarker();
         throw err;
       }
+      if (transaction) {
+        try {
+          await transaction.commit();
+        } catch (err) {
+          // #2813 (P1 C): the memory file LANDED but the COMMITTED receipt
+          // never published. The PENDING marker stays: readers must see
+          // unavailable/recovery-needed — never ownership, never absence —
+          // and promotion/rollback refuse until recovery reconciles. The
+          // reservation must NOT be aborted: the write is on disk.
+          host.logWarning(
+            `storage.tombstoneBlocked receipt publication failed after the memory write (pending marker preserved for recovery): ${err}`,
+          );
+          await discardRebuildMarker();
+          throw err;
+        }
+      }
+      mintedRevision = transaction?.pendingRevision;
       if (rebuildMarker) {
         try {
           await host.commitWrite(rebuildMarker);

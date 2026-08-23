@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -671,7 +671,9 @@ test("promoteAndReconcileMergedTarget: a receipt that becomes unreadable before 
   // confirmed the cached body anyway.
   const committedRow = await s.source.getMemoryByIdIncludingArchived(target.id);
   assert.ok(committedRow);
-  await writeFile(casShardPath(s.source.dir, committedRow.path), "{corrupt", "utf8");
+  const tornShardPath = casShardPath(s.source.dir, committedRow.path);
+  await mkdir(path.dirname(tornShardPath), { recursive: true });
+  await writeFile(tornShardPath, "{corrupt", "utf8");
 
   let promotions = 0;
   await promoteAndReconcileMergedTarget({

@@ -10,6 +10,7 @@ import { withRawEntityPageMutation } from "./entity-canonical-id-lock.js";
 import { readMaybeEncryptedFileFromChunks, writeMaybeEncryptedFileFromChunks } from "../secure-store/secure-fs.js";
 import * as archiveMutation from "../archive-mutation-version.js";
 import { invalidationCommitFingerprint, isSemanticFrontmatterChange } from "./deletion-revision-store.js";
+import type { CasRevisionTransaction } from "./cas-revision-store.js";
 import {
   buildExplicitCaptureDedupKey,
   buildCapturePathLockIdentity,
@@ -210,13 +211,13 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   protected abstract deleteManagedStorageFile(filePath: string, deletionMtimeMs?: number | null): Promise<boolean>;
   protected abstract writeManagedStorageFile(filePath: string, write: () => Promise<void>): Promise<void>;
 
-  /** #2813 (P1, #2807 CI repair): reserve the target's next durable CAS
-   * revision token as part of the same locked mutation — BEFORE the durable
-   * file publish (#2813 P1 B: a failed mint leaves the memory file
-   * untouched). Receipt identity lives in the per-target sidecar, never in
-   * public `frontmatter.updated`. The default host keeps no receipt
-   * identity; StorageManager records it. */
-  protected async commitDurableMemoryRevision(_pathname: string): Promise<string | undefined> {
+  /** #2813 (P1 C, #2807): reserve the target's next durable CAS revision
+   * token as a two-phase receipt transaction — a PENDING write-ahead
+   * marker under the mutation's path lock, published COMMITTED only after
+   * the durable file write lands. Receipt identity lives in the per-target
+   * sidecar, never in public `frontmatter.updated`. The default host keeps
+   * no receipt identity; StorageManager records it. */
+  protected async beginDurableMemoryRevision(_pathname: string): Promise<CasRevisionTransaction | undefined> {
     return undefined;
   }
 
@@ -305,7 +306,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       writeStorageSecureFile: (target, content) => this.writeStorageSecureFile(target, content),
       withCaptureWriteLock: (task, lockIdentity) => this.withTombstoneBlockedCaptureWriteLock(task, lockIdentity),
       logWarning: (message) => log.warn(message),
-      commitDurableMemoryRevision: (targetPath) => this.commitDurableMemoryRevision(targetPath),
+      beginDurableMemoryRevision: (targetPath) => this.beginDurableMemoryRevision(targetPath),
     };
     return await runTombstoneBlockedMutation(host, {
       blocked,

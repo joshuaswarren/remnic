@@ -174,12 +174,39 @@ export async function revertMergedContent(
     // body after our lock was released — reverting would delete their valid
     // merge while their provenance patch may already have landed.
     if (committedRevision !== undefined) {
-      const standingRevision = await storage.readCasRevision(target.path).catch((err) => {
-        log.warn(`revertMergedContent: failed to read CAS revision for ${target.path}: ${err}`);
-        return undefined;
-      });
-      if (standingRevision !== committedRevision) {
-        return "superseded";
+      // #2813 (P1 B): the standing receipt is a THREE-WAY truth. Only a
+      // PROVEN foreign token may take the superseded path — that proof is
+      // what licenses discarding this writer's staged snapshot. The old
+      // fail-open read collapsed an unreadable sidecar into undefined,
+      // which classified as superseded and discarded the recovery
+      // snapshot on unproven grounds. Unavailable (transiently
+      // unreadable, or a reservation pending finalization) and absent
+      // (which cannot corroborate EITHER writer while this receipt is in
+      // hand) are keep-side: the degraded branch preserves the snapshot
+      // and reconciliation retries.
+      let standing: Awaited<ReturnType<StorageManager["readCasRevisionStatus"]>>;
+      try {
+        standing = await storage.readCasRevisionStatus(target.path);
+      } catch (err) {
+        standing = {
+          status: "unavailable",
+          reason: err instanceof Error ? err.message : String(err),
+        };
+      }
+      if (standing.status === "present") {
+        if (standing.revision !== committedRevision) {
+          return "superseded";
+        }
+      } else if (standing.status === "unavailable") {
+        log.warn(
+          `revertMergedContent: CAS revision status for ${target.path} is unavailable (${standing.reason}); ownership cannot be verified — keeping the recovery snapshot instead of discarding or reverting`,
+        );
+        return "stands";
+      } else {
+        log.warn(
+          `revertMergedContent: CAS revision receipt for ${target.path} is absent although this writer holds receipt ${committedRevision}; ownership cannot be verified — keeping the recovery snapshot`,
+        );
+        return "stands";
       }
     }
     return (await storage.updateMemoryIfUnchanged(current, target.content, {

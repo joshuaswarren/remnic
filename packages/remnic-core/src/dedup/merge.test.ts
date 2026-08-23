@@ -48,6 +48,7 @@ import {
 } from "./merge.js";
 import type { SemanticDedupHit } from "./semantic.js";
 import { invalidationCommitFingerprint, isSemanticFrontmatterChange, markCasCommittedRevision, nextCasRevisionIso } from "../storage/deletion-revision-store.js";
+import type { CasRevisionReadStatus } from "../storage/cas-revision-store.js";
 
 // The merge snapshot trigger must stay a literal union: a widened
 // `VersionTrigger` (e.g. annotated `readonly string[]`) would let an unknown
@@ -549,6 +550,12 @@ async function harness(
      * fails, so the throw carries no receipt.
      */
     contentCasThrows?: "before" | "after" | "concurrent" | "after-concurrent";
+    /**
+     * #2813 (P1 B): force the three-way receipt read inside the rollback's
+     * ownership check — "unavailable" simulates a transiently unreadable
+     * sidecar, "absent" a sidecar that corroborates neither writer.
+     */
+    receiptStatus?: "unavailable" | "absent";
   } = {},
 ): Promise<MergeHarness> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-"));
@@ -762,6 +769,14 @@ async function harness(
       calls.hashRegistrations.push({ id, hash });
     },
     readCasRevision: async (p: string) => (p === targetPath ? casRevision : undefined),
+    readCasRevisionStatus: async (p: string): Promise<CasRevisionReadStatus> => {
+      if (p !== targetPath) return { status: "absent" };
+      if (overrides.receiptStatus === "unavailable") {
+        return { status: "unavailable", reason: "simulated transient sidecar read failure" };
+      }
+      if (overrides.receiptStatus === "absent") return { status: "absent" };
+      return casRevision === undefined ? { status: "absent" } : { status: "present", revision: casRevision };
+    },
   } as unknown as StorageManager;
 
   const config = parseConfig({
@@ -4157,4 +4172,78 @@ test("persistMergedTargetThreadEpisode: a re-merge moves an existing earlier tar
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("applySemanticMergeAtPersist: a transiently unreadable receipt preserves the recovery snapshot instead of discarding it (#2813 P1 B)", async () => {
+  // The P1 B hole: the content CAS COMMITTED, the provenance patch failed,
+  // and the rollback's ownership check hit a sidecar it could not read. The
+  // fail-open read returned undefined, which classified the standing merged
+  // body as superseded and DISCARDED the staged recovery snapshot on
+  // unproven grounds — the degraded state lost its recovery point. The
+  // three-way status keeps every unproven branch keep-side: the rollback
+  // refuses, the snapshot is preserved as the recovery point, and the
+  // outcome stays the degraded merged report.
+  const h = await harness({ frontmatterFails: true, receiptStatus: "unavailable" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, {
+    action: "merged",
+    targetId: "fact-target",
+    mergedContent: MERGED,
+    provenancePatched: false,
+  });
+  assert.deepEqual(
+    h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [{ content: MERGED, actor: "semantic-merge" }],
+    "no semantic-merge-rollback runs while receipt identity is unavailable",
+  );
+  assert.equal(
+    (
+      await listVersions(
+        h.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        h.storage.dir,
+      )
+    ).versions.length,
+    1,
+    "the recovery snapshot is preserved — an unreadable receipt never proves supersession",
+  );
+});
+
+test("applySemanticMergeAtPersist: an absent receipt while this writer holds a commit receipt is keep-side (#2813 P1 B)", async () => {
+  // Absent-with-receipt-in-hand corroborates NEITHER writer, so it takes
+  // the same keep-side handling as unavailable: never the superseded
+  // branch, never the discard it licenses.
+  const h = await harness({ frontmatterFails: true, receiptStatus: "absent" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, {
+    action: "merged",
+    targetId: "fact-target",
+    mergedContent: MERGED,
+    provenancePatched: false,
+  });
+  assert.deepEqual(
+    h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [{ content: MERGED, actor: "semantic-merge" }],
+  );
+  assert.equal(
+    (
+      await listVersions(
+        h.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        h.storage.dir,
+      )
+    ).versions.length,
+    1,
+    "the recovery snapshot is preserved when the sidecar corroborates neither writer",
+  );
 });

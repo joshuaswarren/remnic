@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { StorageManager } from "./storage.js";
+import type { CasRevisionTransaction } from "./storage/cas-revision-store.js";
 
 async function withStorage(run: (storage: StorageManager) => Promise<void>): Promise<void> {
   StorageManager.clearAllStaticCaches();
@@ -146,16 +147,24 @@ test("revision minting happens inside the capture lock during frontmatter mutati
     const expected = await storage.getMemoryById(created.id);
     assert.ok(expected);
 
-    let revisionMintedInsideLock = false;
-    const origCommit = (storage as any).casRevisions.commitRevision.bind((storage as any).casRevisions);
-    (storage as any).casRevisions.commitRevision = async (pathname: string) => {
+    let reservedInsideLock = false;
+    const seams = storage as unknown as {
+      casRevisions: { beginRevisionTransaction: (pathname: string) => Promise<CasRevisionTransaction> };
+    };
+    const origBegin = seams.casRevisions.beginRevisionTransaction.bind(seams.casRevisions);
+    seams.casRevisions.beginRevisionTransaction = async (pathname: string) => {
       const lockIndex = (storage as any).getTombstoneBlockedCaptureIndex();
-      revisionMintedInsideLock = lockIndex.isLocked ? lockIndex.isLocked(pathname) : true;
-      return await origCommit(pathname);
+      reservedInsideLock = lockIndex.isLocked ? lockIndex.isLocked(pathname) : true;
+      return await origBegin(pathname);
     };
 
     assert.equal(await storage.writeMemoryFrontmatter(expected, { status: "archived" }), true);
-    assert.equal(revisionMintedInsideLock, true, "commitRevision was called while holding capture lock");
+    assert.equal(reservedInsideLock, true, "the PENDING reservation was minted while holding the capture lock");
+    assert.equal(
+      (await storage.readCasRevisionStatus(expected.path)).status,
+      "present",
+      "the transaction published its COMMITTED receipt",
+    );
   });
 });
 
@@ -288,16 +297,16 @@ test("a failed receipt mint leaves the durable memory file untouched on a conten
     assert.equal((await storage.readCasRevisionStatus(before.path)).status, "absent");
 
     const seams = storage as unknown as {
-      casRevisions: { commitRevision: (pathname: string) => Promise<string> };
+      casRevisions: { beginRevisionTransaction: (pathname: string) => Promise<CasRevisionTransaction> };
     };
-    const origCommit = seams.casRevisions.commitRevision.bind(seams.casRevisions);
-    seams.casRevisions.commitRevision = async () => {
+    const origBegin = seams.casRevisions.beginRevisionTransaction.bind(seams.casRevisions);
+    seams.casRevisions.beginRevisionTransaction = async () => {
       throw new Error("simulated sidecar mint failure");
     };
     try {
       await assert.rejects(storage.updateMemory(created.id, "This body must never land."));
     } finally {
-      seams.casRevisions.commitRevision = origCommit;
+      seams.casRevisions.beginRevisionTransaction = origBegin;
     }
 
     assert.deepEqual(
@@ -325,16 +334,16 @@ test("a failed receipt mint leaves the durable memory file untouched on a semant
     const bytesBefore = await readFile(before.path);
 
     const seams = storage as unknown as {
-      casRevisions: { commitRevision: (pathname: string) => Promise<string> };
+      casRevisions: { beginRevisionTransaction: (pathname: string) => Promise<CasRevisionTransaction> };
     };
-    const origCommit = seams.casRevisions.commitRevision.bind(seams.casRevisions);
-    seams.casRevisions.commitRevision = async () => {
+    const origBegin = seams.casRevisions.beginRevisionTransaction.bind(seams.casRevisions);
+    seams.casRevisions.beginRevisionTransaction = async () => {
       throw new Error("simulated sidecar mint failure");
     };
     try {
       await assert.rejects(storage.writeMemoryFrontmatter(before, { status: "archived" }));
     } finally {
-      seams.casRevisions.commitRevision = origCommit;
+      seams.casRevisions.beginRevisionTransaction = origBegin;
     }
 
     assert.deepEqual(await readFile(before.path), bytesBefore);
@@ -352,9 +361,9 @@ test("an access-only frontmatter patch bypasses the mint and still lands (#2813 
     assert.ok(before);
 
     const seams = storage as unknown as {
-      casRevisions: { commitRevision: (pathname: string) => Promise<string> };
+      casRevisions: { beginRevisionTransaction: (pathname: string) => Promise<CasRevisionTransaction> };
     };
-    seams.casRevisions.commitRevision = async () => {
+    seams.casRevisions.beginRevisionTransaction = async () => {
       throw new Error("access-only patches must never mint");
     };
 
@@ -370,5 +379,213 @@ test("an access-only frontmatter patch bypasses the mint and still lands (#2813 
     assert.equal(after.frontmatter.accessCount, 9);
     assert.equal(after.frontmatter.lastAccessed, lastAccessed);
     assert.equal((await storage.readCasRevisionStatus(before.path)).status, "absent");
+  });
+});
+
+test("a symlinked cas-revisions sidecar directory is rejected, never followed (#2813 P1 A)", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "Symlink escape guard content.", { source: "test" });
+    const memory = await storage.getMemoryById(created.id);
+    assert.ok(memory);
+    assert.equal((await storage.readCasRevisionStatus(memory.path)).status, "absent");
+
+    const { baseDir } = storage as unknown as { baseDir: string };
+    const escapeRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-cas-escape-"));
+    try {
+      const shardDir = path.join(baseDir, ".offline-sync", "cas-revisions");
+      await rm(shardDir, { recursive: true, force: true });
+      await mkdir(path.dirname(shardDir), { recursive: true });
+      await symlink(escapeRoot, shardDir);
+
+      const status = await storage.readCasRevisionStatus(memory.path);
+      assert.equal(
+        status.status,
+        "unavailable",
+        "a symlinked sidecar reads as unavailable — never as data beyond the memory root",
+      );
+
+      await assert.rejects(storage.updateMemory(created.id, "Body routed through a symlink."));
+      const after = await storage.getMemoryById(created.id);
+      assert.ok(after);
+      assert.equal(after.content, memory.content, "the memory file is untouched when the sidecar path is unsafe");
+      assert.deepEqual(
+        await readdir(escapeRoot),
+        [],
+        "no shard, lock, or temporary file escaped the memory root through the symlink",
+      );
+    } finally {
+      await rm(escapeRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test("a symlinked .offline-sync ancestor is rejected before any sidecar use (#2813 P1 A)", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "Offline-sync ancestor guard content.", { source: "test" });
+    const memory = await storage.getMemoryById(created.id);
+    assert.ok(memory);
+
+    const { baseDir } = storage as unknown as { baseDir: string };
+    const escapeRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-sync-escape-"));
+    try {
+      const offlineSync = path.join(baseDir, ".offline-sync");
+      await rm(offlineSync, { recursive: true, force: true });
+      await symlink(escapeRoot, offlineSync);
+
+      assert.equal((await storage.readCasRevisionStatus(memory.path)).status, "unavailable");
+      await assert.rejects(storage.writeMemoryFrontmatter(memory, { status: "archived" }));
+      assert.deepEqual(await readdir(escapeRoot), [], "nothing escaped through the symlinked ancestor");
+    } finally {
+      await rm(escapeRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test("a symlinked shard file reads as unavailable and blocks minting (#2813 P1 A)", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "Shard link guard content.", { source: "test" });
+    const memory = await storage.getMemoryById(created.id);
+    assert.ok(memory);
+    assert.equal(await storage.writeMemoryFrontmatter(memory, { tags: ["v1"] }), true);
+    assert.ok(await storage.readCasRevision(memory.path));
+
+    const { baseDir } = storage as unknown as { baseDir: string };
+    const escapeRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-cas-shard-escape-"));
+    try {
+      const rel = path.relative(baseDir, memory.path).split(path.sep).join("/");
+      const escapeToken = "2099-01-01T00:00:00.000Z";
+      const escapeShard = path.join(escapeRoot, "shard.json");
+      await writeFile(
+        escapeShard,
+        `${JSON.stringify({ version: 1, path: rel, revision: escapeToken, state: "committed" })}\n`,
+        "utf8",
+      );
+      const shardPath = casShardPath(baseDir, memory.path);
+      await rm(shardPath);
+      await symlink(escapeShard, shardPath);
+
+      assert.equal(
+        (await storage.readCasRevisionStatus(memory.path)).status,
+        "unavailable",
+        "a shard symlink is refused — the escape target is never read as the standing receipt",
+      );
+      await assert.rejects(storage.updateMemory(created.id, "Body over a linked shard."));
+      const escaped = JSON.parse(await readFile(escapeShard, "utf8")) as { revision?: string };
+      assert.equal(escaped.revision, escapeToken, "the escape target is byte-identical — never followed nor replaced");
+    } finally {
+      await rm(escapeRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test("a memory file write failure aborts the pending receipt reservation (#2813 P1 C)", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "Write failure abort content.", { source: "test" });
+    const before = await storage.getMemoryById(created.id);
+    assert.ok(before);
+    const bytesBefore = await readFile(before.path);
+    assert.equal((await storage.readCasRevisionStatus(before.path)).status, "absent");
+
+    const seams = storage as unknown as {
+      writeStorageSecureFile: (pathname: string, fileContent: string) => Promise<void>;
+    };
+    const origWrite = seams.writeStorageSecureFile.bind(seams);
+    seams.writeStorageSecureFile = async () => {
+      throw new Error("simulated durable memory write failure");
+    };
+    try {
+      await assert.rejects(storage.updateMemory(created.id, "This body must not own a receipt."));
+    } finally {
+      seams.writeStorageSecureFile = origWrite;
+    }
+
+    assert.deepEqual(await readFile(before.path), bytesBefore, "the durable memory file never changed");
+    assert.equal(
+      (await storage.readCasRevisionStatus(before.path)).status,
+      "absent",
+      "the aborted reservation left no pending marker — the failed write owns nothing",
+    );
+    const shardDir = path.join(
+      (storage as unknown as { baseDir: string }).baseDir,
+      ".offline-sync",
+      "cas-revisions",
+    );
+    const leftovers = (await readdir(shardDir).catch(() => [] as string[])).filter((f) => f.endsWith(".json"));
+    assert.deepEqual(leftovers, [], "the pending shard was unlinked by the abort");
+  });
+});
+
+test("a receipt publication failure after the memory write preserves the pending marker for recovery (#2813 P1 C)", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "Publish failure ambiguity content.", { source: "test" });
+    const before = await storage.getMemoryById(created.id);
+    assert.ok(before);
+
+    const seams = storage as unknown as {
+      casRevisions: {
+        beginRevisionTransaction: (pathname: string) => Promise<CasRevisionTransaction>;
+        reconcilePendingRevision: (pathname: string, fileWriteLanded: boolean) => Promise<string>;
+      };
+    };
+    const origBegin = seams.casRevisions.beginRevisionTransaction.bind(seams.casRevisions);
+    let reserved: string | undefined;
+    seams.casRevisions.beginRevisionTransaction = async (pathname: string) => {
+      const transaction = await origBegin(pathname);
+      reserved = transaction.pendingRevision;
+      return {
+        pendingRevision: transaction.pendingRevision,
+        abort: transaction.abort,
+        commit: async () => {
+          throw new Error("simulated receipt publication failure");
+        },
+      };
+    };
+    try {
+      await assert.rejects(storage.updateMemory(created.id, "Body whose receipt never publishes."));
+    } finally {
+      seams.casRevisions.beginRevisionTransaction = origBegin;
+    }
+    assert.ok(reserved, "the reservation was minted before the write");
+
+    const onDisk = await readFile(before.path, "utf8");
+    assert.match(onDisk, /Body whose receipt never publishes\./, "the durable memory write landed");
+
+    const status = await storage.readCasRevisionStatus(before.path);
+    assert.equal(status.status, "unavailable", "a pending marker is never ownership and never absence");
+    assert.match(status.status === "unavailable" ? status.reason : "", /pending/i);
+
+    await assert.rejects(
+      storage.updateMemory(created.id, "Second body while ambiguous."),
+      "new receipt transactions refuse while a pending marker stands",
+    );
+    await assert.rejects(
+      storage.writeMemoryFrontmatter(before, { status: "archived" }),
+      "frontmatter minting refuses while a pending marker stands",
+    );
+
+    assert.equal(await seams.casRevisions.reconcilePendingRevision(before.path, true), "reconciled");
+    assert.deepEqual(await storage.readCasRevisionStatus(before.path), {
+      status: "present",
+      revision: reserved,
+    });
+  });
+});
+
+test("sequential writers on one target mint unique, strictly increasing receipts (#2813 P1 C)", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "First body.", { source: "test" });
+    const memory = await storage.getMemoryById(created.id);
+    assert.ok(memory);
+    assert.equal((await storage.readCasRevisionStatus(memory.path)).status, "absent");
+
+    assert.equal(await storage.updateMemory(created.id, "Second body."), true);
+    const receiptA = await storage.readCasRevision(memory.path);
+    assert.ok(receiptA, "writer A owns the first receipt");
+
+    assert.equal(await storage.updateMemory(created.id, "Third body."), true);
+    const receiptB = await storage.readCasRevision(memory.path);
+    assert.ok(receiptB, "writer B owns the second receipt");
+    assert.notEqual(receiptA, receiptB, "two commits never share a receipt");
+    assert.ok(receiptB > receiptA, "receipts are strictly increasing per target");
   });
 });

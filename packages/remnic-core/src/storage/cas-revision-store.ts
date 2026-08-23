@@ -11,6 +11,13 @@ type CasRevisionShard = {
   version: 1;
   path: string;
   revision: string;
+  /** Two-phase receipt state (#2813 P1 C). Absent on pre-two-phase shards,
+   * which read as committed. */
+  state?: "pending" | "committed";
+  /** The standing COMMITTED token the pending reservation replaced. An
+   * abort restores it, so a discarded reservation never erases the
+   * target's receipt history. */
+  previous?: string;
 };
 
 type CasRevisionMetadata = {
@@ -22,13 +29,35 @@ type CasRevisionMetadata = {
  * - `present` — the target's standing receipt token.
  * - `absent` — no receipt was ever minted (a pre-sidecar legacy record, or
  *   a fresh target); `undefined` semantics stay correct for those.
- * - `unavailable` — the sidecar could not be read, so receipt identity is
- *   UNKNOWN. The fail-open `readRevision` collapses this into `undefined`;
- *   callers that transact on receipt identity MUST refuse instead. */
+ * - `unavailable` — the sidecar could not be read (unreadable, unsafe, or
+ *   PENDING finalization), so receipt identity is UNKNOWN. The fail-open
+ *   `readRevision` collapses this into `undefined`; callers that transact
+ *   on receipt identity MUST refuse instead. */
 export type CasRevisionReadStatus =
   | { status: "present"; revision: string }
   | { status: "absent" }
   | { status: "unavailable"; reason: string };
+
+/** #2813 (P1 C): a write-ahead receipt transaction. `pendingRevision` is a
+ * RESERVATION, never ownership: no reader may attribute the record from it
+ * while the marker is pending. `commit` publishes the COMMITTED receipt
+ * after the durable memory write lands; `abort` discards the reservation
+ * (restoring the previous standing token) when the write failed. If
+ * `commit` itself fails after the write, the pending marker REMAINS so
+ * readers report recovery-needed and promotion/rollback refuse until
+ * {@link CasRevisionStore.reconcilePendingRevision} runs with the known
+ * write outcome. */
+export interface CasRevisionTransaction {
+  readonly pendingRevision: string;
+  commit(): Promise<void>;
+  abort(): Promise<void>;
+}
+
+type CasShardView =
+  | { kind: "missing" }
+  | { kind: "foreign" }
+  | { kind: "committed"; revision: string; foreign: boolean }
+  | { kind: "pending"; revision: string; previous?: string; foreign: boolean };
 
 const CAS_REVISION_LOCK_STALE_MS = 60_000;
 const CAS_REVISION_LOCK_MAX_WAIT_MS = 120_000;
@@ -43,6 +72,26 @@ const CAS_REVISION_LOCK_MAX_WAIT_MS = 120_000;
  * capture locks around every CAS); the memory files themselves carry no
  * cross-process write lock, so a cross-process same-path race keeps the
  * last-write-wins outcome the corpus already has.
+ *
+ * Receipts publish through a TWO-PHASE transaction (#2813 P1 C), because
+ * neither single-phase ordering is safe: mint-before-write publishes
+ * ownership for a write that can still fail, and mint-after-write leaves a
+ * written record with no receipt. Under the per-target shard lock:
+ *   1. reserve — the next token is minted and durably recorded as a
+ *      PENDING marker (write-ahead), carrying the standing token it
+ *      replaced;
+ *   2. write — the caller performs the durable memory write;
+ *   3. publish — the marker is atomically rewritten COMMITTED.
+ * A failed write aborts the reservation (restoring the previous token); a
+ * failed publish leaves the PENDING marker standing, which readers must
+ * treat as unavailable/recovery-needed — never ownership, never absence —
+ * so promotion and rollback refuse until recovery reconciles.
+ *
+ * Every sidecar path (shard, lock, temporary) is resolved through
+ * {@link resolveSafeStoragePath} (#2813 P1 A): a symlinked
+ * `.offline-sync/cas-revisions` directory — or any symlinked ancestor that
+ * escapes the memory root — is rejected before any lock, read, rename, or
+ * unlink, so sidecar traffic can never be redirected outside the root.
  */
 export class CasRevisionStore {
   private readonly baseDir: string;
@@ -106,12 +155,67 @@ export class CasRevisionStore {
     return this.parseCasRevisionMetadata(raw);
   }
 
-  private getShardInfo(relativePath: string): { shardPath: string; lockPath: string } {
+  /** #2813 (P1 A): every sidecar path is resolved (and symlink-audited)
+   * inside the memory root before it is used for a lock, read, rename, or
+   * unlink. A symlinked `.offline-sync`, `.offline-sync/cas-revisions`, or
+   * shard file makes this throw, so no sidecar traffic can follow a link
+   * out of the root. */
+  private async getSafeShardInfo(relativePath: string): Promise<{ shardPath: string; lockPath: string }> {
+    const baseDir = path.resolve(this.baseDir);
     const hash = createHash("sha256").update(relativePath).digest("hex");
-    const shardDir = path.join(this.baseDir, ".offline-sync", "cas-revisions");
-    const shardPath = path.join(shardDir, `${hash}.json`);
-    const lockPath = path.join(shardDir, `${hash}.json.lock`);
+    const shardPath = await resolveSafeStoragePath(baseDir, ".offline-sync", "cas-revisions", `${hash}.json`);
+    const lockPath = await resolveSafeStoragePath(baseDir, ".offline-sync", "cas-revisions", `${hash}.json.lock`);
     return { shardPath, lockPath };
+  }
+
+  private async readShardView(shardPath: string, relativePath: string): Promise<CasShardView> {
+    let raw: string;
+    try {
+      raw = await readFile(shardPath, "utf8");
+    } catch (error) {
+      if (isErrnoCode(error, "ENOENT")) return { kind: "missing" };
+      throw error;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("CAS revision shard is unreadable.");
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { kind: "foreign" };
+    }
+    const root = parsed as Record<string, unknown>;
+    if (root.state !== undefined) {
+      // Two-phase shard: strict shape. A state-bearing shard that does not
+      // validate is corruption — unavailability, never a usable identity.
+      if (
+        root.version !== 1 ||
+        typeof root.path !== "string" ||
+        typeof root.revision !== "string" ||
+        root.revision.length === 0 ||
+        (root.state !== "pending" && root.state !== "committed") ||
+        (root.previous !== undefined &&
+          (typeof root.previous !== "string" || root.previous.length === 0))
+      ) {
+        throw new Error("CAS revision shard is unreadable.");
+      }
+      const foreign = root.path !== relativePath;
+      return root.state === "pending"
+        ? { kind: "pending", revision: root.revision, previous: root.previous, foreign }
+        : { kind: "committed", revision: root.revision, foreign };
+    }
+    // Pre-two-phase shard: a full-shape match reads as committed; anything
+    // else keeps the legacy fall-through (legacy metadata, then absence).
+    if (
+      root.version === 1 &&
+      root.path === relativePath &&
+      typeof root.revision === "string" &&
+      root.revision.length > 0
+    ) {
+      return { kind: "committed", revision: root.revision, foreign: false };
+    }
+    return { kind: "foreign" };
   }
 
   private async readStandingRevision(relativePath: string): Promise<string | undefined> {
@@ -127,58 +231,41 @@ export class CasRevisionStore {
    * undefined ONLY when no receipt exists for the target — the shard is
    * absent (or names another target) and the legacy metadata holds no
    * entry. THROWS when the standing receipt cannot be determined: an
-   * unreadable or corrupt shard, or unreadable or invalid legacy metadata.
+   * unreadable or corrupt shard, a PENDING reservation awaiting
+   * finalization or recovery, or unreadable or invalid legacy metadata.
    * Fail-open callers collapse the throw into undefined; truthful callers
    * ({@link readRevisionStatus}) report `unavailable` so a transaction can
    * refuse instead of mistaking the failure for absence. */
   private async readStandingRevisionStrict(relativePath: string): Promise<string | undefined> {
-    const { shardPath } = this.getShardInfo(relativePath);
-    const fromShard = await this.readShardRevision(shardPath, relativePath);
-    if (fromShard !== undefined) return fromShard;
+    const { shardPath } = await this.getSafeShardInfo(relativePath);
+    const view = await this.readShardView(shardPath, relativePath);
+    if (view.kind === "pending") {
+      throw new Error(
+        `CAS revision receipt for ${relativePath} is pending finalization (recovery needed).`,
+      );
+    }
+    if (view.kind === "committed" && !view.foreign) return view.revision;
     const legacyMap = await this.readLegacyMetadata();
     return legacyMap.get(relativePath);
   }
 
-  /** The shard's standing revision, or undefined when the shard is absent
-   * or names another target (fall back to legacy metadata, as before).
-   * Throws when the shard exists but cannot be read or parsed — a corrupt
-   * shard is unavailability, never absence. */
-  private async readShardRevision(shardPath: string, relativePath: string): Promise<string | undefined> {
-    let raw: string;
-    try {
-      raw = await readFile(shardPath, "utf8");
-    } catch (error) {
-      if (isErrnoCode(error, "ENOENT")) return undefined;
-      throw error;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new Error("CAS revision shard is unreadable.");
-    }
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed) &&
-      (parsed as Record<string, unknown>).version === 1 &&
-      (parsed as Record<string, unknown>).path === relativePath &&
-      typeof (parsed as Record<string, unknown>).revision === "string" &&
-      ((parsed as Record<string, unknown>).revision as string).length > 0
-    ) {
-      return (parsed as Record<string, unknown>).revision as string;
-    }
-    return undefined;
-  }
-
   private async writeShard(
+    shardPath: string,
     relativePath: string,
     revision: string,
     lock: HeldFileLockController,
+    state: "pending" | "committed",
+    previous?: string,
   ): Promise<void> {
-    const { shardPath } = this.getShardInfo(relativePath);
-    const payload: CasRevisionShard = { version: 1, path: relativePath, revision };
-    const temporaryPath = `${shardPath}.${process.pid}.${randomUUID()}.tmp`;
+    const payload: CasRevisionShard =
+      state === "pending" && previous !== undefined
+        ? { version: 1, path: relativePath, revision, state, previous }
+        : { version: 1, path: relativePath, revision, state };
+    const baseDir = path.resolve(this.baseDir);
+    const temporaryPath = await resolveSafeStoragePath(
+      baseDir,
+      path.relative(baseDir, `${shardPath}.${process.pid}.${randomUUID()}.tmp`),
+    );
     let handle: FileHandle | null = null;
     try {
       await mkdir(path.dirname(shardPath), { recursive: true });
@@ -211,6 +298,21 @@ export class CasRevisionStore {
     return path.relative(baseDir, target).split(path.sep).join("/");
   }
 
+  private async withShardLock<T>(
+    relativePath: string,
+    task: (lock: HeldFileLockController) => Promise<T>,
+  ): Promise<T> {
+    const { lockPath } = await this.getSafeShardInfo(relativePath);
+    return await withHeldFileLock(
+      lockPath,
+      { staleMs: CAS_REVISION_LOCK_STALE_MS, maxWaitMs: CAS_REVISION_LOCK_MAX_WAIT_MS },
+      async (acquired, lock) => {
+        if (!acquired) throw new Error("CAS revision lock is unavailable.");
+        return await task(lock);
+      },
+    );
+  }
+
   /** The target's standing revision token, or undefined when no receipt was
    * ever minted for it. Fail-open on storage/read errors. */
   async readRevision(filePath: string): Promise<string | undefined> {
@@ -226,8 +328,9 @@ export class CasRevisionStore {
   /** #2813 (P1 A): the truthful standing-receipt read. `absent` means no
    * receipt was ever minted for the target — undefined semantics stay
    * correct for those records. `unavailable` means the sidecar could not
-   * be read; callers that transact on receipt identity MUST refuse rather
-   * than treat the failure as absence. */
+   * be read OR a reservation is pending finalization; callers that
+   * transact on receipt identity MUST refuse rather than treat the
+   * failure as absence. */
   async readRevisionStatus(filePath: string): Promise<CasRevisionReadStatus> {
     try {
       const relativePath = await this.resolveRelativePath(filePath);
@@ -238,23 +341,88 @@ export class CasRevisionStore {
     }
   }
 
-  /** Mint the NEXT revision token for the target and durably record it:
-   * strictly greater than the standing token (max(clock, prev + 1ms)), so
-   * two commits can never share a receipt — not within one millisecond, not
-   * across a backward clock step. Sharded per-target for O(1) mutations. */
-  async commitRevision(filePath: string): Promise<string> {
+  /** #2813 (P1 C): reserve the NEXT revision token as a durable PENDING
+   * marker under the target's shard lock — the write-ahead record of a
+   * receipt transaction. The token is strictly greater than the standing
+   * token (max(clock, prev + 1ms)), so two commits can never share a
+   * receipt — not within one millisecond, not across a backward clock
+   * step. Refuses while another reservation is pending (recovery needed)
+   * or the standing receipt cannot be determined. The caller MUST either
+   * `commit` after its durable write lands or `abort` when it fails. */
+  async beginRevisionTransaction(filePath: string): Promise<CasRevisionTransaction> {
     const relativePath = await this.resolveRelativePath(filePath);
-    const { lockPath } = this.getShardInfo(relativePath);
-    return await withHeldFileLock(
-      lockPath,
-      { staleMs: CAS_REVISION_LOCK_STALE_MS, maxWaitMs: CAS_REVISION_LOCK_MAX_WAIT_MS },
-      async (acquired, lock) => {
-        if (!acquired) throw new Error("CAS revision lock is unavailable.");
-        const standing = await this.readStandingRevision(relativePath);
-        const next = nextCasRevisionIso(standing);
-        await this.writeShard(relativePath, next, lock);
-        return next;
-      },
-    );
+    return await this.withShardLock(relativePath, async (lock) => {
+      const standing = await this.readStandingRevisionStrict(relativePath);
+      const next = nextCasRevisionIso(standing);
+      const { shardPath } = await this.getSafeShardInfo(relativePath);
+      await this.writeShard(shardPath, relativePath, next, lock, "pending", standing);
+      return {
+        pendingRevision: next,
+        commit: () => this.finalizeRevisionTransaction(relativePath, next, "commit"),
+        abort: () => this.finalizeRevisionTransaction(relativePath, next, "abort"),
+      };
+    });
+  }
+
+  private async finalizeRevisionTransaction(
+    relativePath: string,
+    token: string,
+    outcome: "commit" | "abort",
+  ): Promise<void> {
+    await this.withShardLock(relativePath, async (lock) => {
+      const { shardPath } = await this.getSafeShardInfo(relativePath);
+      const view = await this.readShardView(shardPath, relativePath);
+      if (view.kind === "pending" && !view.foreign && view.revision === token) {
+        if (outcome === "commit") {
+          await this.writeShard(shardPath, relativePath, token, lock, "committed");
+        } else if (view.previous !== undefined) {
+          await this.writeShard(shardPath, relativePath, view.previous, lock, "committed");
+        } else {
+          await unlink(shardPath);
+        }
+        return;
+      }
+      if (outcome === "commit" && view.kind === "committed" && !view.foreign && view.revision === token) {
+        return; // idempotent retry after a crash between publish and acknowledgment
+      }
+      if (outcome === "abort" && view.kind === "missing") {
+        return; // idempotent retry
+      }
+      throw new Error(
+        `CAS revision transaction ${outcome} refused for ${relativePath}: the pending marker does not match the reserved token.`,
+      );
+    });
+  }
+
+  /** #2813 (P1 C): recovery for a reservation left PENDING by a crash or a
+   * failed publication. The caller supplies the KNOWN outcome of the
+   * durable memory write: `fileWriteLanded` publishes the pending token as
+   * the COMMITTED receipt; otherwise the reservation is discarded and the
+   * previous standing token restored. Idempotent — an already-committed or
+   * absent shard is reported, not mutated. */
+  async reconcilePendingRevision(
+    filePath: string,
+    fileWriteLanded: boolean,
+  ): Promise<"reconciled" | "committed" | "absent"> {
+    const relativePath = await this.resolveRelativePath(filePath);
+    return await this.withShardLock(relativePath, async (lock) => {
+      const { shardPath } = await this.getSafeShardInfo(relativePath);
+      const view = await this.readShardView(shardPath, relativePath);
+      if (view.kind === "committed") return "committed";
+      if (view.kind !== "pending") return "absent";
+      if (view.foreign) {
+        throw new Error(
+          `CAS revision pending marker for ${relativePath} names another target; manual recovery is required.`,
+        );
+      }
+      if (fileWriteLanded) {
+        await this.writeShard(shardPath, relativePath, view.revision, lock, "committed");
+      } else if (view.previous !== undefined) {
+        await this.writeShard(shardPath, relativePath, view.previous, lock, "committed");
+      } else {
+        await unlink(shardPath);
+      }
+      return "reconciled";
+    });
   }
 }
