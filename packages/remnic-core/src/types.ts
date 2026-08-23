@@ -683,6 +683,14 @@ export interface SemanticChunkingConfigShape {
   fallbackToRecursive: boolean;
 }
 
+export interface BackgroundGenerationConfig {
+  /** Full chat-completions URL. Never used as the global OpenAI base URL. */
+  endpoint: string;
+  /** Loopback bearer from the generated client file. */
+  token: string;
+  timeoutSeconds: number;
+}
+
 export interface PluginConfig
   extends BoundedJsonlStateConfig,
     SecurityConfig,
@@ -691,6 +699,11 @@ export interface PluginConfig
     DeepRecallSettings {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
+  /**
+   * Chat-only Hermes loopback bridge. Consumed only by background generation.
+   * Never assigned to openaiBaseUrl.
+   */
+  backgroundGeneration?: BackgroundGenerationConfig;
   model: string;
   reasoningEffort: ReasoningEffort;
   triggerMode: TriggerMode;

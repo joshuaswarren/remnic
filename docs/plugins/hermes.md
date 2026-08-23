@@ -156,7 +156,7 @@ remnic:
   #   port: 8765          # 0 = pick a free ephemeral port
   #   max_body_bytes: 524288
   #   timeout_seconds: 120.0
-  #   client_config_path: ""   # set to also write a credential-free client JSON
+  #   client_config_path: ""   # set to write the 0600 client JSON (includes a loopback bearer)
 
 ### Field reference
 
@@ -233,24 +233,26 @@ a raw API key or OAuth token.
   the message list, and the response reports the model the host actually
   used. There is no `model`/`provider` key in `llm_bridge` config either —
   setting one fails registration loudly instead of being honored.
-- **No credentials in generated config.** The optional
-  `client_config_path` output describes the endpoint and limits only. It is
-  built from a fixed key set with no field that can carry a token or key,
-  and written with `0600` permissions.
-- **Bounded and quiet.** Bodies above `max_body_bytes` get `413`; delegations
-  past `timeout_seconds` get `504`. Request bodies are never logged, and
-  error responses are fixed strings — no exception text, no echoes.
+- **Generated loopback bearer.** The optional `client_config_path` output
+  describes the endpoint, limits, and a generated random token. It is
+  written with `0600` permissions. It never copies a host provider
+  credential. Every request, including `/healthz`, is checked with a
+  constant-time compare. Local callers without the bearer are denied.
+  The token is never logged.
+- **Bounded and quiet.** Bodies above `max_body_bytes` get `413`;
+  queue wait and delegate work share one `timeout_seconds` deadline.
+  A depleted queue budget starts no delegate. Request bodies are never
+  logged, and error responses are fixed strings — no exception text, no
+  echoes.
 
 ### Daemon configuration
 
-Point the Remnic daemon at the generated credential-free client JSON by
-setting `llmBridgeClientConfigPath` to the same path as Hermes
+Point the Remnic daemon at the generated client JSON by setting
+`llmBridgeClientConfigPath` to the same path as Hermes
 `remnic.llm_bridge.client_config_path`. `parseConfig` reads `endpoint`
-from that file and maps it onto the supported `openaiBaseUrl` field
-(stripping `/chat/completions` so the OpenAI client hits `/v1`). A
-placeholder `openaiApiKey` is supplied only when no key is already
-configured, because extraction requires a non-empty key even against this
-unauthenticated loopback listener.
+and `token` into `backgroundGeneration` only. Extraction, day summary,
+dependency revalidation, and embeddings keep using `openaiBaseUrl` and
+are unchanged. Hourly summarizer is the background-generation consumer.
 
 ```json
 {
@@ -258,28 +260,32 @@ unauthenticated loopback listener.
 }
 ```
 
-Equivalent explicit fields, if you prefer not to generate the client file:
+Equivalent explicit fields:
 
 ```json
 {
-  "openaiBaseUrl": "http://127.0.0.1:8765/v1",
-  "openaiApiKey": "remnic-hermes-llm-bridge"
+  "backgroundGeneration": {
+    "endpoint": "http://127.0.0.1:8765/v1/chat/completions",
+    "token": "<generated-loopback-bearer>",
+    "timeoutSeconds": 120
+  }
 }
 ```
 
-There is no `backgroundGeneration` object. Unknown daemon keys are ignored;
-that discarded shape would not enable extraction. The `model` value a client
-sends is ignored by the bridge — it exists only to satisfy OpenAI-shaped
-callers. Prefer `client_config_path` on the Hermes side so the plugin writes
-the JSON the daemon actually consumes.
+Do not assign the bridge to `openaiBaseUrl`. That shared base URL is
+used for `/v1/responses` and `/v1/embeddings`, which this listener does
+not serve. The `model` value a client sends is ignored by the bridge —
+it exists only to satisfy OpenAI-shaped callers.
 
 ### Supervision
 
 The bridge runs on daemon threads inside the Hermes process and lives and
 dies with it — there is no separate service to supervise. Supervisors should
-watch the Hermes process itself and may probe `GET /healthz` on the bridge
-port for liveness. The bridge is **fail-open**: invalid config, a missing Hermes `PluginLlm` runtime, or a failed bind logs a warning and leaves plugin
-registration, recall, and observation fully working.
+watch the Hermes process itself and may probe `GET /healthz` with the
+generated bearer from the client file. The bridge is **fail-open**: invalid
+config, a missing Hermes `PluginLlm` runtime, or a failed bind logs a
+warning and leaves plugin registration, recall, and observation fully
+working.
 
 ### Background-only: never on the recall path
 

@@ -133,6 +133,28 @@ def _post(
         return response.status, raw
 
 
+def _authed_post(
+    bridge: HermesLlmBridge,
+    payload: bytes | str,
+    **kwargs: Any,
+) -> tuple[int, Any]:
+    headers = dict(kwargs.pop("headers", None) or {})
+    headers["Authorization"] = f"Bearer {bridge.auth_token}"
+    return _post(bridge.bound_port, payload, headers=headers, **kwargs)
+
+
+def _get(port: int, path: str, *, headers: dict[str, str] | None = None) -> tuple[int, Any]:
+    connection = HTTPConnection("127.0.0.1", port, timeout=5)
+    connection.request("GET", path, headers=headers or {})
+    response = connection.getresponse()
+    raw = response.read()
+    connection.close()
+    try:
+        return response.status, json.loads(raw)
+    except ValueError:
+        return response.status, raw
+
+
 class TestListenerGuard:
     @pytest.mark.parametrize(
         "host", ["0.0.0.0", "::", "[::]", "192.168.1.5", "10.0.0.7", "example.com", ""]
@@ -223,8 +245,8 @@ class TestRoutingIsServerOwned:
         self, started: tuple[HermesLlmBridge, RecordingDelegate]
     ) -> None:
         bridge, delegate = started
-        status, body = _post(
-            bridge.bound_port,
+        status, body = _authed_post(
+            bridge,
             json.dumps(
                 {
                     "model": "gpt-attacker-model",
@@ -246,8 +268,8 @@ class TestRoutingIsServerOwned:
         self, started: tuple[HermesLlmBridge, RecordingDelegate]
     ) -> None:
         bridge, delegate = started
-        status, _ = _post(
-            bridge.bound_port,
+        status, _ = _authed_post(
+            bridge,
             json.dumps(
                 {
                     "model": "m",
@@ -275,8 +297,8 @@ class TestRoutingIsServerOwned:
         )
         assert bridge is not None
         try:
-            status, _ = _post(
-                bridge.bound_port,
+            status, _ = _authed_post(
+                bridge,
                 json.dumps(
                     {
                         "model": "gpt-attacker-model",
@@ -299,8 +321,8 @@ class TestRoutingIsServerOwned:
 class TestDelegation:
     def test_completes_through_delegate_with_openai_shape(self) -> None:
         with running_bridge(BridgePolicy(enabled=True), RecordingDelegate()) as bridge:
-            status, body = _post(
-                bridge.bound_port,
+            status, body = _authed_post(
+                bridge,
                 json.dumps({"messages": [{"role": "user", "content": "summarize today"}]}),
             )
         assert status == 200
@@ -314,37 +336,37 @@ class TestDelegation:
 
     def test_health_endpoint(self) -> None:
         with running_bridge(BridgePolicy(enabled=True), RecordingDelegate()) as bridge:
-            connection = HTTPConnection("127.0.0.1", bridge.bound_port, timeout=5)
-            connection.request("GET", "/healthz")
-            response = connection.getresponse()
-            body = json.loads(response.read())
-            connection.close()
-        assert response.status == 200
+            status, body = _get(
+                bridge.bound_port,
+                "/healthz",
+                headers={"Authorization": f"Bearer {bridge.auth_token}"},
+            )
+        assert status == 200
         assert body == {"status": "ok"}
 
     def test_unknown_paths_are_404(self) -> None:
         with running_bridge(BridgePolicy(enabled=True), RecordingDelegate()) as bridge:
-            status, _ = _post(bridge.bound_port, "{}", path="/v1/completions")
+            status, _ = _authed_post(bridge, "{}", path="/v1/completions")
             assert status == 404
-            connection = HTTPConnection("127.0.0.1", bridge.bound_port, timeout=5)
-            connection.request("GET", "/v1/models")
-            response = connection.getresponse()
-            response.read()
-            connection.close()
-            assert response.status == 404
+            status, _ = _get(
+                bridge.bound_port,
+                "/v1/models",
+                headers={"Authorization": f"Bearer {bridge.auth_token}"},
+            )
+            assert status == 404
 
     def test_only_post_is_accepted_on_endpoint(self) -> None:
         with running_bridge(BridgePolicy(enabled=True), RecordingDelegate()) as bridge:
-            connection = HTTPConnection("127.0.0.1", bridge.bound_port, timeout=5)
-            connection.request("GET", _ENDPOINT)
-            response = connection.getresponse()
-            response.read()
-            connection.close()
-            assert response.status == 404
+            status, _ = _get(
+                bridge.bound_port,
+                _ENDPOINT,
+                headers={"Authorization": f"Bearer {bridge.auth_token}"},
+            )
+            assert status == 404
 
 
 class TestCredentialsNeverWritten:
-    def test_client_config_has_exact_credential_free_keyset(self, tmp_path: Any) -> None:
+    def test_client_config_includes_generated_token_only(self, tmp_path: Any) -> None:
         with running_bridge(BridgePolicy(enabled=True), RecordingDelegate()) as bridge:
             config = bridge.write_client_config(str(tmp_path / "client.json"))
         assert set(config) == {
@@ -354,12 +376,17 @@ class TestCredentialsNeverWritten:
             "model_policy",
             "max_body_bytes",
             "timeout_seconds",
+            "token",
         }
-        serialized = json.dumps(config).lower()
+        token = config["token"]
+        assert isinstance(token, str)
+        assert len(token) >= 32
+        without_token = {key: value for key, value in config.items() if key != "token"}
+        serialized = json.dumps(without_token).lower()
         assert not any(marker in serialized for marker in _CREDENTIAL_MARKERS)
 
     def test_client_config_file_contains_no_runtime_secrets(self, tmp_path: Any) -> None:
-        """Tokens visible to the process must not leak into the file."""
+        """Provider tokens visible to the process must not leak into the file."""
         path = tmp_path / "client.json"
         section = {
             "enabled": True,
@@ -377,10 +404,10 @@ class TestCredentialsNeverWritten:
         assert bridge is not None
         try:
             text = path.read_text(encoding="utf-8")
+            payload = json.loads(text)
             assert "sk-live-leak-123" not in text
             assert "remnic-live-token-456" not in text
-            assert not any(marker in text.lower() for marker in _CREDENTIAL_MARKERS)
-            # Owner-only permissions.
+            assert payload["token"] == bridge.auth_token
             mode = stat.S_IMODE(path.stat().st_mode)
             assert mode == 0o600
         finally:
@@ -400,7 +427,7 @@ class TestBodyBoundsAndAbort:
             BridgePolicy(enabled=True, max_body_bytes=1024), delegate
         ) as bridge:
             big = json.dumps({"messages": [{"role": "user", "content": "x" * 4096}]})
-            status, body = _post(bridge.bound_port, big)
+            status, body = _authed_post(bridge, big)
         assert status == 413
         assert body["error"]["message"] == "request body too large"
         assert delegate.calls == []
@@ -409,8 +436,11 @@ class TestBodyBoundsAndAbort:
         with running_bridge(BridgePolicy(enabled=True), RecordingDelegate()) as bridge:
             with socket.create_connection(("127.0.0.1", bridge.bound_port), timeout=5) as sock:
                 sock.sendall(
-                    f"POST {_ENDPOINT} HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-                    "Connection: close\r\n\r\n".encode("utf-8")
+                    (
+                        f"POST {_ENDPOINT} HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                        f"Authorization: Bearer {bridge.auth_token}\r\n"
+                        "Connection: close\r\n\r\n"
+                    ).encode("utf-8")
                 )
                 data = sock.recv(4096)
         assert b"411" in data.split(b"\r\n", 1)[0]
@@ -430,7 +460,7 @@ class TestBodyBoundsAndAbort:
     def test_invalid_bodies_are_rejected_400(self, payload: bytes) -> None:
         delegate = RecordingDelegate()
         with running_bridge(BridgePolicy(enabled=True), delegate) as bridge:
-            status, body = _post(bridge.bound_port, payload)
+            status, body = _authed_post(bridge, payload)
         assert status == 400
         assert body["error"]["message"] == "invalid json body" or (
             body["error"]["message"] == "invalid request body"
@@ -443,8 +473,8 @@ class TestBodyBoundsAndAbort:
         with running_bridge(
             BridgePolicy(enabled=True, timeout_seconds=2.0), complete
         ) as bridge:
-            status, body = _post(
-                bridge.bound_port,
+            status, body = _authed_post(
+                bridge,
                 '{"messages": [{"role": "user", "content": "x"}]}',
                 timeout=8.0,
             )
@@ -452,8 +482,8 @@ class TestBodyBoundsAndAbort:
             assert body["error"]["message"] == "completion timed out"
             assert bridge.active_work == 0
             assert gate.is_file()
-            status_next, body_next = _post(
-                bridge.bound_port,
+            status_next, body_next = _authed_post(
+                bridge,
                 '{"messages": [{"role": "user", "content": "y"}]}',
                 timeout=8.0,
             )
@@ -464,8 +494,8 @@ class TestBodyBoundsAndAbort:
     def test_delegate_failure_returns_fixed_502_without_error_detail(self) -> None:
         delegate = RecordingDelegate(error=RuntimeError("boom secret detail /sk-key/"))
         with running_bridge(BridgePolicy(enabled=True), delegate) as bridge:
-            status, body = _post(
-                bridge.bound_port,
+            status, body = _authed_post(
+                bridge,
                 json.dumps({"messages": [{"role": "user", "content": "x"}]}),
             )
         assert status == 502
@@ -480,8 +510,11 @@ class TestBodyBoundsAndAbort:
         with running_bridge(BridgePolicy(enabled=True), delegate) as bridge:
             with socket.create_connection(("127.0.0.1", bridge.bound_port), timeout=5) as sock:
                 sock.sendall(
-                    f"POST {_ENDPOINT} HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-                    "Content-Length: 64\r\nConnection: close\r\n\r\npartial".encode("utf-8")
+                    (
+                        f"POST {_ENDPOINT} HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                        f"Authorization: Bearer {bridge.auth_token}\r\n"
+                        "Content-Length: 64\r\nConnection: close\r\n\r\npartial"
+                    ).encode("utf-8")
                 )
                 sock.close()
             time.sleep(0.3)
@@ -493,12 +526,72 @@ class TestNoBodyLogging:
         marker = "SECRET-PROMPT-MARKER-8321"
         with running_bridge(BridgePolicy(enabled=True), RecordingDelegate()) as bridge:
             with caplog.at_level(logging.DEBUG, logger="remnic_hermes.llm_bridge"):
-                status, _ = _post(
-                    bridge.bound_port,
+                status, _ = _authed_post(
+                    bridge,
                     json.dumps({"messages": [{"role": "user", "content": marker}]}),
                 )
                 assert status == 200
         assert marker not in caplog.text
+        assert bridge.auth_token not in caplog.text
+
+
+class TestLoopbackAuth:
+    def test_missing_bearer_is_401_and_does_not_delegate(self) -> None:
+        delegate = RecordingDelegate()
+        with running_bridge(BridgePolicy(enabled=True), delegate) as bridge:
+            status, body = _post(
+                bridge.bound_port,
+                json.dumps({"messages": [{"role": "user", "content": "x"}]}),
+            )
+            health_status, _ = _get(bridge.bound_port, "/healthz")
+        assert status == 401
+        assert body["error"]["message"] == "unauthorized"
+        assert health_status == 401
+        assert delegate.calls == []
+
+    def test_wrong_bearer_is_401(self) -> None:
+        delegate = RecordingDelegate()
+        with running_bridge(BridgePolicy(enabled=True), delegate) as bridge:
+            status, body = _post(
+                bridge.bound_port,
+                json.dumps({"messages": [{"role": "user", "content": "x"}]}),
+                headers={"Authorization": "Bearer not-the-token"},
+            )
+        assert status == 401
+        assert body["error"]["message"] == "unauthorized"
+        assert delegate.calls == []
+
+
+class TestSingleDeadline:
+    def test_queue_timeout_starts_no_delegate(self) -> None:
+        delegate = RecordingDelegate()
+        bridge = HermesLlmBridge(BridgePolicy(enabled=True, timeout_seconds=0.05), delegate)
+        assert bridge._slots.acquire(blocking=False)
+        assert bridge._slots.acquire(blocking=False)
+        with pytest.raises(TimeoutError, match="deadline"):
+            bridge.complete_with_deadline([{"role": "user", "content": "x"}])
+        assert delegate.calls == []
+        assert bridge.active_work == 0
+
+    def test_delegate_receives_remaining_budget_only(self) -> None:
+        seen: list[float] = []
+
+        def complete(messages: list[dict[str, str]], timeout: float | None = None) -> Any:
+            seen.append(float(timeout or 0))
+            return _delegate_result()
+
+        bridge = HermesLlmBridge(BridgePolicy(enabled=True, timeout_seconds=0.4), complete)
+        original = bridge._slots.acquire
+
+        def delayed_acquire(timeout: float | None = None) -> bool:
+            time.sleep(0.15)
+            return original(timeout=0)
+
+        bridge._slots.acquire = delayed_acquire  # type: ignore[method-assign]
+        bridge.complete_with_deadline([{"role": "user", "content": "x"}])
+        assert len(seen) == 1
+        assert 0 < seen[0] <= 0.3
+
 
 
 class TestOptInDefaults:

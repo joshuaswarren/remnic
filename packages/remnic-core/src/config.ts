@@ -15,7 +15,7 @@ import type {
   MemoryOsPresetName,
   AgentPersonaModelConfig,
   PluginConfig,
-  PrincipalRule,
+  BackgroundGenerationConfig,
   RecallPipelineConfig,
   RecallSectionConfig,
   ReasoningEffort,
@@ -511,52 +511,84 @@ function normalizeOpenaiBaseUrl(value: string | undefined, source: "config" | "e
 }
 
 
-const LLM_BRIDGE_PLACEHOLDER_KEY = "remnic-hermes-llm-bridge";
-
-function deriveOpenaiBaseUrlFromBridgeEndpoint(endpoint: string): string {
-  let trimmed = endpoint.trim().replace(/\/+$/, "");
-  if (trimmed.endsWith("/chat/completions")) {
-    trimmed = trimmed.slice(0, -"/chat/completions".length);
+function parseBackgroundEndpoint(value: string, keyName: string): string {
+  const trimmed = value.trim().replace(/\/+$/, "");
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`${keyName} must be an absolute HTTP or HTTPS URL`);
   }
-  const derived = normalizeOpenaiBaseUrl(trimmed, "config");
-  if (!derived) {
-    throw new Error("llmBridgeClientConfigPath endpoint must be an absolute HTTP or HTTPS URL");
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error(`${keyName} must use HTTP or HTTPS`);
   }
-  return derived;
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error(
+      `${keyName} must not include credentials, query parameters, or fragments`,
+    );
+  }
+  return trimmed;
 }
 
-function applyLlmBridgeClientConfigPath(
-  cfg: Record<string, unknown>,
-  baseUrl: string | undefined,
-  apiKey: string | undefined,
-  openaiApiKeyDisabled: boolean,
-): { baseUrl: string | undefined; apiKey: string | undefined } {
-  const raw = cfg.llmBridgeClientConfigPath;
-  if (raw === undefined || raw === null || raw === "") {
-    return { baseUrl, apiKey };
+function parseBackgroundGenerationObject(
+  raw: unknown,
+  keyName: string,
+): BackgroundGenerationConfig {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`${keyName} must be an object`);
   }
-  if (typeof raw !== "string") {
-    throw new Error("llmBridgeClientConfigPath must be a string");
+  const record = raw as Record<string, unknown>;
+  const endpointRaw = record.endpoint ?? record.url;
+  if (typeof endpointRaw !== "string" || endpointRaw.trim().length === 0) {
+    throw new Error(`${keyName} must include an endpoint URL`);
   }
-  const expanded = expandTildePath(resolveEnvVars(raw.trim()));
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(expanded, "utf8"));
-  } catch {
-    throw new Error(`llmBridgeClientConfigPath could not be read: ${expanded}`);
+  const tokenRaw = record.token;
+  if (typeof tokenRaw !== "string" || tokenRaw.length === 0) {
+    throw new Error(`${keyName} must include a token`);
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("llmBridgeClientConfigPath must contain a JSON object");
+  const timeoutRaw = record.timeoutSeconds ?? record.timeout_seconds;
+  let timeoutSeconds = 120;
+  if (timeoutRaw !== undefined) {
+    const parsed = typeof timeoutRaw === "number" ? timeoutRaw : Number(timeoutRaw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new Error(`${keyName} timeoutSeconds must be a finite number > 0`);
+    }
+    timeoutSeconds = parsed;
   }
-  const record = parsed as Record<string, unknown>;
-  const endpoint = record.endpoint ?? record.url;
-  if (typeof endpoint !== "string" || endpoint.trim().length === 0) {
-    throw new Error("llmBridgeClientConfigPath JSON must include an endpoint URL");
-  }
-  const derived = deriveOpenaiBaseUrlFromBridgeEndpoint(endpoint);
   return {
-    baseUrl: baseUrl ?? derived,
-    apiKey: apiKey !== undefined || openaiApiKeyDisabled ? apiKey : LLM_BRIDGE_PLACEHOLDER_KEY,
+    endpoint: parseBackgroundEndpoint(endpointRaw, `${keyName}.endpoint`),
+    token: tokenRaw,
+    timeoutSeconds,
+  };
+}
+function parseBackgroundGeneration(
+  cfg: Record<string, unknown>,
+): BackgroundGenerationConfig | undefined {
+  const pathRaw = cfg.llmBridgeClientConfigPath;
+  let fromFile: BackgroundGenerationConfig | undefined;
+  if (pathRaw !== undefined && pathRaw !== null && pathRaw !== "") {
+    if (typeof pathRaw !== "string") {
+      throw new Error("llmBridgeClientConfigPath must be a string");
+    }
+    const expanded = expandTildePath(resolveEnvVars(pathRaw.trim()));
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(expanded, "utf8"));
+    } catch {
+      throw new Error(`llmBridgeClientConfigPath could not be read: ${expanded}`);
+    }
+    fromFile = parseBackgroundGenerationObject(parsed, "llmBridgeClientConfigPath");
+  }
+  const explicitRaw = cfg.backgroundGeneration;
+  const fromExplicit =
+    explicitRaw === undefined || explicitRaw === null
+      ? undefined
+      : parseBackgroundGenerationObject(explicitRaw, "backgroundGeneration");
+  if (!fromFile && !fromExplicit) return undefined;
+  return {
+    endpoint: fromExplicit?.endpoint ?? fromFile!.endpoint,
+    token: fromExplicit?.token ?? fromFile!.token,
+    timeoutSeconds: fromExplicit?.timeoutSeconds ?? fromFile!.timeoutSeconds,
   };
 }
 
@@ -1523,12 +1555,7 @@ export function parseConfig(
   } else if (apiKey !== undefined) {
     baseUrl = normalizeOpenaiBaseUrl(readEnvVar("OPENAI_BASE_URL"), "env");
   }
-  ({ baseUrl, apiKey } = applyLlmBridgeClientConfigPath(
-    cfg,
-    baseUrl,
-    apiKey,
-    openaiApiKeyDisabled,
-  ));
+  const backgroundGeneration = parseBackgroundGeneration(cfg);
 
   const sharedCrossSignalSemanticEnabled =
     cfg.sharedCrossSignalSemanticEnabled === true || cfg.crossSignalsSemanticEnabled === true;
@@ -1606,6 +1633,7 @@ export function parseConfig(
   return {
     openaiApiKey: apiKey,
     openaiBaseUrl: baseUrl,
+    backgroundGeneration,
     model,
     reasoningEffort,
     triggerMode,

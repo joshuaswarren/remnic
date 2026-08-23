@@ -10,13 +10,17 @@ background generation without ever seeing a provider credential:
   ``provider`` / routing fields in the request body are ignored and never
   forwarded; the delegate receives the messages and nothing else.
 - Completion is delegated to the existing Hermes runtime resolver
-  (Hermes ``PluginLlm.complete`` — host-owned routing, auth, and fallback). No new
-  provider client or dependency is introduced: the server is stdlib-only.
-- The generated client config contains only the endpoint description and
-  limits — by construction it has no field that can carry a token or key.
-- Requests are body-bounded and deadline-bounded; nothing about the request
-  body is ever logged, and error responses are fixed strings (no exception
-  text, no echoes).
+  (Hermes ``PluginLlm.complete``). No new provider client is introduced.
+- The generated client config describes the endpoint and a generated
+  loopback bearer. It never copies a host provider credential. The file
+  is written with ``0600`` permissions.
+- Every request is authenticated with that bearer using a constant-time
+  compare. Unauthenticated local callers are denied. The token is never
+  logged.
+- Requests are body-bounded and deadline-bounded. One monotonic deadline
+  covers queue wait plus delegate execution. Request bodies are never
+  logged, and error responses are fixed strings (no exception text, no
+  echoes).
 
 Background-only: this bridge is not on the recall path. Recall keeps going
 directly from the provider to the Remnic daemon; if the bridge is down,
@@ -26,6 +30,7 @@ memory recall and observation are unaffected.
 from __future__ import annotations
 
 import functools
+import hmac
 import inspect
 import ipaddress
 import itertools
@@ -35,6 +40,7 @@ import math
 import multiprocessing
 import os
 import pickle
+import secrets
 import socket
 import threading
 import time
@@ -269,6 +275,7 @@ class HermesLlmBridge:
         self._bind = _bind_address(policy.host)  # rejects before any socket exists
         self.policy = policy
         self._complete = complete
+        self._auth_token = secrets.token_urlsafe(32)
         self._server: _BridgeServer | None = None
         self._thread: threading.Thread | None = None
         self._slots = threading.BoundedSemaphore(_WORKERS)
@@ -292,6 +299,10 @@ class HermesLlmBridge:
                 else:
                     self._complete = complete
                     self._use_process = True
+
+    @property
+    def auth_token(self) -> str:
+        return self._auth_token
 
     @property
     def bound_port(self) -> int:
@@ -339,28 +350,26 @@ class HermesLlmBridge:
             return self._inflight
 
     def complete_with_deadline(self, messages: list[dict[str, str]]) -> BridgeCompletionResult:
-        """Delegate to the host resolver under the policy deadline.
+        """Delegate to the host resolver under one absolute policy deadline.
 
-        The delegate receives only ``messages`` — the fixed policy means
-        there is no code path that could forward a caller's model or
-        provider choice even if the host config would allow the override.
-
-        Hosts that expose an explicit ``timeout=`` parameter are invoked
-        in-process so the runtime can abort the call. PluginLlm-shaped
-        facades are reconstructed in a killable child; other pickleable
-        callables run in a child too. Future.cancel is never the stop
-        mechanism. Unpickleable non-PluginLlm callables run in-process so
-        production start is never refused.
+        Queue wait and delegate execution share the same monotonic budget.
+        The delegate receives only remaining time. A depleted queue budget
+        starts no work.
         """
-        if not self._slots.acquire(timeout=self.policy.timeout_seconds):
+        deadline = time.monotonic() + self.policy.timeout_seconds
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not self._slots.acquire(timeout=remaining):
             raise TimeoutError("bridge completion deadline exceeded")
         with self._inflight_lock:
             self._inflight += 1
         try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("bridge completion deadline exceeded")
             if self._use_timeout_kwarg:
-                return self._complete(messages, timeout=self.policy.timeout_seconds)
+                return self._complete(messages, timeout=remaining)
             if self._use_process:
-                return self._run_in_killable_process(messages)
+                return self._run_in_killable_process(messages, remaining)
             try:
                 return self._complete(messages, purpose="remnic-llm-bridge")
             except TypeError:
@@ -371,7 +380,7 @@ class HermesLlmBridge:
             self._slots.release()
 
     def _run_in_killable_process(
-        self, messages: list[dict[str, str]]
+        self, messages: list[dict[str, str]], timeout_seconds: float
     ) -> BridgeCompletionResult:
         ctx = multiprocessing.get_context("spawn")
         parent, child = ctx.Pipe(duplex=False)
@@ -385,7 +394,7 @@ class HermesLlmBridge:
         proc.start()
         child.close()
         try:
-            if parent.poll(self.policy.timeout_seconds):
+            if parent.poll(timeout_seconds):
                 status, payload = parent.recv()
                 if status == "ok":
                     text, model, inp, out, tot = payload
@@ -406,10 +415,10 @@ class HermesLlmBridge:
                 proc.join(0.2)
 
     def client_config(self) -> dict[str, object]:
-        """Credential-free connection description for downstream consumers.
+        """Loopback connection description for the background-generation client.
 
-        Built from a fixed literal: it has no field that can carry a token,
-        key, or credential, and contains no model/provider routing either.
+        Includes a generated bearer. It never copies a host provider secret
+        and contains no model/provider routing.
         """
         if self._server is None:
             raise RuntimeError("llm_bridge not started")
@@ -422,12 +431,15 @@ class HermesLlmBridge:
             "model_policy": "server-owned",
             "max_body_bytes": self.policy.max_body_bytes,
             "timeout_seconds": self.policy.timeout_seconds,
+            "token": self._auth_token,
         }
 
     def write_client_config(self, path: str) -> dict[str, object]:
         """Write :meth:`client_config` to ``path`` with owner-only permissions."""
         config = self.client_config()
         for key in config:
+            if key == "token":
+                continue
             lowered = str(key).lower()
             if any(marker in lowered for marker in _CREDENTIAL_KEY_MARKERS):
                 raise AssertionError(  # pragma: no cover - guards future field additions
@@ -435,6 +447,10 @@ class HermesLlmBridge:
                 )
         serialized = json.dumps(config, indent=2, sort_keys=True)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+        except (OSError, AttributeError, NotImplementedError):
+            pass
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(serialized + "\n")
         return config
@@ -469,13 +485,28 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         # Method/path/status only. The request body is never logged.
         _log.debug("llm_bridge %s", format % args)
 
+    def _authorized(self) -> bool:
+        expected = cast(_BridgeServer, self.server).bridge.auth_token
+        header = self.headers.get("Authorization", "")
+        if not isinstance(header, str) or not header.startswith("Bearer "):
+            provided = ""
+        else:
+            provided = header[7:]
+        return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
     def do_GET(self) -> None:
+        if not self._authorized():
+            self._send_error(401, "unauthorized", "unauthorized")
+            return
         if self.path == _HEALTH_PATH:
             self._send_json(200, {"status": "ok"})
             return
         self._send_error(404, "not found", "not_found")
 
     def do_POST(self) -> None:
+        if not self._authorized():
+            self._send_error(401, "unauthorized", "unauthorized")
+            return
         if self.path != _ENDPOINT_PATH:
             self._send_error(404, "not found", "not_found")
             return

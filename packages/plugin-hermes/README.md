@@ -280,9 +280,10 @@ Set `remnic.llm_bridge.enabled: true` in Hermes `config.yaml` to expose one
 OpenAI-compatible completion endpoint on loopback, backed by the host's
 `PluginLlm` runtime resolver. Provider credentials stay host-managed: the model
 policy is server-owned (request `model`/`provider` fields are discarded),
-the listener rejects any non-loopback bind, and the optional generated client
-config contains no tokens. The bridge serves optional background generation
-only — memory recall never routes through it. Details and daemon
+the listener rejects any non-loopback bind, and the generated client config
+stores a random loopback bearer at `0600`. Unauthenticated local callers are
+denied. The bridge serves optional background generation only — memory recall
+never routes through it. Details and daemon
 configuration: [docs/plugins/hermes.md](../../docs/plugins/hermes.md#policy-bound-llm-bridge-opt-in).
 
 ## Further reading
