@@ -11,7 +11,7 @@ import { resolveContainedPath, sanitizeFilenameSegment } from "./filename-safety
 import { writeLeaderboardArtifactsForResult } from "./leaderboard-export.js";
 import { isSecretKey } from "./security/secret-keys.js";
 import { redactUrlSecrets as redactUrlSecretMaterial } from "./security/url-secrets.js";
-import { resolveCanaryFloorFromEnv } from "./integrity/canary-adapter.js";
+import { resolveEffectiveCanaryFloor } from "./integrity/canary-adapter.js";
 import type { BenchmarkResult } from "./types.js";
 import { resolveBenchmarkRunId } from "./run-identity.js";
 
@@ -273,24 +273,17 @@ function replaceLoneSurrogates(value: string): string {
 }
 
 export async function writeBenchmarkResult(result: BenchmarkResult, outputDir: string): Promise<string> {
+  // Validate before mkdir so a malformed preset or empty env writes
+  // nothing. A present preset must be a valid floor; otherwise the env
+  // parser supplies the override or the canonical 0.1 default.
+  const canaryFloor = resolveEffectiveCanaryFloor(result.meta.canaryFloor);
   const outputRoot = path.resolve(outputDir);
   await mkdir(outputRoot, { recursive: true });
 
-  // Every canonical-result producer funnels through this writer (CLI runs,
-  // partial-result capture, custom benchmarks, the coding-graph suite), so
-  // this is the single place the effective canary floor becomes artifact
-  // provenance: readers judge meta.canaryScore against meta.canaryFloor
-  // after restart, without REMNIC_BENCH_CANARY_FLOOR. Validation matches
-  // the exploit-audit parser — an invalid override throws here instead of
-  // being trusted or silently coerced. A valid caller-supplied floor wins
-  // so replayed results keep the floor that gated them.
-  const effectiveFloor = resolveCanaryFloorFromEnv();
-  const stamped: BenchmarkResult =
-    typeof result.meta.canaryFloor === "number" &&
-    Number.isFinite(result.meta.canaryFloor) &&
-    result.meta.canaryFloor >= 0
-      ? result
-      : { ...result, meta: { ...result.meta, canaryFloor: effectiveFloor } };
+  const stamped: BenchmarkResult = {
+    ...result,
+    meta: { ...result.meta, canaryFloor },
+  };
 
   const safeBenchmark = sanitizeFilenameSegment(stamped.meta.benchmark);
   const safeRemnicVersion = sanitizeFilenameSegment(stamped.meta.remnicVersion);

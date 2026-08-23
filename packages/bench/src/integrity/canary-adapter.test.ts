@@ -5,7 +5,9 @@ import {
   CANARY_SCORE_FLOOR,
   assertCanaryUnderFloor,
   createCanaryAdapter,
+  parseCanaryFloor,
   resolveCanaryFloorFromEnv,
+  resolveEffectiveCanaryFloor,
 } from "./canary-adapter.ts";
 
 test("canary adapter returns the fixed response for every query", async () => {
@@ -74,14 +76,12 @@ test("assertCanaryUnderFloor fails on non-finite scores", () => {
   assert.equal(result.passed, false);
 });
 
-test("resolveCanaryFloorFromEnv returns the canonical default when the override is unset or empty", () => {
+test("resolveCanaryFloorFromEnv returns the canonical default when the override is unset", () => {
   const saved = process.env.REMNIC_BENCH_CANARY_FLOOR;
   try {
     delete process.env.REMNIC_BENCH_CANARY_FLOOR;
     assert.equal(resolveCanaryFloorFromEnv(), CANARY_SCORE_FLOOR);
-
-    process.env.REMNIC_BENCH_CANARY_FLOOR = "";
-    assert.equal(resolveCanaryFloorFromEnv(), CANARY_SCORE_FLOOR);
+    assert.equal(resolveEffectiveCanaryFloor(), CANARY_SCORE_FLOOR);
   } finally {
     if (saved === undefined) {
       delete process.env.REMNIC_BENCH_CANARY_FLOOR;
@@ -99,6 +99,7 @@ test("resolveCanaryFloorFromEnv accepts valid non-negative overrides", () => {
 
     process.env.REMNIC_BENCH_CANARY_FLOOR = "0";
     assert.equal(resolveCanaryFloorFromEnv(), 0);
+    assert.equal(resolveEffectiveCanaryFloor(), 0);
   } finally {
     if (saved === undefined) {
       delete process.env.REMNIC_BENCH_CANARY_FLOOR;
@@ -108,14 +109,37 @@ test("resolveCanaryFloorFromEnv accepts valid non-negative overrides", () => {
   }
 });
 
-test("resolveCanaryFloorFromEnv rejects invalid, non-finite, or negative overrides", () => {
+test("resolveCanaryFloorFromEnv rejects empty, invalid, non-finite, or negative overrides", () => {
   const saved = process.env.REMNIC_BENCH_CANARY_FLOOR;
-  const invalid = ["abc", "-1", "NaN", "Infinity", "1e999"];
+  const invalid = ["", "abc", "-1", "NaN", "Infinity", "1e999"];
   try {
     for (const raw of invalid) {
       process.env.REMNIC_BENCH_CANARY_FLOOR = raw;
       assert.throws(() => resolveCanaryFloorFromEnv(), /Invalid REMNIC_BENCH_CANARY_FLOOR/, raw);
+      assert.throws(() => resolveEffectiveCanaryFloor(), /Invalid REMNIC_BENCH_CANARY_FLOOR/, raw);
     }
+  } finally {
+    if (saved === undefined) {
+      delete process.env.REMNIC_BENCH_CANARY_FLOOR;
+    } else {
+      process.env.REMNIC_BENCH_CANARY_FLOOR = saved;
+    }
+  }
+});
+
+test("resolveEffectiveCanaryFloor prefers a valid preset and rejects a malformed one", () => {
+  const saved = process.env.REMNIC_BENCH_CANARY_FLOOR;
+  try {
+    process.env.REMNIC_BENCH_CANARY_FLOOR = "abc";
+    assert.equal(resolveEffectiveCanaryFloor(0.2), 0.2);
+    assert.equal(resolveEffectiveCanaryFloor(0), 0);
+    assert.throws(() => parseCanaryFloor(-1), /Invalid canary floor/);
+    assert.throws(() => parseCanaryFloor(Number.NaN), /Invalid canary floor/);
+    assert.throws(() => parseCanaryFloor(Number.POSITIVE_INFINITY), /Invalid canary floor/);
+    assert.throws(() => parseCanaryFloor("0.2"), /Invalid canary floor/);
+    assert.throws(() => resolveEffectiveCanaryFloor(-1), /Invalid canary floor/);
+    assert.throws(() => resolveEffectiveCanaryFloor(Number.NaN), /Invalid canary floor/);
+    assert.throws(() => resolveEffectiveCanaryFloor("0.2"), /Invalid canary floor/);
   } finally {
     if (saved === undefined) {
       delete process.env.REMNIC_BENCH_CANARY_FLOOR;

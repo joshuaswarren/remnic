@@ -36,7 +36,9 @@ export {
   CANARY_SCORE_FLOOR,
   assertCanaryUnderFloor,
   createCanaryAdapter,
+  parseCanaryFloor,
   resolveCanaryFloorFromEnv,
+  resolveEffectiveCanaryFloor,
   type CanaryAdapterOptions,
   type CanaryFloorCheck,
 } from "./canary-adapter.js";

@@ -421,6 +421,16 @@ test("writeBenchmarkResult persists the effective custom canary floor beside the
     const written = JSON.parse(await readFile(filePath, "utf8")) as BenchmarkResult;
     assert.equal(written.meta.canaryFloor, 0.05);
     assert.equal(written.meta.canaryScore, 0.08);
+
+    let zeroPath = "";
+    await withCanaryFloorEnv("0", async () => {
+      zeroPath = await writeBenchmarkResult(
+        { ...result, meta: { ...result.meta, timestamp: "2026-04-25T02:52:07.000Z" } },
+        dir,
+      );
+    });
+    const writtenZero = JSON.parse(await readFile(zeroPath, "utf8")) as BenchmarkResult;
+    assert.equal(writtenZero.meta.canaryFloor, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -451,13 +461,17 @@ test("writeBenchmarkResult rejects an invalid canary floor override without writ
       withCanaryFloorEnv("-1", () => writeBenchmarkResult(buildResult(), dir)),
       /Invalid REMNIC_BENCH_CANARY_FLOOR/,
     );
+    await assert.rejects(
+      withCanaryFloorEnv("", () => writeBenchmarkResult(buildResult(), dir)),
+      /Invalid REMNIC_BENCH_CANARY_FLOOR/,
+    );
     assert.deepEqual(await readdir(dir), []);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("writeBenchmarkResult preserves a valid preset floor and replaces an invalid one", async () => {
+test("writeBenchmarkResult persists a valid preset floor including zero", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-reporter-floor-preset-"));
   try {
     const preset = buildResult();
@@ -471,19 +485,47 @@ test("writeBenchmarkResult preserves a valid preset floor and replaces an invali
     const writtenPreset = JSON.parse(await readFile(presetPath, "utf8")) as BenchmarkResult;
     assert.equal(writtenPreset.meta.canaryFloor, 0.2);
 
-    const corrupt = buildResult();
-    let corruptPath = "";
+    let zeroPath = "";
     await withCanaryFloorEnv("0.05", async () => {
-      corruptPath = await writeBenchmarkResult(
+      zeroPath = await writeBenchmarkResult(
         {
-          ...corrupt,
-          meta: { ...corrupt.meta, canaryFloor: -1, timestamp: "2026-04-25T02:52:06.000Z" },
+          ...buildResult(),
+          meta: { ...buildResult().meta, canaryFloor: 0, timestamp: "2026-04-25T02:52:06.000Z" },
         },
         dir,
       );
     });
-    const writtenCorrupt = JSON.parse(await readFile(corruptPath, "utf8")) as BenchmarkResult;
-    assert.equal(writtenCorrupt.meta.canaryFloor, 0.05);
+    const writtenZero = JSON.parse(await readFile(zeroPath, "utf8")) as BenchmarkResult;
+    assert.equal(writtenZero.meta.canaryFloor, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeBenchmarkResult rejects a malformed preset floor without writing an artifact", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-reporter-floor-preset-invalid-"));
+  try {
+    const malformed = [-1, Number.NaN, Number.POSITIVE_INFINITY, "0.2"] as const;
+    for (const [index, canaryFloor] of malformed.entries()) {
+      const result = buildResult();
+      await assert.rejects(
+        withCanaryFloorEnv("0.05", () =>
+          writeBenchmarkResult(
+            {
+              ...result,
+              meta: {
+                ...result.meta,
+                canaryFloor: canaryFloor as number,
+                timestamp: `2026-04-25T02:52:0${index}.000Z`,
+              },
+            },
+            dir,
+          ),
+        ),
+        /Invalid canary floor/,
+      );
+    }
+    assert.deepEqual(await readdir(dir), []);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
