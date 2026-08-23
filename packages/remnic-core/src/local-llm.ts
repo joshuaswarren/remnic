@@ -959,9 +959,8 @@ export class LocalLlmClient {
       }
 
       const promptChars = messages.reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
-      const requestModel = options.model ?? this.config.localLlmModel;
       const requestBody: Record<string, unknown> = {
-        model: requestModel,
+        model: options.model ?? this.config.localLlmModel,
         messages,
         temperature: options.temperature ?? 0.7,
         // Use max_tokens consistent with cloud models
