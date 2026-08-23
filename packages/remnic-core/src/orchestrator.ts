@@ -3423,35 +3423,9 @@ export class Orchestrator {
     );
   }
 
-  private publishRecallResults(options: {
-    title: string;
-    results: QmdSearchResult[];
-    sectionBuckets: RecallSectionBuckets;
-    retrievalQuery: string;
-    sessionKey: string | undefined;
-    identityInjection?: {
-      mode: IdentityInjectionMode | "none";
-      injectedChars: number;
-      truncated: boolean;
-    };
-    /**
-     * Issue #1577 — per-recall trust map. When present, quarantined items
-     * are filtered from injection on EVERY recall path (hot QMD, embedding
-     * fallback, cold archive, recent) so a faithfulness-contradicted memory
-     * cannot sneak in via a branch that bypasses trust scoring (review:
-     * fallback paths bypass trust). The map is also threaded to
-     * formatQmdResults for the epistemic hedge.
-     */
-    trustByPath?: Map<string, TrustStageResultItem> | null;
-    /**
-     * #1952 — per-request effective state-view flag from recallInternal.
-     * The publish seam must not reread live config (per-call override
-     * semantics, issue #1952).
-     */
-    stateViewActive?: boolean;
-    /** #1952 — historical recall pin (epoch ms); asOf-mode annotation. */
-    asOfMs?: number;
-  }): void {
+  private publishRecallResults(
+    options: Parameters<RecallEntryCoordinator["publishRecallResults"]>[0],
+  ): void {
     return (this.recallEntryCoordinator ?? new RecallEntryCoordinator(
       selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),
     )).publishRecallResults(

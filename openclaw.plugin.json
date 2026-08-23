@@ -8558,6 +8558,11 @@
       "placeholder": "0.3",
       "help": "Maximum fraction of the total recall budget available to the behavioral profile. Set to 1 to disable the share cap."
     },
+    "recallStateViews": {
+      "label": "State-Aware Recall Views",
+      "advanced": true,
+      "help": "Surface labeled supersession history on change-intent queries (when did / used to / switched)."
+    },
     "recallPipeline": {
       "label": "Recall Pipeline",
       "advanced": true,
