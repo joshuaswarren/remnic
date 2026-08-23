@@ -30,7 +30,7 @@ import {
   NamespaceNotWritableError,
 } from "./access-service.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
-import { coerceProjectCategoryAlias } from "./access-schema.js";
+import { coerceProjectCategoryAlias, reapplyCategoryCoercion } from "./access-schema.js";
 import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import {
@@ -552,7 +552,7 @@ export class AccessObserveWriteSurface {
       );
       return response;
     };
-    return this.deps.handleIdempotentWrite({
+    const response = await this.deps.handleIdempotentWrite({
       operation: "memory_store",
       idempotencyKey: request.idempotencyKey,
       // Shared builder (issue #1989 PR3): byte-parity with the historical
@@ -573,6 +573,8 @@ export class AccessObserveWriteSurface {
       beforeExecute: hooks?.enforceWriteQuota,
       execute,
     });
+    // #2780 fix B: rewrite a replayed coercion note from THIS request's raw category.
+    return reapplyCategoryCoercion(response, categoryCoercion);
   }
 
   async suggestionSubmit(
@@ -639,7 +641,7 @@ export class AccessObserveWriteSurface {
       );
       return response;
     };
-    return this.deps.handleIdempotentWrite({
+    const replayed = await this.deps.handleIdempotentWrite({
       operation: "suggestion_submit",
       idempotencyKey: request.idempotencyKey,
       // Shared builder (issue #1989 PR3): byte-parity with the historical
@@ -660,6 +662,8 @@ export class AccessObserveWriteSurface {
       beforeExecute: hooks?.enforceWriteQuota,
       execute,
     });
+    // #2780 fix B: rewrite a replayed coercion note from THIS request's raw category.
+    return reapplyCategoryCoercion(replayed, categoryCoercion);
   }
 
   async runObserve(request: EngramAccessObserveRequest): Promise<EngramAccessObserveResponse> {
