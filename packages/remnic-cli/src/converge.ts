@@ -261,7 +261,18 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     for (const rootInfo of roots) {
       const ns = rootInfo.namespace;
       namespacesToPlan.add(ns);
-      const io = await createOfflineStorageIo(rootInfo.rootDir);
+      const identityCachePath = memoryDir
+        ? convergeIdentityCachePath(memoryDir, options.peerUrl ?? "local", ns)
+        : undefined;
+      const identityCache = await loadConvergeIdentityCache(identityCachePath, config.inlineSourceAttributionFormat);
+      // The exclusion callback runs before every snapshot record; without the
+      // persisted classification it reads and parses every candidate file,
+      // defeating the warm-cache skip entirely.
+      const classificationUpdates = new Map<string, { statIdentity: string; excluded: boolean }>();
+      const io = await createOfflineStorageIo(rootInfo.rootDir, undefined, {
+        persisted: identityCache,
+        updates: classificationUpdates,
+      });
       const snapshot = await buildOfflineSyncSnapshotFromBase({
         root: rootInfo.rootDir,
         sourceId: "local",
@@ -281,10 +292,6 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       localMap.set(ns, files);
       const evidence = await readLocalTombstoneEvidence(rootInfo.rootDir);
       let manifestReadFailed = false;
-      const identityCachePath = memoryDir
-        ? convergeIdentityCachePath(memoryDir, options.peerUrl ?? "local", ns)
-        : undefined;
-      const identityCache = await loadConvergeIdentityCache(identityCachePath, config.inlineSourceAttributionFormat);
       const manifest = await buildReconcileManifest({
         files,
         parseMemory: parseFrontmatter,
@@ -317,7 +324,8 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
         identityCachePath,
         manifest,
         config.inlineSourceAttributionFormat,
-        identityCache
+        identityCache,
+        classificationUpdates
       );
     }
   }

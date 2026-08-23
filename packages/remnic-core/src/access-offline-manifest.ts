@@ -15,7 +15,7 @@ import {
   citationTemplateFingerprint,
   isReconcileMemoryIdentity,
 } from "./reconcile/manifest.js";
-import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
+import { createPersistedSupportPassportPrivateFileExclusion } from "./support-passport/card-projection.js";
 
 export interface OfflineSyncManifestRequest {
   includeTranscripts?: boolean;
@@ -31,6 +31,10 @@ export interface ServerIdentityCacheEntry {
   path: string;
   sha256: string;
   memory?: ReconcileMemoryIdentity;
+  /** Stat identity the exclusion classification was computed against. */
+  statIdentity?: string;
+  /** Persisted support-passport private-memory classification for statIdentity. */
+  excluded?: boolean;
 }
 
 /**
@@ -90,16 +94,73 @@ async function loadServerIdentityCache(
       const entry = candidate as Partial<ServerIdentityCacheEntry> | null;
       if (typeof entry?.path !== "string" || typeof entry.sha256 !== "string") continue;
       if (entry.memory !== undefined && !isReconcileMemoryIdentity(entry.memory)) continue;
+      if (entry.statIdentity !== undefined && typeof entry.statIdentity !== "string") continue;
+      if (entry.excluded !== undefined && typeof entry.excluded !== "boolean") continue;
       cache.set(entry.path, {
         path: entry.path,
         sha256: entry.sha256,
         ...(entry.memory ? { memory: entry.memory } : {}),
+        ...(entry.statIdentity !== undefined && entry.excluded !== undefined
+          ? { statIdentity: entry.statIdentity, excluded: entry.excluded }
+          : {}),
       });
     }
   } catch {
     // missing or corrupt cache: cold build
   }
   return cache;
+}
+
+const serverIdentityCacheWriteLocks = new Map<string, Promise<void>>();
+
+/** Serialize cache replacements per path: overlapping manifest streams for one
+ * namespace would otherwise each publish a whole-file snapshot, and the slower
+ * stream built from older filesystem state would overwrite the newer one. */
+async function withServerIdentityCacheWriteLock(cachePath: string, write: () => Promise<void>): Promise<void> {
+  const previous = serverIdentityCacheWriteLocks.get(cachePath) ?? Promise.resolve();
+  const next = previous.then(write, write);
+  serverIdentityCacheWriteLocks.set(cachePath, next);
+  try {
+    await next;
+  } finally {
+    if (serverIdentityCacheWriteLocks.get(cachePath) === next) {
+      serverIdentityCacheWriteLocks.delete(cachePath);
+    }
+  }
+}
+
+/** Union of the entries being written and the current on-disk set; on conflict
+ * the write wins (it reflects the newer run). Callers hold the write lock. */
+async function mergeServerIdentityCacheEntries(
+  fs: typeof import("node:fs/promises"),
+  cachePath: string,
+  entries: readonly ServerIdentityCacheEntry[],
+  citationTemplate: string | undefined
+): Promise<ServerIdentityCacheEntry[]> {
+  const merged = new Map(entries.map((entry) => [entry.path, entry]));
+  try {
+    const raw = JSON.parse(await fs.readFile(cachePath, "utf8")) as {
+      citationTemplate?: string;
+      files?: unknown[];
+    };
+    if (raw.citationTemplate === citationTemplateFingerprint(citationTemplate)) {
+      for (const candidate of raw.files ?? []) {
+        const entry = candidate as Partial<ServerIdentityCacheEntry> | null;
+        if (typeof entry?.path !== "string" || typeof entry.sha256 !== "string") continue;
+        if (entry.memory !== undefined && !isReconcileMemoryIdentity(entry.memory)) continue;
+        if (!merged.has(entry.path)) {
+          merged.set(entry.path, {
+            path: entry.path,
+            sha256: entry.sha256,
+            ...(entry.memory ? { memory: entry.memory } : {}),
+          });
+        }
+      }
+    }
+  } catch {
+    // missing or unreadable current cache: the write set stands alone
+  }
+  return [...merged.values()];
 }
 
 export async function createOfflineSyncManifestStream(
@@ -112,6 +173,10 @@ export async function createOfflineSyncManifestStream(
   const storage = await offlineSyncStorageForSnapshot(orchestrator, namespace);
   const citationTemplate = orchestrator.config.inlineSourceAttributionFormat;
   const identityCache = await loadServerIdentityCache(storage.dir, citationTemplate);
+  // The exclusion callback runs before every yield; without the persisted
+  // classification it would read and parse every candidate file, defeating the
+  // warm-cache skip entirely.
+  const classificationUpdates = new Map<string, { statIdentity: string; excluded: boolean }>();
   const snapshotFiles = iterateOfflineSyncSnapshotFileRecords({
     root: storage.dir,
     includeContent: false,
@@ -119,10 +184,7 @@ export async function createOfflineSyncManifestStream(
     readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
     signal: options.signal,
     userExcludeRegexps,
-    excludeFile: async ({ filePath }) => {
-      const memory = await storage.readMemoryByPath(filePath);
-      return memory ? isSupportPassportPrivateMemory(memory) : false;
-    },
+    excludeFile: createPersistedSupportPassportPrivateFileExclusion(storage, identityCache, classificationUpdates),
   });
   return {
     namespace,
@@ -152,18 +214,40 @@ export async function createOfflineSyncManifestStream(
         try {
           const fs = await import("node:fs/promises");
           const cachePath = serverIdentityCachePath(storage.dir);
-          await fs.mkdir(nodePath.dirname(cachePath), { recursive: true });
-          const tmp = `${cachePath}.tmp`;
-          await fs.writeFile(
-            tmp,
-            JSON.stringify({ citationTemplate: citationTemplateFingerprint(citationTemplate), files: entries })
-          );
-          await fs.rename(tmp, cachePath);
+          await withServerIdentityCacheWriteLock(cachePath, async () => {
+            // Merge with whatever is on disk NOW: a concurrent stream for the
+            // same namespace may have published newer entries after this
+            // request loaded its snapshot, and a blind whole-file replace
+            // would discard them.
+            const merged = await mergeServerIdentityCacheEntries(fs, cachePath, entries, citationTemplate);
+            await fs.mkdir(nodePath.dirname(cachePath), { recursive: true });
+            const tmp = `${cachePath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+            await fs.writeFile(
+              tmp,
+              JSON.stringify({ citationTemplate: citationTemplateFingerprint(citationTemplate), files: merged })
+            );
+            await fs.rename(tmp, cachePath);
+          });
         } catch {
           // cache persistence is best-effort
         }
       };
       try {
+        const applyClassification = (path: string, sha256: string): void => {
+          const classification = classificationUpdates.get(path);
+          if (classification === undefined) return;
+          const entry = persistedEntries.get(path) ?? { path, sha256 };
+          if (entry.statIdentity === classification.statIdentity && entry.excluded === classification.excluded) {
+            return;
+          }
+          persistedEntries.set(path, {
+            ...entry,
+            ...(entry.memory ? { memory: entry.memory } : {}),
+            statIdentity: classification.statIdentity,
+            excluded: classification.excluded,
+          });
+          cacheDirty = true;
+        };
         for await (const file of snapshotFiles) {
           yieldedPaths.add(file.path);
           const cached = identityCache.get(file.path);
@@ -173,6 +257,7 @@ export async function createOfflineSyncManifestStream(
             cached.memory.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION &&
             cached.memory.identityResolutionVersion === IDENTITY_RESOLUTION_VERSION
           ) {
+            applyClassification(file.path, file.sha256);
             yield { ...file, memory: cached.memory };
             continue;
           }
@@ -182,12 +267,18 @@ export async function createOfflineSyncManifestStream(
             parseMemory,
             citationTemplate
           );
-          if (built.memory !== undefined) {
-            persistedEntries.set(built.path, { path: built.path, sha256: built.sha256, memory: built.memory });
-            cacheDirty = true;
-          } else if (persistedEntries.delete(built.path)) {
+          // Negative results persist too: a memory-shaped file that parses
+          // without an identity would otherwise be re-read on every warm run.
+          const previous = persistedEntries.get(built.path);
+          if (previous?.sha256 !== built.sha256 || (built.memory !== undefined && previous?.memory !== built.memory)) {
             cacheDirty = true;
           }
+          persistedEntries.set(built.path, {
+            path: built.path,
+            sha256: built.sha256,
+            ...(built.memory !== undefined ? { memory: built.memory } : {}),
+          });
+          applyClassification(built.path, built.sha256);
           yield built;
         }
         streamCompleted = true;

@@ -43,12 +43,13 @@ async function withCacheFile(run: (cachePath: string) => Promise<void>): Promise
   }
 }
 
-test("a saved cache round-trips only the entries that carry an identity", async () => {
+test("a saved cache round-trips every file, identity or not", async () => {
   await withCacheFile(async (cachePath) => {
     await saveConvergeIdentityCache(cachePath, manifest(), TEMPLATE);
     const loaded = await loadConvergeIdentityCache(cachePath, TEMPLATE);
-    assert.deepEqual([...loaded.keys()], ["facts/a.md"]);
+    assert.deepEqual([...loaded.keys()], ["facts/a.md", "facts/no-identity.md"]);
     assert.equal(loaded.get("facts/a.md")?.memory?.contentHash, HASH_A);
+    assert.equal(loaded.get("facts/no-identity.md")?.memory, undefined);
   });
 });
 
@@ -68,6 +69,7 @@ test("entries with a malformed identity are dropped, not handed to the hit path"
       files: unknown[];
     };
     raw.files.push({ path: "facts/null.md", sha256: "cc", memory: null });
+    raw.files.push({ path: "facts/no-identity.md", sha256: "bb" }); // benign: sha-only entry, no memory
     raw.files.push({ path: "facts/partial.md", sha256: "dd", memory: { id: "p" } });
     raw.files.push({
       path: "facts/bad-hash.md",
@@ -78,7 +80,7 @@ test("entries with a malformed identity are dropped, not handed to the hit path"
     await fs.promises.writeFile(cachePath, JSON.stringify(raw));
 
     const loaded = await loadConvergeIdentityCache(cachePath, TEMPLATE);
-    assert.deepEqual([...loaded.keys()], ["facts/a.md"]);
+    assert.deepEqual([...loaded.keys()], ["facts/a.md", "facts/no-identity.md"]);
   });
 });
 
@@ -106,9 +108,11 @@ test("an unchanged warm run does not rewrite the cache file", async () => {
     // buildReconcileManifest run does: same memory object references.
     const warmManifest: ReconcileManifest = {
       ...manifest(),
-      files: manifest().files.map((file) =>
-        file.memory === undefined ? file : { ...file, memory: loaded.get(file.path)?.memory ?? file.memory }
-      ),
+      files: manifest().files.map((file) => {
+        const cached = loaded.get(file.path);
+        if (cached === undefined) return file;
+        return { path: file.path, sha256: cached.sha256, mtimeMs: file.mtimeMs, bytes: file.bytes, ...(cached.memory ? { memory: cached.memory } : {}) };
+      }),
     };
     await saveConvergeIdentityCache(cachePath, warmManifest, TEMPLATE, loaded);
 
@@ -128,6 +132,60 @@ test("an unchanged warm run does not rewrite the cache file", async () => {
       marker?: string;
     };
     assert.equal(afterChange.marker, undefined, "a changed cache must be rewritten");
-    assert.equal(afterChange.files?.length, 1);
+    assert.equal(afterChange.files?.length, 2);
+  });
+});
+
+test("negative identity results persist so warm runs skip them too", async () => {
+  await withCacheFile(async (cachePath) => {
+    const withNegative: ReconcileManifest = {
+      ...manifest(),
+      files: [...manifest().files, { path: "facts/no-identity.md", sha256: "c".repeat(64), mtimeMs: 2, bytes: 3 }],
+    };
+    await saveConvergeIdentityCache(cachePath, withNegative, TEMPLATE);
+    const loaded = await loadConvergeIdentityCache(cachePath, TEMPLATE);
+    assert.ok(loaded.has("facts/no-identity.md"), "a sha-only entry must persist");
+    assert.equal(loaded.get("facts/no-identity.md")?.memory, undefined);
+  });
+});
+
+test("classifications persist onto entries and skip the rewrite when unchanged", async () => {
+  await withCacheFile(async (cachePath) => {
+    await saveConvergeIdentityCache(cachePath, manifest(), TEMPLATE);
+    const loaded = await loadConvergeIdentityCache(cachePath, TEMPLATE);
+    const classifications = new Map([
+      ["facts/a.md", { statIdentity: "1:2:3:4:5", excluded: false }],
+      ["facts/no-identity.md", { statIdentity: "1:2:9:4:5", excluded: false }],
+    ]);
+
+    // Built from the loaded references the way a warm run rebuilds a manifest.
+    const buildFrom = (from: ReadonlyMap<string, { memory?: unknown }>): ReconcileManifest => ({
+      ...manifest(),
+      files: [
+        {
+          path: "facts/a.md",
+          sha256: "aa",
+          mtimeMs: 1,
+          bytes: 2,
+          ...(from.get("facts/a.md")?.memory ? { memory: from.get("facts/a.md")?.memory } : {}),
+        },
+        { path: "facts/no-identity.md", sha256: "c".repeat(64), mtimeMs: 2, bytes: 3 },
+      ],
+    });
+    const withClassification = buildFrom(loaded);
+    await saveConvergeIdentityCache(cachePath, withClassification, TEMPLATE, loaded, classifications);
+    const persisted = await loadConvergeIdentityCache(cachePath, TEMPLATE);
+    assert.equal(persisted.get("facts/a.md")?.statIdentity, "1:2:3:4:5");
+    assert.equal(persisted.get("facts/a.md")?.excluded, false);
+    assert.equal(persisted.get("facts/no-identity.md")?.excluded, false);
+
+    // Unchanged classifications on an unchanged manifest: no rewrite.
+    const raw = JSON.parse(await fs.promises.readFile(cachePath, "utf8")) as Record<string, unknown>;
+    raw.marker = "untouched";
+    await fs.promises.writeFile(cachePath, JSON.stringify(raw));
+    const reload = await loadConvergeIdentityCache(cachePath, TEMPLATE);
+    await saveConvergeIdentityCache(cachePath, buildFrom(reload), TEMPLATE, reload, classifications);
+    const after = JSON.parse(await fs.promises.readFile(cachePath, "utf8")) as Record<string, unknown>;
+    assert.equal(after.marker, "untouched", "identical classifications must not rewrite the cache");
   });
 });

@@ -11,6 +11,26 @@ export interface ConvergeIdentityCacheEntry {
   path: string;
   sha256: string;
   memory?: ReconcileMemoryIdentity;
+  /** Stat identity the exclusion classification was computed against. */
+  statIdentity?: string;
+  /** Persisted support-passport private-memory classification for statIdentity. */
+  excluded?: boolean;
+}
+
+const cacheWriteLocks = new Map<string, Promise<void>>();
+
+/** Serialize cache replacements per path; concurrent plans for the same
+ * (peer, namespace) would otherwise each publish a whole-file snapshot where
+ * the slower one clobbers the newer. */
+async function withCacheWriteLock(cachePath: string, write: () => Promise<void>): Promise<void> {
+  const previous = cacheWriteLocks.get(cachePath) ?? Promise.resolve();
+  const next = previous.then(write, write);
+  cacheWriteLocks.set(cachePath, next);
+  try {
+    await next;
+  } finally {
+    if (cacheWriteLocks.get(cachePath) === next) cacheWriteLocks.delete(cachePath);
+  }
 }
 
 interface ConvergeIdentityCacheFile {
@@ -44,10 +64,15 @@ export async function loadConvergeIdentityCache(
       const entry = candidate as Partial<ConvergeIdentityCacheEntry> | null;
       if (typeof entry?.path !== "string" || typeof entry.sha256 !== "string") continue;
       if (entry.memory !== undefined && !isReconcileMemoryIdentity(entry.memory)) continue;
+      if (entry.statIdentity !== undefined && typeof entry.statIdentity !== "string") continue;
+      if (entry.excluded !== undefined && typeof entry.excluded !== "boolean") continue;
       cache.set(entry.path, {
         path: entry.path,
         sha256: entry.sha256,
         ...(entry.memory ? { memory: entry.memory } : {}),
+        ...(entry.statIdentity !== undefined && entry.excluded !== undefined
+          ? { statIdentity: entry.statIdentity, excluded: entry.excluded }
+          : {}),
       });
     }
   } catch {
@@ -72,30 +97,75 @@ export async function saveConvergeIdentityCache(
   cachePath: string | undefined,
   manifest: ReconcileManifest,
   citationTemplate?: string,
-  loaded?: ReadonlyMap<string, ConvergeIdentityCacheEntry>
+  loaded?: ReadonlyMap<string, ConvergeIdentityCacheEntry>,
+  classifications?: ReadonlyMap<string, { statIdentity: string; excluded: boolean }>
 ): Promise<void> {
   if (!cachePath) return;
-  const files: ConvergeIdentityCacheEntry[] = manifest.files
-    .filter((file) => file.memory !== undefined)
-    .map((file) => ({ path: file.path, sha256: file.sha256, memory: file.memory }));
+  // Negative results persist too: a memory-shaped file that parses without an
+  // identity would otherwise be re-read on every warm run.
+  const files: ConvergeIdentityCacheEntry[] = manifest.files.map((file) => ({
+    path: file.path,
+    sha256: file.sha256,
+    ...(file.memory !== undefined ? { memory: file.memory } : {}),
+  }));
+  for (const entry of files) {
+    const classification = classifications?.get(entry.path);
+    if (classification === undefined) continue;
+    entry.statIdentity = classification.statIdentity;
+    entry.excluded = classification.excluded;
+  }
   if (
     loaded !== undefined &&
     loaded.size === files.length &&
     files.every((entry) => {
       const previous = loaded.get(entry.path);
-      return previous?.sha256 === entry.sha256 && previous?.memory === entry.memory;
+      if (previous === undefined) return false;
+      if (previous.sha256 !== entry.sha256) return false;
+      if (previous.memory !== entry.memory) return false;
+      if ((previous.statIdentity ?? undefined) !== (entry.statIdentity ?? undefined)) return false;
+      return (previous.excluded ?? undefined) === (entry.excluded ?? undefined);
     })
   ) {
     return;
   }
-  const tmp = `${cachePath}.tmp`;
   try {
-    await fs.promises.mkdir(path.dirname(cachePath), { recursive: true });
-    await fs.promises.writeFile(
-      tmp,
-      JSON.stringify({ citationTemplate: citationTemplateFingerprint(citationTemplate), files })
-    );
-    await fs.promises.rename(tmp, cachePath);
+    await withCacheWriteLock(cachePath, async () => {
+      // Merge with the current on-disk set under the lock: another run may
+      // have published entries after this one loaded its snapshot.
+      const merged = new Map(files.map((entry) => [entry.path, entry]));
+      try {
+        const raw = JSON.parse(await fs.promises.readFile(cachePath, "utf8")) as {
+          citationTemplate?: string;
+          files?: unknown[];
+        };
+        if (raw.citationTemplate === citationTemplateFingerprint(citationTemplate)) {
+          for (const candidate of raw.files ?? []) {
+            const entry = candidate as Partial<ConvergeIdentityCacheEntry> | null;
+            if (typeof entry?.path !== "string" || typeof entry.sha256 !== "string") continue;
+            if (entry.memory !== undefined && !isReconcileMemoryIdentity(entry.memory)) continue;
+            if (!merged.has(entry.path)) {
+              merged.set(entry.path, {
+                path: entry.path,
+                sha256: entry.sha256,
+                ...(entry.memory ? { memory: entry.memory } : {}),
+              });
+            }
+          }
+        }
+      } catch {
+        // missing or corrupt current cache: the write set stands alone
+      }
+      const tmp = `${cachePath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+      await fs.promises.mkdir(path.dirname(cachePath), { recursive: true });
+      await fs.promises.writeFile(
+        tmp,
+        JSON.stringify({
+          citationTemplate: citationTemplateFingerprint(citationTemplate),
+          files: [...merged.values()],
+        })
+      );
+      await fs.promises.rename(tmp, cachePath);
+    });
   } catch {
     // best-effort; a failed write only costs a cold build
   }

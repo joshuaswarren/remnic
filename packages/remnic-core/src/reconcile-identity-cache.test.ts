@@ -13,6 +13,7 @@ import {
   citationTemplateFingerprint,
   isReconcileMemoryIdentity,
 } from "./reconcile/manifest.js";
+import { createPersistedSupportPassportPrivateFileExclusion } from "./support-passport/card-projection.js";
 import { parseFrontmatter } from "./storage.js";
 
 function memoryFile(id: string, body: string): string {
@@ -260,4 +261,47 @@ test("the server cache write persists removals and prunes only completed walks",
   });
   assert.equal(aborted.shouldWrite, false);
   assert.equal(aborted.entries.length, 2);
+});
+
+test("a persisted classification with a matching stat identity skips the file read", async () => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "persisted-exclusion-"));
+  try {
+    const target = path.join(dir, "facts", "warm.md");
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    await fs.promises.writeFile(target, memoryFile("warm-excl", "body"));
+    await fs.promises.utimes(target, new Date(1_700_000_000_000), new Date(1_700_000_000_000));
+
+    let reads = 0;
+    const storage = {
+      readMemoryByPath: async () => {
+        reads += 1;
+        return null;
+      },
+    };
+
+    const persisted = new Map<string, { statIdentity?: string; excluded?: boolean }>();
+    const updates = new Map<string, { statIdentity: string; excluded: boolean }>();
+    const exclude = createPersistedSupportPassportPrivateFileExclusion(storage, persisted, updates);
+
+    // Cold: no persisted classification -> reads once and records it.
+    assert.equal(await exclude({ root: dir, path: "facts/warm.md", filePath: target }), false);
+    assert.equal(reads, 1);
+    const recorded = updates.get("facts/warm.md");
+    assert.ok(recorded, "the cold classification must be recorded for persistence");
+    persisted.set("facts/warm.md", recorded);
+
+    // Warm: the stat identity matches -> no read.
+    updates.clear();
+    assert.equal(await exclude({ root: dir, path: "facts/warm.md", filePath: target }), false);
+    assert.equal(reads, 1, "a matching persisted classification must not re-read the file");
+
+    // A content change moves ctime -> the classification is recomputed.
+    await fs.promises.writeFile(target, memoryFile("warm-excl", "changed body"));
+    updates.clear();
+    assert.equal(await exclude({ root: dir, path: "facts/warm.md", filePath: target }), false);
+    assert.equal(reads, 2, "a changed stat identity must re-classify");
+    assert.ok(updates.has("facts/warm.md"));
+  } finally {
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  }
 });
