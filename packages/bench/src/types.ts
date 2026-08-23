@@ -208,6 +208,12 @@ export interface BenchmarkResult {
      * Must stay below the benchmark's canary floor.
      */
     canaryScore?: number;
+    /**
+     * Canary floor in force when this result was produced. Artifacts written
+     * under a custom floor persist it here so tooling badges against the
+     * gate that actually ran; absent means `CANARY_SCORE_FLOOR` applied.
+     */
+    canaryFloor?: number;
     /** "partial" if the benchmark was interrupted; absent or "complete" otherwise. */
     status?: "complete" | "partial";
     /** If partial, the error that caused interruption. */

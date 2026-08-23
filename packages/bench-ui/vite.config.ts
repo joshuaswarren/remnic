@@ -3,7 +3,7 @@ import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
-import { loadBenchResultSummaries } from "./src/results.js";
+import { loadBenchmarkResultSummaries } from "./src/results.js";
 
 export function resolveResultsDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -55,7 +55,7 @@ export function createBenchResultsHandler(
     }
 
     try {
-      const payload = await loadBenchResultSummaries(resolveResultsDir(env, homeDir));
+      const payload = await loadBenchmarkResultSummaries(resolveResultsDir(env, homeDir));
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(payload));
@@ -76,7 +76,7 @@ function registerBenchResultsApi(server: MiddlewareServer): void {
 }
 
 async function writeStaticBenchResultsApi(outDir: string): Promise<void> {
-  const payload = await loadBenchResultSummaries(resolveResultsDir());
+  const payload = await loadBenchmarkResultSummaries(resolveResultsDir());
   const apiDir = path.join(outDir, "api");
   await mkdir(apiDir, { recursive: true });
   await writeFile(path.join(apiDir, "results"), JSON.stringify(payload), "utf8");
