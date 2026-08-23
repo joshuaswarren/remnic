@@ -1231,10 +1231,6 @@ export {
   type RunImporterResult,
   type RunImportOptions,
 } from "./importers/index.js";
-export {
-  loadImporterFixture,
-  makeImporterTestTarget,
-} from "./importers/test-utils.js";
 
 export {
   FallbackLlmClient,

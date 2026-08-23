@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
+import { runImporter } from "@remnic/core";
 import {
   loadImporterFixture,
   makeImporterTestTarget,
-  runImporter,
-} from "@remnic/core";
+} from "@remnic/core/importers/test-utils";
 
 import { adapter, chatgptAdapter } from "./adapter.js";
 

@@ -3,7 +3,8 @@
 // ---------------------------------------------------------------------------
 // `makeTarget()` / `loadFixture()` were duplicated across the
 // `@remnic/import-*` adapter tests. Test-only — never import from
-// production code paths.
+// production code paths. Ships behind the `@remnic/core/importers/test-utils`
+// subpath export, NOT the runtime barrel (issue #2794 fix round).
 
 import { readFileSync } from "node:fs";
 import path from "node:path";

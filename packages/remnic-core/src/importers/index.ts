@@ -24,7 +24,3 @@ export {
   type FileImporterDefinition,
   type FileImporterParseArgs,
 } from "./base.js";
-export {
-  loadImporterFixture,
-  makeImporterTestTarget,
-} from "./test-utils.js";
