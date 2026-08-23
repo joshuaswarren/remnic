@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { StorageManager } from "./storage.js";
-import type { CasRevisionTransaction } from "./storage/cas-revision-store.js";
+import type { CasRevisionStore, CasRevisionTransaction } from "./storage/cas-revision-store.js";
 
 async function withStorage(run: (storage: StorageManager) => Promise<void>): Promise<void> {
   StorageManager.clearAllStaticCaches();
@@ -515,7 +515,7 @@ test("a memory file write failure aborts the pending receipt reservation (#2813 
   });
 });
 
-test("a receipt publication failure after the memory write preserves the pending marker for recovery (#2813 P1 C)", async () => {
+test("a receipt publication failure after the memory write recovers from recorded evidence (#2813 P1 C, #2807)", async () => {
   await withStorage(async (storage) => {
     const created = await storage.writeMemory("fact", "Publish failure ambiguity content.", { source: "test" });
     const before = await storage.getMemoryById(created.id);
@@ -529,11 +529,12 @@ test("a receipt publication failure after the memory write preserves the pending
     };
     const origBegin = seams.casRevisions.beginRevisionTransaction.bind(seams.casRevisions);
     let reserved: string | undefined;
-    seams.casRevisions.beginRevisionTransaction = async (pathname: string) => {
+    seams.casRevisions.beginRevisionTransaction = async (pathname) => {
       const transaction = await origBegin(pathname);
       reserved = transaction.pendingRevision;
       return {
         pendingRevision: transaction.pendingRevision,
+        writeLanded: transaction.writeLanded,
         abort: transaction.abort,
         commit: async () => {
           throw new Error("simulated receipt publication failure");
@@ -550,24 +551,29 @@ test("a receipt publication failure after the memory write preserves the pending
     const onDisk = await readFile(before.path, "utf8");
     assert.match(onDisk, /Body whose receipt never publishes\./, "the durable memory write landed");
 
-    const status = await storage.readCasRevisionStatus(before.path);
-    assert.equal(status.status, "unavailable", "a pending marker is never ownership and never absence");
-    assert.match(status.status === "unavailable" ? status.reason : "", /pending/i);
-
-    await assert.rejects(
-      storage.updateMemory(created.id, "Second body while ambiguous."),
-      "new receipt transactions refuse while a pending marker stands",
-    );
-    await assert.rejects(
-      storage.writeMemoryFrontmatter(before, { status: "archived" }),
-      "frontmatter minting refuses while a pending marker stands",
-    );
-
-    assert.equal(await seams.casRevisions.reconcilePendingRevision(before.path, true), "reconciled");
+    // #2807: the pending marker carries the post-write fingerprint, so the
+    // next read — not a manual reconcile — decisively publishes the
+    // reserved token. The marker was never ownership and never absence
+    // until this evidence spoke.
     assert.deepEqual(await storage.readCasRevisionStatus(before.path), {
       status: "present",
       revision: reserved,
     });
+    assert.equal(
+      await storage.updateMemory(created.id, "Second body after evidence recovery."),
+      true,
+      "the target is writable again once the evidence published the receipt",
+    );
+    const healed = await storage.readCasRevisionStatus(before.path);
+    assert.ok(
+      healed.status === "present" && healed.revision > reserved,
+      "the post-recovery write owns a strictly greater receipt",
+    );
+    assert.equal(
+      await seams.casRevisions.reconcilePendingRevision(before.path, true),
+      "committed",
+      "manual reconcile after evidence recovery is an idempotent no-op report",
+    );
   });
 });
 
@@ -587,5 +593,155 @@ test("sequential writers on one target mint unique, strictly increasing receipts
     assert.ok(receiptB, "writer B owns the second receipt");
     assert.notEqual(receiptA, receiptB, "two commits never share a receipt");
     assert.ok(receiptB > receiptA, "receipts are strictly increasing per target");
+  });
+});
+
+async function withStorageDir(run: (dir: string) => Promise<void>): Promise<void> {
+  StorageManager.clearAllStaticCaches();
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-cas-restart-"));
+  try {
+    await run(memoryDir);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+}
+
+test("restart after a crash between reserve and write heals on the next mutation (#2807)", async () => {
+  await withStorageDir(async (dir) => {
+    const first = new StorageManager(dir);
+    const created = await first.writeMemory("fact", "Crash before write content.", { source: "test" });
+    const memory = await first.getMemoryById(created.id);
+    assert.ok(memory);
+
+    // Crash simulation: reserve a token, then abandon the transaction
+    // before the durable write — exactly the on-disk state a killed
+    // process leaves behind (pending marker, unchanged file).
+    const seams = first as unknown as { casRevisions: CasRevisionStore };
+    await seams.casRevisions.beginRevisionTransaction(memory.path);
+    StorageManager.clearAllStaticCaches();
+
+    const restarted = new StorageManager(dir);
+    const firstRead = await restarted.readCasRevisionStatus(memory.path);
+    assert.equal(
+      firstRead.status,
+      "unavailable",
+      "an unlocked read will not abort a reserve-only marker — a live owner may be between reserve and write",
+    );
+    assert.equal(
+      await restarted.updateMemory(created.id, "Body after crash recovery."),
+      true,
+      "the next mutation recovers the orphaned reservation under the path lock — the target is writable again",
+    );
+    assert.equal(
+      (await restarted.readCasRevisionStatus(memory.path)).status,
+      "present",
+      "the post-restart write owns a committed receipt",
+    );
+    assert.ok(await restarted.readCasRevision(memory.path));
+  });
+});
+
+test("restart after a crash between write and commit publishes the reserved receipt (#2807)", async () => {
+  await withStorageDir(async (dir) => {
+    const first = new StorageManager(dir);
+    const created = await first.writeMemory("fact", "Crash after write content.", { source: "test" });
+    const memory = await first.getMemoryById(created.id);
+    assert.ok(memory);
+
+    let reserved: string | undefined;
+    const seams = first as unknown as {
+      casRevisions: { beginRevisionTransaction: (pathname: string) => Promise<CasRevisionTransaction> };
+    };
+    const origBegin = seams.casRevisions.beginRevisionTransaction.bind(seams.casRevisions);
+    seams.casRevisions.beginRevisionTransaction = async (pathname) => {
+      const transaction = await origBegin(pathname);
+      reserved = transaction.pendingRevision;
+      return {
+        pendingRevision: transaction.pendingRevision,
+        writeLanded: transaction.writeLanded,
+        abort: transaction.abort,
+        commit: async () => {
+          throw new Error("simulated crash before receipt publication");
+        },
+      };
+    };
+    try {
+      await assert.rejects(first.updateMemory(created.id, "Body whose commit never runs."));
+    } finally {
+      seams.casRevisions.beginRevisionTransaction = origBegin;
+    }
+    assert.ok(reserved);
+    StorageManager.clearAllStaticCaches();
+
+    const restarted = new StorageManager(dir);
+    assert.deepEqual(
+      await restarted.readCasRevisionStatus(memory.path),
+      { status: "present", revision: reserved },
+      "the first read after restart publishes the reserved token from the recorded evidence",
+    );
+    assert.equal(
+      await restarted.updateMemory(created.id, "Body after evidence-published restart."),
+      true,
+      "the memory stays writable after the crash-after-write restart",
+    );
+  });
+});
+
+test("restart with an ambiguous durable change fails closed with actionable recovery (#2807)", async () => {
+  await withStorageDir(async (dir) => {
+    const first = new StorageManager(dir);
+    const created = await first.writeMemory("fact", "Ambiguous restart content.", { source: "test" });
+    const memory = await first.getMemoryById(created.id);
+    assert.ok(memory);
+
+    const seams = first as unknown as {
+      casRevisions: { beginRevisionTransaction: (pathname: string) => Promise<CasRevisionTransaction> };
+    };
+    const origBegin = seams.casRevisions.beginRevisionTransaction.bind(seams.casRevisions);
+    seams.casRevisions.beginRevisionTransaction = async (pathname) => {
+      const transaction = await origBegin(pathname);
+      return {
+        pendingRevision: transaction.pendingRevision,
+        writeLanded: transaction.writeLanded,
+        abort: transaction.abort,
+        commit: async () => {
+          throw new Error("simulated crash before receipt publication");
+        },
+      };
+    };
+    try {
+      await assert.rejects(first.updateMemory(created.id, "Body before the unexplained change."));
+    } finally {
+      seams.casRevisions.beginRevisionTransaction = origBegin;
+    }
+    // After the crash, the durable file changes in a way the reservation
+    // can neither claim nor disown — still a valid record, so the next
+    // semantic mutation reaches the mint and must fail closed there.
+    const crashed = await readFile(memory.path, "utf8");
+    await writeFile(
+      memory.path,
+      crashed.replace("Body before the unexplained change.", "Body silently rewritten by a third party."),
+      "utf8",
+    );
+    StorageManager.clearAllStaticCaches();
+
+    const restarted = new StorageManager(dir);
+    const status = await restarted.readCasRevisionStatus(memory.path);
+    assert.equal(status.status, "unavailable", "an ambiguous marker reads as unavailable, never as presence or absence");
+    assert.match(
+      status.status === "unavailable" ? status.reason : "",
+      /ambiguous[\s\S]*Refusing to guess/,
+      "the reason names the ambiguity and the refusal",
+    );
+    await assert.rejects(
+      restarted.updateMemory(created.id, "Write into an ambiguous target."),
+      "a semantic mutation fails closed while the marker is ambiguous",
+    );
+    assert.match(
+      await readFile(memory.path, "utf8"),
+      /Body silently rewritten by a third party\./,
+      "the refused mutation never touched the durable file",
+    );
   });
 });

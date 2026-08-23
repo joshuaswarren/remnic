@@ -172,3 +172,139 @@ test("a corrupt state-bearing shard is unavailability, never absence (#2813 P1 C
     await assert.rejects(store.beginRevisionTransaction(target), /unreadable/);
   });
 });
+
+test("recoverPendingRevision aborts a crashed reservation whose write never landed (#2807)", async () => {
+  await withStore(async (store, root) => {
+    const target = path.join(root, "memories", "fact-restart-abort.md");
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, "standing bytes", "utf8");
+
+    const a = await store.beginRevisionTransaction(target);
+    await a.commit();
+    // Crash between reserve and the durable write: the file is unchanged,
+    // so the baseline fingerprint still matches.
+    const b = await store.beginRevisionTransaction(target);
+
+    assert.equal(await store.recoverPendingRevision(target), "aborted");
+    assert.deepEqual(await store.readRevisionStatus(target), {
+      status: "present",
+      revision: a.pendingRevision,
+    });
+    assert.equal(await store.recoverPendingRevision(target), "committed", "idempotent once reconciled");
+
+    // Same crash from a fresh target (no standing receipt, absent file):
+    // the aborted reservation returns the shard to genuine absence.
+    const fresh = path.join(root, "memories", "fact-restart-fresh.md");
+    const f = await store.beginRevisionTransaction(fresh);
+    assert.equal(await store.recoverPendingRevision(fresh), "aborted");
+    assert.equal((await store.readRevisionStatus(fresh)).status, "absent");
+    assert.ok(f.pendingRevision.length > 0);
+  });
+});
+
+test("an evidenced gated recovery defers a reserve-only marker to the path-locked write path (#2807)", async () => {
+  await withStore(async (store, root) => {
+    const target = path.join(root, "memories", "fact-restart-gate.md");
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, "standing bytes", "utf8");
+    const a = await store.beginRevisionTransaction(target);
+    await a.commit();
+
+    // A reserve-only marker is indistinguishable from a LIVE transaction
+    // between reserve and write, so an unlocked read must not abort it.
+    const b = await store.beginRevisionTransaction(target);
+    assert.equal(
+      await store.recoverPendingRevision(target, { onlyWithWriteEvidence: true }),
+      "reserved",
+    );
+    assert.equal((await store.readRevisionStatus(target)).status, "unavailable", "the marker still stands");
+    // The live transaction proceeds undisturbed and commits normally.
+    await writeFile(target, "landed bytes", "utf8");
+    await b.writeLanded();
+    await b.commit();
+    assert.deepEqual(await store.readRevisionStatus(target), {
+      status: "present",
+      revision: b.pendingRevision,
+    });
+  });
+});
+
+test("recoverPendingRevision publishes a crashed reservation whose write landed (#2807)", async () => {
+  await withStore(async (store, root) => {
+    const target = path.join(root, "memories", "fact-restart-commit.md");
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, "old durable bytes", "utf8");
+    const a = await store.beginRevisionTransaction(target);
+    await a.commit();
+
+    const b = await store.beginRevisionTransaction(target);
+    await writeFile(target, "new durable bytes", "utf8");
+    await b.writeLanded();
+    // Crash between writeLanded and commit: the marker holds the evidence.
+
+    const shard = JSON.parse(await readFile(shardPathFor(root, target), "utf8")) as {
+      state?: string;
+      baselineDigest?: unknown;
+      expectedDigest?: unknown;
+    };
+    assert.equal(shard.state, "pending");
+    assert.match(String(shard.baselineDigest), /^[0-9a-f]{64}$/, "the reserve-time fingerprint is persisted");
+    assert.match(String(shard.expectedDigest), /^[0-9a-f]{64}$/, "the post-write fingerprint is persisted");
+    assert.equal(JSON.stringify(shard).includes("old durable bytes"), false, "no memory content is persisted");
+
+    assert.equal(await store.recoverPendingRevision(target), "committed");
+    assert.deepEqual(await store.readRevisionStatus(target), {
+      status: "present",
+      revision: b.pendingRevision,
+    });
+    assert.equal(await store.recoverPendingRevision(target), "committed", "idempotent");
+  });
+});
+
+test("recoverPendingRevision fails closed on an ambiguous durable change (#2807)", async () => {
+  await withStore(async (store, root) => {
+    const target = path.join(root, "memories", "fact-restart-ambiguous.md");
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, "old durable bytes", "utf8");
+    const a = await store.beginRevisionTransaction(target);
+    await a.commit();
+
+    const b = await store.beginRevisionTransaction(target);
+    await assert.rejects(store.beginRevisionTransaction(target), /pending finalization/, "new reservations refuse");
+    await b.writeLanded();
+    // After the crash the file changes again — neither the expected
+    // fingerprint nor the baseline can explain the current bytes.
+    await writeFile(target, "unexplained third state", "utf8");
+
+    await assert.rejects(store.recoverPendingRevision(target), /ambiguous[\s\S]*Refusing to guess/);
+    assert.equal((await store.readRevisionStatus(target)).status, "unavailable");
+    await assert.rejects(store.beginRevisionTransaction(target), /ambiguous/, "new reservations refuse");
+    assert.equal(
+      await store.reconcilePendingRevision(target, true),
+      "reconciled",
+      "the known-outcome path remains the operator's manual tool",
+    );
+  });
+});
+
+test("recoverPendingRevision never guesses on a legacy pending marker without evidence (#2807)", async () => {
+  await withStore(async (store, root) => {
+    const target = path.join(root, "memories", "fact-legacy-pending.md");
+    const relative = path.relative(root, target).split(path.sep).join("/");
+    await mkdir(path.dirname(shardPathFor(root, target)), { recursive: true });
+    await writeFile(
+      shardPathFor(root, target),
+      `${JSON.stringify({
+        version: 1,
+        path: relative,
+        revision: "2026-08-01T00:00:00.000Z",
+        state: "pending",
+        previous: "2026-07-31T00:00:00.000Z",
+      })}\n`,
+      "utf8",
+    );
+
+    await assert.rejects(store.recoverPendingRevision(target), /no crash evidence[\s\S]*Refusing to guess/);
+    assert.equal((await store.readRevisionStatus(target)).status, "unavailable");
+  });
+});

@@ -18,6 +18,16 @@ type CasRevisionShard = {
    * abort restores it, so a discarded reservation never erases the
    * target's receipt history. */
   previous?: string;
+  /** #2807 crash-recovery evidence, pending markers only. sha256 of the
+   * durable memory file's BYTES — a fingerprint, never memory content.
+   * `baselineDigest` is the fingerprint captured at reserve time; null
+   * means the file was absent. Absent on legacy pending markers, which
+   * carry no evidence. */
+  baselineDigest?: string | null;
+  /** #2807: the fingerprint the durable file shows once the reserved
+   * write has landed; recorded by `writeLanded` before `commit` publishes.
+   * null means the file was absent when the write landed. */
+  expectedDigest?: string | null;
 };
 
 type CasRevisionMetadata = {
@@ -46,9 +56,14 @@ export type CasRevisionReadStatus =
  * `commit` itself fails after the write, the pending marker REMAINS so
  * readers report recovery-needed and promotion/rollback refuse until
  * {@link CasRevisionStore.reconcilePendingRevision} runs with the known
- * write outcome. */
+ * write outcome or {@link CasRevisionStore.recoverPendingRevision} decides
+ * from the recorded evidence (#2807). */
 export interface CasRevisionTransaction {
   readonly pendingRevision: string;
+  /** #2807: record the durable file's post-write fingerprint in the
+   * PENDING marker — the crash evidence recovery compares. Call immediately
+   * after the durable write lands, before `commit`. */
+  writeLanded(): Promise<void>;
   commit(): Promise<void>;
   abort(): Promise<void>;
 }
@@ -57,10 +72,25 @@ type CasShardView =
   | { kind: "missing" }
   | { kind: "foreign" }
   | { kind: "committed"; revision: string; foreign: boolean }
-  | { kind: "pending"; revision: string; previous?: string; foreign: boolean };
+  | {
+      kind: "pending";
+      revision: string;
+      previous?: string;
+      foreign: boolean;
+      /** #2807 evidence fields, verbatim from the shard (undefined on
+       * legacy pending markers, which carry no evidence). */
+      baselineDigest?: string | null;
+      expectedDigest?: string | null;
+    };
 
 const CAS_REVISION_LOCK_STALE_MS = 60_000;
 const CAS_REVISION_LOCK_MAX_WAIT_MS = 120_000;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+function isDigestOrNullOrUndefined(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  return typeof value === "string" && SHA256_HEX.test(value);
+}
 
 /**
  * #2813 (P1, #2807 CI repair): durable per-target CAS receipt identity,
@@ -196,13 +226,22 @@ export class CasRevisionStore {
         root.revision.length === 0 ||
         (root.state !== "pending" && root.state !== "committed") ||
         (root.previous !== undefined &&
-          (typeof root.previous !== "string" || root.previous.length === 0))
+          (typeof root.previous !== "string" || root.previous.length === 0)) ||
+        !isDigestOrNullOrUndefined(root.baselineDigest) ||
+        !isDigestOrNullOrUndefined(root.expectedDigest)
       ) {
         throw new Error("CAS revision shard is unreadable.");
       }
       const foreign = root.path !== relativePath;
       return root.state === "pending"
-        ? { kind: "pending", revision: root.revision, previous: root.previous, foreign }
+        ? {
+            kind: "pending",
+            revision: root.revision,
+            previous: root.previous,
+            foreign,
+            baselineDigest: root.baselineDigest as string | null | undefined,
+            expectedDigest: root.expectedDigest as string | null | undefined,
+          }
         : { kind: "committed", revision: root.revision, foreign };
     }
     // Pre-two-phase shard: a full-shape match reads as committed; anything
@@ -256,11 +295,19 @@ export class CasRevisionStore {
     lock: HeldFileLockController,
     state: "pending" | "committed",
     previous?: string,
+    evidence?: { baselineDigest: string | null; expectedDigest?: string | null },
   ): Promise<void> {
-    const payload: CasRevisionShard =
-      state === "pending" && previous !== undefined
-        ? { version: 1, path: relativePath, revision, state, previous }
-        : { version: 1, path: relativePath, revision, state };
+    let payload: CasRevisionShard;
+    if (state === "committed") {
+      payload = { version: 1, path: relativePath, revision, state };
+    } else {
+      payload = { version: 1, path: relativePath, revision, state };
+      if (previous !== undefined) payload.previous = previous;
+      if (evidence !== undefined) {
+        payload.baselineDigest = evidence.baselineDigest;
+        if (evidence.expectedDigest !== undefined) payload.expectedDigest = evidence.expectedDigest;
+      }
+    }
     const baseDir = path.resolve(this.baseDir);
     const temporaryPath = await resolveSafeStoragePath(
       baseDir,
@@ -348,19 +395,68 @@ export class CasRevisionStore {
    * receipt — not within one millisecond, not across a backward clock
    * step. Refuses while another reservation is pending (recovery needed)
    * or the standing receipt cannot be determined. The caller MUST either
-   * `commit` after its durable write lands or `abort` when it fails. */
+   * `commit` after its durable write lands or `abort` when it fails.
+   * #2807: the marker also records the durable file's reserve-time
+   * fingerprint (`baselineDigest`), so a crash between reserve and
+   * finalize is decidable by {@link recoverPendingRevision}. */
   async beginRevisionTransaction(filePath: string): Promise<CasRevisionTransaction> {
     const relativePath = await this.resolveRelativePath(filePath);
     return await this.withShardLock(relativePath, async (lock) => {
       const standing = await this.readStandingRevisionStrict(relativePath);
       const next = nextCasRevisionIso(standing);
+      const baselineDigest = await this.digestDurableFile(relativePath);
       const { shardPath } = await this.getSafeShardInfo(relativePath);
-      await this.writeShard(shardPath, relativePath, next, lock, "pending", standing);
+      await this.writeShard(shardPath, relativePath, next, lock, "pending", standing, {
+        baselineDigest,
+      });
       return {
         pendingRevision: next,
+        writeLanded: () => this.recordPendingWriteLanded(relativePath, next),
         commit: () => this.finalizeRevisionTransaction(relativePath, next, "commit"),
         abort: () => this.finalizeRevisionTransaction(relativePath, next, "abort"),
       };
+    });
+  }
+
+  /** #2807: sha256 of the durable memory file's raw BYTES (ciphertext when
+   * the store is encrypted — recovery compares durable state, never
+   * content), or null when the file is absent. Resolved through the same
+   * symlink-auditing path safety as every sidecar path. Any other read
+   * failure throws: evidence must never be guessed. */
+  private async digestDurableFile(relativePath: string): Promise<string | null> {
+    const baseDir = path.resolve(this.baseDir);
+    const target = await resolveSafeStoragePath(baseDir, relativePath);
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(target);
+    } catch (error) {
+      if (isErrnoCode(error, "ENOENT")) return null;
+      throw new Error(
+        `CAS revision evidence: durable memory file ${relativePath} is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    return createHash("sha256").update(bytes).digest("hex");
+  }
+
+  /** #2807: record the post-write fingerprint of the durable file in the
+   * PENDING marker, under the shard lock. Called between the durable write
+   * and `commit`; a crash in that window is then decisively recoverable as
+   * "the write landed". Idempotent. */
+  private async recordPendingWriteLanded(relativePath: string, token: string): Promise<void> {
+    await this.withShardLock(relativePath, async (lock) => {
+      const { shardPath } = await this.getSafeShardInfo(relativePath);
+      const view = await this.readShardView(shardPath, relativePath);
+      if (view.kind !== "pending" || view.foreign || view.revision !== token) {
+        throw new Error(
+          `CAS revision evidence recording refused for ${relativePath}: the pending marker does not match the reserved token.`,
+        );
+      }
+      if (view.expectedDigest !== undefined) return;
+      const expectedDigest = await this.digestDurableFile(relativePath);
+      await this.writeShard(shardPath, relativePath, token, lock, "pending", view.previous, {
+        baselineDigest: view.baselineDigest === undefined ? null : view.baselineDigest,
+        expectedDigest,
+      });
     });
   }
 
@@ -423,6 +519,71 @@ export class CasRevisionStore {
         await unlink(shardPath);
       }
       return "reconciled";
+    });
+  }
+
+  /** #2807 (P1): evidence-based recovery for a reservation left PENDING by
+   * a crash between reserve and finalize — the state no live caller can
+   * report an outcome for. Under the shard lock, the durable file's current
+   * fingerprint is compared against the evidence the marker recorded:
+   * - matches `expectedDigest` → the reserved write landed, so the pending
+   *   token publishes as the COMMITTED receipt;
+   * - matches `baselineDigest` (including both absent) → the durable file
+   *   never changed since reserve, so the reservation is aborted and the
+   *   previous standing token restored (or the marker unlinked);
+   * - anything else — no evidence (a legacy marker), an unreadable durable
+   *   file, or a fingerprint matching neither — THROWS: the target stays
+   *   unavailable and every receipt transaction on it refuses until an
+   *   operator reconciles with the known outcome. Recovery never guesses.
+   * Idempotent; never writes the durable memory file itself.
+   *
+   * `onlyWithWriteEvidence` serves callers that hold NO capture path lock
+   * (the read path): a marker whose write has not yet landed
+   * (`expectedDigest` unset) is indistinguishable from a LIVE transaction
+   * between reserve and write, so aborting it from an unlocked read could
+   * strand a landed write receiptless. Such markers return `reserved`
+   * untouched — only the path-locked write path recovers them. */
+  async recoverPendingRevision(
+    filePath: string,
+    options?: { onlyWithWriteEvidence?: boolean },
+  ): Promise<"committed" | "aborted" | "absent" | "reserved"> {
+    const relativePath = await this.resolveRelativePath(filePath);
+    return await this.withShardLock(relativePath, async (lock) => {
+      const { shardPath } = await this.getSafeShardInfo(relativePath);
+      const view = await this.readShardView(shardPath, relativePath);
+      if (view.kind === "missing" || view.kind === "foreign") return "absent";
+      if (view.kind === "committed") return view.foreign ? "absent" : "committed";
+      if (view.foreign) {
+        throw new Error(
+          `CAS revision pending marker for ${relativePath} names another target; manual recovery is required.`,
+        );
+      }
+      if (options?.onlyWithWriteEvidence && view.expectedDigest === undefined) {
+        return "reserved";
+      }
+      const currentDigest = await this.digestDurableFile(relativePath);
+      if (view.expectedDigest !== undefined && currentDigest === view.expectedDigest) {
+        await this.writeShard(shardPath, relativePath, view.revision, lock, "committed");
+        return "committed";
+      }
+      if (view.baselineDigest !== undefined && currentDigest === view.baselineDigest) {
+        if (view.previous !== undefined) {
+          await this.writeShard(shardPath, relativePath, view.previous, lock, "committed");
+        } else {
+          await unlink(shardPath);
+        }
+        return "aborted";
+      }
+      const evidence =
+        view.baselineDigest === undefined && view.expectedDigest === undefined
+          ? "the pending marker carries no crash evidence (written by an older version)"
+          : "the durable file matches neither the expected commit fingerprint nor the reserve-time baseline";
+      throw new Error(
+        `CAS revision recovery for ${relativePath} is ambiguous: ${evidence} (pending token ${view.revision}` +
+          `${view.previous !== undefined ? `, previous ${view.previous}` : ""}). ` +
+          `Inspect the durable file and the shard at ${shardPath}, then run ` +
+          `reconcilePendingRevision with the known write outcome. Refusing to guess.`,
+      );
     });
   }
 }

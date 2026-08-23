@@ -271,6 +271,18 @@ export async function runTombstoneBlockedMutation(
         throw err;
       }
       if (transaction) {
+        // #2807: record the post-write fingerprint in the PENDING marker
+        // BEFORE publishing, so a crash between the durable write and the
+        // COMMITTED receipt is decisively recoverable. The evidence only
+        // guards that crash window — a recording failure must not fail the
+        // landed write, so commit still runs and publishes truthfully.
+        try {
+          await transaction.writeLanded();
+        } catch (evidenceError) {
+          host.logWarning(
+            `storage.tombstoneBlocked failed to record receipt crash evidence (pending marker preserved): ${evidenceError}`,
+          );
+        }
         try {
           await transaction.commit();
         } catch (err) {
