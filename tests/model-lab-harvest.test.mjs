@@ -20,6 +20,8 @@
  *  - harvest blobs stay gitignored; nothing invokes the tool automatically
  *  - inherited parentId+chunkIndex child chunks are skipped; whole facts
  *    and independently judged files still emit
+ *  - post-gate sanitization rewrites are skipped from persist evidence or
+ *    a contentHash that does not match recovered bytes; unchanged bytes emit
  */
 
 import assert from "node:assert/strict";
@@ -995,6 +997,73 @@ test(
     assert.equal(manifest.labelCounts.contradicted, 1);
     assert.equal(manifest.labelCounts.entailed, 1);
     assert.equal(manifest.labelCounts.unsupported, 1);
+    assertNoPrivateLeak(out);
+  },
+);
+
+test(
+  "harvest: skips post-gate sanitized rewrites; keeps unchanged bytes",
+  { skip: skipReason },
+  () => {
+    const input = tmpDir("sanitize-in");
+    const replacedBody = "[content removed: unsafe memory text]";
+    const unchangedBody = "Synthetic fact unchanged.";
+    const quote = "synthetic sanitize quote";
+    const verdict = (label) =>
+      JSON.stringify({
+        verdict: label,
+        model: "synthetic-teacher-model",
+        at: "2026-01-01T00:00:00Z",
+      });
+    const sources = JSON.stringify([
+      {
+        sessionKey: "sess-PRIVATE-marker",
+        observedAt: "2026-01-01T00:00:00Z",
+        quote,
+        charStart: 0,
+        charEnd: quote.length,
+      },
+    ]);
+    writeMemory(
+      input,
+      "facts/2026-01-01/fact-sanitize-injection.md",
+      [
+        "id: fact-sanitize-injection",
+        "category: fact",
+        `faithfulness: ${verdict("entailed")}`,
+        `sources: ${sources}`,
+        'tags: ["injection-screen:ignore-previous-family"]',
+      ].join("\n"),
+      replacedBody,
+    );
+    writeMemory(
+      input,
+      "facts/2026-01-01/fact-sanitize-rewritten.md",
+      [
+        "id: fact-sanitize-rewritten",
+        "category: fact",
+        `faithfulness: ${verdict("contradicted")}`,
+        `sources: ${sources}`,
+        "contentHash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      ].join("\n"),
+      replacedBody,
+    );
+    memoryWithVerdict(input, "fact-sanitize-unchanged", "unsupported", quote, unchangedBody);
+    const out = tmpDir("out-sanitize");
+    const res = runHarvest([
+      "--task", "faithfulness-gate", "--input", input, "--out", out, "--consent", "--quiet",
+    ]);
+    assert.equal(res.status, 0, res.stderr);
+    const rows = readJsonl(path.join(out, "harvest-faithfulness-gate.jsonl"));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].label, "unsupported");
+    assert.equal(rows[0].factText, unchangedBody);
+    assert.ok(!rows.some((row) => row.factText === replacedBody));
+    const manifest = readManifest(out, "faithfulness-gate");
+    assert.equal(manifest.skipped.sanitized, 2);
+    assert.equal(manifest.labelCounts.unsupported, 1);
+    assert.equal(manifest.labelCounts.entailed, 0);
+    assert.equal(manifest.labelCounts.contradicted, 0);
     assertNoPrivateLeak(out);
   },
 );
