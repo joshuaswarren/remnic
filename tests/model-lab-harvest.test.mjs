@@ -164,7 +164,11 @@ function planBase(overrides = {}) {
     },
     namespace: "ns-PRIVATE-marker",
     classification: "outdated",
-    actions: [{ kind: "supersede", memoryId: "mem-PRIVATE-marker" }],
+    actions: [{
+      kind: "supersede",
+      loserId: "mem-PRIVATE-marker",
+      replacement: { content: "we now use synthetic-db" },
+    }],
     confidence: 0.9,
     createdAt: "2026-01-01T00:00:00Z",
     status: "applied",
@@ -183,6 +187,7 @@ function buildCorrectionInput() {
       confidence: 0.85,
       status: "pending",
       request: { text: "that's wrong, the port is not 8080", sessionKey: "sess-PRIVATE-marker" },
+      actions: [{ kind: "retract", memoryId: "mem-PRIVATE-marker" }],
     }),
   );
   writePlan(dir, "corr-synthetic-003.json", planBase({ status: "discarded" }));
@@ -627,6 +632,133 @@ test(
     const manifest = readManifest(out, "correction-intent");
     assert.equal(manifest.skipped.malformed, 2);
     assert.equal(manifest.labelCounts.correction, 2);
+    assertNoPrivateLeak(out);
+  },
+);
+
+test(
+  "harvest: unknown or incomplete correction actions count malformed",
+  { skip: skipReason },
+  () => {
+    const dir = tmpDir("bad-actions");
+    writePlan(dir, "banana-kind.json", planBase({
+      actions: [{ kind: "banana" }],
+      request: { text: "banana action must not become a label" },
+    }));
+    writePlan(dir, "missing-loser.json", planBase({
+      actions: [{ kind: "supersede" }],
+    }));
+    writePlan(dir, "missing-patch.json", planBase({
+      classification: "incomplete",
+      actions: [{ kind: "edit", memoryId: "mem-PRIVATE-marker" }],
+    }));
+    writePlan(dir, "non-object.json", planBase({
+      actions: ["retract"],
+    }));
+    writePlan(dir, "rescope-only.json", planBase({
+      classification: "wrong_scope",
+      actions: [{ kind: "rescope", memoryId: "mem-PRIVATE-marker", toNamespace: "other" }],
+    }));
+    const out = tmpDir("out-bad-actions");
+    const res = runHarvest([
+      "--task", "correction-intent", "--input", dir, "--out", out, "--consent",
+    ]);
+    assert.equal(res.status, 0, res.stderr);
+    const rows = readJsonl(path.join(out, "harvest-correction-intent.jsonl"));
+    assert.equal(rows.length, 0, "invalid actions must not emit positives");
+    const manifest = readManifest(out, "correction-intent");
+    assert.equal(manifest.labelCounts.correction, 0);
+    assert.equal(manifest.skipped.malformed, 5);
+    assertNoPrivateLeak(out);
+  },
+);
+
+test(
+  "harvest: structured corrections come from actions, not request text",
+  { skip: skipReason },
+  () => {
+    const dir = tmpDir("from-actions");
+    writePlan(dir, "retract.json", planBase({
+      classification: "wrong",
+      request: { text: "actually we switched to postgres" },
+      actions: [{ kind: "retract", memoryId: "mem-PRIVATE-marker" }],
+    }));
+    writePlan(dir, "edit.json", planBase({
+      classification: "incomplete",
+      request: { text: "that's wrong, fill in the port" },
+      actions: [{
+        kind: "edit",
+        memoryId: "mem-PRIVATE-marker",
+        patch: "the service listens on 443",
+      }],
+    }));
+    writePlan(dir, "supersede.json", planBase({
+      request: { text: "forget about redis, it was never true" },
+      actions: [{
+        kind: "supersede",
+        loserId: "mem-PRIVATE-marker",
+        replacement: { content: "the cache is sqlite" },
+      }],
+    }));
+    const out = tmpDir("out-from-actions");
+    const res = runHarvest([
+      "--task", "correction-intent", "--input", dir, "--out", out, "--consent",
+    ]);
+    assert.equal(res.status, 0, res.stderr);
+    const rows = readJsonl(path.join(out, "harvest-correction-intent.jsonl"));
+    assert.equal(rows.length, 3);
+    const byTurn = Object.fromEntries(rows.map((row) => [row.turns[0].content, row.corrections[0]]));
+    assert.equal(byTurn["actually we switched to postgres"].polarity, "retract");
+    assert.equal(byTurn["actually we switched to postgres"].correctedAssertion, "");
+    assert.equal(byTurn["that's wrong, fill in the port"].polarity, "update");
+    assert.equal(byTurn["that's wrong, fill in the port"].correctedAssertion, "the service listens on 443");
+    assert.equal(byTurn["forget about redis, it was never true"].polarity, "update");
+    assert.equal(byTurn["forget about redis, it was never true"].correctedAssertion, "the cache is sqlite");
+    assertNoPrivateLeak(out);
+  },
+);
+
+test(
+  "harvest: reconstructs gated fact text and skips leftover private attribution",
+  { skip: skipReason },
+  () => {
+    const input = tmpDir("recon-in");
+    memoryWithVerdict(
+      input,
+      "fact-attr-001",
+      "entailed",
+      "synthetic quote attr",
+      "Synthetic fact alpha.\n[Attributes: city: Austin]",
+    );
+    memoryWithVerdict(
+      input,
+      "fact-cite-001",
+      "contradicted",
+      "synthetic quote cite",
+      "Synthetic fact beta. [Source: agent=planner, session=sess-PRIVATE-marker, ts=2026-01-01T00:00:00Z]",
+    );
+    memoryWithVerdict(
+      input,
+      "fact-private-001",
+      "unsupported",
+      "synthetic quote priv",
+      "Synthetic fact gamma. [src:planner/sess-PRIVATE-marker@2026-01-01]",
+    );
+    const out = tmpDir("out-recon");
+    const res = runHarvest([
+      "--task", "faithfulness-gate", "--input", input, "--out", out, "--consent", "--quiet",
+    ]);
+    assert.equal(res.status, 0, res.stderr);
+    const rows = readJsonl(path.join(out, "harvest-faithfulness-gate.jsonl"));
+    assert.equal(rows.length, 2);
+    const byLabel = Object.fromEntries(rows.map((row) => [row.label, row.factText]));
+    assert.equal(byLabel.entailed, "Synthetic fact alpha.");
+    assert.equal(byLabel.contradicted, "Synthetic fact beta.");
+    assert.ok(!rows.some((row) => row.factText.includes("[Attributes:")));
+    assert.ok(!rows.some((row) => row.factText.includes("[Source:")));
+    const manifest = readManifest(out, "faithfulness-gate");
+    assert.equal(manifest.skipped.private, 1);
+    assert.equal(manifest.labelCounts.unsupported, 0);
     assertNoPrivateLeak(out);
   },
 );

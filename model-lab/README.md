@@ -108,8 +108,13 @@ memory ids, model ids) by building records from an allowlist, derives
 `sourceId` as a hash of those approved fields plus a task salt, and skips
 redacted/never-store plans outright. Faithfulness rows keep every verified
 source quote, joined with a newline in persisted order (same as the gate).
-Unknown correction classification, status, schema version, or a confidence
-outside `[0, 1]` counts as malformed, never as a positive label.
+Unknown correction classification, status, schema version, action kind or
+required action field, or a confidence outside `[0, 1]` counts as malformed,
+never as a positive label. Polarity and `correctedAssertion` come from the
+validated action (a `retract` stays a retract even when the request text
+looks like an update). Faithfulness `factText` is the pre-persist gated
+body: the `[Attributes: …]` suffix and default `[Source: …]` citation are
+stripped; leftover custom attribution is skipped as private.
 Nothing in the daemon, build, or CI ever invokes it.
 
 ```bash

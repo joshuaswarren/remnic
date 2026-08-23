@@ -5,9 +5,13 @@ model-lab tasks:
 
 * ``faithfulness-gate`` — memory markdown with a ``faithfulness:`` frontmatter
   verdict (#1576) plus every verified ``sources[].quote`` span (#1575),
-  joined with a newline in persisted order (same as the gate).
+  joined with a newline in persisted order (same as the gate). ``factText``
+  is the pre-persist gated body: the ``[Attributes: …]`` suffix and default
+  inline citation are stripped from the already-bounded source bytes.
 * ``correction-intent`` — persisted correction-plan JSON (#1581 durable output).
-  ``confidence`` must be finite and in ``[0, 1]``.
+  ``confidence`` must be finite and in ``[0, 1]``. Every action is validated
+  against the product kind/field contract. Polarity and assertion come from
+  the action, never from request-text heuristics.
 
 Contract (issue #2852):
 
@@ -22,15 +26,17 @@ Contract (issue #2852):
   stay behind. ``sourceId`` is a hash of sanitized approved fields plus a
   task salt — never a frontmatter id, plan id, or filename. Redacted (#1678)
   and never-store plans are skipped. Unknown classification, status,
-  schema version, or a confidence outside ``[0, 1]`` count as malformed,
-  never as a positive label.
+  schema version, action kind/fields, or a confidence outside ``[0, 1]``
+  count as malformed, never as a positive label. A body that still carries
+  unstrippable inline attribution is skipped as private.
 * Deterministic and idempotent: same input tree → byte-identical dataset AND
   manifest (no clocks, no absolute paths). Rows dedup on the training payload
   and emit in canonical-JSON order.
 * Bounded: ``max_records`` caps the dataset. ``max_text_bytes`` is checked
   with fstat plus a bounded stream *before* a full read or fingerprint.
   Oversized files are counted and skipped without allocating their bytes.
-  Oversize text fields are skipped, never truncated.
+  Oversize text fields are skipped, never truncated. Fact reconstruction
+  uses only the already-bounded payload and linear string scans.
 
 Pure stdlib. The correction-intent schema is imported lazily so ``common/``
 keeps no static dependency on a task directory.
@@ -90,9 +96,19 @@ CORRECTION_PLAN_STATUSES: frozenset[str] = frozenset(
 HARVESTABLE_PLAN_STATUSES: frozenset[str] = frozenset(
     {"pending", "applying", "applied", "partial"}
 )
+#: Exact #1580 action kinds. Unknown kinds (e.g. ``banana``) are malformed.
+CORRECTION_ACTION_KINDS: frozenset[str] = frozenset(
+    {"supersede", "edit", "retract", "rescope", "redaction_rule"}
+)
+CORRECTION_POLARITIES: frozenset[str] = frozenset(
+    {"update", "retract", "stop_storing"}
+)
 SUPPORTED_PLAN_SCHEMA_VERSIONS: frozenset[int] = frozenset({1})
 DEFAULT_PLAN_SCHEMA_VERSION = 1
 SOURCE_ID_SALT = "remnic-harvest-v1"
+ATTRIBUTES_MARKER = "\n[Attributes: "
+DEFAULT_CITATION_OPEN = "[Source:"
+MAX_CITATION_INNER = 1024
 
 
 def dataset_filename(task: str) -> str:
@@ -273,6 +289,154 @@ def _joined_verified_quotes(raw_sources: str | None) -> str:
     return "\n".join(quotes)
 
 
+def _strip_attributes_suffix(content: str) -> str:
+    """Drop the persist-time ``[Attributes: …]`` suffix. String scan only."""
+    trimmed = content.rstrip()
+    if not trimmed.endswith("]"):
+        return content.strip()
+    marker_index = trimmed.rfind(ATTRIBUTES_MARKER)
+    if marker_index == -1:
+        return content.strip()
+    inner = trimmed[marker_index + len(ATTRIBUTES_MARKER) : -1]
+    if "]" in inner or "\n" in inner:
+        return content.strip()
+    return trimmed[:marker_index].strip()
+
+
+def _strip_default_citations(text: str) -> str:
+    """Remove default ``[Source: …]`` markers from already-bounded text."""
+    pieces: list[str] = []
+    cursor = 0
+    length = len(text)
+    while cursor < length:
+        start = text.find(DEFAULT_CITATION_OPEN, cursor)
+        if start == -1:
+            pieces.append(text[cursor:])
+            break
+        search_from = start + len(DEFAULT_CITATION_OPEN)
+        window = text[search_from : search_from + MAX_CITATION_INNER + 1]
+        close = window.find("]")
+        newline = window.find("\n")
+        if close == -1 or (newline != -1 and newline < close):
+            pieces.append(text[cursor:search_from])
+            cursor = search_from
+            continue
+        pieces.append(text[cursor:start].rstrip(" \t"))
+        cursor = search_from + close + 1
+    return "".join(pieces).strip()
+
+
+def _has_unstrippable_attribution(text: str) -> bool:
+    if DEFAULT_CITATION_OPEN in text:
+        return True
+    trimmed = text.rstrip()
+    if not trimmed.endswith("]"):
+        return False
+    open_at = trimmed.rfind("[")
+    if open_at == -1:
+        return False
+    inner = trimmed[open_at + 1 : -1]
+    if "\n" in inner or len(inner) > MAX_CITATION_INNER:
+        return False
+    return any(token in inner for token in ("=", "/", "@"))
+
+
+def _reconstruct_gated_fact(body: str) -> tuple[str | None, str | None]:
+    """Recover the fact text the gate evaluated, or skip the row."""
+    without_attributes = _strip_attributes_suffix(body)
+    fact_text = _strip_default_citations(without_attributes)
+    if not fact_text:
+        return None, "malformed"
+    if _has_unstrippable_attribution(fact_text):
+        return None, "private"
+    return fact_text, None
+
+
+def _target_hint(turn: str) -> str:
+    cleaned = " ".join(turn.split())
+    return cleaned[:80] if len(cleaned) <= 80 else cleaned[:77] + "..."
+
+
+def _validate_correction_action(action: Any) -> dict[str, Any] | None:
+    """Return a sanitized action payload, or None when the contract fails."""
+    if not isinstance(action, dict):
+        return None
+    kind = action.get("kind")
+    if kind not in CORRECTION_ACTION_KINDS:
+        return None
+    if kind == "supersede":
+        loser_id = action.get("loserId")
+        if not isinstance(loser_id, str) or not loser_id:
+            return None
+        replacement = action.get("replacement")
+        if replacement is None:
+            return {"kind": kind}
+        if not isinstance(replacement, dict):
+            return None
+        content = replacement.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return None
+        return {"kind": kind, "assertion": content.strip()}
+    if kind == "edit":
+        memory_id = action.get("memoryId")
+        patch = action.get("patch")
+        if not isinstance(memory_id, str) or not memory_id:
+            return None
+        if not isinstance(patch, str) or len(patch) == 0:
+            return None
+        return {"kind": kind, "assertion": patch}
+    if kind == "retract":
+        memory_id = action.get("memoryId")
+        if not isinstance(memory_id, str) or not memory_id:
+            return None
+        return {"kind": kind}
+    if kind == "rescope":
+        memory_id = action.get("memoryId")
+        namespace = action.get("toNamespace")
+        if not isinstance(memory_id, str) or not memory_id:
+            return None
+        if not isinstance(namespace, str) or not namespace.strip():
+            return None
+        return {"kind": kind}
+    pattern = action.get("pattern")
+    if not isinstance(pattern, str) or not pattern.strip():
+        return None
+    return {"kind": kind}
+
+
+def _corrections_from_actions(
+    actions: list[dict[str, Any]],
+    confidence: float,
+    target_hint: str,
+) -> list[dict[str, Any]] | None:
+    """Map validated actions to #1581 correction blocks. No invented polarity."""
+    blocks: list[dict[str, Any]] = []
+    for action in actions:
+        kind = action["kind"]
+        if kind == "retract" or (kind == "supersede" and "assertion" not in action):
+            polarity = "retract"
+            assertion = ""
+        elif kind in {"edit", "supersede"}:
+            polarity = "update"
+            assertion = action["assertion"][:200]
+        else:
+            continue
+        if polarity not in CORRECTION_POLARITIES:
+            return None
+        blocks.append(
+            {
+                "targetHint": target_hint,
+                "correctedAssertion": assertion,
+                "polarity": polarity,
+                "confidence": confidence,
+            }
+        )
+    if not blocks:
+        return None
+    return blocks
+
+
+
 def build_faithfulness_record(
     markdown_text: str,
 ) -> tuple[dict[str, Any] | None, str | None]:
@@ -296,9 +460,9 @@ def build_faithfulness_record(
     quote = _joined_verified_quotes(scalars.get("sources"))
     if not quote:
         return None, "no_quote"
-    fact_text = body.strip()
-    if not fact_text:
-        return None, "malformed"
+    fact_text, fact_reason = _reconstruct_gated_fact(body)
+    if fact_reason is not None:
+        return None, fact_reason
     approved = {
         "factText": fact_text,
         "quote": quote,
@@ -359,12 +523,15 @@ def build_correction_record(
     actions = plan.get("actions")
     if classification not in CORRECTION_CLASSIFICATIONS or not isinstance(actions, list):
         return None, "malformed"
+    validated: list[dict[str, Any]] = []
+    for action in actions:
+        cleaned_action = _validate_correction_action(action)
+        if cleaned_action is None:
+            return None, "malformed"
+        validated.append(cleaned_action)
     if classification in SENSITIVE_CLASSIFICATIONS:
         return None, "sensitive"
-    if any(
-        isinstance(action, dict) and action.get("kind") in SENSITIVE_ACTION_KINDS
-        for action in actions
-    ):
+    if any(action["kind"] in SENSITIVE_ACTION_KINDS for action in validated):
         return None, "sensitive"
     request = plan.get("request")
     if not isinstance(request, dict):
@@ -384,14 +551,11 @@ def build_correction_record(
     ):
         return None, "malformed"
     cleaned = text.strip()
-    corrections = [
-        {
-            "targetHint": cleaned[:80],
-            "correctedAssertion": cleaned[:200],
-            "polarity": "update",
-            "confidence": float(confidence),
-        }
-    ]
+    corrections = _corrections_from_actions(
+        validated, float(confidence), _target_hint(cleaned)
+    )
+    if corrections is None:
+        return None, "malformed"
     turns = [{"role": "user", "content": cleaned}]
     approved = {
         "turns": turns,

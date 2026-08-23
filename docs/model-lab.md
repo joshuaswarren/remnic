@@ -185,8 +185,11 @@ a model-backed detector lands in the consuming child.
   memory ids, and model ids by projecting records field-by-field from an
   allowlist, emits an unlinkable hashed `sourceId`, keeps every verified
   source quote (joined with a newline, same as the gate), skips
-  redacted/never-store plans, treats unknown classification/status/version
-  or a confidence outside `[0, 1]` as malformed, stats-and-streams
+  redacted/never-store plans, treats unknown classification/status/version/
+  action kind or required field or a confidence outside `[0, 1]` as
+  malformed, derives polarity and assertion from the action, reconstructs
+  gated `factText` by stripping the persist-time attribute suffix and
+  default inline citation, stats-and-streams
   `--max-text-bytes` before a full read, and never
   runs from the daemon, build, or CI. See `model-lab/README.md`
   ("Harvesting shadow-telemetry labels") for the command recipe.
