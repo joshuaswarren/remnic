@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,6 +15,21 @@ async function writeConfig(content: string): Promise<{ filePath: string; cleanup
   return { filePath, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
+async function reserveFreePort(): Promise<number> {
+  const { promise, resolve, reject } = Promise.withResolvers<number>();
+  const probe = net.createServer();
+  probe.once("error", reject);
+  probe.listen(0, "127.0.0.1", () => {
+    const address = probe.address();
+    if (address && typeof address === "object") {
+      const { port } = address;
+      probe.close(() => resolve(port));
+    } else {
+      probe.close(() => reject(new Error("no address")));
+    }
+  });
+  return promise;
+}
 
 test("server config merge preserves openaiApiKey=false over OPENAI_API_KEY env override", () => {
   const merged = mergeRemnicConfigForServer(
@@ -227,8 +243,9 @@ test("server config parser rejects ephemeral and blank ports in user-facing conf
   );
 });
 
-test("standalone startServer forwards a trusted request principal", async () => {
+test("standalone startServer applies the runtime port override and forwards a trusted request principal", async () => {
   const { filePath, cleanup } = await writeConfig("{}");
+  const requestedPort = await reserveFreePort();
   const memoryDir = path.join(path.dirname(filePath), "memory");
   await writeFile(
     filePath,
@@ -251,6 +268,7 @@ test("standalone startServer forwards a trusted request principal", async () => 
       },
       server: {
         host: "127.0.0.1",
+        port: requestedPort === 65535 ? requestedPort - 1 : requestedPort + 1,
         authToken: "test-token",
         trustPrincipalHeader: true,
       },
@@ -263,10 +281,9 @@ test("standalone startServer forwards a trusted request principal", async () => 
     result = await startServer({
       configPath: filePath,
       authToken: "test-token",
-      // OS-assigned ephemeral port at bind time; result.port reports the
-      // bound value. Avoids the probe-then-close EADDRINUSE race.
-      allowEphemeralPort: true,
+      port: requestedPort,
     });
+    assert.equal(result.port, requestedPort);
     const url = `http://127.0.0.1:${result.port}/engram/v1/memories?namespace=tenant-a&limit=10&offset=0&sort=updated_desc`;
     const withoutHeader = await fetch(url, {
       headers: { authorization: "Bearer test-token" },
