@@ -1,40 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-import type { ImportTurn, ImporterWriteTarget } from "@remnic/core";
 import { runImporter } from "@remnic/core";
+import {
+  loadImporterFixture,
+  makeImporterTestTarget,
+} from "@remnic/core/importers/test-utils";
 
 import { adapter, claudeAdapter } from "./adapter.js";
 
-const FIXTURE_DIR = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../fixtures",
-);
-
-function loadFixture(name: string): string {
-  return readFileSync(path.join(FIXTURE_DIR, name), "utf-8");
-}
-
-function makeTarget(): {
-  target: ImporterWriteTarget;
-  received: ImportTurn[][];
-} {
-  const received: ImportTurn[][] = [];
-  return {
-    target: {
-      async ingestBulkImportBatch(turns) {
-        received.push(turns.map((t) => ({ ...t })));
-      },
-      bulkImportWriteNamespace() {
-        return "default";
-      },
-    },
-    received,
-  };
-}
+const loadFixture = (name: string): string =>
+  loadImporterFixture(import.meta.url, name);
 
 describe("claude adapter shape", () => {
   it("exports a canonical adapter + name-prefixed alias", () => {
@@ -47,7 +23,7 @@ describe("claude adapter shape", () => {
   });
 
   it("drives runImporter end-to-end with a synthetic projects fixture", async () => {
-    const { target, received } = makeTarget();
+    const { target, received } = makeImporterTestTarget();
     const result = await runImporter(
       adapter,
       loadFixture("projects.json"),
@@ -66,7 +42,7 @@ describe("claude adapter shape", () => {
   });
 
   it("dry-run does not hit the target", async () => {
-    const { target, received } = makeTarget();
+    const { target, received } = makeImporterTestTarget();
     const result = await runImporter(
       adapter,
       loadFixture("projects.json"),
@@ -80,12 +56,12 @@ describe("claude adapter shape", () => {
 
   it("skips conversations by default but imports them with includeConversations", async () => {
     const conversations = loadFixture("conversations.json");
-    const t1 = makeTarget();
+    const t1 = makeImporterTestTarget();
     const r1 = await runImporter(adapter, conversations, t1.target);
     assert.equal(r1.memoriesPlanned, 0);
     assert.equal(t1.received.length, 0);
 
-    const t2 = makeTarget();
+    const t2 = makeImporterTestTarget();
     const r2 = await runImporter(adapter, conversations, t2.target, {
       transformOptions: { includeConversations: true },
     });

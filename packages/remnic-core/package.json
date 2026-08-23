@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.69.25",
+  "version": "9.69.29",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -30,6 +30,16 @@
       "types": "./dist/salvage-envelope.d.ts",
       "remnic-source": "./src/salvage-envelope.ts",
       "import": "./dist/salvage-envelope.js"
+    },
+    "./http-retry": {
+      "types": "./dist/http-retry.d.ts",
+      "remnic-source": "./src/http-retry.ts",
+      "import": "./dist/http-retry.js"
+    },
+    "./http-retry.js": {
+      "types": "./dist/http-retry.d.ts",
+      "remnic-source": "./src/http-retry.ts",
+      "import": "./dist/http-retry.js"
     },
     "./abort-error.js": {
       "types": "./dist/abort-error.d.ts",
@@ -1214,6 +1224,16 @@
       "types": "./dist/importers/index.d.ts",
       "remnic-source": "./src/importers/index.ts",
       "import": "./dist/importers/index.js"
+    },
+    "./importers/test-utils": {
+      "types": "./dist/importers/test-utils.d.ts",
+      "remnic-source": "./src/importers/test-utils.ts",
+      "import": "./dist/importers/test-utils.js"
+    },
+    "./importers/test-utils.js": {
+      "types": "./dist/importers/test-utils.d.ts",
+      "remnic-source": "./src/importers/test-utils.ts",
+      "import": "./dist/importers/test-utils.js"
     },
     "./intent": {
       "types": "./dist/intent.d.ts",
@@ -3234,7 +3254,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^9.69.25"
+    "@remnic/coding-graph": "^9.69.29"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {

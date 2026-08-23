@@ -20,14 +20,20 @@
  * empty `notes` array is a real empty result, never conflated (AGENTS.md §22).
  */
 
+import {
+  ConnectorApiError,
+  describeNetworkError,
+  discardResponseBody,
+  retryingFetch,
+  stripTrailingSlashes,
+} from "@remnic/core/http-retry";
+
 export const GRANOLA_DEFAULT_BASE_URL = "https://public-api.granola.ai";
 
 /** Hard API maximum for `page_size` on the notes list. */
 export const NOTES_MAX_PAGE_SIZE = 30;
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const MAX_RETRIES = 3;
-const MAX_RETRY_DELAY_MS = 30_000;
 
 export interface GranolaSpeaker {
   source?: string | null;
@@ -78,12 +84,12 @@ export interface GranolaClientOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-export class GranolaApiError extends Error {
+export class GranolaApiError extends ConnectorApiError {
   constructor(
     message: string,
-    readonly status?: number,
+    status?: number,
   ) {
-    super(message);
+    super(message, status);
     this.name = "GranolaApiError";
   }
 }
@@ -98,7 +104,7 @@ export class GranolaClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
-  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly sleep: ((ms: number) => Promise<void>) | undefined;
 
   constructor(options: GranolaClientOptions) {
     if (typeof options.apiKey !== "string" || options.apiKey.trim().length === 0) {
@@ -113,7 +119,7 @@ export class GranolaClient {
     this.baseUrl = stripTrailingSlashes(options.baseUrl ?? GRANOLA_DEFAULT_BASE_URL);
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.sleep = options.sleep ?? defaultSleep;
+    this.sleep = options.sleep;
   }
 
   /** One page of note summaries in the half-open [createdAfter, createdBefore) window. */
@@ -188,104 +194,37 @@ export class GranolaClient {
   }
 
   private async requestJson(pathAndQuery: string, signal?: AbortSignal): Promise<unknown> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      signal?.throwIfAborted();
-      const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-      const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-      let response: Response;
-      try {
-        response = await this.fetchImpl(`${this.baseUrl}${pathAndQuery}`, {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            Accept: "application/json",
-          },
-          signal: combined,
-        });
-      } catch (err) {
-        if (signal?.aborted) throw err;
-        lastError = err;
-        if (attempt < MAX_RETRIES) {
-          await this.sleep(backoffMs(attempt));
-          continue;
-        }
-        throw new GranolaApiError(
-          `Granola API request failed after ${MAX_RETRIES + 1} attempts: ${describeNetworkError(err)}`,
-        );
-      }
-
-      if (response.status === 429 || response.status >= 500) {
-        discardBody(response);
-        lastError = new GranolaApiError(`Granola API responded ${response.status}`, response.status);
-        if (attempt < MAX_RETRIES) {
-          await this.sleep(await retryDelayMs(response, attempt));
-          continue;
-        }
-        throw lastError;
-      }
-      if (!response.ok) {
-        discardBody(response);
-        throw new GranolaApiError(
-          `Granola API responded ${response.status} for ${pathAndQuery.split("?")[0]}`,
-          response.status,
-        );
-      }
-      try {
-        return await response.json();
-      } catch {
-        throw new GranolaApiError("Granola API returned a non-JSON body");
-      }
+    const response = await retryingFetch(`${this.baseUrl}${pathAndQuery}`, {
+      init: {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          Accept: "application/json",
+        },
+      },
+      fetchImpl: this.fetchImpl,
+      sleep: this.sleep,
+      signal,
+      timeoutMs: this.timeoutMs,
+      networkError: (err, attempts) =>
+        new GranolaApiError(
+          `Granola API request failed after ${attempts} attempts: ${describeNetworkError(err)}`,
+        ),
+      retryableError: (retryable) =>
+        new GranolaApiError(`Granola API responded ${retryable.status}`, retryable.status),
+    });
+    if (!response.ok) {
+      discardResponseBody(response);
+      throw new GranolaApiError(
+        `Granola API responded ${response.status} for ${pathAndQuery.split("?")[0]}`,
+        response.status,
+      );
     }
-    throw lastError instanceof Error ? lastError : new GranolaApiError("Granola API request failed");
-  }
-}
-
-function defaultSleep(ms: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
-}
-
-/**
- * Release the socket back to the pool on error paths: an unconsumed response
- * body pins the undici connection (stability review note).
- */
-function discardBody(response: Response): void {
-  void response.body?.cancel().catch(() => {});
-}
-
-function describeNetworkError(err: unknown): string {
-  if (isRecord(err)) {
-    const name = typeof err.name === "string" ? err.name : "Error";
-    const code = err.code;
-    return typeof code === "string" ? `${name} (${code})` : name;
-  }
-  return "network error";
-}
-
-/** Loop instead of `/\/+$/` — CodeQL js/polynomial-redos on user-set URLs. */
-function stripTrailingSlashes(value: string): string {
-  let end = value.length;
-  while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
-  return value.slice(0, end);
-}
-
-function backoffMs(attempt: number): number {
-  return Math.min(MAX_RETRY_DELAY_MS, 1_000 * 2 ** attempt);
-}
-
-async function retryDelayMs(response: Response, attempt: number): Promise<number> {
-  const header = response.headers.get("retry-after");
-  if (header) {
-    const seconds = Number(header);
-    if (Number.isFinite(seconds) && seconds >= 0) {
-      return Math.min(MAX_RETRY_DELAY_MS, seconds * 1_000);
-    }
-    const when = Date.parse(header);
-    if (Number.isFinite(when)) {
-      return Math.min(MAX_RETRY_DELAY_MS, Math.max(0, when - Date.now()));
+    try {
+      return await response.json();
+    } catch {
+      throw new GranolaApiError("Granola API returned a non-JSON body");
     }
   }
-  return backoffMs(attempt);
 }
+

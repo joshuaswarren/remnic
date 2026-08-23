@@ -11,13 +11,20 @@
  * messages.
  */
 
+import {
+  ConnectorApiError,
+  describeNetworkError,
+  retryAfterHeaderMs,
+  retryingFetch,
+  stripTrailingSlashes,
+} from "@remnic/core/http-retry";
+
 export const LIMITLESS_DEFAULT_BASE_URL = "https://api.limitless.ai";
 
 /** Hard API maximum for `limit` on /v1/lifelogs. */
 export const LIFELOGS_MAX_PAGE_SIZE = 10;
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const MAX_RETRIES = 3;
 /** Backoff cap so a hostile retryAfter can't stall a sync for minutes. */
 const MAX_RETRY_DELAY_MS = 30_000;
 
@@ -60,12 +67,12 @@ export interface LimitlessClientOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-export class LimitlessApiError extends Error {
+export class LimitlessApiError extends ConnectorApiError {
   constructor(
     message: string,
-    readonly status?: number,
+    status?: number,
   ) {
-    super(message);
+    super(message, status);
     this.name = "LimitlessApiError";
   }
 }
@@ -164,107 +171,53 @@ export class LimitlessClient {
   }
 
   private async requestJson(pathAndQuery: string, signal?: AbortSignal): Promise<unknown> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      signal?.throwIfAborted();
-      const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-      const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-      let response: Response;
-      try {
-        response = await this.fetchImpl(`${this.baseUrl}${pathAndQuery}`, {
-          method: "GET",
-          headers: {
-            "X-API-Key": this.apiKey,
-            Accept: "application/json",
-          },
-          signal: combined,
-        });
-      } catch (err) {
-        // Network failure / timeout: retry unless the caller aborted.
-        if (signal?.aborted) throw err;
-        lastError = err;
-        if (attempt < MAX_RETRIES) {
-          await this.sleep(backoffMs(attempt));
-          continue;
+    const response = await retryingFetch(`${this.baseUrl}${pathAndQuery}`, {
+      init: {
+        method: "GET",
+        headers: {
+          "X-API-Key": this.apiKey,
+          Accept: "application/json",
+        },
+      },
+      fetchImpl: this.fetchImpl,
+      sleep: this.sleep,
+      signal,
+      timeoutMs: this.timeoutMs,
+      // 429 bodies carry retryAfter as a STRING of seconds (per docs); a
+      // Retry-After header may also appear. Either is honored, capped.
+      retryAfterMs: async (retryable) => {
+        const fromHeader = retryAfterHeaderMs(retryable, MAX_RETRY_DELAY_MS);
+        if (fromHeader !== undefined) return fromHeader;
+        try {
+          const body = (await retryable.clone().json()) as { retryAfter?: unknown };
+          const parsed = Number(body?.retryAfter);
+          if (Number.isFinite(parsed) && parsed > 0) {
+            return Math.min(MAX_RETRY_DELAY_MS, Math.ceil(parsed * 1_000));
+          }
+        } catch {
+          // Body unavailable or non-JSON — fall through to exponential backoff.
         }
-        throw new LimitlessApiError(
-          `Limitless API request failed after ${MAX_RETRIES + 1} attempts: ${describeNetworkError(err)}`,
-        );
-      }
-
-      if (response.status === 429 || response.status >= 500) {
-        lastError = new LimitlessApiError(
-          `Limitless API responded ${response.status}`,
-          response.status,
-        );
-        if (attempt < MAX_RETRIES) {
-          await this.sleep(await retryDelayMs(response, attempt));
-          continue;
-        }
-        throw lastError;
-      }
-      if (!response.ok) {
-        throw new LimitlessApiError(
-          `Limitless API responded ${response.status} for ${pathAndQuery.split("?")[0]}`,
-          response.status,
-        );
-      }
-      try {
-        return await response.json();
-      } catch {
-        throw new LimitlessApiError("Limitless API returned a non-JSON body");
-      }
+        return null;
+      },
+      networkError: (err, attempts) =>
+        new LimitlessApiError(
+          `Limitless API request failed after ${attempts} attempts: ${describeNetworkError(err)}`,
+        ),
+      retryableError: (retryable) =>
+        new LimitlessApiError(`Limitless API responded ${retryable.status}`, retryable.status),
+    });
+    if (!response.ok) {
+      throw new LimitlessApiError(
+        `Limitless API responded ${response.status} for ${pathAndQuery.split("?")[0]}`,
+        response.status,
+      );
     }
-    // Unreachable: every loop path returns or throws. Keep the throw for
-    // exhaustiveness.
-    throw lastError instanceof Error
-      ? lastError
-      : new LimitlessApiError("Limitless API request failed");
-  }
-}
-
-/**
- * Network/timeout failures wrap Node error text that can carry loader
- * paths or stack fragments; sync errors reach MCP clients verbatim, so
- * only the error name + code survive (Cursor review on PR #1458).
- */
-function describeNetworkError(err: unknown): string {
-  if (!(err instanceof Error)) return "unexpected non-Error failure";
-  const code = (err as NodeJS.ErrnoException).code;
-  return typeof code === "string" && code.length > 0 ? `${err.name} (${code})` : err.name;
-}
-
-/** Loop instead of `/\/+$/` — CodeQL js/polynomial-redos on user-set URLs. */
-function stripTrailingSlashes(value: string): string {
-  let end = value.length;
-  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end--;
-  return value.slice(0, end);
-}
-
-function backoffMs(attempt: number): number {
-  return Math.min(MAX_RETRY_DELAY_MS, 1_000 * 2 ** attempt);
-}
-
-async function retryDelayMs(response: Response, attempt: number): Promise<number> {
-  // 429 bodies carry retryAfter as a STRING of seconds (per docs); a
-  // Retry-After header may also appear. Either is honored, capped.
-  const headerValue = response.headers.get("retry-after");
-  let seconds: number | undefined;
-  if (headerValue !== null) {
-    const parsed = Number(headerValue);
-    if (Number.isFinite(parsed) && parsed > 0) seconds = parsed;
-  }
-  if (seconds === undefined) {
     try {
-      const body = (await response.clone().json()) as { retryAfter?: unknown };
-      const parsed = Number(body?.retryAfter);
-      if (Number.isFinite(parsed) && parsed > 0) seconds = parsed;
+      return await response.json();
     } catch {
-      // Body unavailable or non-JSON — fall through to exponential backoff.
+      throw new LimitlessApiError("Limitless API returned a non-JSON body");
     }
   }
-  if (seconds !== undefined) {
-    return Math.min(MAX_RETRY_DELAY_MS, Math.ceil(seconds * 1_000));
-  }
-  return backoffMs(attempt);
 }
+
+

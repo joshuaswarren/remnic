@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { Orchestrator, parseConfig, resolveRemnicConfigRecord } from "@remnic/core";
-import { resolveConfigPath } from "../index.js";
+import { resolveConfigPath } from "../config-path.js";
 import { buildStandup, parseStandupDate, standupHelp } from "@remnic/core/standup";
 
 function takeFlag(rest: string[], name: string): string | undefined {
