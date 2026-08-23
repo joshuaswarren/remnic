@@ -9162,6 +9162,7 @@ Options:
   --token <token>          Bearer token for the remote server (argv-visible;
                            prefer --token-file or the env fallbacks)
   --token-file <path>      Read the bearer token from a 0600 regular file
+                           (leading ~, $HOME, \${HOME} forms are expanded)
   --namespace <name>       Namespace to sync
   --memory-dir <dir>       Local memory dir (defaults to resolved memoryDir)
   --state <path>           Override offline sync state file
