@@ -28,14 +28,83 @@ export function isSupportPassportPrivateMemory(memory: {
   if (tags?.includes(SUPPORT_PASSPORT_CARD_TAG) === true || tags?.includes(SUPPORT_PASSPORT_AUDIT_TAG) === true) {
     return true;
   }
-  return Object.keys(memory.frontmatter.structuredAttributes ?? {})
-    .some((key) => key.startsWith("support-passport-"));
+  return Object.keys(memory.frontmatter.structuredAttributes ?? {}).some((key) => key.startsWith("support-passport-"));
 }
 
 export function excludeSupportPassportPrivateMemories<T extends Pick<MemoryFile, "frontmatter">>(
   memories: readonly T[]
 ): T[] {
   return memories.filter((memory) => !isSupportPassportPrivateMemory(memory));
+}
+
+/**
+ * Stat identity a persisted exclusion classification is keyed on. Any content
+ * change rewrites the file, which moves ctime, so a matching identity implies
+ * the same bytes and therefore the same classification.
+ */
+export function supportPassportStatIdentity(file: {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}): string {
+  return `${file.dev}:${file.ino}:${file.size}:${file.mtimeMs}:${file.ctimeMs}`;
+}
+
+export interface PersistedSupportPassportClassification {
+  statIdentity: string;
+  excluded: boolean;
+}
+
+/**
+ * `createSupportPassportPrivateFileExclusion` variant that consults a
+ * PERSISTED classification before touching the file. The plain factory
+ * classifies by reading and parsing every candidate (readMemoryByPath), which
+ * is fine once per process but defeats any persisted-parse optimization: a
+ * warm reconcile plan that should skip per-file reads would still read every
+ * file just to decide exclusion. When the persisted stat identity matches, the
+ * classification is reused and the file is not opened; on mismatch it is
+ * recomputed once and recorded into `updates` so the caller can persist it.
+ */
+export function createPersistedSupportPassportPrivateFileExclusion(
+  storage: {
+    readMemoryByPath(filePath: string): Promise<MemoryFile | null>;
+  },
+  persisted: ReadonlyMap<string, { statIdentity?: string; excluded?: boolean }>,
+  updates: Map<string, PersistedSupportPassportClassification>
+): OfflineSyncExcludeFile {
+  const inFlight = new Map<string, { identity: string; excluded: Promise<boolean> }>();
+  return async ({ filePath, path: relPath }) => {
+    let file: Awaited<ReturnType<typeof lstat>>;
+    try {
+      file = await lstat(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        inFlight.delete(filePath);
+        return false;
+      }
+      throw error;
+    }
+    const identity = supportPassportStatIdentity(file);
+    const known = persisted.get(relPath);
+    if (known?.statIdentity === identity && known.excluded !== undefined) {
+      updates.set(relPath, { statIdentity: identity, excluded: known.excluded });
+      return known.excluded;
+    }
+    const cached = inFlight.get(filePath);
+    if (cached?.identity === identity) return await cached.excluded;
+    const excluded = storage
+      .readMemoryByPath(filePath)
+      .then((memory) => (memory ? isSupportPassportPrivateMemory(memory) : false))
+      .finally(() => {
+        if (inFlight.get(filePath)?.identity === identity) inFlight.delete(filePath);
+      });
+    inFlight.set(filePath, { identity, excluded });
+    const result = await excluded;
+    updates.set(relPath, { statIdentity: identity, excluded: result });
+    return result;
+  };
 }
 
 export function createSupportPassportPrivateFileExclusion(storage: {
@@ -168,13 +237,13 @@ export function computeSupportPassportOwnerKey(principal: string): string {
 }
 
 export function activeSupportPassportReplacementPredecessorIds(
-  cards: readonly StoredSupportPassportCard[],
+  cards: readonly StoredSupportPassportCard[]
 ): Set<string> {
   return new Set(
     cards
       .filter((item) => item.card.status === "active")
       .map((item) => item.memory.frontmatter.supersedes)
-      .filter((cardId): cardId is string => typeof cardId === "string"),
+      .filter((cardId): cardId is string => typeof cardId === "string")
   );
 }
 
@@ -206,24 +275,14 @@ interface SupportPassportCardMetadata {
   generatedBatchSize?: number;
 }
 
-function parseSupportPassportCardMetadata(
-  memory: Pick<MemoryFile, "frontmatter">,
-): SupportPassportCardMetadata | null {
+function parseSupportPassportCardMetadata(memory: Pick<MemoryFile, "frontmatter">): SupportPassportCardMetadata | null {
   const frontmatter = memory.frontmatter;
   const attributes = frontmatter.structuredAttributes;
   if (frontmatter.category !== "preference") return null;
   if (!frontmatter.tags?.includes(SUPPORT_PASSPORT_CARD_TAG)) return null;
-  if (
-    !attributes ||
-    frontmatter.blockedBy ||
-    frontmatter.archivedAt ||
-    frontmatter.supersededBy
-  )
-    return null;
+  if (!attributes || frontmatter.blockedBy || frontmatter.archivedAt || frontmatter.supersededBy) return null;
 
-  const category = SupportPassportCardCategorySchema.safeParse(
-    attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.category],
-  );
+  const category = SupportPassportCardCategorySchema.safeParse(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.category]);
   const status = SupportPassportCardStatusSchema.safeParse(frontmatter.status);
   const rawOrder = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order];
   const order = Number(rawOrder);
@@ -231,17 +290,14 @@ function parseSupportPassportCardMetadata(
   const namespace = decodeSupportPassportNamespaceAttributes(attributes);
   const owner = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.owner];
   let replacesDraftId: string | undefined;
-  const rawReplacesDraftId =
-    attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.replacesDraftId];
+  const rawReplacesDraftId = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.replacesDraftId];
   if (rawReplacesDraftId !== undefined) {
-    const parsedReplacesDraftId =
-      SupportPassportMemoryIdSchema.safeParse(rawReplacesDraftId);
+    const parsedReplacesDraftId = SupportPassportMemoryIdSchema.safeParse(rawReplacesDraftId);
     if (!parsedReplacesDraftId.success) return null;
     replacesDraftId = parsedReplacesDraftId.data;
   }
   let replacedRevision: string | undefined;
-  const rawReplacedRevision =
-    attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.replacedRevision];
+  const rawReplacedRevision = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.replacedRevision];
   if (rawReplacedRevision !== undefined) {
     if (!/^[a-f0-9]{64}$/.test(rawReplacedRevision)) return null;
     replacedRevision = rawReplacedRevision;
@@ -253,10 +309,7 @@ function parseSupportPassportCardMetadata(
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(generatedBatchId)) {
       return null;
     }
-    if (
-      typeof rawGeneratedBatchSize !== "string" ||
-      !/^[1-8]$/.test(rawGeneratedBatchSize)
-    ) {
+    if (typeof rawGeneratedBatchSize !== "string" || !/^[1-8]$/.test(rawGeneratedBatchSize)) {
       return null;
     }
     generatedBatchSize = Number(rawGeneratedBatchSize);
@@ -296,9 +349,7 @@ function parseSupportPassportCardMetadata(
     owner,
     replacesDraftId,
     replacedRevision,
-    draftReplacementPrepared:
-      attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.draftReplacementPrepared] ===
-      "true",
+    draftReplacementPrepared: attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.draftReplacementPrepared] === "true",
     generatedBatchId,
     generatedBatchSize,
   };
@@ -314,9 +365,7 @@ export function hasLiveSupportPassportCard(memory: Pick<MemoryFile, "frontmatter
   }).success;
 }
 
-export function projectSupportPassportCard(
-  memory: MemoryFile,
-): StoredSupportPassportCard | null {
+export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPassportCard | null {
   const metadata = parseSupportPassportCardMetadata(memory);
   if (!metadata) return null;
 
