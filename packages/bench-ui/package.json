@@ -5,8 +5,10 @@
   "type": "module",
   "description": "Minimal local UI shell for browsing Remnic benchmark result summaries.",
   "scripts": {
+    "predev": "node ../../scripts/ensure-bench-ui-build-deps.mjs",
     "dev": "vite",
     "test": "export NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\"; find src \\( -name '*.test.ts' -o -name '*.test.tsx' \\) -print | sort | xargs tsx --test",
+    "precheck-types": "node ../../scripts/ensure-bench-ui-build-deps.mjs",
     "check-types": "tsc --noEmit",
     "build": "pnpm run check-types && vite build"
   },

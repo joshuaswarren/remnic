@@ -23,17 +23,19 @@
  *   downstream integrity gates (publish, leaderboard) still classify
  *   these results as `missing-integrity`. Unknown version, Remnic
  *   version, and git SHA upgrade to the explicit marker `"unknown"`.
- * - Modern provenance or integrity markers (version/remnicVersion/gitSha,
- *   published/remnic tier, or split/hash seals) are not shape 1. Reject
- *   those payloads; never fabricate empty results for them.
+ * - Modern provenance or integrity markers are not shape 1. ANY single
+ *   provenance key (version/remnicVersion/gitSha), a published/remnic
+ *   tier, or a split/hash seal claims modern provenance, so partially
+ *   corrupted modern artifacts reject too instead of laundering through
+ *   this path with fabricated "unknown" markers; never fabricate empty
+ *   results for them.
  * - Task entries without a usable `taskId` are skipped, exactly as the
  *   pre-#2800 UI skipped unidentifiable task rows.
  * - Mean-only aggregates upgrade only when exactly one recognized task
  *   proves single-sample semantics. Zero recognized tasks, skipped-ID
  *   rows, and multi-task runs reject incomplete aggregates.
  */
-
-import type { AggregateMetrics, BenchmarkMode, BenchmarkResult, BenchmarkTier, MetricAggregate, ProviderConfig, TaskResult } from "./types.js";
+import type { AggregateMetrics, BenchRuntimeProfile, BenchmarkMode, BenchmarkResult, BenchmarkTier, MetricAggregate, ProviderConfig, TaskResult } from "./types.js";
 import { INTEGRITY_META_FIELDS } from "./integrity/types.js";
 
 /**
@@ -129,6 +131,13 @@ function optionalSeeds(where: string, value: unknown): number[] | undefined {
   }
   return value;
 }
+
+function isBenchRuntimeProfile(value: unknown): value is BenchRuntimeProfile {
+  return (
+    value === "baseline" || value === "real" || value === "openclaw-chain" || value === "local-lab"
+  );
+}
+
 function normalizeMetricAggregate(
   where: string,
   raw: unknown,
@@ -180,13 +189,9 @@ function normalizeMetricAggregate(
     reject(`${where} must be a finite number or an object with a finite mean number`);
   }
 
-  const hasAllFields =
-    rawMedian !== undefined &&
-    rawStdDev !== undefined &&
-    rawMin !== undefined &&
-    rawMax !== undefined;
-
-  if (hasAllFields) {
+  // Inline the guard: an aliased boolean does not narrow `let` locals,
+  // and this branch returns the raw values as required numbers.
+  if (rawMedian !== undefined && rawStdDev !== undefined && rawMin !== undefined && rawMax !== undefined) {
     return {
       mean,
       median: rawMedian,
@@ -237,11 +242,12 @@ function upgradeMeta(legacy: JsonRecord, recognizedTaskCount: number): Benchmark
     timestamp: meta.timestamp as string,
     // Old UI display default for an absent tier.
     benchmarkTier: optionalTier("meta.benchmarkTier", meta) ?? "custom",
-    // Provenance is not knowable from a legacy artifact; mark it unknown
-    // instead of inventing a plausible value.
-    version: optionalString("meta.version", meta, "version") ?? "unknown",
-    remnicVersion: optionalString("meta.remnicVersion", meta, "remnicVersion") ?? "unknown",
-    gitSha: optionalString("meta.gitSha", meta, "gitSha") ?? "unknown",
+    // Provenance is not knowable from a legacy artifact: recognition
+    // rejects any payload with a present provenance key, so the only
+    // honest value here is the explicit "unknown" marker.
+    version: "unknown",
+    remnicVersion: "unknown",
+    gitSha: "unknown",
     // Old UI display default for an absent mode.
     mode: optionalMode("meta.mode", meta) ?? "quick",
     // Old UI fell back to the task count when runCount was absent.
@@ -353,11 +359,24 @@ function upgradeConfig(legacy: JsonRecord): BenchmarkResult["config"] {
   if ("internalProvider" in config && config.internalProvider !== undefined) {
     upgraded.internalProvider = optionalProviderConfig("config.internalProvider", config.internalProvider);
   }
-  const configExtras = upgraded as unknown as JsonRecord;
-  for (const key of ["runtimeProfile", "benchmarkOptions"] as const) {
-    if (key in config) {
-      configExtras[key] = config[key];
+  // Config extras carry the strict-schema contract (issue #2885): the
+  // canonical re-validation never checks these fields, so an invalid
+  // value copied here would flow into repro manifests and exports as if
+  // it were typed. Validate before copying.
+  if ("runtimeProfile" in config && config.runtimeProfile !== undefined) {
+    const profile = config.runtimeProfile;
+    if (profile !== null && !isBenchRuntimeProfile(profile)) {
+      reject(
+        'config.runtimeProfile must be "baseline", "real", "openclaw-chain", "local-lab", or null when present',
+      );
     }
+    upgraded.runtimeProfile = profile;
+  }
+  if ("benchmarkOptions" in config && config.benchmarkOptions !== undefined) {
+    if (!isRecord(config.benchmarkOptions)) {
+      reject("config.benchmarkOptions must be an object when present");
+    }
+    upgraded.benchmarkOptions = config.benchmarkOptions;
   }
 
   return upgraded;
@@ -531,7 +550,11 @@ export function recognizeLegacyBenchmarkArtifact(value: unknown): LegacyArtifact
   }
   if (isRecord(value.meta)) {
     const meta = value.meta;
-    const modernProvenance = "version" in meta && "remnicVersion" in meta && "gitSha" in meta;
+    // Any single provenance key claims modern provenance. Requiring all
+    // three keys let a partially corrupted modern artifact (e.g. version
+    // and remnicVersion retained, gitSha lost) fall into this legacy
+    // path and get its missing marker fabricated as "unknown".
+    const modernProvenance = "version" in meta || "remnicVersion" in meta || "gitSha" in meta;
     const modernTier = meta.benchmarkTier === "published" || meta.benchmarkTier === "remnic";
     const modernIntegrity = INTEGRITY_META_FIELDS.some((key) => key in meta);
     if (modernProvenance || modernTier || modernIntegrity) {

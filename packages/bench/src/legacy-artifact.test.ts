@@ -571,4 +571,99 @@ test("loadBenchmarkResult rejects a modern artifact missing results instead of f
   });
 });
 
+test("recognizeLegacyBenchmarkArtifact rejects any single modern provenance marker", () => {
+  const cases: Array<[key: string, value: unknown]> = [
+    ["version", "1.0.0"],
+    ["remnicVersion", "9.1.0"],
+    ["gitSha", "0123456789abcdef0123456789abcdef01234567"],
+  ];
+
+  for (const [key, value] of cases) {
+    const artifact = {
+      ...minimalLegacyArtifact(),
+      meta: { ...(minimalLegacyArtifact().meta as Record<string, unknown>), [key]: value },
+    };
+    const recognition = recognizeLegacyBenchmarkArtifact(artifact);
+    assert.equal(recognition.ok, false, `meta.${key} alone must claim modern provenance`);
+    if (recognition.ok) continue;
+    assert.match(recognition.reason, /modern provenance\/integrity markers present/);
+  }
+});
+
+test("loadBenchmarkResult rejects a partially corrupted modern artifact instead of upgrading it", async () => {
+  // A modern artifact that lost exactly one provenance key (gitSha) fails
+  // canonical validation; the legacy fallback must not fill the gap with a
+  // fabricated "unknown" marker (PR #2860 review).
+  const { meta, ...rest } = canonicalResult();
+  const { gitSha: _gitSha, ...metaWithoutGitSha } = meta;
+  const artifact = {
+    ...rest,
+    meta: { ...metaWithoutGitSha, benchmarkTier: "custom" as const },
+  };
+
+  await withResultFile(artifact, async (filePath) => {
+    await assert.rejects(
+      () => loadBenchmarkResult(filePath),
+      /modern provenance\/integrity markers present; not a legacy artifact/,
+    );
+  });
+});
+
+test("recognizeLegacyBenchmarkArtifact validates legacy config extras before copying", () => {
+  const rejections: Array<[config: Record<string, unknown>, pattern: RegExp]> = [
+    [{ runtimeProfile: 42 }, /config\.runtimeProfile must be "baseline", "real", "openclaw-chain", "local-lab", or null/],
+    [{ runtimeProfile: "turbo" }, /config\.runtimeProfile must be/],
+    [{ benchmarkOptions: "fast" }, /config\.benchmarkOptions must be an object when present/],
+    [{ benchmarkOptions: [1, 2] }, /config\.benchmarkOptions must be an object when present/],
+  ];
+
+  for (const [config, pattern] of rejections) {
+    const recognition = recognizeLegacyBenchmarkArtifact({
+      ...minimalLegacyArtifact(),
+      config,
+    });
+    assert.equal(recognition.ok, false, `expected rejection for config ${JSON.stringify(config)}`);
+    if (recognition.ok) continue;
+    assert.match(recognition.reason, pattern);
+  }
+});
+
+test("recognizeLegacyBenchmarkArtifact preserves valid legacy config extras", () => {
+  const recognition = recognizeLegacyBenchmarkArtifact({
+    ...minimalLegacyArtifact(),
+    config: {
+      runtimeProfile: "baseline",
+      benchmarkOptions: { limit: 5 },
+    },
+  });
+
+  assert.equal(recognition.ok, true);
+  if (!recognition.ok) return;
+  assert.equal(recognition.result.config.runtimeProfile, "baseline");
+  assert.deepEqual(recognition.result.config.benchmarkOptions, { limit: 5 });
+
+  const nullProfile = recognizeLegacyBenchmarkArtifact({
+    ...minimalLegacyArtifact(),
+    config: { runtimeProfile: null },
+  });
+  assert.equal(nullProfile.ok, true);
+  if (!nullProfile.ok) return;
+  assert.equal(nullProfile.result.config.runtimeProfile, null);
+});
+
+test("loadBenchmarkResult rejects a legacy artifact with an invalid runtimeProfile", async () => {
+  await withResultFile(
+    {
+      ...minimalLegacyArtifact(),
+      config: { runtimeProfile: 42 },
+    },
+    async (filePath) => {
+      await assert.rejects(
+        () => loadBenchmarkResult(filePath),
+        /Invalid benchmark result file: .+ \(config\.runtimeProfile must be/,
+      );
+    },
+  );
+});
+
 
