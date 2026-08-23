@@ -84,6 +84,24 @@ export function casCommittedRevisionOf(err: unknown): string | undefined {
 }
 
 /**
+ * #2813 (P1, round 3): the CAS receipt identity — the revision the next
+ * content write stamps into `frontmatter.updated`. NOT a bare wall-clock
+ * read: the stamp is strictly greater than the standing record's previous
+ * revision (max(clock, prev + 1ms)), and because it is persisted IN the
+ * record each serialized CAS re-reads its predecessor's stamp and steps past
+ * it, two commits to the same target can never share a receipt — not within
+ * one millisecond, not across a backward clock step. It is a per-target
+ * monotonic sequence wearing ISO-8601 clothes.
+ */
+export function nextCasRevisionIso(previous: string | undefined, now = new Date()): string {
+  const previousMs = previous !== undefined ? new Date(previous).getTime() : Number.NaN;
+  if (Number.isFinite(previousMs) && now.getTime() <= previousMs) {
+    return new Date(previousMs + 1).toISOString();
+  }
+  return now.toISOString();
+}
+
+/**
  * Runs a compare-and-swap write's post-commit steps. The durable mutation
  * has already landed by the time `run` executes, so any throw it raises is
  * stamped with the commit receipt — callers must attribute the standing

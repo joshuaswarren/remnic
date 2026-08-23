@@ -46,7 +46,7 @@ import {
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
-import { DeletionRevisionStore, invalidationCommitFingerprint, withCasCommitReceipt } from "./storage/deletion-revision-store.js";
+import { DeletionRevisionStore, invalidationCommitFingerprint, nextCasRevisionIso, withCasCommitReceipt } from "./storage/deletion-revision-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import * as entityMigration from "./storage/entity-canonical-id-migration.js";
 import * as entityRefs from "./storage/entity-canonical-id-references.js";
@@ -5288,17 +5288,20 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     });
   }
 
+  /** Commit the new body and return the revision it stamped — the CAS commit
+   * receipt (#2813 P1): a strictly-monotonic per-target stamp
+   * (nextCasRevisionIso), unique per commit, so the reread comparison attributes the commit exactly. */
   private async updateMemoryFromCurrent(
     memory: MemoryFile,
     newContent: string,
     options?: { supersedes?: string; lineage?: string[]; actor?: string; sourceConnector?: string },
-  ): Promise<boolean> {
+  ): Promise<string> {
     const mergedLineage = [...(memory.frontmatter.lineage ?? []), ...(options?.lineage ?? [])].filter((v, i, a) => a.indexOf(v) === i);
     const refIdsAtWrite = this.currentHistoricalIds();
     const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
       {
         ...memory.frontmatter,
-        updated: new Date().toISOString(),
+        updated: nextCasRevisionIso(memory.frontmatter.updated),
         supersedes: options?.supersedes ?? memory.frontmatter.supersedes,
         lineage: mergedLineage.length > 0 ? mergedLineage : undefined,
         ...(memory.frontmatter.sourceConnector === undefined && options?.sourceConnector
@@ -5334,7 +5337,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         ],
       });
       log.debug(`updated memory ${memory.frontmatter.id}`);
-      return true;
+      return updated.updated;
     });
   }
 
@@ -5345,14 +5348,18 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   ): Promise<boolean> {
     const memory = (await this.readAllMemories()).find((candidate) => candidate.frontmatter.id === id);
     if (!memory) return false;
-    return await this.updateMemoryFromCurrent(memory, newContent, options);
+    await this.updateMemoryFromCurrent(memory, newContent, options);
+    return true;
   }
 
+  /** CAS content update: false when the record moved past `expected`; on
+   * success the commit receipt — the unique per-commit revision this write
+   * stamped (#2813 P1); the only identity that can attribute a standing body later. */
   async updateMemoryIfUnchanged(
     expected: MemoryFile,
     newContent: string,
     options?: { supersedes?: string; lineage?: string[]; actor?: string; sourceConnector?: string }
-  ): Promise<boolean> {
+  ): Promise<string | false> {
     const sanitized = sanitizeMemoryContent(newContent);
     const oldIdentity = buildExplicitCaptureDedupKey(
       expected.content,

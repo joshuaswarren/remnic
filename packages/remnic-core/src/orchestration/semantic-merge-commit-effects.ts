@@ -150,9 +150,11 @@ export async function readTargetSnapshot(
  *  - "stands" — unverifiable (unreadable target), or the restore lost its
  *    race, so assume the merged text stands and refuse to create a duplicate.
  *
- * `committedRevision` is the CAS commit receipt (markCasCommittedRevision —
- * the frontmatter.updated the write stamped). Callers without identity omit
- * it and keep the body-equality classification above.
+ * `committedRevision` is the CAS commit receipt (markCasCommittedRevision,
+ * or the successful CAS's return value): the strictly-monotonic per-target
+ * `frontmatter.updated` revision the write stamped (nextCasRevisionIso) —
+ * unique per commit even within one millisecond. Callers without identity
+ * omit it and keep the body-equality classification above.
  */
 export type RevertMergedContentResult = "reverted" | "superseded" | "stands";
 

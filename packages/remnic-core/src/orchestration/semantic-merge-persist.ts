@@ -715,7 +715,7 @@ export async function applySemanticMergeAtPersist(
   // win rather than be overwritten from a stale body. The active-target check
   // above makes a tombstone block structurally impossible here.
   const nowIso = (options.now ? options.now() : new Date()).toISOString();
-  let contentCommitted = false;
+  let casRevision: string | undefined; // #2813 (P1, fix A): receipt of OUR content CAS — retained on the success path, not just the throwing one
   // Captured so the success return can describe the COMMITTED frontmatter
   // (the patch's appended sources) without widening the try's scope.
   let mergePatch: MergeFrontmatterUpdate | undefined;
@@ -743,7 +743,7 @@ export async function applySemanticMergeAtPersist(
       );
       return { action: "created", reason: "target_changed" };
     }
-    contentCommitted = true;
+    casRevision = updated; // fix A: a successful CAS returns the revision it landed; a later rollback compares against it
     // The provenance patch must land on OUR merged body. An id-keyed patch
     // re-reads and stamps whatever the latest row holds, so a writer landing
     // after the content commit would receive this merge's provenance while
@@ -857,8 +857,8 @@ export async function applySemanticMergeAtPersist(
     //     is a duplicate and goes, `created` is honest;
     //   - no receipt, replaced by another writer or unreadable →
     //     unverifiable → keep-side, the snapshot stays.
-    const committedRevision = casCommittedRevisionOf(err);
-    let landed = contentCommitted || committedRevision !== undefined;
+    const committedRevision = casCommittedRevisionOf(err) ?? casRevision; // fix A: patch-path failures carry no error receipt — fall back to the success receipt
+    const landed = committedRevision !== undefined;
     if (!landed) {
       let observed: MemoryFile | null = null;
       try {

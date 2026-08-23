@@ -418,7 +418,7 @@ async function commitWriterMerge(
 ): Promise<void> {
   const snapshot = await storage.getMemoryByIdIncludingArchived(targetId);
   assert.ok(snapshot);
-  assert.equal(await storage.updateMemoryIfUnchanged(snapshot, body), true);
+  assert.ok(await storage.updateMemoryIfUnchanged(snapshot, body));
 }
 
 test("promoteAndReconcileMergedTarget: abandons the cached promotion when the target advanced past it (round N+15 A)", async () => {
