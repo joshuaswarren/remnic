@@ -7,9 +7,11 @@
   "scripts": {
     "predev": "node ../../scripts/ensure-bench-ui-build-deps.mjs",
     "dev": "vite",
-    "test": "export NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\"; find src \\( -name '*.test.ts' -o -name '*.test.tsx' \\) -print | sort | xargs tsx --test",
+    "pretest": "node ../../scripts/ensure-bench-ui-build-deps.mjs",
+    "test": "find src \\( -name '*.test.ts' -o -name '*.test.tsx' \\) -print | sort | xargs env NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test",
     "precheck-types": "node ../../scripts/ensure-bench-ui-build-deps.mjs",
     "check-types": "tsc --noEmit",
+    "prebuild": "node ../../scripts/ensure-bench-ui-build-deps.mjs",
     "build": "pnpm run check-types && vite build"
   },
   "dependencies": {
@@ -19,6 +21,7 @@
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
+    "@remnic/bench": "workspace:^",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.0",

@@ -311,11 +311,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "codex",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "codex.codexHome",
     "issue": "#1990"
   },
