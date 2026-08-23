@@ -50,8 +50,7 @@
     "prepublishOnly": "npm run check-packed-imports"
   },
   "dependencies": {
-    "@remnic/core": "workspace:^",
-    "@sinclair/typebox": "^0.34.0"
+    "@remnic/core": "workspace:^"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
