@@ -4,9 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.29] — 2026-08-23
+
 ### Changed
 
 - `buildReconcileManifest` processes uncached files in bounded 50-file batches (order-preserving) instead of strictly sequentially. At boot scale the sequential form's per-file promise/async-hook overhead dominates — measured on the first full two-host converge: ~66% of apply CPU in async_hooks._propagate + GC, with the manifest read loop (`readParsedMemoriesFromPaths`/`readMaybeEncryptedFile`) the inclusive driver. Synthetic receipt with the full parse path exercised (scripts/measure-manifest-batch.ts, 2,000 files: read → sha verify → parse → identity): 19.4k files/s sequential → 70.2k files/s batched (3.6x). The real-corpus wall time is dominated by per-file encrypted reads the synthetic cannot reproduce; the live first-apply CPU profile (66% promise/GC overhead) is the field receipt for why batching cuts it.
+
 ## [v9.69.23] — 2026-08-23
 
 ### Added
