@@ -199,6 +199,9 @@ importers:
 
   packages/capture-screen:
     devDependencies:
+      '@remnic/core':
+        specifier: workspace:*
+        version: link:../remnic-core
       '@types/node':
         specifier: ^22.10.0
         version: 22.20.0
@@ -564,9 +567,6 @@ importers:
       '@remnic/core':
         specifier: workspace:^
         version: link:../remnic-core
-      '@sinclair/typebox':
-        specifier: ^0.34.0
-        version: 0.34.49
     devDependencies:
       tsup:
         specifier: ^8.5.1

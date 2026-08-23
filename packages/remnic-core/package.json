@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.69.31",
+  "version": "9.69.33",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -10,6 +10,16 @@
       "types": "./dist/index.d.ts",
       "remnic-source": "./src/index.ts",
       "import": "./dist/index.js"
+    },
+    "./activity/digest": {
+      "types": "./dist/activity/digest.d.ts",
+      "remnic-source": "./src/activity/digest.ts",
+      "import": "./dist/activity/digest.js"
+    },
+    "./activity/digest.js": {
+      "types": "./dist/activity/digest.d.ts",
+      "remnic-source": "./src/activity/digest.ts",
+      "import": "./dist/activity/digest.js"
     },
     "./maintenance/atomic-file": {
       "types": "./dist/maintenance/atomic-file.d.ts",
@@ -3254,7 +3264,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^9.69.31"
+    "@remnic/coding-graph": "^9.69.33"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {

@@ -28,10 +28,7 @@ import { NamespaceStorageRouter } from "../namespaces/storage.js";
 import { NegativeExampleStore } from "../negative.js";
 import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
 import type { RecallRerankCoordinator, RecallResultPartitionSink } from "./recall-rerank-coordinator.js";
-import type {
-  GraphRecallExpansionOptions,
-  GraphRecallExpansionResult,
-} from "./graph-recall-seam.js";
+import type { GraphRecallExpansionOptions, GraphRecallExpansionResult } from "./graph-recall-coordinator.js";
 import { RelevanceStore } from "../relevance.js";
 import { RerankCache, rerankLocalOrNoop, reorderByRankedKeys } from "../rerank.js";
 import type { SearchBackend, SearchDegradation, SearchExecutionOptions, SearchQueryOptions } from "../search/port.js";
