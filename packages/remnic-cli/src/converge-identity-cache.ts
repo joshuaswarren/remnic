@@ -3,6 +3,8 @@ import * as path from "node:path";
 import {
   type ReconcileManifest,
   type ReconcileMemoryIdentity,
+  CONTENT_HASH_NORMALIZER_VERSION,
+  IDENTITY_RESOLUTION_VERSION,
   citationTemplateFingerprint,
   isReconcileMemoryIdentity,
 } from "@remnic/core/reconcile/manifest.js";
@@ -11,6 +13,9 @@ export interface ConvergeIdentityCacheEntry {
   path: string;
   sha256: string;
   memory?: ReconcileMemoryIdentity;
+  /** Stamped on sha-only entries so an upgrade re-parses them. */
+  normalizerVersion?: number;
+  identityResolutionVersion?: number;
   /** Stat identity the exclusion classification was computed against. */
   statIdentity?: string;
   /** Persisted support-passport private-memory classification for statIdentity. */
@@ -66,10 +71,22 @@ export async function loadConvergeIdentityCache(
       if (entry.memory !== undefined && !isReconcileMemoryIdentity(entry.memory)) continue;
       if (entry.statIdentity !== undefined && typeof entry.statIdentity !== "string") continue;
       if (entry.excluded !== undefined && typeof entry.excluded !== "boolean") continue;
+      if (entry.normalizerVersion !== undefined && typeof entry.normalizerVersion !== "number") continue;
+      if (entry.identityResolutionVersion !== undefined && typeof entry.identityResolutionVersion !== "number") {
+        continue;
+      }
       cache.set(entry.path, {
         path: entry.path,
         sha256: entry.sha256,
         ...(entry.memory ? { memory: entry.memory } : {}),
+        ...(entry.memory
+          ? {}
+          : {
+              ...(typeof entry.normalizerVersion === "number" ? { normalizerVersion: entry.normalizerVersion } : {}),
+              ...(typeof entry.identityResolutionVersion === "number"
+                ? { identityResolutionVersion: entry.identityResolutionVersion }
+                : {}),
+            }),
         ...(entry.statIdentity !== undefined && entry.excluded !== undefined
           ? { statIdentity: entry.statIdentity, excluded: entry.excluded }
           : {}),
@@ -106,7 +123,12 @@ export async function saveConvergeIdentityCache(
   const files: ConvergeIdentityCacheEntry[] = manifest.files.map((file) => ({
     path: file.path,
     sha256: file.sha256,
-    ...(file.memory !== undefined ? { memory: file.memory } : {}),
+    ...(file.memory !== undefined
+      ? { memory: file.memory }
+      : {
+          normalizerVersion: file.normalizerVersion ?? CONTENT_HASH_NORMALIZER_VERSION,
+          identityResolutionVersion: file.identityResolutionVersion ?? IDENTITY_RESOLUTION_VERSION,
+        }),
   }));
   for (const entry of files) {
     const classification = classifications?.get(entry.path);
@@ -122,6 +144,10 @@ export async function saveConvergeIdentityCache(
       if (previous === undefined) return false;
       if (previous.sha256 !== entry.sha256) return false;
       if (previous.memory !== entry.memory) return false;
+      if ((previous.normalizerVersion ?? undefined) !== (entry.normalizerVersion ?? undefined)) return false;
+      if ((previous.identityResolutionVersion ?? undefined) !== (entry.identityResolutionVersion ?? undefined)) {
+        return false;
+      }
       if ((previous.statIdentity ?? undefined) !== (entry.statIdentity ?? undefined)) return false;
       return (previous.excluded ?? undefined) === (entry.excluded ?? undefined);
     })
@@ -133,6 +159,9 @@ export async function saveConvergeIdentityCache(
       // Merge with the current on-disk set under the lock: another run may
       // have published entries after this one loaded its snapshot.
       const merged = new Map(files.map((entry) => [entry.path, entry]));
+      const dropped = new Set(
+        [...(loaded?.keys() ?? [])].filter((pathName) => !merged.has(pathName))
+      );
       try {
         const raw = JSON.parse(await fs.promises.readFile(cachePath, "utf8")) as {
           citationTemplate?: string;
@@ -143,13 +172,22 @@ export async function saveConvergeIdentityCache(
             const entry = candidate as Partial<ConvergeIdentityCacheEntry> | null;
             if (typeof entry?.path !== "string" || typeof entry.sha256 !== "string") continue;
             if (entry.memory !== undefined && !isReconcileMemoryIdentity(entry.memory)) continue;
-            if (!merged.has(entry.path)) {
-              merged.set(entry.path, {
-                path: entry.path,
-                sha256: entry.sha256,
-                ...(entry.memory ? { memory: entry.memory } : {}),
-              });
-            }
+            if (dropped.has(entry.path) || merged.has(entry.path)) continue;
+            merged.set(entry.path, {
+              path: entry.path,
+              sha256: entry.sha256,
+              ...(entry.memory ? { memory: entry.memory } : {}),
+              ...(entry.memory
+                ? {}
+                : {
+                    ...(typeof entry.normalizerVersion === "number"
+                      ? { normalizerVersion: entry.normalizerVersion }
+                      : {}),
+                    ...(typeof entry.identityResolutionVersion === "number"
+                      ? { identityResolutionVersion: entry.identityResolutionVersion }
+                      : {}),
+                  }),
+            });
           }
         }
       } catch {

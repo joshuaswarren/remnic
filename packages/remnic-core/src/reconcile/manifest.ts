@@ -49,6 +49,9 @@ export interface ReconcileMemoryIdentity {
 
 export interface ReconcileManifestFile extends ReconcileFileState {
   memory?: ReconcileMemoryIdentity;
+  /** Present on sha-only (negative) entries so an upgrade re-parses them. */
+  normalizerVersion?: number;
+  identityResolutionVersion?: number;
 }
 
 type ActiveFactManifestFile = ReconcileManifestFile & { memory: ReconcileMemoryIdentity };
@@ -174,6 +177,23 @@ export function isReconcileMemoryIdentity(value: unknown): value is ReconcileMem
   return true;
 }
 
+/** A cache hit is valid only when the entry was built by the current parser.
+ * Positive hits carry versions on `memory`; sha-only negatives stamp the same
+ * versions on the entry itself. Unversioned negatives are pre-upgrade leftovers
+ * and must miss so a newer parser can recognize an identity it previously skipped. */
+export function isCachedIdentityReusable(cached: ReconcileManifestFile): boolean {
+  if (cached.memory !== undefined) {
+    return (
+      cached.memory.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION &&
+      cached.memory.identityResolutionVersion === IDENTITY_RESOLUTION_VERSION
+    );
+  }
+  return (
+    cached.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION &&
+    cached.identityResolutionVersion === IDENTITY_RESOLUTION_VERSION
+  );
+}
+
 export async function buildReconcileManifestFile(
   file: ReconcileFileState,
   readFile: (file: ReconcileFileState) => Promise<Buffer | string | null>,
@@ -192,7 +212,15 @@ export async function buildReconcileManifestFile(
     raw = null;
   }
   const memory = raw === null ? undefined : parsedMemoryIdentity(file.path, raw, parseMemory, citationTemplate);
-  return { ...file, ...(memory ? { memory } : {}) };
+  return {
+    ...file,
+    ...(memory
+      ? { memory }
+      : {
+          normalizerVersion: CONTENT_HASH_NORMALIZER_VERSION,
+          identityResolutionVersion: IDENTITY_RESOLUTION_VERSION,
+        }),
+  };
 }
 
 /** Read-batch size for manifest builds. Uncached files are independent (a
@@ -226,11 +254,17 @@ export async function buildReconcileManifest(options: BuildReconcileManifestOpti
     if (
       cached !== undefined &&
       cached.sha256.toLowerCase() === file.sha256.toLowerCase() &&
-      (cached.memory === undefined ||
-        (cached.memory.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION &&
-          cached.memory.identityResolutionVersion === IDENTITY_RESOLUTION_VERSION))
+      isCachedIdentityReusable(cached)
     ) {
-      files[i] = { ...file, ...(cached.memory ? { memory: cached.memory } : {}) };
+      files[i] = {
+        ...file,
+        ...(cached.memory
+          ? { memory: cached.memory }
+          : {
+              normalizerVersion: cached.normalizerVersion,
+              identityResolutionVersion: cached.identityResolutionVersion,
+            }),
+      };
     } else {
       uncached.push({ index: i, file });
     }

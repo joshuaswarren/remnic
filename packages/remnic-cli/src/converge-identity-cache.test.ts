@@ -5,7 +5,7 @@ import * as path from "node:path";
 import test from "node:test";
 
 import type { ReconcileManifest } from "@remnic/core/reconcile/manifest.js";
-import { loadConvergeIdentityCache, saveConvergeIdentityCache } from "./converge-identity-cache.js";
+import { loadConvergeIdentityCache, saveConvergeIdentityCache, type ConvergeIdentityCacheEntry } from "./converge-identity-cache.js";
 
 const TEMPLATE = "Source: {{source}}";
 const HASH_A = "a".repeat(64);
@@ -146,6 +146,8 @@ test("negative identity results persist so warm runs skip them too", async () =>
     const loaded = await loadConvergeIdentityCache(cachePath, TEMPLATE);
     assert.ok(loaded.has("facts/no-identity.md"), "a sha-only entry must persist");
     assert.equal(loaded.get("facts/no-identity.md")?.memory, undefined);
+    assert.equal(loaded.get("facts/no-identity.md")?.normalizerVersion, 4);
+    assert.equal(loaded.get("facts/no-identity.md")?.identityResolutionVersion, 2);
   });
 });
 
@@ -159,7 +161,7 @@ test("classifications persist onto entries and skip the rewrite when unchanged",
     ]);
 
     // Built from the loaded references the way a warm run rebuilds a manifest.
-    const buildFrom = (from: ReadonlyMap<string, { memory?: unknown }>): ReconcileManifest => ({
+    const buildFrom = (from: ReadonlyMap<string, ConvergeIdentityCacheEntry>): ReconcileManifest => ({
       ...manifest(),
       files: [
         {
@@ -167,7 +169,7 @@ test("classifications persist onto entries and skip the rewrite when unchanged",
           sha256: "aa",
           mtimeMs: 1,
           bytes: 2,
-          ...(from.get("facts/a.md")?.memory ? { memory: from.get("facts/a.md")?.memory } : {}),
+          ...(from.get("facts/a.md")?.memory ? { memory: from.get("facts/a.md")!.memory } : {}),
         },
         { path: "facts/no-identity.md", sha256: "c".repeat(64), mtimeMs: 2, bytes: 3 },
       ],
@@ -189,3 +191,21 @@ test("classifications persist onto entries and skip the rewrite when unchanged",
     assert.equal(after.marker, "untouched", "identical classifications must not rewrite the cache");
   });
 });
+
+test("a completed save does not resurrect a path the manifest dropped", async () => {
+  await withCacheFile(async (cachePath) => {
+    await saveConvergeIdentityCache(cachePath, manifest(), TEMPLATE);
+    const loaded = await loadConvergeIdentityCache(cachePath, TEMPLATE);
+    assert.ok(loaded.has("facts/no-identity.md"));
+
+    const withoutDeleted: ReconcileManifest = {
+      ...manifest(),
+      files: manifest().files.filter((file) => file.path !== "facts/no-identity.md"),
+    };
+    await saveConvergeIdentityCache(cachePath, withoutDeleted, TEMPLATE, loaded);
+    const after = await loadConvergeIdentityCache(cachePath, TEMPLATE);
+    assert.equal(after.has("facts/no-identity.md"), false, "a deleted path must stay out of the cache");
+    assert.ok(after.has("facts/a.md"));
+  });
+});
+

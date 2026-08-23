@@ -11,8 +11,8 @@ import {
   type ReconcileManifestFile,
   type ReconcileMemoryIdentity,
   type ReconcileMemoryParser,
-  buildReconcileManifestFile,
   citationTemplateFingerprint,
+  isCachedIdentityReusable,
   isReconcileMemoryIdentity,
 } from "./reconcile/manifest.js";
 import { createPersistedSupportPassportPrivateFileExclusion } from "./support-passport/card-projection.js";
@@ -31,6 +31,9 @@ export interface ServerIdentityCacheEntry {
   path: string;
   sha256: string;
   memory?: ReconcileMemoryIdentity;
+  /** Stamped on sha-only entries so an upgrade re-parses them. */
+  normalizerVersion?: number;
+  identityResolutionVersion?: number;
   /** Stat identity the exclusion classification was computed against. */
   statIdentity?: string;
   /** Persisted support-passport private-memory classification for statIdentity. */
@@ -96,10 +99,22 @@ async function loadServerIdentityCache(
       if (entry.memory !== undefined && !isReconcileMemoryIdentity(entry.memory)) continue;
       if (entry.statIdentity !== undefined && typeof entry.statIdentity !== "string") continue;
       if (entry.excluded !== undefined && typeof entry.excluded !== "boolean") continue;
+      if (entry.normalizerVersion !== undefined && typeof entry.normalizerVersion !== "number") continue;
+      if (entry.identityResolutionVersion !== undefined && typeof entry.identityResolutionVersion !== "number") {
+        continue;
+      }
       cache.set(entry.path, {
         path: entry.path,
         sha256: entry.sha256,
         ...(entry.memory ? { memory: entry.memory } : {}),
+        ...(entry.memory
+          ? {}
+          : {
+              ...(typeof entry.normalizerVersion === "number" ? { normalizerVersion: entry.normalizerVersion } : {}),
+              ...(typeof entry.identityResolutionVersion === "number"
+                ? { identityResolutionVersion: entry.identityResolutionVersion }
+                : {}),
+            }),
         ...(entry.statIdentity !== undefined && entry.excluded !== undefined
           ? { statIdentity: entry.statIdentity, excluded: entry.excluded }
           : {}),
@@ -135,7 +150,8 @@ async function mergeServerIdentityCacheEntries(
   fs: typeof import("node:fs/promises"),
   cachePath: string,
   entries: readonly ServerIdentityCacheEntry[],
-  citationTemplate: string | undefined
+  citationTemplate: string | undefined,
+  dropped: ReadonlySet<string> = new Set()
 ): Promise<ServerIdentityCacheEntry[]> {
   const merged = new Map(entries.map((entry) => [entry.path, entry]));
   try {
@@ -148,13 +164,20 @@ async function mergeServerIdentityCacheEntries(
         const entry = candidate as Partial<ServerIdentityCacheEntry> | null;
         if (typeof entry?.path !== "string" || typeof entry.sha256 !== "string") continue;
         if (entry.memory !== undefined && !isReconcileMemoryIdentity(entry.memory)) continue;
-        if (!merged.has(entry.path)) {
-          merged.set(entry.path, {
-            path: entry.path,
-            sha256: entry.sha256,
-            ...(entry.memory ? { memory: entry.memory } : {}),
-          });
-        }
+        if (dropped.has(entry.path) || merged.has(entry.path)) continue;
+        merged.set(entry.path, {
+          path: entry.path,
+          sha256: entry.sha256,
+          ...(entry.memory ? { memory: entry.memory } : {}),
+          ...(entry.memory
+            ? {}
+            : {
+                ...(typeof entry.normalizerVersion === "number" ? { normalizerVersion: entry.normalizerVersion } : {}),
+                ...(typeof entry.identityResolutionVersion === "number"
+                  ? { identityResolutionVersion: entry.identityResolutionVersion }
+                  : {}),
+              }),
+        });
       }
     }
   } catch {
@@ -219,7 +242,17 @@ export async function createOfflineSyncManifestStream(
             // same namespace may have published newer entries after this
             // request loaded its snapshot, and a blind whole-file replace
             // would discard them.
-            const merged = await mergeServerIdentityCacheEntries(fs, cachePath, entries, citationTemplate);
+            const written = new Set(entries.map((entry) => entry.path));
+            const dropped = streamCompleted
+              ? new Set([...identityCache.keys()].filter((pathName) => !written.has(pathName)))
+              : new Set<string>();
+            const merged = await mergeServerIdentityCacheEntries(
+              fs,
+              cachePath,
+              entries,
+              citationTemplate,
+              dropped
+            );
             await fs.mkdir(nodePath.dirname(cachePath), { recursive: true });
             const tmp = `${cachePath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
             await fs.writeFile(
@@ -252,13 +285,20 @@ export async function createOfflineSyncManifestStream(
           yieldedPaths.add(file.path);
           const cached = identityCache.get(file.path);
           if (
-            cached?.memory !== undefined &&
+            cached !== undefined &&
             cached.sha256.toLowerCase() === file.sha256.toLowerCase() &&
-            cached.memory.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION &&
-            cached.memory.identityResolutionVersion === IDENTITY_RESOLUTION_VERSION
+            isCachedIdentityReusable(cached)
           ) {
             applyClassification(file.path, file.sha256);
-            yield { ...file, memory: cached.memory };
+            yield {
+              ...file,
+              ...(cached.memory
+                ? { memory: cached.memory }
+                : {
+                    normalizerVersion: cached.normalizerVersion,
+                    identityResolutionVersion: cached.identityResolutionVersion,
+                  }),
+            };
             continue;
           }
           const built = await buildReconcileManifestFile(
@@ -276,7 +316,12 @@ export async function createOfflineSyncManifestStream(
           persistedEntries.set(built.path, {
             path: built.path,
             sha256: built.sha256,
-            ...(built.memory !== undefined ? { memory: built.memory } : {}),
+            ...(built.memory !== undefined
+              ? { memory: built.memory }
+              : {
+                  normalizerVersion: built.normalizerVersion ?? CONTENT_HASH_NORMALIZER_VERSION,
+                  identityResolutionVersion: built.identityResolutionVersion ?? IDENTITY_RESOLUTION_VERSION,
+                }),
           });
           applyClassification(built.path, built.sha256);
           yield built;

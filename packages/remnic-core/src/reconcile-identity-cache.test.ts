@@ -305,3 +305,48 @@ test("a persisted classification with a matching stat identity skips the file re
     await fs.promises.rm(dir, { recursive: true, force: true });
   }
 });
+
+test("an unversioned sha-only cache entry is not reused", async () => {
+  const content = "not a memory file at all";
+  const sha = createHash("sha256").update(content).digest("hex");
+  let reads = 0;
+  await buildReconcileManifest({
+    files: [{ path: "facts/no-id.md", sha256: sha, mtimeMs: 1, bytes: content.length }],
+    parseMemory: parseFrontmatter,
+    cachedFiles: [{ path: "facts/no-id.md", sha256: sha, mtimeMs: 1, bytes: content.length }],
+    readFile: async () => {
+      reads += 1;
+      return content;
+    },
+  });
+  assert.equal(reads, 1, "a pre-upgrade sha-only entry must be reparsed");
+});
+
+test("a version-stamped sha-only cache entry is reused", async () => {
+  const content = "not a memory file at all";
+  const sha = createHash("sha256").update(content).digest("hex");
+  let reads = 0;
+  const warm = await buildReconcileManifest({
+    files: [{ path: "facts/no-id.md", sha256: sha, mtimeMs: 1, bytes: content.length }],
+    parseMemory: parseFrontmatter,
+    cachedFiles: [
+      {
+        path: "facts/no-id.md",
+        sha256: sha,
+        mtimeMs: 1,
+        bytes: content.length,
+        normalizerVersion: 4,
+        identityResolutionVersion: 2,
+      },
+    ],
+    readFile: async () => {
+      reads += 1;
+      return content;
+    },
+  });
+  assert.equal(reads, 0, "a current-version sha-only entry must skip the read");
+  assert.equal(warm.files[0]?.memory, undefined);
+  assert.equal(warm.files[0]?.normalizerVersion, 4);
+  assert.equal(warm.files[0]?.identityResolutionVersion, 2);
+});
+
