@@ -6,12 +6,14 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  StorageManager,
+  createJournalMemoryWriter,
   parseConfig,
   readJournalForDate,
   type JournalExtractionDeps,
   type PluginConfig,
 } from "@remnic/core";
-import { runJournalBinaryCommand, runJournalCommand, type JournalCommandDeps } from "./journal.js";
+import { createJournalCommandDeps, runJournalBinaryCommand, runJournalCommand, type JournalCommandDeps } from "./journal.js";
 
 const START = "<!-- remnic:timeline:start -->";
 const END = "<!-- remnic:timeline:end -->";
@@ -468,3 +470,77 @@ test("memoryDir mode extract reads the day file, writes pending_review, hash-ski
   }
 });
 
+
+const STORAGE_FACT = "I decided the journal writer must stay sealed.";
+
+function walkFiles(root: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const full = path.join(root, entry.name);
+    if (entry.isDirectory()) out.push(...walkFiles(full));
+    else out.push(full);
+  }
+  return out;
+}
+
+test("extract without injected storage fails closed instead of constructing StorageManager(memoryDir)", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-journal-cli-nostore-"));
+  try {
+    const dayFile = path.join(memoryDir, "journal", "2026-08-20.md");
+    fs.mkdirSync(path.dirname(dayFile), { recursive: true });
+    fs.writeFileSync(dayFile, `${STORAGE_FACT}\n`);
+    const config = reviewMemoryDirConfigFor(memoryDir);
+    await assert.rejects(
+      () => capture(config, ["extract", "--date", "2026-08-20"]),
+      /resolved StorageManager|orchestrator/,
+    );
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("extract through injected StorageManager encrypts writes and leaves no plaintext fact", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-journal-cli-enc-"));
+  try {
+    const dayFile = path.join(memoryDir, "journal", "2026-08-20.md");
+    fs.mkdirSync(path.dirname(dayFile), { recursive: true });
+    fs.writeFileSync(dayFile, `${STORAGE_FACT}\n`);
+    const config = reviewMemoryDirConfigFor(memoryDir);
+    const storage = new StorageManager(config.memoryDir);
+    await storage.ensureDirectories();
+    storage.setSecureStoreRequired(true);
+    storage.setSecureStoreKey(Buffer.alloc(32, 11));
+    const deps = createJournalCommandDeps(config, storage);
+    deps.extractionDeps = async () => ({
+      extract: async () => ({
+        facts: [
+          {
+            content: STORAGE_FACT,
+            category: "decision" as const,
+            confidence: 0.9,
+            tags: [],
+            entityRef: undefined,
+          },
+        ],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      }),
+      writer: createJournalMemoryWriter(storage),
+    });
+    const result = await capture(config, ["extract", "--date", "2026-08-20"], deps);
+    assert.equal(result.code, 0);
+    assert.equal(result.out[0], "pending_review: 1");
+    const bodies = walkFiles(memoryDir)
+      .filter((file) => !file.endsWith(`${path.sep}journal${path.sep}2026-08-20.md`))
+      .filter((file) => !file.includes(`${path.sep}state${path.sep}`))
+      .map((file) => fs.readFileSync(file));
+    assert.ok(bodies.some((buf) => buf.subarray(0, 10).equals(Buffer.from("REMNIC-ENC"))));
+    assert.equal(
+      bodies.some((buf) => buf.toString("utf8").includes(STORAGE_FACT)),
+      false,
+    );
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});

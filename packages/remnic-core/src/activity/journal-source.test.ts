@@ -17,12 +17,20 @@ test("source vault resolves to vault mode", () => {
   });
 });
 
-test("unknown source is unknown_source", () => {
+test("legacy source file aliases memoryDir", () => {
   assert.deepEqual(resolveJournalSource({ source: "file" }), {
+    ok: true,
+    mode: "memoryDir",
+    deprecatedAlias: "file",
+  });
+});
+
+test("unknown source is unknown_source", () => {
+  assert.deepEqual(resolveJournalSource({ source: "" }), {
     ok: false,
     error: "unknown_source",
   });
-  assert.deepEqual(resolveJournalSource({ source: "" }), {
+  assert.deepEqual(resolveJournalSource({ source: "disk" }), {
     ok: false,
     error: "unknown_source",
   });

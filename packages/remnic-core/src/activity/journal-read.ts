@@ -7,7 +7,7 @@
  * refused before any byte is read. Exactly ONE readFile per call; a
  * missing note is a legitimate no-journal day, not an error (§22).
  */
-import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { expandTildePath } from "../utils/path.js";
@@ -76,14 +76,18 @@ export function readJournalForDate(input: {
     return { ok: false, reason: "symlink_escape", filePath };
   }
 
-  // One read. A concurrent vault-sync write lands as whichever snapshot
-  // this single read returns — never a torn mix.
+  // One read of a no-follow fd. Ancestor/note symlink swaps cannot redirect
+  // the bytes: the path is verified, then the same fd is read once.
   let fileText: string;
   try {
-    fileText = readFileSync(filePath, "utf8");
+    fileText = readVerifiedDailyNote(root, filePath);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
       return { ok: true, exists: false, reason: "missing_file", filePath };
+    }
+    if (code === "ELOOP" || code === "EISDIR") {
+      return { ok: false, reason: "symlink_escape", filePath };
     }
     throw err;
   }
@@ -117,5 +121,63 @@ function containedBySymlinks(root: string, dest: string): boolean {
     const parent = path.dirname(probe);
     if (parent === probe) return false;
     probe = parent;
+  }
+}
+
+function symlinkRejected(): NodeJS.ErrnoException {
+  const err = new Error("symlink refused") as NodeJS.ErrnoException;
+  err.code = "ELOOP";
+  return err;
+}
+
+/**
+ * Open the verified daily note with O_NOFOLLOW, fstat a regular file whose
+ * identity still matches the path, then read that same fd once. Any symlink
+ * in the root→note chain is refused.
+ */
+function readVerifiedDailyNote(root: string, filePath: string): string {
+  const relative = path.relative(root, filePath);
+  const parts = relative.split(path.sep).filter((part) => part.length > 0 && part !== ".");
+  let cursor = root;
+  for (const part of parts) {
+    cursor = path.join(cursor, part);
+    const st = lstatSync(cursor);
+    if (st.isSymbolicLink()) throw symlinkRejected();
+  }
+
+  const parent = path.dirname(filePath);
+  const parentLstat = lstatSync(parent);
+  if (parentLstat.isSymbolicLink() || !parentLstat.isDirectory()) throw symlinkRejected();
+  const nofollow = fsConstants.O_NOFOLLOW ?? 0;
+  const parentFd = openSync(parent, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | nofollow);
+  try {
+    const parentFstat = fstatSync(parentFd);
+    if (parentFstat.ino !== parentLstat.ino || parentFstat.dev !== parentLstat.dev) {
+      throw symlinkRejected();
+    }
+  } finally {
+    closeSync(parentFd);
+  }
+
+  const fd = openSync(filePath, fsConstants.O_RDONLY | nofollow);
+  try {
+    const opened = fstatSync(fd);
+    if (!opened.isFile()) throw symlinkRejected();
+    const pathLstat = lstatSync(filePath);
+    if (pathLstat.isSymbolicLink() || pathLstat.ino !== opened.ino || pathLstat.dev !== opened.dev) {
+      throw symlinkRejected();
+    }
+    try {
+      const fdPath = realpathSync(`/proc/self/fd/${fd}`);
+      const realRoot = realpathSync(root);
+      if (fdPath !== realRoot && !fdPath.startsWith(`${realRoot}${path.sep}`)) {
+        throw symlinkRejected();
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ELOOP") throw err;
+    }
+    return readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
   }
 }

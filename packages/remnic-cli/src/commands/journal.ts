@@ -14,12 +14,18 @@
  * extract runs the #1987 review-only pass from @remnic/core
  * (activity/journal-extract.ts): candidates land `pending_review` only,
  * never auto-approved, and unchanged days hash-skip.
+ *
+ * Extract writes through a resolved StorageManager from the CLI/orchestrator
+ * (secure store, tombstones, namespace router). Constructing
+ * `new StorageManager(memoryDir)` here is not permitted.
  */
 import fs from "node:fs";
 import {
   ExtractionEngine,
+  Orchestrator,
   StorageManager,
   activityDateInTimezone,
+  commitJournalHash,
   createJournalMemoryWriter,
   hashJournalText,
   journalPath,
@@ -30,8 +36,7 @@ import {
   resolveRemnicConfigRecord,
   runJournalReviewExtraction,
   seedJournal,
-  setJournalHash,
-  writeTimelineState,
+  withJournalDateLock,
   type BufferTurn,
   type JournalExtractionDeps,
   type PluginConfig,
@@ -51,11 +56,15 @@ export interface JournalCommandDeps {
   now(): Date;
 }
 
-function defaultDeps(config: PluginConfig): JournalCommandDeps {
+function defaultDeps(config: PluginConfig, storage?: StorageManager): JournalCommandDeps {
   return {
     readJournal: readJournalForDate,
     async extractionDeps() {
-      const storage = new StorageManager(config.memoryDir);
+      if (!storage) {
+        throw new Error(
+          "journal extract requires a resolved StorageManager from the orchestrator; constructing StorageManager(memoryDir) is not permitted",
+        );
+      }
       await storage.ensureDirectories();
       const engine = new ExtractionEngine(config);
       return {
@@ -65,6 +74,11 @@ function defaultDeps(config: PluginConfig): JournalCommandDeps {
     },
     now: () => new Date(),
   };
+}
+
+/** Build command deps with an already-resolved StorageManager (secure store, tombstones, namespace). */
+export function createJournalCommandDeps(config: PluginConfig, storage: StorageManager): JournalCommandDeps {
+  return defaultDeps(config, storage);
 }
 
 function takeFlag(rest: string[], name: string): string | undefined {
@@ -209,37 +223,40 @@ export async function runJournalCommand(
       text = fs.readFileSync(filePath, "utf8");
     }
 
-    // Hash-skip (journal-state.ts): an unchanged day is never re-extracted;
-    // a day edited weeks later re-extracts exactly once per content change.
-    const state = readTimelineState(config.memoryDir);
-    if (journalUnchanged(state, date, text)) {
-      io.out(`unchanged ${date} (hash-skip)`);
-      return 0;
-    }
+    // Per-date lock covers hash reread → extract/dedup/write → state commit
+    // so two processes cannot double-extract the same day. Different dates
+    // use different lock files and may run concurrently.
+    return withJournalDateLock(config.memoryDir, date, async () => {
+      const state = readTimelineState(config.memoryDir);
+      if (journalUnchanged(state, date, text)) {
+        io.out(`unchanged ${date} (hash-skip)`);
+        return 0;
+      }
 
-    // Review-only pass: candidates land pending_review ONLY. The judge is a
-    // maintenance-surface dep; without it every candidate survives to human
-    // review — the conservative direction for a one-shot command.
-    const result = await runJournalReviewExtraction({
-      date,
-      journalText: text,
-      source: vaultMode ? "vault" : "memoryDir",
-      journalConfig,
-      deps: await deps.extractionDeps(),
+      // Review-only pass: candidates land pending_review ONLY. The judge is a
+      // maintenance-surface dep; without it every candidate survives to human
+      // review — the conservative direction for a one-shot command.
+      const result = await runJournalReviewExtraction({
+        date,
+        journalText: text,
+        source: vaultMode ? "vault" : "memoryDir",
+        journalConfig,
+        deps: await deps.extractionDeps(),
+      });
+      if (!result.completed) {
+        io.err(`journal: extraction did not complete for ${date} — the day retries on the next run.`);
+        return 1;
+      }
+      // Completed runs advance the day's hash so the same content never re-runs.
+      await commitJournalHash(config.memoryDir, date, hashJournalText(text));
+      io.out(`pending_review: ${result.pendingReview}`);
+      io.out(`rejected_by_judge: ${result.rejectedByJudge}`);
+      io.out(`skipped: ${result.skipped}`);
+      for (const warning of result.warnings) {
+        io.err(`journal: ${warning}`);
+      }
+      return 0;
     });
-    if (!result.completed) {
-      io.err(`journal: extraction did not complete for ${date} — the day retries on the next run.`);
-      return 1;
-    }
-    // Completed runs advance the day's hash so the same content never re-runs.
-    writeTimelineState(config.memoryDir, setJournalHash(state, date, hashJournalText(text)));
-    io.out(`pending_review: ${result.pendingReview}`);
-    io.out(`rejected_by_judge: ${result.rejectedByJudge}`);
-    io.out(`skipped: ${result.skipped}`);
-    for (const warning of result.warnings) {
-      io.err(`journal: ${warning}`);
-    }
-    return 0;
   }
 
   io.err(`journal: unknown action "${action}".`);
@@ -270,14 +287,31 @@ export async function runJournalBinaryCommand(rest: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  const action = rest[0];
+  let orchestrator: Orchestrator | undefined;
   try {
-    const code = await runJournalCommand(config, rest, {
-      out: (line) => console.log(line),
-      err: (line) => console.error(line),
-    });
+    let deps: JournalCommandDeps | undefined;
+    if (action === "extract") {
+      orchestrator = new Orchestrator(config);
+      await orchestrator.initialize();
+      await orchestrator.deferredReady;
+      const storage = await orchestrator.getStorageForNamespace(config.defaultNamespace);
+      deps = createJournalCommandDeps(config, storage);
+    }
+    const code = await runJournalCommand(
+      config,
+      rest,
+      {
+        out: (line) => console.log(line),
+        err: (line) => console.error(line),
+      },
+      deps ?? defaultDeps(config),
+    );
     if (code !== 0) process.exitCode = code;
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
+  } finally {
+    await orchestrator?.destroy();
   }
 }

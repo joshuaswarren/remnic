@@ -2,6 +2,7 @@ import path from "node:path";
 
 import { coerceBooleanLike, coerceNumber } from "../connectors/coerce.js";
 import { assertValidTimezone } from "./digest.js";
+import { applyLegacyJournalHeading } from "./journal-heading.js";
 import { checkVaultJournalPrerequisites } from "./journal-vault-prereq.js";
 import { resolveJournalSource } from "./journal-source.js";
 import { validateVaultNoteTemplate } from "./vault-path.js";
@@ -230,7 +231,27 @@ function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
     throw new TypeError("activity.timeline.enabled must be a boolean");
   }
   const journal = parseTimelineJournalConfig(timeline.journal);
-  const vault = parseTimelineVaultConfig(timeline.vault);
+  let vault = parseTimelineVaultConfig(timeline.vault);
+  const journalRaw = timeline.journal;
+  const headingRaw =
+    typeof journalRaw === "object" && journalRaw !== null && !Array.isArray(journalRaw)
+      ? (journalRaw as Record<string, unknown>).heading
+      : undefined;
+  if (headingRaw !== undefined) {
+    const aliased = applyLegacyJournalHeading({
+      journalSection: vault.readback.journalSection,
+      heading: headingRaw,
+    });
+    process.emitWarning(
+      aliased.ignoredLegacyHeading
+        ? 'activity.timeline.journal.heading is deprecated and ignored because activity.timeline.vault.readback.journalSection is set; use vault.readback.journalSection.'
+        : 'activity.timeline.journal.heading is deprecated; use activity.timeline.vault.readback.journalSection.',
+      { type: "DeprecationWarning", code: "REMNIC_DEP_JOURNAL_HEADING" },
+    );
+    if (aliased.usedLegacyHeading) {
+      vault = { ...vault, readback: { ...vault.readback, journalSection: aliased.journalSection } };
+    }
+  }
   if (journal.source === "vault") {
     // Parse-time prerequisite gate (issue #1987): the error names EVERY
     // missing prerequisite, never just the first (§1/§39).
@@ -513,6 +534,12 @@ function parseTimelineJournalConfig(raw: unknown): ActivityTimelineJournalConfig
   const resolved = resolveJournalSource({ source });
   if (!resolved.ok) {
     throw new RangeError('activity.timeline.journal.source must be one of "memoryDir", "vault"');
+  }
+  if (resolved.deprecatedAlias === "file") {
+    process.emitWarning(
+      'activity.timeline.journal.source "file" is deprecated; use "memoryDir".',
+      { type: "DeprecationWarning", code: "REMNIC_DEP_JOURNAL_SOURCE_FILE" },
+    );
   }
   const extractionMode = journal.extractionMode === undefined ? "off" : journal.extractionMode;
   if (extractionMode !== "off" && extractionMode !== "review") {

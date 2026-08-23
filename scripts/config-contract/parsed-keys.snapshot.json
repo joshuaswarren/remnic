@@ -63,6 +63,7 @@
     "activity.timeline.journal.enabled",
     "activity.timeline.journal.extractionMode",
     "activity.timeline.journal.source",
+    "activity.timeline.journal.heading",
     "activity.timeline.qa",
     "activity.timeline.qa.enabled",
     "activity.timeline.qa.maxRangeDays",

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -201,5 +201,42 @@ test("reads exactly one file per call — the note is read once", () => {
     assert.equal(readFileSync(notePath, "utf8"), before);
   } finally {
     rmSync(vault, { recursive: true, force: true });
+  }
+});
+
+test("refuses a daily note that is a symlink", () => {
+  const vault = makeVault();
+  const outside = makeVault();
+  try {
+    writeFileSync(path.join(outside, "escaped.md"), "## Journal\nstolen\n");
+    symlinkSync(path.join(outside, "escaped.md"), path.join(vault, "2026-08-20.md"));
+    const result = readJournalForDate({ vault: vaultConfig(vault), date: "2026-08-20" });
+    assert.equal(result.ok, false);
+    assert.equal(result.ok === false ? result.reason : "", "symlink_escape");
+  } finally {
+    rmSync(vault, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("refuses an ancestor directory swapped for a symlink out of the vault", () => {
+  const vault = makeVault();
+  const outside = makeVault();
+  try {
+    const nested = path.join(vault, "days");
+    mkdirSync(nested);
+    writeFileSync(path.join(nested, "2026-08-20.md"), "## Journal\nmine\n");
+    writeFileSync(path.join(outside, "2026-08-20.md"), "## Journal\nstolen\n");
+    rmSync(nested, { recursive: true, force: true });
+    symlinkSync(outside, nested);
+    const result = readJournalForDate({
+      vault: vaultConfig(vault, { dailyNotePath: "days/{yyyy}-{MM}-{dd}.md" }),
+      date: "2026-08-20",
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.ok === false ? result.reason : "", "symlink_escape");
+  } finally {
+    rmSync(vault, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
   }
 });

@@ -6397,10 +6397,15 @@
                     "type": "string",
                     "enum": [
                       "memoryDir",
-                      "vault"
+                      "vault",
+                      "file"
                     ],
                     "default": "memoryDir",
-                    "description": "Where a day's journal body is read from (issue #1987). 'memoryDir' uses journal/<date>.md under the memory dir; 'vault' reads the vault.readback.journalSection heading in the vault daily note. 'vault' requires vault.enabled plus a resolvable dailyNotePath and a non-empty readback.journalSection — config load fails naming every missing prerequisite. An unrecognized value is rejected at config load."
+                    "description": "Where a day's journal body is read from (issue #1987). 'memoryDir' uses journal/<date>.md under the memory dir; 'vault' reads the vault.readback.journalSection heading in the vault daily note. 'vault' requires vault.enabled plus a resolvable dailyNotePath and a non-empty readback.journalSection — config load fails naming every missing prerequisite. Legacy 'file' is accepted as an alias of 'memoryDir' and emits a deprecation warning."
+                  },
+                  "heading": {
+                    "type": "string",
+                    "description": "Deprecated alias of activity.timeline.vault.readback.journalSection. Used only when the new key is absent; if both are set the new key wins. Emits a deprecation warning."
                   },
                   "extractionMode": {
                     "type": "string",

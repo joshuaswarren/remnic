@@ -76,11 +76,33 @@ test("activity.timeline.journal vault mode with only the section set still names
   assert.match(err.message, /vault\.enabled/);
 });
 
+test("activity.timeline.journal aliases source file to memoryDir", () => {
+  const journal = parseActivityConfig({ timeline: { journal: { source: "file" } } }).timeline.journal;
+  assert.equal(journal.source, "memoryDir");
+});
+
 test("activity.timeline.journal rejects an unknown source", () => {
   assert.throws(
-    () => parseActivityConfig({ timeline: { journal: { source: "file" } } }),
+    () => parseActivityConfig({ timeline: { journal: { source: "disk" } } }),
     /activity\.timeline\.journal\.source must be one of "memoryDir", "vault"/,
   );
+});
+
+test("activity.timeline.journal.heading fills vault.readback.journalSection when the new key is absent", () => {
+  const vault = parseActivityConfig({
+    timeline: { journal: { heading: "  Diary  " }, vault: { readback: { journalSection: "" } } },
+  }).timeline.vault;
+  assert.equal(vault.readback.journalSection, "Diary");
+});
+
+test("activity.timeline.vault.readback.journalSection wins over journal.heading", () => {
+  const vault = parseActivityConfig({
+    timeline: {
+      journal: { heading: "Diary" },
+      vault: { readback: { journalSection: "Journal" } },
+    },
+  }).timeline.vault;
+  assert.equal(vault.readback.journalSection, "Journal");
 });
 
 

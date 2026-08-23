@@ -6,8 +6,8 @@ The narrative timeline turns recorded activity into day-shaped artifacts: day jo
 
 `activity.timeline.journal.source` decides where a day's journal text lives:
 
-- `"memoryDir"` (default) — `journal/<YYYY-MM-DD>.md` under the memory directory (#1984 behavior). `remnic journal seed` scaffolds the day file from cards; once written, Remnic never rewrites it.
-- `"vault"` — the user's vault daily note IS the journal (#1987). Remnic reads exactly one named section of exactly the daily note, resolved through the same path template the vault publisher uses (`activity.timeline.vault.dailyNotePath`). The section heading is `activity.timeline.vault.readback.journalSection` — arbitrary user-chosen text, matched exactly.
+- `"memoryDir"` (default) — `journal/<YYYY-MM-DD>.md` under the memory directory (#1984 behavior). `remnic journal seed` scaffolds the day file from cards; once written, Remnic never rewrites it. Legacy `source: "file"` is accepted as an alias of `"memoryDir"` and emits a deprecation warning.
+- `"vault"` — the user's vault daily note IS the journal (#1987). Remnic reads exactly one named section of exactly the daily note, resolved through the same path template the vault publisher uses (`activity.timeline.vault.dailyNotePath`). The section heading is `activity.timeline.vault.readback.journalSection` — arbitrary user-chosen text, matched exactly. Legacy `activity.timeline.journal.heading` fills that key when it is empty; if both are set, `vault.readback.journalSection` wins and the heading is ignored with a deprecation warning.
 
 Setting `source: "vault"` requires `activity.timeline.vault.enabled: true` and a resolvable `dailyNotePath` and a non-empty `readback.journalSection`; config load fails naming every missing prerequisite at once.
 
