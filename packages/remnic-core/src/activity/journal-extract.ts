@@ -37,31 +37,55 @@ export interface JournalStorageIo {
   readAllMemories(): Promise<Array<{ path: string; frontmatter: { tags?: string[]; source?: unknown }; content: string }>>;
 }
 
+/**
+ * One extraction pass's stable dedupe view (issue #2882): the journal-tagged
+ * corpus is read ONCE per pass — every candidate decision answers from that
+ * single version plus this pass's own writes, never a mid-pass mix of corpus
+ * states (each write invalidates StorageManager's corpus cache, so a
+ * per-candidate rescan would both re-read the whole corpus and change the
+ * decision basis under the pass).
+ */
+export interface JournalDedupeSnapshot {
+  has(content: string): Promise<boolean>;
+  /** Fold this pass's own successful write into the snapshot (§32: never recorded for tombstone-blocked or rejected writes). */
+  record(content: string): void;
+}
+
 export interface JournalMemoryWriter {
   writeSealedMemory: JournalStorageIo["writeSealedMemory"];
-  /** Dedup beyond the fact-only hash index: scans journal-tagged memories. */
-  hasJournalMemoryContent(content: string): Promise<boolean>;
+  /** Dedup beyond the fact-only hash index: opens the per-pass snapshot of journal-tagged memories. */
+  openDedupeSnapshot(): Promise<JournalDedupeSnapshot>;
 }
 
 /**
  * The storage fact-hash index only covers category "fact"; journal
  * candidates span every category, so dedup additionally scans existing
  * journal-tagged memories for an exact content match (wearables parity,
- * Codex P2 on PR #1458).
+ * Codex P2 on PR #1458). The scan runs once per snapshot open (issue #2882),
+ * not once per candidate.
  */
 export function createJournalMemoryWriter(storage: JournalStorageIo): JournalMemoryWriter {
   return {
     writeSealedMemory: storage.writeSealedMemory.bind(storage),
-    hasJournalMemoryContent: async (content: string) => {
-      if (await storage.hasFactContentHash(content)) return true;
-      const needle = stripAttributesSuffix(content);
-      const memories = await storage.readAllMemories();
-      return memories.some(
-        (memory) =>
+    openDedupeSnapshot: async () => {
+      const journalContents = new Set<string>();
+      for (const memory of await storage.readAllMemories()) {
+        if (
           Array.isArray(memory.frontmatter.tags) &&
-          memory.frontmatter.tags.includes("journal") &&
-          stripAttributesSuffix(memory.content) === needle,
-      );
+          memory.frontmatter.tags.includes("journal")
+        ) {
+          journalContents.add(stripAttributesSuffix(memory.content));
+        }
+      }
+      return {
+        has: async (content: string) => {
+          if (await storage.hasFactContentHash(content)) return true;
+          return journalContents.has(stripAttributesSuffix(content));
+        },
+        record: (content: string) => {
+          journalContents.add(stripAttributesSuffix(content));
+        },
+      };
     },
   };
 }
@@ -172,6 +196,7 @@ export async function runJournalReviewExtraction(input: {
   }
 
   let wrote = false;
+  let dedupe: JournalDedupeSnapshot | null = null;
   const ctx: WriteContext = { source: "journal", now: input.deps.now };
   for (let index = 0; index < candidates.length; index += 1) {
     const fact = candidates[index]!;
@@ -182,7 +207,10 @@ export async function runJournalReviewExtraction(input: {
       continue;
     }
     const normalizedKey = fact.content.trim().toLowerCase();
-    if (await input.deps.writer.hasJournalMemoryContent(fact.content)) {
+    // Open the snapshot lazily so zero-candidate passes never pay the corpus
+    // read; from here every decision in the pass answers from this one version.
+    dedupe ??= await input.deps.writer.openDedupeSnapshot();
+    if (await dedupe.has(fact.content)) {
       result.skipped += 1;
       continue;
     }
@@ -214,6 +242,7 @@ export async function runJournalReviewExtraction(input: {
       result.skipped += 1;
       continue;
     }
+    dedupe.record(fact.content);
     result.pendingReview += 1;
     wrote = true;
   }

@@ -16,8 +16,18 @@
  * Heading lines parse through the SAME exported ATX parser the
  * journal-section reader uses, so a heading the reader recognizes is
  * always a heading this stripper strips.
+ *
+ * Markers and headings are recognized only outside code blocks
+ * (issue #2882): lines are classified through the same shared
+ * `fileLines()` scanner the vault publisher uses, so a fenced or
+ * indented code example carrying Remnic-looking markers or owned
+ * headings is sample text and passes through untouched. A fenced end
+ * marker therefore does not close a live region, and an unclosed fence
+ * keeps the remainder fenced — both resolving toward stripping more,
+ * never toward keeping published output.
  */
 import { parseAtxHeading } from "./journal-section.js";
+import { fileLines } from "./vault-publish.js";
 
 const MARKER_OPEN = "<!-- remnic:";
 const MARKER_CLOSE = "-->";
@@ -40,12 +50,29 @@ export function stripRemnicOwnedRegions(
   return { text: stripOwnedHeadings(marked, ownedHeadings), warnings };
 }
 
+/**
+ * Code-aware line split: `fileLines` classification plus the exact
+ * `split("\n")` line shape (fileLines stops at the last terminator, so the
+ * final empty line of a trailing newline is re-added; CRLF terminators are
+ * normalized away, matching the journal-section reader).
+ */
+function splitCodeAwareLines(text: string): { lines: string[]; fenced: boolean[] } {
+  const rows = fileLines(text);
+  const lines = rows.map((row) => row.line);
+  const fenced = rows.map((row) => row.fenced);
+  if (text.length > 0 && (text.endsWith("\n") || text.endsWith("\r"))) {
+    lines.push("");
+    fenced.push(false);
+  }
+  return { lines, fenced };
+}
+
 function stripMarkerRegions(text: string, warnings: string[]): string {
-  const lines = text.split("\n");
+  const { lines, fenced } = splitCodeAwareLines(text);
   const keep = lines.map(() => true);
   let openName: string | null = null;
   for (let i = 0; i < lines.length; i++) {
-    const marker = parseRegionMarker(lines[i]!);
+    const marker = fenced[i] ? null : parseRegionMarker(lines[i]!);
     if (openName !== null) {
       keep[i] = false;
       if (marker && marker.kind === "end" && marker.name === openName) openName = null;
@@ -74,21 +101,22 @@ function stripMarkerRegions(text: string, warnings: string[]): string {
 function stripOwnedHeadings(text: string, ownedHeadings: readonly string[]): string {
   const wanted = ownedHeadingSet(ownedHeadings);
   if (wanted.size === 0 || text.length === 0) return text;
-  const lines = text.split("\n");
+  const { lines, fenced } = splitCodeAwareLines(text);
   const keep = lines.map(() => true);
   for (let i = 0; i < lines.length; i++) {
     if (!keep[i]) continue;
-    const heading = parseAtxHeading(lines[i]!);
+    const heading = fenced[i] ? null : parseAtxHeading(lines[i]!);
     if (!heading || !wanted.has(heading.text)) continue;
     keep[i] = false;
     for (let j = i + 1; j < lines.length; j++) {
-      const next = parseAtxHeading(lines[j]!);
+      const next = fenced[j] ? null : parseAtxHeading(lines[j]!);
       if (next && next.level <= heading.level) break;
       keep[j] = false;
     }
   }
   return emitKeptLines(lines, keep);
 }
+
 
 /**
  * Emit kept lines, collapsing the one blank line each removal would
