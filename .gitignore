@@ -32,9 +32,6 @@ src/CLAUDE.md
 scripts/CLAUDE.md
 .claude/
 
-# Eval datasets (downloaded via script, not committed)
-evals/datasets/
-
 # Published-benchmark datasets (LongMemEval, LoCoMo) — run
 # `scripts/bench/fetch-datasets.sh --help` to set up.
 bench-datasets/

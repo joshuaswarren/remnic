@@ -274,12 +274,6 @@ import {
   readBenchStatus,
 } from "./bench-status.js";
 import {
-  buildBenchRunnerArgs,
-  createFallbackBenchOutputDir,
-  findUnsupportedFallbackBenchOptions,
-  resolveFallbackBenchResultPath,
-} from "./bench-fallback.js";
-import {
   atomicWriteFileSync, cleanupRollbackDirectoryBestEffort,
   createOpenclawUpgradeRollbackFailure,
   runBestEffortGatewayRestart,
@@ -479,7 +473,6 @@ const LOG_FILE = path.join(PID_DIR, "server.log");
 const LEGACY_LOG_FILE = path.join(LEGACY_PID_DIR, "server.log");
 const CLI_MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLI_REPO_ROOT = path.resolve(CLI_MODULE_DIR, "../../..");
-const EVAL_RUNNER_PATH = path.join(CLI_REPO_ROOT, "evals", "run.ts");
 const OPENCLAW_GATEWAY_LABEL = "ai.openclaw.gateway";
 // QMD teardown and cache reads can leave short-lived filesystem requests after
 // successful one-shot commands; give them enough time to drain before forcing.
@@ -1182,14 +1175,7 @@ async function resolveAllBenchmarks(): Promise<string[]> {
       .filter((entry) => entry.runnerAvailable)
       .map((entry) => entry.id);
   }
-
-  if (!fs.existsSync(EVAL_RUNNER_PATH)) {
-    return [];
-  }
-
-  return BENCHMARK_CATALOG
-    .filter((entry) => entry.category !== "ingestion")
-    .map((entry) => entry.id);
+  return [];
 }
 
 async function resolveKnownBenchmarkIds(): Promise<Set<string>> {
@@ -1203,70 +1189,6 @@ async function resolveKnownBenchmarkIds(): Promise<Set<string>> {
   return knownIds;
 }
 
-async function runBenchViaFallback(
-  parsed: ParsedBenchArgs,
-  benchmarkId: string,
-  runtimeProfile: BenchRuntimeProfile,
-): Promise<string> {
-  if (parsed.taskIdsFile) {
-    throw new Error(
-      "Fallback benchmark runner does not support hash-pinned LoCoMo task selection. Build/install @remnic/bench to use --task-ids-file.",
-    );
-  }
-  if (runtimeProfile === "real" && parsed.remnicConfigPath) {
-    resolveExistingBenchRemnicConfigPath(parsed.remnicConfigPath);
-  }
-  if (runtimeProfile === "openclaw-chain" && parsed.openclawConfigPath) {
-    resolveExistingBenchOpenclawConfigPath(parsed.openclawConfigPath);
-  }
-  if (runtimeProfile === "real") {
-    throw new Error(
-      'Fallback benchmark runner does not support --runtime-profile "real". Build/install @remnic/bench to use package-backed runtime profiles.',
-    );
-  }
-  if (runtimeProfile === "openclaw-chain") {
-    throw new Error(
-      'Fallback benchmark runner does not support --runtime-profile "openclaw-chain". Build/install @remnic/bench to use package-backed runtime profiles.',
-    );
-  }
-  if (runtimeProfile === "local-lab") {
-    throw new Error(
-      'Fallback benchmark runner does not support --runtime-profile "local-lab". Build/install @remnic/bench to use package-backed runtime profiles with local-lab manifests.',
-    );
-  }
-  const unsupportedOptions = findUnsupportedFallbackBenchOptions(parsed);
-  if (unsupportedOptions.length > 0) {
-    throw new Error(
-      `Fallback benchmark runner does not support provider-backed, gateway, or thinking/timeout flags (${unsupportedOptions.join(", ")}). Build/install @remnic/bench to use those options.`,
-    );
-  }
-  if (!fs.existsSync(EVAL_RUNNER_PATH)) {
-    console.error(
-      "Benchmark runner not found. Expected eval runner at evals/run.ts or a phase-1 @remnic/bench runtime export.",
-    );
-    process.exit(1);
-  }
-
-  const tsxCandidates = [
-    path.join(CLI_REPO_ROOT, "node_modules", ".bin", "tsx"),
-    path.join(CLI_REPO_ROOT, "packages", "remnic-cli", "node_modules", ".bin", "tsx"),
-  ];
-  const tsxCmd = tsxCandidates.find((candidate) => fs.existsSync(candidate)) ?? "tsx";
-  const fallbackOutputDir = createFallbackBenchOutputDir(
-    parsed.resultsDir ?? resolveBenchOutputDir(),
-    benchmarkId,
-    process.pid,
-  );
-  const fallbackArgs = [
-    EVAL_RUNNER_PATH,
-    ...buildBenchRunnerArgs(parsed, benchmarkId, fallbackOutputDir),
-  ];
-  childProcess.execFileSync(tsxCmd, fallbackArgs, {
-    stdio: "inherit",
-    env: process.env,
-  });
-  return resolveFallbackBenchResultPath(fallbackOutputDir);
-}
 
 function resolveBenchOutputDir(): string {
   return path.join(resolveHomeDir(), ".remnic", "bench", "results");
@@ -1685,18 +1607,10 @@ async function launchBenchUi(resultsDir: string): Promise<void> {
   });
 }
 
-// Resolve the dataset root. In a monorepo checkout we keep using
-// evals/datasets so local dev state stays stable; in a published CLI
-// install CLI_REPO_ROOT points under node_modules (not user-writable
-// and missing the repo-only evals/ tree) so we fall back to
-// ~/.remnic/bench/datasets.
-function resolveRepoDatasetRoot(): string {
-  const repoCandidate = path.join(CLI_REPO_ROOT, "evals", "datasets");
-  if (isRepoCheckout()) {
-    return repoCandidate;
-  }
-  return path.join(resolveHomeDir(), ".remnic", "bench", "datasets");
-}
+// Canonical user-writable dataset store for both repo checkouts and
+// published installs. The legacy repo-local dataset default died with
+// the deleted evals tree (issue #2798).
+const BENCH_DATASET_ROOT = path.join(resolveHomeDir(), ".remnic", "bench", "datasets");
 
 function listDownloadableBenchmarks(): string[] {
   return [...DOWNLOADABLE_BENCHMARK_DATASETS];
@@ -1711,18 +1625,7 @@ function resolveDatasetDownloadScriptPath(): string {
   if (fs.existsSync(bundled)) {
     return bundled;
   }
-  return path.join(CLI_REPO_ROOT, "evals", "scripts", "download-datasets.sh");
-}
-
-function isRepoCheckout(): boolean {
-  // Treat the install as a repo checkout only when the monorepo
-  // marker files are present next to CLI_REPO_ROOT. In published
-  // @remnic/cli installs, CLI_REPO_ROOT points inside node_modules
-  // where these files do not exist.
-  return (
-    fs.existsSync(path.join(CLI_REPO_ROOT, "pnpm-workspace.yaml")) &&
-    fs.existsSync(path.join(CLI_REPO_ROOT, "evals", "scripts", "download-datasets.sh"))
-  );
+  return path.join(CLI_REPO_ROOT, "packages", "remnic-cli", "assets", "download-datasets.sh");
 }
 
 function runDatasetDownloadScript(
@@ -1808,11 +1711,9 @@ function resolveBenchDatasetDir(
   // an explicit `--dataset-dir` override. Gate auto-selection on the
   // same per-benchmark content markers as `datasets status` so a
   // partial/interrupted download doesn't silently feed an empty
-  // directory into the benchmark loader. `resolveRepoDatasetRoot`
-  // already picks the correct layout (evals/datasets in monorepo
-  // checkouts, ~/.remnic/bench/datasets in packaged installs), so one
-  // lookup covers both install modes.
-  const datasetDir = path.join(resolveRepoDatasetRoot(), benchmarkId);
+  // directory into the benchmark loader. BENCH_DATASET_ROOT covers
+  // both install modes, so one lookup suffices.
+  const datasetDir = path.join(BENCH_DATASET_ROOT, benchmarkId);
   if (isDatasetDownloaded(datasetDir, benchmarkId)) {
     return datasetDir;
   }
@@ -2166,7 +2067,7 @@ async function exportBenchPackageResult(parsed: ParsedBenchArgs): Promise<void> 
 }
 
 async function manageBenchDatasets(parsed: ParsedBenchArgs): Promise<void> {
-  const datasetRoot = resolveRepoDatasetRoot();
+  const datasetRoot = BENCH_DATASET_ROOT;
   const supported = listDownloadableBenchmarks();
 
   if (parsed.datasetAction === "status") {
@@ -10655,9 +10556,11 @@ async function cmdBench(rest: string[]): Promise<void> {
             }
             try { await updateBenchmarkCompleted(benchStatusPath, statusId, handledByPackage.writtenPath ?? ""); } catch { /* non-fatal */ }
           } else {
-            const fallbackResultPath = await runBenchViaFallback(parsed, benchmarkId, runtimeProfile);
-            writtenPaths.push(fallbackResultPath);
-            try { await updateBenchmarkCompleted(benchStatusPath, statusId, fallbackResultPath); } catch { /* non-fatal */ }
+            // The legacy eval-runner fallback was removed (issue #2798);
+            // @remnic/bench is the only benchmark runtime.
+            throw new Error(
+              `Benchmark "${benchmarkId}" requires @remnic/bench. Build the workspace packages (or install @remnic/bench) and retry.`,
+            );
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

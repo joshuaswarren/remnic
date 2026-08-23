@@ -6,7 +6,6 @@
 # ============================================================
 
 # Large generated or data-heavy files that bloat the index
-evals/
 tests/fixtures/
 tests/compat-fixtures/
 
