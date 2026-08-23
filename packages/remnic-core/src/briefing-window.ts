@@ -6,7 +6,12 @@ import type { ParsedBriefingWindow } from "./briefing.js";
 
 type BriefingMemoryReader = {
   readMemoriesWindow?: (options: { updatedAfter?: Date }) => Promise<{ memories: MemoryFile[] }>;
-  readAllMemories: (options?: CorpusReadOptions) => Promise<MemoryFile[]>;
+  readAllMemories: ((options?: CorpusReadOptions) => Promise<MemoryFile[]>) & {
+    supportsAbortSignal?: boolean;
+  };
+  supportsAbortSignal?: boolean;
+  supportsCancellation?: boolean;
+  cancellable?: boolean;
 };
 
 /**
@@ -46,9 +51,42 @@ class LegacyReadUnsupported extends Error {
   }
 }
 
-/** Error class name only — never the message or content (issue #2779). */
+const SAFE_ERROR_CLASSES: Record<string, true> = {
+  Error: true,
+  TypeError: true,
+  RangeError: true,
+  ReferenceError: true,
+  SyntaxError: true,
+  URIError: true,
+  EvalError: true,
+  AggregateError: true,
+  AbortError: true,
+  TimeoutError: true,
+  SystemError: true,
+  BriefingReadTimedOut: true,
+  LegacyReadUnsupported: true,
+  StorageError: true,
+  EngramAccessInputError: true,
+};
+
+/**
+ * Sanitize adapter-controlled Error.name before structured discriminator logs
+ * (issue #2827). Allow-lists known system/remnic error names and maps any
+ * unrecognized or backend-controlled names to a safe bounded class ("CustomError").
+ */
 function errorClass(err: unknown): string {
-  return err instanceof Error ? err.name : typeof err;
+  if (err instanceof Error) {
+    const name = err.name;
+    if (typeof name === "string" && SAFE_ERROR_CLASSES[name] === true) {
+      return name;
+    }
+    return "CustomError";
+  }
+  return typeof err === "string"
+    ? "string"
+    : typeof err === "object" && err !== null
+      ? "object"
+      : typeof err;
 }
 
 /**
@@ -128,11 +166,14 @@ async function readBriefingMemories(
     const result = await storage.readMemoriesWindow!({ updatedAfter: window.from });
     return result.memories;
   }
-  // A readAllMemories that declares no parameters cannot observe the abort
-  // signal; launching it would be uncancellable unbounded I/O that keeps
-  // scanning after the briefing has returned. Refuse it up front and fail
-  // open — never start a read that cannot be stopped (issue #2779 finding A).
-  if (storage.readAllMemories.length === 0) {
+  // Refuse legacy adapters that explicitly declare no signal support (#2827).
+  // Do not rely on Function.length, which is zero for default/rest/bound functions.
+  const isCancellable =
+    storage.supportsAbortSignal ??
+    storage.supportsCancellation ??
+    storage.cancellable ??
+    storage.readAllMemories?.supportsAbortSignal;
+  if (isCancellable === false) {
     throw new LegacyReadUnsupported();
   }
   const deadlineMs = options.fallbackDeadlineMs ?? BRIEFING_FULL_READ_FALLBACK_MS;

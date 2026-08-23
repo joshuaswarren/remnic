@@ -191,9 +191,7 @@ test("safeReadMemories refuses a signal-blind legacy full read instead of starti
   try {
     let fullReadCalls = 0;
     const storage = {
-      // Legacy double (pre-windowed, pre-signal): takes no options, so it can
-      // never observe the deadline. Launching it would be uncancellable
-      // unbounded I/O that keeps scanning after the briefing returned.
+      supportsAbortSignal: false,
       readAllMemories: () => {
         fullReadCalls += 1;
         return new Promise<MemoryFile[]>(() => {});
@@ -259,6 +257,127 @@ test("fallback rejection emits exactly one error discriminator — class only, n
     assert.ok(
       !lines.some((line) => line.includes("corpus read exploded")),
       "error message content must never reach the log",
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("safeReadMemories cancels readAllMemories declared with default parameters", async () => {
+  const { lines, restore } = captureLogs();
+  try {
+    let sawSignal = false;
+    const storage = {
+      readAllMemories: async (options = {} as CorpusReadOptions): Promise<MemoryFile[]> => {
+        sawSignal = options?.abortSignal instanceof AbortSignal;
+        if (options?.abortSignal) {
+          await new Promise<void>((resolve) => {
+            options.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          throw err;
+        }
+        return [];
+      },
+    };
+
+    const memories = await safeReadMemories(storage, WINDOW, { fallbackDeadlineMs: 25 });
+
+    assert.deepEqual(memories, []);
+    assert.ok(sawSignal, "default-parameter readAllMemories must receive the abortSignal");
+    const marks = discriminators(lines);
+    assert.equal(marks.length, 1);
+    assert.match(marks[0]!, /mode=full-read-fallback durationMs=\d+ outcome=timeout$/);
+  } finally {
+    restore();
+  }
+});
+
+test("safeReadMemories cancels readAllMemories declared with rest parameters", async () => {
+  const { lines, restore } = captureLogs();
+  try {
+    let sawSignal = false;
+    const storage = {
+      readAllMemories: async (...args: [CorpusReadOptions?]): Promise<MemoryFile[]> => {
+        const options = args[0];
+        sawSignal = options?.abortSignal instanceof AbortSignal;
+        if (options?.abortSignal) {
+          await new Promise<void>((resolve) => {
+            options.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          throw err;
+        }
+        return [];
+      },
+    };
+
+    const memories = await safeReadMemories(storage, WINDOW, { fallbackDeadlineMs: 25 });
+
+    assert.deepEqual(memories, []);
+    assert.ok(sawSignal, "rest-parameter readAllMemories must receive the abortSignal");
+    const marks = discriminators(lines);
+    assert.equal(marks.length, 1);
+    assert.match(marks[0]!, /mode=full-read-fallback durationMs=\d+ outcome=timeout$/);
+  } finally {
+    restore();
+  }
+});
+
+test("safeReadMemories cancels readAllMemories when bound function is passed", async () => {
+  const { lines, restore } = captureLogs();
+  try {
+    let sawSignal = false;
+    const fn = async (options?: CorpusReadOptions): Promise<MemoryFile[]> => {
+      sawSignal = options?.abortSignal instanceof AbortSignal;
+      if (options?.abortSignal) {
+        await new Promise<void>((resolve) => {
+          options.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        throw err;
+      }
+      return [];
+    };
+    const storage = {
+      readAllMemories: fn.bind(null),
+    };
+
+    const memories = await safeReadMemories(storage, WINDOW, { fallbackDeadlineMs: 25 });
+
+    assert.deepEqual(memories, []);
+    assert.ok(sawSignal, "bound function readAllMemories must receive the abortSignal");
+    const marks = discriminators(lines);
+    assert.equal(marks.length, 1);
+    assert.match(marks[0]!, /mode=full-read-fallback durationMs=\d+ outcome=timeout$/);
+  } finally {
+    restore();
+  }
+});
+
+test("errorClass sanitizes malicious or backend-controlled Error.name to safe bounded class", async () => {
+  const { lines, restore } = captureLogs();
+  try {
+    const storage = {
+      readAllMemories: async (_options?: CorpusReadOptions): Promise<MemoryFile[]> => {
+        const err = new Error("leak secret payload");
+        err.name = "MaliciousError\nLOG_INJECTION\nsecret_token_12345";
+        throw err;
+      },
+    };
+
+    const memories = await safeReadMemories(storage, WINDOW);
+
+    assert.deepEqual(memories, []);
+    const marks = discriminators(lines);
+    assert.equal(marks.length, 1, "exactly one discriminator per read");
+    assert.match(marks[0]!, /mode=full-read-fallback durationMs=\d+ outcome=error err=CustomError$/);
+    assert.ok(
+      !lines.some((line) => line.includes("MaliciousError") || line.includes("LOG_INJECTION") || line.includes("secret_token")),
+      "malicious Error.name must never land in discriminator or logs",
     );
   } finally {
     restore();
