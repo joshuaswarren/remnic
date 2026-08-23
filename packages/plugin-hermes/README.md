@@ -86,6 +86,17 @@ Set `client_id` to the daemon namespace that Hermes should use. Namespace values
 
 Loopback hosts use HTTP. Other hosts use HTTPS by default. Existing remote HTTP setups must set `allow_insecure_http: true` during migration.
 
+## Optional Hermes-managed LLM bridge
+
+For deferred Remnic LLM work, `remnic-hermes` also provides two opt-in commands:
+
+- `remnic-hermes-bridge` exposes one policy-selected Hermes provider as a **loopback-only** OpenAI-compatible endpoint.
+- `remnic-hermes-supervisor` starts that bridge, authenticates the supervised Remnic daemon with a launch-scoped request token, proves the exact bridge instance is ready with a separate per-launch secret, then stops both together.
+
+The policy has exactly three fields — `provider`, `model`, and `timeout_seconds`. It must not contain a provider API key or OAuth token: each request is resolved by Hermes' own `agent.auxiliary_client.call_llm()` routing and auth machinery.
+
+Use this only with Remnic's deferred extraction/consolidation paths. Keep recall-critical reranking and planner LLM calls disabled when their latency budget cannot accommodate a routed provider. Full configuration and lifecycle guidance is in [docs/plugins/hermes.md](../../docs/plugins/hermes.md).
+
 ### Environment variable overrides
 
 | Variable | Overrides | Description |

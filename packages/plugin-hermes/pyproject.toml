@@ -26,6 +26,10 @@ dependencies = [
     "httpx>=0.25.0",
 ]
 
+[project.scripts]
+remnic-hermes-bridge = "remnic_hermes.hermes_llm_bridge:main"
+remnic-hermes-supervisor = "remnic_hermes.hermes_llm_supervisor:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
