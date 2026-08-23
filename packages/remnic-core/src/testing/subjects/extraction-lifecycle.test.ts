@@ -133,8 +133,13 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
               ? makeHarmonicLifecycleConfig(memoryDir, {
                   extractionDedupeEnabled: true,
                   extractionDedupeWindowMs: 60_000,
+                  // Issue #2333: materialization sits inside the extraction
+                  // path, so the dedupe/replay row must hold with spanMode on.
+                  extraction: { spanMode: "on" },
                 })
-              : makeHarmonicLifecycleConfig(memoryDir);
+              // Issue #2333: extraction-lifecycle rows (compaction flush,
+              // before_reset, …) must pass with `extraction.spanMode: "on"`.
+              : makeHarmonicLifecycleConfig(memoryDir, { extraction: { spanMode: "on" } });
       primary = new Orchestrator(cfg);
       const calls = stubExtraction(primary, (turns) => singleFactResult(turns.map((turn) => turn.content).join(" | ")));
       return { memoryDir, cfg, orchestrators: [primary], calls };

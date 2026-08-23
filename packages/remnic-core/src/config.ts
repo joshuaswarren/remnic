@@ -25,6 +25,7 @@ import type {
   TriggerMode,
   TrustWeights,
 } from "./types.js";
+import { parseExtractionSpanConfig } from "./extraction-span-config.js";
 import { parseConvergeConfig } from "./converge-config.js";
 import { parseExternalWikiRecallGuard } from "./external-wiki-guard.js";
 import { log } from "./logger.js";
@@ -1176,6 +1177,8 @@ export function parseConfig(
     // read fallbacks so globally useful memories remain visible. CLAUDE.md #30.
     globalFallback: codingGlobalFallbackRaw === undefined ? true : codingGlobalFallbackRaw,
   };
+  // Span-mode extraction (issue #2333 Phase B): strict-enum sibling parser.
+  const extraction = parseExtractionSpanConfig(cfg.extraction);
 
   const memoryDir =
     typeof cfg.memoryDir === "string" && cfg.memoryDir.length > 0
@@ -2300,7 +2303,7 @@ export function parseConfig(
         : 15_000,
     activeRecallModel:
       typeof cfg.activeRecallModel === "string" && cfg.activeRecallModel.trim().length > 0
-        ? cfg.activeRecallModel.trim()
+        ? cfg.activeRecallModel
         : null,
     activeRecallModelFallbackPolicy:
       cfg.activeRecallModelFallbackPolicy === "resolved-only"
@@ -2319,6 +2322,7 @@ export function parseConfig(
     dreaming,
     dreamsPhases,
     procedural,
+    extraction,
     extractionLiveness: parseExtractionLivenessConfig(cfg),
     replicaPeers: parseReplicaPeersConfig(cfg),
     converge: parseConvergeConfig(cfg.converge),

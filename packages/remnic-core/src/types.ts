@@ -4,6 +4,7 @@ import type { LocationConfig } from "./location/types.js";
 import type { OkfConfig } from "./okf/config.js";
 import type { ActivityConfig } from "./activity/types.js";
 import type { WearablesConfig } from "./wearables/types.js";
+import type { ExtractionSpanConfig, ExtractedFactSpanRef } from "./extraction-span-config.js";
 import type { ExtractionLivenessConfig } from "./extraction-liveness.js";
 import type { ReplicaPeersConfig } from "./replica-peers-config.js";
 import type { ExternalWikiRoot } from "./external-wiki-config.js";
@@ -1229,6 +1230,8 @@ export interface PluginConfig
   dreamsPhases: DreamsPhasesConfig;
   procedural: ProceduralConfig;
   extractionLiveness: ExtractionLivenessConfig;
+  /** Span-mode extraction (#2333 Phase B, bench-gated). Default off. */
+  extraction: ExtractionSpanConfig;
   replicaPeers: ReplicaPeersConfig;
   converge: ConvergeConfig;
   /** Claim-level provenance spans (#1575); see `ProvenanceConfig` for defaults. */
@@ -3251,17 +3254,11 @@ export interface ExtractedFact {
    * content-hash dedup (rule 23 / checklist §13).
    */
   quote?: string;
-  /**
-   * Transient requireSpans signal (#1575 PR 2): quote unlocatable while
-   * `provenance.requireSpans` is on. Persist path routes the fact to
-   * `pending_review`. Stripped before persistence — never reaches frontmatter.
-   */
+  /** Transient requireSpans signal (#1575 PR 2): quote unlocatable while
+   * `provenance.requireSpans` is on → routed to `pending_review`; stripped pre-persist. */
   requireSpansPending?: boolean;
   promptedByQuestion?: string;
-  /**
-   * Project- vs global-scoped; emitted when `extractionScopeClassificationEnabled`.
-   * Defaults to "project" with a coding context active, else "global".
-   */
+  /** Project- vs global-scoped; emitted when `extractionScopeClassificationEnabled`; defaults "project" with a coding context. */
   scope?: MemoryScope;
   /** Extractor-assigned subject, present only when subjectClassification.enabled (issue #2372). */
   subject?: MemorySubject;
@@ -3297,6 +3294,9 @@ export interface ExtractedFact {
    * `observedAt`, then to the batch anchor, when absent.
    */
   sourceTurnTimestamp?: string;
+  /** Transient span-mode reference (issue #2333): offsets into the exact
+   * per-turn text the extraction model saw; stripped at materialization. */
+  span?: ExtractedFactSpanRef | null;
 }
 
 export interface ExtractedReasoningTraceStep {

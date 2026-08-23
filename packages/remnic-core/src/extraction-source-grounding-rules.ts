@@ -654,17 +654,46 @@ function filterGroundedFact(
   roleAssertionSources: ExtractionGroundingRoleSources | undefined,
   eventTimeNormalizer: ((eventTime: string) => string) | undefined,
 ): ExtractionResult["facts"][number] | undefined {
-  const factContext = selectGroundingContext(
+  // Span-materialized content (issue #2333) is "frame: verbatim slice". The
+  // frame label is generated deixis resolution, not source text, so the whole
+  // content can fail the clause-anchor gate even though the fact is verbatim-
+  // grounded by construction. When the fact carries its slice as `quote` and
+  // that slice is embedded in the content, gate on the slice instead — the
+  // slice IS the evidence. Zero effect on facts without an embedded quote.
+  const embeddedQuote = typeof fact.quote === "string" && fact.quote.trim().length > 0
+    && fact.content !== fact.quote
+    && fact.content.includes(fact.quote)
+    ? fact.quote
+    : undefined;
+  const contentContext = selectGroundingContext(
     fact.content,
     resolveGroundingContext(fact.content, source, assertionSource, roleAssertionSources),
   );
-  if (!isGroundedCandidate(
-    fact.content,
-    factContext.source,
-    factContext.assertionSource,
-    false,
-    factContext.allowRoleNormalization,
-  )) return undefined;
+  let gateContent = fact.content;
+  let factContext = contentContext;
+  if (
+    !isGroundedCandidate(
+      fact.content,
+      contentContext.source,
+      contentContext.assertionSource,
+      false,
+      contentContext.allowRoleNormalization,
+    )
+  ) {
+    if (embeddedQuote === undefined) return undefined;
+    gateContent = embeddedQuote;
+    factContext = selectGroundingContext(
+      gateContent,
+      resolveGroundingContext(gateContent, source, assertionSource, roleAssertionSources),
+    );
+    if (!isGroundedCandidate(
+      gateContent,
+      factContext.source,
+      factContext.assertionSource,
+      false,
+      factContext.allowRoleNormalization,
+    )) return undefined;
+  }
   const factEventTime = fact.eventTime;
   const groundedFactEventTime = factEventTime === undefined
     ? undefined
@@ -672,7 +701,7 @@ function filterGroundedFact(
   const factSupportingSentences = sourceSentences(factContext.assertionSource ?? factContext.source).filter(
     (sentence) =>
     isGroundedCandidate(
-      fact.content,
+      gateContent,
       sentence,
       undefined,
       false,
