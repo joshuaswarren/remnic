@@ -26,7 +26,7 @@ import type {
   CodexCliFallbackResult,
   CodexCliFallbackRunner,
 } from "./cli-fallback.js";
-import { isCodexCliFallbackRunnerRegistered, setCodexCliFallbackRunnerForProcess } from "./cli-fallback.js";
+import { isCodexCliFallbackRunnerRegistered, normalizeCodexCliTimeoutMs, setCodexCliFallbackRunnerForProcess } from "./cli-fallback.js";
 import { log } from "./logger.js";
 import { launchProcess } from "./runtime/child-process.js";
 import type { CodexCliReasoningEffort, ModelProviderConfig } from "./types.js";
@@ -226,7 +226,10 @@ async function runCodexSubscriptionRequest(
     throw abortErrorOf(request.options.signal);
   }
 
-  const timeoutMs = request.options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const providerTimeoutMs = config.retryOptions?.timeoutMs !== undefined
+    ? normalizeCodexCliTimeoutMs(config.retryOptions.timeoutMs)
+    : undefined;
+  const timeoutMs = request.options.timeoutMs ?? providerTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   let tempDir: string | undefined;
   try {
     tempDir = await mkdtemp(path.join(deps.tmpdir?.() ?? os.tmpdir(), "remnic-codex-sub-"));
@@ -365,6 +368,8 @@ function buildExecArgs(
     `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`,
     "--config",
     'approval_policy="never"',
+    "--config",
+    'web_search="disabled"',
     "--disable",
     "hooks",
     "--disable",

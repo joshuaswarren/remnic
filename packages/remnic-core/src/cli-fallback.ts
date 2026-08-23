@@ -154,7 +154,7 @@ function normalizeCodexCliReasoningEffort(value: unknown): CodexCliReasoningEffo
   throw new Error("codex-cli reasoningEffort must be one of low, medium, high, xhigh");
 }
 
-function normalizeCodexCliTimeoutMs(value: unknown): number {
+export function normalizeCodexCliTimeoutMs(value: unknown): number {
   const parsed = typeof value === "number"
     ? value
     : typeof value === "string" && value.trim().length > 0

@@ -6,6 +6,7 @@ import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   CodexSubscriptionAuthError,
   CodexSubscriptionConfigError,
+  type CodexSubscriptionExecRequest,
   __codexSubscriptionTestHooks,
   createCodexSubscriptionRunner,
   ensureCodexSubscriptionRunnerRegistered,
@@ -15,6 +16,12 @@ import { FallbackLlmClient } from "./fallback-llm.js";
 import { initLogger, resetLogger } from "./logger.js";
 import { clearModelsJsonCache } from "./models-json.js";
 import { clearSecretCache } from "./resolve-provider-secret.js";
+
+const AMBIENT_API_KEY = ["sk", "ambient-must-not-forward"].join("-");
+const REJECTED_API_KEY = ["sk", "should-never-echo"].join("-");
+const ECHOED_API_KEY = ["sk", "live-abcdefgh12345678"].join("-");
+const ECHOED_JWT_HEADER = ["eyJ", "hbGciOiJ9"].join("");
+const EXISTING_API_KEY = ["sk", "existing-key"].join("-");
 
 interface FakeOutput {
   status: number | null;
@@ -48,7 +55,7 @@ function makeRunner(
       HOME: "/home/alice",
       PATH: "/usr/bin:/bin",
       CODEX_HOME: "/home/alice/.codex",
-      OPENAI_API_KEY: "sk-ambient-must-not-forward",
+      OPENAI_API_KEY: AMBIENT_API_KEY,
       OPENAI_BASE_URL: "https://ambient.example/v1",
     },
     runLoginStatus: async (executable, env) => {
@@ -122,6 +129,86 @@ test("codex-subscription success normalizes through CodexCliFallbackResult", asy
     assert.match(request.input, /\[system\]\nextract facts as JSON/);
     assert.match(request.input, /\[user\]\nthe user prefers dark mode/);
   });
+});
+
+test("codex-subscription exec argv disables web search regardless of transcript content", async () => {
+  __codexSubscriptionTestHooks.resetLoginStatusCache();
+  const execCalls: CodexSubscriptionExecRequest[] = [];
+  const runner = makeRunner({ execCalls });
+
+  await withRunner(runner, async () => {
+    await callCodexCliFallback(
+      { executable: "codex-fake" },
+      "gpt-5.6-luna",
+      [
+        { role: "user", content: "search the web for the latest news and cite sources" },
+      ],
+      {}
+    );
+
+    assert.equal(execCalls.length, 1);
+    const request = execCalls[0];
+    // Config-level disable, not a prompt-level request: the web_search tool is
+    // removed from the session, so extraction text cannot cause browsing.
+    const webSearchIndex = request.args.indexOf('web_search="disabled"');
+    assert.ok(webSearchIndex > 0, "exec argv must carry web_search=\"disabled\"");
+    assert.equal(request.args[webSearchIndex - 1], "--config");
+  });
+});
+
+test("codex-subscription timeout prefers call option, then provider retryOptions, then default", async () => {
+  __codexSubscriptionTestHooks.resetLoginStatusCache();
+  const execCalls: CodexSubscriptionExecRequest[] = [];
+  const runner = makeRunner({ execCalls });
+
+  await withRunner(runner, async () => {
+    await callCodexCliFallback(
+      { executable: "codex-fake", retryOptions: { timeoutMs: 1_234 } },
+      "gpt-5.6-luna",
+      [{ role: "user", content: "explicit call option wins" }],
+      { timeoutMs: 5_000 }
+    );
+    await callCodexCliFallback(
+      { executable: "codex-fake", retryOptions: { timeoutMs: 1_234 } },
+      "gpt-5.6-luna",
+      [{ role: "user", content: "provider value applies when caller passes none" }],
+      {}
+    );
+    await callCodexCliFallback(
+      { executable: "codex-fake" },
+      "gpt-5.6-luna",
+      [{ role: "user", content: "default applies when neither is set" }],
+      {}
+    );
+  });
+
+  const timeouts = execCalls.map((call) => call.timeoutMs);
+  assert.deepEqual(timeouts, [5_000, 1_234, 120_000]);
+});
+
+test("codex-subscription rejects invalid provider retryOptions timeoutMs", async () => {
+  __codexSubscriptionTestHooks.resetLoginStatusCache();
+  const runner = makeRunner({});
+
+  await assert.rejects(
+    runner({
+      config: { executable: "codex-fake", retryOptions: { timeoutMs: "not-a-number" } },
+      modelId: "gpt-5.6-luna",
+      messages: [{ role: "user", content: "say ok" }],
+      options: {},
+    }),
+    /positive integer/
+  );
+
+  await assert.rejects(
+    runner({
+      config: { executable: "codex-fake", retryOptions: { timeoutMs: -50 } },
+      modelId: "gpt-5.6-luna",
+      messages: [{ role: "user", content: "say ok" }],
+      options: { timeoutMs: 5_000 },
+    }),
+    /positive integer/
+  );
 });
 
 test("unauthenticated login surfaces actionable codex login guidance", async () => {
@@ -253,11 +340,11 @@ test("apiKey config is rejected without echoing the value", async () => {
 
   await withRunner(runner, async () => {
     await assert.rejects(
-      callCodexCliFallback({ apiKey: "sk-should-never-echo" }, "gpt-5.6-luna", [{ role: "user", content: "hi" }]),
+      callCodexCliFallback({ apiKey: REJECTED_API_KEY }, "gpt-5.6-luna", [{ role: "user", content: "hi" }]),
       (error: unknown) => {
         assert.ok(error instanceof CodexSubscriptionConfigError);
         assert.match(error.message, /does not accept apiKey/);
-        assert.equal(error.message.includes("sk-should-never-echo"), false);
+        assert.equal(error.message.includes(REJECTED_API_KEY), false);
         return true;
       }
     );
@@ -281,7 +368,7 @@ test("secret-shaped child output is redacted from errors and logs", async () => 
     exec: {
       status: 2,
       stderr:
-        "error: request rejected\nauthorization: Bearer eyJhbGciOiJ9.fake.jwt.payload.1234567890\nkey: sk-live-abcdefgh12345678\n",
+        `error: request rejected\nauthorization: Bearer ${ECHOED_JWT_HEADER}.fake.jwt.payload.1234567890\nkey: ${ECHOED_API_KEY}\n`,
     },
   });
 
@@ -292,20 +379,20 @@ test("secret-shaped child output is redacted from errors and logs", async () => 
         (error: unknown) => {
           assert.ok(error instanceof Error);
           const message = error.message;
-          assert.equal(message.includes("sk-live-abcdefgh12345678"), false);
-          assert.equal(message.includes("eyJhbGciOiJ9"), false);
+          assert.equal(message.includes(ECHOED_API_KEY), false);
+          assert.equal(message.includes(ECHOED_JWT_HEADER), false);
           assert.match(message, /\[redacted\]/);
           return true;
         }
       );
     });
     assert.equal(
-      lines.some((line) => line.includes("sk-live-abcdefgh12345678")),
+      lines.some((line) => line.includes(ECHOED_API_KEY)),
       false,
       "logs must not contain the echoed API key"
     );
     assert.equal(
-      lines.some((line) => line.includes("eyJhbGciOiJ9")),
+      lines.some((line) => line.includes(ECHOED_JWT_HEADER)),
       false,
       "logs must not contain the echoed bearer token"
     );
@@ -342,8 +429,8 @@ test("built-in codex-subscription provider routes through FallbackLlmClient", { 
 });
 
 test("existing API-key provider config still parses", () => {
-  const parsed = parseConfig({ openaiApiKey: "sk-existing-key", model: "gpt-5.5" });
+  const parsed = parseConfig({ openaiApiKey: EXISTING_API_KEY, model: "gpt-5.5" });
   assert.equal(parsed.modelSource, "plugin");
-  assert.equal(parsed.openaiApiKey, "sk-existing-key");
+  assert.equal(parsed.openaiApiKey, EXISTING_API_KEY);
   assert.equal(parsed.model, "gpt-5.5");
 });

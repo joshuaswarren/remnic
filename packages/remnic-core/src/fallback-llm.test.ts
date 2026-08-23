@@ -827,6 +827,59 @@ test("fallback llm invokes registered codex-cli fallback runner", { concurrency:
   }
 });
 
+test("fallback llm leaves codex-cli call timeout unset so provider retryOptions applies", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  let capturedOptionTimeout: unknown;
+  let capturedProviderTimeout: unknown;
+  const restoreRunner = __codexCliFallbackTestHooks.setRunCodexCliForTest(
+    async (request) => {
+      capturedOptionTimeout = request.options.timeoutMs;
+      capturedProviderTimeout = request.config.retryOptions?.timeoutMs;
+      return { content: "provider timeout answer" };
+    },
+  );
+
+  const llm = new FallbackLlmClient({
+    agents: {
+      defaults: {
+        model: {
+          primary: "codex-cli/gpt-custom",
+        },
+      },
+    },
+    models: {
+      providers: {
+        "codex-cli": {
+          baseUrl: "",
+          api: "codex-cli",
+          executable: "codex-test-bin",
+          retryOptions: { timeoutMs: 1234 },
+          models: [],
+        },
+      },
+    },
+  });
+
+  try {
+    const response = await llm.chatCompletion(
+      [
+        { role: "user", content: "Say OK" },
+      ],
+      { temperature: 0, maxTokens: 16 },
+    );
+
+    assert.equal(response?.content, "provider timeout answer");
+    assert.equal(capturedOptionTimeout, undefined);
+    assert.equal(capturedProviderTimeout, 1234);
+  } finally {
+    restoreRunner();
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
 test("fallback llm aborts codex-cli fallback requests when timeout wins", { concurrency: false }, async () => {
   clearModelsJsonCache();
   clearSecretCache();

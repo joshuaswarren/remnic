@@ -825,12 +825,15 @@ Behavior:
   provider never reads, accepts, or logs tokens; an `apiKey` in the provider
   config is rejected with a pointer to `codex login`.
 - Requests run sandboxed and ephemeral (`codex exec` with tools, hooks,
-  plugins, and memories disabled), so extraction cannot touch your machine.
+  plugins, memories, and web search disabled), so extraction cannot touch
+  your machine and transcript text cannot cause browsing.
 - Ambient `OPENAI_API_KEY` / `OPENAI_BASE_URL` are stripped from the child
   environment so the subscription login — not metered API auth — is used.
 - Optional provider overrides via `models.providers["codex-subscription"]`:
   `executable` (or `REMNIC_CODEX_EXECUTABLE` env), `reasoningEffort`
-  (`low` | `medium` | `high` | `xhigh`, default `medium`).
+  (`low` | `medium` | `high` | `xhigh`, default `medium`), and
+  `retryOptions.timeoutMs` (positive integer; the request deadline when the
+  caller does not set one — an explicit call timeout always wins).
 - Not logged in → the provider fails fast with `codex login` guidance; an
   expired or revoked session fails with re-auth guidance. Timeouts surface
   as `TimeoutError`; caller cancellations keep their original abort reason.
