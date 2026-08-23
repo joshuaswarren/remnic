@@ -756,3 +756,38 @@ test("buildMergedTargetPromotionPayload and promotion refuse when interleaving w
     "promotion must be abandoned when standing receipt digest/revision changes due to same-body metadata update",
   );
 });
+
+test("buildMergedTargetPromotionPayload: unavailable snapshot digest refuses when a committed digest exists (#2813 P1)", async () => {
+  const s = await makeStorages();
+  const target = await s.source.writeMemory("fact", PRE_MERGE_BODY, { source: "test" });
+  await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
+  const committedRow = await s.source.getMemoryByIdIncludingArchived(target.id);
+  assert.ok(committedRow);
+  const status = await s.source.readCasRevisionStatus(committedRow.path);
+  assert.equal(status.status, "present", "the merge minted a standing receipt");
+  assert.ok(
+    status.status === "present" && status.committedDigest,
+    "the standing receipt carries a committed digest",
+  );
+
+  s.source.readDurableFileDigest = async () => null;
+  const built = await buildMergedTargetPromotionPayload(s.source, {
+    targetId: target.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.equal(built.payload, null, "an unreadable snapshot digest must refuse the promotion");
+  assert.equal(built.readFailed, true, "unavailable snapshot is unknown, not an absent revision");
+
+  const legacyStore = await makeStorages();
+  const fresh = await legacyStore.source.writeMemory("fact", A_MERGED_BODY, { source: "test" });
+  legacyStore.source.readDurableFileDigest = async () => null;
+  const legacy = await buildMergedTargetPromotionPayload(legacyStore.source, {
+    targetId: fresh.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.ok(legacy.payload, "a genuinely absent receipt still builds a payload");
+  assert.equal(legacy.readFailed, false, "missing snapshot must not be conflated with an absent revision");
+  assert.equal(legacy.payload.committedRevision, undefined);
+});

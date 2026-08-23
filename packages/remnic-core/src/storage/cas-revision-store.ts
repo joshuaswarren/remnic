@@ -26,8 +26,13 @@ type CasRevisionShard = {
   baselineDigest?: string | null;
   /** #2807: the fingerprint the durable file shows once the reserved
    * write has landed; recorded by `writeLanded` before `commit` publishes.
-   * null means the file was absent when the write landed. */
+   * null means the file was absent when the write landed. May also be
+   * pre-recorded at reserve from the caller's expected bytes. */
   expectedDigest?: string | null;
+  /** True after `writeLanded()` verifies the durable write. New pending
+   * markers write false. Absent on legacy pending shards: those treat
+   * a present `expectedDigest` as already landed. */
+  writeLanded?: boolean;
   /** #2813 (P1 B): sha256 hex digest of the durable memory file when committed. */
   committedDigest?: string | null;
 };
@@ -79,10 +84,9 @@ type CasShardView =
       revision: string;
       previous?: string;
       foreign: boolean;
-      /** #2807 evidence fields, verbatim from the shard (undefined on
-       * legacy pending markers, which carry no evidence). */
       baselineDigest?: string | null;
       expectedDigest?: string | null;
+      writeLanded?: boolean;
     };
 
 const CAS_REVISION_LOCK_STALE_MS = 60_000;
@@ -93,6 +97,16 @@ function isDigestOrNullOrUndefined(value: unknown): boolean {
   if (value === undefined || value === null) return true;
   return typeof value === "string" && SHA256_HEX.test(value);
 }
+
+function pendingWriteHasLanded(view: {
+  writeLanded?: boolean;
+  expectedDigest?: string | null;
+}): boolean {
+  if (view.writeLanded === true) return true;
+  if (view.writeLanded === false) return false;
+  return view.expectedDigest !== undefined;
+}
+
 
 /**
  * #2813 (P1, #2807 CI repair): durable per-target CAS receipt identity,
@@ -230,7 +244,8 @@ export class CasRevisionStore {
         (root.previous !== undefined &&
           (typeof root.previous !== "string" || root.previous.length === 0)) ||
         !isDigestOrNullOrUndefined(root.baselineDigest) ||
-        !isDigestOrNullOrUndefined(root.expectedDigest)
+        !isDigestOrNullOrUndefined(root.expectedDigest) ||
+        (root.writeLanded !== undefined && typeof root.writeLanded !== "boolean")
       ) {
         throw new Error("CAS revision shard is unreadable.");
       }
@@ -245,6 +260,7 @@ export class CasRevisionStore {
             foreign,
             baselineDigest: root.baselineDigest as string | null | undefined,
             expectedDigest: root.expectedDigest as string | null | undefined,
+            ...(typeof root.writeLanded === "boolean" ? { writeLanded: root.writeLanded } : {}),
           }
         : { kind: "committed", revision: root.revision, committedDigest, foreign };
     }
@@ -265,7 +281,7 @@ export class CasRevisionStore {
 
   private async readStandingRevision(relativePath: string): Promise<string | undefined> {
     try {
-      return await this.readStandingRevisionStrict(relativePath);
+      return (await this.readStandingRevisionStrict(relativePath))?.revision;
     } catch (error) {
       log.warn(`CasRevisionStore failed to read standing revision for ${relativePath}: ${error}`);
       return undefined;
@@ -310,6 +326,7 @@ export class CasRevisionStore {
       baselineDigest?: string | null;
       expectedDigest?: string | null;
       committedDigest?: string | null;
+      writeLanded?: boolean;
     },
   ): Promise<void> {
     let payload: CasRevisionShard;
@@ -324,6 +341,7 @@ export class CasRevisionStore {
       if (evidence !== undefined) {
         if (evidence.baselineDigest !== undefined) payload.baselineDigest = evidence.baselineDigest;
         if (evidence.expectedDigest !== undefined) payload.expectedDigest = evidence.expectedDigest;
+        if (evidence.writeLanded !== undefined) payload.writeLanded = evidence.writeLanded;
       }
     }
     const baseDir = path.resolve(this.baseDir);
@@ -422,21 +440,10 @@ export class CasRevisionStore {
    * step. Refuses while another reservation is pending (recovery needed)
    * or the standing receipt cannot be determined. The caller MUST either
    * `commit` after its durable write lands or `abort` when it fails.
-   * #2807: the marker also records the durable file's reserve-time
-   * fingerprint (`baselineDigest`), so a crash between reserve and
-   * finalize is decidable by {@link recoverPendingRevision}. */
-  /** #2813 (P1 C): reserve the NEXT revision token as a durable PENDING
-   * marker under the target's shard lock — the write-ahead record of a
-   * receipt transaction. The token is strictly greater than the standing
-   * token (max(clock, prev + 1ms)), so two commits can never share a
-   * receipt — not within one millisecond, not across a backward clock
-   * step. Refuses while another reservation is pending (recovery needed)
-   * or the standing receipt cannot be determined. The caller MUST either
-   * `commit` after its durable write lands or `abort` when it fails.
-   * #2807: the marker also records the durable file's reserve-time
-   * fingerprint (`baselineDigest`) and EXPECTED post-write fingerprint
-   * (`expectedDigest`) before the memory write under lock, so a crash
-   * before or after the memory write is decidable by {@link recoverPendingRevision}. */
+   * #2807: the marker records the reserve-time fingerprint (`baselineDigest`)
+   * and optional expected post-write fingerprint (`expectedDigest`) with
+   * `writeLanded: false`. {@link recoverPendingRevision} decides crashes
+   * before or after the memory write from that evidence. */
   async beginRevisionTransaction(
     filePath: string,
     expectedContent?: string | Buffer | null,
@@ -453,6 +460,7 @@ export class CasRevisionStore {
       await this.writeShard(shardPath, relativePath, next, lock, "pending", standing, {
         baselineDigest,
         ...(expectedDigest !== undefined ? { expectedDigest } : {}),
+        writeLanded: false,
       });
       return {
         pendingRevision: next,
@@ -484,10 +492,9 @@ export class CasRevisionStore {
     return createHash("sha256").update(bytes).digest("hex");
   }
 
-  /** #2807: record the post-write fingerprint of the durable file in the
-   * PENDING marker, under the shard lock. Called between the durable write
-   * and `commit`; a crash in that window is then decisively recoverable as
-   * "the write landed". Idempotent. */
+  /** #2807: mark the reserved write as landed. Verifies a pre-recorded
+   * expected digest against the durable file, or records the file digest
+   * when none was reserved. Sets `writeLanded: true`. Idempotent. */
   private async recordPendingWriteLanded(relativePath: string, token: string): Promise<void> {
     await this.withShardLock(relativePath, async (lock) => {
       const { shardPath } = await this.getSafeShardInfo(relativePath);
@@ -497,11 +504,17 @@ export class CasRevisionStore {
           `CAS revision evidence recording refused for ${relativePath}: the pending marker does not match the reserved token.`,
         );
       }
-      if (view.expectedDigest !== undefined) return;
-      const expectedDigest = await this.digestDurableFile(relativePath);
+      if (pendingWriteHasLanded(view) && view.writeLanded !== false) return;
+      const currentDigest = await this.digestDurableFile(relativePath);
+      if (view.expectedDigest !== undefined && currentDigest !== view.expectedDigest) {
+        throw new Error(
+          `CAS revision evidence recording refused for ${relativePath}: the durable file does not match the reserved expected digest.`,
+        );
+      }
       await this.writeShard(shardPath, relativePath, token, lock, "pending", view.previous, {
         baselineDigest: view.baselineDigest === undefined ? null : view.baselineDigest,
-        expectedDigest,
+        expectedDigest: view.expectedDigest !== undefined ? view.expectedDigest : currentDigest,
+        writeLanded: true,
       });
     });
   }
@@ -529,10 +542,10 @@ export class CasRevisionStore {
         return;
       }
       if (outcome === "commit" && view.kind === "committed" && !view.foreign && view.revision === token) {
-        return; // idempotent retry after a crash between publish and acknowledgment
+        return;
       }
       if (outcome === "abort" && view.kind === "missing") {
-        return; // idempotent retry
+        return;
       }
       throw new Error(
         `CAS revision transaction ${outcome} refused for ${relativePath}: the pending marker does not match the reserved token.`,
@@ -577,26 +590,16 @@ export class CasRevisionStore {
   }
 
   /** #2807 (P1): evidence-based recovery for a reservation left PENDING by
-   * a crash between reserve and finalize — the state no live caller can
-   * report an outcome for. Under the shard lock, the durable file's current
-   * fingerprint is compared against the evidence the marker recorded:
-   * - matches `expectedDigest` → the reserved write landed, so the pending
-   *   token publishes as the COMMITTED receipt;
-   * - matches `baselineDigest` (including both absent) → the durable file
-   *   never changed since reserve, so the reservation is aborted and the
-   *   previous standing token restored (or the marker unlinked);
-   * - anything else — no evidence (a legacy marker), an unreadable durable
-   *   file, or a fingerprint matching neither — THROWS: the target stays
-   *   unavailable and every receipt transaction on it refuses until an
-   *   operator reconciles with the known outcome. Recovery never guesses.
-   * Idempotent; never writes the durable memory file itself.
+   * a crash between reserve and finalize. Under the shard lock, the durable
+   * file's current fingerprint is compared against the marker:
+   * - matches `expectedDigest` → publish the pending token as COMMITTED;
+   * - matches `baselineDigest` (including both absent) → abort and restore;
+   * - anything else THROWS. Recovery never guesses.
    *
-   * `onlyWithWriteEvidence` serves callers that hold NO capture path lock
-   * (the read path): a marker whose write has not yet landed
-   * (`expectedDigest` unset) is indistinguishable from a LIVE transaction
-   * between reserve and write, so aborting it from an unlocked read could
-   * strand a landed write receiptless. Such markers return `reserved`
-   * untouched — only the path-locked write path recovers them. */
+   * `onlyWithWriteEvidence` is the unlocked read path. A marker whose write
+   * has not landed (`writeLanded` false, or legacy with no expectedDigest)
+   * may belong to a live writer, so it returns `reserved`. A landed marker
+   * whose file no longer matches `expectedDigest` throws ambiguity. */
   async recoverPendingRevision(
     filePath: string,
     options?: { onlyWithWriteEvidence?: boolean },
@@ -613,6 +616,10 @@ export class CasRevisionStore {
         );
       }
       const currentDigest = await this.digestDurableFile(relativePath);
+      const landed = pendingWriteHasLanded(view);
+      if (options?.onlyWithWriteEvidence && !landed) {
+        return "reserved";
+      }
       if (view.expectedDigest !== undefined && currentDigest === view.expectedDigest) {
         await this.writeShard(shardPath, relativePath, view.revision, lock, "committed", undefined, {
           committedDigest: view.expectedDigest,
@@ -620,7 +627,16 @@ export class CasRevisionStore {
         return "committed";
       }
       if (options?.onlyWithWriteEvidence) {
-        return "reserved";
+        const evidence =
+          view.expectedDigest === undefined
+            ? "the pending marker carries no crash evidence (written by an older version)"
+            : "the durable file matches neither the expected commit fingerprint nor the reserve-time baseline";
+        throw new Error(
+          `CAS revision recovery for ${relativePath} is ambiguous: ${evidence} (pending token ${view.revision}` +
+            `${view.previous !== undefined ? `, previous ${view.previous}` : ""}). ` +
+            `Inspect the durable file and the shard at ${shardPath}, then run ` +
+            `reconcilePendingRevision with the known write outcome. Refusing to guess.`,
+        );
       }
       if (view.baselineDigest !== undefined && currentDigest === view.baselineDigest) {
         if (view.previous !== undefined) {

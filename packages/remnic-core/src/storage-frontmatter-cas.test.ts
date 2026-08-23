@@ -270,6 +270,7 @@ test("readCasRevisionStatus distinguishes present, absent, and unavailable recei
     assert.deepEqual(await storage.readCasRevisionStatus(memory.path), {
       status: "present",
       revision: standing,
+      committedDigest: createHash("sha256").update(await readFile(memory.path)).digest("hex"),
     });
 
     // A torn shard write: the receipt EXISTS but cannot be read. That is
@@ -548,16 +549,15 @@ test("a receipt publication failure after the memory write recovers from recorde
     }
     assert.ok(reserved, "the reservation was minted before the write");
 
-    const onDisk = await readFile(before.path, "utf8");
-    assert.match(onDisk, /Body whose receipt never publishes\./, "the durable memory write landed");
+    const onDisk = await readFile(before.path);
+    assert.match(onDisk.toString("utf8"), /Body whose receipt never publishes\./, "the durable memory write landed");
 
-    // #2807: the pending marker carries the post-write fingerprint, so the
-    // next read — not a manual reconcile — decisively publishes the
-    // reserved token. The marker was never ownership and never absence
-    // until this evidence spoke.
+    // #2807: writeLanded recorded evidence, so the next unlocked read
+    // publishes the reserved token with the intended file digest.
     assert.deepEqual(await storage.readCasRevisionStatus(before.path), {
       status: "present",
       revision: reserved,
+      committedDigest: createHash("sha256").update(onDisk).digest("hex"),
     });
     assert.equal(
       await storage.updateMemory(created.id, "Second body after evidence recovery."),
@@ -675,10 +675,15 @@ test("restart after a crash between write and commit publishes the reserved rece
     StorageManager.clearAllStaticCaches();
 
     const restarted = new StorageManager(dir);
+    const landedBytes = await readFile(memory.path);
     assert.deepEqual(
       await restarted.readCasRevisionStatus(memory.path),
-      { status: "present", revision: reserved },
-      "the first read after restart publishes the reserved token from the recorded evidence",
+      {
+        status: "present",
+        revision: reserved,
+        committedDigest: createHash("sha256").update(landedBytes).digest("hex"),
+      },
+      "the first read after restart publishes the reserved token from writeLanded evidence",
     );
     assert.equal(
       await restarted.updateMemory(created.id, "Body after evidence-published restart."),
@@ -731,7 +736,7 @@ test("restart with an ambiguous durable change fails closed with actionable reco
     assert.equal(status.status, "unavailable", "an ambiguous marker reads as unavailable, never as presence or absence");
     assert.match(
       status.status === "unavailable" ? status.reason : "",
-      /ambiguous[\s\S]*Refusing to guess/,
+      /ambiguous[\s\S]{0,512}Refusing to guess/,
       "the reason names the ambiguity and the refusal",
     );
     await assert.rejects(
@@ -742,6 +747,92 @@ test("restart with an ambiguous durable change fails closed with actionable reco
       await readFile(memory.path, "utf8"),
       /Body silently rewritten by a third party\./,
       "the refused mutation never touched the durable file",
+    );
+  });
+});
+
+test("crash after memory write before writeLanded recovers from host-forwarded expected bytes (#2813 P1)", async () => {
+  await withStorageDir(async (dir) => {
+    const first = new StorageManager(dir);
+    const created = await first.writeMemory("fact", "Baseline before the writeLanded crash window.", { source: "test" });
+    const memory = await first.getMemoryById(created.id);
+    assert.ok(memory);
+
+    let reserved: string | undefined;
+    let forwardedExpected: string | Buffer | null | undefined;
+    const seams = first as unknown as {
+      casRevisions: {
+        beginRevisionTransaction: (
+          pathname: string,
+          expectedContent?: string | Buffer | null,
+        ) => Promise<CasRevisionTransaction>;
+      };
+    };
+    const origBegin = seams.casRevisions.beginRevisionTransaction.bind(seams.casRevisions);
+    seams.casRevisions.beginRevisionTransaction = async (pathname, expectedContent) => {
+      forwardedExpected = expectedContent;
+      const transaction = await origBegin(pathname, expectedContent);
+      reserved = transaction.pendingRevision;
+      return {
+        pendingRevision: transaction.pendingRevision,
+        writeLanded: async () => {
+          throw new Error("simulated crash before writeLanded");
+        },
+        abort: transaction.abort,
+        commit: async () => {
+          throw new Error("simulated crash before receipt publication");
+        },
+      };
+    };
+    try {
+      await assert.rejects(first.updateMemory(created.id, "Body that landed without writeLanded."));
+    } finally {
+      seams.casRevisions.beginRevisionTransaction = origBegin;
+    }
+
+    assert.ok(reserved, "the reservation was minted before the write");
+    assert.equal(
+      typeof forwardedExpected,
+      "string",
+      "the revision host must forward the intended payload bytes",
+    );
+    assert.match(
+      String(forwardedExpected),
+      /Body that landed without writeLanded\./,
+      "forwarded bytes are the durable file payload, not only the target path",
+    );
+
+    const shard = JSON.parse(await readFile(casShardPath(dir, memory.path), "utf8")) as {
+      state?: string;
+      expectedDigest?: string;
+      writeLanded?: boolean;
+    };
+    assert.equal(shard.state, "pending");
+    assert.equal(shard.writeLanded, false, "writeLanded never ran, so the marker is not landed");
+    assert.equal(
+      typeof shard.expectedDigest,
+      "string",
+      "expectedDigest must be recorded at reserve time so crash-before-writeLanded is decidable",
+    );
+
+    StorageManager.clearAllStaticCaches();
+    const restarted = new StorageManager(dir);
+    const unlocked = await restarted.readCasRevisionStatus(memory.path);
+    assert.equal(
+      unlocked.status,
+      "unavailable",
+      "an unlocked read must not publish a not-yet-landed reservation",
+    );
+    assert.equal(
+      await restarted.updateMemory(created.id, "Writable after expected-bytes recovery."),
+      true,
+      "the path-locked write recovers from the host-forwarded expected bytes",
+    );
+    const recovered = await restarted.readCasRevisionStatus(memory.path);
+    assert.equal(recovered.status, "present");
+    assert.ok(
+      recovered.status === "present" && recovered.revision > reserved,
+      "the post-recovery write owns a strictly greater receipt",
     );
   });
 });
