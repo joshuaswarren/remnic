@@ -5,8 +5,6 @@ import { isDeepStrictEqual } from "node:util";
 import { log } from "../logger.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { markProjectedMemoryPathInvalid } from "../memory-projection-store.js";
-import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
-import { isErrnoCode } from "../utils/errno.js";
 import { pathMayCarryEntityRefs, requestEntityCanonicalIdReconcile } from "./entity-canonical-id-references.js";
 import { withRawEntityPageMutation } from "./entity-canonical-id-lock.js";
 import { readMaybeEncryptedFileFromChunks, writeMaybeEncryptedFileFromChunks } from "../secure-store/secure-fs.js";
@@ -290,8 +288,9 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     identity: string | readonly string[],
     updateIndex: (rebuildMarker?: string, current?: MemoryFile | null) => Promise<void>,
     beforeIndexUpdate?: () => Promise<void>,
-    coordinate = false
-  ): Promise<void> {
+    coordinate = false,
+    shouldMintRevision?: (current: MemoryFile | null) => boolean
+  ): Promise<string | undefined> {
     const host: TombstoneBlockedMutationHost = {
       readCurrent: () => this.readMemoryByPath(pathname),
       isBlocked: (memory) => this.isTombstoneBlockedMemory(memory),
@@ -304,8 +303,9 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       writeStorageSecureFile: (target, content) => this.writeStorageSecureFile(target, content),
       withCaptureWriteLock: (task, lockIdentity) => this.withTombstoneBlockedCaptureWriteLock(task, lockIdentity),
       logWarning: (message) => log.warn(message),
+      commitDurableMemoryRevision: (targetPath) => this.commitDurableMemoryRevision(targetPath),
     };
-    await runTombstoneBlockedMutation(host, {
+    return await runTombstoneBlockedMutation(host, {
       blocked,
       pathname,
       fileContent,
@@ -313,6 +313,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       updateIndex,
       beforeIndexUpdate,
       coordinate,
+      shouldMintRevision,
     });
   }
 
@@ -409,7 +410,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     content: string,
     beforeIndexUpdate?: () => Promise<void>
   ): Promise<string | undefined> {
-    await this.writeTombstoneBlockedMutation(
+    return await this.writeTombstoneBlockedMutation(
       tombstoneBlocked(before.frontmatter) || tombstoneBlocked(frontmatter),
       before.path,
       fileContent,
@@ -426,11 +427,9 @@ export abstract class TombstoneBlockedCaptureIndexHost {
           rebuildMarker
         ),
       beforeIndexUpdate,
-      true
+      true,
+      () => true
     );
-    // The commit receipt (#2813 P1): minted after the durable write, inside
-    // the caller's per-path lock, so [write, mint] is atomic per target.
-    return await this.commitDurableMemoryRevision(before.path);
   }
 
   protected async writeTombstoneBlockedFrontmatter(
@@ -439,7 +438,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     frontmatter: MemoryFrontmatter,
     beforeIndexUpdate?: () => Promise<void>
   ): Promise<string | undefined> {
-    await this.writeTombstoneBlockedMutation(
+    return await this.writeTombstoneBlockedMutation(
       tombstoneBlocked(before.frontmatter) || tombstoneBlocked(frontmatter),
       before.path,
       fileContent,
@@ -451,15 +450,11 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       (rebuildMarker, current) =>
         this.getTombstoneBlockedCaptureIndex().syncUpdatedFrontmatter(current ?? before, frontmatter, rebuildMarker),
       beforeIndexUpdate,
-      true
+      true,
+      (current) => isSemanticFrontmatterChange((current ?? before).frontmatter, frontmatter)
     );
-    // Access-only rewrites keep the standing revision token; every semantic
-    // change mints a new one, retiring any receipt a CAS issued earlier.
-    if (isSemanticFrontmatterChange(before.frontmatter, frontmatter)) {
-      return await this.commitDurableMemoryRevision(before.path);
-    }
-    return undefined;
   }
+
 
   private isTombstoneBlockedMemory(memory: MemoryFile | null): memory is MemoryFile {
     return memory !== null && memory.frontmatter.status === "pending_review" && Boolean(memory.frontmatter.blockedBy);

@@ -174,7 +174,10 @@ export async function revertMergedContent(
     // body after our lock was released — reverting would delete their valid
     // merge while their provenance patch may already have landed.
     if (committedRevision !== undefined) {
-      const standingRevision = await storage.readCasRevision(target.path);
+      const standingRevision = await storage.readCasRevision(target.path).catch((err) => {
+        log.warn(`revertMergedContent: failed to read CAS revision for ${target.path}: ${err}`);
+        return undefined;
+      });
       if (standingRevision !== committedRevision) {
         return "superseded";
       }
@@ -272,7 +275,10 @@ export async function rewriteMergedTargetGraphEdges(
   try {
     appended = (await input.build()) ?? undefined;
     const committedNow = await storage.getMemoryByIdIncludingArchived(input.targetId);
-    const committedRevision = committedNow === null ? undefined : await storage.readCasRevision(committedNow.path);
+    const committedRevision = committedNow === null ? undefined : await storage.readCasRevision(committedNow.path).catch((err) => {
+      log.warn(`rewriteMergedTargetGraphEdges: failed to read CAS revision for ${committedNow.path}: ${err}`);
+      return undefined;
+    });
     if (
       !committedNow ||
       committedNow.content !== input.mergedContent ||

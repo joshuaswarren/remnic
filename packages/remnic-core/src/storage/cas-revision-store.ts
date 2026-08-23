@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { resolveSafeStoragePath } from "../storage-paths.js";
@@ -6,6 +6,12 @@ import { isErrnoCode } from "../utils/errno.js";
 import { withHeldFileLock, type HeldFileLockController } from "../utils/serialize-mutations.js";
 import { log } from "../logger.js";
 import { isValidManagedStoragePath, nextCasRevisionIso } from "./deletion-revision-store.js";
+
+type CasRevisionShard = {
+  version: 1;
+  path: string;
+  revision: string;
+};
 
 type CasRevisionMetadata = {
   version: 1;
@@ -28,14 +34,12 @@ const CAS_REVISION_LOCK_MAX_WAIT_MS = 120_000;
  */
 export class CasRevisionStore {
   private readonly baseDir: string;
-  private readonly revisionMetadataPath: string;
-  private readonly revisionLockPath: string;
+  private readonly legacyMetadataPath: string;
 
   constructor(baseDir: string) {
     this.baseDir = baseDir;
-    // Same sidecar home as the deletion-revision metadata: `<baseDir>/.offline-sync/`.
-    this.revisionMetadataPath = path.join(baseDir, ".offline-sync", "cas-revisions.v1.json");
-    this.revisionLockPath = path.join(baseDir, ".offline-sync", "cas-revisions.v1.json.lock");
+    // Legacy global metadata location for backward-compatible fallback reads.
+    this.legacyMetadataPath = path.join(baseDir, ".offline-sync", "cas-revisions.v1.json");
   }
 
   private parseCasRevisionMetadata(raw: string): Map<string, string> {
@@ -77,15 +81,12 @@ export class CasRevisionStore {
     return revisions;
   }
 
-  private async metadataPath(): Promise<string> {
+  private async readLegacyMetadata(): Promise<Map<string, string>> {
     const baseDir = path.resolve(this.baseDir);
-    return await resolveSafeStoragePath(baseDir, path.relative(baseDir, this.revisionMetadataPath));
-  }
-
-  private async readMetadata(): Promise<Map<string, string>> {
+    const legacyPath = await resolveSafeStoragePath(baseDir, path.relative(baseDir, this.legacyMetadataPath));
     let raw: string;
     try {
-      raw = await readFile(await this.metadataPath(), "utf8");
+      raw = await readFile(legacyPath, "utf8");
     } catch (error) {
       if (isErrnoCode(error, "ENOENT")) return new Map();
       throw new Error("CAS revision metadata is unavailable.");
@@ -93,51 +94,79 @@ export class CasRevisionStore {
     return this.parseCasRevisionMetadata(raw);
   }
 
-  private async writeMetadata(
-    revisions: ReadonlyMap<string, string>,
+  private getShardInfo(relativePath: string): { shardPath: string; lockPath: string } {
+    const hash = createHash("sha256").update(relativePath).digest("hex");
+    const shardDir = path.join(this.baseDir, ".offline-sync", "cas-revisions");
+    const shardPath = path.join(shardDir, `${hash}.json`);
+    const lockPath = path.join(shardDir, `${hash}.json.lock`);
+    return { shardPath, lockPath };
+  }
+
+  private async readStandingRevision(relativePath: string): Promise<string | undefined> {
+    const { shardPath } = this.getShardInfo(relativePath);
+    try {
+      const raw = await readFile(shardPath, "utf8");
+      const parsed = JSON.parse(raw) as unknown;
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        (parsed as Record<string, unknown>).version === 1 &&
+        (parsed as Record<string, unknown>).path === relativePath &&
+        typeof (parsed as Record<string, unknown>).revision === "string" &&
+        ((parsed as Record<string, unknown>).revision as string).length > 0
+      ) {
+        return (parsed as Record<string, unknown>).revision as string;
+      }
+    } catch (error) {
+      if (!isErrnoCode(error, "ENOENT")) {
+        log.warn(`CasRevisionStore failed to read shard for ${relativePath}: ${error}`);
+        return undefined;
+      }
+    }
+    try {
+      const legacyMap = await this.readLegacyMetadata();
+      return legacyMap.get(relativePath);
+    } catch (error) {
+      if (!isErrnoCode(error, "ENOENT")) {
+        log.warn(`CasRevisionStore failed to read legacy metadata for ${relativePath}: ${error}`);
+      }
+      return undefined;
+    }
+  }
+
+  private async writeShard(
+    relativePath: string,
+    revision: string,
     lock: HeldFileLockController,
   ): Promise<void> {
-    const metadataPath = await this.metadataPath();
-    const entries = [...revisions.entries()]
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([entryPath, revision]) => ({ path: entryPath, revision }));
-    const metadata: CasRevisionMetadata = { version: 1, revisions: entries };
-    const temporaryPath = `${metadataPath}.${process.pid}.${randomUUID()}.tmp`;
+    const { shardPath } = this.getShardInfo(relativePath);
+    const payload: CasRevisionShard = { version: 1, path: relativePath, revision };
+    const temporaryPath = `${shardPath}.${process.pid}.${randomUUID()}.tmp`;
     let handle: FileHandle | null = null;
     try {
-      await mkdir(path.dirname(metadataPath), { recursive: true });
+      await mkdir(path.dirname(shardPath), { recursive: true });
       handle = await open(temporaryPath, "wx", 0o600);
-      await handle.writeFile(`${JSON.stringify(metadata)}\n`, "utf8");
+      await handle.writeFile(`${JSON.stringify(payload)}\n`, "utf8");
       await handle.sync();
       await handle.close();
       handle = null;
       if (!(await lock.refresh())) {
-        throw new Error("CAS revision metadata lock was lost.");
+        throw new Error("CAS revision shard lock was lost.");
       }
-      await rename(temporaryPath, metadataPath);
+      await rename(temporaryPath, shardPath);
     } finally {
       if (handle !== null) {
         await handle.close().catch((error: unknown) => {
-          log.warn("failed to close CAS revision metadata temporary file", error);
+          log.warn("failed to close CAS revision shard temporary file", error);
         });
       }
       await unlink(temporaryPath).catch((error: unknown) => {
         if (!isErrnoCode(error, "ENOENT")) {
-          log.warn("failed to clean up CAS revision metadata temporary file", error);
+          log.warn("failed to clean up CAS revision shard temporary file", error);
         }
       });
     }
-  }
-
-  private async withRevisionLock<T>(task: (lock: HeldFileLockController) => Promise<T>): Promise<T> {
-    return withHeldFileLock(
-      this.revisionLockPath,
-      { staleMs: CAS_REVISION_LOCK_STALE_MS, maxWaitMs: CAS_REVISION_LOCK_MAX_WAIT_MS },
-      async (acquired, lock) => {
-        if (!acquired) throw new Error("CAS revision metadata lock is unavailable.");
-        return task(lock);
-      },
-    );
   }
 
   private async resolveRelativePath(filePath: string): Promise<string> {
@@ -147,28 +176,34 @@ export class CasRevisionStore {
   }
 
   /** The target's standing revision token, or undefined when no receipt was
-   * ever minted for it. */
+   * ever minted for it. Fail-open on storage/read errors. */
   async readRevision(filePath: string): Promise<string | undefined> {
-    const relativePath = await this.resolveRelativePath(filePath);
-    return await this.withRevisionLock(async () => (await this.readMetadata()).get(relativePath));
+    try {
+      const relativePath = await this.resolveRelativePath(filePath);
+      return await this.readStandingRevision(relativePath);
+    } catch (error) {
+      log.warn(`CasRevisionStore.readRevision failed for ${filePath}: ${error}`);
+      return undefined;
+    }
   }
 
   /** Mint the NEXT revision token for the target and durably record it:
    * strictly greater than the standing token (max(clock, prev + 1ms)), so
    * two commits can never share a receipt — not within one millisecond, not
-   * across a backward clock step. Any receipt minted earlier stops matching
-   * the standing token, which is exactly the ownership signal the rollback
-   * comparison needs. Entries persist for the corpus's lifetime (one per
-   * target path, replaced in place) — bounded like any index, and a stale
-   * entry for a deleted path can only make an old receipt mismatch. */
+   * across a backward clock step. Sharded per-target for O(1) mutations. */
   async commitRevision(filePath: string): Promise<string> {
     const relativePath = await this.resolveRelativePath(filePath);
-    return await this.withRevisionLock(async (lock) => {
-      const revisions = await this.readMetadata();
-      const next = nextCasRevisionIso(revisions.get(relativePath));
-      revisions.set(relativePath, next);
-      await this.writeMetadata(revisions, lock);
-      return next;
-    });
+    const { lockPath } = this.getShardInfo(relativePath);
+    return await withHeldFileLock(
+      lockPath,
+      { staleMs: CAS_REVISION_LOCK_STALE_MS, maxWaitMs: CAS_REVISION_LOCK_MAX_WAIT_MS },
+      async (acquired, lock) => {
+        if (!acquired) throw new Error("CAS revision lock is unavailable.");
+        const standing = await this.readStandingRevision(relativePath);
+        const next = nextCasRevisionIso(standing);
+        await this.writeShard(relativePath, next, lock);
+        return next;
+      },
+    );
   }
 }

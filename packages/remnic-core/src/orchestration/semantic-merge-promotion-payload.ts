@@ -150,7 +150,10 @@ export async function buildMergedTargetPromotionPayload(
   const fm = committed.frontmatter;
   // #2807: receipt identity is the sidecar token, not `fm.updated`
   // (business/event time).
-  const committedRevision = await storage.readCasRevision(committed.path);
+  const committedRevision = await storage.readCasRevision(committed.path).catch((err) => {
+    log.warn(`buildMergedTargetPromotionPayload: failed to read CAS revision for ${committed.path}: ${err}`);
+    return undefined;
+  });
   return {
     payload: {
       category: fm.category,

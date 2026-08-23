@@ -2715,9 +2715,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.deletionRevisionStore.hasCommittedInvalidation(memory);
   }
 
-  /** Standing CAS revision token — receipt identity, never public `updated` (#2807). */
+  /** Standing CAS revision token — receipt identity, never public `updated` (#2807). Fail-open on read errors. */
   async readCasRevision(filePath: string): Promise<string | undefined> {
-    return await this.casRevisions.readRevision(filePath);
+    try {
+      return await this.casRevisions.readRevision(filePath);
+    } catch (err) {
+      log.warn(`storage.readCasRevision failed for ${filePath}: ${err}`);
+      return undefined;
+    }
   }
 
   protected override async commitDurableMemoryRevision(pathname: string): Promise<string> {

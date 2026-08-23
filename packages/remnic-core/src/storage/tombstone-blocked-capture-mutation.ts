@@ -196,6 +196,7 @@ export type TombstoneBlockedMutationHost = {
   writeStorageSecureFile: (pathname: string, fileContent: string) => Promise<void>;
   withCaptureWriteLock: (task: () => Promise<void>, identity: string | readonly string[]) => Promise<void>;
   logWarning: (message: string) => void;
+  commitDurableMemoryRevision?: (pathname: string) => Promise<string | undefined>;
 };
 
 export type TombstoneBlockedMutation = {
@@ -206,15 +207,17 @@ export type TombstoneBlockedMutation = {
   updateIndex: (rebuildMarker?: string, current?: MemoryFile | null) => Promise<void>;
   beforeIndexUpdate?: () => Promise<void>;
   coordinate?: boolean;
+  shouldMintRevision?: (current: MemoryFile | null) => boolean;
 };
 
 export async function runTombstoneBlockedMutation(
   host: TombstoneBlockedMutationHost,
   mutation: TombstoneBlockedMutation
-): Promise<void> {
+): Promise<string | undefined> {
   let lockIdentity: string | readonly string[] = mutation.identity;
   for (;;) {
     let retryIdentity: string | undefined;
+    let mintedRevision: string | undefined;
     const mutate = async (): Promise<void> => {
       const current = await host.readCurrent();
       const currentBlocked = host.isBlocked(current);
@@ -251,13 +254,18 @@ export async function runTombstoneBlockedMutation(
       }
       if (rebuildMarker) await mutation.beforeIndexUpdate?.();
       await mutation.updateIndex(rebuildMarker, currentBlocked && current !== null ? current : undefined);
+
+      if (mutation.shouldMintRevision?.(current)) {
+        mintedRevision = await host.commitDurableMemoryRevision?.(mutation.pathname);
+      }
     };
     await host.withCaptureWriteLock(mutate, lockIdentity);
-    if (retryIdentity === undefined) return;
+    if (retryIdentity === undefined) return mintedRevision;
     const identities = Array.isArray(lockIdentity) ? [...lockIdentity, retryIdentity] : [lockIdentity, retryIdentity];
     lockIdentity = [...new Set(identities)];
   }
 }
+
 
 export function tombstoneBlocked(frontmatter: MemoryFrontmatter): boolean {
   return frontmatter.status === "pending_review" && Boolean(frontmatter.blockedBy);
