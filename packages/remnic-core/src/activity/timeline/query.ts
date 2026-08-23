@@ -121,6 +121,32 @@ function assertRange(fromMs: number, toMs: number, maxRangeDays: number): void {
   }
 }
 
+/**
+ * Validate a range request completely - format, instants, ordering, and
+ * qa.maxRangeDays - with no card access. Production callers must run this
+ * before any side-effecting card loader so an invalid range fails before
+ * day regeneration or analysis spend.
+ */
+export function validateTimelineRangeQuery(query: {
+  from: string;
+  to: string;
+  format: string;
+  maxRangeDays?: number;
+}): void {
+  if (!RANGE_FORMATS.includes(query.format as TimelineRangeFormat)) {
+    throw new TypeError(`format must be one of: ${RANGE_FORMATS.join(", ")}`);
+  }
+  const maxRangeDays = query.maxRangeDays ?? DEFAULT_MAX_RANGE_DAYS;
+  assertRange(parseInstant(query.from, "from"), parseInstant(query.to, "to"), maxRangeDays);
+}
+
+/** Validate optional search bounds the way queryTimelineSearch applies them. */
+export function validateTimelineSearchBounds(bounds: { from?: string; to?: string }): void {
+  const fromMs = parseInstant(bounds.from ?? bounds.to!, "from");
+  const toMs = parseInstant(bounds.to ?? bounds.from!, "to");
+  assertRange(fromMs, toMs, DEFAULT_MAX_RANGE_DAYS);
+}
+
 function cardOverlaps(card: TimelineQueryCard, fromMs: number, toMs: number): boolean {
   const start = Date.parse(card.startUtc);
   const end = Date.parse(card.endUtc);
@@ -306,6 +332,14 @@ export async function runTimelineCliCommand(
       const from = flagString(flags, "--from");
       const to = flagString(flags, "--to");
       if (!from || !to) throw new TypeError("range requires --from and --to");
+      const formatRaw = flagString(flags, "--format") ?? "compact";
+      if (formatRaw !== "cards" && formatRaw !== "compact") {
+        throw new TypeError("format must be one of: cards, compact");
+      }
+      // Validate the complete request before the side-effecting loader: an
+      // over-wide or malformed range must fail before any day regeneration
+      // or analysis spend.
+      validateTimelineRangeQuery({ from, to, format: formatRaw, maxRangeDays: deps.qa.maxRangeDays });
       const cards = Array.isArray(deps.cards)
         ? deps.cards
         : deps.loadCards === undefined
@@ -314,10 +348,6 @@ export async function runTimelineCliCommand(
       if (!Array.isArray(cards)) {
         io.stderr.write("store_unreadable\n");
         return 1;
-      }
-      const formatRaw = flagString(flags, "--format") ?? "compact";
-      if (formatRaw !== "cards" && formatRaw !== "compact") {
-        throw new TypeError("format must be one of: cards, compact");
       }
       const categoriesRaw = flagString(flags, "--categories");
       const result = queryTimelineRange(cards, {
@@ -341,6 +371,11 @@ export async function runTimelineCliCommand(
       }
       const from = flagString(flags, "--from");
       const to = flagString(flags, "--to");
+      // Bounds are validated before the side-effecting loader so a malformed
+      // or over-wide window fails before any day regeneration or analysis.
+      if (from !== undefined || to !== undefined) {
+        validateTimelineSearchBounds({ from, to });
+      }
       const cards = Array.isArray(deps.cards)
         ? deps.cards
         : deps.loadCards === undefined

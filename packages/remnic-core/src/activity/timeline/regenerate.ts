@@ -6,7 +6,7 @@
  * callers share one in-flight run. Surfaces (sync, CLI) call this function.
  */
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig } from "../../fallback-llm.js";
@@ -52,19 +52,26 @@ export interface RegenerateTimelineDayInput {
   corrections?: readonly TimelineCorrection[];
 }
 
+/**
+ * Persisted day status. "pending" is the prewrite marker for an enabled run
+ * whose analysis has not completed: a crash after the deterministic prewrite
+ * must not read as terminal on the next run.
+ */
+export type PersistedTimelineDayStatus = TimelineAnalysisStatus | "pending" | "timeline_disabled";
+
 export interface PersistedTimelineDay {
   formatVersion: number;
   date: string;
   timezone: string;
   sourceHash: string;
-  status: TimelineAnalysisStatus | "timeline_disabled";
+  status: PersistedTimelineDayStatus;
   cards: TimelineCard[];
   metadata?: AnalysisRunMetadata;
   failure?: AnalysisFailure;
 }
 
 export interface RegenerateTimelineDayResult {
-  status: TimelineAnalysisStatus | "timeline_disabled";
+  status: PersistedTimelineDayStatus;
   cards: TimelineCard[];
   path: string;
   written: boolean;
@@ -103,18 +110,68 @@ export function snapshotToObservation(snapshot: ActivitySnapshot): TimelineObser
   };
 }
 
+/** Local calendar days covering [fromMs, toMs), oldest first. Capped at 3660 days. */
 export function localDatesForUtcRange(fromMs: number, toMs: number, timezone: string): string[] {
   if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) return [];
   const dates: string[] = [];
   let date = activityDateInTimezone(new Date(fromMs), timezone);
   const last = activityDateInTimezone(new Date(toMs - 1), timezone);
-  while (dates.length < 366) {
+  while (dates.length < 3660) {
     dates.push(date);
     if (date === last) break;
     const { endUtc } = activityDayWindow(date, timezone);
     date = activityDateInTimezone(new Date(Date.parse(endUtc)), timezone);
   }
   return dates;
+}
+
+/** Persisted local days already on disk (YYYY-MM-DD), regardless of store state. */
+export function listPersistedTimelineDates(memoryDir: string): string[] {
+  let entries: readonly string[];
+  try {
+    entries = readdirSync(path.join(path.resolve(requireToken(memoryDir, "memoryDir")), TIMELINE_DAY_DIR));
+  } catch {
+    return [];
+  }
+  const dates: string[] = [];
+  for (const entry of entries) {
+    const day = entry.endsWith(".json") ? entry.slice(0, -".json".length) : entry;
+    if (isValidActivityDate(day)) dates.push(day);
+  }
+  return dates.sort();
+}
+
+/**
+ * Local days a CLI window must load. Bounded windows keep the explicit
+ * from/to span. An unbounded search loads every day the snapshot store or a
+ * persisted day file covers (plus today), so historical cards enter the
+ * search pool instead of only the current day.
+ */
+export function resolveTimelineLoadDates(input: {
+  window: { from?: string; to?: string };
+  timezone: string;
+  today: string;
+  store: { snapshotCaptureExtent(): { firstUtc: string; lastUtc: string } | null };
+  persistedDates: readonly string[];
+}): string[] {
+  const { window, timezone, today, store, persistedDates } = input;
+  if (window.from !== undefined || window.to !== undefined) {
+    const fromMs = window.from === undefined ? Date.now() : Date.parse(window.from);
+    const toMs = window.to === undefined ? fromMs + 1 : Date.parse(window.to);
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return [];
+    return localDatesForUtcRange(fromMs, toMs > fromMs ? toMs : fromMs + 1, timezone);
+  }
+  const days = new Set<string>(persistedDates);
+  days.add(today);
+  const extent = store.snapshotCaptureExtent();
+  if (extent !== null) {
+    const firstMs = Date.parse(extent.firstUtc);
+    const lastMs = Date.parse(extent.lastUtc);
+    if (Number.isFinite(firstMs) && Number.isFinite(lastMs) && lastMs >= firstMs) {
+      for (const day of localDatesForUtcRange(firstMs, lastMs + 1, timezone)) days.add(day);
+    }
+  }
+  return [...days].sort();
 }
 
 export function timelineAnalysisClientsFromConfig(config: PluginConfig): TimelineAnalysisClients {
@@ -214,6 +271,21 @@ function toResult(
   };
 }
 
+/**
+ * A cached day is final when its persisted status matches the request:
+ * completed results (ok, or an explicit provider/output failure) are terminal
+ * for the same source hash, so unchanged scheduled syncs and CLI reads never
+ * repeat provider spend. A "pending" prewrite, or a "disabled" file under an
+ * enabled request (legacy prewrite or interrupted run), is rebuilt so a later
+ * enabled config can still analyze.
+ */
+function isCachedDayFinal(status: PersistedTimelineDayStatus, analysisEnabled: boolean): boolean {
+  if (analysisEnabled) {
+    return status === "ok" || status === "provider_failed" || status === "invalid_output";
+  }
+  return status === "disabled";
+}
+
 async function regenerateUncached(input: RegenerateTimelineDayInput): Promise<RegenerateTimelineDayResult> {
   const date = requireToken(input.date, "date");
   const timezone = requireToken(input.timezone, "timezone");
@@ -241,7 +313,7 @@ async function regenerateUncached(input: RegenerateTimelineDayInput): Promise<Re
     );
     const hash = sourceHash({ observations, analysis: input.analysis, corrections });
     const prior = readPersisted(filePath);
-    if (prior !== null && prior.sourceHash === hash && (prior.status === "ok" || prior.status === "disabled")) {
+    if (prior !== null && prior.sourceHash === hash && isCachedDayFinal(prior.status, input.analysis.enabled)) {
       return toResult(filePath, false, false, prior);
     }
 
@@ -250,7 +322,7 @@ async function regenerateUncached(input: RegenerateTimelineDayInput): Promise<Re
       date,
       timezone,
       sourceHash: hash,
-      status: "disabled",
+      status: input.analysis.enabled ? "pending" : "disabled",
       cards: built,
     };
     persistDay(filePath, deterministic);

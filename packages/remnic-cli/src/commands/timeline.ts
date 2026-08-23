@@ -9,31 +9,38 @@ import fs from "node:fs";
 import {
   ActivityStore,
   activityDateInTimezone,
-  localDatesForUtcRange,
+  listPersistedTimelineDates,
   parseConfig,
   regenerateTimelineDay,
   resolveRemnicConfigRecord,
+  resolveTimelineLoadDates,
   runTimelineCliCommand,
 } from "@remnic/core";
 import type { PluginConfig, TimelineCard } from "@remnic/core";
 import { resolveConfigPath } from "../config-path.js";
 
-async function loadProductionTimelineCards(
+/**
+ * Production card loader for the shared timeline runner. Bounded windows load
+ * their explicit span; an unbounded search loads every day the snapshot store
+ * or a persisted day file covers, so historical cards are searchable.
+ */
+export async function loadProductionTimelineCards(
   config: PluginConfig,
   window: { from?: string; to?: string },
+  now: () => Date = () => new Date(),
 ): Promise<TimelineCard[] | null> {
   const timeline = config.activity.timeline;
   if (!timeline.enabled) return null;
   const timezone = config.activity.timezone;
-  const fromMs = window.from === undefined ? Date.now() : Date.parse(window.from);
-  const toMs = window.to === undefined ? fromMs + 1 : Date.parse(window.to);
-  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return null;
-  const dates =
-    window.from === undefined && window.to === undefined
-      ? [activityDateInTimezone(new Date(), timezone)]
-      : localDatesForUtcRange(fromMs, Number.isFinite(toMs) && toMs > fromMs ? toMs : fromMs + 1, timezone);
   const store = ActivityStore.open(config.memoryDir);
   try {
+    const dates = resolveTimelineLoadDates({
+      window,
+      timezone,
+      today: activityDateInTimezone(now(), timezone),
+      store,
+      persistedDates: listPersistedTimelineDates(config.memoryDir),
+    });
     const cards: TimelineCard[] = [];
     for (const date of dates) {
       const result = await regenerateTimelineDay({

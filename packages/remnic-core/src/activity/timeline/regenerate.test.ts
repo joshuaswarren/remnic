@@ -2,7 +2,7 @@
  * Production regenerate flow for timeline-card analysis (issue #2050).
  */
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,7 +10,13 @@ import test from "node:test";
 import { ActivityStore } from "../store.js";
 import type { ActivitySnapshot } from "../types.js";
 import { parseActivityConfig } from "../config.js";
-import { regenerateTimelineDay, timelineDayPath } from "./regenerate.js";
+import {
+  listPersistedTimelineDates,
+  localDatesForUtcRange,
+  regenerateTimelineDay,
+  resolveTimelineLoadDates,
+  timelineDayPath,
+} from "./regenerate.js";
 import type { TimelineAnalysisRemoteLlm } from "./analysis-provider.js";
 
 const DATE = "2026-08-17";
@@ -189,4 +195,171 @@ test("local provider request carries the configured analysis.model", async () =>
     assert.deepEqual(seen, ["qwen3.8-27b"]);
     assert.equal(result.metadata?.model, "qwen3.8-27b");
   });
+});
+
+test("enabled analysis prewrites pending, and a pending day is re-analyzed", async () => {
+  await withStore(async (store, memoryDir) => {
+    store.insertSnapshot(snapshot());
+    const seenOnDisk: string[] = [];
+    let calls = 0;
+    const remote: TimelineAnalysisRemoteLlm = {
+      chatCompletion: async () => {
+        calls += 1;
+        const onDisk = JSON.parse(await readFile(timelineDayPath(memoryDir, DATE), "utf8")) as {
+          status: string;
+        };
+        seenOnDisk.push(onDisk.status);
+        return { content: '{"ops":[]}' };
+      },
+    };
+    const analysis = parseActivityConfig({
+      timeline: { analysis: { enabled: true, provider: "openai", model: "gpt-test" } },
+    }).timeline.analysis;
+    const run = () =>
+      regenerateTimelineDay({
+        date: DATE,
+        timezone: TZ,
+        memoryDir,
+        store,
+        timelineEnabled: true,
+        analysis,
+        deps: { remoteLlm: remote },
+      });
+    const first = await run();
+    assert.equal(first.status, "ok");
+    assert.deepEqual(seenOnDisk, ["pending"], "the deterministic prewrite must persist pending, not disabled");
+    // Simulate a crash between the prewrite and the final write.
+    const persisted = JSON.parse(await readFile(timelineDayPath(memoryDir, DATE), "utf8")) as {
+      status: string;
+    };
+    persisted.status = "pending";
+    await writeFile(timelineDayPath(memoryDir, DATE), `${JSON.stringify(persisted)}\n`);
+    const second = await run();
+    assert.equal(second.status, "ok");
+    assert.equal(calls, 2, "a pending prewrite must be re-analyzed, not skipped forever");
+  });
+});
+
+test("a legacy disabled file is re-analyzed once analysis is enabled", async () => {
+  await withStore(async (store, memoryDir) => {
+    store.insertSnapshot(snapshot());
+    let calls = 0;
+    const remote: TimelineAnalysisRemoteLlm = {
+      chatCompletion: async () => {
+        calls += 1;
+        return { content: '{"ops":[]}' };
+      },
+    };
+    const analysis = parseActivityConfig({
+      timeline: { analysis: { enabled: true, provider: "openai", model: "gpt-test" } },
+    }).timeline.analysis;
+    const run = () =>
+      regenerateTimelineDay({
+        date: DATE,
+        timezone: TZ,
+        memoryDir,
+        store,
+        timelineEnabled: true,
+        analysis,
+        deps: { remoteLlm: remote },
+      });
+    await run();
+    // Simulate the old prewrite behavior: enabled input, disabled file.
+    const persisted = JSON.parse(await readFile(timelineDayPath(memoryDir, DATE), "utf8")) as {
+      status: string;
+    };
+    persisted.status = "disabled";
+    await writeFile(timelineDayPath(memoryDir, DATE), `${JSON.stringify(persisted)}\n`);
+    const second = await run();
+    assert.equal(second.status, "ok");
+    assert.equal(calls, 2, "a disabled file under an enabled request must be re-analyzed");
+  });
+});
+
+test("a completed provider failure is terminal for unchanged evidence", async () => {
+  await withStore(async (store, memoryDir) => {
+    store.insertSnapshot(snapshot());
+    let calls = 0;
+    const remote: TimelineAnalysisRemoteLlm = {
+      chatCompletion: async () => {
+        calls += 1;
+        throw new Error("provider down");
+      },
+    };
+    const analysis = parseActivityConfig({
+      timeline: { analysis: { enabled: true, provider: "openai", model: "gpt-test" } },
+    }).timeline.analysis;
+    const run = () =>
+      regenerateTimelineDay({
+        date: DATE,
+        timezone: TZ,
+        memoryDir,
+        store,
+        timelineEnabled: true,
+        analysis,
+        deps: { remoteLlm: remote },
+      });
+    const first = await run();
+    assert.equal(first.status, "provider_failed");
+    const second = await run();
+    assert.equal(second.status, "provider_failed");
+    assert.equal(second.written, false);
+    assert.equal(calls, 1, "unchanged evidence must not repeat the provider call");
+  });
+});
+
+test("resolveTimelineLoadDates keeps a bounded window and expands an unbounded one", () => {
+  const store = {
+    snapshotCaptureExtent: () => ({ firstUtc: "2026-05-01T01:00:00.000Z", lastUtc: "2026-05-03T23:00:00.000Z" }),
+  };
+  const bounded = resolveTimelineLoadDates({
+    window: { from: "2026-05-02T00:00:00.000Z", to: "2026-05-04T00:00:00.000Z" },
+    timezone: "UTC",
+    today: "2026-08-23",
+    store,
+    persistedDates: [],
+  });
+  assert.deepEqual(bounded, ["2026-05-02", "2026-05-03"]);
+  const unbounded = resolveTimelineLoadDates({
+    window: {},
+    timezone: "UTC",
+    today: "2026-08-23",
+    store,
+    persistedDates: ["2026-04-28"],
+  });
+  assert.deepEqual(unbounded, ["2026-04-28", "2026-05-01", "2026-05-02", "2026-05-03", "2026-08-23"]);
+  const empty = resolveTimelineLoadDates({
+    window: {},
+    timezone: "UTC",
+    today: "2026-08-23",
+    store: { snapshotCaptureExtent: () => null },
+    persistedDates: [],
+  });
+  assert.deepEqual(empty, ["2026-08-23"]);
+});
+
+test("localDatesForUtcRange covers a multi-year span for unbounded search", () => {
+  const dates = localDatesForUtcRange(
+    Date.parse("2020-01-01T00:00:00.000Z"),
+    Date.parse("2026-08-23T00:00:00.000Z"),
+    "UTC",
+  );
+  assert.equal(dates[0], "2020-01-01");
+  assert.equal(dates[dates.length - 1], "2026-08-22");
+  assert.ok(dates.length > 2400, `expected full history, got ${dates.length} days`);
+});
+
+test("listPersistedTimelineDates lists only valid day files", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-timeline-days-"));
+  try {
+    const dir = path.join(memoryDir, "activity", "timeline");
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, "2026-08-17.json"), "{}\n");
+    await writeFile(path.join(dir, "2026-08-18.json.tmp"), "{}\n");
+    await writeFile(path.join(dir, "notes.txt"), "");
+    assert.deepEqual(listPersistedTimelineDates(memoryDir), ["2026-08-17"]);
+    assert.deepEqual(listPersistedTimelineDates(path.join(memoryDir, "missing")), []);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
