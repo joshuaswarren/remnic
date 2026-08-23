@@ -330,8 +330,10 @@ test("beginRevisionTransaction with expectedContent persists expectedDigest in p
       state?: string;
       baselineDigest?: string;
       expectedDigest?: string;
+      writeLanded?: boolean;
     };
     assert.equal(shard.state, "pending");
+    assert.equal(shard.writeLanded, false, "new pending markers are not landed");
     assert.ok(shard.baselineDigest, "baseline digest is persisted");
     assert.equal(
       shard.expectedDigest,
@@ -351,7 +353,11 @@ test("beginRevisionTransaction with expectedContent persists expectedDigest in p
     // Case 2: Fresh transaction, memory write lands, crash AFTER memory write:
     const txn2 = await store.beginRevisionTransaction(target, expectedContent);
     await writeFile(target, expectedContent, "utf8");
-    // Without calling txn2.writeLanded() or txn2.commit(), simulate crash recovery:
+    assert.equal(
+      await store.recoverPendingRevision(target, { onlyWithWriteEvidence: true }),
+      "reserved",
+      "pre-recorded expectedDigest is not unlocked write evidence",
+    );
     assert.equal(await store.recoverPendingRevision(target), "committed");
     assert.deepEqual(await store.readRevisionStatus(target), {
       status: "present",
@@ -359,5 +365,99 @@ test("beginRevisionTransaction with expectedContent persists expectedDigest in p
       committedDigest: store.digestContent(expectedContent),
       committedSemanticFingerprint: store.digestContent(expectedContent),
     });
+  });
+});
+
+test("writeLanded sets the landed marker and unlocked mismatch is ambiguous (#2813 P1)", async () => {
+  await withStore(async (store, root) => {
+    const target = path.join(root, "memories", "fact-write-landed-marker.md");
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, "old bytes", "utf8");
+    const standing = await store.beginRevisionTransaction(target, "old bytes");
+    await standing.commit();
+
+    const next = await store.beginRevisionTransaction(target, "new bytes");
+    await writeFile(target, "new bytes", "utf8");
+    assert.equal(
+      await store.recoverPendingRevision(target, { onlyWithWriteEvidence: true }),
+      "reserved",
+    );
+    await next.writeLanded();
+    const landedShard = JSON.parse(await readFile(shardPathFor(root, target), "utf8")) as {
+      writeLanded?: boolean;
+      expectedDigest?: string;
+    };
+    assert.equal(landedShard.writeLanded, true);
+    assert.equal(landedShard.expectedDigest, store.digestContent("new bytes"));
+    await writeFile(target, "third-party rewrite", "utf8");
+    await assert.rejects(
+      store.recoverPendingRevision(target, { onlyWithWriteEvidence: true }),
+      /ambiguous[\s\S]{0,512}Refusing to guess/,
+    );
+  });
+});
+
+test("legacy pending shards without writeLanded treat expectedDigest as already landed (#2813 P1)", async () => {
+  await withStore(async (store, root) => {
+    const target = path.join(root, "memories", "fact-legacy-landed.md");
+    const relative = path.relative(root, target).split(path.sep).join("/");
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, "legacy landed bytes", "utf8");
+    const expectedDigest = store.digestContent("legacy landed bytes");
+    await mkdir(path.dirname(shardPathFor(root, target)), { recursive: true });
+    await writeFile(
+      shardPathFor(root, target),
+      `${JSON.stringify({
+        version: 1,
+        path: relative,
+        revision: "2026-08-01T00:00:00.000Z",
+        state: "pending",
+        previous: "2026-07-31T00:00:00.000Z",
+        baselineDigest: store.digestContent("old bytes"),
+        expectedDigest,
+      })}\n`,
+      "utf8",
+    );
+
+    assert.equal(
+      await store.recoverPendingRevision(target, { onlyWithWriteEvidence: true }),
+      "committed",
+      "absent writeLanded plus expectedDigest is legacy landed evidence",
+    );
+    assert.deepEqual(await store.readRevisionStatus(target), {
+      status: "present",
+      revision: "2026-08-01T00:00:00.000Z",
+      committedDigest: expectedDigest,
+      committedSemanticFingerprint: expectedDigest,
+    });
+  });
+});
+
+test("legacy landed pending whose file no longer matches expectedDigest is ambiguous (#2813 P1)", async () => {
+  await withStore(async (store, root) => {
+    const target = path.join(root, "memories", "fact-legacy-mismatch.md");
+    const relative = path.relative(root, target).split(path.sep).join("/");
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, "third-party rewrite", "utf8");
+    await mkdir(path.dirname(shardPathFor(root, target)), { recursive: true });
+    await writeFile(
+      shardPathFor(root, target),
+      `${JSON.stringify({
+        version: 1,
+        path: relative,
+        revision: "2026-08-01T00:00:00.000Z",
+        state: "pending",
+        previous: "2026-07-31T00:00:00.000Z",
+        baselineDigest: store.digestContent("old bytes"),
+        expectedDigest: store.digestContent("expected landed bytes"),
+      })}\n`,
+      "utf8",
+    );
+
+    await assert.rejects(
+      store.recoverPendingRevision(target, { onlyWithWriteEvidence: true }),
+      /ambiguous[\s\S]{0,512}Refusing to guess/,
+    );
+    assert.equal((await store.readRevisionStatus(target)).status, "unavailable");
   });
 });

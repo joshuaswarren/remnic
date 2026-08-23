@@ -306,7 +306,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       writeStorageSecureFile: (target, content) => this.writeStorageSecureFile(target, content),
       withCaptureWriteLock: (task, lockIdentity) => this.withTombstoneBlockedCaptureWriteLock(task, lockIdentity),
       logWarning: (message) => log.warn(message),
-      beginDurableMemoryRevision: (targetPath) => this.beginDurableMemoryRevision(targetPath),
+      beginDurableMemoryRevision: (targetPath, expectedContent) =>
+        this.beginDurableMemoryRevision(targetPath, expectedContent),
     };
     return await runTombstoneBlockedMutation(host, {
       blocked,

@@ -978,3 +978,36 @@ test("a legacy shard without a stored semantic fingerprint keeps the conservativ
   assert.equal(payload, null, "legacy shards keep the full-digest binding until the next semantic write");
   assert.equal(readFailed, true);
 });
+
+test("legacy receipt with unavailable snapshot digest refuses promotion (#2813 P1, #2870)", async () => {
+  const s = await makeStorages();
+  const target = await s.source.writeMemory("fact", PRE_MERGE_BODY, { source: "test" });
+  await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
+  const committedRow = await s.source.getMemoryByIdIncludingArchived(target.id);
+  assert.ok(committedRow);
+  const shardPath = casShardPath(s.source.dir, committedRow.path);
+  const shard = JSON.parse(await readFile(shardPath, "utf8")) as Record<string, unknown>;
+  delete shard.committedSemanticFingerprint;
+  await writeFile(shardPath, `${JSON.stringify(shard)}\n`, "utf8");
+
+  s.source.readDurableFileDigest = async () => null;
+  const built = await buildMergedTargetPromotionPayload(s.source, {
+    targetId: target.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.equal(built.payload, null, "an unreadable snapshot digest must refuse the legacy receipt");
+  assert.equal(built.readFailed, true, "unavailable snapshot is unknown, not an absent revision");
+
+  const legacyStore = await makeStorages();
+  const fresh = await legacyStore.source.writeMemory("fact", A_MERGED_BODY, { source: "test" });
+  legacyStore.source.readDurableFileDigest = async () => null;
+  const legacy = await buildMergedTargetPromotionPayload(legacyStore.source, {
+    targetId: fresh.id,
+    mergedContent: A_MERGED_BODY,
+    provenancePatched: true,
+  });
+  assert.ok(legacy.payload, "a genuinely absent receipt still builds a payload");
+  assert.equal(legacy.readFailed, false, "missing snapshot must not be conflated with an absent revision");
+  assert.equal(legacy.payload.committedRevision, undefined);
+});

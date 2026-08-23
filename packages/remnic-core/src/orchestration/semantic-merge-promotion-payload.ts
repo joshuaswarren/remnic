@@ -187,22 +187,24 @@ export async function buildMergedTargetPromotionPayload(
   }
   if (
     receipt.committedSemanticFingerprint !== undefined &&
-    snapshotSemanticFingerprint !== null &&
     snapshotSemanticFingerprint !== receipt.committedSemanticFingerprint
   ) {
     log.warn(
-      `semantic-merge: merged-target promotion refused for ${merge.targetId} — record semantic fingerprint (${snapshotSemanticFingerprint}) does not match committed receipt fingerprint (${receipt.committedSemanticFingerprint}); record metadata was mutated concurrently`,
+      snapshotSemanticFingerprint == null
+        ? `semantic-merge: merged-target promotion refused for ${merge.targetId} — the semantic snapshot fingerprint is unavailable while the CAS receipt carries ${receipt.committedSemanticFingerprint}; promotion and reconciliation retry on the next merge`
+        : `semantic-merge: merged-target promotion refused for ${merge.targetId} — record semantic fingerprint (${snapshotSemanticFingerprint}) does not match committed receipt fingerprint (${receipt.committedSemanticFingerprint}); record metadata was mutated concurrently`,
     );
     return { payload: null, readFailed: true };
   }
   if (
     receipt.committedSemanticFingerprint === undefined &&
     receipt.committedDigest !== undefined &&
-    snapshotDigest !== null &&
     snapshotDigest !== receipt.committedDigest
   ) {
     log.warn(
-      `semantic-merge: merged-target promotion refused for ${merge.targetId} — record snapshot digest (${snapshotDigest}) does not match committed receipt digest (${receipt.committedDigest}); record metadata was mutated concurrently`,
+      snapshotDigest == null
+        ? `semantic-merge: merged-target promotion refused for ${merge.targetId} — the record snapshot digest is unavailable while the CAS receipt carries committed digest ${receipt.committedDigest}; promotion and reconciliation retry on the next merge`
+        : `semantic-merge: merged-target promotion refused for ${merge.targetId} — record snapshot digest (${snapshotDigest}) does not match committed receipt digest (${receipt.committedDigest}); record metadata was mutated concurrently`,
     );
     return { payload: null, readFailed: true };
   }
