@@ -963,6 +963,7 @@ test("buildBriefing excludes support passport records from generated context", a
     content: "Public project update",
   };
   const storage = {
+    supportsAbortSignal: true,
     readAllMemories: async (_options?: { abortSignal?: AbortSignal }) => [privateMemory, publicMemory],
     readAllEntityFiles: async () => [],
   } as unknown as StorageManager;

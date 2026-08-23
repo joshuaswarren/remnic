@@ -267,7 +267,7 @@ test("safeReadMemories invokes fallback for each explicit capability marker when
   ];
 
   for (const { label, makeStorage } of cases) {
-    const { lines, restore } = captureLogs();
+    const { restore } = captureLogs();
     try {
       let fullReadCalls = 0;
       let receivedSignal: AbortSignal | undefined;
@@ -333,6 +333,28 @@ test("fallback rejection emits exactly one error discriminator — class only, n
       !lines.some((line) => line.includes("corpus read exploded")),
       "error message content must never reach the log",
     );
+  } finally {
+    restore();
+  }
+});
+
+test("fallback AbortError is a timeout only after the briefing deadline fires", async () => {
+  const { lines, restore } = captureLogs();
+  try {
+    const storage = {
+      supportsAbortSignal: true,
+      readAllMemories: async (_options?: CorpusReadOptions): Promise<MemoryFile[]> => {
+        const error = new Error("backend cancelled independently");
+        error.name = "AbortError";
+        throw error;
+      },
+    };
+
+    assert.deepEqual(await safeReadMemories(storage, WINDOW, { fallbackDeadlineMs: 1_000 }), []);
+    const marks = discriminators(lines);
+    assert.equal(marks.length, 1);
+    assert.match(marks[0]!, /mode=full-read-fallback durationMs=\d+ outcome=error err=AbortError$/);
+    assert.equal(lines.some((line) => line.includes("timed out")), false);
   } finally {
     restore();
   }

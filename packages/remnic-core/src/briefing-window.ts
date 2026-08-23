@@ -179,21 +179,25 @@ async function readBriefingMemories(
   }
   const deadlineMs = options.fallbackDeadlineMs ?? BRIEFING_FULL_READ_FALLBACK_MS;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), deadlineMs);
+  let deadlineFired = false;
+  const timer = setTimeout(() => {
+    deadlineFired = true;
+    controller.abort();
+  }, deadlineMs);
   try {
     // Direct await, no Promise.race: the signal IS the deadline. A
     // signal-aware read settles on abort (AbortError at its next scan
     // boundary, #2307), so nothing is left scanning in the background once
     // this function returns.
     const memories = await storage.readAllMemories({ abortSignal: controller.signal });
-    if (controller.signal.aborted) {
+    if (deadlineFired) {
       // A double that resolves partial rows instead of rejecting on abort
       // must not have them served as a complete corpus.
       throw new BriefingReadTimedOut(deadlineMs);
     }
     return memories;
   } catch (err) {
-    if (isAbortError(err)) throw new BriefingReadTimedOut(deadlineMs);
+    if (isAbortError(err) && deadlineFired) throw new BriefingReadTimedOut(deadlineMs);
     throw err;
   } finally {
     clearTimeout(timer);
