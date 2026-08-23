@@ -1168,6 +1168,13 @@ async function loadBenchDefinitionsFromPackage(): Promise<BenchmarkDefinition[] 
   return Array.isArray(result) ? result : undefined;
 }
 
+// Shared install hint for `bench run` paths that need @remnic/bench — the
+// only benchmark runtime since the legacy evals fallback was removed
+// (issue #2798). Used by both the per-benchmark run loop and the --all
+// expansion guard so every missing-runtime exit reads the same.
+const MISSING_BENCH_RUNTIME_HINT =
+  "@remnic/bench. Build the workspace packages (or install @remnic/bench) and retry.";
+
 async function resolveAllBenchmarks(): Promise<string[]> {
   const packageBenchmarks = await loadBenchDefinitionsFromPackage();
   if (packageBenchmarks) {
@@ -10430,6 +10437,15 @@ async function cmdBench(rest: string[]): Promise<void> {
     return;
   }
 
+  // --all expands from the @remnic/bench registry; without the optional
+  // package there is nothing to expand. Fail here with the same
+  // actionable install hint a named benchmark gets, before the empty
+  // expansion can be misread as "no runnable benchmarks in this install".
+  if (parsed.all && !(await tryLoadBenchModule())) {
+    console.error(`ERROR: bench run --all requires ${MISSING_BENCH_RUNTIME_HINT}`);
+    process.exit(1);
+  }
+
   let selectedBenchmarks = parsed.all
     ? await resolveAllBenchmarks()
     : parsed.benchmarks;
@@ -10559,7 +10575,7 @@ async function cmdBench(rest: string[]): Promise<void> {
             // The legacy eval-runner fallback was removed (issue #2798);
             // @remnic/bench is the only benchmark runtime.
             throw new Error(
-              `Benchmark "${benchmarkId}" requires @remnic/bench. Build the workspace packages (or install @remnic/bench) and retry.`,
+              `Benchmark "${benchmarkId}" requires ${MISSING_BENCH_RUNTIME_HINT}`,
             );
           }
         } catch (err) {
