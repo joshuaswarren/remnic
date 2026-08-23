@@ -144,29 +144,26 @@ function nextIsoDate(date: string): string {
   return shiftIsoDate(date, 1);
 }
 
-/** Half-open [start, end) UTC ISO bounds of a local day. */
+/**
+ * Half-open [start, end) UTC ISO bounds of a local day. A civil date the
+ * zone skipped entirely owns no interval: the window is zero-width
+ * `[transition, transition)`.
+ */
 export function activityDayWindow(date: string, timezone: string): { startUtc: string; endUtc: string } {
   if (!isValidActivityDate(date)) {
     throw new RangeError(`Invalid activity date "${date}"; expected a real YYYY-MM-DD day.`);
   }
   assertValidTimezone(timezone);
   const startUtc = zonedDayStartIso(date, timezone);
-  let endDate = nextIsoDate(date);
-  let endUtc = zonedDayStartIso(endDate, timezone);
-  // Semantics for a date the zone skipped entirely: its day start resolves
-  // to the transition instant, which is ALSO the following existing date's
-  // start — so the naive [start, end) collapses to identical bounds (an
-  // empty window that drops every record nominally of that day). A skipped
-  // date instead spans [transition instant, the next EXISTING date's start):
-  // it adopts the local day the calendar jumped into (Pacific/Apia
-  // 2011-12-30 adopts 2011-12-31's interval, sharing it). Windows stay
-  // non-degenerate, the last REAL day keeps its full window (its end is
-  // exactly the skipped date's start), and no date inherits the PREVIOUS
-  // date's interval.
-  while (endUtc <= startUtc) {
-    endDate = nextIsoDate(endDate);
-    endUtc = zonedDayStartIso(endDate, timezone);
-  }
+  const endUtc = zonedDayStartIso(nextIsoDate(date), timezone);
+  // Skipped-date semantics (Pacific/Apia 2011-12-30 class): the skipped
+  // date's start and the following date's start both resolve to the
+  // transition instant, so the window is naturally zero-width. Keep it
+  // that way: a date that never occurred contributes to no daily total
+  // (daysOverlappingWeek drops zero-width days) and a connector sync for
+  // it fetches nothing. Pushing the end forward to stay non-degenerate
+  // would alias the next real day's interval and double-attribute every
+  // card in it to two daily totals.
   return { startUtc, endUtc };
 }
 

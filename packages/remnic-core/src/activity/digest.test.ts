@@ -178,20 +178,22 @@ test("activityDayWindow keeps the last real day whole across an entirely skipped
   assert.equal(activityDateInTimezone(new Date(Date.parse(w.endUtc) - 1), "Pacific/Apia"), "2011-12-29");
 });
 
-test("activityDayWindow resolves an entirely skipped civil date to a well-defined window", () => {
-  // 2011-12-30 never occurred in Pacific/Apia. Pre-fix it returned the
-  // 29th's interval, misattributing that day's transcripts to the 30th.
-  // Per the skipped-date semantics it instead adopts the interval of the
-  // day the calendar jumped into (2011-12-31's), staying non-degenerate.
+test("activityDayWindow gives an entirely skipped civil date no interval", () => {
+  // 2011-12-30 never occurred in Pacific/Apia: the date-line jump went
+  // 2011-12-29 23:59:59-10:00 → 2011-12-31 00:00:00+14:00. The skipped
+  // date's nominal start and 2011-12-31's start both resolve to that jump
+  // instant, so its window is zero-width [jump, jump). A date that never
+  // occurred owns no interval: it must not adopt 2011-12-31's, which
+  // double-attributed the 31st's cards to two daily totals and made
+  // connector syncs for the skipped date fetch the 31st's records.
   const w = activityDayWindow("2011-12-30", "Pacific/Apia");
-  assert.equal(w.startUtc, "2011-12-30T10:00:00.000Z");
-  assert.equal(w.endUtc, "2011-12-31T10:00:00.000Z");
-  assert.ok(Date.parse(w.endUtc) > Date.parse(w.startUtc), "window must be non-degenerate");
-  // The skipped date never overlaps the 29th's data: the last real day ends
-  // exactly where the skipped date's window starts. Past the skip it adopts
-  // 2011-12-31's interval wholesale, and the 31st keeps its own window.
-  assert.equal(activityDayWindow("2011-12-29", "Pacific/Apia").endUtc, w.startUtc);
-  assert.deepEqual(w, activityDayWindow("2011-12-31", "Pacific/Apia"));
+  assert.equal(w.startUtc, "2011-12-30T10:00:00.000Z"); // the jump instant
+  assert.equal(w.endUtc, w.startUtc); // zero-width: syncs nothing
+  // The 31st keeps its OWN window; no interval is shared with the skip.
+  const dec31 = activityDayWindow("2011-12-31", "Pacific/Apia");
+  assert.equal(dec31.startUtc, "2011-12-30T10:00:00.000Z");
+  assert.equal(dec31.endUtc, "2011-12-31T10:00:00.000Z");
+  assert.notDeepEqual(w, dec31);
 });
 
 test("timeline keeps a second machine's span even with the same app/window", () => {
