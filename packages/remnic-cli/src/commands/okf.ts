@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { Orchestrator, parseConfig, resolveRemnicConfigRecord, runOkfCliCommand } from "@remnic/core";
-import { resolveConfigPath } from "../index.js";
+import { resolveConfigPath } from "../config-path.js";
 
 export async function runOkfBinaryCommand(rest: string[]): Promise<void> {
   const argv = rest.length === 0 || rest[0] === "--help" || rest[0] === "-h" ? ["help"] : rest;

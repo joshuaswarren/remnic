@@ -712,6 +712,39 @@ test("the installed service's pinned config path outranks the gateway's cwd", as
   }
 });
 
+test("env config path home references expand exactly like the server and CLI", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-env-homeform-"));
+  await mkdir(path.join(home, "opt"), { recursive: true });
+  const configPath = path.join(home, "opt", "remnic.json");
+  await writeFile(configPath, JSON.stringify({ server: { host: "127.0.0.1", port: 4711 } }), "utf8");
+  const priorHome = process.env.HOME;
+  const priorEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) Reflect.deleteProperty(process.env, key);
+  delete process.env.REMNIC_CONFIG_PATH;
+  delete process.env.ENGRAM_CONFIG_PATH;
+  try {
+    process.env.HOME = home;
+    // Every home-reference form the server and CLI accept must discover the
+    // same file here: a literal `$HOME` used to pass through unexpanded and
+    // hide the daemon's config from the bridge (issue #2796).
+    for (const form of ["$HOME/opt/remnic.json", "${HOME}/opt/remnic.json", "~/opt/remnic.json"]) {
+      process.env.REMNIC_CONFIG_PATH = form;
+      const detected = detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, unitExists: () => false });
+      assert.equal(detected.daemonConfigPath, configPath, `config path for ${form}`);
+      assert.equal(detected.daemonPort, 4711, `port for ${form}`);
+    }
+  } finally {
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    delete process.env.REMNIC_CONFIG_PATH;
+    for (const [key, value] of priorEnv) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("a config whose server block is not an object is skipped, not adopted", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "remnic-bad-server-"));
   await mkdir(path.join(home, ".config", "remnic"), { recursive: true });
