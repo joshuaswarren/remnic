@@ -6382,6 +6382,42 @@
                 "default": false,
                 "description": "Master gate for timeline-card derivation. Default false."
               },
+              "analysis": {
+                "type": "object",
+                "additionalProperties": false,
+                "default": {},
+                "description": "Optional AI analysis over deterministic timeline cards (issue #2050). Independent gate, default off: disabled makes zero provider calls and writes zero analysis artifacts.",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Gate for evidence-bound card analysis. Default false; independent of activity capture, timeline derivation, and memory creation."
+                  },
+                  "provider": {
+                    "type": "string",
+                    "description": "Explicit provider id: 'local' routes to the local LLM client; any other identifier routes to the configured remote provider registry pinned to exactly this provider with no chain fallback. Identifier syntax (letters, digits, ._:-/); required when enabled."
+                  },
+                  "model": {
+                    "type": "string",
+                    "description": "Model id, same identifier syntax as provider. Required when enabled."
+                  },
+                  "timeoutMs": {
+                    "type": "integer",
+                    "minimum": 1000,
+                    "maximum": 120000,
+                    "default": 15000,
+                    "description": "Per-request timeout in milliseconds. Integer 1000..120000."
+                  },
+                  "preferences": {
+                    "type": "array",
+                    "default": [],
+                    "description": "Up to 16 free-form preference strings (max 200 characters each) passed to the analysis prompt. Evidence-only payloads: no screenshots, audio, OCR output, keystrokes, clipboard contents, or media are ever sent.",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
               "journal": {
                 "type": "object",
                 "additionalProperties": false,

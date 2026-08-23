@@ -19,6 +19,7 @@ test("parseActivityConfig defaults to an inert, search-only configuration", () =
     maxMemoriesPerDay: 0,
     timeline: {
       enabled: false,
+      analysis: { enabled: false },
       journal: { enabled: false, source: "file" },
       qa: { enabled: false, maxRangeDays: 31 },
       vault: {
@@ -172,6 +173,95 @@ test("activity config rejects a null extractionMode instead of silently defaulti
 
 test("activity config rejects a null maxMemoriesPerDay instead of silently uncapping", () => {
   assert.throws(() => parseActivityConfig({ maxMemoriesPerDay: null }), /maxMemoriesPerDay/);
+});
+
+test("activity timeline analysis defaults off with no provider settings stored", () => {
+  const timeline = parseActivityConfig(undefined).timeline;
+  assert.deepEqual(timeline.analysis, { enabled: false });
+  // The gate is independent of the timeline master switch and of capture.
+  assert.equal(parseActivityConfig({ timeline: { enabled: true } }).timeline.analysis.enabled, false);
+});
+
+test("activity timeline analysis parses a valid enabled block", () => {
+  const analysis = parseActivityConfig({
+    timeline: {
+      analysis: {
+        enabled: true,
+        provider: "openai",
+        model: "gpt-5.2",
+        timeoutMs: 30_000,
+        preferences: ["terse titles", "no emoji"],
+      },
+    },
+  }).timeline.analysis;
+  assert.deepEqual(analysis, {
+    enabled: true,
+    provider: "openai",
+    model: "gpt-5.2",
+    timeoutMs: 30_000,
+    preferences: ["terse titles", "no emoji"],
+  });
+});
+
+test("activity timeline analysis rejects enabling without an explicit provider and model", () => {
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { enabled: true } } }),
+    /provider and model are required/,
+  );
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { enabled: true, provider: "openai" } } }),
+    /provider and model are required/,
+  );
+});
+
+test("activity timeline analysis rejects prose or blank provider/model identifiers", () => {
+  for (const provider of ["Summarize this user's activity", "  ", "has space"]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { analysis: { provider, model: "m" } } }),
+      /activity\.timeline\.analysis\.provider must be an identifier/,
+    );
+  }
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { provider: "openai", model: "" } } }),
+    /activity\.timeline\.analysis\.model must be an identifier/,
+  );
+});
+
+test("activity timeline analysis rejects invalid timeout and preferences shapes", () => {
+  const base = { provider: "openai", model: "gpt-5.2" } as const;
+  for (const timeoutMs of [0, 999, 120_001, 1.5, "fast"]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { analysis: { ...base, enabled: true, timeoutMs } } }),
+      /timeoutMs/,
+    );
+  }
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { ...base, preferences: "terse" } } }),
+    /preferences must be an array/,
+  );
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { ...base, preferences: [""] } } }),
+    /preferences entries/,
+  );
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: { analysis: { ...base, preferences: Array.from({ length: 17 }, () => "p") } },
+      }),
+    /at most 16/,
+  );
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { ...base, preferences: ["x".repeat(201)] } } }),
+    /at most 200 characters/,
+  );
+});
+
+test("activity timeline analysis rejects a non-object or non-boolean block", () => {
+  assert.throws(() => parseActivityConfig({ timeline: { analysis: "on" } }), /analysis must be an object/);
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { enabled: 3 } } }),
+    /analysis\.enabled must be a boolean/,
+  );
 });
 
 test("vault publish section names are rejected at config load when the publisher would reject them", () => {

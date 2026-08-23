@@ -156,9 +156,32 @@ export interface ActivityTimelineQaConfig {
   maxRangeDays: number;
 }
 
+/**
+ * Opt-in AI analysis over deterministic timeline cards (issue #2050).
+ * Default off; gated independently of `activity.timeline.enabled`, capture,
+ * and memory creation. When disabled, zero provider calls and zero analysis
+ * artifacts occur.
+ */
+export interface ActivityTimelineAnalysisConfig {
+  enabled: boolean;
+  /**
+   * Explicit provider id: `"local"` routes to the local LLM client; any other
+   * identifier routes to the configured remote provider registry. Required
+   * when enabled. An invalid explicit provider fails — never a silent fallback.
+   */
+  provider?: string;
+  /** Model id. Required when enabled. */
+  model?: string;
+  /** Per-request timeout in ms. Positive integer. */
+  timeoutMs?: number;
+  /** Free-form user preferences passed to the prompt (no secrets). */
+  preferences?: string[];
+}
+
 /** Opt-in timeline-card derivation settings (issue #2049). Default off. */
 export interface ActivityTimelineConfig {
   enabled: boolean;
+  analysis: ActivityTimelineAnalysisConfig;
   journal: ActivityTimelineJournalConfig;
   qa: ActivityTimelineQaConfig;
   vault: ActivityTimelineVaultConfig;

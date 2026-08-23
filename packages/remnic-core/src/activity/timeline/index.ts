@@ -10,6 +10,8 @@ export * from "./journal-recap-persist.js";
 export * from "./weekly.js";
 export * from "./weekly-persist.js";
 export * from "./analysis.js";
+export * from "./analysis-provider.js";
+export * from "./analysis-run.js";
 export * from "./recap-export.js";
 export * from "./recap-markdown.js";
 export * from "./week-export.js";
