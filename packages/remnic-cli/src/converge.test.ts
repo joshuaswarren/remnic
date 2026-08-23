@@ -1909,12 +1909,27 @@ test("converge --token-file rejects permissive modes and missing values (#2823 r
     await chmod(permissive, 0o644);
     process.exitCode = undefined;
     await cmdConverge("plan", ["--peer", "http://127.0.0.1:1", "--token-file", permissive], true);
-    assert.equal(process.exitCode, 2);
+    // Windows synthesizes POSIX mode bits (readable files present as 0666),
+    // so the permissive rejection is only observable on POSIX.
+    if (process.platform !== "win32") assert.equal(process.exitCode, 2);
     process.exitCode = undefined;
     await cmdConverge("plan", ["--peer", "http://127.0.0.1:1", "--token-file"], true);
     assert.equal(process.exitCode, 2);
     process.exitCode = undefined;
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("converge rejects invalid REMNIC_CONVERGE_TRANSFER_CONCURRENCY (#2832)", async () => {
+  const prev = process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY;
+  try {
+    for (const bad of ["0", "-1", "2.5", "abc", "Infinity"]) {
+      process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = bad;
+      await assert.rejects(() => executeConvergeApply({}), /TRANSFER_CONCURRENCY must be a positive integer/);
+    }
+  } finally {
+    if (prev === undefined) delete process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY;
+    else process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = prev;
   }
 });
