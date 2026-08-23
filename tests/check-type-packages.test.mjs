@@ -42,6 +42,9 @@ function writeWorkspace(dir, { shuffled, hydrated }) {
   // Non-pnpm directory (no manifest) and a stray file must be ignored.
   mkdirSync(join(packagesDir, "swift-native-helper"), { recursive: true });
   writeFileSync(join(packagesDir, "notes.md"), "");
+  // Workspace contract: run mode must resolve this dir as the pnpm workspace
+  // root owning packagesDir (#2873).
+  writeFileSync(join(dir, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
   if (hydrated) mkdirSync(join(dir, "node_modules"), { recursive: true });
   return packagesDir;
 }
@@ -96,6 +99,7 @@ break > "${argsFile}"
 for %%A in (%*) do (
   (echo %%A)>>"${argsFile}"
 )
+break > stub-cwd-marker
 if defined STUB_EXIT (
   exit /b %STUB_EXIT%
 ) else (
@@ -112,6 +116,7 @@ if [ "$1" = "--version" ]; then
   exit 0
 fi
 printf '%s\\n' "$@" > "${argsFile}"
+: > ./stub-cwd-marker
 exit "\${STUB_EXIT:-0}"
 `,
       { mode: 0o755 }
@@ -167,6 +172,93 @@ exit "\${STUB_EXIT:-0}"
     assert.equal(failing.status, 7, "pnpm failure must fail the sweep");
   } finally {
     rmSync(runDir, { recursive: true, force: true });
+  }
+}
+
+// #2873: --run must execute pnpm in the enumerated workspace root, not the
+// caller's cwd. The caller here sits inside a DIFFERENT synthetic pnpm
+// workspace with a decoy package named like a covered one — if the filters
+// resolved against the caller's workspace, pnpm would run there instead.
+{
+  const foreignRoot = mkdtempSync(join(tmpdir(), "check-type-packages-foreign-"));
+  const runDir = mkdtempSync(join(tmpdir(), "check-type-packages-cwd-"));
+  try {
+    writeFileSync(join(foreignRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+    const decoyDir = join(foreignRoot, "packages", "aaa-early-omega");
+    mkdirSync(decoyDir, { recursive: true });
+    writeFileSync(
+      join(decoyDir, "package.json"),
+      JSON.stringify({ name: "@caller/decoy", scripts: { "check-types": "tsc --noEmit" } })
+    );
+
+    const packagesDir = writeWorkspace(runDir, { shuffled: false, hydrated: false });
+    const stubBin = join(runDir, "stub-bin");
+    const argsFile = join(runDir, "args.txt");
+    createStubPnpm(stubBin, argsFile);
+
+    const result = spawnSync(process.execPath, [modulePath, "--run", "--packages-dir", packagesDir], {
+      cwd: foreignRoot,
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${stubBin}${delimiter}${process.env.PATH ?? ""}` },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    // pnpm ran in the enumerated workspace root: the stub's relative cwd
+    // marker landed there, and in neither the caller's root nor its packages.
+    assert.ok(
+      existsSync(join(runDir, "stub-cwd-marker")),
+      "pnpm cwd must be the enumerated workspace root (#2873)"
+    );
+    assert.ok(!existsSync(join(foreignRoot, "stub-cwd-marker")), "caller workspace must not be filtered");
+    assert.ok(
+      !existsSync(join(foreignRoot, "packages", "stub-cwd-marker")),
+      "caller workspace packages must not be filtered"
+    );
+    const args = readFileSync(argsFile, "utf8").trim().split(/\r?\n/);
+    assert.deepEqual(args, [
+      "--recursive",
+      "--if-present",
+      "--filter",
+      "./packages/aaa-early-omega",
+      "--filter",
+      "./packages/import-like-optional",
+      "--filter",
+      "./packages/zzz-late-alpha",
+      "run",
+      "check-types",
+    ]);
+  } finally {
+    rmSync(foreignRoot, { recursive: true, force: true });
+    rmSync(runDir, { recursive: true, force: true });
+  }
+}
+
+// #2873: --packages-dir whose parent carries no pnpm-workspace.yaml is not a
+// pnpm workspace — reject before pnpm is invoked at all.
+{
+  const noWorkspaceRoot = mkdtempSync(join(tmpdir(), "check-type-packages-nonws-"));
+  try {
+    const packagesDir = join(noWorkspaceRoot, "packages");
+    const pkgDir = join(packagesDir, "stray-package");
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(
+      join(pkgDir, "package.json"),
+      JSON.stringify({ name: "@remnic/stray-package", scripts: { "check-types": "tsc --noEmit" } })
+    );
+    const stubBin = join(noWorkspaceRoot, "stub-bin");
+    const argsFile = join(noWorkspaceRoot, "args.txt");
+    createStubPnpm(stubBin, argsFile);
+
+    const result = spawnSync(process.execPath, [modulePath, "--run", "--packages-dir", packagesDir], {
+      cwd: noWorkspaceRoot,
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${stubBin}${delimiter}${process.env.PATH ?? ""}` },
+    });
+    assert.notEqual(result.status, 0, "non-workspace packages-dir must fail");
+    assert.match(result.stderr, /not a pnpm workspace/);
+    assert.ok(!existsSync(argsFile), "pnpm must not be invoked for a non-workspace packages-dir");
+    assert.ok(!existsSync(join(noWorkspaceRoot, "stub-cwd-marker")));
+  } finally {
+    rmSync(noWorkspaceRoot, { recursive: true, force: true });
   }
 }
 

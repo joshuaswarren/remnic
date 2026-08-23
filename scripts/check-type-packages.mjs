@@ -16,7 +16,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -44,15 +44,34 @@ export function checkTypePackageDirs(packagesDir = join(repoRoot, "packages")) {
 export function noCheckTypePackageDirs(packagesDir = join(repoRoot, "packages")) {
   return manifestPackageDirs(packagesDir).filter((name) => !hasCheckTypesScript(packagesDir, name));
 }
+/**
+ * Workspace root that owns packagesDir: the parent directory, validated by
+ * the pnpm workspace contract. `--filter ./packages/<name>` selectors are
+ * cwd-relative, so pnpm must execute with this root as its working directory
+ * (#2873) — running from the caller's cwd filters whatever workspace the
+ * caller happens to sit in, never the enumerated one.
+ */
+export function resolveWorkspaceRoot(packagesDir) {
+  const root = dirname(resolve(packagesDir));
+  return existsSync(join(root, "pnpm-workspace.yaml")) ? root : null;
+}
 
 /**
  * Run check-types in exactly the covered packages through the pinned pnpm
- * wrapper, one explicit --filter per package. Replaces the environment-
+ * wrapper, one explicit --filter per package, with the enumerated workspace
+ * root as pnpm's cwd — never the caller's (#2873). Replaces the environment-
  * dependent `--filter="./packages/*"` glob sweep, whose matched set followed
  * pnpm workspace-resolution state and skipped covered packages on clean CI
  * checkouts (#2851).
  */
 export function runCheckTypePackages(packagesDir = join(repoRoot, "packages")) {
+  const workspaceRoot = resolveWorkspaceRoot(packagesDir);
+  if (!workspaceRoot) {
+    console.error(
+      `[check-type-packages] not a pnpm workspace: no pnpm-workspace.yaml next to ${packagesDir}`
+    );
+    return 1;
+  }
   const covered = checkTypePackageDirs(packagesDir);
   if (covered.length === 0) {
     console.log("[check-type-packages] No packages declare scripts.check-types; nothing to run");
@@ -63,6 +82,7 @@ export function runCheckTypePackages(packagesDir = join(repoRoot, "packages")) {
   args.push("run", "check-types");
   const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "pnpm.mjs"), ...args], {
     stdio: "inherit",
+    cwd: workspaceRoot,
   });
   if (result.error) {
     console.error(result.error.message);
