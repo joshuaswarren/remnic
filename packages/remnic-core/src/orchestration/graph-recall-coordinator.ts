@@ -56,6 +56,24 @@ export interface GraphRecallShadowComparison {
   averageOverlapDelta: number;
 }
 
+export interface GraphRecallExpansionOptions {
+  memoryResults: QmdSearchResult[];
+  recallNamespaces: string[];
+  recallResultLimit: number;
+  /** Query-time instant used for graph-path invalidity checks. */
+  asOf?: string;
+  asOfMs?: number;
+  deadlineAtMs?: number | null;
+  /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
+  includeLowConfidence?: boolean;
+}
+
+export interface GraphRecallExpansionResult {
+  merged: QmdSearchResult[];
+  seedPaths: string[];
+  expandedPaths: GraphRecallExpandedEntry[];
+  seedResults: QmdSearchResult[];
+}
 // ---------------------------------------------------------------------------
 // Utility functions (moved from orchestrator.ts; re-exported for callers)
 // ---------------------------------------------------------------------------
@@ -193,22 +211,7 @@ export class GraphRecallCoordinator {
   }
 
 
-  async expandResultsViaGraph(options: {
-    memoryResults: QmdSearchResult[];
-    recallNamespaces: string[];
-    recallResultLimit: number;
-    /** Query-time instant used for graph-path invalidity checks. */
-    asOf?: string;
-    asOfMs?: number;
-    deadlineAtMs?: number | null;
-    /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
-    includeLowConfidence?: boolean;
-  }): Promise<{
-    merged: QmdSearchResult[];
-    seedPaths: string[];
-    expandedPaths: GraphRecallExpandedEntry[];
-    seedResults: QmdSearchResult[];
-  }> {
+  async expandResultsViaGraph(options: GraphRecallExpansionOptions): Promise<GraphRecallExpansionResult> {
     const config = this.getConfig();
     const parsedAsOfMs =
       typeof options.asOf === "string" ? Date.parse(options.asOf) : Number.NaN;

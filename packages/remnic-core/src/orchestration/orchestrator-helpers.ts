@@ -32,6 +32,8 @@ import { type BufferTurn, type MemoryActionEvent, type MemoryFile, type MemoryFr
 import { categoryDirName } from "../utils/category-dir.js";
 import { parseFlexibleIsoTimestamp } from "../utils/iso-timestamp.js";
 
+/** Freshness window for the artifact source status cache read by NamespaceReadFanoutCoordinator. */
+export const ARTIFACT_STATUS_CACHE_TTL_MS = 60_000;
 export interface BulkImportBatchIngestResult {
   attemptedTurnCount: number;
   extractionCount: number;

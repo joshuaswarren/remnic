@@ -1,16 +1,8 @@
 import { log } from "../logger.js";
 
-export interface ExtractionDrainPort {
-  pauseAndDrain(): Promise<boolean>;
-}
-
-export interface DependencyPropagationShutdownPort {
-  shutdown(): Promise<void>;
-}
-
 export async function drainExtractionAndShutdownDependencyPropagation(
-  extractionQueue: ExtractionDrainPort,
-  dependencyPropagationDelivery: DependencyPropagationShutdownPort | undefined,
+  extractionQueue: { pauseAndDrain(): Promise<boolean> },
+  dependencyPropagationDelivery: { shutdown(): Promise<void> } | undefined,
 ): Promise<unknown | undefined> {
   let extractionDrainError: unknown;
   try {

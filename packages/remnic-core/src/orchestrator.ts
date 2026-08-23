@@ -132,7 +132,7 @@ import { isDependencyPropagationEnabled } from "./orchestration/dependency-propa
 import { createDependencyPropagationReplayReconciliation } from "./orchestration/dependency-propagation-replay-reconciliation.js";
 import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
 import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-pipeline.js";
-import type { GraphRecallExpansionOptions, GraphRecallExpansionResult } from "./orchestration/graph-recall-seam.js";
+import type { GraphRecallExpansionOptions, GraphRecallExpansionResult } from "./orchestration/graph-recall-coordinator.js";
 import type { ArtifactRecallOptions } from "./orchestration/recall-search-prefilter.js";
 import type { CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { TurnIngestionCoordinator, type TurnIngestionOptions } from "./orchestration/turn-ingestion.js";
@@ -716,8 +716,6 @@ export class Orchestrator {
       statuses: Map<string, "active" | "superseded" | "archived" | "missing">;
     }
   >();
-  /** Read by NamespaceReadFanoutCoordinator (seam 26), hence not `private`. */
-  static readonly ARTIFACT_STATUS_CACHE_TTL_MS = 60_000;
 
   // Batched access-tracking counts and timestamps (Phase 1A).
   private accessTrackingBuffer: Map<
