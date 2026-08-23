@@ -1,11 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import {
-  type ReconcilePlanEntry,
-  type ReconcileSemanticAgreement,
-  semanticAgreementKey,
-} from "./plan.js";
+import { type ReconcilePlanEntry, type ReconcileSemanticAgreement, semanticAgreementKey } from "./plan.js";
 
 export type ConvergeRefreshTarget = "local" | "receiver";
 
@@ -56,19 +52,24 @@ export function normalizeConvergePeerUrl(peerUrl: string): string {
 export function hashPeerNamespace(peerUrl: string, namespace: string): string {
   const normalizedUrl = normalizeConvergePeerUrl(peerUrl);
   const normalizedNs = namespace.trim().toLowerCase();
-  return createHash("sha256")
-    .update(`${normalizedUrl}\0${normalizedNs}`)
-    .digest("hex")
-    .slice(0, 16);
+  return createHash("sha256").update(`${normalizedUrl}\0${normalizedNs}`).digest("hex").slice(0, 16);
 }
 
-export function defaultConvergeCursorPath(
-  memoryDir: string,
-  peerUrl: string,
-  namespace: string,
-): string {
+export function defaultConvergeCursorPath(memoryDir: string, peerUrl: string, namespace: string): string {
   const key = hashPeerNamespace(peerUrl, namespace);
   return path.join(path.resolve(memoryDir), ".remnic", "state", "converge-cursors", `${key}.json`);
+}
+
+/**
+ * Persistent identity cache location for a (peerUrl, namespace) pair, next
+ * to the cursor that governs the same pair. The cache stores the parsed
+ * memory identity per path keyed by content sha, so a warm manifest build
+ * skips the per-file read + frontmatter parse + content-hash identity work
+ * entirely (the dominant boot-scale plan cost on both sides).
+ */
+export function convergeIdentityCachePath(memoryDir: string, peerUrl: string, namespace: string): string {
+  const key = hashPeerNamespace(peerUrl, namespace);
+  return path.join(path.resolve(memoryDir), ".remnic", "state", "converge-identity", `identity-${key}.json`);
 }
 
 function normalizeSemanticFileState(input: unknown): { path: string; sha256: string } | undefined {
@@ -94,7 +95,7 @@ function digestAfterReconcile(entry: ReconcilePlanEntry): string | undefined {
 export function deriveConvergeCursorBase(
   entries: readonly ReconcilePlanEntry[],
   namespace: string,
-  priorSemanticAgreements: readonly ReconcileSemanticAgreement[] = [],
+  priorSemanticAgreements: readonly ReconcileSemanticAgreement[] = []
 ): Pick<ConvergeCursorState, "baseFiles" | "semanticAgreements"> {
   const baseFiles: ConvergeCursorFileState[] = [];
   const semanticAgreementsByPathPair = new Map(
@@ -111,8 +112,8 @@ export function deriveConvergeCursorBase(
   }
   baseFiles.sort((left, right) => left.path.localeCompare(right.path));
   const semanticAgreements = [...semanticAgreementsByPathPair.values()];
-  semanticAgreements.sort((left, right) =>
-    left.local.path.localeCompare(right.local.path) || left.peer.path.localeCompare(right.peer.path)
+  semanticAgreements.sort(
+    (left, right) => left.local.path.localeCompare(right.local.path) || left.peer.path.localeCompare(right.peer.path)
   );
   return { baseFiles, semanticAgreements };
 }
@@ -182,9 +183,7 @@ export function normalizeConvergeCursor(input: unknown): ConvergeCursorState {
   };
 }
 
-export async function readConvergeCursor(
-  cursorPath: string,
-): Promise<ConvergeCursorState | null> {
+export async function readConvergeCursor(cursorPath: string): Promise<ConvergeCursorState | null> {
   try {
     const raw = await fs.readFile(path.resolve(cursorPath), "utf-8");
     const parsed = JSON.parse(raw);
@@ -195,17 +194,11 @@ export async function readConvergeCursor(
   }
 }
 
-export async function writeConvergeCursor(
-  cursorPath: string,
-  cursor: ConvergeCursorState,
-): Promise<void> {
+export async function writeConvergeCursor(cursorPath: string, cursor: ConvergeCursorState): Promise<void> {
   const normalized = normalizeConvergeCursor(cursor);
   const target = path.resolve(cursorPath);
   await fs.mkdir(path.dirname(target), { recursive: true });
-  const tmp = path.join(
-    path.dirname(target),
-    `.converge-cursor.${process.pid}.${randomUUID()}.tmp`,
-  );
+  const tmp = path.join(path.dirname(target), `.converge-cursor.${process.pid}.${randomUUID()}.tmp`);
   await fs.writeFile(tmp, JSON.stringify(normalized, null, 2) + "\n", "utf-8");
   try {
     await fs.rename(tmp, target);
@@ -221,7 +214,7 @@ export async function markConvergeRefreshPending(
     peerUrl: string;
     namespace: string;
     target: ConvergeRefreshTarget;
-  },
+  }
 ): Promise<void> {
   const current = await readConvergeCursor(cursorPath);
   const pendingRefreshes = new Set(current?.pendingRefreshes ?? []);
@@ -238,10 +231,7 @@ export async function markConvergeRefreshPending(
   });
 }
 
-export async function clearConvergeRefreshPending(
-  cursorPath: string,
-  target: ConvergeRefreshTarget,
-): Promise<void> {
+export async function clearConvergeRefreshPending(cursorPath: string, target: ConvergeRefreshTarget): Promise<void> {
   const current = await readConvergeCursor(cursorPath);
   if (!current?.pendingRefreshes?.includes(target)) return;
   await writeConvergeCursor(cursorPath, {

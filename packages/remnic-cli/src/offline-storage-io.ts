@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
   StorageManager,
+  createPersistedSupportPassportPrivateFileExclusion,
   createSupportPassportPrivateFileExclusion,
 } from "@remnic/core";
 import type {
@@ -134,7 +135,11 @@ export async function createOfflineStorageForPath(
 
 export async function createOfflineStorageIo(
   memoryDir: string,
-  configuredStorage?: ConfiguredOfflineStorage
+  configuredStorage?: ConfiguredOfflineStorage,
+  persistedExclusion?: {
+    persisted: ReadonlyMap<string, { statIdentity?: string; excluded?: boolean }>;
+    updates: Map<string, { statIdentity: string; excluded: boolean }>;
+  }
 ): Promise<OfflineStorageIo> {
   // Sweep crash-orphaned decrypt staging dirs before any snapshot enumeration
   // (#2033 P1). The normal decrypt path removes its own staging dir in a
@@ -145,7 +150,15 @@ export async function createOfflineStorageIo(
   await cleanupOrphanedOfflineDecryptStaging(memoryDir);
   const { storage, secureStoreKey } = configuredStorage ?? (await createConfiguredOfflineStorage(memoryDir));
   return {
-    excludeFile: createSupportPassportPrivateFileExclusion(storage),
+    // With persisted classifications the warm path skips the per-file
+    // read+parse the plain exclusion performs for every candidate.
+    excludeFile: persistedExclusion
+      ? createPersistedSupportPassportPrivateFileExclusion(
+          storage,
+          persistedExclusion.persisted,
+          persistedExclusion.updates
+        )
+      : createSupportPassportPrivateFileExclusion(storage),
     readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
     readDeletionRevisions: () => storage.readDeletionRevisions(),
     readFileDigest: async ({ filePath }) => {
