@@ -66,7 +66,7 @@ function defaultDeps(config: PluginConfig, storage?: StorageManager): JournalCom
         );
       }
       await storage.ensureDirectories();
-      const engine = new ExtractionEngine(config);
+      const engine = new ExtractionEngine(config, undefined, undefined, config.gatewayConfig);
       return {
         extract: (turns: BufferTurn[]) => engine.extract(turns),
         writer: createJournalMemoryWriter(storage),
