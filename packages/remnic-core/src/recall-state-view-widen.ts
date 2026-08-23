@@ -19,12 +19,20 @@ export function widenRecallStateViews<T extends StateViewResult>(
   query: string,
   config: unknown,
   pool: readonly T[] = [],
+  /**
+   * #1952 — per-request effective flag (per-call `stateView` OR config,
+   * gated on change intent), computed once at recall entry and threaded
+   * through. When `true` it wins over the config read so a per-call
+   * override survives a global `false` at the inject seam. Callers that
+   * omit it keep the legacy config-only behavior.
+   */
+  stateViewActive?: boolean,
 ): T[] {
   const raw =
     typeof config === "object" && config !== null && "recallStateViews" in config
       ? config.recallStateViews
       : undefined;
-  const enabled = parseRecallStateViews(raw);
+  const enabled = stateViewActive === true || parseRecallStateViews(raw);
   if (!enabled || !isChangeOrientedQuery(query)) return results;
 
   const candidateIds = new Set<string>();

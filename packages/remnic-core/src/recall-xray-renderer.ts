@@ -207,9 +207,6 @@ function renderResultTextLines(
   if (result.pathPenaltyApplied !== undefined) {
     lines.push(`    path-penalty: ${result.pathPenaltyApplied ? "yes" : "no"}`);
   }
-  if (result.stateView) {
-    lines.push(`    state-view: ${result.stateView}`);
-  }
   if (result.pathNodeIds && result.pathNodeIds.length > 0) {
     lines.push(`    path-node-ids: ${result.pathNodeIds.join(" -> ")}`);
   }

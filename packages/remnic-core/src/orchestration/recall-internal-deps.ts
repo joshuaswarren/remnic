@@ -331,6 +331,12 @@ export interface RecallInternalDeps {
      * formatQmdResults for the epistemic hedge.
      */
     trustByPath?: Map<string, TrustStageResultItem> | null;
+    /**
+     * #1952 — per-request effective state-view flag from recallInternal.
+     * The publish seam must not reread live config (per-call override
+     * semantics, issue #1952).
+     */
+    stateViewActive?: boolean;
   }): void;
   readonly qmd: SearchBackend;
   queueEvalShadowRecall(

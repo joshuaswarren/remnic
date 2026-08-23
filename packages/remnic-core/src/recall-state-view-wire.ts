@@ -13,6 +13,7 @@ export function applyRecallStateViews<T extends StateViewResult>(
   results: T[],
   query: string,
   config: unknown,
+  stateViewActive?: boolean,
 ): T[] {
-  return widenRecallStateViews(results, query, config);
+  return widenRecallStateViews(results, query, config, [], stateViewActive);
 }

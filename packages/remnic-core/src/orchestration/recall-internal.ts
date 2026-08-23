@@ -4075,6 +4075,7 @@ export class RecallInternalCoordinator {
             injectedChars: identityInjectedChars,
             truncated: identityInjectionTruncated,
           },
+        stateViewActive,
         trustByPath: recallTrustByPath,
         });
         recalledMemoryPaths = memoryResults
@@ -4197,6 +4198,7 @@ export class RecallInternalCoordinator {
               injectedChars: identityInjectedChars,
               truncated: identityInjectionTruncated,
             },
+          stateViewActive,
           trustByPath: recallTrustByPath,
           });
           recalledMemoryPaths = scoped
@@ -4252,6 +4254,7 @@ export class RecallInternalCoordinator {
                 injectedChars: identityInjectedChars,
                 truncated: identityInjectionTruncated,
               },
+            stateViewActive,
             trustByPath: recallTrustByPath,
             });
             recalledMemoryPaths = longTerm
@@ -4408,6 +4411,7 @@ export class RecallInternalCoordinator {
             injectedChars: identityInjectedChars,
             truncated: identityInjectionTruncated,
           },
+        stateViewActive,
         trustByPath: recallTrustByPath,
         });
         recalledMemoryPaths = scoped
@@ -4512,6 +4516,7 @@ export class RecallInternalCoordinator {
                   injectedChars: identityInjectedChars,
                   truncated: identityInjectionTruncated,
                 },
+              stateViewActive,
               trustByPath: recallTrustByPath,
               });
               recalledMemoryPaths = longTerm
@@ -4639,6 +4644,7 @@ export class RecallInternalCoordinator {
                   injectedChars: identityInjectedChars,
                   truncated: identityInjectionTruncated,
                 },
+              stateViewActive,
               trustByPath: recallTrustByPath,
               });
               recalledMemoryPaths = recent
@@ -4693,6 +4699,7 @@ export class RecallInternalCoordinator {
                     injectedChars: identityInjectedChars,
                     truncated: identityInjectionTruncated,
                   },
+                stateViewActive,
                 trustByPath: recallTrustByPath,
                 });
                 recalledMemoryPaths = longTerm
@@ -4749,6 +4756,7 @@ export class RecallInternalCoordinator {
                 injectedChars: identityInjectedChars,
                 truncated: identityInjectionTruncated,
               },
+            stateViewActive,
             trustByPath: recallTrustByPath,
             });
             recalledMemoryPaths = longTerm
@@ -5049,7 +5057,7 @@ export class RecallInternalCoordinator {
         // boostSearchResults annotated before surfacing to xray.
         // #1952: label the captured branch through the same inject-seam annotator.
         const xrayResultByPath = new Map<string, QmdSearchResult>(
-          applyRecallStateViews(xrayRecalledResults, retrievalQuery, this.deps.config).map((xr) => [`${xr.namespace ?? ""}\0${xr.path}`, xr]),
+          applyRecallStateViews(xrayRecalledResults, retrievalQuery, this.deps.config, stateViewActive).map((xr) => [`${xr.namespace ?? ""}\0${xr.path}`, xr]),
         );
         const results: RecallXrayResult[] = [];
         for (let xrayIdx = 0; xrayIdx < recalledMemoryPaths.length; xrayIdx += 1) {
