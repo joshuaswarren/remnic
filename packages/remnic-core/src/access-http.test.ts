@@ -852,7 +852,7 @@ test("HTTP briefing endpoint dispatches through the briefing operation", async (
     );
 
     assert.equal(response.status, 200);
-    const body = await response.json();
+    const body = (await response.json()) as { format: string; markdown: string; json: { sections: { activeThreads: unknown[] } } };
     assert.equal(body.format, "markdown");
     assert.equal(body.markdown, "# Briefing");
     assert.deepEqual(body.json.sections.activeThreads, []);
@@ -879,7 +879,7 @@ test("HTTP briefing endpoint dispatches through the briefing operation", async (
       },
     );
     assert.equal(invalid.status, 400);
-    assert.equal((await invalid.json()).code, "input_error");
+    assert.equal(((await invalid.json()) as { code: string }).code, "input_error");
     assert.equal(calls.length, 1);
   } finally {
     await server.stop();
