@@ -114,7 +114,9 @@ never as a positive label. Polarity and `correctedAssertion` come from the
 validated action (a `retract` stays a retract even when the request text
 looks like an update). Faithfulness `factText` is the pre-persist gated
 body: the `[Attributes: …]` suffix and default `[Source: …]` citation are
-stripped; leftover custom attribution is skipped as private.
+stripped; leftover custom attribution is skipped as private. Child files
+with persisted `parentId` and `chunkIndex` inherit the whole-fact verdict
+and are skipped; a whole fact or independently judged body still emits.
 Nothing in the daemon, build, or CI ever invokes it.
 
 ```bash

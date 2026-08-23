@@ -18,6 +18,8 @@
  *    dataset sha256 AND same manifest)
  *  - bounded record/text limits (truncate + oversize skip)
  *  - harvest blobs stay gitignored; nothing invokes the tool automatically
+ *  - inherited parentId+chunkIndex child chunks are skipped; whole facts
+ *    and independently judged files still emit
  */
 
 import assert from "node:assert/strict";
@@ -759,6 +761,101 @@ test(
     const manifest = readManifest(out, "faithfulness-gate");
     assert.equal(manifest.skipped.private, 1);
     assert.equal(manifest.labelCounts.unsupported, 0);
+    assertNoPrivateLeak(out);
+  },
+);
+
+test(
+  "harvest: skips inherited whole-fact chunk verdicts; keeps judged bodies",
+  { skip: skipReason },
+  () => {
+    const input = tmpDir("chunk-in");
+    const parentQuote = "synthetic composite quote";
+    const parentBody = "Synthetic fact alpha. Synthetic fact beta.";
+    memoryWithVerdict(input, "fact-composite-001", "contradicted", parentQuote, parentBody);
+    const inheritedFm = (id, chunkIndex) =>
+      [
+        `id: ${id}`,
+        "category: fact",
+        "parentId: fact-composite-001",
+        `chunkIndex: ${chunkIndex}`,
+        "chunkTotal: 2",
+        `faithfulness: ${JSON.stringify({
+          verdict: "contradicted",
+          model: "synthetic-teacher-model",
+          at: "2026-01-01T00:00:00Z",
+        })}`,
+        `sources: ${JSON.stringify([
+          {
+            sessionKey: "sess-PRIVATE-marker",
+            observedAt: "2026-01-01T00:00:00Z",
+            quote: parentQuote,
+            charStart: 0,
+            charEnd: parentQuote.length,
+          },
+        ])}`,
+      ].join("\n");
+    writeMemory(
+      input,
+      "facts/2026-01-01/fact-composite-001-chunk-0.md",
+      inheritedFm("fact-composite-001-chunk-0", 0),
+      "Synthetic fact alpha.",
+    );
+    writeMemory(
+      input,
+      "facts/2026-01-01/fact-composite-001-chunk-1.md",
+      inheritedFm("fact-composite-001-chunk-1", 1),
+      "Synthetic fact beta.",
+    );
+    memoryWithVerdict(
+      input,
+      "fact-composite-001-chunk-9",
+      "entailed",
+      "synthetic independent quote",
+      "Independently judged chunk body.",
+    );
+    writeMemory(
+      input,
+      "facts/2026-01-01/fact-lineage-001.md",
+      [
+        "id: fact-lineage-001",
+        "category: fact",
+        "parentId: fact-other-001",
+        `faithfulness: ${JSON.stringify({
+          verdict: "unsupported",
+          model: "synthetic-teacher-model",
+          at: "2026-01-01T00:00:00Z",
+        })}`,
+        `sources: ${JSON.stringify([
+          {
+            sessionKey: "sess-PRIVATE-marker",
+            observedAt: "2026-01-01T00:00:00Z",
+            quote: "synthetic lineage quote",
+            charStart: 0,
+            charEnd: 23,
+          },
+        ])}`,
+      ].join("\n"),
+      "Lineage memory judged on its own body.",
+    );
+    const out = tmpDir("out-chunk");
+    const res = runHarvest([
+      "--task", "faithfulness-gate", "--input", input, "--out", out, "--consent", "--quiet",
+    ]);
+    assert.equal(res.status, 0, res.stderr);
+    const rows = readJsonl(path.join(out, "harvest-faithfulness-gate.jsonl"));
+    const byLabel = Object.fromEntries(rows.map((row) => [row.label, row.factText]));
+    assert.equal(rows.length, 3);
+    assert.equal(byLabel.contradicted, parentBody);
+    assert.equal(byLabel.entailed, "Independently judged chunk body.");
+    assert.equal(byLabel.unsupported, "Lineage memory judged on its own body.");
+    assert.ok(!rows.some((row) => row.factText === "Synthetic fact alpha."));
+    assert.ok(!rows.some((row) => row.factText === "Synthetic fact beta."));
+    const manifest = readManifest(out, "faithfulness-gate");
+    assert.equal(manifest.skipped.inherited_chunk, 2);
+    assert.equal(manifest.labelCounts.contradicted, 1);
+    assert.equal(manifest.labelCounts.entailed, 1);
+    assert.equal(manifest.labelCounts.unsupported, 1);
     assertNoPrivateLeak(out);
   },
 );

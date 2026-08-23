@@ -8,6 +8,10 @@ model-lab tasks:
   joined with a newline in persisted order (same as the gate). ``factText``
   is the pre-persist gated body: the ``[Attributes: …]`` suffix and default
   inline citation are stripped from the already-bounded source bytes.
+  Child files with persisted ``parentId`` and ``chunkIndex`` inherit the
+  whole-fact verdict; they are skipped so a chunk body is not labeled as
+  the gated fact. A whole fact, or a file judged on its own body without
+  those chunk fields, still emits.
 * ``correction-intent`` — persisted correction-plan JSON (#1581 durable output).
   ``confidence`` must be finite and in ``[0, 1]``. Every action is validated
   against the product kind/field contract. Polarity and assertion come from
@@ -341,6 +345,21 @@ def _has_unstrippable_attribution(text: str) -> bool:
     return any(token in inner for token in ("=", "/", "@"))
 
 
+def _inherited_whole_fact_chunk(scalars: dict[str, str]) -> bool:
+    """True when persist copied a parent faithfulness verdict onto a child."""
+    parent_id = scalars.get("parentId", "").strip()
+    if not parent_id:
+        return False
+    raw_index = scalars.get("chunkIndex", "").strip()
+    if not raw_index:
+        return False
+    try:
+        index = int(raw_index, 10)
+    except ValueError:
+        return False
+    return index >= 0
+
+
 def _reconstruct_gated_fact(body: str) -> tuple[str | None, str | None]:
     """Recover the fact text the gate evaluated, or skip the row."""
     without_attributes = _strip_attributes_suffix(body)
@@ -457,6 +476,9 @@ def build_faithfulness_record(
     label = TEACHER_VERDICT_TO_LABEL.get(str(verdict) if verdict is not None else "")
     if label is None:
         return None, "non_teacher_verdict"
+    if _inherited_whole_fact_chunk(scalars):
+        return None, "inherited_chunk"
+
     quote = _joined_verified_quotes(scalars.get("sources"))
     if not quote:
         return None, "no_quote"
