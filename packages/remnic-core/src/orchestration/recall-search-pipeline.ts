@@ -102,6 +102,8 @@ export interface RecallSearchPipelineDeps {
        * string at the input boundary (CLI / HTTP / MCP).
        */
       asOfMs?: number;
+      /** #1952 state-view admission — see filterSearchResultsByRecallSafety. */
+      stateViewActive?: boolean;
       requestingConnector?: string;
     },
   ): Promise<QmdSearchResult[]>;
@@ -175,6 +177,8 @@ export interface RecallSearchPipelineDeps {
       dropUnresolved?: boolean;
       recallNamespaces?: readonly string[];
       requestingConnector?: string;
+      /** #1952 state-view admission — see filterSearchResultsByRecallSafety. */
+      stateViewActive?: boolean;
     },
   ): Promise<{ results: QmdSearchResult[]; memoryByPath: Map<string, MemoryFile> }>;
   loadSearchResultMemoryMap(
@@ -601,6 +605,8 @@ export class RecallSearchPipelineCoordinator {
     deadlineAtMs?: number | null;
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
+    /** #1952 state-view admission — resolved by the caller from config/override + change intent. */
+    stateViewActive?: boolean;
   }): Promise<QmdSearchResult[]> {
     // Prefer the threaded set; fall back to a config-derived set so direct
     // callers (unit tests) behave identically to the recall pipeline (#1523).
@@ -847,6 +853,7 @@ export class RecallSearchPipelineCoordinator {
         dropUnresolved: true,
         recallNamespaces: options.recallNamespaces,
         requestingConnector: options.requestingConnector,
+        stateViewActive: options.stateViewActive,
       },
     );
     results = boostInput.results;
@@ -867,6 +874,7 @@ export class RecallSearchPipelineCoordinator {
                 {
                   allowLifecycleFiltered: true,
                   asOfMs: options.asOfMs,
+                  stateViewActive: options.stateViewActive,
                   requestingConnector: options.requestingConnector,
                 },
               ),
@@ -885,6 +893,7 @@ export class RecallSearchPipelineCoordinator {
               {
                 allowLifecycleFiltered: true,
                 asOfMs: options.asOfMs,
+                stateViewActive: options.stateViewActive,
                 requestingConnector: options.requestingConnector,
               },
             ));
@@ -1111,8 +1120,28 @@ export class RecallSearchPipelineCoordinator {
       asOfMs?: number;
       blockedPaths?: Set<string>;
       requestingConnector?: string;
+      /**
+       * #1952 state-aware recall views. When true (config `recallStateViews`
+       * or per-call override, AND a change-intent query — resolved by the
+       * caller), a superseded candidate is admitted iff its successor
+       * (`frontmatter.supersededBy`) is also in this candidate set. The
+       * admitted row carries `id`/`status`/`supersededBy`/`supersededAt` so
+       * the inject seam can label it; every other path is unchanged.
+       */
+      stateViewActive?: boolean;
     },
   ): QmdSearchResult[] {
+    // #1952: memory ids of the whole candidate set — the state-view
+    // admission rule anchors a superseded row on its successor's presence.
+    const stateViewCandidateIds =
+      options?.stateViewActive === true
+        ? new Set(
+            Array.from(memoryByPath.values())
+              .map((m) => m.frontmatter.id)
+              .filter((id): id is string => typeof id === "string" && id.length > 0),
+          )
+        : null;
+    let stateViewAdmittedCount = 0;
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.deps.config);
     let lifecycleFilteredCount = 0;
     let temporalSupersededFilteredCount = 0;
@@ -1198,13 +1227,18 @@ export class RecallSearchPipelineCoordinator {
           // allowLifecycleFiltered=true to include archived/retired
           // candidates, but superseded memories must still be filtered
           // unless temporalSupersessionIncludeInRecall is set.
-          // Skipped entirely when `as_of` is active (above branch); the
-          // half-open `[valid_at, invalid_at)` evaluation in isValidAsOf
-          // is the authoritative gate for historical recall.
+          // #1952: an active state view ADMITS the superseded row when its
+          // successor is also in the candidate set — history never renders
+          // unanchored. Skipped entirely when `as_of` is active (above
+          // branch); isValidAsOf stays the authoritative historical gate.
           shouldFilterSupersededFromRecall(memory.frontmatter, {
             enabled: lifecycleCaps.temporalSupersession,
             includeInRecall: this.deps.config.temporalSupersessionIncludeInRecall,
-          })
+          }) &&
+          !(
+            stateViewCandidateIds !== null &&
+            stateViewCandidateIds.has(memory.frontmatter.supersededBy ?? "")
+          )
         ) {
           temporalSupersededFilteredCount += 1;
           continue;
@@ -1246,10 +1280,28 @@ export class RecallSearchPipelineCoordinator {
       }
       // Derive persisted provenance exclusively from hydrated frontmatter.
       // The formatter parses this value at the model-context render site.
+      // #1952: an active state view also carries the chain fields the inject
+      // seam labels from (id/status/supersededBy/supersededAt).
+      if (
+        stateViewCandidateIds !== null &&
+        memory &&
+        memory.frontmatter.status === "superseded" &&
+        stateViewCandidateIds.has(memory.frontmatter.supersededBy ?? "")
+      ) {
+        stateViewAdmittedCount += 1;
+      }
       filtered.push({
         ...r,
         sourceConnector: memory ? memory.frontmatter.sourceConnector : undefined,
         origin: memory ? memory.frontmatter.origin : undefined,
+        ...(stateViewCandidateIds !== null && memory
+          ? {
+              id: memory.frontmatter.id,
+              status: memory.frontmatter.status,
+              supersededBy: memory.frontmatter.supersededBy,
+              supersededAt: memory.frontmatter.supersededAt,
+            }
+          : {}),
       });
     }
     if (connectorPartitionFilteredCount > 0) {
@@ -1270,6 +1322,11 @@ export class RecallSearchPipelineCoordinator {
     if (temporalSupersededFilteredCount > 0) {
       log.debug(
         `temporal supersession filter removed ${temporalSupersededFilteredCount} superseded candidates`,
+      );
+    }
+    if (stateViewAdmittedCount > 0) {
+      log.debug(
+        `state views admitted ${stateViewAdmittedCount} superseded candidates anchored on in-set successors (#1952)`,
       );
     }
     if (biTemporalExpiredFilteredCount > 0) {
@@ -1307,6 +1364,8 @@ export class RecallSearchPipelineCoordinator {
       dropUnresolved?: boolean;
       recallNamespaces?: readonly string[];
       requestingConnector?: string;
+      /** #1952 state-view admission — see filterSearchResultsByRecallSafety. */
+      stateViewActive?: boolean;
     },
   ): Promise<{ results: QmdSearchResult[]; memoryByPath: Map<string, MemoryFile> }> {
     if (results.length === 0) {
@@ -1369,6 +1428,8 @@ export class RecallSearchPipelineCoordinator {
        * string at the input boundary (CLI / HTTP / MCP).
        */
       asOfMs?: number;
+      /** #1952 state-view admission — flows into filterSearchResultsForRecall. */
+      stateViewActive?: boolean;
       requestingConnector?: string;
     },
   ): Promise<QmdSearchResult[]> {

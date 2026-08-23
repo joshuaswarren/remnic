@@ -99,6 +99,8 @@ import {
   type RecallInvocationOptions,
 } from "../orchestrator.js";
 import { isGenericRecallExcludedPath } from "./generic-recall-paths.js";
+import { isChangeOrientedQuery } from "../recall-state-view.js";
+import { applyRecallStateViews } from "../recall-state-view-wire.js";
 import type { RecallSectionBuckets } from "./recall-section-coordinator.js";
 import {
   reconcileRecallResultPartition,
@@ -242,7 +244,11 @@ export class RecallInternalCoordinator {
         this.deps.effectiveCronRecallInstructionHeavyTokenCap(),
       cronConversationRecallMode: this.deps.config.cronConversationRecallMode,
     });
+    // #1952 state views: config flag OR per-call override, gated on change intent; computed once for all branches.
     const retrievalQuery = queryPolicy.retrievalQuery || prompt;
+    const stateViewActive =
+      (options.stateView === true || this.deps.config.recallStateViews === true) &&
+      isChangeOrientedQuery(retrievalQuery);
     const retrievalQueryHash = createHash("sha256")
       .update(retrievalQuery)
       .digest("hex");
@@ -3842,6 +3848,7 @@ export class RecallInternalCoordinator {
         undefined,
         {
           asOfMs,
+          stateViewActive,
           // If QMD had already settled before the ordered assembly reached it,
           // do not let unrelated slow enrichment turn those known results into
           // unchecked misses. QMD that only settles during its own wait remains
@@ -3865,7 +3872,7 @@ export class RecallInternalCoordinator {
             recallNamespaces,
             retrievalQuery,
             qmdBoostInput.memoryByPath,
-            { asOfMs, requestingConnector: options.sourceConnector },
+            { asOfMs, stateViewActive, requestingConnector: options.sourceConnector },
           ),
         qmdBoostInput.results,
       );
@@ -4106,7 +4113,7 @@ export class RecallInternalCoordinator {
               recallNamespaces,
               retrievalQuery,
               undefined,
-              { asOfMs, requestingConnector: options.sourceConnector },
+              { asOfMs, stateViewActive, requestingConnector: options.sourceConnector },
             );
             xrayBranchPoolSize.hot_embedding = Math.max(
               xrayBranchPoolSize.hot_embedding,
@@ -4201,6 +4208,7 @@ export class RecallInternalCoordinator {
             options.xrayCapture === true ? { partition: null } : undefined;
           const longTerm = await this.deps.applyColdFallbackPipeline({
             prompt: retrievalQuery,
+            stateViewActive,
             recallNamespaces,
             recallResultLimit,
             recallMode,
@@ -4318,7 +4326,7 @@ export class RecallInternalCoordinator {
               recallNamespaces,
               retrievalQuery,
               undefined,
-              { asOfMs, requestingConnector: options.sourceConnector },
+              { asOfMs, stateViewActive, requestingConnector: options.sourceConnector },
             );
             // MMR runs on the pre-truncation pool (see the hot-embedding branch).
             xrayBranchPoolSize.hot_embedding = Math.max(
@@ -4416,35 +4424,23 @@ export class RecallInternalCoordinator {
           [] as MemoryFile[],
         );
         if (memories.length > 0) {
-          // Filter out non-active memories.  Delegate to
-          // shouldFilterSupersededFromRecall for superseded-status logic so
-          // that the recent-scan path and the boostSearchResults (QMD) path
-          // have identical semantics:
-          //   • temporalSupersessionEnabled=false  → never filter superseded
-          //     (mirrors QMD path; user disabled the feature, so old marks
-          //     are ignored and all memories surface)
-          //   • temporalSupersessionIncludeInRecall=true → never filter (audit mode)
-          //   • enabled=true + includeInRecall=false → filter superseded
-          // Previously the recent-scan path checked `enabled && includeInRecall`
-          // directly, which disagreed with the QMD path when enabled=false
-          // (memories were still filtered, contrary to the kill-switch intent).
-          // Using the shared gate fixes both Finding 2 and Finding 3 from
-          // PR #402 (round 6).
+          // Superseded-status filtering delegates to
+          // shouldFilterSupersededFromRecall so recent-scan and the QMD
+          // safety filter share semantics (kill switch, audit mode, PR #402).
+          // #1952: an active state view admits a superseded memory whose
+          // successor is also in this candidate pool — same rule as the
+          // filterSearchResultsByRecallSafety branch.
           const supersessionOptions = {
             enabled: lifecycleCaps.temporalSupersession,
             includeInRecall: this.deps.config.temporalSupersessionIncludeInRecall,
           };
-          // Cursor Medium on PR #713: when `as_of` is active, the
-          // recent-scan path used to strip every non-active status
-          // (including superseded) before `boostSearchResults` ran,
-          // so the as_of bypass inside boostSearchResults never had
-          // a chance to admit historically-valid records. Pass
-          // superseded candidates through here when as_of is active;
-          // boostSearchResults's `[valid_at, invalid_at)` evaluation
-          // is the authoritative gate. Other non-active statuses
-          // (archived, forgotten, rejected) stay excluded — historical
-          // recall is about supersession history, not about reviving
-          // records the operator explicitly dropped.
+          const stateViewCandidateIds = stateViewActive
+            ? new Set(memories.flatMap((m) => (typeof m.frontmatter.id === "string" && m.frontmatter.id ? [m.frontmatter.id] : [])))
+            : null;
+          // PR #713: when `as_of` is active, pass superseded candidates
+          // through here — boostSearchResults's `[valid_at, invalid_at)`
+          // evaluation is the authoritative historical gate. Other
+          // non-active statuses stay excluded.
           const asOfActive =
             typeof asOfMs === "number" && Number.isFinite(asOfMs);
           const activeMemories = memories.filter(
@@ -4454,6 +4450,7 @@ export class RecallInternalCoordinator {
               if (!status || status === "active") return true;
               if (status === "superseded") {
                 if (asOfActive) return true;
+                if (stateViewCandidateIds !== null && stateViewCandidateIds.has(m.frontmatter.supersededBy ?? "")) return true;
                 // Include superseded memory only if the canonical gate says
                 // NOT to filter it (kill switch off or audit mode on).
                 return !shouldFilterSupersededFromRecall(m.frontmatter, supersessionOptions);
@@ -4463,12 +4460,9 @@ export class RecallInternalCoordinator {
               return false;
             },
           );
-          // Convert all active memories to QmdSearchResult with recency-based
-          // baseline score, then pass through boostSearchResults so temporal/tag
-          // boosts apply consistently with the primary QMD retrieval path.
-          // Cap AFTER boosting so boosted-but-recency-ranked memories can surface.
-          // Pass a pre-populated memoryByPath so boostSearchResults skips redundant
-          // disk reads for files already loaded by readAllMemoriesForNamespaces.
+          // Convert to QmdSearchResult with recency baseline, then boost so
+          // temporal/tag boosts match the QMD path. Cap AFTER boosting, and
+          // pass a pre-populated memoryByPath to skip redundant disk reads.
           const queryAwareScopedMemories = queryAwarePrefilter.candidatePaths
             ? activeMemories.filter((memory) =>
                 queryAwarePrefilter.candidatePaths?.has(memory.path),
@@ -4482,6 +4476,7 @@ export class RecallInternalCoordinator {
               options.xrayCapture === true ? { partition: null } : undefined;
             const longTerm = await this.deps.applyColdFallbackPipeline({
               prompt: retrievalQuery,
+              stateViewActive,
               recallNamespaces,
               recallResultLimit,
               recallMode,
@@ -4554,7 +4549,7 @@ export class RecallInternalCoordinator {
                     recallNamespaces,
                     retrievalQuery,
                     preloadedMap,
-                    { asOfMs, requestingConnector: options.sourceConnector },
+                    { asOfMs, stateViewActive, requestingConnector: options.sourceConnector },
                   )
                 ).sort((a, b) => b.score - a.score);
                 // MMR runs on the pre-truncation pool so diverse candidates just
@@ -4655,6 +4650,7 @@ export class RecallInternalCoordinator {
                 options.xrayCapture === true ? { partition: null } : undefined;
               const longTerm = await this.deps.applyColdFallbackPipeline({
                 prompt: retrievalQuery,
+                stateViewActive,
                 recallNamespaces,
                 recallResultLimit,
                 recallMode,
@@ -4711,6 +4707,7 @@ export class RecallInternalCoordinator {
             options.xrayCapture === true ? { partition: null } : undefined;
           const longTerm = await this.deps.applyColdFallbackPipeline({
             prompt: retrievalQuery,
+            stateViewActive,
             recallNamespaces,
             recallResultLimit,
             recallMode,
@@ -5050,8 +5047,9 @@ export class RecallInternalCoordinator {
         // Build a path → QmdSearchResult index so we can pull per-result
         // explain data (e.g. reinforcementBoost) from the result that
         // boostSearchResults annotated before surfacing to xray.
+        // #1952: label the captured branch through the same inject-seam annotator.
         const xrayResultByPath = new Map<string, QmdSearchResult>(
-          xrayRecalledResults.map((xr) => [`${xr.namespace ?? ""}\0${xr.path}`, xr]),
+          applyRecallStateViews(xrayRecalledResults, retrievalQuery, this.deps.config).map((xr) => [`${xr.namespace ?? ""}\0${xr.path}`, xr]),
         );
         const results: RecallXrayResult[] = [];
         for (let xrayIdx = 0; xrayIdx < recalledMemoryPaths.length; xrayIdx += 1) {
@@ -5109,6 +5107,7 @@ export class RecallInternalCoordinator {
             servedBy,
             scoreDecomposition,
             admittedBy: [],
+            ...(xrayResult?.stateLabel ? { stateView: xrayResult.stateLabel } : {}),
             ...(xrayResult?.pathNodeIds ? { pathNodeIds: xrayResult.pathNodeIds } : {}),
             ...(typeof xrayResult?.pathPenaltyApplied === "boolean"
               ? { pathPenaltyApplied: xrayResult.pathPenaltyApplied }

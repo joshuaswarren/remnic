@@ -73,6 +73,8 @@ export interface RecallInternalDeps {
     /** Issue #680 — historical recall point in ms-since-epoch. */
     asOfMs?: number;
     requestingConnector?: string;
+    /** #1952 state-view admission — resolved by the caller from config/override + change intent. */
+    stateViewActive?: boolean;
     /**
      * Optional out-parameter that receives the pre-MMR / pre-truncation
      * pool size captured inside the pipeline (issue #570 PR 1).  The
@@ -137,6 +139,8 @@ export interface RecallInternalDeps {
        * string at the input boundary (CLI / HTTP / MCP).
        */
       asOfMs?: number;
+      /** #1952 state-view admission — see RecallSearchPipelineCoordinator. */
+      stateViewActive?: boolean;
       requestingConnector?: string;
     },
   ): Promise<QmdSearchResult[]>;
@@ -237,6 +241,8 @@ export interface RecallInternalDeps {
       dropUnresolved?: boolean;
       recallNamespaces?: readonly string[];
       requestingConnector?: string;
+      /** #1952 state-view admission — see RecallSearchPipelineCoordinator. */
+      stateViewActive?: boolean;
     },
   ): Promise<{ results: QmdSearchResult[]; memoryByPath: Map<string, MemoryFile> }>;
   formatCausalTrajectoryResults(

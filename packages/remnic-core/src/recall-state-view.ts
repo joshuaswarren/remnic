@@ -115,20 +115,37 @@ export function annotateStateView<T extends StateViewResult>(
     if (id) candidateIds.add(id);
   }
 
+  const isSupersededRow = (result: T): { superseded: boolean; successorId: string | undefined } => {
+    const id = resultStateViewId(result);
+    return {
+      superseded: result.status === "superseded" || Boolean(result.supersededBy) || byPred.has(id),
+      successorId: result.supersededBy ?? byPred.get(id),
+    };
+  };
+
   const admitted: T[] = [];
   for (const result of results) {
-    const id = resultStateViewId(result);
-    const successorId = result.supersededBy ?? byPred.get(id);
-    const superseded = result.status === "superseded" || Boolean(result.supersededBy) || byPred.has(id);
+    const { superseded, successorId } = isSupersededRow(result);
     if (!superseded || shouldWidenSuperseded(successorId, candidateIds)) {
       admitted.push(result);
     }
   }
 
-  const admittedIds = new Set<string>();
-  for (const result of admitted) {
-    const id = resultStateViewId(result);
-    if (id) admittedIds.add(id);
+  // #1952 contract: superseded never appears without its successor. A
+  // successor can itself be dropped (filtered elsewhere, or transitively
+  // orphaned), so reconcile to a fixpoint instead of trusting the first pass.
+  let admittedIds = new Set(admitted.map(resultStateViewId).filter(Boolean));
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (let i = admitted.length - 1; i >= 0; i -= 1) {
+      const row = admitted[i]!;
+      const { superseded, successorId } = isSupersededRow(row);
+      if (superseded && !shouldWidenSuperseded(successorId, admittedIds)) {
+        admitted.splice(i, 1);
+        changed = true;
+      }
+    }
+    if (changed) admittedIds = new Set(admitted.map(resultStateViewId).filter(Boolean));
   }
 
   return admitted.map((result) => {

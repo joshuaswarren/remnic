@@ -247,6 +247,12 @@ export interface RecallInvocationOptions {
    */
   includeLowConfidence?: boolean;
   /**
+   * #1952 — per-call override enabling state-aware recall views for this
+   * recall only (MCP `stateView` boolean). ORs with the `recallStateViews`
+   * config flag; a change-intent query is still required for any effect.
+   */
+  stateView?: boolean;
+  /**
    * User-aware context scopes active for this recall. Used by X-ray
    * provenance safety checks so boundary-scoped memories are evaluated
    * against the caller's real context.

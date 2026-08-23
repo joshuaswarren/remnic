@@ -129,3 +129,55 @@ test("annotateStateView does not mutate input rows", () => {
   assert.equal(input[0]?.stateLabel, undefined);
   assert.equal(input[1]?.stateLabel, undefined);
 });
+
+test("disputed cycle never labels historical against a missing anchor", () => {
+  const results = [
+    fact("a", { status: "superseded", supersededBy: "b" }),
+    fact("b", { status: "superseded", supersededBy: "a" }),
+    fact("c", { status: "active" }),
+  ];
+  const labeled = annotateStateView(results, "when did this change", [], { enabled: true });
+  assert.deepEqual(
+    labeled.map((row) => [row.id, row.stateLabel]),
+    [
+      ["a", "transition"],
+      ["b", "transition"],
+      ["c", "current"],
+    ],
+    "cycle members may render as transitions, never historical-vs-current",
+  );
+});
+
+test("corrected row links through the chain when supersededBy is absent", () => {
+  const chains: StateViewChain[] = [
+    { predecessorId: "old", successorId: "new", supersededAt: "2026-02-01" },
+  ];
+  const results = [
+    fact("new", { status: "active" }),
+    fact("old", { status: "superseded", supersededAt: "2026-02-01" }),
+  ];
+  const labeled = annotateStateView(results, "before the correction what was it", chains, {
+    enabled: true,
+  });
+  assert.deepEqual(
+    labeled.map((row) => [row.id, row.stateLabel]),
+    [
+      ["new", "current"],
+      ["old", "historical"],
+    ],
+  );
+});
+
+test("transitive orphan chains collapse: A→B→(C absent) drops both A and B", () => {
+  const results = [
+    fact("a", { status: "superseded", supersededBy: "b" }),
+    fact("b", { status: "superseded", supersededBy: "c" }),
+    fact("unrelated", { status: "active" }),
+  ];
+  const labeled = annotateStateView(results, "when did this change", [], { enabled: true });
+  assert.deepEqual(
+    labeled.map((row) => row.id),
+    ["unrelated"],
+    "the fixpoint must drop A once B is dropped, not render a dangling historical",
+  );
+});

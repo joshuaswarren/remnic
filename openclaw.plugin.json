@@ -4865,6 +4865,11 @@
         "default": 0.3,
         "description": "Maximum fraction of the total recall budget available to the behavioral profile. Set to 1 to disable the share cap."
       },
+      "recallStateViews": {
+        "type": "boolean",
+        "default": false,
+        "description": "State-aware recall views (issue #1952): on change-intent queries, superseded memories surface as labeled history (current/historical/transition) when their successor is also recalled. Default false keeps recall output byte-identical."
+      },
       "recallConfidenceGateEnabled": {
         "type": "boolean",
         "default": false,
