@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { summarizeBenchmarkResult } from "../packages/bench-ui/src/results.js";
+import { loadBenchResultSummaries, summarizeBenchmarkResult } from "../packages/bench-ui/src/results.js";
 import { loadBenchmarkResult } from "../packages/bench/src/results-store.js";
 import type { BenchResultSummary } from "../packages/bench-ui/src/bench-data.js";
 
@@ -138,6 +138,25 @@ test("legacy artifacts summarize identically to the pre-#2800 UI after the compa
         `summary parity failed for the ${name}`,
       );
     }
+
+    const uiPayload = await loadBenchResultSummaries(dir);
+    assert.equal(uiPayload.skippedFiles?.length ?? 0, 0);
+    assert.deepEqual(
+      uiPayload.summaries.map((summary) => summary.id).sort(),
+      legacyArtifacts.map((entry) => entry.id).sort(),
+    );
+    for (const { name, id, artifact } of legacyArtifacts) {
+      const filePath = path.join(dir, `${id}.json`);
+      const oldUiSummary = summarizeBenchmarkResult(artifact, filePath);
+      assert.ok(oldUiSummary, `old UI parser must accept the ${name}`);
+      const uiSummary = uiPayload.summaries.find((summary) => summary.id === id);
+      assert.ok(uiSummary, `UI loader must surface ${name}`);
+      assert.deepEqual(
+        uiSummary,
+        applyDocumentedCoercions(oldUiSummary),
+        `UI loader parity failed for the ${name}`,
+      );
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -157,6 +176,15 @@ test("artifacts the old UI skipped as malformed stay rejected with a reason", as
     await assert.rejects(
       () => loadBenchmarkResult(filePath),
       /Invalid benchmark result file: .+ \(meta\.mode must be "quick" or "full" when present\)/,
+    );
+
+    const uiPayload = await loadBenchResultSummaries(dir);
+    assert.equal(uiPayload.summaries.length, 0);
+    assert.equal(uiPayload.skippedFiles?.length, 1);
+    assert.equal(uiPayload.skippedFiles?.[0]?.filePath, filePath);
+    assert.match(
+      uiPayload.skippedFiles?.[0]?.reason ?? "",
+      /meta\.mode must be "quick" or "full" when present/,
     );
   } finally {
     await rm(dir, { recursive: true, force: true });

@@ -1,6 +1,7 @@
 import fs from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
+import { loadBenchmarkResult } from "@remnic/bench";
 import type {
   BenchAggregateMetric,
   BenchAssistantTaskDetails,
@@ -321,8 +322,8 @@ export async function loadBenchResultSummaries(
     const filePath = path.join(resultsDir, entry.name);
 
     try {
-      const raw = await readFile(filePath, "utf8");
-      const summary = summarizeBenchmarkResult(JSON.parse(raw) as unknown, filePath);
+      const result = await loadBenchmarkResult(filePath);
+      const summary = summarizeBenchmarkResult(result, filePath);
       if (summary) {
         summaries.push(summary);
       } else {

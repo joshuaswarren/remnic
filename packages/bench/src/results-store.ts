@@ -316,7 +316,17 @@ function isBenchmarkResult(value: unknown): value is BenchmarkResult {
     isFiniteNumber(meta.runCount) &&
     Array.isArray(meta.seeds) &&
     meta.seeds.every(isFiniteNumber) &&
-    (meta.canaryFloor === undefined || (isFiniteNumber(meta.canaryFloor) && meta.canaryFloor >= 0));
+    (meta.canaryFloor === undefined || (isFiniteNumber(meta.canaryFloor) && meta.canaryFloor >= 0)) &&
+    (meta.canaryScore === undefined || isFiniteNumber(meta.canaryScore)) &&
+    (meta.failureReason === undefined || typeof meta.failureReason === "string") &&
+    (meta.runId === undefined || typeof meta.runId === "string") &&
+    (meta.gitDirty === undefined || typeof meta.gitDirty === "boolean") &&
+    (meta.gitDirtyEntryCount === undefined || isFiniteNumber(meta.gitDirtyEntryCount)) &&
+    (meta.splitType === undefined || meta.splitType === "public" || meta.splitType === "holdout") &&
+    (meta.qrelsSealedHash === undefined || typeof meta.qrelsSealedHash === "string") &&
+    (meta.judgePromptHash === undefined || typeof meta.judgePromptHash === "string") &&
+    (meta.datasetHash === undefined || typeof meta.datasetHash === "string") &&
+    (meta.status === undefined || meta.status === "complete" || meta.status === "partial");
   if (!hasValidMeta) {
     return false;
   }

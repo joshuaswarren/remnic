@@ -147,6 +147,11 @@ function normalizeMetricAggregate(
   if (isFiniteNumber(raw)) {
     mean = raw;
   } else if (isRecord(raw)) {
+    for (const field of ["mean", "median", "stdDev", "min", "max"] as const) {
+      if (field in raw && !isFiniteNumber(raw[field])) {
+        reject(`${where}.${field} must be a finite number when present`);
+      }
+    }
     if (isFiniteNumber(raw.mean)) {
       mean = raw.mean;
     }
@@ -231,10 +236,8 @@ function upgradeMeta(legacy: JsonRecord, recognizedTaskCount: number): Benchmark
     seeds: optionalSeeds("meta.seeds", meta.seeds) ?? [],
   };
 
-  // Optional pass-through fields the canonical validator may check
-  // (goldMemories-adjacent witnesses, hardware); anything invalid here
-  // is caught by the canonical re-validation in the loader, never
-  // silently coerced.
+  // Optional pass-through fields: present-but-wrong-type rejects here
+  // so report-card/HTML export never sees a non-string failureReason.
   const metaExtras = upgraded as unknown as JsonRecord;
   for (const key of [
     "runId",
@@ -249,19 +252,57 @@ function upgradeMeta(legacy: JsonRecord, recognizedTaskCount: number): Benchmark
     "status",
     "failureReason",
   ] as const) {
-    if (key in meta) {
-      if (key === "canaryFloor") {
-        const floorVal = optionalFiniteNumber("meta.canaryFloor", meta, "canaryFloor");
-        if (floorVal !== undefined) {
-          if (floorVal < 0) {
-            reject("meta.canaryFloor must be a non-negative number when present");
-          }
-          metaExtras[key] = floorVal;
-        }
-      } else {
-        metaExtras[key] = meta[key];
-      }
+    if (!(key in meta)) {
+      continue;
     }
+    if (key === "canaryFloor") {
+      const floorVal = optionalFiniteNumber("meta.canaryFloor", meta, "canaryFloor");
+      if (floorVal !== undefined) {
+        if (floorVal < 0) {
+          reject("meta.canaryFloor must be a non-negative number when present");
+        }
+        metaExtras[key] = floorVal;
+      }
+      continue;
+    }
+    if (key === "canaryScore" || key === "gitDirtyEntryCount") {
+      const numeric = optionalFiniteNumber(`meta.${key}`, meta, key);
+      if (numeric !== undefined) {
+        metaExtras[key] = numeric;
+      }
+      continue;
+    }
+    if (
+      key === "runId" ||
+      key === "qrelsSealedHash" ||
+      key === "judgePromptHash" ||
+      key === "datasetHash" ||
+      key === "failureReason"
+    ) {
+      const text = optionalString(`meta.${key}`, meta, key);
+      if (text !== undefined) {
+        metaExtras[key] = text;
+      }
+      continue;
+    }
+    if (key === "gitDirty") {
+      if (typeof meta.gitDirty !== "boolean") {
+        reject("meta.gitDirty must be a boolean when present");
+      }
+      metaExtras.gitDirty = meta.gitDirty;
+      continue;
+    }
+    if (key === "status") {
+      if (meta.status !== "complete" && meta.status !== "partial") {
+        reject('meta.status must be "complete" or "partial" when present');
+      }
+      metaExtras.status = meta.status;
+      continue;
+    }
+    if (meta.splitType !== "public" && meta.splitType !== "holdout") {
+      reject('meta.splitType must be "public" or "holdout" when present');
+    }
+    metaExtras.splitType = meta.splitType;
   }
 
   return upgraded;

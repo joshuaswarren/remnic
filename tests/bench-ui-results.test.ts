@@ -53,10 +53,9 @@ test("bench UI loader summarizes valid benchmark JSON files and ignores invalid 
       results: {
         tasks: [{ taskId: "task-1" }, { taskId: "task-2" }],
         aggregates: {
-          accuracy: { mean: 0.75 },
-          f1: { mean: 0.63 },
-          llm_judge: { mean: 0.9 },
-          ignored: { mean: "bad" },
+          accuracy: { mean: 0.75, median: 0.75, stdDev: 0, min: 0.75, max: 0.75 },
+          f1: { mean: 0.63, median: 0.63, stdDev: 0, min: 0.63, max: 0.63 },
+          llm_judge: { mean: 0.9, median: 0.9, stdDev: 0, min: 0.9, max: 0.9 },
         },
       },
     }, null, 2),

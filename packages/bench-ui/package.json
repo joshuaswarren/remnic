@@ -6,11 +6,12 @@
   "description": "Minimal local UI shell for browsing Remnic benchmark result summaries.",
   "scripts": {
     "dev": "vite",
-    "test": "find src \\( -name '*.test.ts' -o -name '*.test.tsx' \\) -print | sort | xargs tsx --test",
+    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test src/**/*.test.ts src/**/*.test.tsx",
     "check-types": "tsc --noEmit",
     "build": "pnpm run check-types && vite build"
   },
   "dependencies": {
+    "@remnic/bench": "workspace:^",
     "react-router-dom": "^7.18.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"

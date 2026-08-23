@@ -310,6 +310,26 @@ test("recognizeLegacyBenchmarkArtifact rejects malformed and ambiguous shapes wi
       },
       /missing required multi-sample fields/,
     ],
+    [
+      {
+        ...minimalLegacyArtifact(),
+        results: {
+          tasks: [{ taskId: "t1" }],
+          aggregates: { accuracy: { mean: 0.5, median: "bad" } },
+        },
+      },
+      /results\.aggregates\.accuracy\.median must be a finite number when present/,
+    ],
+    [
+      {
+        ...minimalLegacyArtifact(),
+        meta: {
+          ...(minimalLegacyArtifact().meta as Record<string, unknown>),
+          failureReason: 404,
+        },
+      },
+      /meta\.failureReason must be a string when present/,
+    ],
   ];
 
   for (const [artifact, pattern] of rejections) {
@@ -405,3 +425,17 @@ test("upgraded legacy results stay classified as missing-integrity for publishin
     );
   });
 });
+
+test("loadBenchmarkResult rejects a canonical artifact with a non-string failureReason", async () => {
+  const artifact = {
+    ...canonicalResult(),
+    meta: { ...canonicalResult().meta, failureReason: 404 },
+  };
+  await withResultFile(artifact, async (filePath) => {
+    await assert.rejects(
+      () => loadBenchmarkResult(filePath),
+      /Invalid benchmark result file: /,
+    );
+  });
+});
+
