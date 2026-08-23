@@ -2,12 +2,6 @@ import * as React from "react";
 import type { BenchIntegritySummary } from "../bench-data";
 import { describeIntegrity } from "./integrity-model";
 
-export { describeIntegrity } from "./integrity-model";
-export type {
-  IntegrityBadgeLevel,
-  IntegrityBadgeModel,
-} from "./integrity-model";
-
 export function IntegrityBadge({ summary }: { summary: BenchIntegritySummary }) {
   const model = describeIntegrity(summary);
   const tooltipParts = [
