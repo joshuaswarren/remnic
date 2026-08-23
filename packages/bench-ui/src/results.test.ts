@@ -157,7 +157,7 @@ test("loadBenchmarkResultSummaries produces the full UI summary for a conformant
   });
 });
 
-test("loadBenchResultSummaries compatibility export matches the parser output", async () => {
+test("loadBenchResultSummaries compatibility export emits deprecation warning once and matches parser output", async () => {
   await withTempDir("results", async (resultsDir) => {
     await writeFile(
       path.join(resultsDir, "compat.json"),
@@ -166,12 +166,35 @@ test("loadBenchResultSummaries compatibility export matches the parser output", 
     );
     await writeFile(path.join(resultsDir, "malformed.json"), "{not-json", "utf8");
 
-    const viaCompatExport = await loadBenchResultSummaries(resultsDir);
+    const warnings: Error[] = [];
+    const onWarning = (warning: Error) => {
+      warnings.push(warning);
+    };
+    process.on("warning", onWarning);
 
-    assert.deepEqual(viaCompatExport, await loadBenchmarkResultSummaries(resultsDir));
-    assert.equal(viaCompatExport.summaries.length, 1);
-    assert.equal(viaCompatExport.summaries[0]?.id, "run-compat");
-    assert.equal(viaCompatExport.skippedFiles?.length, 1);
+    try {
+      const directResult = await loadBenchmarkResultSummaries(resultsDir);
+      assert.equal(warnings.length, 0);
+
+      const firstWrapperCall = await loadBenchResultSummaries(resultsDir);
+      assert.equal(warnings.length, 1);
+      assert.equal(warnings[0]?.name, "DeprecationWarning");
+      assert.match(
+        warnings[0]?.message ?? "",
+        /loadBenchResultSummaries is deprecated; use loadBenchmarkResultSummaries from @remnic\/bench/,
+      );
+
+      const secondWrapperCall = await loadBenchResultSummaries(resultsDir);
+      assert.equal(warnings.length, 1);
+
+      assert.deepEqual(firstWrapperCall, directResult);
+      assert.deepEqual(secondWrapperCall, directResult);
+      assert.equal(firstWrapperCall.summaries.length, 1);
+      assert.equal(firstWrapperCall.summaries[0]?.id, "run-compat");
+      assert.equal(firstWrapperCall.skippedFiles?.length, 1);
+    } finally {
+      process.removeListener("warning", onWarning);
+    }
   });
 });
 
