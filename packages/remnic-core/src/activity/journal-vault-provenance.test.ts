@@ -14,16 +14,16 @@ test("vault source produces the documented tags, attributes, and validAt", () =>
   );
 });
 
-test("file source differs only in the attribute value", () => {
+test("memoryDir source differs only in the attribute value", () => {
   const vault = buildJournalMemoryProvenance({ source: "vault", date: "2026-08-01" });
-  const file = buildJournalMemoryProvenance({ source: "file", date: "2026-08-01" });
-  assert.deepEqual(file.structuredAttributes, { journalSource: "file" });
-  assert.deepEqual(file.tags, vault.tags);
-  assert.equal(file.validAt, vault.validAt);
+  const memoryDir = buildJournalMemoryProvenance({ source: "memoryDir", date: "2026-08-01" });
+  assert.deepEqual(memoryDir.structuredAttributes, { journalSource: "memoryDir" });
+  assert.deepEqual(memoryDir.tags, vault.tags);
+  assert.equal(memoryDir.validAt, vault.validAt);
 });
 
 test("every structured attribute value is a string", () => {
-  for (const source of ["file", "vault"] as const) {
+  for (const source of ["memoryDir", "vault"] as const) {
     const { structuredAttributes } = buildJournalMemoryProvenance({
       source,
       date: "2026-08-01",
@@ -35,7 +35,7 @@ test("every structured attribute value is a string", () => {
 });
 
 test("unknown source throws RangeError naming source", () => {
-  for (const source of ["memoryDir", "vault ", "Vault", ""]) {
+  for (const source of ["file", "vault ", "Vault", ""]) {
     assert.throws(
       () => buildJournalMemoryProvenance({ source, date: "2026-08-01" }),
       RangeError,

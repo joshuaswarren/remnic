@@ -6396,15 +6396,20 @@
                   "source": {
                     "type": "string",
                     "enum": [
-                      "file",
+                      "memoryDir",
                       "vault"
                     ],
-                    "default": "file",
-                    "description": "Where a day's journal body is read from (issue #1987). 'file' uses journal/<date>.md under the memory dir; 'vault' reads a designated heading in the vault daily note. An unrecognized value is rejected at config load."
+                    "default": "memoryDir",
+                    "description": "Where a day's journal body is read from (issue #1987). 'memoryDir' uses journal/<date>.md under the memory dir; 'vault' reads the vault.readback.journalSection heading in the vault daily note. 'vault' requires vault.enabled plus a resolvable dailyNotePath and a non-empty readback.journalSection — config load fails naming every missing prerequisite. An unrecognized value is rejected at config load."
                   },
-                  "heading": {
+                  "extractionMode": {
                     "type": "string",
-                    "description": "Heading whose section holds the journal body when source is 'vault' (issue #1987). Required and non-blank in vault mode, trimmed before use, ignored in file mode."
+                    "enum": [
+                      "off",
+                      "review"
+                    ],
+                    "default": "off",
+                    "description": "Review-only journal extraction (issue #1987). 'review' runs a pass over changed journal text producing pending_review candidates only (never auto-approve; no auto mode by design)."
                   }
                 }
               },
@@ -6639,6 +6644,19 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Publish after each successful artifact generation, once those hooks land. The CLI is always available."
+                  },
+                  "readback": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "default": {},
+                    "description": "Vault daily-note read-back settings (issue #1987).",
+                    "properties": {
+                      "journalSection": {
+                        "type": "string",
+                        "default": "",
+                        "description": "Heading whose section of the daily note is the user's journal. Arbitrary user-chosen text (any language, emoji, punctuation) matched exactly. Required non-empty when timeline.journal.source is 'vault'."
+                      }
+                    }
                   }
                 }
               }
