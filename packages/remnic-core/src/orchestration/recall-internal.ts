@@ -4132,29 +4132,8 @@ export class RecallInternalCoordinator {
           },
           [] as QmdSearchResult[],
         );
-        const embeddingPartition =
-          options.xrayCapture === true
-            ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
-                "memories",
-                scoped,
-                recallResultLimit,
-                retrievalQuery,
-                caps,
-                stateViewPacketActive,
-              )
-            : null;
-        scoped =
-          embeddingPartition?.appliedResults ??
-          this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
-            "memories",
-            scoped,
-            recallResultLimit,
-            retrievalQuery,
-            caps,
-            stateViewPacketActive,
-          ).appliedResults;
-        // Issue #1577 — apply TrustScore on the embedding-fallback path so the
-        // feature gate is consistent across ALL recall paths (rule 41 parity).
+        // Issue #1577 — trust filter before packet cap (AGENTS.md order).
+        // Feature gate is consistent across ALL recall paths (rule 41 parity).
         {
           // Deadline-bound (issue #1905). This branch has no preloaded
           // frontmatter map (boost ran without one), so pass undefined and let
@@ -4187,6 +4166,27 @@ export class RecallInternalCoordinator {
             success: !trustFellBack,
           });
         }
+        const embeddingPartition =
+          options.xrayCapture === true
+            ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+                "memories",
+                scoped,
+                recallResultLimit,
+                retrievalQuery,
+                caps,
+                stateViewPacketActive,
+              )
+            : null;
+        scoped =
+          embeddingPartition?.appliedResults ??
+          this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+            "memories",
+            scoped,
+            recallResultLimit,
+            retrievalQuery,
+            caps,
+            stateViewPacketActive,
+          ).appliedResults;
         if (scoped.length > 0) {
           if (shouldPersistGraphSnapshot) {
             graphSnapshotFinalResults = this.deps.buildGraphRecallRankedResults(
@@ -4352,29 +4352,8 @@ export class RecallInternalCoordinator {
           },
           [] as QmdSearchResult[],
         );
-        const embeddingPartition =
-          options.xrayCapture === true
-            ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
-                "memories",
-                scoped,
-                recallResultLimit,
-                retrievalQuery,
-                caps,
-                stateViewPacketActive,
-              )
-            : null;
-        scoped =
-          embeddingPartition?.appliedResults ??
-          this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
-            "memories",
-            scoped,
-            recallResultLimit,
-            retrievalQuery,
-            caps,
-            stateViewPacketActive,
-          ).appliedResults;
-        // Issue #1577 — apply TrustScore on the embedding-fallback path so the
-        // feature gate is consistent across ALL recall paths (rule 41 parity).
+        // Issue #1577 — trust filter before packet cap (AGENTS.md order).
+        // Feature gate is consistent across ALL recall paths (rule 41 parity).
         {
           // Deadline-bound (issue #1905); no preloaded map on this branch.
           const trustT0 = Date.now();
@@ -4404,6 +4383,27 @@ export class RecallInternalCoordinator {
             success: !trustFellBack,
           });
         }
+        const embeddingPartition =
+          options.xrayCapture === true
+            ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+                "memories",
+                scoped,
+                recallResultLimit,
+                retrievalQuery,
+                caps,
+                stateViewPacketActive,
+              )
+            : null;
+        scoped =
+          embeddingPartition?.appliedResults ??
+          this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+            "memories",
+            scoped,
+            recallResultLimit,
+            retrievalQuery,
+            caps,
+            stateViewPacketActive,
+          ).appliedResults;
       if (scoped.length > 0) {
         if (shouldPersistGraphSnapshot) {
           graphSnapshotFinalResults = this.deps.buildGraphRecallRankedResults(
@@ -4556,29 +4556,8 @@ export class RecallInternalCoordinator {
               },
               [] as QmdSearchResult[],
             );
-            const recentPartition =
-              options.xrayCapture === true
-                ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
-                    "memories",
-                    recent,
-                    recallResultLimit,
-                    retrievalQuery,
-                    caps,
-                    stateViewPacketActive,
-                  )
-                : null;
-            recent =
-              recentPartition?.appliedResults ??
-              this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
-                "memories",
-                recent,
-                recallResultLimit,
-                retrievalQuery,
-                caps,
-                stateViewPacketActive,
-              ).appliedResults;
-            // Issue #1577 — apply TrustScore on the recent-scan path so the
-            // feature gate is consistent across ALL recall paths (rule 41).
+            // Issue #1577 — trust filter before packet cap (AGENTS.md order).
+            // Feature gate is consistent across ALL recall paths (rule 41).
             {
               // Deadline-bound (issue #1905). The recent-scan branch already
               // loaded every candidate's MemoryFile (queryAwareScopedMemories),
@@ -4614,6 +4593,27 @@ export class RecallInternalCoordinator {
                 success: !trustFellBack,
               });
             }
+            const recentPartition =
+              options.xrayCapture === true
+                ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+                    "memories",
+                    recent,
+                    recallResultLimit,
+                    retrievalQuery,
+                    caps,
+                    stateViewPacketActive,
+                  )
+                : null;
+            recent =
+              recentPartition?.appliedResults ??
+              this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+                "memories",
+                recent,
+                recallResultLimit,
+                retrievalQuery,
+                caps,
+                stateViewPacketActive,
+              ).appliedResults;
             if (recent.length > 0) {
               if (shouldPersistGraphSnapshot) {
                 graphSnapshotFinalResults = this.deps.buildGraphRecallRankedResults(

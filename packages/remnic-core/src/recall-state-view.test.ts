@@ -3,9 +3,11 @@ import test from "node:test";
 
 import {
   annotateStateView,
+  capStateViewPackets,
   formatSupersededPrefix,
   isChangeOrientedQuery,
   parseRecallStateViews,
+  reconcileStateViewPairs,
   shouldWidenSuperseded,
   type StateViewChain,
   type StateViewResult,
@@ -281,12 +283,12 @@ test("#2859 reverse chain derives from the successor supersedes back-pointer whe
   ];
   const labeled = annotateStateView(results, "when did the job title change", [], { enabled: true });
   assert.deepEqual(
-    labeled.map((row) => [row.id, row.stateLabel]),
+    labeled.map((row) => [row.id, row.stateLabel, row.supersededBy]),
     [
-      ["new-job", "current"],
-      ["old-job", "historical"],
+      ["new-job", "current", undefined],
+      ["old-job", "historical", "new-job"],
     ],
-    "the back-pointer must link the pair, admit the predecessor, and label it history",
+    "the back-pointer must link the pair, admit the predecessor, and carry derived supersededBy",
   );
 });
 
@@ -404,5 +406,29 @@ test("#2859 namespace-qualified chains: a chain link never crosses namespaces", 
     labeled.map((row) => row.id),
     ["new"],
     "the ns-a chain link must not pair against the ns-b successor",
+  );
+});
+
+test("reconcile drops a linkless superseded row so it cannot consume a packet slot", () => {
+  const rows = [
+    fact("legacy", { status: "superseded", supersededAt: "2026-01-01" }),
+    fact("live", { status: "active" }),
+  ];
+  assert.deepEqual(
+    reconcileStateViewPairs(rows).map((row) => row.id),
+    ["live"],
+    "audit/kill-switch status-only rows have no successor and must leave before the cap",
+  );
+  assert.deepEqual(
+    capStateViewPackets(reconcileStateViewPairs(rows), 1).map((row) => row.id),
+    ["live"],
+  );
+});
+
+test("reconcile still keeps an unlinked active row", () => {
+  const rows = [fact("solo", { status: "active" })];
+  assert.deepEqual(
+    reconcileStateViewPairs(rows).map((row) => row.id),
+    ["solo"],
   );
 });

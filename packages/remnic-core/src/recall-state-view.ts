@@ -98,6 +98,12 @@ export function resultStateViewKey(result: StateViewResult): string {
   return id ? stateViewKey(result.namespace, id) : "";
 }
 
+/** Inverse of {@link stateViewKey}: the id after the namespace separator. */
+function stateViewIdFromKey(key: string): string {
+  const sep = key.indexOf("\u0000");
+  return sep === -1 ? key : key.slice(sep + 1);
+}
+
 /**
  * predecessorKey → successorKey, namespace-qualified. Precedence: explicit
  * chains, then successor rows' `supersedes` back-pointers (#2859 — derives
@@ -137,6 +143,22 @@ function buildSuccessorMap(
   return byPred;
 }
 
+function successorLinkOf(
+  result: StateViewResult,
+  byPred: ReadonlyMap<string, string>,
+): { superseded: boolean; successorKey: string | undefined } {
+  const key = resultStateViewKey(result);
+  return {
+    superseded:
+      result.status === "superseded" ||
+      Boolean(result.supersededBy) ||
+      byPred.has(key),
+    successorKey: result.supersededBy
+      ? stateViewKey(result.namespace, result.supersededBy)
+      : byPred.get(key),
+  };
+}
+
 function labelFor(
   key: string,
   result: StateViewResult,
@@ -144,9 +166,7 @@ function labelFor(
   admittedIds: ReadonlySet<string>,
   asOfMs: number | null,
 ): StateLabel {
-  const successorKey = result.supersededBy
-    ? stateViewKey(result.namespace, result.supersededBy)
-    : byPred.get(key);
+  const { successorKey } = successorLinkOf(result, byPred);
   const isPred = shouldWidenSuperseded(successorKey, admittedIds);
   let isSucc = false;
   for (const [predId, succId] of byPred) {
@@ -204,29 +224,13 @@ export function annotateStateView<T extends StateViewResult>(
     const key = resultStateViewKey(result);
     if (key) candidateIds.add(key);
   }
-
-  const isSupersededRow = (
-    result: T,
-  ): { superseded: boolean; successorKey: string | undefined } => {
-    const key = resultStateViewKey(result);
-    return {
-      superseded:
-        result.status === "superseded" ||
-        Boolean(result.supersededBy) ||
-        byPred.has(key),
-      successorKey: result.supersededBy
-        ? stateViewKey(result.namespace, result.supersededBy)
-        : byPred.get(key),
-    };
-  };
-
   let admitted: T[];
   if (asOfMs !== null) {
     admitted = results.slice();
   } else {
     admitted = [];
     for (const result of results) {
-      const { superseded, successorKey } = isSupersededRow(result);
+      const { superseded, successorKey } = successorLinkOf(result, byPred);
       if (!superseded || shouldWidenSuperseded(successorKey, candidateIds)) {
         admitted.push(result);
       }
@@ -240,7 +244,7 @@ export function annotateStateView<T extends StateViewResult>(
       changed = false;
       for (let i = admitted.length - 1; i >= 0; i -= 1) {
         const row = admitted[i]!;
-        const { superseded, successorKey } = isSupersededRow(row);
+        const { superseded, successorKey } = successorLinkOf(row, byPred);
         if (superseded && !shouldWidenSuperseded(successorKey, admittedIds)) {
           admitted.splice(i, 1);
           changed = true;
@@ -253,7 +257,10 @@ export function annotateStateView<T extends StateViewResult>(
   const admittedIds = new Set(admitted.map(resultStateViewKey).filter(Boolean));
   return admitted.map((result) => {
     const key = resultStateViewKey(result);
-    return { ...result, stateLabel: labelFor(key, result, byPred, admittedIds, asOfMs) };
+    const { successorKey } = successorLinkOf(result, byPred);
+    const stateLabel = labelFor(key, result, byPred, admittedIds, asOfMs);
+    if (result.supersededBy || !successorKey) return { ...result, stateLabel };
+    return { ...result, stateLabel, supersededBy: stateViewIdFromKey(successorKey) };
   });
 }
 
@@ -267,23 +274,14 @@ export function annotateStateView<T extends StateViewResult>(
  */
 export function reconcileStateViewPairs<T extends StateViewResult>(results: readonly T[]): T[] {
   const byPred = buildSuccessorMap(results, []);
-  const successorKeyOf = (row: T): string | undefined => {
-    const key = resultStateViewKey(row);
-    const superseded =
-      row.status === "superseded" || Boolean(row.supersededBy) || byPred.has(key);
-    if (!superseded) return undefined;
-    return row.supersededBy
-      ? stateViewKey(row.namespace, row.supersededBy)
-      : byPred.get(key);
-  };
   let kept = results.slice();
   for (let changed = true; changed; ) {
     changed = false;
     const keptKeys = new Set(kept.map(resultStateViewKey).filter(Boolean));
     const next: T[] = [];
     for (const row of kept) {
-      const successorKey = successorKeyOf(row);
-      if (successorKey !== undefined && !keptKeys.has(successorKey)) {
+      const { superseded, successorKey } = successorLinkOf(row, byPred);
+      if (superseded && !shouldWidenSuperseded(successorKey, keptKeys)) {
         changed = true;
         continue;
       }

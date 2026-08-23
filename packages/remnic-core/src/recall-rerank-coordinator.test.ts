@@ -649,3 +649,74 @@ test("#2859 state-view cap: pairs reconcile before cap/MMR and count as one evid
     "without the state view the cap stays the plain top-N row slice",
   );
 });
+
+test("#2859 packet cap after filter: a quarantined successor does not consume budget", () => {
+  const config = parseConfig({ recallMmrEnabled: false });
+  const corpus = makeFakes([]);
+  const coordinator = new RecallRerankCoordinator({
+    getConfig: () => config,
+    getStorage: corpus.getStorage,
+    readQmdResultMemory: async () => null,
+  });
+  const sv = (
+    id: string,
+    score: number,
+    chain: Partial<QmdSearchResult> = {},
+  ): QmdSearchResult => ({ ...result(id, score), id, status: "active", ...chain });
+  // Trust already removed s1. Cap-after-filter must drop the orphaned
+  // predecessor and promote the next live packet instead of returning empty.
+  const afterTrust: QmdSearchResult[] = [
+    sv("p1", 0.95, { status: "superseded", supersededBy: "s1" }),
+    sv("f1", 0.8),
+    sv("f2", 0.75),
+  ];
+  const partition = coordinator.diversifyRecallResultsWithHeadroom(
+    "memories",
+    afterTrust,
+    1,
+    undefined,
+    resolveCapabilities(config),
+    true,
+  );
+  assert.deepEqual(
+    partition.appliedResults.map((row) => row.id),
+    ["f1"],
+    "disallowed pair must not occupy the only packet slot",
+  );
+  assert.deepEqual(
+    partition.headroomResults.map((row) => row.id),
+    ["f2"],
+  );
+});
+
+test("#2859 linkless superseded status does not consume a packet slot", () => {
+  const config = parseConfig({ recallMmrEnabled: false });
+  const corpus = makeFakes([]);
+  const coordinator = new RecallRerankCoordinator({
+    getConfig: () => config,
+    getStorage: corpus.getStorage,
+    readQmdResultMemory: async () => null,
+  });
+  const sv = (
+    id: string,
+    score: number,
+    chain: Partial<QmdSearchResult> = {},
+  ): QmdSearchResult => ({ ...result(id, score), id, status: "active", ...chain });
+  const rows: QmdSearchResult[] = [
+    sv("legacy", 0.99, { status: "superseded" }),
+    sv("live", 0.5),
+  ];
+  const applied = coordinator.diversifyAndLimitRecallResults(
+    "memories",
+    rows,
+    1,
+    undefined,
+    resolveCapabilities(config),
+    true,
+  );
+  assert.deepEqual(
+    applied.map((row) => row.id),
+    ["live"],
+    "status-only superseded rows are rejected before the packet cap",
+  );
+});
