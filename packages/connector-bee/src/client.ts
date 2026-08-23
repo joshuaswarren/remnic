@@ -21,12 +21,17 @@
  * logged and never appear in thrown error messages.
  */
 
+import {
+  ConnectorApiError,
+  describeNetworkError,
+  retryingFetch,
+  stripTrailingSlashes,
+} from "@remnic/core/http-retry";
+
 export const BEE_DEFAULT_BASE_URL = "http://127.0.0.1:8787";
 export const BEE_DIRECT_BASE_URL = "https://app-api-developer.ce.bee.amazon.dev";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const MAX_RETRIES = 3;
-const MAX_RETRY_DELAY_MS = 30_000;
 const LIST_PAGE_SIZE = 50;
 
 export interface BeeConversationListItem {
@@ -88,12 +93,12 @@ export interface BeeClientOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-export class BeeApiError extends Error {
+export class BeeApiError extends ConnectorApiError {
   constructor(
     message: string,
-    readonly status?: number,
+    status?: number,
   ) {
-    super(message);
+    super(message, status);
     this.name = "BeeApiError";
   }
 }
@@ -233,62 +238,39 @@ export class BeeClient {
   }
 
   private async requestJson(pathAndQuery: string, signal?: AbortSignal): Promise<unknown> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      signal?.throwIfAborted();
-      const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-      const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-      let response: Response;
-      try {
-        response = await this.fetchImpl(`${this.baseUrl}${pathAndQuery}`, {
-          method: "GET",
-          headers: {
-            Accept: "application/json",
-            ...(this.token !== undefined
-              ? { Authorization: `Bearer ${this.token}` }
-              : {}),
-          },
-          signal: combined,
-        });
-      } catch (err) {
-        if (signal?.aborted) throw err;
-        lastError = err;
-        if (attempt < MAX_RETRIES) {
-          await this.sleep(backoffMs(attempt));
-          continue;
-        }
-        throw new BeeApiError(
-          `Bee API request failed after ${MAX_RETRIES + 1} attempts: ${describeNetworkError(err)}` +
+    const response = await retryingFetch(`${this.baseUrl}${pathAndQuery}`, {
+      init: {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          ...(this.token !== undefined
+            ? { Authorization: `Bearer ${this.token}` }
+            : {}),
+        },
+      },
+      fetchImpl: this.fetchImpl,
+      sleep: this.sleep,
+      signal,
+      timeoutMs: this.timeoutMs,
+      networkError: (err, attempts) =>
+        new BeeApiError(
+          `Bee API request failed after ${attempts} attempts: ${describeNetworkError(err)}` +
             (this.usingLocalProxy ? " — is `bee proxy` running?" : ""),
-        );
-      }
-
-      if (response.status === 429 || response.status >= 500) {
-        lastError = new BeeApiError(
-          `Bee API responded ${response.status}`,
-          response.status,
-        );
-        if (attempt < MAX_RETRIES) {
-          await this.sleep(retryDelayMs(response, attempt));
-          continue;
-        }
-        throw lastError;
-      }
-      if (!response.ok) {
-        throw new BeeApiError(
-          `Bee API responded ${response.status} for ${pathAndQuery.split("?")[0]}`,
-          response.status,
-        );
-      }
-      try {
-        return await response.json();
-      } catch {
-        throw new BeeApiError("Bee API returned a non-JSON body");
-      }
+        ),
+      retryableError: (retryable) =>
+        new BeeApiError(`Bee API responded ${retryable.status}`, retryable.status),
+    });
+    if (!response.ok) {
+      throw new BeeApiError(
+        `Bee API responded ${response.status} for ${pathAndQuery.split("?")[0]}`,
+        response.status,
+      );
     }
-    throw lastError instanceof Error
-      ? lastError
-      : new BeeApiError("Bee API request failed");
+    try {
+      return await response.json();
+    } catch {
+      throw new BeeApiError("Bee API returned a non-JSON body");
+    }
   }
 }
 
@@ -327,35 +309,4 @@ export function isLocalProxyUrl(url: string): boolean {
   }
 }
 
-/**
- * Network/timeout failures wrap Node error text that can carry loader
- * paths or stack fragments; sync errors reach MCP clients verbatim, so
- * only the error name + code survive.
- */
-function describeNetworkError(err: unknown): string {
-  if (!(err instanceof Error)) return "unexpected non-Error failure";
-  const code = (err as NodeJS.ErrnoException).code;
-  return typeof code === "string" && code.length > 0 ? `${err.name} (${code})` : err.name;
-}
 
-/** Loop instead of `/\/+$/` — CodeQL js/polynomial-redos on user-set URLs. */
-function stripTrailingSlashes(value: string): string {
-  let end = value.length;
-  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end--;
-  return value.slice(0, end);
-}
-
-function backoffMs(attempt: number): number {
-  return Math.min(MAX_RETRY_DELAY_MS, 1_000 * 2 ** attempt);
-}
-
-function retryDelayMs(response: Response, attempt: number): number {
-  const headerValue = response.headers.get("retry-after");
-  if (headerValue !== null) {
-    const parsed = Number(headerValue);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return Math.min(MAX_RETRY_DELAY_MS, Math.ceil(parsed * 1_000));
-    }
-  }
-  return backoffMs(attempt);
-}
