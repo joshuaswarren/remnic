@@ -28,6 +28,10 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export function isValidActivityDate(date: string): boolean {
   if (typeof date !== "string" || !DATE_PATTERN.test(date)) return false;
+  // Year 0000 passes the round-trip below but Intl formats it as astronomical
+  // year 1 BC, so zonedDayStartIso's padded year yields 0001 and day windows
+  // land on the wrong boundary. Reject it here, at validation.
+  if (date.startsWith("0000-")) return false;
   // Reject impossible calendar days (e.g. 2026-02-30, 2026-13-01): the UTC
   // round-trip must reproduce the same Y-M-D, else Date normalized an overflow.
   const parsed = new Date(`${date}T00:00:00Z`);

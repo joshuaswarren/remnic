@@ -106,7 +106,12 @@ test("isValidActivityDate rejects impossible and malformed calendar days", () =>
   assert.equal(isValidActivityDate("2026-00-10"), false);
   assert.equal(isValidActivityDate("not-a-date"), false);
   assert.equal(isValidActivityDate("2026-3-10"), false); // wrong shape
-});
+  // Astronomical year zero: Intl formats it as 1 BC, so day windows would
+  // pad it to 0001 and land on the wrong boundary. Validation rejects it.
+  assert.equal(isValidActivityDate("0000-01-01"), false);
+  assert.equal(isValidActivityDate("0001-01-01"), true); // first supported year
+  assert.equal(isValidActivityDate("0999-01-01"), true); // unpadded Intl year, still correct
+ });
 
 test("activityDigestPath rejects path-traversal / invalid dates", () => {
   assert.equal(activityDigestPath("/mem", "2026-03-10"), "/mem/activity/2026-03-10.md");
@@ -117,6 +122,13 @@ test("activityDigestPath rejects path-traversal / invalid dates", () => {
 test("activityDayWindow rejects an impossible date", () => {
   assert.throws(() => activityDayWindow("2026-02-30", "UTC"), RangeError);
   assert.throws(() => activityDayWindow("../evil", "UTC"), RangeError);
+  assert.throws(() => activityDayWindow("0000-01-01", "UTC"), RangeError);
+});
+
+test("activityDayWindow keeps year 0001 boundaries correct", () => {
+  const w = activityDayWindow("0001-01-01", "UTC");
+  assert.equal(w.startUtc, "0001-01-01T00:00:00.000Z");
+  assert.equal(w.endUtc, "0001-01-02T00:00:00.000Z");
 });
 
 test("parseActivityDigest rejects a non-numeric snapshotCount/formatVersion", () => {
