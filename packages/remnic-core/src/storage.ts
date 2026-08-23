@@ -46,7 +46,7 @@ import {
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
-import { DeletionRevisionStore, invalidationCommitFingerprint } from "./storage/deletion-revision-store.js";
+import { DeletionRevisionStore, invalidationCommitFingerprint, withCasCommitReceipt } from "./storage/deletion-revision-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import * as entityMigration from "./storage/entity-canonical-id-migration.js";
 import * as entityRefs from "./storage/entity-canonical-id-references.js";
@@ -5293,9 +5293,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     newContent: string,
     options?: { supersedes?: string; lineage?: string[]; actor?: string; sourceConnector?: string },
   ): Promise<boolean> {
-    const mergedLineage = [...(memory.frontmatter.lineage ?? []), ...(options?.lineage ?? [])].filter(
-      (v, i, a) => a.indexOf(v) === i
-    );
+    const mergedLineage = [...(memory.frontmatter.lineage ?? []), ...(options?.lineage ?? [])].filter((v, i, a) => a.indexOf(v) === i);
     const refIdsAtWrite = this.currentHistoricalIds();
     const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
       {
@@ -5318,31 +5316,26 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       this.invalidateAllMemoriesCache();
       if (this.isColdOrArchiveTierPath(memory.path)) this.invalidateColdMemoriesCache();
     });
-    if (typeof memory.frontmatter.entityRef === "string") {
-      await this.entityRefRepair.repair(
-        memory.path,
-        updated,
-        memory.frontmatter.entityRef,
-        refIdsAtWrite,
-        sanitized.text,
-        { onFailRestore: memory }
-      );
-    }
-    await this.patchHotMemoriesCache({ addedPath: memory.path });
-    await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
-      memoryId: memory.frontmatter.id,
-      eventType: "updated",
-      timestamp: updated.updated,
-      actor: options?.actor ?? "storage.updateMemory",
-      before: this.summarizeLifecycleState(memory.frontmatter, memory.path),
-      after: this.summarizeLifecycleState(updated, memory.path),
-      relatedMemoryIds: [
-        ...(updated.supersedes ? [updated.supersedes] : []),
-        ...(updated.lineage ?? []).filter(Boolean),
-      ],
+    return await withCasCommitReceipt(updated.updated, async () => {
+      if (typeof memory.frontmatter.entityRef === "string") {
+        await this.entityRefRepair.repair(memory.path, updated, memory.frontmatter.entityRef, refIdsAtWrite, sanitized.text, { onFailRestore: memory });
+      }
+      await this.patchHotMemoriesCache({ addedPath: memory.path });
+      await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
+        memoryId: memory.frontmatter.id,
+        eventType: "updated",
+        timestamp: updated.updated,
+        actor: options?.actor ?? "storage.updateMemory",
+        before: this.summarizeLifecycleState(memory.frontmatter, memory.path),
+        after: this.summarizeLifecycleState(updated, memory.path),
+        relatedMemoryIds: [
+          ...(updated.supersedes ? [updated.supersedes] : []),
+          ...(updated.lineage ?? []).filter(Boolean),
+        ],
+      });
+      log.debug(`updated memory ${memory.frontmatter.id}`);
+      return true;
     });
-    log.debug(`updated memory ${memory.frontmatter.id}`);
-    return true;
   }
 
   async updateMemory(

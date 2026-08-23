@@ -81,6 +81,7 @@ import type {
 } from "../types.js";
 import { normalizeConnectorScope } from "../dedup/connector-scope.js";
 import type { StorageManager } from "../index.js";
+import { casCommittedRevisionOf } from "../storage/deletion-revision-store.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
 
 export type SemanticMergeCreateReason =
@@ -838,15 +839,27 @@ export async function applySemanticMergeAtPersist(
     // snapshot `pending` forever, which pruneExcessVersions deliberately
     // excludes, so repeated contention grew history past
     // maxVersionsPerPage with snapshots of bodies storage never (or no
-    // longer) holds. Reread the target instead of trusting the flag:
-    //   - the exact pre-merge body → the write never landed → the snapshot
-    //     is a duplicate and goes, `created` is honest;
-    //   - our merged body → the write DID land (throw after commit) → the
+    // longer) holds. Reread the target instead of trusting the flag.
+    // #2813 (P1): ownership comes from the CAS's own commit identity —
+    // storage stamps the thrown error with the revision its write landed
+    // (markCasCommittedRevision) — NEVER from body equality: a concurrent
+    // writer's identical deterministic merge is byte-for-byte this writer's
+    // merged body, so content comparison would misattribute their commit,
+    // and the revert below would CAS-replace their valid merge with the
+    // pre-merge body while their patched provenance stood.
+    //   - receipt present → OUR write landed (throw after commit) → the
     //     committed-update handling below applies: revert, else degraded
     //     success;
-    //   - replaced by another writer, or unreadable → unverifiable —
-    //     keep-side, the snapshot stays.
-    let landed = contentCommitted;
+    //   - no receipt, merged body standing → a concurrent writer's commit —
+    //     clean up OUR staged duplicate, leave theirs untouched, report the
+    //     degraded merged outcome (never `created`: storage already holds
+    //     these claims);
+    //   - no receipt, pre-merge body → the write never landed → the snapshot
+    //     is a duplicate and goes, `created` is honest;
+    //   - no receipt, replaced by another writer or unreadable →
+    //     unverifiable → keep-side, the snapshot stays.
+    const committedRevision = casCommittedRevisionOf(err);
+    let landed = contentCommitted || committedRevision !== undefined;
     if (!landed) {
       let observed: MemoryFile | null = null;
       try {
@@ -855,7 +868,23 @@ export async function applySemanticMergeAtPersist(
         /* unreadable → keep-side below */
       }
       if (observed?.content === committedContent) {
-        landed = true;
+        await discardMergedTargetSnapshot(
+          target.path,
+          versioning,
+          options.storage.dir,
+          decision.targetId,
+          versionId,
+        );
+        await repairIndexes(committedMergedFactHash(deps, options.category, committedContent));
+        log.warn(
+          `semantic-merge: update failed for ${decision.targetId} (the compare-and-swap threw before this writer's mutation; the standing merged body is another writer's identical commit — snapshot ${versionId} discarded, the concurrent commit left untouched): ${detail}`,
+        );
+        return {
+          action: "merged",
+          targetId: decision.targetId,
+          mergedContent: committedContent,
+          provenancePatched: false,
+        };
       } else if (observed?.content === target.content) {
         await discardMergedTargetSnapshot(
           target.path,

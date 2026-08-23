@@ -47,7 +47,7 @@ import {
   type MergeJudgeRawVerdict,
 } from "./merge.js";
 import type { SemanticDedupHit } from "./semantic.js";
-import { invalidationCommitFingerprint } from "../storage/deletion-revision-store.js";
+import { invalidationCommitFingerprint, markCasCommittedRevision } from "../storage/deletion-revision-store.js";
 
 // The merge snapshot trigger must stay a literal union: a widened
 // `VersionTrigger` (e.g. annotated `readonly string[]`) would let an unknown
@@ -524,9 +524,12 @@ async function harness(
      * #2807: force `updateMemoryIfUnchanged` itself to THROW on the
      * semantic-merge actor — "before" fails at lock acquisition (target
      * untouched), "after" commits the merged body and then throws (lock
-     * release failure past the write).
+     * release failure past the write; storage stamps the commit receipt),
+     * "concurrent" (#2813 P1) has another writer commit the IDENTICAL
+     * deterministic merged body before this writer's lock acquisition
+     * fails, so the throw carries no receipt.
      */
-    contentCasThrows?: "before" | "after";
+    contentCasThrows?: "before" | "after" | "concurrent";
   } = {},
 ): Promise<MergeHarness> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-"));
@@ -625,13 +628,25 @@ async function harness(
       if (overrides.contentCasThrows === "before" && options?.actor === "semantic-merge") {
         throw new Error("storage lock acquisition timed out");
       }
+      if (overrides.contentCasThrows === "concurrent" && options?.actor === "semantic-merge") {
+        // #2813 (P1): a concurrent writer wins the lock and commits the
+        // IDENTICAL deterministic merged body; this writer's CAS then throws
+        // before its own mutation — no commit receipt is stamped.
+        calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: "other-writer" });
+        await commit(content);
+        throw new Error("storage lock acquisition timed out");
+      }
       if (overrides.mutateOnWrite !== undefined && options?.actor === "semantic-merge") {
         await commit(overrides.mutateOnWrite);
       }
       if (overrides.contentCasThrows === "after" && options?.actor === "semantic-merge") {
         calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: options?.actor });
         await commit(content);
-        throw new Error("lock release failed after the content write committed");
+        // Signature-faithful to the real CAS: the durable write landed, so
+        // storage stamps the post-commit throw with the commit receipt.
+        const err = new Error("lock release failed after the content write committed");
+        markCasCommittedRevision(err, "2026-08-22T00:00:00.000Z");
+        throw err;
       }
       if (!(await unchanged(expected))) return false;
       calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: options?.actor });
@@ -3594,6 +3609,50 @@ test("applySemanticMergeAtPersist: a content CAS that throws before changing the
     ).versions.length,
     0,
     "the reverted attempt leaves no snapshot: the recovery point would hold the body storage already returned to",
+  );
+});
+
+test("applySemanticMergeAtPersist: a concurrent identical commit is never claimed as this writer's (#2813 P1)", async () => {
+  // The P1 hole — body-equality ownership. This writer's CAS throws before
+  // mutating anything, but a concurrent writer commits the IDENTICAL
+  // deterministic merged body. The old reread saw "the merged body
+  // standing" and claimed the commit as ours, so revertMergedContent
+  // CAS-replaced the other writer's valid merge with the pre-merge body
+  // while their patched provenance stood. Ownership now comes from the CAS
+  // commit receipt: absent → the standing body is theirs. This writer
+  // discards only its own staged duplicate snapshot and reports the
+  // degraded merged outcome (never `created` — storage already holds
+  // these claims, so writing the fact again would duplicate them).
+  const h = await harness({ contentCasThrows: "concurrent" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, {
+    action: "merged",
+    targetId: "fact-target",
+    mergedContent: MERGED,
+    provenancePatched: false,
+  });
+  const body = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(body?.content, MERGED, "the concurrent writer's commit stands — never reverted");
+  assert.deepEqual(
+    h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [{ content: MERGED, actor: "other-writer" }],
+    "neither a semantic-merge write nor a semantic-merge-rollback ran — the concurrent commit's state is untouched",
+  );
+  assert.equal(
+    (
+      await listVersions(
+        h.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        h.storage.dir,
+      )
+    ).versions.length,
+    0,
+    "this writer's staged duplicate snapshot is cleaned up, not finalized into history",
   );
 });
 

@@ -63,6 +63,41 @@ export function invalidationCommitFingerprint(memory: Pick<MemoryFile, "content"
     .digest("hex");
 }
 
+/**
+ * #2813 (P1): revision identity stamped onto an Error thrown by a
+ * compare-and-swap write AFTER the durable mutation landed (a post-commit
+ * step failed). Body equality cannot attribute a standing body — a
+ * concurrent writer's identical deterministic merge is byte-for-byte the
+ * same — so throw-path ownership must come from this receipt, never from
+ * comparing content afterward.
+ */
+export function markCasCommittedRevision(err: unknown, revision: string): void {
+  if (err instanceof Error) {
+    (err as Error & { casCommittedRevision?: string }).casCommittedRevision = revision;
+  }
+}
+
+export function casCommittedRevisionOf(err: unknown): string | undefined {
+  return err instanceof Error
+    ? (err as Error & { casCommittedRevision?: string }).casCommittedRevision
+    : undefined;
+}
+
+/**
+ * Runs a compare-and-swap write's post-commit steps. The durable mutation
+ * has already landed by the time `run` executes, so any throw it raises is
+ * stamped with the commit receipt — callers must attribute the standing
+ * body by that identity, never by body equality (#2813 P1).
+ */
+export async function withCasCommitReceipt<T>(revision: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    markCasCommittedRevision(err, revision);
+    throw err;
+  }
+}
+
 function isValidInvalidationCommitTimestamp(value: unknown): value is number {
   return (
     typeof value === "number" &&
