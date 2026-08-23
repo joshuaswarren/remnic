@@ -31,6 +31,7 @@
     "node": ">=22.13.0"
   },
   "peerDependencies": {
+    "@remnic/core": "^9.69.25",
     "@remnic/capture-native-darwin-arm64": "^9.69.25",
     "@remnic/capture-native-darwin-x64": "^9.69.25"
   },
@@ -43,6 +44,7 @@
     }
   },
   "devDependencies": {
+    "@remnic/core": "workspace:*",
     "@types/node": "^22.10.0",
     "tsup": "^8.0.0",
     "typescript": "^5.7.0",
