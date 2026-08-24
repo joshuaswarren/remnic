@@ -535,6 +535,60 @@ test("discoverBenchDatasetDir rejects a symlinked ancestor of the legacy root", 
   }
 });
 
+test("discoverBenchDatasetDir rejects a nested directory symlink inside a legacy dataset dir", async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-dataset-dir-symlink-"));
+  const canonicalRoot = path.join(base, "canonical");
+  const legacyRoot = path.join(base, "evals", "datasets");
+  const outsideData = path.join(base, "outside", "data");
+  await mkdir(outsideData, { recursive: true });
+  await writeFile(path.join(outsideData, "100K-00000-of-00001.parquet"), "x");
+  const legacyDir = path.join(legacyRoot, "beam");
+  await mkdir(legacyDir, { recursive: true });
+  await symlink(outsideData, path.join(legacyDir, "data"));
+
+  __benchDatasetTestHooks.resetLegacyDatasetDiscoveryWarningForTest();
+  const captured = captureConsoleError();
+  try {
+    assert.equal(
+      __benchDatasetTestHooks.discoverBenchDatasetDir("beam", {
+        canonicalRoot,
+        legacyRoot,
+      }),
+      undefined,
+    );
+    assert.deepEqual(captured.lines(), []);
+  } finally {
+    captured.restore();
+  }
+});
+
+test("discoverBenchDatasetDir rejects an unused directory symlink in a complete legacy dataset", async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-dataset-unused-dir-symlink-"));
+  const canonicalRoot = path.join(base, "canonical");
+  const legacyRoot = path.join(base, "evals", "datasets");
+  const legacyDir = path.join(legacyRoot, "locomo");
+  await writeLocomoDataset(legacyDir);
+  const outsideDir = path.join(base, "outside", "extra");
+  await mkdir(outsideDir, { recursive: true });
+  await writeFile(path.join(outsideDir, "note.txt"), "x");
+  await symlink(outsideDir, path.join(legacyDir, "extra"));
+
+  __benchDatasetTestHooks.resetLegacyDatasetDiscoveryWarningForTest();
+  const captured = captureConsoleError();
+  try {
+    assert.equal(
+      __benchDatasetTestHooks.discoverBenchDatasetDir("locomo", {
+        canonicalRoot,
+        legacyRoot,
+      }),
+      undefined,
+    );
+    assert.deepEqual(captured.lines(), []);
+  } finally {
+    captured.restore();
+  }
+});
+
 test("resolveRepoDatasetRoot uses the post-migration home store in a repo checkout", () => {
   assert.equal(
     resolveRepoDatasetRoot(),

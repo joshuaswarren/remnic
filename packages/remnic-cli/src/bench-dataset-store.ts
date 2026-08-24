@@ -441,6 +441,31 @@ function isPathContainedWithinRoot(candidate: string, root: string): boolean {
   }
 }
 
+// In-tree symlink policy for a contained legacy dataset dir. `lstat` on a
+// nested marker follows intermediate directory links (BEAM `data/…`), so
+// the only complete check is a dirent walk that never follows links.
+function datasetTreeHasSymlink(root: string): boolean {
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return true;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) {
+        return true;
+      }
+      if (entry.isDirectory()) {
+        stack.push(path.join(dir, entry.name));
+      }
+    }
+  }
+  return false;
+}
+
 // Single seam for read-side dataset discovery (#2867): canonical root wins;
 // a dataset left at the legacy evals/datasets/<benchmark> location is used
 // read-only with a once-per-process migration hint. Never moves, links, or
@@ -463,7 +488,8 @@ export function discoverBenchDatasetDir(
   }
   if (
     !isPathContainedWithinRoot(legacyDir, legacyRoot) ||
-    !isDatasetDownloaded(legacyDir, benchmarkId)
+    !isDatasetDownloaded(legacyDir, benchmarkId) ||
+    datasetTreeHasSymlink(legacyDir)
   ) {
     return undefined;
   }
