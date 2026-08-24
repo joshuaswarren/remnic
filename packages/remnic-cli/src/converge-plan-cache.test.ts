@@ -505,6 +505,52 @@ test("converge plan: client-built peer rows stay a SHA-keyed warm base for unver
   }
 });
 
+test("converge plan: streamed remanifest clears client-built provenance so a later revision bump cannot reuse stale identities (#2803)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-stream-clear-"));
+  try {
+    const local = convergedCorpus();
+    const peer = new Map<string, FixtureFile[]>();
+    for (const [namespace, files] of local) {
+      peer.set(
+        namespace,
+        files.map((file) => ({ ...file, content: memoryFileBody(`peer ${namespace}`) }))
+      );
+    }
+    await writeLocalCorpus(memoryDir, local);
+
+    const fallback = createPeerMock(peer, undefined);
+    fallback.manifestStream = false;
+    await convergedPlan(memoryDir, fallback);
+    assert.ok(fallback.contentPaths.length >= 3, `expected per-file fetches, got ${fallback.contentPaths.length}`);
+
+    for (const [namespace, files] of peer) {
+      peer.set(
+        namespace,
+        files.map((file) => ({ ...file, content: memoryFileBody(`streamed ${namespace}`) }))
+      );
+    }
+
+    const remanifested = ["alpha", "beta", "default"];
+    const streamed = createPeerMock(peer, "rev-1");
+    await convergedPlan(memoryDir, streamed);
+    assert.deepEqual(streamed.manifestStreamNamespaces, remanifested);
+
+    const sameRevision = createPeerMock(peer, "rev-1");
+    await convergedPlan(memoryDir, sameRevision);
+    assert.deepEqual(sameRevision.manifestStreamNamespaces, []);
+
+    const upgraded = createPeerMock(peer, "rev-2");
+    await convergedPlan(memoryDir, upgraded);
+    assert.deepEqual(
+      upgraded.manifestStreamNamespaces,
+      remanifested,
+      "streamed rows must not keep clientBuilt or a revision bump reuses the old peer identities"
+    );
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 const HEX16 = (value: number): string => value.toString(16).padStart(16, "0");
 
 test("converge plan: a symlinked plan-cache root is rejected and never pruned (#2803)", async () => {

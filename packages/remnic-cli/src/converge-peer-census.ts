@@ -90,7 +90,9 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
       ? await fetchPeerManifestStream(peerUrl, ns, args.resolvedToken, args.fetchFn, args.timeoutMs)
       : null;
     peerManifest = streamedManifest;
-    if (!peerManifest) {
+    if (peerManifest) {
+      clientBuilt = false;
+    } else {
       clientBuilt = true;
       let readFailure: Error | undefined;
       peerManifest = await buildReconcileManifest({
