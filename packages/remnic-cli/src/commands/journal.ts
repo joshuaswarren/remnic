@@ -41,6 +41,7 @@ import {
   type JournalExtractionDeps,
   type PluginConfig,
 } from "@remnic/core";
+import type { BufferTurn } from "@remnic/core/types.js";
 import { resolveConfigPath } from "../config-path.js";
 
 export interface JournalCommandIo {
@@ -251,7 +252,6 @@ export async function runJournalCommand(
         text = fs.readFileSync(filePath, "utf8");
       }
       surfaceStripWarnings(io, stripWarnings);
-
       const state = readTimelineState(config.memoryDir);
       if (journalUnchanged(state, date, text)) {
         io.out(`unchanged ${date} (hash-skip)`);
