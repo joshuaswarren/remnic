@@ -128,11 +128,18 @@ const DESCRIPTIVE_ARTICLES = new Set(["the", "a", "an"]);
 const PAST_PARTICIPLE_KEYWORDS = new Set(["fixed", "closed", "resolved"]);
 
 /**
- * All #<n> issue references in free text, deduped (issue #2067). Non-rendered
- * content is dropped first — HTML comments (template/generated <!-- ... -->
- * blocks) and fenced + inline code spans — so a hidden `<!-- related #2 -->`
- * or a hash in a code sample (a CSS hex color like #123456, a shell prompt) is
- * never mistaken for an issue ref, and the match requires GitHub
+ * Issues CLAIMED by PR-body closing keywords, deduped (issues #2067, #2919).
+ * The grammar is GitHub's closing-keyword form: keyword + optional
+ * OWNER/REPOSITORY qualifier + #<n>, with comma/"and" list continuations —
+ * `Fixes #1, #2 and #3`, `resolves octo-org/octo-repo#100`. Bare #<n>
+ * citations — ordinary prose, quoted source comments, anything without a
+ * keyword — never count, and neither do citations from touched-file
+ * contents, commit messages, or review text: the parser consumes PR text
+ * only (the workflow passes the body, #2919). Non-rendered content is
+ * dropped first — HTML comments (template/generated <!-- ... --> blocks) and
+ * fenced + inline code spans — so a hidden `<!-- related #2 -->` or a hash
+ * in a code sample (a CSS hex color like #123456, a shell prompt) is never
+ * mistaken for an issue ref, and the match requires GitHub
  * issue-reference boundaries (no adjacent alphanumerics, no leading #) so
  * `abc#12`, `#12ab`, and `##12` do not count.
  */
@@ -143,9 +150,19 @@ export function extractIssueRefs(text) {
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`[^`]*`/g, " ");
-  for (const match of prose.matchAll(
-    /(\w+\s+)?\b(fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d+)((?:\s*(?:,|and)\s*#\d+)*)/gi,
-  )) {
+  // The optional OWNER/REPOSITORY qualifier accepts GitHub's cross-repo
+  // closing form (`Fixes octo-org/octo-repo#100`) in both the head ref and
+  // every comma/"and" list continuation (this-run #2919). A separator RUN
+  // ("#1, #2, and #3" — comma + "and" between elements) counts as one
+  // separator, so Oxford-comma lists never truncate.
+  const qualifiedRef = String.raw`(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#`;
+  const closingKeywordPattern = new RegExp(
+    String.raw`(\w+\s+)?\b(fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+${qualifiedRef}(\d+)` +
+      String.raw`((?:(?:\s*(?:,|and)\s*)+${qualifiedRef}\d+)*)` +
+      String.raw`(?!\w)`,
+    "gi",
+  );
+  for (const match of prose.matchAll(closingKeywordPattern)) {
     // An ARTICLE in front of a PAST-PARTICIPLE keyword is a noun phrase, not a
     // claim: "follow-up to the closed #2448" names history, while "Closes
     // #2448" claims the issue. Counting the former inflated the multi-issue
@@ -345,8 +362,11 @@ function main() {
   const ignorePatterns = parseIgnoreManifest(
     readFileSync(args.ignore ?? path.join(ROOT, ".github", "ai-review-ignore"), "utf8")
   );
-  // PR title + body is DATA (author-controlled), never executed — only scanned
-  // for #<n> issue references. Absent -> no multi-issue signal.
+  // PR body is DATA (author-controlled), never executed — only scanned for
+  // closing-keyword issue claims. Absent -> no multi-issue signal. The
+  // workflow passes the BODY only: closing keywords close issues from the PR
+  // description, never the title, and never commit messages or review text
+  // (#2919).
   const prText = args["pr-meta"] ? readFileSync(args["pr-meta"], "utf8") : "";
 
   const result = evaluateScopeBudget({

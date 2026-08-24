@@ -240,6 +240,81 @@ test("extractIssueRefs accepts GitHub Fixes #1 and #2 lists", () => {
   );
 });
 
+test("claimed issues come only from PR-body closing keywords (this-run #2919)", () => {
+  const bodies = [
+    ["single", "Fixes #2919", [2919]],
+    ["comma list", "Closes #1, #2, and #3", [1, 2, 3]],
+    ["cross-repo", "Fixes octo-org/octo-repo#100", [100]],
+    ["docs mixed list", "Resolves #10, resolves #123, resolves octo-org/octo-repo#100", [10, 100, 123]],
+    ["qualified continuation", "Fixes #1 and octo-org/octo-repo#2", [1, 2]],
+    ["mixed case", "FIXES #7 cLoSeD #8 ReSoLvEs #9", [7, 8, 9]],
+    ["fenced code", "Fixes #42\n\n```\nFixes #999\n```", [42]],
+    ["ordinary citations", "Follow-up to #2448. See #12. Part of #34. As reported in #99.", []],
+    [
+      "malformed keywords",
+      "refixes #1, prefix #2, suffix #3, fixes: #4, fixes abc#5, fixes owner#6, fixes owner/repo #7, fixes #12ab, fixes ##13",
+      [],
+    ],
+  ];
+  for (const [name, body, expected] of bodies) {
+    assert.deepEqual(
+      [...extractIssueRefs(body)].sort((a, b) => a - b),
+      expected,
+      name,
+    );
+  }
+});
+
+test("touched-code historical citations never inflate the count (#2769 shape, this-run #2919)", () => {
+  // The #2769/#2774 failure: the gate reported the predecessor issues a
+  // touched module's docstring cites, on a PR claiming ONE issue. The parser
+  // consumes PR text only — file contents, commit messages, and review text
+  // are structurally outside its input.
+  const body = [
+    "## Summary",
+    "",
+    "Fixes #2919",
+    "",
+    "Context: the touched module's docstring (quoted verbatim) reads:",
+    "",
+    "```",
+    "/**",
+    " * Loopback classification (issues #2448 and #2712) — narrowed here.",
+    " */",
+    "```",
+    "",
+    "This is a follow-up to the closed #2488. See #2448 for the original report.",
+  ].join("\n");
+  assert.deepEqual([...extractIssueRefs(body)], [2919]);
+});
+
+test("gate level: cross-repo claims count as multi-issue; citations alone stay single-issue (this-run #2919)", () => {
+  const files = [
+    coreFile(200, "packages/remnic-core/src/recall/recall.ts"),
+    coreFile(200, "packages/remnic-cli/src/main.ts"),
+  ];
+  const quiet = evaluateScopeBudget({
+    files,
+    labels: [],
+    thresholds: THRESHOLDS,
+    ignorePatterns: NO_IGNORES,
+    subsystemGroups: GROUPS,
+    prText: "Fixes #2919. Follow-up to #2448, see #2712, part of the closed #2488.",
+  });
+  assert.equal(quiet.verdict, "pass", "one claimed issue + historical citations stays single-issue");
+
+  const loud = evaluateScopeBudget({
+    files,
+    labels: [],
+    thresholds: THRESHOLDS,
+    ignorePatterns: NO_IGNORES,
+    subsystemGroups: GROUPS,
+    prText: "Fixes #2919 and fixes octo-org/octo-repo#100",
+  });
+  assert.equal(loud.verdict, "fail");
+  assert.match(loud.detail, /#100, #2919/);
+});
+
 test("classifySubsystem picks the longest matching prefix", () => {
   const map = {
     "packages/remnic-core/": "core",
