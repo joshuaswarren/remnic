@@ -107,6 +107,32 @@ describe("check-test-types wrapper", () => {
     assert.match(result.details ?? "", /wrapper\.js/);
   });
 
+  it("ignores pnpm unsupported-platform warnings next to baseline diagnostics", () => {
+    const result = evaluateTestTypecheckResult({
+      status: 2,
+      stdout: `${BASELINE_DIAGNOSTIC}\npackages/capture-native-darwin-arm64     |  WARN Unsupported platform: wanted: {"cpu":["arm64"]} (current: {"os":"linux"})\n`,
+      expectedText: `${BASELINE_DIAGNOSTIC}\n`,
+      root: ROOT,
+    });
+
+    assert.equal(result.ok, true);
+  });
+
+  it("rejects unrelated package WARN lines so the baseline is not rewritten", () => {
+    const stdout = `${BASELINE_DIAGNOSTIC}\npackages/secret-pkg | WARN something else entirely\n`;
+    const result = evaluateTestTypecheckResult({
+      status: 2,
+      stdout,
+      expectedText: `${BASELINE_DIAGNOSTIC}\n`,
+      root: ROOT,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.message, /non-diagnostic output/);
+
+    const update = evaluateTestTypecheckUpdate({ status: 2, stdout, root: ROOT });
+    assert.equal(update.ok, false);
+  });
+
   it("rejects tsc failures with no TypeScript diagnostics", () => {
     const result = evaluateTestTypecheckResult({
       status: 2,
