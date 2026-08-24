@@ -19,7 +19,7 @@ import {
   isValidActivityDate,
 } from "../digest.js";
 import type { ActivitySnapshot, ActivityTimelineAnalysisConfig } from "../types.js";
-import { applyTimelineCorrections, TimelineCorrectionStore } from "./corrections.js";
+import { applyTimelineCorrections, correctionsForCards, TimelineCorrectionStore } from "./corrections.js";
 import { buildTimelineDay } from "./build.js";
 import { runTimelineCardAnalysis, type TimelineAnalysisRunResult } from "./analysis-run.js";
 import type {
@@ -313,10 +313,9 @@ async function regenerateUncached(input: RegenerateTimelineDayInput): Promise<Re
     corrections = opened.list();
   }
   try {
-    const built = applyTimelineCorrections(
-      buildTimelineDay({ date, timezone, observations }).cards,
-      corrections,
-    );
+    const rawCards = buildTimelineDay({ date, timezone, observations }).cards;
+    corrections = correctionsForCards(rawCards, corrections);
+    const built = applyTimelineCorrections(rawCards, corrections);
     const hash = sourceHash({ timezone, observations, analysis: input.analysis, corrections });
     const prior = readPersisted(filePath);
     if (prior !== null && prior.sourceHash === hash && isCachedDayFinal(prior.status, input.analysis.enabled)) {

@@ -18,9 +18,11 @@ import {
   timelineDayPath,
 } from "./regenerate.js";
 import type { TimelineAnalysisRemoteLlm } from "./analysis-provider.js";
+import { TimelineCorrectionStore } from "./corrections.js";
 
 const DATE = "2026-08-17";
 const TZ = "UTC";
+const DATE_B = "2026-08-18";
 
 function snapshot(overrides: Partial<ActivitySnapshot> = {}): ActivitySnapshot {
   return {
@@ -64,6 +66,52 @@ function fakeRemote(handler: () => Promise<{ content: string } | null>): {
       },
     },
   };
+}
+
+function recordingRemote() {
+  const prompts: string[] = [];
+  const remoteLlm: TimelineAnalysisRemoteLlm = {
+    chatCompletion: async (messages) => {
+      prompts.push(messages[0]?.content ?? "");
+      return { content: '{"ops":[]}' };
+    },
+  };
+  return { remoteLlm, prompts };
+}
+
+function persistCorrection(
+  memoryDir: string,
+  cardId: string,
+  title: string,
+  editedAtUtc: string,
+): void {
+  const corrections = TimelineCorrectionStore.open(memoryDir);
+  try {
+    corrections.upsert({ cardId, title, editedAtUtc });
+  } finally {
+    corrections.close();
+  }
+}
+
+function persistedSourceHash(raw: string): string {
+  const parsed: unknown = JSON.parse(raw);
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    !("sourceHash" in parsed) ||
+    typeof parsed.sourceHash !== "string"
+  ) {
+    throw new Error("persisted day missing sourceHash");
+  }
+  return parsed.sourceHash;
+}
+
+function priorEditsFromPrompt(prompt: string): unknown {
+  const parsed: unknown = JSON.parse(prompt.slice(prompt.indexOf("\n") + 1));
+  if (parsed === null || typeof parsed !== "object" || !("priorEdits" in parsed)) {
+    throw new Error("analysis prompt missing priorEdits");
+  }
+  return parsed.priorEdits;
 }
 
 test("disabled analysis persists deterministic cards and makes zero provider calls", async () => {
@@ -443,5 +491,95 @@ test("an empty day cached under one timezone is rebuilt under another (issue #28
     assert.equal(shifted.written, true);
     const persisted = JSON.parse(await readFile(timelineDayPath(memoryDir, DATE), "utf8"));
     assert.equal(persisted.timezone, "America/New_York");
+  });
+});
+
+test("a correction for another day does not change this day's hash, cache, or provider input", async () => {
+  await withStore(async (store, memoryDir) => {
+    store.insertSnapshot(snapshot());
+    store.insertSnapshot(
+      snapshot({ capturedAtUtc: "2026-08-18T10:00:00.000Z", contentHash: "hash-2", windowTitle: "other.ts" }),
+    );
+    const analysis = parseActivityConfig({
+      timeline: { analysis: { enabled: true, provider: "openai", model: "gpt-test" } },
+    }).timeline.analysis;
+    const remote = recordingRemote();
+    const runA = () =>
+      regenerateTimelineDay({
+        date: DATE,
+        timezone: TZ,
+        memoryDir,
+        store,
+        timelineEnabled: true,
+        analysis,
+        deps: { remoteLlm: remote.remoteLlm },
+      });
+    const first = await runA();
+    assert.equal(first.status, "ok");
+    assert.equal(remote.prompts.length, 1);
+    assert.deepEqual(priorEditsFromPrompt(remote.prompts[0] ?? ""), []);
+    const firstHash = persistedSourceHash(await readFile(timelineDayPath(memoryDir, DATE), "utf8"));
+
+    const dayB = await regenerateTimelineDay({
+      date: DATE_B,
+      timezone: TZ,
+      memoryDir,
+      store,
+      timelineEnabled: true,
+      analysis: parseActivityConfig({ timeline: { enabled: true } }).timeline.analysis,
+    });
+    const dayBCard = dayB.cards.find((card) => card.kind === "activity");
+    assert.ok(dayBCard);
+    persistCorrection(memoryDir, dayBCard.id, "Other-day title", "2026-08-18T12:00:00.000Z");
+
+    const cached = await runA();
+    assert.equal(cached.written, false);
+    assert.equal(cached.analyzed, false);
+    assert.equal(remote.prompts.length, 1);
+    assert.equal(persistedSourceHash(await readFile(timelineDayPath(memoryDir, DATE), "utf8")), firstHash);
+
+    await rm(timelineDayPath(memoryDir, DATE));
+    const rebuilt = await runA();
+    assert.equal(rebuilt.status, "ok");
+    assert.equal(remote.prompts.length, 2);
+    assert.deepEqual(priorEditsFromPrompt(remote.prompts[1] ?? ""), []);
+    assert.equal(persistedSourceHash(await readFile(timelineDayPath(memoryDir, DATE), "utf8")), firstHash);
+  });
+});
+
+test("a same-day correction updates hash, cards, and priorEdits", async () => {
+  await withStore(async (store, memoryDir) => {
+    store.insertSnapshot(snapshot());
+    const analysis = parseActivityConfig({
+      timeline: { analysis: { enabled: true, provider: "openai", model: "gpt-test" } },
+    }).timeline.analysis;
+    const remote = recordingRemote();
+    const run = () =>
+      regenerateTimelineDay({
+        date: DATE,
+        timezone: TZ,
+        memoryDir,
+        store,
+        timelineEnabled: true,
+        analysis,
+        deps: { remoteLlm: remote.remoteLlm },
+      });
+    const first = await run();
+    const activity = first.cards.find((card) => card.kind === "activity");
+    assert.ok(activity);
+    const firstHash = persistedSourceHash(await readFile(timelineDayPath(memoryDir, DATE), "utf8"));
+    persistCorrection(memoryDir, activity.id, "Same-day title", "2026-08-17T12:00:00.000Z");
+
+    const second = await run();
+    assert.equal(second.status, "ok");
+    assert.equal(second.analyzed, true);
+    assert.equal(remote.prompts.length, 2);
+    const edited = second.cards.find((card) => card.id === activity.id);
+    assert.equal(edited?.title, "Same-day title");
+    assert.equal(edited?.manualEdit?.title, "Same-day title");
+    assert.deepEqual(priorEditsFromPrompt(remote.prompts[1] ?? ""), [
+      { cardId: activity.id, title: "Same-day title", editedAtUtc: "2026-08-17T12:00:00.000Z" },
+    ]);
+    assert.notEqual(persistedSourceHash(await readFile(timelineDayPath(memoryDir, DATE), "utf8")), firstHash);
   });
 });
