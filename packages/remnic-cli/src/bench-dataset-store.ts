@@ -240,20 +240,16 @@ function parseCsvRows(raw: string): string[][] {
 function isPersonaMemDatasetComplete(datasetPath: string): boolean {
   try {
     const completionMarkerPath = path.join(datasetPath, PERSONAMEM_COMPLETION_MARKER);
-    if (fs.statSync(completionMarkerPath).isFile()) {
+    if (isRegularFileNoFollow(completionMarkerPath)) {
       return true;
     }
   } catch {
     // Fall back to verifying every CSV-linked history file for pre-marker mirrors.
   }
 
-  const datasetFile = PERSONAMEM_DATASET_FILE_CANDIDATES.find((candidate) => {
-    try {
-      return fs.statSync(path.join(datasetPath, candidate)).isFile();
-    } catch {
-      return false;
-    }
-  });
+  const datasetFile = PERSONAMEM_DATASET_FILE_CANDIDATES.find((candidate) =>
+    isRegularFileNoFollow(path.join(datasetPath, candidate)),
+  );
   if (!datasetFile) {
     return false;
   }
@@ -283,9 +279,9 @@ function isPersonaMemDatasetComplete(datasetPath: string): boolean {
   }
 }
 
-function hasDatasetFile(datasetPath: string, relativePath: string): boolean {
+function isRegularFileNoFollow(filePath: string): boolean {
   try {
-    return fs.statSync(path.join(datasetPath, relativePath)).isFile();
+    return fs.lstatSync(filePath).isFile();
   } catch {
     return false;
   }
@@ -295,11 +291,11 @@ function hasMemoryAgentBenchEntityMapping(datasetPath: string): boolean {
   const absoluteDatasetPath = path.resolve(datasetPath);
   const roots = [absoluteDatasetPath, path.dirname(absoluteDatasetPath)];
   return (
-    hasDatasetFile(absoluteDatasetPath, "entity2id.json") ||
+    isRegularFileNoFollow(path.join(absoluteDatasetPath, "entity2id.json")) ||
     roots.some((root) =>
       MEMORY_AGENT_BENCH_ENTITY_MAPPING_CANDIDATES
         .filter((relativePath) => relativePath !== "entity2id.json")
-        .some((relativePath) => hasDatasetFile(root, relativePath)),
+        .some((relativePath) => isRegularFileNoFollow(path.join(root, relativePath))),
     )
   );
 }
@@ -312,7 +308,7 @@ function memoryAgentBenchDatasetHasRecSysSamples(datasetPath: string): boolean {
   return candidateFilenames.some((filename) => {
     const filePath = path.join(datasetPath, filename);
     try {
-      if (!fs.statSync(filePath).isFile()) {
+      if (!isRegularFileNoFollow(filePath)) {
         return false;
       }
       const raw = fs.readFileSync(filePath, "utf8");
@@ -333,11 +329,11 @@ function isMemoryAgentBenchDatasetComplete(datasetPath: string): boolean {
 export function isDatasetDownloaded(datasetPath: string, benchmarkId: string): boolean {
   let stats: fs.Stats;
   try {
-    stats = fs.statSync(datasetPath);
+    stats = fs.lstatSync(datasetPath);
   } catch {
     return false;
   }
-  if (!stats.isDirectory()) {
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
     return false;
   }
   const marker = DOWNLOADED_DATASET_MARKERS[benchmarkId];
@@ -350,25 +346,17 @@ export function isDatasetDownloaded(datasetPath: string, benchmarkId: string): b
     }
   }
   if (marker.allOf) {
-    const hasAllRequiredFiles = marker.allOf.every((name) => {
-      try {
-        return fs.statSync(path.join(datasetPath, name)).isFile();
-      } catch {
-        return false;
-      }
-    });
+    const hasAllRequiredFiles = marker.allOf.every((name) =>
+      isRegularFileNoFollow(path.join(datasetPath, name)),
+    );
     if (!hasAllRequiredFiles) {
       return false;
     }
   }
   if (marker.anyOf) {
-    const hasMarkerFile = marker.anyOf.some((name) => {
-      try {
-        return fs.statSync(path.join(datasetPath, name)).isFile();
-      } catch {
-        return false;
-      }
-    });
+    const hasMarkerFile = marker.anyOf.some((name) =>
+      isRegularFileNoFollow(path.join(datasetPath, name)),
+    );
     if (!hasMarkerFile) {
       return false;
     }
@@ -382,8 +370,8 @@ export function isDatasetDownloaded(datasetPath: string, benchmarkId: string): b
   }
   if (marker.ext) {
     try {
-      return fs.readdirSync(datasetPath).some((name) =>
-        name.endsWith(marker.ext!) && !marker.exclude?.includes(name),
+      return fs.readdirSync(datasetPath, { withFileTypes: true }).some((entry) =>
+        entry.isFile() && entry.name.endsWith(marker.ext!) && !marker.exclude?.includes(entry.name),
       );
     } catch {
       return false;
@@ -415,12 +403,33 @@ const warnedLegacyDatasetBenchmarkIds = new Set<string>();
 
 // Containment guard for legacy discovery: the resolved (real) path of
 // `candidate` must be a strict subdirectory of the resolved `root`.
-// Rejects `..` traversal, absolute-path smuggling, symlink escape, and a
-// symlinked root (lstat before realpath so an external target cannot
-// masquerade as contained).
+// Rejects `..` traversal, absolute-path smuggling, a symlink anywhere in
+// the unresolved root/parent chain (evals -> outside/datasets), and a
+// candidate that realpath-escapes the root.
+function pathHasSymlinkComponent(target: string): boolean {
+  let current = path.resolve(target);
+  // Bound the walk to the dataset root, its parent (`evals`), and the
+  // checkout/test base. Do not walk to `/` — `/tmp` is a symlink on macOS.
+  for (let depth = 0; depth < 3; depth += 1) {
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+  return false;
+}
+
 function isPathContainedWithinRoot(candidate: string, root: string): boolean {
   try {
-    if (fs.lstatSync(root).isSymbolicLink()) {
+    if (pathHasSymlinkComponent(root)) {
       return false;
     }
     const rootReal = fs.realpathSync(root);

@@ -484,6 +484,57 @@ test("discoverBenchDatasetDir rejects a symlinked legacy dataset root", async ()
   assert.equal(await hashTree(outsideRoot), outsideHashBefore);
 });
 
+test("discoverBenchDatasetDir rejects a symlinked file inside a contained legacy dataset dir", async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-dataset-file-symlink-"));
+  const canonicalRoot = path.join(base, "canonical");
+  const legacyRoot = path.join(base, "evals", "datasets");
+  const legacyDir = path.join(legacyRoot, "locomo");
+  const outsideFile = path.join(base, "outside", "locomo10.json");
+  await mkdir(path.dirname(outsideFile), { recursive: true });
+  await writeFile(outsideFile, "[]");
+  await mkdir(legacyDir, { recursive: true });
+  await symlink(outsideFile, path.join(legacyDir, "locomo10.json"));
+
+  __benchDatasetTestHooks.resetLegacyDatasetDiscoveryWarningForTest();
+  const captured = captureConsoleError();
+  try {
+    assert.equal(
+      __benchDatasetTestHooks.discoverBenchDatasetDir("locomo", {
+        canonicalRoot,
+        legacyRoot,
+      }),
+      undefined,
+    );
+    assert.deepEqual(captured.lines(), []);
+  } finally {
+    captured.restore();
+  }
+});
+
+test("discoverBenchDatasetDir rejects a symlinked ancestor of the legacy root", async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-dataset-ancestor-symlink-"));
+  const canonicalRoot = path.join(base, "canonical");
+  const outsideRoot = path.join(base, "outside");
+  await writeLocomoDataset(path.join(outsideRoot, "datasets", "locomo"));
+  await symlink(outsideRoot, path.join(base, "evals"));
+  const legacyRoot = path.join(base, "evals", "datasets");
+
+  __benchDatasetTestHooks.resetLegacyDatasetDiscoveryWarningForTest();
+  const captured = captureConsoleError();
+  try {
+    assert.equal(
+      __benchDatasetTestHooks.discoverBenchDatasetDir("locomo", {
+        canonicalRoot,
+        legacyRoot,
+      }),
+      undefined,
+    );
+    assert.deepEqual(captured.lines(), []);
+  } finally {
+    captured.restore();
+  }
+});
+
 test("resolveRepoDatasetRoot uses the post-migration home store in a repo checkout", () => {
   assert.equal(
     resolveRepoDatasetRoot(),
