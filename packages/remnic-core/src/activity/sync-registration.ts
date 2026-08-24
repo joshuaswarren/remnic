@@ -25,6 +25,7 @@
 import { refreshActivityIndex, type ActivityIndexRefresher } from "./reindex.js";
 import type { ActivitySyncRunSummary } from "./runner.js";
 import { ActivitySyncScheduler, type ActivitySyncSchedulerOptions } from "./scheduler.js";
+import type { PluginConfig } from "../types.js";
 import type { ActivityConfig } from "./types.js";
 import { log } from "../logger.js";
 
@@ -59,6 +60,8 @@ export interface ActivitySyncRegistrarDeps {
   readonly onSynced?: (summary: ActivitySyncRunSummary) => void;
   /** Scheduler factory (injectable for tests); defaults to the real scheduler. */
   readonly createScheduler?: (options: ActivitySyncSchedulerOptions) => ActivitySyncSchedulerLike;
+  /** Full plugin config so the default runner can build analysis clients. */
+  readonly pluginConfig?: PluginConfig;
 }
 
 export class ActivitySyncRegistrar {
@@ -108,6 +111,7 @@ export class ActivitySyncRegistrar {
         // Strict refresh after each digest write (rule 31): bypasses the
         // min-interval gate and throws on a real failure.
         reindexSearch: (sig) => refreshActivityIndex(this.deps.getQmd(), this.deps.qmdCollection, sig),
+        ...(this.deps.pluginConfig === undefined ? {} : { pluginConfig: this.deps.pluginConfig }),
         // A failed reindex (QMD down) leaves the next unchanged-digest tick
         // skipping afterWrites, so route the retry through the durable,
         // throttled QMD path — but never after teardown.

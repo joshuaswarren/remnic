@@ -81,6 +81,7 @@ import type {
 } from "../types.js";
 import { normalizeConnectorScope } from "../dedup/connector-scope.js";
 import type { StorageManager } from "../index.js";
+import { casCommittedRevisionOf } from "../storage/deletion-revision-store.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
 
 export type SemanticMergeCreateReason =
@@ -714,9 +715,7 @@ export async function applySemanticMergeAtPersist(
   // win rather than be overwritten from a stale body. The active-target check
   // above makes a tombstone block structurally impossible here.
   const nowIso = (options.now ? options.now() : new Date()).toISOString();
-  let contentCommitted = false;
-  // Captured so the success return can describe the COMMITTED frontmatter
-  // (the patch's appended sources) without widening the try's scope.
+  let casRevision: string | undefined; // #2813 (P1): OUR content CAS's receipt — feeds the patch stamp below and the catch's rollback comparison
   let mergePatch: MergeFrontmatterUpdate | undefined;
   try {
     mergePatch = buildMergeFrontmatterUpdate({
@@ -742,7 +741,7 @@ export async function applySemanticMergeAtPersist(
       );
       return { action: "created", reason: "target_changed" };
     }
-    contentCommitted = true;
+    casRevision = updated; // fix A: a successful CAS returns the revision it landed; a later rollback compares against it
     // The provenance patch must land on OUR merged body. An id-keyed patch
     // re-reads and stamps whatever the latest row holds, so a writer landing
     // after the content commit would receive this merge's provenance while
@@ -790,6 +789,8 @@ export async function applySemanticMergeAtPersist(
     const patched = await options.storage.writeMemoryFrontmatterIfUnchanged(
       merged,
       {
+        // #2807: business/event time, exactly what an ordinary write would
+        // stamp — receipt identity is the sidecar token storage mints.
         updated: mergePatch.updated,
         derived_via: mergePatch.derived_via,
         reinforcement_count: mergePatch.reinforcement_count,
@@ -831,10 +832,100 @@ export async function applySemanticMergeAtPersist(
     // leave those claims without the incoming provenance, so `created` is
     // reachable only once storage has been re-read and confirms the target no
     // longer holds this merge's unprovenanced body.
-    if (
-      contentCommitted &&
-      !(await revertMergedContent(options.storage, target, committedContent))
-    ) {
+    //
+    // #2807 (finding 2): the flag alone cannot distinguish a CAS that threw
+    // BEFORE changing the target (lock acquisition, transient I/O) from one
+    // that threw AFTER the write committed — and both left the staged
+    // snapshot `pending` forever, which pruneExcessVersions deliberately
+    // excludes, so repeated contention grew history past
+    // maxVersionsPerPage with snapshots of bodies storage never (or no
+    // longer) holds. Reread the target instead of trusting the flag.
+    // #2813 (P1): ownership comes from the CAS's own commit identity —
+    // storage stamps the thrown error with the revision its write landed
+    // (markCasCommittedRevision) — NEVER from body equality: a concurrent
+    // writer's identical deterministic merge is byte-for-byte this writer's
+    // merged body, so content comparison would misattribute their commit,
+    // and the revert below would CAS-replace their valid merge with the
+    // pre-merge body while their patched provenance stood.
+    //   - receipt present → OUR write landed (throw after commit) → revert,
+    //     else degraded success — and the rollback verifies the standing
+    //     record still carries the receipt's revision (#2813 P1, round 2);
+    //     clean up OUR staged duplicate, leave theirs untouched, report the
+    //     degraded merged outcome (never `created`: storage already holds
+    //     these claims);
+    //   - no receipt, pre-merge body → the write never landed → the snapshot
+    //     is a duplicate and goes, `created` is honest;
+    //   - no receipt, replaced by another writer or unreadable →
+    //     unverifiable → keep-side, the snapshot stays.
+    const committedRevision = casCommittedRevisionOf(err) ?? casRevision; // fix A: patch-path failures carry no error receipt — fall back to the success receipt
+    const landed = committedRevision !== undefined;
+    if (!landed) {
+      let observed: MemoryFile | null = null;
+      try {
+        observed = await readTargetSnapshot(options.storage, target);
+      } catch {
+        /* unreadable → keep-side below */
+      }
+      if (observed?.content === committedContent) {
+        await discardMergedTargetSnapshot(
+          target.path,
+          versioning,
+          options.storage.dir,
+          decision.targetId,
+          versionId,
+        );
+        await repairIndexes(committedMergedFactHash(deps, options.category, committedContent));
+        log.warn(
+          `semantic-merge: update failed for ${decision.targetId} (the compare-and-swap threw before this writer's mutation; the standing merged body is another writer's identical commit — snapshot ${versionId} discarded, the concurrent commit left untouched): ${detail}`,
+        );
+        return {
+          action: "merged",
+          targetId: decision.targetId,
+          mergedContent: committedContent,
+          provenancePatched: false,
+        };
+      } else if (observed?.content === target.content) {
+        await discardMergedTargetSnapshot(
+          target.path,
+          versioning,
+          options.storage.dir,
+          decision.targetId,
+          versionId,
+        );
+        log.warn(
+          `semantic-merge: update failed for ${decision.targetId} (the compare-and-swap threw before changing the target; snapshot ${versionId} discarded — the reread holds the pre-merge body): ${detail}`,
+        );
+        return { action: "created", reason: "update_failed" };
+      }
+    }
+    // #2813 (P1, round 2): the receipt was used only as a boolean — never
+    // compared with the standing record — so writer B's identical commit
+    // after our lock released was reverted as ours. Equal revision → ours,
+    // safe to roll back; advanced → B's — the same handling as the no-receipt
+    // other-writer branch above; never revert theirs.
+    const revert = landed
+      ? await revertMergedContent(options.storage, target, committedContent, committedRevision)
+      : undefined;
+    if (revert === "superseded") {
+      await discardMergedTargetSnapshot(
+        target.path,
+        versioning,
+        options.storage.dir,
+        decision.targetId,
+        versionId,
+      );
+      await repairIndexes(committedMergedFactHash(deps, options.category, committedContent));
+      log.warn(
+        `semantic-merge: update failed for ${decision.targetId} (the standing merged body advanced past this writer's commit receipt — another writer's identical commit stands; snapshot ${versionId} discarded, the concurrent commit left untouched): ${detail}`,
+      );
+      return {
+        action: "merged",
+        targetId: decision.targetId,
+        mergedContent: committedContent,
+        provenancePatched: false,
+      };
+    }
+    if (landed && revert !== "reverted") {
       log.error(
         `semantic-merge: ${decision.targetId} holds merged content without provenance metadata and the rollback failed (${detail}); snapshot ${versionId} holds the pre-merge state — recover with revertToVersion. Not creating a duplicate fact.`,
       );
@@ -861,10 +952,9 @@ export async function applySemanticMergeAtPersist(
     // Round N+13 (B): with the content committed and the revert above
     // confirmed, storage holds the pre-merge body, so the staged snapshot of
     // that same body is a duplicate and goes. (The degraded-success branch
-    // above keeps it as the recovery point. A throw BEFORE the content
-    // commit leaves storage state unverifiable — keep-side, the snapshot
-    // stays.)
-    if (contentCommitted) {
+    // above keeps it as the recovery point. An unverifiable throw — target
+    // replaced or unreadable — is keep-side, the snapshot stays.)
+    if (landed) {
       await discardMergedTargetSnapshot(
         target.path,
         versioning,
@@ -874,7 +964,7 @@ export async function applySemanticMergeAtPersist(
       );
     }
     log.warn(
-      `semantic-merge: update failed for ${decision.targetId}${contentCommitted ? ` (content rolled back; snapshot ${versionId} rolled back out of history)` : ` (snapshot ${versionId} staged)`}: ${detail}`,
+      `semantic-merge: update failed for ${decision.targetId}${landed ? ` (content rolled back; snapshot ${versionId} rolled back out of history)` : ` (snapshot ${versionId} staged)`}: ${detail}`,
     );
     return { action: "created", reason: "update_failed" };
   }
@@ -1024,6 +1114,10 @@ export async function runMergedTargetPostEffects(
     episodes.push(merge.targetId);
   }
   if (!input.graphCaps.multiGraphMemory) return signals;
+  // #2807 (finding 4): whether the remove-and-rebuild below finalized. A
+  // false or thrown exit means a ROLLBACK ran (or nothing mutated), and the
+  // owning index's edge cache must be invalidated after the catch.
+  let rewriteInstalled = false;
   try {
     const committed = await storage.getMemoryByIdIncludingArchived(merge.targetId);
     if (!committed || committed.content !== merge.mergedContent) return signals;
@@ -1066,11 +1160,12 @@ export async function runMergedTargetPostEffects(
     // Round N+12 (C): the remove-and-rebuild is revision-guarded end to end
     // (see rewriteMergedTargetGraphEdges) — a writer committing a newer body
     // mid-rebuild aborts this install instead of clobbering its edges.
-    const installed = await rewriteMergedTargetGraphEdges(storage, {
+    rewriteInstalled = await rewriteMergedTargetGraphEdges(storage, {
       targetId: merge.targetId,
       memoryRelPath,
       mergedContent: merge.mergedContent,
-      revisionChecked: committed.frontmatter.updated,
+      // #2807: the dedicated CAS revision token, not public `updated`.
+      revisionChecked: await storage.readCasRevision(committed.path),
       rewriteTypes,
       build: () =>
         deps.buildGraphEdge(
@@ -1087,9 +1182,19 @@ export async function runMergedTargetPostEffects(
           input.graphCaps,
         ),
     });
-    if (installed) input.graphContext.previousPersistedRelPath = memoryRelPath;
+    if (rewriteInstalled) input.graphContext.previousPersistedRelPath = memoryRelPath;
   } catch {
     /* fail-open: the committed merge stands; the create path's graph block fails open too */
+  }
+  if (!rewriteInstalled) {
+    // #2807 (finding 4): the rewrite rolled back — superseded revision, a
+    // failed build, or a pre-rewrite read error — after the build's
+    // onMemoryWritten had already pushed this writer's appended rows into
+    // the owning GraphIndex's warm edge cache. The rollback repaired only
+    // the JSONL files; without invalidating the cache, spreadingActivation
+    // kept serving the rolled-back edges for the full five-minute TTL.
+    // Invalidation is idempotent and cheap when nothing was cached.
+    deps.invalidateGraphEdgeCache?.(storage);
   }
   return signals;
 }

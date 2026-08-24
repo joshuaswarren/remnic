@@ -12,6 +12,7 @@
  */
 
 import type { ImportanceLevel } from "../types.js";
+import type { JournalSource } from "./journal-source.js";
 
 export type ActivityExtractionMode = "off" | "smart";
 
@@ -96,13 +97,22 @@ export interface ActivitySourceConfig {
   token?: string;
 }
 
-/** Opt-in daily journal settings (issue #1984). Default off. */
+/** Opt-in daily journal settings (issue #1984; vault read-back #1987). Default off. */
 export interface ActivityTimelineJournalConfig {
   enabled: boolean;
-  /** Where the journal text is read from (issue #1987). */
-  source: "file" | "vault";
-  /** Vault section heading, trimmed. Required when `source` is `"vault"`; not stored in `"file"` mode. */
-  heading?: string;
+  /** Where the journal text is read from: the memoryDir day file (default) or the vault daily note. */
+  source: JournalSource;
+  /** Review-only journal extraction gate (issue #1987): "off" | "review". No auto mode by design. */
+  extractionMode: ActivityJournalExtractionMode;
+}
+
+/** Journal extraction is review-only by design (#1984 decision): no "auto". */
+export type ActivityJournalExtractionMode = "off" | "review";
+
+/** Vault daily-note read-back settings (issue #1987). */
+export interface ActivityTimelineVaultReadbackConfig {
+  /** Heading whose section is the user's journal; arbitrary user-chosen text. */
+  journalSection: string;
 }
 
 /** Section ownership strategy for vault publishing (issue #1985). */
@@ -144,6 +154,7 @@ export interface ActivityTimelineVaultConfig {
   };
   /** Markers strategy: heading under which missing marker pairs are inserted; empty = never insert. */
   insertUnderHeading: string;
+  readback: ActivityTimelineVaultReadbackConfig;
   wikilinks: { places: boolean; placesFolder: string };
   properties: { mode: VaultPropertiesMode; prefix: string };
   autoPublish: boolean;
@@ -156,9 +167,33 @@ export interface ActivityTimelineQaConfig {
   maxRangeDays: number;
 }
 
+/**
+ * Opt-in AI analysis over deterministic timeline cards (issue #2050).
+ * Default off; gated independently of `activity.timeline.enabled`, capture,
+ * and memory creation. When disabled, zero provider calls and zero analysis
+ * artifacts occur.
+ */
+export interface ActivityTimelineAnalysisConfig {
+  enabled: boolean;
+  /**
+   * Explicit provider id: `"local"` routes to the local LLM client; any other
+   * identifier routes to the configured remote provider registry. Required
+   * when enabled. A single provider segment only — `/` is rejected at parse.
+   * At most 120 characters so accepted config cannot fail metadata validation.
+   */
+  provider?: string;
+  /** Model id. Required when enabled. May include `/`. At most 120 characters. */
+  model?: string;
+  /** Per-request timeout in ms. Positive integer. */
+  timeoutMs?: number;
+  /** Free-form user preferences passed to the prompt (no secrets). */
+  preferences?: string[];
+}
+
 /** Opt-in timeline-card derivation settings (issue #2049). Default off. */
 export interface ActivityTimelineConfig {
   enabled: boolean;
+  analysis: ActivityTimelineAnalysisConfig;
   journal: ActivityTimelineJournalConfig;
   qa: ActivityTimelineQaConfig;
   vault: ActivityTimelineVaultConfig;

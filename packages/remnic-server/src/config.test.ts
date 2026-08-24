@@ -1,17 +1,34 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { parseConfig } from "@remnic/core";
-import { createAdminControls, envOverrides, loadConfigFile, mergeRemnicConfigForServer, parseServerConfig } from "./index.js";
+import { createAdminControls, envOverrides, loadConfigFile, mergeRemnicConfigForServer, parseServerConfig, startServer, type ServerResult } from "./index.js";
 
 async function writeConfig(content: string): Promise<{ filePath: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-server-config-"));
   const filePath = path.join(dir, "config.json");
   await writeFile(filePath, content, "utf-8");
   return { filePath, cleanup: () => rm(dir, { recursive: true, force: true }) };
+}
+
+async function reserveFreePort(): Promise<number> {
+  const { promise, resolve, reject } = Promise.withResolvers<number>();
+  const probe = net.createServer();
+  probe.once("error", reject);
+  probe.listen(0, "127.0.0.1", () => {
+    const address = probe.address();
+    if (address && typeof address === "object") {
+      const { port } = address;
+      probe.close(() => resolve(port));
+    } else {
+      probe.close(() => reject(new Error("no address")));
+    }
+  });
+  return promise;
 }
 
 test("server config merge preserves openaiApiKey=false over OPENAI_API_KEY env override", () => {
@@ -188,6 +205,104 @@ test("server config parser disables the admin console by default", () => {
   assert.equal(parseServerConfig({ adminConsoleEnabled: true }).adminConsoleEnabled, true);
   assert.equal(parseServerConfig({ adminConsoleEnabled: false }).adminConsoleEnabled, false);
   assert.equal(parseServerConfig({}).adminConsolePrefillToken, false);
+});
+
+test("server config parser defaults trustPrincipalHeader to false and accepts boolean-like strings", () => {
+  assert.equal(parseServerConfig({}).trustPrincipalHeader, false);
+  assert.equal(parseServerConfig({ trustPrincipalHeader: true }).trustPrincipalHeader, true);
+  assert.equal(
+    parseServerConfig({ trustPrincipalHeader: "true" as unknown as boolean }).trustPrincipalHeader,
+    true,
+  );
+  assert.equal(
+    parseServerConfig({ trustPrincipalHeader: "0" as unknown as boolean }).trustPrincipalHeader,
+    false,
+  );
+});
+
+test("server config parser rejects invalid trustPrincipalHeader values", () => {
+  assert.throws(
+    () => parseServerConfig({ trustPrincipalHeader: "maybe" as unknown as boolean }),
+    /server\.trustPrincipalHeader: expected a boolean/,
+  );
+});
+
+test("server config parser rejects ephemeral and blank ports in user-facing config", () => {
+  // Port 0 is reserved for the programmatic allowEphemeralPort runtime
+  // option: user-facing server.port / REMNIC_PORT / --port must stay 1-65535
+  // so runServerHealthcheck never probes port 0 (review: PR #2790).
+  assert.throws(
+    () => parseServerConfig({ port: 0 }),
+    /server\.port: expected an integer port from 1 to 65535/,
+  );
+  // Number("".trim()) === 0, so a blank string must be rejected explicitly
+  // rather than silently resolving to an ephemeral port.
+  assert.throws(
+    () => parseServerConfig({ port: "" }),
+    /server\.port: expected an integer port from 1 to 65535/,
+  );
+});
+
+test("standalone startServer applies the runtime port override and forwards a trusted request principal", async () => {
+  const { filePath, cleanup } = await writeConfig("{}");
+  const requestedPort = await reserveFreePort();
+  const memoryDir = path.join(path.dirname(filePath), "memory");
+  await writeFile(
+    filePath,
+    JSON.stringify({
+      remnic: {
+        memoryDir,
+        qmdEnabled: false,
+        qmdDaemonEnabled: false,
+        searchBackend: "noop",
+        namespacesEnabled: true,
+        defaultNamespace: "default",
+        defaultRecallNamespaces: ["self"],
+        namespacePolicies: [
+          {
+            name: "tenant-a",
+            readPrincipals: ["header-agent"],
+            writePrincipals: ["header-agent"],
+          },
+        ],
+      },
+      server: {
+        host: "127.0.0.1",
+        port: requestedPort === 65535 ? requestedPort - 1 : requestedPort + 1,
+        authToken: "test-token",
+        trustPrincipalHeader: true,
+      },
+    }),
+    "utf8",
+  );
+
+  let result: ServerResult | undefined;
+  try {
+    result = await startServer({
+      configPath: filePath,
+      authToken: "test-token",
+      port: requestedPort,
+    });
+    assert.equal(result.port, requestedPort);
+    const url = `http://127.0.0.1:${result.port}/engram/v1/memories?namespace=tenant-a&limit=10&offset=0&sort=updated_desc`;
+    const withoutHeader = await fetch(url, {
+      headers: { authorization: "Bearer test-token" },
+    });
+    assert.equal(withoutHeader.status, 400, await withoutHeader.text());
+
+    const withHeader = await fetch(url, {
+      headers: {
+        authorization: "Bearer test-token",
+        "x-engram-principal": "header-agent",
+      },
+    });
+    assert.equal(withHeader.status, 200);
+    const body = (await withHeader.json()) as { namespace?: string };
+    assert.equal(body.namespace, "tenant-a");
+  } finally {
+    await result?.stop();
+    await cleanup();
+  }
 });
 
 test("server config parser rejects invalid field types", () => {
