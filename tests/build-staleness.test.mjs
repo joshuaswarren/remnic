@@ -10,6 +10,7 @@ import {
   acquireLockDir,
   ensurePackageBuild,
   isLockHeldByLiveProcess,
+  quarantineLockIfOwnerMatches,
   releaseLockDir,
   spawnExitCode,
   spawnSucceeded,
@@ -172,6 +173,7 @@ test("fingerprint scan does not follow source symlinks outside the package", asy
     await utimes(outsideFile, newer, newer);
     await ensure();
     assert.equal(state.builds, 1);
+
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -507,6 +509,184 @@ test("release keeps a swapped-in owner while a third acquirer races", async () =
     releaseLockDir(handleB);
     assert.equal(fsSync.existsSync(lockDir), false);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function backdateDir(dir) {
+  // Past the 30s default ownerless grace window without waiting for it.
+  const past = new Date(Date.now() - 60 * 1000);
+  await utimes(dir, past, past);
+}
+
+test("ownerless lock is held within the creation grace window and reclaimed after it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-build-staleness-ownerless-grace-"));
+  try {
+    const lockRoot = path.join(root, "node_modules", ".cache", "remnic-build-locks");
+    const lockDir = path.join(lockRoot, "scope-ownerless-grace-pkg");
+    await mkdir(lockRoot, { recursive: true });
+
+    // Crash shape: the dir exists but the owner write never happened. A live
+    // creator may still be between mkdir and its owner write, so it is held.
+    fsSync.mkdirSync(lockDir);
+    assert.equal(isLockHeldByLiveProcess(lockDir), true);
+    assert.equal(acquireLockDir(lockDir), null);
+
+    await backdateDir(lockDir); // Creation grace window long elapsed.
+    assert.equal(isLockHeldByLiveProcess(lockDir), false);
+    const handle = acquireLockDir(lockDir);
+    assert.ok(handle);
+    const observed = JSON.parse(fsSync.readFileSync(path.join(lockDir, "owner.json"), "utf8"));
+    assert.deepEqual(observed, handle.owner);
+
+    releaseLockDir(handle);
+    assert.equal(fsSync.existsSync(lockDir), false);
+    assert.deepEqual(fsSync.readdirSync(lockRoot), [], "no stale-* or released-* leftovers");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("ownerless reclaim restores a creator that completes its owner write mid-reclaim", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-build-staleness-ownerless-complete-"));
+  try {
+    const lockRoot = path.join(root, "node_modules", ".cache", "remnic-build-locks");
+    const lockDir = path.join(lockRoot, "scope-ownerless-complete-pkg");
+    await mkdir(lockRoot, { recursive: true });
+
+    // The reclaimer observed ownerlessness (expected null) after the grace
+    // window, but the creator finished its owner write before the rename.
+    fsSync.mkdirSync(lockDir);
+    await backdateDir(lockDir);
+    const completed = {
+      pid: process.pid,
+      startTicks: 0,
+      nonce: "completed-owner",
+      acquiredAt: Date.now(),
+    };
+    await writeFile(path.join(lockDir, "owner.json"), `${JSON.stringify(completed)}\n`);
+
+    assert.equal(quarantineLockIfOwnerMatches(lockDir, null), false);
+    const observed = JSON.parse(fsSync.readFileSync(path.join(lockDir, "owner.json"), "utf8"));
+    assert.deepEqual(observed, completed, "the completed owner must be restored to the live path");
+    assert.deepEqual(fsSync.readdirSync(lockRoot), [path.basename(lockDir)]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("two ownerless-lock reclaimers leave exactly one owner and one build", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-build-staleness-ownerless-reclaim-"));
+  try {
+    const srcDir = path.join(root, "pkg", "src");
+    await mkdir(srcDir, { recursive: true });
+    await writeFile(path.join(srcDir, "index.ts"), "export const v = 1;\n");
+    const distFile = path.join(root, "pkg", "dist", "index.js");
+    const buildLog = path.join(root, "builds.log");
+    const lockRoot = path.join(root, "node_modules", ".cache", "remnic-build-locks");
+    const lockDir = path.join(lockRoot, "scope-ownerless-reclaim-pkg");
+
+    // Crashed partial creation with the grace window elapsed.
+    await mkdir(lockRoot, { recursive: true });
+    fsSync.mkdirSync(lockDir);
+    await backdateDir(lockDir);
+
+    const driverPath = path.join(root, "reclaim-driver.mjs");
+    await writeFile(
+      driverPath,
+      [
+        'import fs from "node:fs";',
+        'import path from "node:path";',
+        `import { ensurePackageBuild } from ${JSON.stringify(buildStalenessModuleUrl)};`,
+        "const [rootArg, distArg, logArg] = process.argv.slice(2);",
+        "ensurePackageBuild(rootArg, '@scope/ownerless-reclaim-pkg', distArg, [path.join(rootArg, 'pkg', 'src')], {",
+        "  runBuild: () => {",
+        "    fs.appendFileSync(logArg, `build ${process.pid}\\n`);",
+        "    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400);",
+        "    fs.mkdirSync(path.dirname(distArg), { recursive: true });",
+        "    fs.writeFileSync(distArg, 'dist\\n');",
+        "  },",
+        "});",
+      ].join("\n"),
+    );
+
+    const children = [0, 1].map(() => {
+      const child = spawn(process.execPath, [driverPath, root, distFile, buildLog], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      child.stdout.resume();
+      child.stderr.resume();
+      return child;
+    });
+    const exitCodes = await Promise.all(
+      children.map((child) => new Promise((resolve) => child.on("close", (code) => resolve(code)))),
+    );
+    assert.deepEqual(exitCodes, [0, 0]);
+
+    const log = await readFile(buildLog, "utf8");
+    assert.equal(log.trim().split("\n").filter((line) => line.length > 0).length, 1);
+    assert.deepEqual(fsSync.readdirSync(lockRoot), [], "the final owner must release cleanly");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("late release by an ownerless holder leaves the reclaimer's lock intact", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-build-staleness-ownerless-late-"));
+  let child = null;
+  try {
+    const lockRoot = path.join(root, "node_modules", ".cache", "remnic-build-locks");
+    const lockDir = path.join(lockRoot, "scope-ownerless-late-pkg");
+    await mkdir(lockRoot, { recursive: true });
+    const acquiredFlag = path.join(root, "acquired");
+    const goFlag = path.join(root, "go");
+
+    // Holder whose owner write never landed: it created the dir directly and
+    // releases with the null-owner handle acquireLockDir would have returned.
+    const driverPath = path.join(root, "ownerless-holder-driver.mjs");
+    await writeFile(
+      driverPath,
+      [
+        'import fs from "node:fs";',
+        `import { releaseLockDir } from ${JSON.stringify(buildStalenessModuleUrl)};`,
+        "const [lockDirArg, acquiredArg, goArg] = process.argv.slice(2);",
+        "fs.mkdirSync(lockDirArg);",
+        "fs.writeFileSync(acquiredArg, String(process.pid));",
+        "while (!fs.existsSync(goArg)) {",
+        "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);",
+        "}",
+        "releaseLockDir({ lockDir: lockDirArg, owner: null });",
+      ].join("\n"),
+    );
+
+    child = spawn(process.execPath, [driverPath, lockDir, acquiredFlag, goFlag], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.resume();
+    child.stderr.resume();
+    const childExit = new Promise((resolve) => child.on("close", (code) => resolve(code)));
+    while (!fsSync.existsSync(acquiredFlag)) {
+      await sleep(10);
+    }
+
+    await backdateDir(lockDir); // Grace window elapsed: reclaim is sanctioned.
+    const reclaimer = acquireLockDir(lockDir);
+    assert.ok(reclaimer);
+
+    await writeFile(goFlag, ""); // The ownerless holder releases late.
+    assert.equal(await childExit, 0);
+
+    assert.equal(fsSync.existsSync(lockDir), true, "late ownerless release must not remove the new owner");
+    const observed = JSON.parse(fsSync.readFileSync(path.join(lockDir, "owner.json"), "utf8"));
+    assert.deepEqual(observed, reclaimer.owner);
+    assert.deepEqual(fsSync.readdirSync(lockRoot), [path.basename(lockDir)]);
+
+    releaseLockDir(reclaimer);
+    assert.equal(fsSync.existsSync(lockDir), false);
+  } finally {
+    if (child !== null && child.exitCode === null) {
+      child.kill("SIGKILL");
+    }
     await rm(root, { recursive: true, force: true });
   }
 });
