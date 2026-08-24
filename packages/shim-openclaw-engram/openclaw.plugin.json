@@ -3246,6 +3246,10 @@
         "type": "string",
         "description": "Optional API key for authenticated OpenAI-compatible local endpoints"
       },
+      "localLlmApiKeyEnv": {
+        "type": "string",
+        "description": "Optional environment variable name for a local LLM API key. A missing variable leaves local auth unset so read-only CLI commands can still load config."
+      },
       "localLlmAuthHeader": {
         "type": "boolean",
         "default": true,

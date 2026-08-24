@@ -202,7 +202,7 @@ In the **Remnic daemon configuration** (not the `remnic:` block in Hermes' `conf
     "localLlmEnabled": true,
     "localLlmUrl": "http://127.0.0.1:4329/v1",
     "localLlmModel": "gpt-5.6-terra",
-    "localLlmApiKey": "${REMNIC_HERMES_BRIDGE_TOKEN}",
+    "localLlmApiKeyEnv": "REMNIC_HERMES_BRIDGE_TOKEN",
     "localLlmAuthHeader": true,
     "localLlmFallback": false,
     "openaiApiKey": false,
