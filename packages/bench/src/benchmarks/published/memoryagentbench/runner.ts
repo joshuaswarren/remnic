@@ -3,7 +3,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { Message } from "../../../adapters/types.js";
 import { answerBenchmarkQuestion } from "../../../answering.js";
@@ -15,6 +15,12 @@ import {
   type MemoryAgentBenchMetadata,
   type MemoryAgentBenchTurn,
 } from "./fixture.js";
+import {
+  loadRecSysEntityMapping,
+  movieAliases,
+  requireRecSysEntityMapping,
+  type RecSysEntityMapping,
+} from "./recsys-entity-mapping.js";
 import type {
   BenchmarkDefinition,
   BenchmarkResult,
@@ -101,13 +107,6 @@ type MemoryAgentBenchProtocol =
   | "infbench_sum"
   | "detective_qa"
   | "factconsolidation";
-
-interface RecSysEntityMapping {
-  idToName: Map<number, string>;
-  movieCandidates: string[];
-  aliasCounts: Map<string, number>;
-  sourcePath: string;
-}
 
 export const memoryAgentBenchDefinition: BenchmarkDefinition = {
   id: "memoryagentbench",
@@ -1165,30 +1164,6 @@ function stripTrailingRecommendationPunctuation(value: string): string {
     .trim();
 }
 
-function countMovieAliases(movieCandidates: string[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const movie of movieCandidates) {
-    for (const alias of movieAliases(movie)) {
-      const normalizedAlias = alias.toLowerCase();
-      counts.set(normalizedAlias, (counts.get(normalizedAlias) ?? 0) + 1);
-    }
-  }
-  return counts;
-}
-
-function movieAliases(movie: string): string[] {
-  const aliases = [movie];
-  const titleWithoutYear = movie.replace(/\s*\(\d{4}\)\s*$/, "").trim();
-  if (titleWithoutYear.length >= 2 && titleWithoutYear !== movie) {
-    aliases.push(titleWithoutYear);
-  }
-  const titleWithoutArticle = titleWithoutYear.replace(/^(?:the|a|an)\s+/i, "").trim();
-  if (titleWithoutArticle.length >= 2 && titleWithoutArticle !== titleWithoutYear) {
-    aliases.push(titleWithoutArticle);
-  }
-  return aliases;
-}
-
 function findDelimitedIndex(haystack: string, needle: string): number {
   let start = 0;
   while (start < haystack.length) {
@@ -1263,127 +1238,6 @@ function editDistance(a: string, b: string): number {
   }
 
   return previous[b.length] ?? 0;
-}
-
-async function loadRecSysEntityMapping(
-  datasetDir: string | undefined,
-): Promise<RecSysEntityMapping | null> {
-  const candidates = recsysEntityMappingCandidates(datasetDir);
-  for (const candidate of candidates) {
-    if (!(await fileExists(candidate))) {
-      continue;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(await readFile(candidate, "utf8")) as unknown;
-    } catch (error) {
-      console.error(
-        `  [WARN] MemoryAgentBench ReDial entity mapping ${candidate} is invalid JSON; trying the next candidate: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      continue;
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      console.error(
-        `  [WARN] MemoryAgentBench ReDial entity mapping ${candidate} must be an object; trying the next candidate.`,
-      );
-      continue;
-    }
-
-    const idToName = new Map<number, string>();
-    let invalidMapping = false;
-    for (const [rawName, rawId] of Object.entries(parsed)) {
-      const id = typeof rawId === "number" ? rawId : Number(rawId);
-      if (!Number.isInteger(id)) {
-        console.error(
-          `  [WARN] MemoryAgentBench ReDial entity mapping ${candidate} has non-integer id for ${rawName}; trying the next candidate.`,
-        );
-        invalidMapping = true;
-        break;
-      }
-      idToName.set(id, extractMovieName(rawName));
-    }
-    if (invalidMapping) {
-      continue;
-    }
-    if (idToName.size === 0) {
-      console.error(
-        `  [WARN] MemoryAgentBench ReDial entity mapping ${candidate} is empty; trying the next candidate.`,
-      );
-      continue;
-    }
-
-    return {
-      idToName,
-      movieCandidates: [...new Set(idToName.values())],
-      aliasCounts: countMovieAliases([...new Set(idToName.values())]),
-      sourcePath: candidate,
-    };
-  }
-  return null;
-}
-
-async function requireRecSysEntityMapping(
-  datasetDir: string | undefined,
-): Promise<RecSysEntityMapping> {
-  const mapping = await loadRecSysEntityMapping(datasetDir);
-  if (!mapping) {
-    throw new Error(
-      "MemoryAgentBench ReDial samples require a valid ReDial entity mapping. " +
-        `Expected one of: ${recsysEntityMappingCandidates(datasetDir).join(", ") || "entity2id.json under the dataset directory"}.`,
-    );
-  }
-  return mapping;
-}
-
-function recsysEntityMappingCandidates(datasetDir: string | undefined): string[] {
-  if (!datasetDir) {
-    return [];
-  }
-  const absoluteDatasetDir = path.resolve(datasetDir);
-  const roots = [
-    absoluteDatasetDir,
-    path.dirname(absoluteDatasetDir),
-  ];
-
-  const canonicalSuffixes = [
-    path.join("processed_data", "Recsys_Redial", "entity2id.json"),
-    path.join("Recsys_Redial", "entity2id.json"),
-  ];
-  const looseSuffixes = ["entity2id.json"];
-
-  return [
-    ...roots.flatMap((root) =>
-      canonicalSuffixes.map((suffix) => path.join(root, suffix)),
-    ),
-    ...looseSuffixes.map((suffix) => path.join(absoluteDatasetDir, suffix)),
-  ];
-}
-
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function extractMovieName(rawName: string): string {
-  const filename = rawName.split("/").pop() ?? rawName;
-  const decodedFilename = decodeUrlComponentSafely(filename);
-  return decodedFilename
-    .replace(/[_>]+/g, " ")
-    .replace(/\((\d{4})\s+film\)$/i, "($1)")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function decodeUrlComponentSafely(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
 }
 
 async function loadDataset(
