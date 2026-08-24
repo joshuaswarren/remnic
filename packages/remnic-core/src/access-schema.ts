@@ -323,13 +323,18 @@ export function categoryAliasCoercion(rawCategory: string | undefined): Category
 /**
  * Recover the retained alias spelling from a pre-parse raw envelope: the
  * `rawCategory` minted by a previous parse of the same schema (the HTTP/MCP
- * validate-then-dispatch double pass) or an as-yet-untransformed alias
- * `category` (single-parse callers like the CLI store command).
+ * validate-then-dispatch double pass), or — for single-parse callers like the
+ * CLI store command — the as-yet-untransformed alias still sitting on
+ * `category` (issue #2889). A minted `rawCategory` always wins: it names the
+ * spelling the transform actually canonicalized.
  */
 export function retainedCategoryAlias(rawInput: unknown): MemoryCategoryAlias | undefined {
   if (!rawInput || typeof rawInput !== "object") return undefined;
-  const spelling = (rawInput as Record<string, unknown>).rawCategory;
-  return typeof spelling === "string" && isMemoryCategoryAlias(spelling) ? spelling : undefined;
+  const envelope = rawInput as Record<string, unknown>;
+  const minted = envelope.rawCategory;
+  if (typeof minted === "string" && isMemoryCategoryAlias(minted)) return minted;
+  const category = envelope.category;
+  return typeof category === "string" && isMemoryCategoryAlias(category) ? category : undefined;
 }
 
 /**
