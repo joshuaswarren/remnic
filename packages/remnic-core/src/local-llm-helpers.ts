@@ -1,4 +1,32 @@
 import { log } from "./logger.js";
+import type { LocalLlmRequestPriority } from "./local-llm.js";
+
+export interface LocalLlmChatCompletionOptions {
+  temperature?: number;
+  maxTokens?: number;
+  responseFormat?: { type: string };
+  timeoutMs?: number;
+  operation?: string;
+  forceDisableThinking?: boolean;
+  disableThinking?: boolean;
+  priority?: LocalLlmRequestPriority;
+  signal?: AbortSignal;
+  redactProviderErrors?: boolean;
+  /** Per-request model; defaults to config.localLlmModel. */
+  model?: string;
+  /**
+   * Optional out-box for the terminal failure cause (issue #2891): on a
+   * failed request the client records the last provider error here so
+   * callers can classify it (e.g. HTTP 429 → rate-limited) in memory
+   * instead of seeing only null. Never logged.
+   */
+  failureDiag?: { lastError?: unknown };
+}
+
+export interface LocalLlmChatCompletionResult {
+  content: string;
+  usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+}
 export function isAbortError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const maybe = err as { name?: string; message?: string };

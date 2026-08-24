@@ -12,6 +12,7 @@ import {
 } from "undici";
 
 import { LocalLlmClient } from "./local-llm.js";
+import { classifyAnalysisProviderError } from "./activity/timeline/analysis-provider.js";
 import { ChatTransport } from "./local-llm-transport.js";
 import { initLogger, resetLogger } from "./logger.js";
 import type { PluginConfig } from "./types.js";
@@ -550,6 +551,35 @@ test("sensitive local requests do not log provider error bodies", { concurrency:
   } finally {
     globalThis.fetch = original;
     resetLogger();
+    await dispatcherOf(client).close();
+  }
+});
+
+test("failureDiag preserves a 429 rate-limit failure cause (issue #2891)", { concurrency: false }, async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ error: { message: "rate limit exceeded" } }), {
+      status: 429,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+  const client = new LocalLlmClient(createConfig());
+
+  try {
+    primeClient(client);
+    const failureDiag: { lastError?: unknown } = {};
+    assert.equal(
+      await client.chatCompletion(
+        [{ role: "user", content: "test" }],
+        { redactProviderErrors: true, failureDiag },
+      ),
+      null,
+    );
+    const lastError = failureDiag.lastError;
+    assert.ok(lastError instanceof Error, "expected the terminal provider error to survive the request");
+    assert.equal("status" in lastError ? lastError.status : undefined, 429);
+    assert.equal(classifyAnalysisProviderError(lastError), "rate_limited");
+  } finally {
+    globalThis.fetch = original;
     await dispatcherOf(client).close();
   }
 });
