@@ -40,9 +40,8 @@ export const normalizeDiagnostics = (value, root = repoRoot) =>
 
 const ignoredToolingWarningPatterns = [
   /^\[WARN\] The "pnpm" field in package\.json is no longer read by pnpm\./,
-  // pnpm prints per-package WARN lines (e.g. unsupported optional platform
-  // builds) into the same captured stream as tsc output in CI.
-  /^packages\/\S+\s*\|\s*WARN\s/,
+  // pnpm optional-dependency platform notice; exact prefix from CI logs.
+  /^packages\/\S+\s+\|\s+WARN\s+Unsupported platform: wanted:/,
 ];
 
 export function nonDiagnosticFailureLines(value, root = repoRoot) {
