@@ -724,6 +724,17 @@ class TestRegisterWiring:
             assert bridge.bound_port > 0
             assert bridge.active_work == 0
 
+    def test_opaque_runtime_facade_completes_when_plugin_llm_is_not_importable(self) -> None:
+        complete = UnpickleablePluginLlm().complete
+        with patch("remnic_hermes.llm_runtime._discover_plugin_llm_class", return_value=None):
+            with running_bridge(BridgePolicy(enabled=True), complete) as bridge:
+                status, body = _authed_post(
+                    bridge,
+                    json.dumps({"messages": [{"role": "user", "content": "summarize today"}]}),
+                )
+        assert status == 200
+        assert body["choices"][0]["message"]["content"] == "bridged answer"
+
     def test_register_swallows_bridge_setup_failures(self) -> None:
         ctx = self._ctx({"remnic": {"llm_bridge": {"enabled": True}}}, with_llm=False)
         with (

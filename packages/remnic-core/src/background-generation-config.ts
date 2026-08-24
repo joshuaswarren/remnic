@@ -1,3 +1,5 @@
+import { isLoopbackHost } from "./runtime/http-transport.js";
+
 export interface BackgroundGenerationConfig {
   /** Full chat-completions URL. Never used as the global OpenAI base URL. */
   endpoint: string;
@@ -24,6 +26,9 @@ function parseBackgroundEndpoint(value: string, keyName: string): string {
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new Error(`${keyName} must use HTTP or HTTPS`);
+  }
+  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
+    throw new Error(`${keyName} must use HTTPS unless the host is loopback`);
   }
   if (parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error(

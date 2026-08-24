@@ -29,7 +29,6 @@ memory recall and observation are unaffected.
 
 from __future__ import annotations
 
-import functools
 import hmac
 import inspect
 import ipaddress
@@ -208,36 +207,6 @@ def _accepts_timeout(complete: Callable[..., Any]) -> bool:
     return "timeout" in parameters
 
 
-def _plugin_id_of(complete: Callable[..., Any]) -> str | None:
-    owner = getattr(complete, "__self__", None)
-    if owner is None:
-        return None
-    plugin_id = getattr(owner, "plugin_id", None) or getattr(owner, "_plugin_id", None)
-    if type(owner).__name__ == "PluginLlm" or plugin_id or callable(
-        getattr(owner, "complete_structured", None)
-    ):
-        return str(plugin_id or "remnic")
-    return None
-
-
-def _plugin_llm_child_complete(
-    messages: list[dict[str, str]], plugin_id: str = "remnic"
-) -> Any:
-    """Reconstruct Hermes PluginLlm inside a killable worker (never pickle the live facade)."""
-    from remnic_hermes.llm_runtime import _discover_plugin_llm_class, _instantiate_plugin_llm
-
-    plugin_cls = _discover_plugin_llm_class()
-    if plugin_cls is None:
-        raise RuntimeError("PluginLlm is not importable in the llm_bridge worker")
-    instance = _instantiate_plugin_llm(plugin_cls, plugin_id)
-    if instance is None:
-        raise RuntimeError("PluginLlm could not be constructed in the llm_bridge worker")
-    complete = instance.complete
-    try:
-        return complete(messages, purpose="remnic-llm-bridge")
-    except TypeError:
-        return complete(messages)
-
 
 @dataclass(frozen=True)
 class _FrozenUsage:
@@ -295,21 +264,13 @@ class HermesLlmBridge:
         self._live_procs: set[Any] = set()
         self._use_timeout_kwarg = _accepts_timeout(complete)
         self._use_process = False
-        if self._use_timeout_kwarg:
-            self._complete = complete
-        else:
-            plugin_id = _plugin_id_of(complete)
-            if plugin_id is not None:
-                self._complete = functools.partial(_plugin_llm_child_complete, plugin_id=plugin_id)
-                self._use_process = True
+        if not self._use_timeout_kwarg:
+            try:
+                pickle.dumps(complete)
+            except Exception:
+                pass
             else:
-                try:
-                    pickle.dumps(complete)
-                except Exception:
-                    self._complete = complete
-                else:
-                    self._complete = complete
-                    self._use_process = True
+                self._use_process = True
 
     @property
     def auth_token(self) -> str:

@@ -2861,3 +2861,38 @@ test("parseConfig strips a slash-rich bridge endpoint without regex", () => {
     assert.equal(parsed.openaiBaseUrl, undefined);
   });
 });
+
+test("parseConfig rejects plaintext non-loopback backgroundGeneration endpoints", () => {
+  withIsolatedConnectorsDir(false, () => {
+    for (const endpoint of [
+      "http://192.168.10.20:8765/v1/chat/completions",
+      "http://example.test/v1/chat/completions",
+    ]) {
+      assert.throws(
+        () =>
+          parseConfig({
+            backgroundGeneration: {
+              endpoint,
+              token: "bridge-token-fixture",
+            },
+          }),
+        /must use HTTPS unless the host is loopback/,
+      );
+    }
+
+    for (const endpoint of [
+      "http://127.0.0.1:8765/v1/chat/completions",
+      "http://localhost:8765/v1/chat/completions",
+      "http://[::1]:8765/v1/chat/completions",
+      "https://example.test/v1/chat/completions",
+    ]) {
+      const parsed = parseConfig({
+        backgroundGeneration: {
+          endpoint,
+          token: "bridge-token-fixture",
+        },
+      });
+      assert.equal(parsed.backgroundGeneration?.endpoint, endpoint);
+    }
+  });
+});
