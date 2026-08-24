@@ -4091,7 +4091,7 @@ test("issue #2829: memory_store category aliases canonicalize with a retained sp
     };
     const categoryDetail = nearMissBody.details?.find((detail) => detail.field === "category");
     assert.ok(categoryDetail, "the 400 must name the category field");
-    assert.match(categoryDetail.message, /'fact'/, "the 400 must list valid options");
+    assert.match(categoryDetail.message, /one of: fact/, "the 400 must list valid options");
     assert.equal(captured.length, 2, "the near-miss must not dispatch");
   } finally {
     await server.stop();
