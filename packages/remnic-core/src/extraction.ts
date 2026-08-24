@@ -48,7 +48,7 @@ import {
 } from "./extraction-source-grounding.js";
 import { applyGroundingWithConnector, headerConnector, renderExtractionConversation, resolveSourceConnector, type ExtractionGroundingContext } from "./source-agent-qualifier.js";
 import { isMemoryCategory } from "./write-envelope.js";
-import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
+import { classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog } from "./extraction-error-classification.js";
 import { AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT, clampAmbientCaptureConfidence } from "./ambient-provenance.js";
 import {
   CONSOLIDATION_RESPONSE_SCHEMA,
@@ -69,7 +69,7 @@ import {
   extractionText,
   isPlainRecord,
 } from "./extraction-normalization.js";
-export { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
+export { classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog } from "./extraction-error-classification.js";
 import { resolveLocalLlmCapabilities, resolveMemoryLifecycleCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 
 type ExtractionQuestion = ExtractionResult["questions"][number];
@@ -1344,11 +1344,26 @@ export class ExtractionEngine {
         return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector, ambientCapture);
       }
 
-      this.emit({
-        kind: "llm_error", traceId: fallbackTraceId, model: "fallback", operation: "extraction",
-        durationMs: fallbackDurationMs, error: "fallback returned no parsed output",
+      const parseFailure =
+        detailed.result === null
+          ? detailed
+          : { failureReason: "empty" as const, attemptedModel: undefined, httpStatus: undefined, errorClass: "empty" };
+      const failureLog = formatExtractionParseFailureLog({
+        failureReason: parseFailure.failureReason,
+        attemptedModel: parseFailure.attemptedModel,
+        httpStatus: parseFailure.httpStatus,
+        errorClass: parseFailure.errorClass,
+        traceId: fallbackTraceId,
       });
-      log.warn("extraction fallback returned no parsed output");
+      this.emit({
+        kind: "llm_error",
+        traceId: fallbackTraceId,
+        model: parseFailure.attemptedModel ?? "fallback",
+        operation: "extraction",
+        durationMs: fallbackDurationMs,
+        error: failureLog,
+      });
+      log.warn(failureLog);
       const fallbackParseFailureClass: ExtractionFailureClass =
         detailed.result === null
           ? detailed.failureReason === "no_models" && primaryExtractorAttempted

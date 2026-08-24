@@ -75,6 +75,39 @@ export interface FallbackLlmResponse {
   };
 }
 
+/**
+ * Structured-parse failure reasons. `"no_models" | "empty" | "http_error"` are
+ * the historical public set; `"schema_rejection"` and `"timeout"` are additive
+ * so callers that switch on the old three keep compiling. Success remains
+ * `{ result; modelUsed }` — failure objects must not carry `modelUsed`, which
+ * several callers use as the success discriminant.
+ */
+export type StructuredParseFailureReason =
+  | "no_models"
+  | "empty"
+  | "http_error"
+  | "schema_rejection"
+  | "timeout";
+
+export interface StructuredParseFailure {
+  result: null;
+  failureReason: StructuredParseFailureReason;
+  /** Model string of the last attempt, when one was selected. Not `modelUsed`. */
+  attemptedModel?: string;
+  /** HTTP status when known. Never a response body. */
+  httpStatus?: number;
+  /** Coarse class: http_4xx / http_5xx / timeout / network / empty / schema_rejection / no_models. */
+  errorClass?: string;
+}
+
+export type StructuredParseResult<T> =
+  | { result: T; modelUsed: string }
+  | StructuredParseFailure;
+
+type ChatCompletionOutcome =
+  | { ok: true; response: FallbackLlmResponse }
+  | { ok: false; failure: Omit<StructuredParseFailure, "result"> };
+
 export interface FallbackLlmRuntimeContext {
   agentDir?: string;
   getRuntimeAuthForModel?: GetRuntimeAuthForModelFn | null;
@@ -205,6 +238,18 @@ export class FallbackLlmClient {
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
     options: FallbackLlmOptions = {},
   ): Promise<FallbackLlmResponse | null> {
+    const outcome = await this.completeChat(messages, options);
+    return outcome.ok ? outcome.response : null;
+  }
+
+  /**
+   * Same transport walk as chatCompletion, but tagged so structured parse can
+   * tell timeout / empty / HTTP error apart instead of collapsing them to null.
+   */
+  private async completeChat(
+    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+    options: FallbackLlmOptions = {},
+  ): Promise<ChatCompletionOutcome> {
     const models = this.getModelChain(
       options.agentId,
       options.model,
@@ -213,25 +258,47 @@ export class FallbackLlmClient {
     );
     if (models.length === 0) {
       log.warn("fallback LLM: no models configured in gateway");
-      return null;
+      return { ok: false, failure: { failureReason: "no_models", errorClass: "no_models" } };
     }
+
+    let lastFailure: Omit<StructuredParseFailure, "result"> = {
+      failureReason: "http_error",
+      errorClass: "network",
+    };
+
+    const recordFailure = (
+      failure: Omit<StructuredParseFailure, "result">,
+      attemptedModel?: string,
+    ): void => {
+      lastFailure = attemptedModel ? { ...failure, attemptedModel } : failure;
+    };
+
+    const throwIfCallerAborted = (signal: AbortSignal | undefined): void => {
+      if (!signal?.aborted) return;
+      const reason = abortReason(signal);
+      if (isTimeoutError(reason) && !options.signal?.aborted) {
+        recordFailure({ failureReason: "timeout", errorClass: "timeout" });
+        return;
+      }
+      throw reason;
+    };
 
     const runChain = async (
       initialOptions: FallbackLlmOptions,
     ): Promise<FallbackLlmResponse | null> => {
       let runOptions = initialOptions;
       let lastRejectedResponse: FallbackLlmResponse | null = null;
-      // Try each model in the chain
       for (let i = 0; i < models.length; i++) {
         if (runOptions.signal?.aborted) {
-          throw abortReason(runOptions.signal);
+          throwIfCallerAborted(runOptions.signal);
+          if (lastFailure.failureReason === "timeout") return null;
         }
         const model = models[i];
         const isFallback = i > 0;
 
         try {
           const result = await this.tryModel(model, messages, runOptions);
-          if (result) {
+          if (result?.content) {
             const response = {
               content: result.content,
               modelUsed: model.modelString,
@@ -247,18 +314,17 @@ export class FallbackLlmClient {
             }
             return response;
           }
+          recordFailure({ failureReason: "empty", errorClass: "empty" }, model.modelString);
         } catch (err) {
           if (runOptions.signal?.aborted) {
-            throw abortReason(runOptions.signal);
+            throwIfCallerAborted(runOptions.signal);
+            if (lastFailure.failureReason === "timeout") return null;
           }
           if (
             (runOptions.jsonSchema || runOptions.responsesJsonSchema) &&
             isUnsupportedJsonSchemaError(err)
           ) {
             log.debug(`fallback LLM: ${model.modelString} rejected native JSON schema; retrying without it`);
-            // Degrade to prompt-only for the REST of the chain too, so an
-            // N-model chain where every provider rejects structured output
-            // costs N+1 requests instead of 2N.
             runOptions = {
               ...runOptions,
               jsonSchema: undefined,
@@ -266,7 +332,7 @@ export class FallbackLlmClient {
             };
             try {
               const result = await this.tryModel(model, messages, runOptions);
-              if (result) {
+              if (result?.content) {
                 const response = {
                   content: result.content,
                   modelUsed: model.modelString,
@@ -279,8 +345,14 @@ export class FallbackLlmClient {
                 log.debug(`fallback LLM: ${model.modelString} unstructured retry output rejected by acceptResponse, trying next model...`);
                 continue;
               }
+              recordFailure({ failureReason: "empty", errorClass: "empty" }, model.modelString);
             } catch (retryError) {
-              if (runOptions.signal?.aborted) throw abortReason(runOptions.signal);
+              if (runOptions.signal?.aborted) {
+                throwIfCallerAborted(runOptions.signal);
+                if (lastFailure.failureReason === "timeout") return null;
+              }
+              const retryClassified = classifyThrownProviderError(retryError);
+              recordFailure(retryClassified, model.modelString);
               const retryErrorMsg = runOptions.redactProviderErrors
                 ? "provider error details redacted"
                 : retryError instanceof Error
@@ -292,13 +364,14 @@ export class FallbackLlmClient {
             }
             continue;
           }
+          const classified = classifyThrownProviderError(err);
+          recordFailure(classified, model.modelString);
           const errorMsg = runOptions.redactProviderErrors
             ? "provider error details redacted"
             : err instanceof Error
               ? err.message
               : String(err);
           log.debug(`fallback LLM: ${model.modelString} failed (${errorMsg}), trying next...`);
-          // Continue to next model in chain
         }
       }
 
@@ -306,10 +379,15 @@ export class FallbackLlmClient {
       return lastRejectedResponse;
     };
 
+    const toOutcome = (response: FallbackLlmResponse | null): ChatCompletionOutcome => {
+      if (response) return { ok: true, response };
+      return { ok: false, failure: lastFailure };
+    };
+
     if (typeof options.timeoutMs === "number") {
       if (options.timeoutMs <= 0) {
         log.warn("fallback LLM: timed out before request started");
-        return null;
+        return { ok: false, failure: { failureReason: "timeout", errorClass: "timeout" } };
       }
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const controller = new AbortController();
@@ -323,26 +401,38 @@ export class FallbackLlmClient {
       const timedOptions = { ...options, signal: controller.signal };
       const chain = runChain(timedOptions);
       chain.catch(() => {});
+      const timeoutFailure: ChatCompletionOutcome = {
+        ok: false,
+        failure: { failureReason: "timeout", errorClass: "timeout" },
+      };
       try {
-        return await Promise.race([
-          chain,
-          new Promise<null>((resolve) => {
+        const raced = await Promise.race([
+          chain.then(toOutcome),
+          new Promise<ChatCompletionOutcome>((resolve) => {
             timeoutHandle = setTimeout(() => {
               log.warn(`fallback LLM: timed out after ${options.timeoutMs}ms`);
+              recordFailure({ failureReason: "timeout", errorClass: "timeout" });
               controller.abort(
                 new Error(`fallback LLM timed out after ${options.timeoutMs}ms`),
               );
-              resolve(null);
+              resolve(timeoutFailure);
             }, options.timeoutMs);
           }),
         ]);
+        return raced;
+      } catch (err) {
+        if (options.signal?.aborted) throw err;
+        if (isTimeoutError(err)) {
+          return timeoutFailure;
+        }
+        throw err;
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);
         options.signal?.removeEventListener("abort", onCallerAbort);
       }
     }
 
-    return await runChain(options);
+    return toOutcome(await runChain(options));
   }
 
   /**
@@ -366,50 +456,74 @@ export class FallbackLlmClient {
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
     schema: { parse: (data: unknown) => T },
     options: FallbackLlmOptions = {},
-  ): Promise<
-    | { result: T; modelUsed: string }
-    | { result: null; failureReason: "no_models" | "empty" | "http_error" }
-  > {
-    let response: FallbackLlmResponse | null;
+  ): Promise<StructuredParseResult<T>> {
+    let outcome: ChatCompletionOutcome;
     try {
-      response = await this.chatCompletion(messages, options);
+      outcome = await this.completeChat(messages, options);
     } catch (err) {
       // Caller aborts must propagate (e.g. recall planner cancellation) — do
       // not swallow them as a provider failure, or abort-driven callers lose
       // cancellation and treat it as an extraction error (codex review).
       if (options.signal?.aborted) throw err;
+      if (isTimeoutError(err)) {
+        return { result: null, failureReason: "timeout", errorClass: "timeout" };
+      }
       log.warn("fallback LLM: chatCompletion threw during structured parse:", err);
-      return { result: null, failureReason: "http_error" };
+      return { result: null, ...classifyThrownProviderError(err) };
     }
-    if (!response?.content) {
-      // chatCompletion returns null both when no models are configured
-      // (auth/config) and when every configured model errored (transient).
-      // Disambiguate via the resolved model chain so the retry layer can pick
-      // the right failure class.
-      const hasModels =
-        this.getModelChain(
-          options.agentId,
-          options.model,
-          options.modelChain,
-          options.includeDefaultModelFallback,
-        ).length > 0;
-      return { result: null, failureReason: hasModels ? "http_error" : "no_models" };
+    if (!outcome.ok) {
+      return { result: null, ...outcome.failure };
+    }
+    const response = outcome.response;
+    if (!response.content) {
+      return {
+        result: null,
+        failureReason: "empty",
+        attemptedModel: response.modelUsed,
+        errorClass: "empty",
+      };
     }
 
     try {
       const candidates = extractJsonCandidates(response.content);
+      let sawJson = false;
+      let sawSchemaReject = false;
       for (const c of candidates) {
+        let parsed: unknown;
         try {
-          const parsed = JSON.parse(c);
+          parsed = JSON.parse(c);
+          sawJson = true;
+        } catch {
+          continue;
+        }
+        try {
           return { result: schema.parse(parsed), modelUsed: response.modelUsed };
         } catch {
-          // keep trying other candidates
+          sawSchemaReject = true;
         }
       }
-      return { result: null, failureReason: "empty" };
+      if (sawSchemaReject) {
+        return {
+          result: null,
+          failureReason: "schema_rejection",
+          attemptedModel: response.modelUsed,
+          errorClass: "schema_rejection",
+        };
+      }
+      return {
+        result: null,
+        failureReason: "empty",
+        attemptedModel: response.modelUsed,
+        errorClass: "empty",
+      };
     } catch (err) {
       log.warn("fallback LLM: failed to parse structured output:", err);
-      return { result: null, failureReason: "empty" };
+      return {
+        result: null,
+        failureReason: "empty",
+        attemptedModel: response.modelUsed,
+        errorClass: "empty",
+      };
     }
   }
 
@@ -1116,6 +1230,65 @@ export class FallbackLlmClient {
 function abortReason(signal: AbortSignal | undefined): Error {
   const reason = signal?.reason;
   return reason instanceof Error ? reason : new Error("fallback LLM request aborted");
+}
+
+const HTTP_STATUS_IN_MESSAGE = /\b([1-5]\d{2})\b/;
+
+function isTimeoutError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /timed out after \d+ms/i.test(msg) || /timed out before request started/i.test(msg);
+}
+
+function isEmptyProviderResponse(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /^Empty response from /i.test(msg);
+}
+
+function finiteHttpStatus(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) return undefined;
+  if (value < 100 || value > 599) return undefined;
+  return value;
+}
+
+function httpStatusFromProviderError(err: unknown): number | undefined {
+  if (err && typeof err === "object") {
+    if ("status" in err) {
+      const status = finiteHttpStatus(err.status);
+      if (status !== undefined) return status;
+    }
+    if ("statusCode" in err) {
+      const status = finiteHttpStatus(err.statusCode);
+      if (status !== undefined) return status;
+    }
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  const match = HTTP_STATUS_IN_MESSAGE.exec(msg);
+  if (!match) return undefined;
+  return finiteHttpStatus(Number(match[1]));
+}
+
+function errorClassForHttpStatus(status: number): string {
+  if (status >= 500) return "http_5xx";
+  if (status >= 400) return "http_4xx";
+  return `http_${status}`;
+}
+
+function classifyThrownProviderError(err: unknown): Omit<StructuredParseFailure, "result"> {
+  if (isTimeoutError(err)) {
+    return { failureReason: "timeout", errorClass: "timeout" };
+  }
+  if (isEmptyProviderResponse(err)) {
+    return { failureReason: "empty", errorClass: "empty" };
+  }
+  const httpStatus = httpStatusFromProviderError(err);
+  if (httpStatus !== undefined) {
+    return {
+      failureReason: "http_error",
+      httpStatus,
+      errorClass: errorClassForHttpStatus(httpStatus),
+    };
+  }
+  return { failureReason: "http_error", errorClass: "network" };
 }
 
 function normalizeRuntimePath(value: unknown): string | undefined {
