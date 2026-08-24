@@ -848,13 +848,30 @@ Behavior:
   `executable` (or `REMNIC_CODEX_EXECUTABLE` env), `reasoningEffort`
   (`low` | `medium` | `high` | `xhigh`, default `medium`), and
   `retryOptions.timeoutMs` (positive integer; the request deadline when the
-  caller does not set one — an explicit call timeout always wins).
+  caller does not set one — an explicit call timeout always wins). The
+  deadline covers the login precheck and the exec subprocess as one budget,
+  including waits on a login check another request already started: each
+  request times out on its own budget without cancelling the shared check.
 - Not logged in → the provider fails fast with `codex login` guidance; an
   expired or revoked session fails with re-auth guidance. Timeouts surface
-  as `TimeoutError`; caller cancellations keep their original abort reason.
-- A host or benchmark run that registers its own `codex-cli` transport
-  always wins; Remnic registers its subprocess transport only when the seam
-  is free.
+  as `TimeoutError` and survive the model chain (a sole/last
+  `codex-subscription` model propagates the typed error instead of an empty
+  result); caller cancellations keep their original abort reason. A cached
+  login is revalidated whenever the Codex auth store changes on disk, so a
+  later API-key login cannot be masked by an earlier ChatGPT cache entry.
+- Relative `HOME`/`CODEX_HOME` values resolve against the daemon's working
+  directory before either subprocess starts (same rule as the executable
+  path), so the login precheck and the exec child always see the same auth
+  home. Detached Codex child process groups are tracked by the owning
+  runtime's runner. The owning server or plugin runtime invokes
+  `beginCodexSubscriptionShutdown` on its own runner at shutdown,
+  so stopping one Remnic instance cannot kill another instance's in-flight
+  subscription requests. A SIGKILL timer starts before orchestrator drain.
+  The provider does not install process signal
+  listeners or call `process.exit`.
+  A host or benchmark run that registers its own `codex-cli` transport
+  always wins; the core default process runner does not override a
+  runtime-owned runner.
 
 ### Setup
 
