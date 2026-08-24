@@ -224,7 +224,7 @@
       "activeRecallEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Compat-only (issue #1550): enables the Remnic-native active-recall pre-reply summary block. NOT required for OpenClaw prompt injection — when Remnic is the memory slot, prompt injection runs through registerMemoryPromptSection / memory capability promptBuilder. Enable only to layer a second blocking pre-reply retrieval; a startup warning is logged when both this and memory-slot prompt injection are on."
+        "description": "Enable the optional Remnic-native pre-reply recall block. Memory-slot prompt injection does not require it."
       },
       "activeRecallEntityGraphDepth": {
         "type": "integer",
@@ -1697,7 +1697,7 @@
           "auto"
         ],
         "default": "off",
-        "description": "Passive correction capture (#1581) — detects corrections expressed in conversation during extraction and routes them to the Correction Contract (#1580). \"off\" disables detection (default, rule 48); \"queue\" plans corrections for human review in the review list; \"auto\" applies immediately when all safety guards pass (confidence floor, blast-radius cap, allowed action/classification), otherwise falls back to queue. Invalid values are rejected (rule 51)."
+        "description": "Passive correction capture: off, queue, or guarded auto-apply. Invalid values reject."
       },
       "correction": {
         "type": "object",
@@ -2088,7 +2088,7 @@
       "emitLegacyTools": {
         "type": "boolean",
         "default": false,
-        "description": "Advertise legacy engram_* / engram.* MCP tool aliases alongside the canonical remnic_* names. Issue #1550: defaults to false on fresh installs (halving the advertised tools/list surface); when existing legacy connector entries are present on disk the default stays true so upgrades never silently break a configured legacy client. An explicit value always wins."
+        "description": "Advertise legacy engram tool aliases. Existing legacy connector entries keep compatibility by default."
       },
       "enrichmentAutoOnCreate": {
         "type": "boolean",
@@ -3584,7 +3584,7 @@
       "namespaceCatalogEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Enable the rebuildable namespace catalog (issue #1499). Records cheap, failure-tolerant namespace touches in <memoryDir>/state/namespaces.jsonl for enumeration by maintenance, QMD indexing, dashboard, and doctor. Inert unless namespacesEnabled is also true; filesystem memory stays the source of truth and the catalog is rebuildable via `remnic namespaces rebuild`. Default on; set false to opt out."
+        "description": "Enable the rebuildable namespace catalog when namespaces are enabled. Default true."
       },
       "namespacePolicies": {
         "type": "array",
@@ -4475,7 +4475,7 @@
       "projectionRebuildEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Enable the maintenance-scheduled rebuild of state/memory-projection.sqlite (issue #2119). The projection is otherwise rebuild-only (manual CLI / tests), so it goes stale as the lifecycle ledger grows and timeline/browse consumers silently fall back to full-corpus scans. Default true; set false to disable (operators can still cron the CLI rebuild)."
+        "description": "Schedule rebuilds of the memory projection. Default true; manual rebuild remains available."
       },
       "projectionRebuildIntervalMs": {
         "type": "integer",
@@ -4865,6 +4865,11 @@
         "default": 0.3,
         "description": "Maximum fraction of the total recall budget available to the behavioral profile. Set to 1 to disable the share cap."
       },
+      "recallStateViews": {
+        "type": "boolean",
+        "default": false,
+        "description": "State-aware recall views (issue #1952): on change-intent queries, superseded memories surface as labeled history (current/historical/transition) when their successor is also recalled. Default false keeps recall output byte-identical."
+      },
       "recallConfidenceGateEnabled": {
         "type": "boolean",
         "default": false,
@@ -5029,18 +5034,18 @@
       "recallTrustStageCorpusFallbackEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "When true (default), the Memory-Worth/TrustScore recall rerank stage probes a per-namespace corpus counter/signal map for candidates whose frontmatter was NOT already loaded on the hot path (cold-tier / embedding-fallback / archive rows). The map is version-keyed (invalidated on corpus mutation) and age-bounded for trust signals, so it hits in steady state without the old 30s-TTL permanent-miss. Set false to disable the corpus fallback entirely (only preloaded-candidate + direct-read paths run) — max performance when every candidate is hot, at the cost of neutral treatment for cold candidates."
+        "description": "Use cached corpus trust signals for cold recall candidates. Disable to keep only preloaded and direct-read signals."
       },
       "hotMemoriesCacheEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Serve StorageManager.readAllMemories() from a version-keyed in-process cache of the full parsed corpus (issue #1902), eliminating repeated full-corpus disk scans on the recall hot path. Cross-process coherence is preserved by the on-disk corpus version sentinel; writes patch the cache in place. Set false to force disk scans on memory-constrained hosts (behavior then matches the pre-#1902 scan path)."
+        "description": "Cache parsed memories by corpus version. Disable to force disk scans."
       },
       "hotMemoriesCacheTtlMs": {
         "type": "number",
         "minimum": 0,
         "default": 60000,
-        "description": "Max age (ms) a version-keyed hot-memories cache entry is served before a fresh disk scan (issue #1902). The corpus version sentinel gives immediate coherence for writers that go through StorageManager or the corpus-bump helper, but direct filesystem edits (manual, git checkout, external tools) don't bump it; this TTL bounds how long such an edit can be stale. Default 60000 (60s). Set 0 to disable the TTL (version invalidation only; max performance for pure-daemon deployments with no external edits)."
+        "description": "Maximum cache age in milliseconds; 0 uses version invalidation only. Default 60000."
       },
       "recallMemoryWorthHalfLifeMs": {
         "type": "number",
@@ -5781,7 +5786,7 @@
           "enforce"
         ],
         "default": "warn",
-        "description": "Guard for promoting user-subject (or unstamped — fail-closed) memories into shared layers (team-project, server-shared, team spaces). \"warn\" promotes with a recorded warning; \"enforce\" rejects naming the --allow-user-subject override; \"off\" disables. Default \"warn\" so enabling classification later warns without a second flag flip (issue #2372)."
+        "description": "Guard user-subject promotion to shared layers: off, warn, or enforce. Default warn."
       },
       "summarizationEnabled": {
         "type": "boolean",
@@ -5975,7 +5980,7 @@
       "temporalBiTemporal": {
         "type": "boolean",
         "default": false,
-        "description": "Bi-temporal validity master gate (issue #1578). When false (default), recall behaves byte-identically to pre-#1578. Turn on to exclude validity-expired facts from default injection candidates (they stay findable by explicit search and as_of). Storage round-trips observedAt/eventTimeSource; extraction event-time write-time wiring lands in a follow-on PR."
+        "description": "Enable bi-temporal validity filtering for default recall injection. Default false."
       },
       "temporalBoostRecentDays": {
         "type": "number",
@@ -6382,6 +6387,46 @@
                 "default": false,
                 "description": "Master gate for timeline-card derivation. Default false."
               },
+              "analysis": {
+                "type": "object",
+                "additionalProperties": false,
+                "default": {},
+                "description": "Optional evidence-bound AI analysis over timeline cards. Default off.",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable evidence-bound card analysis. Default false."
+                  },
+                  "provider": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+                    "description": "Provider id. Use 'local' for local LLM; otherwise selects one configured remote provider. Required when enabled."
+                  },
+                  "model": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                    "description": "Model id; may include '/'. Required when enabled."
+                  },
+                  "timeoutMs": {
+                    "type": "integer",
+                    "minimum": 1000,
+                    "maximum": 120000,
+                    "default": 15000,
+                    "description": "Request timeout in milliseconds."
+                  },
+                  "preferences": {
+                    "type": "array",
+                    "default": [],
+                    "description": "Up to 16 prompt preferences, 200 characters each.",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
               "journal": {
                 "type": "object",
                 "additionalProperties": false,
@@ -6396,15 +6441,25 @@
                   "source": {
                     "type": "string",
                     "enum": [
-                      "file",
-                      "vault"
+                      "memoryDir",
+                      "vault",
+                      "file"
                     ],
-                    "default": "file",
-                    "description": "Where a day's journal body is read from (issue #1987). 'file' uses journal/<date>.md under the memory dir; 'vault' reads a designated heading in the vault daily note. An unrecognized value is rejected at config load."
+                    "default": "memoryDir",
+                    "description": "Where a day's journal body is read from (issue #1987). 'memoryDir' uses journal/<date>.md under the memory dir; 'vault' reads the vault.readback.journalSection heading in the vault daily note. 'vault' requires vault.enabled plus a resolvable dailyNotePath and a non-empty readback.journalSection — config load fails naming every missing prerequisite. Legacy 'file' is accepted as an alias of 'memoryDir' and emits a deprecation warning."
                   },
                   "heading": {
                     "type": "string",
-                    "description": "Heading whose section holds the journal body when source is 'vault' (issue #1987). Required and non-blank in vault mode, trimmed before use, ignored in file mode."
+                    "description": "Deprecated alias of activity.timeline.vault.readback.journalSection. Used only when the new key is absent; if both are set the new key wins. Emits a deprecation warning."
+                  },
+                  "extractionMode": {
+                    "type": "string",
+                    "enum": [
+                      "off",
+                      "review"
+                    ],
+                    "default": "off",
+                    "description": "Review-only journal extraction (issue #1987). 'review' runs a pass over changed journal text producing pending_review candidates only (never auto-approve; no auto mode by design)."
                   }
                 }
               },
@@ -6639,6 +6694,19 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Publish after each successful artifact generation, once those hooks land. The CLI is always available."
+                  },
+                  "readback": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "default": {},
+                    "description": "Vault daily-note read-back settings (issue #1987).",
+                    "properties": {
+                      "journalSection": {
+                        "type": "string",
+                        "default": "",
+                        "description": "Heading whose section of the daily note is the user's journal. Arbitrary user-chosen text (any language, emoji, punctuation) matched exactly. Required non-empty when timeline.journal.source is 'vault'."
+                      }
+                    }
                   }
                 }
               }
@@ -7312,7 +7380,7 @@
           "auto"
         ],
         "default": "embedded",
-        "description": "Bridge mode: 'embedded' (default) boots the in-process orchestrator; 'delegate' backs memory injection/observe/flush with a running standalone Remnic daemon over HTTP and skips the embedded orchestrator; 'auto' delegates only when a healthy same-host daemon reports the SAME memoryDir, and stays embedded otherwise. REMNIC_BRIDGE_MODE env overrides this key."
+        "description": "Bridge mode: embedded, delegate, or same-memory auto delegation. Environment override supported."
       },
       "bridgeHealthTimeoutMs": {
         "type": "integer",
@@ -8552,6 +8620,11 @@
       "advanced": true,
       "placeholder": "0.3",
       "help": "Maximum fraction of the total recall budget available to the behavioral profile. Set to 1 to disable the share cap."
+    },
+    "recallStateViews": {
+      "label": "State-Aware Recall Views",
+      "advanced": true,
+      "help": "Surface labeled supersession history on change-intent queries (when did / used to / switched)."
     },
     "recallPipeline": {
       "label": "Recall Pipeline",
