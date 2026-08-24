@@ -75,21 +75,32 @@ _request_counter = itertools.count(1)
 class BridgeUsage(Protocol):
     """Token usage of a delegated completion (matches Hermes PluginLlmUsage)."""
 
-    input_tokens: int
-    output_tokens: int
-    total_tokens: int
+    @property
+    def input_tokens(self) -> int: ...
+
+    @property
+    def output_tokens(self) -> int: ...
+
+    @property
+    def total_tokens(self) -> int: ...
 
 
 class BridgeCompletionResult(Protocol):
     """What the delegate must return (matches Hermes PluginLlmCompleteResult)."""
 
-    text: str
-    model: str
-    usage: BridgeUsage
+    @property
+    def text(self) -> str: ...
+
+    @property
+    def model(self) -> str: ...
+
+    @property
+    def usage(self) -> BridgeUsage: ...
 
 
 # The delegate is the host's runtime resolver call: it receives the validated
 # message list and NOTHING else — model/provider routing cannot be forwarded.
+# Deadline/purpose kwargs are optional host extensions, not routing inputs.
 CompletionDelegate = Callable[[list[dict[str, str]]], BridgeCompletionResult]
 
 
@@ -274,7 +285,7 @@ class HermesLlmBridge:
     def __init__(self, policy: BridgePolicy, complete: CompletionDelegate) -> None:
         self._bind = _bind_address(policy.host)  # rejects before any socket exists
         self.policy = policy
-        self._complete = complete
+        self._complete: Callable[..., BridgeCompletionResult] = complete
         self._auth_token = secrets.token_urlsafe(32)
         self._server: _BridgeServer | None = None
         self._thread: threading.Thread | None = None
