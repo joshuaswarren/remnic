@@ -159,6 +159,9 @@ importers:
         specifier: ^7.18.2
         version: 7.18.2(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
     devDependencies:
+      '@remnic/bench':
+        specifier: workspace:^
+        version: link:../bench
       '@types/react':
         specifier: ^19.2.14
         version: 19.2.17
@@ -567,9 +570,6 @@ importers:
       '@remnic/core':
         specifier: workspace:^
         version: link:../remnic-core
-      '@sinclair/typebox':
-        specifier: ^0.34.0
-        version: 0.34.49
     devDependencies:
       tsup:
         specifier: ^8.5.1

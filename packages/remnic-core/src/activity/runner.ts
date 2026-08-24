@@ -26,7 +26,9 @@ import { syncActivitySource } from "./pipeline.js";
 import { ActivityHttpSourceClient } from "./source-client.js";
 import { activityDateInTimezone } from "./digest.js";
 import { displayErrorDetail } from "../runtime/better-sqlite.js";
+import type { PluginConfig } from "../types.js";
 import type { ActivityConfig, ActivitySourceClient, ActivitySourceConfig } from "./types.js";
+import { regenerateTimelineDay, type TimelineAnalysisClients } from "./timeline/regenerate.js";
 
 type ActivityNow = Date | (() => Date);
 
@@ -86,6 +88,10 @@ export interface ActivitySyncRunOptions {
    * Host wires the core index seam (SearchBackend.update); best-effort.
    */
   reindexSearch?: (signal?: AbortSignal) => Promise<void>;
+  /** Full plugin config so regenerate can construct local/remote LLM clients. */
+  pluginConfig?: PluginConfig;
+  /** Injected analysis clients; tests and hosts that already own them. */
+  analysisDeps?: TimelineAnalysisClients;
 }
 
 /** Previous calendar date via pure date arithmetic (no DST wall-clock drift). */
@@ -216,6 +222,25 @@ export async function runActivitySyncOnce(options: ActivitySyncRunOptions): Prom
       // (its fast-failing attempt reports an error), but no later source builds
       // a client or contacts a daemon — teardown settles promptly.
       if (options.signal?.aborted) break;
+    }
+    if (options.config.timeline.enabled && !options.signal?.aborted) {
+      for (const date of dates) {
+        try {
+          await regenerateTimelineDay({
+            date,
+            timezone: options.config.timezone,
+            memoryDir: options.memoryDir,
+            store,
+            timelineEnabled: true,
+            analysis: options.config.timeline.analysis,
+            ...(options.pluginConfig === undefined ? {} : { pluginConfig: options.pluginConfig }),
+            ...(options.analysisDeps === undefined ? {} : { deps: options.analysisDeps }),
+            ...(options.signal === undefined ? {} : { signal: options.signal }),
+          });
+        } catch {
+          // Analysis/persist faults must not fail the durable sync.
+        }
+      }
     }
   } finally {
     if (ownStore) store.close();
