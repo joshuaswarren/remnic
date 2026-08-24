@@ -22,7 +22,7 @@ import {
 } from "../capabilities.js";
 import type { MemoryFile, PluginConfig } from "../types.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
-import { readPromotionReceiptStatus, type MergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
+import { readDurableSemanticFingerprint, readPromotionReceiptStatus, type MergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
 
 export const confidenceTierOrder = [
   "explicit",
@@ -395,28 +395,31 @@ export async function promoteAndReconcileMergedTarget(args: {
       );
       return;
     }
-    // #2813 (P1 A, P1 B): confirm the cached payload against a TRUTHFUL receipt
-    // read and digest check. An unavailable sidecar or digest mismatch abandons the
-    // promotion — the previous undefined-vs-undefined comparison confirmed any
-    // payload whose receipt identity had become unreadable. A genuinely absent receipt
-    // still compares equal and promotes.
+    // #2813 (P1 A, P1 B) + #2870: confirm the cached payload against a
+    // TRUTHFUL receipt read and a SEMANTIC fingerprint check. An
+    // unavailable sidecar or revision mismatch abandons the promotion —
+    // the previous undefined-vs-undefined comparison confirmed any payload
+    // whose receipt identity had become unreadable. A genuinely absent
+    // receipt still compares equal and promotes. The file check binds
+    // SEMANTIC identity, not bytes: an access-tracking flush between build
+    // and promotion rewrites only `accessCount`/`lastAccessed` (mints no
+    // receipt, changes no semantic line), so it stays compatible and the
+    // promotion proceeds; any body/confidence/provenance/scope/tags/status
+    // change makes the fingerprint differ and refuses.
     const standingReceipt = await readPromotionReceiptStatus(args.sourceStorage, current.path);
-    const standingDigest =
-      typeof args.sourceStorage.readDurableFileDigest === "function"
-        ? await args.sourceStorage.readDurableFileDigest(current.path).catch(() => null)
-        : null;
+    const standingSemanticFingerprint = await readDurableSemanticFingerprint(current.path);
     if (
       !standingReceipt.available ||
       (standingReceipt.revision ?? undefined) !== (payload.committedRevision ?? undefined) ||
       (payload.committedDigest !== undefined &&
         standingReceipt.committedDigest !== undefined &&
         standingReceipt.committedDigest !== payload.committedDigest) ||
-      (payload.committedDigest !== undefined &&
-        standingDigest !== null &&
-        standingDigest !== payload.committedDigest)
+      (payload.committedSemanticFingerprint !== undefined &&
+        standingSemanticFingerprint !== null &&
+        standingSemanticFingerprint !== payload.committedSemanticFingerprint)
     ) {
       log.warn(
-        `persistExtraction: merged-target promotion abandoned for ${args.sourceMemoryId} — the committed record's CAS receipt or digest ${standingReceipt.available ? "does not match the cached payload's" : "is unreadable"}, so the cached body is not confirmed`,
+        `persistExtraction: merged-target promotion abandoned for ${args.sourceMemoryId} — the committed record's CAS receipt or semantic fingerprint ${standingReceipt.available ? "does not match the cached payload's" : "is unreadable"}, so the cached body is not confirmed`,
       );
       return;
     }
