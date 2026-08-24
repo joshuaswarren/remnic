@@ -45,9 +45,19 @@ export const EXTRACTION_RESPONSE_SHAPE = `{
   "episodeTitle": "<six-to-eight word conversation segment title>",
   "relationships": [{"source": "<normalized-name>", "target": "<normalized-name>", "label": "<source-grounded relationship>"}]
 }`;
+export function extractionResponseShape(spanMode: "off" | "shadow" | "on" = "off"): string {
+  if (spanMode === "off") return EXTRACTION_RESPONSE_SHAPE;
+  return EXTRACTION_RESPONSE_SHAPE.replace(
+    `"eventTime": "<optional source temporal expression>"`,
+    `"eventTime": "<optional source temporal expression>",
+    "span": {"sourceMessageIndex": <message number>, "charStart": <number>, "charEnd": <number>, "frame": "<at most 15 words>"}`,
+  );
+}
 export const EXTRACTION_RESPONSE_PLACEHOLDERS: Record<string, true> = {};
-for (const placeholder of EXTRACTION_RESPONSE_SHAPE.match(/<[^<>\r\n]+>/g) ?? []) {
-  EXTRACTION_RESPONSE_PLACEHOLDERS[placeholder] = true;
+for (const shape of [EXTRACTION_RESPONSE_SHAPE, extractionResponseShape("on")]) {
+  for (const placeholder of shape.match(/<[^<>\r\n]+>/g) ?? []) {
+    EXTRACTION_RESPONSE_PLACEHOLDERS[placeholder] = true;
+  }
 }
 export const CUE_ANCHOR_PROMPT_INSTRUCTION = `- For each fact, emit at most 3 "cueAnchors".
 - Each cue anchor value must be a source-grounded search hook of at most 120 characters, in the form "<main entity or topic> <key aspect>".
@@ -74,6 +84,30 @@ export function eventTimePromptInstruction(config: PluginConfig): string {
   if (!config.temporalBiTemporal) return "";
   return `
 When a fact states when it became or stopped being true, copy that explicit temporal expression verbatim into "eventTime". Omit "eventTime" when no such expression appears; never infer dates.`;
+}
+
+/**
+ * Span-mode extraction instructions (issue #2333 Phase B). Empty when the
+ * mode is off (byte-identical prompt). The offset convention mirrors the
+ * Phase A bench: messages numbered in order from 0, offsets index the
+ * message's own text (after the `[role] ` tag), [charStart, charEnd)
+ * end-exclusive.
+ */
+export function spanModePromptSection(spanMode: "off" | "shadow" | "on"): string {
+  if (spanMode === "off") return "";
+  const requestBoth = spanMode === "shadow";
+  return `
+Span mode (numbered-message offsets):
+- Conversation messages are numbered in order starting at 0 (the "[role] text" blocks).
+- For each fact, return "span": {"sourceMessageIndex": <message number>, "charStart": <number>, "charEnd": <number>, "frame": "<at most 15 words>"} pointing at the verbatim supporting words in that message's text (the text after the "] "). Offsets are [charStart, charEnd), end-exclusive, counting from the first character of the message text.
+- "frame" is at most 15 generated words that make the span self-contained: resolve pronouns to names, name the subject (e.g., frame "Maya's relocation:" + span "moved to Seattle last spring…").${
+    requestBoth
+      ? `
+- This run is in SHADOW mode: ALSO include the full standalone "content" restatement exactly as you would normally write it, in addition to "span".`
+      : `
+- Set "content" to the frame text (the short ≤15-word frame) — do not restate the full fact; the span plus frame carry it.`
+  }
+- Invalid spans fall back to the frame, so keep the frame informative.`;
 }
 
 /**
@@ -170,7 +204,7 @@ When you see something that matches a known entity, use THAT name exactly. Only 
 `
     : ""
 }
-${eventTimePromptInstruction(config)}
+${eventTimePromptInstruction(config)}${spanModePromptSection(config.extraction?.spanMode ?? "off")}
 Also extract relationships between entities mentioned in the conversation.
 - Format: {source: "entity-name", target: "entity-name", label: "relationship description"}
 - Max 5 relationships per extraction

@@ -129,6 +129,20 @@ export const ExtractedFactSchema = z.object({
     .describe(
       'For category "procedure" only: ordered steps (intent per step). At least two steps; include explicit trigger phrasing in content (e.g. "When you deploy…").',
     ),
+  span: z
+    .object({
+      sourceMessageIndex: z.number(),
+      charStart: z.number(),
+      charEnd: z.number(),
+      frame: z.string(),
+      sourceHash: z.string().optional().nullable(),
+      sourceLength: z.number().optional().nullable(),
+    })
+    .optional()
+    .nullable()
+    .describe(
+      'Span-mode only (issue #2333): offsets of a verbatim supporting span in the numbered conversation segment. Messages are numbered in order starting at 0; charStart/charEnd index that message\'s text in a [charStart, charEnd) interval (end-exclusive). "frame" is at most 15 words that make the span self-contained (resolve pronouns, name the subject). Optional sourceHash/sourceLength bind the span to the exact prompt text. When span-mode requests spans, omit the full "content" restatement and let the frame plus span carry the fact.',
+    ),
   reasoningTrace: z
     .object({
       steps: z
