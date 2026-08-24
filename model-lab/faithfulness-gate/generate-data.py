@@ -22,10 +22,10 @@ Outputs
 * ``<out>/dataset.sha256`` — the dataset hash (gitignored).
 * stdout gains ``DATASET_SHA256=<hex>`` for machine parsing.
 
-The harvest stream (teacher labels from shadow mode) is NOT here and never
-was: the former harvest-shadow-logs.py stubs were unimplemented and are now
-deleted. #1576 shadow verdicts are recorded in the parent tree; harvesting
-them into training data is a separate tracked issue (#2852).
+The harvest stream (teacher labels from #1576 shadow verdicts) is NOT here
+and never was: the former harvest-shadow-logs.py stubs were unimplemented
+and are now deleted. Harvesting is the opt-in, consent-gated
+``model-lab/harvest.py`` CLI (issue #2852).
 """
 
 from __future__ import annotations
