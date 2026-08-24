@@ -85,7 +85,6 @@ def _no_timeout_delegate(messages: list[dict[str, str]]) -> Any:
     """Pickleable delegate with no explicit timeout: must run in a killable worker."""
     return _delegate_result()
 
-
 class RecordingDelegate:
     """Delegate that records exactly how it was invoked."""
 
@@ -246,7 +245,6 @@ class TestPolicyParsing:
 
     def test_ephemeral_port_still_allowed_without_client_config(self) -> None:
         assert BridgePolicy.from_config({"enabled": True, "port": 0}).port == 0
-
     def test_policy_dataclass_has_no_model_provider_or_credential_field(self) -> None:
         names = {field.name for field in dataclasses.fields(BridgePolicy)}
         assert not any(
@@ -487,7 +485,6 @@ class TestCredentialsNeverWritten:
             BridgePolicy(enabled=True, client_config_path=str(path)), RecordingDelegate()
         )
         assert len(bridge.auth_token) >= 32
-
 
 class TestBodyBoundsAndAbort:
     def test_oversized_content_length_is_rejected_without_delegation(self) -> None:
@@ -778,7 +775,6 @@ class TestPurposeForwarding:
                 _plugin_llm_child_complete([{"role": "user", "content": "x"}])
         assert len(calls) == 1
 
-
 class TestOptInDefaults:
     def test_no_section_starts_nothing(self) -> None:
         assert start_bridge_from_config(None, lambda *a, **k: _delegate_result()) is None
@@ -808,7 +804,6 @@ class TestOptInDefaults:
             )
             is None
         )
-
 
 class TestRegisterWiring:
     def _ctx(self, config: dict[str, Any], with_llm: bool = True) -> Any:
@@ -917,6 +912,7 @@ class TestRegisterWiring:
         with running_bridge(BridgePolicy(enabled=True), complete) as bridge:
             assert bridge.bound_port > 0
             assert bridge.active_work == 0
+
 
     def test_register_swallows_bridge_setup_failures(self) -> None:
         ctx = self._ctx({"remnic": {"llm_bridge": {"enabled": True}}}, with_llm=False)

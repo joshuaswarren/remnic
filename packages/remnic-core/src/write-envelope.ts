@@ -121,6 +121,11 @@ const MEMORY_CATEGORY_TABLE: Record<MemoryCategory, true> = {
   reasoning_trace: true,
 };
 
+/**
+ * Canonical category spellings, sorted. Runtime counterpart of the
+ * `MemoryCategory` union for error messages and cross-module consistency
+ * checks (issue #2829).
+ */
 export const MEMORY_CATEGORY_NAMES = Object.keys(MEMORY_CATEGORY_TABLE).sort();
 
 export function isMemoryCategory(value: string): value is MemoryCategory {

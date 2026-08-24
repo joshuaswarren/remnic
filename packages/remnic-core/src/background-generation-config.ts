@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 
+import { isLoopbackHost } from "./runtime/http-transport.js";
 import { expandTildePath } from "./utils/path.js";
 
 export interface BackgroundGenerationConfig {
@@ -28,6 +29,9 @@ function parseBackgroundEndpoint(value: string, keyName: string): string {
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new Error(`${keyName} must use HTTP or HTTPS`);
+  }
+  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
+    throw new Error(`${keyName} must use HTTPS unless the host is loopback`);
   }
   if (parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error(

@@ -158,6 +158,7 @@ remnic:
   #   max_body_bytes: 524288
   #   timeout_seconds: 120.0
   #   client_config_path: ""   # set to write the 0600 client JSON (includes a loopback bearer)
+```
 
 ### Field reference
 

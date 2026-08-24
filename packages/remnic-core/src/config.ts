@@ -26,6 +26,7 @@ import type {
   TrustWeights,
 } from "./types.js";
 import { parseBackgroundGeneration } from "./background-generation-config.js";
+import { parseLocalLlmConfig } from "./local-llm-config.js";
 import { parseConvergeConfig } from "./converge-config.js";
 import { parseExternalWikiRecallGuard } from "./external-wiki-guard.js";
 import { log } from "./logger.js";
@@ -41,7 +42,7 @@ import { coerceBool, coerceBooleanLike, coerceInstallExtension, coerceNumber } f
 import { parseSubjectRuntimeConfig } from "./subject-config.js";
 import { parseRecallStateViews } from "./recall-state-view.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
-import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
+import { parseExtractionFields } from "./extraction-span-config.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
 import { parseDependencyPropagationConfig } from "./dependency-propagation-config.js";
 import { parseProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
@@ -2336,7 +2337,7 @@ export function parseConfig(
     dreaming,
     dreamsPhases,
     procedural,
-    extractionLiveness: parseExtractionLivenessConfig(cfg),
+    ...parseExtractionFields(cfg),
     replicaPeers: parseReplicaPeersConfig(cfg),
     converge: parseConvergeConfig(cfg.converge),
     wearables,
@@ -2684,49 +2685,7 @@ export function parseConfig(
       typeof cfg.abstractionNodeStoreDir === "string" && cfg.abstractionNodeStoreDir.trim().length > 0
         ? cfg.abstractionNodeStoreDir.trim()
         : path.join(memoryDir, "state", "abstraction-nodes"),
-    // Local LLM Provider (v2.1)
-    localLlmEnabled: cfg.localLlmEnabled === true || cfg.localLlmEnabled === "true", // default: false
-    localLlmUrl:
-      typeof cfg.localLlmUrl === "string" && cfg.localLlmUrl.length > 0
-        ? cfg.localLlmUrl
-        : "http://localhost:1234/v1",
-    localLlmModel:
-      typeof cfg.localLlmModel === "string" && cfg.localLlmModel.length > 0
-        ? cfg.localLlmModel
-        : "local-model",
-    localLlmApiKey:
-      typeof cfg.localLlmApiKey === "string" && cfg.localLlmApiKey.length > 0
-        ? resolveEnvVars(cfg.localLlmApiKey)
-        : localLlmApiKeyEnv === undefined
-          ? undefined
-          : readEnvVar(localLlmApiKeyEnv),
-    localLlmApiKeyEnv,
-    localLlmHeaders:
-      cfg.localLlmHeaders && typeof cfg.localLlmHeaders === "object" && !Array.isArray(cfg.localLlmHeaders)
-        ? Object.fromEntries(
-            Object.entries(cfg.localLlmHeaders as Record<string, unknown>)
-              .filter(([, value]) => typeof value === "string")
-              .map(([key, value]) => [key, String(value)]),
-          )
-        : undefined,
-    localLlmAuthHeader: cfg.localLlmAuthHeader !== false,
-    localLlmFallback: cfg.localLlmFallback !== false, // default: true
-    localLlmHomeDir:
-      typeof cfg.localLlmHomeDir === "string" && cfg.localLlmHomeDir.length > 0
-        ? cfg.localLlmHomeDir
-        : undefined,
-    localLmsCliPath:
-      typeof cfg.localLmsCliPath === "string" && cfg.localLmsCliPath.length > 0
-        ? cfg.localLmsCliPath
-        : undefined,
-    localLmsBinDir:
-      typeof cfg.localLmsBinDir === "string" && cfg.localLmsBinDir.length > 0
-        ? cfg.localLmsBinDir
-        : undefined,
-    localLlmTimeoutMs:
-      parseBoundedIntegerMs(cfg.localLlmTimeoutMs, 180_000, 1, 86_400_000),
-    localLlmMaxContext:
-      parseOptionalIntegerAtLeast(cfg.localLlmMaxContext, 1024, "localLlmMaxContext"),
+    ...parseLocalLlmConfig(cfg, localLlmApiKeyEnv, resolveEnvVars),
     // Observability (disabled by default to avoid log spam)
     slowLogEnabled: cfg.slowLogEnabled === true,
     slowLogThresholdMs:

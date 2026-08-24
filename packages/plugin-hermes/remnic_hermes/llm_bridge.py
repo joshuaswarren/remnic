@@ -245,7 +245,6 @@ def _plugin_llm_child_complete(
         return complete(messages, purpose="remnic-llm-bridge")
     return complete(messages)
 
-
 @dataclass(frozen=True)
 class _FrozenUsage:
     input_tokens: int
@@ -306,14 +305,13 @@ def _persisted_auth_token(policy: BridgePolicy) -> str | None:
         return token
     return None
 
-
 class HermesLlmBridge:
     """Loopback-only OpenAI-compatible completion bridge (opt-in)."""
 
     def __init__(self, policy: BridgePolicy, complete: CompletionDelegate) -> None:
         self._bind = _bind_address(policy.host)  # rejects before any socket exists
         self.policy = policy
-        self._complete = complete
+        self._complete: Callable[..., BridgeCompletionResult] = complete
         self._auth_token = _persisted_auth_token(policy) or secrets.token_urlsafe(32)
         self._server: _BridgeServer | None = None
         self._thread: threading.Thread | None = None
@@ -676,7 +674,7 @@ def start_bridge_from_config(
         bridge = HermesLlmBridge(policy, llm_complete)
         bridge.start()
     except (OSError, ValueError) as err:
-        _log.warning("llm_bridge failed to start: %s", err)
+        _log.warning("llm_bridge failed to start (%s)", type(err).__name__)
         return None
     if policy.client_config_path:
         try:
