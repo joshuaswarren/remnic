@@ -567,3 +567,156 @@ test("trust rerank preserves duplicate paths owned by different namespaces (#202
   );
   assert.equal(outcome.trustByPath?.size, 2, "trust metadata must have one entry per namespaced result");
 });
+
+test("#2859 state-view cap: pairs reconcile before cap/MMR and count as one evidence packet", () => {
+  // MMR off so the ordered pool equals the input order — the packet
+  // semantics under test are then fully deterministic.
+  const config = parseConfig({ recallMmrEnabled: false });
+  const corpus = makeFakes([]);
+  const coordinator = new RecallRerankCoordinator({
+    getConfig: () => config,
+    getStorage: corpus.getStorage,
+    readQmdResultMemory: async () => null,
+  });
+  const sv = (
+    id: string,
+    score: number,
+    chain: Partial<QmdSearchResult> = {},
+  ): QmdSearchResult => ({ ...result(id, score), id, status: "active", ...chain });
+  const rows: QmdSearchResult[] = [
+    sv("p1", 0.95, { status: "superseded", supersededBy: "s1" }),
+    sv("orphan", 0.9, { status: "superseded", supersededBy: "absent" }),
+    sv("s1", 0.85),
+    sv("f1", 0.8),
+    sv("f2", 0.75),
+  ];
+  const caps = resolveCapabilities(config);
+
+  // Packet view: [p1+s1], [f1], [f2] — the orphan is reconciled away
+  // BEFORE the cap, and the admitted pair consumes a single slot.
+  const partition = coordinator.diversifyRecallResultsWithHeadroom(
+    "memories",
+    rows,
+    2,
+    undefined,
+    caps,
+    true,
+  );
+  assert.deepEqual(
+    partition.appliedResults.map((r) => r.id),
+    ["p1", "s1", "f1"],
+    "a complete pair is one packet: pred+succ plus one filler for limit 2",
+  );
+  assert.deepEqual(
+    partition.headroomResults.map((r) => r.id),
+    ["f2"],
+    "headroom is the remainder of the reconciled pool",
+  );
+
+  // The slice never splits a packet at the boundary: even with the
+  // successor ranked LAST, the pair is admitted together.
+  const splitRisk: QmdSearchResult[] = [
+    sv("p1", 0.95, { status: "superseded", supersededBy: "s1" }),
+    sv("f1", 0.9),
+    sv("f2", 0.85),
+    sv("s1", 0.8),
+  ];
+  const applied = coordinator.diversifyAndLimitRecallResults(
+    "memories",
+    splitRisk,
+    2,
+    undefined,
+    caps,
+    true,
+  );
+  assert.deepEqual(
+    applied.map((r) => r.id),
+    ["p1", "f1", "s1"],
+    "no underfill: the boundary keeps the evidence packet complete",
+  );
+
+  // Flag absent → the legacy row slice, byte-identical (zero-diff default).
+  const legacy = coordinator.diversifyAndLimitRecallResults(
+    "memories",
+    rows,
+    2,
+    undefined,
+    caps,
+  );
+  assert.deepEqual(
+    legacy.map((r) => r.id),
+    ["p1", "orphan"],
+    "without the state view the cap stays the plain top-N row slice",
+  );
+});
+
+test("#2859 packet cap after filter: a quarantined successor does not consume budget", () => {
+  const config = parseConfig({ recallMmrEnabled: false });
+  const corpus = makeFakes([]);
+  const coordinator = new RecallRerankCoordinator({
+    getConfig: () => config,
+    getStorage: corpus.getStorage,
+    readQmdResultMemory: async () => null,
+  });
+  const sv = (
+    id: string,
+    score: number,
+    chain: Partial<QmdSearchResult> = {},
+  ): QmdSearchResult => ({ ...result(id, score), id, status: "active", ...chain });
+  // Trust already removed s1. Cap-after-filter must drop the orphaned
+  // predecessor and promote the next live packet instead of returning empty.
+  const afterTrust: QmdSearchResult[] = [
+    sv("p1", 0.95, { status: "superseded", supersededBy: "s1" }),
+    sv("f1", 0.8),
+    sv("f2", 0.75),
+  ];
+  const partition = coordinator.diversifyRecallResultsWithHeadroom(
+    "memories",
+    afterTrust,
+    1,
+    undefined,
+    resolveCapabilities(config),
+    true,
+  );
+  assert.deepEqual(
+    partition.appliedResults.map((row) => row.id),
+    ["f1"],
+    "disallowed pair must not occupy the only packet slot",
+  );
+  assert.deepEqual(
+    partition.headroomResults.map((row) => row.id),
+    ["f2"],
+  );
+});
+
+test("#2859 linkless superseded status does not consume a packet slot", () => {
+  const config = parseConfig({ recallMmrEnabled: false });
+  const corpus = makeFakes([]);
+  const coordinator = new RecallRerankCoordinator({
+    getConfig: () => config,
+    getStorage: corpus.getStorage,
+    readQmdResultMemory: async () => null,
+  });
+  const sv = (
+    id: string,
+    score: number,
+    chain: Partial<QmdSearchResult> = {},
+  ): QmdSearchResult => ({ ...result(id, score), id, status: "active", ...chain });
+  const rows: QmdSearchResult[] = [
+    sv("legacy", 0.99, { status: "superseded" }),
+    sv("live", 0.5),
+  ];
+  const applied = coordinator.diversifyAndLimitRecallResults(
+    "memories",
+    rows,
+    1,
+    undefined,
+    resolveCapabilities(config),
+    true,
+  );
+  assert.deepEqual(
+    applied.map((row) => row.id),
+    ["live"],
+    "status-only superseded rows are rejected before the packet cap",
+  );
+});
