@@ -284,7 +284,7 @@ test("plan and execute accept variants-per-family above 64", async () => {
 });
 
 
-function withEnv(
+async function withEnv(
   overlay: Record<string, string | undefined>,
   fn: () => Promise<void>,
 ): Promise<void> {
