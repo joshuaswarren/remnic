@@ -143,6 +143,7 @@ type LiveFixtureRow = StateViewLine & {
   score: number;
   supersededAt?: string;
   supersededBy?: string;
+  supersedes?: string;
 };
 
 // Review round 2: the earlier follow-up ran `injectStateViewLines`, which has
@@ -176,6 +177,7 @@ function liveEntries(
     stateLabel: result.stateLabel,
     ...(result.supersededAt ? { supersededAt: result.supersededAt } : {}),
     ...(result.supersededBy ? { supersededBy: result.supersededBy } : {}),
+    ...(result.supersedes ? { supersedes: result.supersedes } : {}),
   }));
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
   const widened = applyRecallStateViews(qmdResults as any[], query, config);
@@ -288,4 +290,32 @@ test("the live route still renders every current entry it was given", () => {
   assert.equal(entries.length, 2);
   assert.match(entries[0]!, /the API limit is 100\/min/);
   assert.match(entries[1]!, /we chose SQLite/);
+});
+
+test("the enabled route renders history for a supersedes-only pair", () => {
+  const results = [
+    {
+      memoryId: "m-1",
+      text: "we use PostgreSQL",
+      stateLabel: "current" as const,
+      score: 0.9,
+      supersedes: "m-0",
+    },
+    {
+      memoryId: "m-0",
+      text: "we use SQLite",
+      stateLabel: "current" as const,
+      supersededAt: "2026-08-01",
+      score: 0.7,
+    },
+  ];
+  const query = "what changed about the database?";
+  const enabled = liveEntries(results, query, true);
+  const old = enabled.entries.find((entry) => entry.includes("we use SQLite"));
+  assert.equal(
+    enabled.widened.find((row) => row.id === "m-0")?.stateLabel,
+    "historical",
+  );
+  assert.ok(old, "enabled render includes the predecessor");
+  assert.match(old!, /\[superseded 2026-08-01 by m-1\] we use SQLite/);
 });
