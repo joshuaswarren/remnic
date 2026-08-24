@@ -96,5 +96,14 @@ export interface ExtractionPersistDeps {
     fallbackCausalPredecessor: string | undefined,
     graphCaps?: GraphConstructionCapabilitySet
   ) => Promise<GraphEdge[] | void>;
+  /**
+   * #2807 (finding 4): invalidate the in-process GraphIndex edge cache for
+   * a storage dir. Called after a merged-target graph rewrite rolls back —
+   * the rollback repairs the JSONL files, but the warm cache served by
+   * `loadEdgesCached()` would otherwise keep the rolled-back edges for the
+   * full TTL. Optional so existing partial deps keep compiling; production
+   * wiring always supplies it.
+   */
+  invalidateGraphEdgeCache?: (storage: StorageManager) => void;
   updateTemporalTagIndexes: (storage: StorageManager, persistedIds: string[]) => Promise<void>;
 }
