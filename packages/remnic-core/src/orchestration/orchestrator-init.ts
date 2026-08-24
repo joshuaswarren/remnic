@@ -46,6 +46,7 @@ import { TranscriptManager } from "../transcript.js";
 import type { PluginConfig } from "../types.js";
 import { type UtilityRuntimeValues, loadUtilityRuntimeValues } from "../utility-runtime.js";
 import { WearablesService } from "../wearables/service.js";
+import { startupDiscoveryWithTimeout } from "./startup-collection-checks.js";
 import type { MeetingsService } from "../meetings/service.js";
 import {
   COMPACTION_SIGNAL_MAX_AGE_MS,
@@ -103,6 +104,17 @@ export class OrchestratorInitCoordinator {
     private readonly deps: OrchestratorInitDeps,
   ) {}
 
+  private async startupNamespaces(): Promise<{ namespaces: string[]; complete: boolean }> {
+    if (!resolveNamespaceCapabilities(this.deps.config).namespaces) {
+      return { namespaces: [this.deps.config.defaultNamespace], complete: true };
+    }
+    const discovery = await startupDiscoveryWithTimeout(
+      () => this.deps.maintenanceNamespaces(),
+      this.deps.configuredNamespaceList(),
+    );
+    return { namespaces: discovery.value, complete: discovery.complete };
+  }
+
   async initialize(): Promise<void> {
     // Recreate the deferred-ready gate on every initialize() call.
     // The same Orchestrator instance may be reused across stop/start cycles
@@ -159,7 +171,11 @@ export class OrchestratorInitCoordinator {
         const correctionNamespaces = new Set(this.deps.configuredNamespaceList());
         if (this.deps.namespaceCatalog.enabled) {
           try {
-            for (const rec of await this.deps.namespaceCatalog.listNamespaces()) {
+            const catalogDiscovery = await startupDiscoveryWithTimeout(
+              () => this.deps.namespaceCatalog.listNamespaces(),
+              [],
+            );
+            for (const rec of catalogDiscovery.value) {
               correctionNamespaces.add(rec.namespace);
             }
           } catch { /* best-effort */ }
@@ -264,13 +280,12 @@ export class OrchestratorInitCoordinator {
           // after a restart. `registerConfiguredNamespaces()` already seeded the
           // catalog above, so `maintenanceNamespaces()` is readable here; it falls
           // back to the configured set on any catalog read failure.
-          const namespaces = resolveNamespaceCapabilities(this.deps.config).namespaces
-            ? await this.deps.maintenanceNamespaces()
-            : [this.deps.config.defaultNamespace];
-          const checks = namespaces.map(async (namespace) => {
+          const namespaceCapabilities = resolveNamespaceCapabilities(this.deps.config).namespaces;
+          const discovery = await this.startupNamespaces();
+          const checks = discovery.namespaces.map(async (namespace) => {
             const collectionCheckAbort = new AbortController();
             const state = await qmdStartupCollectionCheckWithTimeout(
-              resolveNamespaceCapabilities(this.deps.config).namespaces
+              namespaceCapabilities
                 ? this.deps.namespaceSearchRouter.ensureNamespaceCollection(
                     namespace,
                     { signal: collectionCheckAbort.signal },
@@ -285,7 +300,7 @@ export class OrchestratorInitCoordinator {
             );
             return { namespace, state };
           });
-          const states = await qmdStartupCollectionChecksWithTimeout(checks, namespaces);
+          const states = await qmdStartupCollectionChecksWithTimeout(checks, discovery.namespaces);
           const defaultState =
             states.find(
               (entry) => entry.namespace === this.deps.config.defaultNamespace,
@@ -387,20 +402,27 @@ export class OrchestratorInitCoordinator {
     if (this.deps.qmd.isAvailable() && resolveQmdCapabilities(this.deps.config).qmdMaintenance) {
       try {
         log.info("QMD startup sync: updating index to match current disk state");
+        const discovery = await this.startupNamespaces();
+        if (signal.aborted) return;
         if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
           // Cover cataloged dynamic namespaces at startup too (NHZEV, codex P2):
           // a dynamic namespace written before a daemon restart must be synced on
           // boot, not only by the debounced runQmdMaintenance() path. Same union +
           // catalog-read-failure fallback as runQmdMaintenance.
           await this.deps.namespaceSearchRouter.updateNamespaces(
-            await this.deps.maintenanceNamespaces(),
+            discovery.namespaces,
             { signal },
           );
         } else {
           await this.deps.qmd.update({ signal });
         }
         log.info("QMD startup sync: complete");
-        this.deps.deferredSyncSucceeded = true;
+        if (discovery.complete) {
+          this.deps.deferredSyncSucceeded = true;
+        } else {
+          this.deps.deferredSyncSucceeded = false;
+          log.warn("QMD startup sync used configured namespace fallback; retry remains armed");
+        }
       } catch (err) {
         log.warn(`QMD startup sync failed (non-fatal): ${err}`);
         // deferredSyncSucceeded stays false — server retry will attempt sync
@@ -635,9 +657,12 @@ export class OrchestratorInitCoordinator {
     // re-synced here too, otherwise after a backend-was-unavailable-at-boot
     // recovery its collection stays stale. Falls back to the configured set on any
     // catalog read failure.
-    const namespaces = resolveNamespaceCapabilities(this.deps.config).namespaces
-      ? await this.deps.maintenanceNamespaces()
-      : [this.deps.config.defaultNamespace];
+    const discovery = await this.startupNamespaces();
+    if (signal?.aborted) {
+      log.debug("startupSearchSync: aborted after namespace discovery");
+      return false;
+    }
+    const namespaces = discovery.namespaces;
 
     const states = await Promise.all(
       namespaces.map(async (namespace) => ({
@@ -737,6 +762,6 @@ export class OrchestratorInitCoordinator {
       }
     }
 
-    return true;
+    return discovery.complete;
   }
 }
