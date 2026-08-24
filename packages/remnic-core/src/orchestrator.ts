@@ -213,6 +213,7 @@ export {
   type RecallInvocationOptions,
   type RecallModeDecision,
 } from "./orchestration/orchestrator-helpers.js";
+export { qmdStartupCollectionChecksWithTimeout } from "./orchestration/startup-collection-checks.js";
 export { filterRecallCandidates } from "./orchestration/generic-recall-paths.js";
 
 export { hasIdentityRecoveryIntent, resolveEffectiveIdentityInjectionMode } from "./orchestration/recall-result-formatter.js";

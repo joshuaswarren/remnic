@@ -51,6 +51,7 @@ import {
   COMPACTION_SIGNAL_MAX_AGE_MS,
   defaultWorkspaceDir,
   qmdStartupCollectionCheckWithTimeout,
+  qmdStartupCollectionChecksWithTimeout,
 } from "../orchestrator.js";
 
 export interface OrchestratorInitDeps {
@@ -266,26 +267,25 @@ export class OrchestratorInitCoordinator {
           const namespaces = resolveNamespaceCapabilities(this.deps.config).namespaces
             ? await this.deps.maintenanceNamespaces()
             : [this.deps.config.defaultNamespace];
-          const states = await Promise.all(
-            namespaces.map(async (namespace) => {
-              const collectionCheckAbort = new AbortController();
-              const state = await qmdStartupCollectionCheckWithTimeout(
-                resolveNamespaceCapabilities(this.deps.config).namespaces
-                  ? this.deps.namespaceSearchRouter.ensureNamespaceCollection(
-                      namespace,
-                      { signal: collectionCheckAbort.signal },
-                    )
-                  : this.deps.qmd.ensureCollection(
-                      this.deps.config.memoryDir,
-                      this.deps.config.qmdCollection,
-                      { signal: collectionCheckAbort.signal },
-                    ),
-                collectionCheckAbort,
-                namespace,
-              );
-              return { namespace, state };
-            }),
-          );
+          const checks = namespaces.map(async (namespace) => {
+            const collectionCheckAbort = new AbortController();
+            const state = await qmdStartupCollectionCheckWithTimeout(
+              resolveNamespaceCapabilities(this.deps.config).namespaces
+                ? this.deps.namespaceSearchRouter.ensureNamespaceCollection(
+                    namespace,
+                    { signal: collectionCheckAbort.signal },
+                  )
+                : this.deps.qmd.ensureCollection(
+                    this.deps.config.memoryDir,
+                    this.deps.config.qmdCollection,
+                    { signal: collectionCheckAbort.signal },
+                  ),
+              collectionCheckAbort,
+              namespace,
+            );
+            return { namespace, state };
+          });
+          const states = await qmdStartupCollectionChecksWithTimeout(checks, namespaces);
           const defaultState =
             states.find(
               (entry) => entry.namespace === this.deps.config.defaultNamespace,
