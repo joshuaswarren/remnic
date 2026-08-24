@@ -24,7 +24,7 @@ import {
 } from "./extraction-span-materialize.js";
 import { renderExtractionConversation } from "./source-agent-qualifier.js";
 import { parseConfig } from "./config.js";
-import type { ExtractedFact } from "./types.js";
+import type { BufferTurn, ExtractedFact } from "./types.js";
 import type { ExtractedFactSpanRef } from "./extraction-span-config.js";
 
 const TURN_TEXT = "Maya moved to Seattle last spring for a new senior role.";
@@ -275,7 +275,7 @@ test("local prompt bind stamps the truncated visible prefix, not the unseen suff
   const visible = "Maya moved to Seattle last spring";
   const unseen = " for a new senior role. UNSEEN_SUFFIX";
   const content = `${visible}${unseen}`;
-  const turns = [{ role: "user", content, timestamp: "2026-05-21T00:00:00.000Z" }];
+  const turns: BufferTurn[] = [{ role: "user", content, timestamp: "2026-05-21T00:00:00.000Z" }];
   const { conversation, renderedConversation } = renderExtractionConversation(turns, undefined);
   const cut = conversation.indexOf(unseen);
   assert.ok(cut > 0);
