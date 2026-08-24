@@ -38,15 +38,19 @@ export const normalizeDiagnostics = (value, root = repoRoot) =>
     .join("\n")
     .trim();
 
-const ignoredToolingWarningPattern =
-  /^\[WARN\] The "pnpm" field in package\.json is no longer read by pnpm\./;
+const ignoredToolingWarningPatterns = [
+  /^\[WARN\] The "pnpm" field in package\.json is no longer read by pnpm\./,
+  // pnpm prints per-package WARN lines (e.g. unsupported optional platform
+  // builds) into the same captured stream as tsc output in CI.
+  /^packages\/\S+\s*\|\s*WARN\s/,
+];
 
 export function nonDiagnosticFailureLines(value, root = repoRoot) {
   const lines = [];
   let sawDiagnostic = false;
   for (const rawLine of normalizeOutputLines(value, root)) {
     const line = rawLine.trim();
-    if (line.length === 0 || ignoredToolingWarningPattern.test(line)) continue;
+    if (line.length === 0 || ignoredToolingWarningPatterns.some((pattern) => pattern.test(line))) continue;
     if (diagnosticHeaderPattern.test(line)) {
       sawDiagnostic = true;
       continue;
