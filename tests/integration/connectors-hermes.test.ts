@@ -161,7 +161,8 @@ function withTempHome(fn: (tmpHome: string) => void): void {
   }
 }
 
-test("withTempHome clears inherited HERMES_HOME and restores the exact environment", () => {
+test("withTempHome isolates connector writes and restores the exact environment", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
   const inheritedHermesHome = fs.mkdtempSync(
     path.join(os.tmpdir(), "remnic-hermes-inherited-home-"),
   );
@@ -173,6 +174,21 @@ test("withTempHome clears inherited HERMES_HOME and restores the exact environme
     withTempHome((tmpHome) => {
       assert.equal(process.env.HOME, tmpHome);
       assert.equal(process.env.HERMES_HOME, undefined);
+
+      const hermesDir = path.join(tmpHome, ".hermes");
+      const configPath = path.join(hermesDir, "config.yaml");
+      fs.mkdirSync(hermesDir, { recursive: true });
+      fs.writeFileSync(configPath, "model:\n  provider: anthropic\n", { mode: 0o600 });
+
+      const result = mod.upsertHermesConfig({
+        profile: "default",
+        host: "127.0.0.1",
+        port: 4318,
+        token: "remnic_hm_SYNTHETICISOLATION",
+      });
+      assert.equal(result.updated, true);
+      assert.equal(result.configPath, configPath);
+      assert.match(fs.readFileSync(configPath, "utf8"), /remnic_hm_SYNTHETICISOLATION/);
     });
     assert.equal(Object.hasOwn(process.env, "HOME"), false);
     assert.equal(process.env.HERMES_HOME, inheritedHermesHome);
