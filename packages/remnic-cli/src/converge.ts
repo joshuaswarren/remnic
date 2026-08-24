@@ -41,6 +41,7 @@ import {
   convergePlanScopeKey,
   type ConvergePlanProgressEvent,
 } from "./converge-plan-cache.js";
+
 import type { ConvergeConflictPolicy } from "@remnic/core/types.js";
 import { loadConvergeIdentityCache, saveConvergeIdentityCache } from "./converge-identity-cache.js";
 import { formatConvergeApplyReport, formatConvergeReport } from "./converge-report.js";
@@ -828,7 +829,9 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     // entries needed no transport call.
     options.signal?.throwIfAborted();
     const batch = actionable.slice(i, i + TRANSFER_BATCH_SIZE);
-    await Promise.all(batch.map((entry) => executeTransferEntry(entry)));
+    const results = await Promise.allSettled(batch.map((entry) => executeTransferEntry(entry)));
+    const rejected = results.find((result) => result.status === "rejected");
+    if (rejected && rejected.status === "rejected") throw rejected.reason;
   }
   options.signal?.throwIfAborted();
   if (options.peerUrl && peerMutatedNamespaces.size > 0) {
