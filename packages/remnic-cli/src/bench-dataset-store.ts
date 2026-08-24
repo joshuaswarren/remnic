@@ -287,16 +287,53 @@ function isRegularFileNoFollow(filePath: string): boolean {
   }
 }
 
+function hasSymlinkComponentBetween(root: string, target: string): boolean {
+  const resolvedRoot = path.resolve(root);
+  const resolvedTarget = path.resolve(target);
+  const rel = path.relative(resolvedRoot, resolvedTarget);
+  if (rel === "" || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    return true;
+  }
+  let current = resolvedRoot;
+  for (const part of rel.split(path.sep)) {
+    if (part === "" || part === ".") {
+      continue;
+    }
+    current = path.join(current, part);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isRegularFileContainedNoFollow(filePath: string, root: string): boolean {
+  if (hasSymlinkComponentBetween(root, filePath)) {
+    return false;
+  }
+  if (!isRegularFileNoFollow(filePath)) {
+    return false;
+  }
+  return isPathContainedWithinRoot(filePath, root);
+}
+
 function hasMemoryAgentBenchEntityMapping(datasetPath: string): boolean {
   const absoluteDatasetPath = path.resolve(datasetPath);
-  const roots = [absoluteDatasetPath, path.dirname(absoluteDatasetPath)];
-  return (
-    isRegularFileNoFollow(path.join(absoluteDatasetPath, "entity2id.json")) ||
-    roots.some((root) =>
-      MEMORY_AGENT_BENCH_ENTITY_MAPPING_CANDIDATES
-        .filter((relativePath) => relativePath !== "entity2id.json")
-        .some((relativePath) => isRegularFileNoFollow(path.join(root, relativePath))),
-    )
+  const datasetsRoot = path.dirname(absoluteDatasetPath);
+  if (isRegularFileContainedNoFollow(path.join(absoluteDatasetPath, "entity2id.json"), datasetsRoot)) {
+    return true;
+  }
+  const siblingSuffixes = MEMORY_AGENT_BENCH_ENTITY_MAPPING_CANDIDATES.filter(
+    (relativePath) => relativePath !== "entity2id.json",
+  );
+  return [absoluteDatasetPath, datasetsRoot].some((root) =>
+    siblingSuffixes.some((relativePath) =>
+      isRegularFileContainedNoFollow(path.join(root, relativePath), datasetsRoot),
+    ),
   );
 }
 

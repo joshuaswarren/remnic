@@ -274,6 +274,25 @@ async function writeLocomoDataset(dir: string): Promise<void> {
   await writeFile(path.join(dir, "locomo10.json"), "[]");
 }
 
+async function writeMemoryAgentBenchRedialDataset(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    path.join(dir, "memoryagentbench.json"),
+    JSON.stringify([
+      {
+        context: "The user asked for a comedy movie.",
+        questions: ["User: recommend a comedy. Recommender:"],
+        answers: [["7008"]],
+        metadata: {
+          source: "recsys_redial",
+          qa_pair_ids: ["redial-1"],
+          question_types: ["recommendation"],
+        },
+      },
+    ]),
+  );
+}
+
 // Deterministic content hash of a directory tree (names, structure, file
 // bytes, symlink targets) — used to prove discovery never moves or mutates.
 async function hashTree(root: string): Promise<string> {
@@ -584,6 +603,84 @@ test("discoverBenchDatasetDir rejects an unused directory symlink in a complete 
       undefined,
     );
     assert.deepEqual(captured.lines(), []);
+  } finally {
+    captured.restore();
+  }
+});
+
+test("discoverBenchDatasetDir rejects a sibling processed_data mapping symlink", async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-dataset-processed-data-symlink-"));
+  const canonicalRoot = path.join(base, "canonical");
+  const legacyRoot = path.join(base, "evals", "datasets");
+  const outsideMapping = path.join(base, "outside", "Recsys_Redial");
+  await writeMemoryAgentBenchRedialDataset(path.join(legacyRoot, "memoryagentbench"));
+  await mkdir(outsideMapping, { recursive: true });
+  await writeFile(path.join(outsideMapping, "entity2id.json"), '{"/movie/The_Big_Lebowski_(1998)":7008}\n');
+  await symlink(path.join(base, "outside"), path.join(legacyRoot, "processed_data"));
+
+  __benchDatasetTestHooks.resetLegacyDatasetDiscoveryWarningForTest();
+  const captured = captureConsoleError();
+  try {
+    assert.equal(
+      __benchDatasetTestHooks.discoverBenchDatasetDir("memoryagentbench", {
+        canonicalRoot,
+        legacyRoot,
+      }),
+      undefined,
+    );
+    assert.deepEqual(captured.lines(), []);
+  } finally {
+    captured.restore();
+  }
+});
+
+test("discoverBenchDatasetDir rejects a sibling Recsys_Redial mapping symlink", async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-dataset-recsys-redial-symlink-"));
+  const canonicalRoot = path.join(base, "canonical");
+  const legacyRoot = path.join(base, "evals", "datasets");
+  const outsideMapping = path.join(base, "outside", "Recsys_Redial");
+  await writeMemoryAgentBenchRedialDataset(path.join(legacyRoot, "memoryagentbench"));
+  await mkdir(outsideMapping, { recursive: true });
+  await writeFile(path.join(outsideMapping, "entity2id.json"), '{"/movie/The_Big_Lebowski_(1998)":7008}\n');
+  await symlink(outsideMapping, path.join(legacyRoot, "Recsys_Redial"));
+
+  __benchDatasetTestHooks.resetLegacyDatasetDiscoveryWarningForTest();
+  const captured = captureConsoleError();
+  try {
+    assert.equal(
+      __benchDatasetTestHooks.discoverBenchDatasetDir("memoryagentbench", {
+        canonicalRoot,
+        legacyRoot,
+      }),
+      undefined,
+    );
+    assert.deepEqual(captured.lines(), []);
+  } finally {
+    captured.restore();
+  }
+});
+
+test("discoverBenchDatasetDir accepts a real sibling Recsys mapping under the legacy root", async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-dataset-recsys-mapping-ok-"));
+  const canonicalRoot = path.join(base, "canonical");
+  const legacyRoot = path.join(base, "evals", "datasets");
+  const legacyDir = path.join(legacyRoot, "memoryagentbench");
+  const mappingDir = path.join(legacyRoot, "processed_data", "Recsys_Redial");
+  await writeMemoryAgentBenchRedialDataset(legacyDir);
+  await mkdir(mappingDir, { recursive: true });
+  await writeFile(path.join(mappingDir, "entity2id.json"), '{"/movie/The_Big_Lebowski_(1998)":7008}\n');
+
+  __benchDatasetTestHooks.resetLegacyDatasetDiscoveryWarningForTest();
+  const captured = captureConsoleError();
+  try {
+    const discovered = __benchDatasetTestHooks.discoverBenchDatasetDir("memoryagentbench", {
+      canonicalRoot,
+      legacyRoot,
+    });
+    assert.ok(discovered);
+    assert.equal(discovered.source, "legacy-evals");
+    assert.equal(discovered.dir, legacyDir);
+    assert.equal(captured.lines().length, 1);
   } finally {
     captured.restore();
   }

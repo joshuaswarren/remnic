@@ -3,6 +3,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { lstatSync, realpathSync } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { Message } from "../../../adapters/types.js";
@@ -1270,6 +1271,9 @@ async function loadRecSysEntityMapping(
 ): Promise<RecSysEntityMapping | null> {
   const candidates = recsysEntityMappingCandidates(datasetDir);
   for (const candidate of candidates) {
+    if (!isSafeRecsysMappingCandidate(candidate, datasetDir)) {
+      continue;
+    }
     if (!(await fileExists(candidate))) {
       continue;
     }
@@ -1357,6 +1361,41 @@ function recsysEntityMappingCandidates(datasetDir: string | undefined): string[]
     ),
     ...looseSuffixes.map((suffix) => path.join(absoluteDatasetDir, suffix)),
   ];
+}
+
+function isSafeRecsysMappingCandidate(candidate: string, datasetDir: string | undefined): boolean {
+  if (!datasetDir) {
+    return false;
+  }
+  const root = path.dirname(path.resolve(datasetDir));
+  const resolvedRoot = path.resolve(root);
+  const resolvedCandidate = path.resolve(candidate);
+  const rel = path.relative(resolvedRoot, resolvedCandidate);
+  if (rel === "" || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    return false;
+  }
+  let current = resolvedRoot;
+  for (const part of rel.split(path.sep)) {
+    if (part === "" || part === ".") {
+      continue;
+    }
+    current = path.join(current, part);
+    try {
+      if (lstatSync(current).isSymbolicLink()) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  try {
+    const rootReal = realpathSync(resolvedRoot);
+    const candidateReal = realpathSync(resolvedCandidate);
+    const realRel = path.relative(rootReal, candidateReal);
+    return realRel !== "" && realRel !== ".." && !realRel.startsWith(`..${path.sep}`) && !path.isAbsolute(realRel);
+  } catch {
+    return false;
+  }
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
