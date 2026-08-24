@@ -18,7 +18,9 @@ Hard gates, all enforced BEFORE anything is read:
    existing directory (lstat; a symlink root is refused). The tool walks
    exactly that directory, skips descendant symlinks, and refuses a path
    that escapes the root. No vault scan, no home-dir discovery.
-3. ``--out`` must differ from ``--input`` and must be empty or ``--yes``.
+3. ``--out`` must not overlap ``--input`` (equal, inside it, or containing
+   it) and must be empty or ``--yes``. Overlap would let one run's outputs
+   become the next run's inputs (issue #2886).
 
 Outputs under ``--out`` (all deterministic; same input tree → same bytes):
 
@@ -148,8 +150,16 @@ def main(argv: list[str] | None = None) -> int:
         require_input_dir(args.input)
     except (ValueError, NotADirectoryError) as err:
         return _refuse(str(err))
-    if args.out.resolve() == args.input.resolve():
-        return _refuse("--out must be a different directory from --input")
+    input_resolved = args.input.resolve()
+    out_resolved = args.out.resolve()
+    if (
+        out_resolved == input_resolved
+        or out_resolved in input_resolved.parents
+        or input_resolved in out_resolved.parents
+    ):
+        return _refuse(
+            "--out must not overlap --input (equal, ancestor, or descendant)"
+        )
     if args.out.exists() and not args.out.is_dir():
         return _refuse(f"--out exists and is not a directory: {args.out}")
     if args.out.exists() and any(args.out.iterdir()) and not args.yes:

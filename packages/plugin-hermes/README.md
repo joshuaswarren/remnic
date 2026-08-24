@@ -86,6 +86,17 @@ Set `client_id` to the daemon namespace that Hermes should use. Namespace values
 
 Loopback hosts use HTTP. Other hosts use HTTPS by default. Existing remote HTTP setups must set `allow_insecure_http: true` during migration.
 
+## Optional Hermes-managed LLM bridge
+
+For deferred Remnic LLM work, `remnic-hermes` also provides two opt-in commands:
+
+- `remnic-hermes-bridge` exposes one policy-selected Hermes provider as a **loopback-only** OpenAI-compatible endpoint.
+- `remnic-hermes-supervisor` starts that bridge, authenticates the supervised Remnic daemon with a launch-scoped request token, proves the exact bridge instance is ready with a separate per-launch secret, gives the daemon no provider environment variables, and stops the peer if either child exits.
+
+The policy has exactly three fields — `provider`, `model`, and `timeout_seconds`. It must not contain a provider API key or OAuth token: each request is resolved by Hermes' own `agent.auxiliary_client.call_llm()` routing and auth machinery.
+
+Use this only with Remnic's deferred extraction/consolidation paths. Keep recall-critical reranking and planner LLM calls disabled when their latency budget cannot accommodate a routed provider. Full configuration and lifecycle guidance is in [docs/plugins/hermes.md](../../docs/plugins/hermes.md).
+
 ### Environment variable overrides
 
 | Variable | Overrides | Description |
@@ -273,6 +284,18 @@ remnic connectors remove hermes
 `remnic_lcm_search` searches the Remnic daemon's Lossless Context Management archive on demand. The legacy `engram_lcm_search` alias is registered for existing Engram-era Hermes configurations.
 
 LCM runs daemon-side and reaches Hermes through the `memory_provider` recall path. Remnic does not register, and does not need, a Hermes `context_engine` slot for this feature.
+
+## Policy-bound LLM bridge (opt-in)
+
+Set `remnic.llm_bridge.enabled: true` in Hermes `config.yaml` to expose one
+OpenAI-compatible completion endpoint on loopback, backed by the host's
+`PluginLlm` runtime resolver. Provider credentials stay host-managed: the model
+policy is server-owned (request `model`/`provider` fields are discarded),
+the listener rejects any non-loopback bind, and the generated client config
+stores a random loopback bearer at `0600`. Unauthenticated local callers are
+denied. The bridge serves optional background generation only — memory recall
+never routes through it. Details and daemon
+configuration: [docs/plugins/hermes.md](../../docs/plugins/hermes.md#policy-bound-llm-bridge-opt-in).
 
 ## Further reading
 

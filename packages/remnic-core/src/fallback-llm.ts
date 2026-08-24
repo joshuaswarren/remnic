@@ -16,10 +16,17 @@ import {
 import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   codexSubscriptionBuiltinProviderConfig,
-  ensureCodexSubscriptionRunnerRegistered,
+  getCodexSubscriptionRunnerForOwner,
 } from "./providers/codex-subscription.js";
 import { loadModelsJsonProviders } from "./models-json.js";
-import { callCodexCliFallback } from "./cli-fallback.js";
+import {
+  abortReason,
+  isTerminalCodexSubscriptionError,
+  raceFallbackLlmDeadline,
+  tryCodexSubscriptionProvider,
+  withCodexRuntimeShutdown,
+} from "./fallback-llm-codex-subscription.js";
+import type { CodexCliFallbackRunner } from "./cli-fallback.js";
 import { resolveHomeDir } from "./runtime/env.js";
 import { expandTildePath } from "./utils/path.js";
 
@@ -85,6 +92,8 @@ export interface FallbackLlmRuntimeContext {
   getRuntimeAuthForModel?: GetRuntimeAuthForModelFn | null;
   resolveApiKeyForProvider?: ResolveApiKeyFn | null;
   workspaceDir?: string;
+  /** Per-runtime Codex child owner. Shutdown must terminate only this runner. */
+  codexSubscriptionRunner?: CodexCliFallbackRunner;
 }
 
 export function fallbackLlmRuntimeContextFromConfig(
@@ -98,6 +107,7 @@ export function fallbackLlmRuntimeContextFromConfig(
     workspaceDir: config.workspaceDir,
     resolveApiKeyForProvider: config.providerApiKeyResolver,
     getRuntimeAuthForModel: config.runtimeAuthForModelResolver,
+    codexSubscriptionRunner: getCodexSubscriptionRunnerForOwner(config),
     ...overrides,
   };
 }
@@ -224,12 +234,14 @@ export class FallbackLlmClient {
       log.warn("fallback LLM: no models configured in gateway");
       return null;
     }
+    options = withCodexRuntimeShutdown(options, this.runtimeContext.codexSubscriptionRunner);
 
     const runChain = async (
       initialOptions: FallbackLlmOptions,
     ): Promise<FallbackLlmResponse | null> => {
       let runOptions = initialOptions;
       let lastRejectedResponse: FallbackLlmResponse | null = null;
+      let terminalError: unknown;
       // Try each model in the chain
       for (let i = 0; i < models.length; i++) {
         if (runOptions.signal?.aborted) {
@@ -257,6 +269,9 @@ export class FallbackLlmClient {
             return response;
           }
         } catch (err) {
+          if (isTerminalCodexSubscriptionError(err) && runOptions.signal?.aborted) {
+            throw err;
+          }
           if (runOptions.signal?.aborted) {
             throw abortReason(runOptions.signal);
           }
@@ -289,6 +304,9 @@ export class FallbackLlmClient {
                 continue;
               }
             } catch (retryError) {
+              if (isTerminalCodexSubscriptionError(retryError) && runOptions.signal?.aborted) {
+                throw retryError;
+              }
               if (runOptions.signal?.aborted) throw abortReason(runOptions.signal);
               const retryErrorMsg = runOptions.redactProviderErrors
                 ? "provider error details redacted"
@@ -298,6 +316,9 @@ export class FallbackLlmClient {
               log.debug(
                 `fallback LLM: ${model.modelString} unstructured retry failed (${retryErrorMsg})`,
               );
+              if (isTerminalCodexSubscriptionError(retryError)) {
+                terminalError = retryError;
+              }
             }
             continue;
           }
@@ -307,11 +328,20 @@ export class FallbackLlmClient {
               ? err.message
               : String(err);
           log.debug(`fallback LLM: ${model.modelString} failed (${errorMsg}), trying next...`);
+          if (isTerminalCodexSubscriptionError(err)) {
+            terminalError = err;
+          }
           // Continue to next model in chain
         }
       }
 
       log.warn(`fallback LLM: all ${models.length} models in chain failed`);
+      // A terminal typed provider failure must reach the caller when the
+      // chain is exhausted — the documented timeout/re-login guidance
+      // depends on it (issue #2833).
+      if (terminalError !== undefined) {
+        throw terminalError;
+      }
       return lastRejectedResponse;
     };
 
@@ -320,7 +350,6 @@ export class FallbackLlmClient {
         log.warn("fallback LLM: timed out before request started");
         return null;
       }
-      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const controller = new AbortController();
       const onCallerAbort = (): void => {
         controller.abort(abortReason(options.signal));
@@ -331,22 +360,22 @@ export class FallbackLlmClient {
       }
       const timedOptions = { ...options, signal: controller.signal };
       const chain = runChain(timedOptions);
-      chain.catch(() => {});
+      const guarded = chain.then(
+        (value) => value,
+        (err) => {
+          if (isTerminalCodexSubscriptionError(err)) throw err;
+          return null;
+        },
+      );
       try {
-        return await Promise.race([
-          chain,
-          new Promise<null>((resolve) => {
-            timeoutHandle = setTimeout(() => {
-              log.warn(`fallback LLM: timed out after ${options.timeoutMs}ms`);
-              controller.abort(
-                new Error(`fallback LLM timed out after ${options.timeoutMs}ms`),
-              );
-              resolve(null);
-            }, options.timeoutMs);
-          }),
-        ]);
+        const outcome = await raceFallbackLlmDeadline(guarded, options.timeoutMs, () => {
+          log.warn(`fallback LLM: timed out after ${options.timeoutMs}ms`);
+          controller.abort(
+            new Error(`fallback LLM timed out after ${options.timeoutMs}ms`),
+          );
+        });
+        return outcome.timedOut ? null : outcome.value;
       } finally {
-        if (timeoutHandle) clearTimeout(timeoutHandle);
         options.signal?.removeEventListener("abort", onCallerAbort);
       }
     }
@@ -386,7 +415,9 @@ export class FallbackLlmClient {
       // Caller aborts must propagate (e.g. recall planner cancellation) — do
       // not swallow them as a provider failure, or abort-driven callers lose
       // cancellation and treat it as an extraction error (codex review).
-      if (options.signal?.aborted) throw err;
+      // Terminal codex-subscription failures propagate for the same reason:
+      // their TimeoutError/auth guidance is the documented contract.
+      if (options.signal?.aborted || isTerminalCodexSubscriptionError(err)) throw err;
       log.warn("fallback LLM: chatCompletion threw during structured parse:", err);
       return { result: null, failureReason: "http_error" };
     }
@@ -643,24 +674,22 @@ export class FallbackLlmClient {
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
     options: FallbackLlmOptions,
   ): Promise<{ content: string; usage?: FallbackLlmResponse["usage"] } | null> {
-    // Try the gateway's native runtime auth first — it handles all provider-
-    // specific transforms (OAuth exchange, base URL rewrite, etc.)
-    const runtimeAuth = model.providerConfig.api === "codex-cli"
-      ? null
-      : await this.resolveRuntimeAuth(model);
+    const codexResult = await tryCodexSubscriptionProvider(
+      model,
+      messages,
+      options,
+      () => this.resolveFallbackApiKey(model),
+      this.runtimeContext.codexSubscriptionRunner,
+    );
+    if (codexResult !== undefined) return codexResult;
+    const runtimeAuth = await this.resolveRuntimeAuth(model);
     const effectiveBaseUrl = runtimeAuth?.baseUrl ?? model.providerConfig.baseUrl;
-    const resolvedApiKey = runtimeAuth?.apiKey
-      ?? (
-        model.providerConfig.api === "codex-cli" && model.providerConfig.apiKey === undefined
-          ? undefined
-          : await this.resolveFallbackApiKey(model)
-      );
+    const resolvedApiKey = runtimeAuth?.apiKey ?? await this.resolveFallbackApiKey(model);
 
     // If the raw key looks like an unresolved secret ref and resolution fails,
     // skip this provider entirely so the chain falls through to the next.
     const rawKey = model.providerConfig.apiKey;
-    const needsResolution = rawKey === "secretref-managed"
-      || (typeof rawKey === "object" && rawKey !== null);
+    const needsResolution = rawKey === "secretref-managed" || (typeof rawKey === "object" && rawKey !== null);
     if (needsResolution && !resolvedApiKey) {
       throw new Error(`API key for provider "${model.providerId}" could not be resolved from secret ref`);
     }
@@ -673,18 +702,6 @@ export class FallbackLlmClient {
 
     if (model.providerConfig.api === "anthropic-messages") {
       return await this.callAnthropic(effectiveConfig, model.modelId, messages, options);
-    }
-
-    if (model.providerConfig.api === "codex-cli") {
-      // Registers the core subprocess transport only when no host/benchmark
-      // runner claimed the seam, so daemon/plugin runtimes work out of the box.
-      ensureCodexSubscriptionRunnerRegistered();
-      return await callCodexCliFallback(
-        effectiveConfig,
-        model.modelId,
-        messages,
-        { timeoutMs: options.timeoutMs, signal: options.signal },
-      );
     }
 
     if (model.providerConfig.api === "ollama-chat") {
@@ -1123,11 +1140,6 @@ export class FallbackLlmClient {
         : undefined,
     };
   }
-}
-
-function abortReason(signal: AbortSignal | undefined): Error {
-  const reason = signal?.reason;
-  return reason instanceof Error ? reason : new Error("fallback LLM request aborted");
 }
 
 function normalizeRuntimePath(value: unknown): string | undefined {

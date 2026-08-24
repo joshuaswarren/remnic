@@ -33,16 +33,24 @@ Contract (issue #2852):
   task salt — never a frontmatter id, plan id, or filename. Redacted (#1678)
   and never-store plans are skipped. Unknown classification, status,
   schema version, action kind/fields, or a confidence outside ``[0, 1]``
-  count as malformed, never as a positive label. A body that still carries
-  unstrippable inline attribution is skipped as private.
+  count as malformed, never as a positive label. Input decodes strictly as
+  UTF-8: invalid bytes count as malformed and never surface as U+FFFD
+  replacement text (#2886). A body that still carries unstrippable inline
+  attribution is skipped as private.
 * Deterministic and idempotent: same input tree → byte-identical dataset AND
   manifest (no clocks, no absolute paths). Rows dedup on the training payload
   and emit in canonical-JSON order.
-* Bounded: ``max_records`` caps the dataset. ``max_text_bytes`` is checked
-  with fstat plus a bounded stream *before* a full read or fingerprint.
-  Oversized files are counted and skipped without allocating their bytes.
-  Oversize text fields are skipped, never truncated. Fact reconstruction
-  uses only the already-bounded payload and linear string scans.
+* Bounded and streaming (#2886): ``max_records`` caps the dataset AND the
+  resident row set (bounded top-N selection during the walk, so a huge
+  telemetry tree never means a huge in-memory dataset). ``max_text_bytes`` is
+  checked with fstat plus a bounded stream *before* a full read or
+  fingerprint. Exactly one payload is resident at a time; the input
+  fingerprint chains per-file sha256 digests in deterministic walk order
+  instead of retaining payloads, and dedup keys are sha256 digests of the
+  canonical payload rather than the payload itself. Oversized files are
+  counted and skipped without allocating their bytes. Oversize text fields
+  are skipped, never truncated. Fact reconstruction uses only the
+  already-bounded payload and linear string scans.
 
 Pure stdlib. The correction-intent schema is imported lazily so ``common/``
 keeps no static dependency on a task directory.
@@ -50,6 +58,8 @@ keeps no static dependency on a task directory.
 
 from __future__ import annotations
 
+import hashlib
+import heapq
 import json
 import math
 import os
@@ -148,6 +158,19 @@ def _canonical(row: dict[str, Any]) -> str:
 def _payload_key(row: dict[str, Any]) -> str:
     return _canonical({k: v for k, v in row.items() if k != "sourceId"})
 
+
+class _MaxKey(str):
+    """``str`` with inverted ordering — lets a min-heap evict the largest.
+
+    The harvest walk keeps only the ``max_records`` canonically-smallest rows
+    (#2886); this class turns :mod:`heapq`'s min-heap into a max-heap so the
+    evicted entry is always the largest kept key.
+    """
+
+    __slots__ = ()
+
+    def __lt__(self, other: object) -> bool:
+        return str.__gt__(self, other)
 
 def require_input_dir(input_dir: Path) -> Path:
     """lstat the harvest root. Refuse a symlink or a non-directory."""
@@ -254,9 +277,13 @@ def _read_bounded(path: Path, max_bytes: int) -> tuple[bytes | None, str | None]
         os.close(fd)
 
 
-def _fingerprint_payloads(payloads: list[bytes]) -> str:
-    parts = sorted(sha256_bytes(payload) for payload in payloads)
-    return sha256_bytes("\n".join(parts).encode("utf-8"))
+def _fingerprint_update(digest: "hashlib._Hash", data: bytes) -> None:
+    """Fold one read payload into the incremental input fingerprint.
+
+    The fingerprint chains per-file sha256 hex digests (each + ``\\n``) in the
+    deterministic walk order, so no payload list is ever retained (#2886).
+    """
+    digest.update(sha256_bytes(data).encode("ascii") + b"\n")
 
 
 def parse_frontmatter(text: str) -> tuple[dict[str, str], str] | None:
@@ -692,8 +719,17 @@ def harvest(
     files = _iter_input_files(input_dir, TASK_INPUT_SUFFIX[task])
 
     skips: Counter[str] = Counter()
-    payloads: list[bytes] = []
     bytes_read = 0
+    fingerprint = hashlib.sha256()
+    # Streaming contract (#2886): exactly one payload is resident at a time,
+    # the fingerprint folds each payload in as it is read, and the row set is
+    # bounded by max_records via a max-heap of the canonically-smallest rows.
+    # Dedup keys are sha256 digests of the canonical payload, never the
+    # payload text itself.
+    seen: set[str] = set()
+    kept: list[tuple[_MaxKey, str, dict[str, Any]]] = []
+    unique_total = 0
+    deduped = 0
     for path in files:
         data, reason = _read_bounded(path, max_text_bytes)
         if reason is not None:
@@ -701,12 +737,14 @@ def harvest(
             continue
         assert data is not None
         bytes_read += len(data)
-        payloads.append(data)
-    fingerprint = _fingerprint_payloads(payloads)
-
-    rows: list[dict[str, Any]] = []
-    for data in payloads:
-        text = data.decode("utf-8", errors="replace")
+        _fingerprint_update(fingerprint, data)
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            # Never replacement-decode (#2886): invalid bytes are malformed
+            # input, not a positive training example with U+FFFD in it.
+            skips["malformed"] += 1
+            continue
         if task == "faithfulness-gate":
             row, reason = build_faithfulness_record(text)
         else:
@@ -726,20 +764,22 @@ def harvest(
         ):
             skips["oversize"] += 1
             continue
-        rows.append(row)
-
-    seen: set[str] = set()
-    unique_rows: list[dict[str, Any]] = []
-    for row in rows:
-        key = _payload_key(row)
+        key = sha256_bytes(_payload_key(row).encode("utf-8"))
         if key in seen:
+            deduped += 1
             continue
         seen.add(key)
-        unique_rows.append(row)
-    deduped = len(rows) - len(unique_rows)
-    unique_rows.sort(key=_canonical)
-    truncated = len(unique_rows) > max_records
-    final_rows = unique_rows[:max_records]
+        unique_total += 1
+        if max_records > 0:
+            canonical = _canonical(row)
+            entry = (_MaxKey(canonical), canonical, row)
+            if len(kept) < max_records:
+                heapq.heappush(kept, entry)
+            else:
+                heapq.heappushpop(kept, entry)
+
+    final_rows = sorted((row for _, _, row in kept), key=_canonical)
+    truncated = unique_total > max_records
 
     label_order = (
         FAITHFULNESS_LABELS
@@ -753,7 +793,7 @@ def harvest(
         label_counts={label: counts.get(label, 0) for label in label_order},
         skips={reason: skips[reason] for reason in sorted(skips)},
         input_files=len(files),
-        input_fingerprint=fingerprint,
+        input_fingerprint=fingerprint.hexdigest(),
         deduped=deduped,
         truncated=truncated,
         bytes_read=bytes_read,

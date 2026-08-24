@@ -768,6 +768,145 @@ test(
 );
 
 test(
+  "harvest: invalid UTF-8 counts malformed, never emits replacement chars (#2886)",
+  { skip: skipReason },
+  () => {
+    const input = tmpDir("utf8-in");
+    memoryWithVerdict(input, "fact-good-001", "entailed", "good quote", "Good fact.");
+    memoryWithVerdict(input, "fact-good-002", "entailed", "another quote", "Another fact.");
+    // Splice invalid bytes (0xc3 0x28: 0xc3 needs a continuation byte) into
+    // an otherwise-valid record's body.
+    const victim = path.join(input, "facts/2026-01-01/fact-good-002.md");
+    const raw = fs.readFileSync(victim);
+    fs.writeFileSync(
+      victim,
+      Buffer.concat([
+        raw.subarray(0, raw.length - 8),
+        Buffer.from([0xc3, 0x28]),
+        raw.subarray(raw.length - 8),
+      ]),
+    );
+    const out = tmpDir("out-utf8");
+    const res = runHarvest([
+      "--task", "faithfulness-gate", "--input", input, "--out", out, "--consent", "--quiet",
+    ]);
+    assert.equal(res.status, 0, res.stderr);
+    const rows = readJsonl(path.join(out, "harvest-faithfulness-gate.jsonl"));
+    assert.equal(rows.length, 1, "only the clean file may emit a record");
+    assert.equal(rows[0].factText, "Good fact.");
+    const manifest = readManifest(out, "faithfulness-gate");
+    assert.equal(manifest.skipped.malformed, 1);
+    for (const file of fs.readdirSync(out)) {
+      assert.ok(
+        !fs.readFileSync(path.join(out, file), "utf8").includes("\uFFFD"),
+        `${file} must not carry U+FFFD replacement characters`,
+      );
+    }
+    assertNoPrivateLeak(out);
+
+    const plans = tmpDir("utf8-plans");
+    writePlan(plans, "good.json", planBase());
+    fs.writeFileSync(
+      path.join(plans, "bad.json"),
+      Buffer.concat([
+        Buffer.from('{"planId":"x","classification":"outdated","request":{"text":"bad ', "utf8"),
+        Buffer.from([0xff]),
+        Buffer.from('"}}', "utf8"),
+      ]),
+    );
+    const planOut = tmpDir("out-utf8-plans");
+    const planRes = runHarvest([
+      "--task", "correction-intent", "--input", plans, "--out", planOut, "--consent", "--quiet",
+    ]);
+    assert.equal(planRes.status, 0, planRes.stderr);
+    assert.equal(readJsonl(path.join(planOut, "harvest-correction-intent.jsonl")).length, 1);
+    assert.equal(readManifest(planOut, "correction-intent").skipped.malformed, 1);
+    assertNoPrivateLeak(planOut);
+  },
+);
+
+test(
+  "harvest: refuses --out that overlaps --input (equal, inside, or containing) (#2886)",
+  { skip: skipReason },
+  () => {
+    const parent = tmpDir("overlap-parent");
+    const input = path.join(parent, "input");
+    const wrapping = parent;
+    const nested = path.join(input, "nested-out");
+    fs.mkdirSync(input, { recursive: true });
+    memoryWithVerdict(input, "fact-overlap-001", "entailed", "overlap quote", "Overlap fact.");
+    const run = (out) =>
+      runHarvest(["--task", "faithfulness-gate", "--input", input, "--out", out, "--consent"]);
+    for (const label of ["equal", "descendant", "ancestor"]) {
+      const out = label === "equal" ? input : label === "descendant" ? nested : wrapping;
+      const res = run(out);
+      assert.equal(res.status, 2, `expected refusal for ${label} --out: ${res.stderr}`);
+      assert.match(res.stderr, /overlap/i);
+    }
+    assert.ok(!fs.existsSync(nested), "overlap refusal must not create --out inside --input");
+    assert.deepEqual(
+      fs.readdirSync(parent).sort(),
+      ["input"],
+      "overlap refusal must not write anything beside --input",
+    );
+  },
+);
+
+test(
+  "harvest: streams inputs — capped selection equals the full run's sorted prefix (#2886)",
+  { skip: skipReason },
+  () => {
+    const input = tmpDir("stream-in");
+    for (let i = 0; i < 12; i += 1) {
+      memoryWithVerdict(
+        input,
+        `fact-stream-${String(i).padStart(2, "0")}`,
+        "entailed",
+        `stream quote ${i}`,
+        `Stream fact ${i}.`,
+      );
+    }
+    // exact payload duplicate under a different filename: one row, deduped=1
+    memoryWithVerdict(input, "fact-stream-dup", "entailed", "stream quote 3", "Stream fact 3.");
+    const fullOut = tmpDir("stream-full");
+    const full = runHarvest([
+      "--task", "faithfulness-gate", "--input", input, "--out", fullOut, "--consent", "--quiet",
+    ]);
+    const cappedOut = tmpDir("stream-capped");
+    const capped = runHarvest([
+      "--task", "faithfulness-gate", "--input", input, "--out", cappedOut,
+      "--consent", "--quiet", "--max-records", "5",
+    ]);
+    assert.equal(full.status, 0, full.stderr);
+    assert.equal(capped.status, 0, capped.stderr);
+    const fullRows = readJsonl(path.join(fullOut, "harvest-faithfulness-gate.jsonl"));
+    const cappedRows = readJsonl(path.join(cappedOut, "harvest-faithfulness-gate.jsonl"));
+    assert.equal(fullRows.length, 12);
+    assert.equal(cappedRows.length, 5);
+    assert.deepEqual(
+      cappedRows,
+      fullRows.slice(0, 5),
+      "capped run must keep exactly the canonically-first rows",
+    );
+    const fullManifest = readManifest(fullOut, "faithfulness-gate");
+    const cappedManifest = readManifest(cappedOut, "faithfulness-gate");
+    assert.equal(fullManifest.deduped, 1);
+    assert.equal(cappedManifest.deduped, 1, "duplicates count even when neither copy is kept");
+    assert.equal(cappedManifest.truncated, true);
+    assert.equal(cappedManifest.emitted, 5);
+    assert.equal(
+      cappedManifest.inputFingerprint,
+      fullManifest.inputFingerprint,
+      "the cap must not shortcut reads: the fingerprint still covers every file",
+    );
+    assert.equal(cappedManifest.inputFiles, fullManifest.inputFiles);
+    const bytesRead = Number(capped.stdout.match(/HARVEST_BYTES_READ=(\d+)/)?.[1]);
+    assert.ok(Number.isFinite(bytesRead) && bytesRead > 0, capped.stdout);
+    assertNoPrivateLeak(cappedOut);
+  },
+);
+
+test(
   "harvest: skips inherited whole-fact chunk verdicts; keeps judged bodies",
   { skip: skipReason },
   () => {

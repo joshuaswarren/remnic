@@ -4,6 +4,7 @@ import type { LocationConfig } from "./location/types.js";
 import type { OkfConfig } from "./okf/config.js";
 import type { ActivityConfig } from "./activity/types.js";
 import type { WearablesConfig } from "./wearables/types.js";
+import type { ExtractionSpanConfig, ExtractedFactSpanRef } from "./extraction-span-config.js";
 import type { ExtractionLivenessConfig } from "./extraction-liveness.js";
 import type { ReplicaPeersConfig } from "./replica-peers-config.js";
 import type { ExternalWikiRoot } from "./external-wiki-config.js";
@@ -12,6 +13,8 @@ import type { ContradictionLocalizationConfig, ContradictionScanConfig } from ".
 import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 export type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
 export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
+export type { BackgroundGenerationConfig } from "./background-generation-config.js";
+import type { BackgroundGenerationConfig } from "./background-generation-config.js";
 import type {
   DriftDetectionSettings,
   MemoryDriftProvenance,
@@ -22,6 +25,7 @@ import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-confi
 import type { SkillProjectionConfig } from "./procedural/skill-projection.js";
 import type { ActionGateConfig } from "./coding/action-gate.js";
 import type { ActiveContextConfigFields } from "./active-context-config.js";
+import type { LocalLlmConfig } from "./local-llm-config.js";
 import type { AmbientCaptureProvenance, BufferTurnOwner, SecurityConfig, OriginMetadata } from "./security/types.js";
 export type MemorySubject = "user" | "agent";
 export type SubjectGuardMode = "off" | "warn" | "enforce";
@@ -683,15 +687,16 @@ export interface SemanticChunkingConfigShape {
   embeddingBatchSize: number;
   fallbackToRecursive: boolean;
 }
-
 export interface PluginConfig
   extends BoundedJsonlStateConfig,
     SecurityConfig,
     DriftDetectionSettings,
     ActiveContextConfigFields,
-    DeepRecallSettings {
+    DeepRecallSettings,
+    LocalLlmConfig {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
+  backgroundGeneration?: BackgroundGenerationConfig;
   model: string;
   reasoningEffort: ReasoningEffort;
   triggerMode: TriggerMode;
@@ -1229,6 +1234,8 @@ export interface PluginConfig
   dreamsPhases: DreamsPhasesConfig;
   procedural: ProceduralConfig;
   extractionLiveness: ExtractionLivenessConfig;
+  /** Span-mode extraction (#2333 Phase B, bench-gated). Default off. */
+  extraction: ExtractionSpanConfig;
   replicaPeers: ReplicaPeersConfig;
   converge: ConvergeConfig;
   /** Claim-level provenance spans (#1575); see `ProvenanceConfig` for defaults. */
@@ -1534,27 +1541,6 @@ export interface PluginConfig
   workProjectIndexEnabled: boolean;
   workIndexAutoRebuildEnabled: boolean;
   workIndexAutoRebuildDebounceMs: number;
-  // Local LLM Provider (v2.1)
-  localLlmEnabled: boolean;
-  localLlmUrl: string;
-  localLlmModel: string;
-  /** Optional API key for authenticated OpenAI-compatible endpoints. */
-  localLlmApiKey?: string;
-  /** Additional headers for local/compatible endpoint requests. */
-  localLlmHeaders?: Record<string, string>;
-  /** If false, do not send Authorization header even when localLlmApiKey is set. */
-  localLlmAuthHeader: boolean;
-  localLlmFallback: boolean;
-  /** Optional home directory override for local LLM helpers (LM Studio settings, CLI PATH). */
-  localLlmHomeDir?: string;
-  /** Optional absolute path to LMS CLI binary (preferred over auto-detection). */
-  localLmsCliPath?: string;
-  /** Optional bin directory prepended to PATH for LMS CLI execution. */
-  localLmsBinDir?: string;
-  /** Hard timeout for local LLM and gateway fallback requests (ms). */
-  localLlmTimeoutMs: number;
-  /** Max context window for local LLM (override auto-detection). Set lower if your LLM server defaults to smaller contexts. */
-  localLlmMaxContext?: number;
   // Observability
   /** If true, log slow operations (local LLM + related I/O) with durations and metadata (no content). */
   slowLogEnabled: boolean;
@@ -3251,17 +3237,11 @@ export interface ExtractedFact {
    * content-hash dedup (rule 23 / checklist §13).
    */
   quote?: string;
-  /**
-   * Transient requireSpans signal (#1575 PR 2): quote unlocatable while
-   * `provenance.requireSpans` is on. Persist path routes the fact to
-   * `pending_review`. Stripped before persistence — never reaches frontmatter.
-   */
+  /** Transient requireSpans signal (#1575 PR 2): quote unlocatable while
+   * `provenance.requireSpans` is on → routed to `pending_review`; stripped pre-persist. */
   requireSpansPending?: boolean;
   promptedByQuestion?: string;
-  /**
-   * Project- vs global-scoped; emitted when `extractionScopeClassificationEnabled`.
-   * Defaults to "project" with a coding context active, else "global".
-   */
+  /** Project- vs global-scoped; emitted when `extractionScopeClassificationEnabled`; defaults "project" with a coding context. */
   scope?: MemoryScope;
   /** Extractor-assigned subject, present only when subjectClassification.enabled (issue #2372). */
   subject?: MemorySubject;
@@ -3297,6 +3277,9 @@ export interface ExtractedFact {
    * `observedAt`, then to the batch anchor, when absent.
    */
   sourceTurnTimestamp?: string;
+  /** Transient span-mode reference (issue #2333): offsets into the exact
+   * per-turn text the extraction model saw; stripped at materialization. */
+  span?: ExtractedFactSpanRef | null;
 }
 
 export interface ExtractedReasoningTraceStep {
@@ -3878,7 +3861,6 @@ export interface HourlySummary {
 // ============================================================================
 // Dreams Pipeline Telemetry (issue #678 PR 3/4)
 // ============================================================================
-
 // Re-export from the authoritative source to avoid duplicate definitions.
 // dreams-ledger.ts is the single source of truth; types.ts re-exports so
 // callers that import from types.js continue to work unchanged.

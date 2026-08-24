@@ -185,18 +185,21 @@ a model-backed detector lands in the consuming child.
   `--consent` flag plus explicit local `--input`/`--out` paths, prints exactly
   what it will read, and refuses otherwise (exit 2, nothing read). It walks
   exactly the named directory — no vault scan, no symlink `--input` root, no
-  descendant symlink follow — strips session keys, principals, namespaces,
-  memory ids, and model ids by projecting records field-by-field from an
-  allowlist, emits an unlinkable hashed `sourceId`, keeps every verified
-  source quote (joined with a newline, same as the gate), skips
+  descendant symlink follow — refuses a `--out` that overlaps `--input`
+  (equal, ancestor, or descendant, #2886), strips session keys, principals,
+  namespaces, memory ids, and model ids by projecting records field-by-field
+  from an allowlist, emits an unlinkable hashed `sourceId`, keeps every
+  verified source quote (joined with a newline, same as the gate), skips
   redacted/never-store plans, treats unknown classification/status/version/
-  action kind or required field or a confidence outside `[0, 1]` as
-  malformed, derives polarity and assertion from the action, reconstructs
-  gated `factText` by stripping the persist-time attribute suffix and
-  default inline citation, skips child files that persist `parentId` plus
-  `chunkIndex` with an inherited whole-fact verdict, skips a post-gate
-  sanitization rewrite when persist recorded that evidence or the stored
-  content hash does not match the recovered bytes, stats-and-streams
+  action kind or required field, a confidence outside `[0, 1]`, or invalid
+  UTF-8 (strict decode, never U+FFFD replacement text) as malformed, derives
+  polarity and assertion from the action, reconstructs gated `factText` by
+  stripping the persist-time attribute suffix and default inline citation,
+  skips child files that persist `parentId` plus `chunkIndex` with an inherited
+  whole-fact verdict, skips a post-gate sanitization rewrite when persist
+  recorded that evidence or the stored content hash does not match the recovered
+  bytes, streams reads (one payload resident at a time, fingerprint chained
+  per-file in walk order, row set bounded by `--max-records`), stats-and-streams
   `--max-text-bytes` before a full read, and never
   runs from the daemon, build, or CI. See `model-lab/README.md`
   ("Harvesting shadow-telemetry labels") for the command recipe.
