@@ -91,7 +91,11 @@ smoke-test the harness without running a full benchmark pass. When a benchmark
 ships a bundled smoke fixture, `--quick` uses that tracked fixture by default;
 full runs need a real benchmark dataset. The CLI resolves
 `~/.remnic/bench/datasets/<benchmark>` automatically in both repo checkouts and packaged installs; alternatively pass
-`--dataset-dir <path>` explicitly.
+`--dataset-dir <path>` explicitly. If a dataset is missing from the canonical
+store but still present at the legacy `evals/datasets/<benchmark>` location,
+the CLI uses it read-only and prints a once-per-process hint to re-download
+with `remnic bench datasets download <benchmark>` — nothing is moved or
+linked automatically.
 
 Package-backed benchmark runs also write `MANIFEST.json` in the results
 directory. The manifest records result artifact hashes, dataset file hashes,
