@@ -387,6 +387,54 @@ test("resolveTimelineLoadDates keeps a bounded window and expands an unbounded o
   assert.deepEqual(empty, ["2026-08-23"]);
 });
 
+test("resolveTimelineLoadDates loads the local day of a lone bound, never today (#2931)", () => {
+  const store = { snapshotCaptureExtent: () => null };
+  const base = { timezone: "UTC" as const, today: "2026-08-23", store, persistedDates: [] as string[] };
+
+  const loneTo = resolveTimelineLoadDates({
+    ...base,
+    window: { to: "2026-05-02T12:00:00.000Z" },
+  });
+  assert.deepEqual(loneTo, ["2026-05-02"], "a lone --to must load the day of the to instant, not today");
+
+  const loneFrom = resolveTimelineLoadDates({
+    ...base,
+    window: { from: "2026-05-02T12:00:00.000Z" },
+  });
+  assert.deepEqual(loneFrom, ["2026-05-02"], "a lone --from keeps loading its own day");
+
+  const futureTo = resolveTimelineLoadDates({
+    ...base,
+    window: { to: "2026-09-01T12:00:00.000Z" },
+  });
+  assert.deepEqual(futureTo, ["2026-09-01"], "a lone future --to loads that future day, not today");
+});
+
+test("resolveTimelineLoadDates resolves a lone --to day through the configured timezone (#2931)", () => {
+  const store = { snapshotCaptureExtent: () => null };
+  // 2026-08-20T23:30Z is 2026-08-21 13:30 in Kiritimati (UTC+14) but still
+  // 2026-08-20 in Adak (UTC-10): the same instant must load different local
+  // days under the two configured zones, proving the configured timezone —
+  // not UTC and not today — drives the resolution.
+  const east = resolveTimelineLoadDates({
+    window: { to: "2026-08-20T23:30:00.000Z" },
+    timezone: "Pacific/Kiritimati",
+    today: "2026-08-23",
+    store,
+    persistedDates: [],
+  });
+  assert.deepEqual(east, ["2026-08-21"]);
+
+  const west = resolveTimelineLoadDates({
+    window: { to: "2026-08-20T23:30:00.000Z" },
+    timezone: "America/Adak",
+    today: "2026-08-23",
+    store,
+    persistedDates: [],
+  });
+  assert.deepEqual(west, ["2026-08-20"]);
+});
+
 test("localDatesForUtcRange covers a multi-year span for unbounded search", () => {
   const dates = localDatesForUtcRange(
     Date.parse("2020-01-01T00:00:00.000Z"),

@@ -143,9 +143,10 @@ export function listPersistedTimelineDates(memoryDir: string): string[] {
 
 /**
  * Local days a CLI window must load. Bounded windows keep the explicit
- * from/to span. An unbounded search loads every day the snapshot store or a
- * persisted day file covers (plus today), so historical cards enter the
- * search pool instead of only the current day.
+ * from/to span; a window with a single bound loads the local day containing
+ * that instant (never today). An unbounded search loads every day the
+ * snapshot store or a persisted day file covers (plus today), so historical
+ * cards enter the search pool instead of only the current day.
  */
 export function resolveTimelineLoadDates(input: {
   window: { from?: string; to?: string };
@@ -156,8 +157,9 @@ export function resolveTimelineLoadDates(input: {
 }): string[] {
   const { window, timezone, today, store, persistedDates } = input;
   if (window.from !== undefined || window.to !== undefined) {
-    const fromMs = window.from === undefined ? Date.now() : Date.parse(window.from);
-    const toMs = window.to === undefined ? fromMs + 1 : Date.parse(window.to);
+    const parsedTo = window.to === undefined ? Number.NaN : Date.parse(window.to);
+    const fromMs = window.from === undefined ? parsedTo : Date.parse(window.from);
+    const toMs = window.to === undefined ? fromMs + 1 : parsedTo;
     if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return [];
     return localDatesForUtcRange(fromMs, toMs > fromMs ? toMs : fromMs + 1, timezone);
   }
