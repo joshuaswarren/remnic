@@ -10,6 +10,7 @@ import {
   type RemnicAdminControls,
   type RemnicAdminDashboardStatus,
 } from "./access-http.js";
+import { peerManifestRevision } from "./reconcile/manifest.js";
 import {
   EngramAccessInputError,
   type EngramAccessRecallRequest,
@@ -1546,8 +1547,30 @@ test("HTTP offline sync capabilities advertise manifest streaming", async () => 
         manifestStream: true,
       }
     );
-    assert.equal(typeof payload.manifestRevision, "string", "capabilities must advertise a manifest revision");
-    assert.ok((payload.manifestRevision as string).length > 0);
+    assert.equal(payload.manifestRevision, peerManifestRevision());
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP offline sync capabilities include the configured citation fingerprint", async () => {
+  const citationTemplate = "{{source}} — {{title}}";
+  const server = new EngramAccessHttpServer({
+    service: { configRef: { inlineSourceAttributionFormat: citationTemplate } } as EngramAccessService,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/remnic/v1/offline-sync/capabilities`,
+      { headers: { authorization: "Bearer test-token" } },
+    );
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { manifestRevision?: unknown };
+    assert.equal(payload.manifestRevision, peerManifestRevision(citationTemplate));
+    assert.notEqual(payload.manifestRevision, peerManifestRevision());
   } finally {
     await server.stop();
   }
