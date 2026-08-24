@@ -91,7 +91,9 @@ interface PeerMock {
   /** Namespaces whose manifest-stream was fetched (in order). */
   manifestStreamNamespaces: string[];
   snapshotNamespaces: string[];
+  contentPaths: string[];
   failManifestFor: Set<string>;
+  manifestStream: boolean;
   onSnapshot?: (namespace: string) => void;
 }
 
@@ -101,13 +103,13 @@ function createPeerMock(
   manifestRevision: string | undefined = "rev-1"
 ): PeerMock {
   const mock: PeerMock = {
-    fetchImpl: async (input) => {
+    fetchImpl: async (input, init) => {
       const url = new URL(String(input));
       if (url.pathname.endsWith("/offline-sync/capabilities")) {
         return Response.json({
           version: 1,
           convergenceFinalization: true,
-          manifestStream: true,
+          manifestStream: mock.manifestStream,
           ...(manifestRevision !== undefined ? { manifestRevision } : {}),
         });
       }
@@ -153,11 +155,33 @@ function createPeerMock(
         }
         return new Response([...rows, ""].join("\n"));
       }
+      if (url.pathname.endsWith("/offline-sync/file-content")) {
+        const payload = JSON.parse(String(init?.body ?? "{}")) as { namespace?: string; path?: string };
+        const fileNamespace = payload.namespace ?? "";
+        const filePath = payload.path ?? "";
+        mock.contentPaths.push(`${fileNamespace}:${filePath}`);
+        const file = (filesByNamespace.get(fileNamespace) ?? []).find((row) => row.path === filePath);
+        if (!file) return new Response(null, { status: 404 });
+        const sha256 = createHash("sha256").update(file.content).digest("hex");
+        const bytes = Buffer.byteLength(file.content);
+        return new Response(file.content, {
+          headers: {
+            "x-remnic-file-path": encodeURIComponent(file.path),
+            "x-remnic-file-sha256": sha256,
+            "x-remnic-file-bytes": String(bytes),
+            "x-remnic-file-mtime-ms": "2000",
+            "x-remnic-chunk-offset": "0",
+            "x-remnic-chunk-bytes": String(bytes),
+          },
+        });
+      }
       return new Response(null, { status: 404 });
     },
     manifestStreamNamespaces: [],
     snapshotNamespaces: [],
+    contentPaths: [],
     failManifestFor: new Set(),
+    manifestStream: true,
   };
   return mock;
 }
@@ -431,6 +455,34 @@ test("converge plan: peer cache entries are keyed by the peer's advertised manif
   }
 });
 
+test("converge plan: client-built peer rows stay a SHA-keyed warm base for unversioned peers (#2803)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-client-built-"));
+  try {
+    const local = convergedCorpus();
+    const peer = new Map<string, FixtureFile[]>();
+    for (const [namespace, files] of local) {
+      peer.set(
+        namespace,
+        files.map((file) => ({ ...file, content: memoryFileBody(`peer ${namespace}`) }))
+      );
+    }
+    await writeLocalCorpus(memoryDir, local);
+    const first = createPeerMock(peer, undefined);
+    first.manifestStream = false;
+    await convergedPlan(memoryDir, first);
+    assert.deepEqual(first.manifestStreamNamespaces, []);
+    assert.ok(first.contentPaths.length >= 3, `expected per-file fetches, got ${first.contentPaths.length}`);
+
+    const retry = createPeerMock(peer, undefined);
+    retry.manifestStream = false;
+    await convergedPlan(memoryDir, retry);
+    assert.deepEqual(retry.manifestStreamNamespaces, []);
+    assert.equal(retry.contentPaths.length, 0);
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 const HEX16 = (value: number): string => value.toString(16).padStart(16, "0");
 
 test("converge plan: a symlinked plan-cache root is rejected and never pruned (#2803)", async () => {
@@ -444,6 +496,7 @@ test("converge plan: a symlinked plan-cache root is rejected and never pruned (#
     await fs.mkdir(path.dirname(root), { recursive: true });
     await fs.symlink(outside, root);
     await assert.rejects(ConvergePlanCache.open(memoryDir, HEX16(1)), /symlink/);
+    assert.deepEqual(await fs.readdir(outside), ["keep-me.json"]);
     assert.equal(await fs.readFile(canary, "utf8"), '{"keep":true}\n');
 
     const corpus = convergedCorpus();
@@ -512,6 +565,80 @@ test("converge plan: a live lock with matching start identity still rejects a se
       });
     } finally {
       await first.close();
+    }
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: a lock without start ticks is stolen after the lease (#2803)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-lock-lease-"));
+  try {
+    const root = convergePlanCacheRoot(memoryDir);
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(
+      path.join(root, "lock.json"),
+      `${JSON.stringify({ pid: process.pid, savedAt: new Date(0).toISOString() })}\n`
+    );
+    const cache = await ConvergePlanCache.open(memoryDir, HEX16(6));
+    try {
+      const held = JSON.parse(await fs.readFile(path.join(root, "lock.json"), "utf8")) as {
+        pid?: unknown;
+        savedAt?: unknown;
+      };
+      assert.equal(held.pid, process.pid);
+      assert.notEqual(held.savedAt, new Date(0).toISOString());
+    } finally {
+      await cache.close();
+    }
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: a recent lock without start ticks still rejects a second opener (#2803)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-lock-nolease-"));
+  try {
+    const root = convergePlanCacheRoot(memoryDir);
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(
+      path.join(root, "lock.json"),
+      `${JSON.stringify({ pid: process.pid, savedAt: new Date().toISOString() })}\n`
+    );
+    await assert.rejects(ConvergePlanCache.open(memoryDir, HEX16(7)), (error: unknown) => {
+      assert.ok(error instanceof ConvergePlanCacheBusyError);
+      return true;
+    });
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: case-differing namespaces keep distinct cache entries (#2803)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-ns-case-"));
+  try {
+    const cache = await ConvergePlanCache.open(memoryDir, HEX16(8));
+    try {
+      const sha = "a".repeat(64);
+      const watermark = "b".repeat(64);
+      const base = {
+        version: 1 as const,
+        scope: cache.scope,
+        side: "local" as const,
+        watermark,
+        fileCount: 1,
+        capturedAtMs: 1,
+        savedAt: new Date().toISOString(),
+        files: [{ path: "facts/a.md", sha256: sha }],
+      };
+      await cache.writeEntry({ ...base, namespace: "Alpha" });
+      await cache.writeEntry({ ...base, namespace: "alpha" });
+      const upper = await cache.readEntry("local", "Alpha");
+      const lower = await cache.readEntry("local", "alpha");
+      assert.equal(upper?.namespace, "Alpha");
+      assert.equal(lower?.namespace, "alpha");
+    } finally {
+      await cache.close();
     }
   } finally {
     await fs.rm(memoryDir, { recursive: true, force: true });

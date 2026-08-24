@@ -59,19 +59,18 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
   args.signal?.throwIfAborted();
   const peerData = await fetchPeerSnapshot(peerUrl, ns, args.resolvedToken, args.fetchFn, args.timeoutMs);
   const priorPeerEntry = args.cache ? await args.cache.readEntry("peer", ns) : null;
-  // Peer-manifest reuse is keyed on the peer's ADVERTISED manifest revision
-  // (#2803 review): identical file bytes can carry identities built by a
-  // different peer implementation. An unversioned peer, or one whose
-  // advertised revision changed, gets no watermark reuse — and its cached
-  // rows are not trusted as the per-file warm base either, because streamed
-  // rows carry the PEER's identity semantics, not this client's.
+  // Streamed rows carry the PEER's identity semantics. Client-built rows
+  // (legacy per-file fallback) carry this client's parser and are safe
+  // to reuse as a SHA-keyed warm base, including watermark hits.
   const revisionTrusted =
     args.peerManifestRevision !== undefined &&
     priorPeerEntry?.peerManifestRevision === args.peerManifestRevision;
-  const reusableEntry = revisionTrusted ? priorPeerEntry : null;
+  const clientBuiltPrior = priorPeerEntry?.clientBuilt === true;
+  const reusableEntry = revisionTrusted || clientBuiltPrior ? priorPeerEntry : null;
   const priorPeerFiles = reusableEntry?.files;
   const watermark = censusWatermark(peerData.files);
   let peerManifest: ReconcileManifest | null = null;
+  let clientBuilt = clientBuiltPrior;
   if (reusableEntry && reusableEntry.watermark === watermark && reusableEntry.fileCount === peerData.files.length) {
     // Cache hit: the peer census is byte-identical to the one this manifest
     // was built from. Overlay fresh mtime/bytes (newest-wins conflict
@@ -91,6 +90,7 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
       : null;
     peerManifest = streamedManifest;
     if (!peerManifest) {
+      clientBuilt = true;
       let readFailure: Error | undefined;
       peerManifest = await buildReconcileManifest({
         files: peerData.files,
@@ -197,6 +197,7 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
       ...(args.peerManifestRevision !== undefined
         ? { peerManifestRevision: args.peerManifestRevision }
         : {}),
+      ...(clientBuilt ? { clientBuilt: true } : {}),
       files: peerManifests.files,
     });
   }

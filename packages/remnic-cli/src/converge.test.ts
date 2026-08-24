@@ -664,6 +664,68 @@ test("remnic converge apply: an aborted signal stops transfer batches instead of
   }
 });
 
+test("remnic converge apply: abort drains the rest of the started transfer batch", async () => {
+  const originalConcurrency = process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY;
+  process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = "2";
+  try {
+    const controller = new AbortController();
+    let slowFinished = false;
+    let applyCalls = 0;
+    const mkFile = (name: string) => {
+      const content = Buffer.from(`local body ${name}`);
+      return { content, sha256: createHash("sha256").update(content).digest("hex") };
+    };
+    const files = [mkFile("one"), mkFile("two")];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (!url.includes("/offline-sync/apply-file-content")) {
+        return new Response(null, { status: 404 });
+      }
+      applyCalls += 1;
+      if (applyCalls === 1) {
+        controller.abort();
+        return Response.json({ done: true, applied: true, skipped: false });
+      }
+      const signal = init?.signal;
+      if (signal && !signal.aborted) {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        signal.addEventListener("abort", () => resolve(), { once: true });
+        await promise;
+      }
+      slowFinished = true;
+      throw signal?.reason ?? new Error("This operation was aborted");
+    };
+    await assert.rejects(
+      executeConvergeApply({
+        peerUrl: "https://peer.example.test",
+        fetchImpl,
+        signal: controller.signal,
+        localFilesByNamespace: new Map([
+          [
+            "default",
+            files.map((file, index) => ({
+              path: `facts/local-${index}.md`,
+              sha256: file.sha256,
+              bytes: file.content.length,
+              mtimeMs: 1000,
+            })),
+          ],
+        ]),
+        peerFilesByNamespace: new Map([["default", []]]),
+        localFileBuffers: new Map([
+          ["default", new Map(files.map((file, index) => [`facts/local-${index}.md`, file.content]))],
+        ]),
+      }),
+      (error: unknown) => error instanceof Error && /abort/i.test(error.message)
+    );
+    assert.ok(applyCalls >= 2, `expected both batch entries to start, got ${applyCalls}`);
+    assert.equal(slowFinished, true);
+  } finally {
+    if (originalConcurrency === undefined) delete process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY;
+    else process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = originalConcurrency;
+  }
+});
+
 test("remnic converge apply: a newer local deletion uses the guarded remote delete contract", async () => {
   const filePath = "facts/deleted-locally.md";
   const peerContent = Buffer.from("peer v2");
