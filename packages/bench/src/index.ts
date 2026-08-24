@@ -526,6 +526,23 @@ export type {
   PublishedBenchmarkFeedEntry,
 } from "./results-store.js";
 export type { ReportCardProvenanceContext } from "./report-card.js";
+export {
+  loadBenchmarkResultSummaries,
+  summarizeBenchmarkResult,
+} from "./result-summary.js";
+export type {
+  BenchAggregateMetric,
+  BenchAssistantTaskDetails,
+  BenchIntegritySplit,
+  BenchIntegritySummary,
+  BenchMetricHighlight,
+  BenchPerSeedScore,
+  BenchResultFileWarning,
+  BenchResultSummary,
+  BenchResultSummaryPayload,
+  BenchTaskScoreEntry,
+  BenchTaskSummary,
+} from "./result-summary.js";
 
 // Published-benchmark dataset loaders (LongMemEval-S + LoCoMo-10).
 export {

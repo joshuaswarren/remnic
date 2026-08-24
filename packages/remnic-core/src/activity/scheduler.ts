@@ -18,6 +18,7 @@
  */
 
 import { runActivitySyncOnce, type ActivitySyncRunSummary } from "./runner.js";
+import type { PluginConfig } from "../types.js";
 import type { ActivityConfig } from "./types.js";
 
 /**
@@ -47,6 +48,8 @@ export interface ActivitySyncSchedulerOptions {
   onRun?: (summary: ActivitySyncRunSummary) => void;
   /** Called when a tick's sync rejects; defaults to swallowing (best-effort). */
   onError?: (error: unknown) => void;
+  /** Full plugin config forwarded to the default runner for analysis clients. */
+  pluginConfig?: PluginConfig;
 }
 
 export interface ActivitySyncRegistration {
@@ -88,6 +91,7 @@ export class ActivitySyncScheduler {
           memoryDir: this.memoryDir,
           signal,
           ...(options.reindexSearch === undefined ? {} : { reindexSearch: options.reindexSearch }),
+          ...(options.pluginConfig === undefined ? {} : { pluginConfig: options.pluginConfig }),
         }));
     this.setTimer =
       options.setTimer ??

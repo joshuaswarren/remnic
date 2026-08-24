@@ -8,6 +8,7 @@ import {
   createBenchResultsHandler,
   resolveResultsDir,
 } from "./vite.config";
+import { validResultFixture } from "./src/testing/result-fixture";
 import { withTempDir } from "./src/testing/tmp-dir";
 
 test("resolveResultsDir expands exact home-relative bench results paths", () => {
@@ -47,17 +48,9 @@ test("bench results handler serves JSON for dev and preview middleware", async (
     await mkdir(resultsDir, { recursive: true });
     await writeFile(
       path.join(resultsDir, "run.json"),
-      JSON.stringify({
-        meta: {
-          id: "run-1",
-          benchmark: "locomo",
-          timestamp: "2026-05-21T00:00:00.000Z",
-        },
-        results: { aggregates: {} },
-      }),
+      JSON.stringify(validResultFixture("run-1")),
       "utf8",
     );
-
     const handler = createBenchResultsHandler({ REMNIC_BENCH_RESULTS_DIR: resultsDir }, tempRoot);
     const response = await invokeHandler(handler, "GET");
 
@@ -101,14 +94,7 @@ test("bench results plugin emits static /api/results asset during build", async 
     await mkdir(resultsDir, { recursive: true });
     await writeFile(
       path.join(resultsDir, "run.json"),
-      JSON.stringify({
-        meta: {
-          id: "run-static",
-          benchmark: "locomo",
-          timestamp: "2026-05-21T00:00:00.000Z",
-        },
-        results: { aggregates: {} },
-      }),
+      JSON.stringify(validResultFixture("run-static")),
       "utf8",
     );
 
