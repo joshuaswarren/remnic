@@ -243,7 +243,7 @@ export class RecallInternalCoordinator {
       cronConversationRecallMode: this.deps.config.cronConversationRecallMode,
     });
     const retrievalQuery = queryPolicy.retrievalQuery || prompt;
-    const stateViewActive = resolveRecallStateViewActive(options, this.deps.config, retrievalQuery);
+    const stateViewActive = resolveRecallStateViewActive(options, this.deps.config, prompt);
     const retrievalQueryHash = createHash("sha256")
       .update(retrievalQuery)
       .digest("hex");

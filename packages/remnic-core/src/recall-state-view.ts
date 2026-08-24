@@ -120,10 +120,13 @@ export function annotateStateView<T extends StateViewResult>(
   results: T[],
   query: string,
   chains: readonly StateViewChain[],
-  options: { enabled?: boolean; asOfMs?: number } = {},
+  options: { enabled?: boolean; asOfMs?: number; changeIntent?: boolean } = {},
 ): T[] {
   const enabled = options.enabled === true;
-  if (!enabled || !isChangeOrientedQuery(query)) return results;
+  // #2893 — changeIntent:true marks intent as already classified from the
+  // ORIGINAL prompt; `query` may be cron-normalized (intent signal
+  // truncated or stop-worded away) and must not be re-checked then.
+  if (!enabled || (options.changeIntent !== true && !isChangeOrientedQuery(query))) return results;
   // #1952 asOf mode: under a historical pin the pipeline's isValidAsOf
   // gate already decided validity at the pinned instant, so a predecessor
   // must not be discarded merely because its successor is absent under
