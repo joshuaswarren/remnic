@@ -105,6 +105,18 @@ test("activity.timeline.vault.readback.journalSection wins over journal.heading"
   assert.equal(vault.readback.journalSection, "Journal");
 });
 
+test("activity.timeline.journal.heading colliding with a daily publish section is rejected", () => {
+  // The legacy key is copied into vault.readback.journalSection, so the
+  // issue #2894 ownership gate must also see the aliased value.
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: { journal: { heading: "Timeline" }, vault: { sectionStrategy: "heading" } },
+      }),
+    /readback\.journalSection "Timeline" is publisher-owned/,
+  );
+});
+
 
 test("activity.timeline.journal extractionMode allows off and review only", () => {
   for (const extractionMode of ["off", "review"]) {

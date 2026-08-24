@@ -230,7 +230,7 @@ function fakeExtractionDeps(
     },
     writer: {
       writeSealedMemory: async (envelope, extras) => {
-        writes.push({ status: extras.status, tags: envelope.tags });
+        writes.push({ status: extras.status, tags: [...envelope.tags] });
         return {};
       },
       openDedupeSnapshot: async () => ({ has: async () => false, record: () => {} }),

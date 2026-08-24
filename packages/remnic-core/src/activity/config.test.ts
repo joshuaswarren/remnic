@@ -366,3 +366,68 @@ test("an enabled vault rejects relative or whitespace-only vaultPath at config l
   const inert = parseActivityConfig({ timeline: { vault: { enabled: false, vaultPath: "." } } });
   assert.equal(inert.timeline.vault.vaultPath, ".");
 });
+
+test("readback journalSection grammar is validated at config load against the heading parser", () => {
+  // Each value passes a plain string check, but the read path compares
+  // parseAtxHeading(line).text === journalSection — the parser trims, sees
+  // one line only, and strips a trailing '#' closing sequence, so every
+  // show/extract would report missing_heading forever (issue #2894).
+  for (const journalSection of [" Journal", "Journal ", "   ", "Jour\nnal", "Dia\u0000ry", "Notes #"]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { vault: { readback: { journalSection } } } }),
+      /activity\.timeline\.vault\.readback\.journalSection/,
+    );
+  }
+  const ok = parseActivityConfig({ timeline: { vault: { readback: { journalSection: "Tagebuch 📝" } } } });
+  assert.equal(ok.timeline.vault.readback.journalSection, "Tagebuch 📝");
+});
+
+test("a readback heading owned by a daily publisher target is rejected at config load", () => {
+  // Under sectionStrategy "heading" the selected journal heading is never
+  // passed to the stripper — only headings inside its body are — so a
+  // publisher-owned journal heading would feed generated timeline output
+  // back into the journal (issue #2894 review thread).
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: { vault: { sectionStrategy: "heading", readback: { journalSection: "Timeline" } } },
+      }),
+    /readback\.journalSection "Timeline" is publisher-owned.*publish\.timeline/s,
+  );
+  // Config-known daily sections stay owned after their target is disabled:
+  // a disabled publisher still owns the historical sections it wrote.
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: {
+          vault: {
+            sectionStrategy: "heading",
+            publish: { standup: { enabled: false } },
+            readback: { journalSection: "Standup" },
+          },
+        },
+      }),
+    /readback\.journalSection "Standup" is publisher-owned.*publish\.standup/s,
+  );
+});
+
+test("weekly-only publish targets never own the daily readback heading", () => {
+  const ok = parseActivityConfig({
+    timeline: {
+      vault: {
+        sectionStrategy: "heading",
+        weeklyNotePath: "weekly-{yyyy}-w{ww}.md",
+        publish: { weekly: { enabled: true, target: "weekly", section: "Journal" } },
+        readback: { journalSection: "Journal" },
+      },
+    },
+  });
+  assert.equal(ok.timeline.vault.readback.journalSection, "Journal");
+});
+
+test("markers strategy owns regions, not headings, so a name shared with a publish section loads", () => {
+  const ok = parseActivityConfig({
+    timeline: { vault: { readback: { journalSection: "Timeline" } } },
+  });
+  assert.equal(ok.timeline.vault.readback.journalSection, "Timeline");
+});
