@@ -543,10 +543,7 @@ export class EngramMcpServer {
             topK: { type: "number" },
             mode: { type: "string", enum: ["auto", "no_recall", "minimal", "full", "graph_mode"] },
             includeDebug: { type: "boolean" },
-            // Recall disclosure depth (issue #677).  Default `chunk` when
-            // omitted.  Section/raw payload shaping ships in PR 2; this PR
-            // wires the field end-to-end so clients can already pass it
-            // without it being silently dropped.
+            // Disclosure depth (issue #677); default `chunk` when omitted.
             disclosure: { type: "string", enum: ["chunk", "section", "raw"] },
             cwd: { type: "string", description: "Working directory for auto git-context resolution." },
             projectTag: {
@@ -566,8 +563,11 @@ export class EngramMcpServer {
             tagMatch: {
               type: "string",
               enum: ["any", "all"],
-              description:
-                "Tag-filter match mode. 'any' (default) admits results with at least one filter tag; 'all' requires every filter tag.",
+              description: "Tag-filter match mode; 'any' (default) or 'all'.",
+            },
+            stateView: {
+              type: "boolean",
+              description: "Opt in to state-aware recall views (issue #1952); ORs with the recallStateViews config flag.",
             },
           },
           required: ["query"],

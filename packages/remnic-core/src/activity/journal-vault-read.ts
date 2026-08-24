@@ -76,6 +76,7 @@ export function readVaultJournal(input: ReadVaultJournalInput): ReadVaultJournal
   };
 }
 
+
 function trimNewlines(text: string): string {
   let start = 0;
   let end = text.length;

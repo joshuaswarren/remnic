@@ -11,6 +11,7 @@ model-lab/
   README.md                       this file
   requirements.txt                version-pinned GPU training stack (both models)
   setup.sh                        bootstrap a venv on the lab box
+  harvest.py                      consent-gated shadow-telemetry label harvester (generic CLI; #2852)
   common/                         shared, stdlib-only helpers
     seeding.py                    deterministic RNG + sha256 + JSONL writer
     jsonl_schema.py               FaithfulnessRecord + validators (the #1576 contract)
@@ -20,6 +21,7 @@ model-lab/
     manifest_schema.py            the reproducibility-manifest validator (both models)
     training_stack.py             version-pin capture (requirements parse + pip-freeze hash)
     hf_push.py                    HF Hub upload — STUB (honestly labeled; GPU-run follow-up)
+    harvest.py                    label-harvest engine: shared schema + both task mappings (#2852)
   faithfulness-gate/
     generate-data.py              synthetic perturbation generator (the CI-tested piece)
     perturbations.py              pure perturbation primitives + the selfcheck case table
@@ -94,7 +96,54 @@ python model-lab/faithfulness-gate/eval.py --version-tag v1             # → ma
 #
 # Real v1 numbers (RTX 3090): held-out macro-F1 1.0, p95 9.93 ms. See
 # docs/model-lab.md (Results) + model-lab/faithfulness-gate/manifest.json.
+
+### Harvesting shadow-telemetry labels (opt-in, local-only — #2852)
+
+`harvest.py` turns an operator's OWN persisted shadow telemetry into labeled
+training records for either classifier. It refuses to run without `--consent`
+and explicit local `--input`/`--out` paths, reads exactly the named directory
+(no vault scan; a symlink `--input` root is refused; descendant symlinks are
+skipped), strips every private field (session keys, principals, namespaces,
+memory ids, model ids) by building records from an allowlist, derives
+`sourceId` as a hash of those approved fields plus a task salt, and skips
+redacted/never-store plans outright. Faithfulness rows keep every verified
+source quote, joined with a newline in persisted order (same as the gate).
+Unknown correction classification, status, schema version, action kind or
+required action field, or a confidence outside `[0, 1]` counts as malformed,
+never as a positive label. Polarity and `correctedAssertion` come from the
+validated action (a `retract` stays a retract even when the request text
+looks like an update). Faithfulness `factText` is the pre-persist gated
+body: the `[Attributes: …]` suffix and default `[Source: …]` citation are
+stripped; leftover custom attribution is skipped as private. Child files
+with persisted `parentId` and `chunkIndex` inherit the whole-fact verdict
+and are skipped; a whole fact or independently judged body still emits.
+A post-gate sanitization rewrite is skipped when persist recorded that
+evidence or the stored content hash does not match the recovered bytes.
+Nothing in the daemon, build, or CI ever invokes it.
+
+```bash
+# faithfulness-gate: memory .md files carrying the #1576 faithfulness: verdict
+python3 model-lab/harvest.py --task faithfulness-gate \
+    --input <your-memory-dir> --out model-lab/faithfulness-gate/data/harvest --consent
+# → harvest-faithfulness-gate.jsonl (+ .manifest.json + dataset.sha256)
+
+# correction-intent: persisted correction plans (state/corrections/pending/)
+python3 model-lab/harvest.py --task correction-intent \
+    --input <your-plans-dir> --out model-lab/correction-intent/data/harvest --consent
 ```
+
+Deterministic and idempotent: the same input tree yields byte-identical
+dataset AND manifest (records dedup on training payload, emit in canonical
+order; the manifest carries an input fingerprint + dataset sha256 and no
+clocks or absolute paths). `--max-records` caps emitted rows.
+`--max-text-bytes` is enforced with fstat plus a bounded stream
+*before* a file is read or fingerprinted; oversized files are counted and
+skipped without a full allocation. Oversize text is skipped, never truncated.
+Labels emitted:
+`entailed|contradicted|unsupported` (teacher verdicts only —
+`skipped_no_span`/`unchecked` are not labels) and `correction` (persisted
+plans; `none` negatives stay synthetic-only). Guarded by
+`tests/model-lab-harvest.test.mjs`.
 
 `train.py` / `eval.py` lazy-import the GPU stack so `--help` works on a bare machine. `train.py` exits with code 2 and an install hint if `torch`/`transformers` are missing. `eval.py`'s GPU gate is scoped to the inference path (no `--predictions`): offline scoring of pre-computed predictions is JSONL + stdlib only and runs CPU-only; the inline inference loop (which loads the checkpoint) gates the GPU stack. **They never run in CI.**
 
@@ -106,5 +155,5 @@ python model-lab/faithfulness-gate/eval.py --version-tag v1             # → ma
 
 ## Privacy + consent
 
-* The **harvest stream** (teacher labels from shadow mode) is not implemented and never was — the deleted `harvest-shadow-logs.py` stubs (#2847) were dead code, and the #1585 GPU-run work landed with synthetic-data training only. Shadow verdicts are already recorded (`extraction-persist.ts`, #1576); harvesting them into training data is a separate, unscheduled enhancement (#2852), opt-in and local-only by design.
+* The **harvest stream** (teacher labels from shadow telemetry) is real and opt-in: `model-lab/harvest.py` requires an explicit `--consent` flag plus explicit local `--input`/`--out` paths, prints exactly what it will read, and refuses otherwise (issue #2852). The deleted `harvest-shadow-logs.py` stubs (#2847) were dead code, and the #1585 GPU-run work landed with synthetic-data training only. Shadow verdicts are already recorded (`extraction-persist.ts`, #1576). No committed dataset contains harvested data — both v1 datasets remain synthetic-only; harvested blobs live under the gitignored `model-lab/**/data/` dirs and never reach git.
 * Teacher-model outputs ("LLM traces") live under the gitignored data dir like everything else.
