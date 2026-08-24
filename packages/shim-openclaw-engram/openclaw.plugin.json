@@ -3270,7 +3270,7 @@
       "localLlmFallback": {
         "type": "boolean",
         "default": true,
-        "description": "Fall back to cloud OpenAI if local LLM is unavailable"
+        "description": "Legacy alias for taskLlmFallback. Use the gateway/task LLM chain when the local LLM path fails or is unavailable."
       },
       "localLlmFastEnabled": {
         "type": "boolean",
@@ -3337,7 +3337,17 @@
       "localLlmTimeoutMs": {
         "type": "number",
         "default": 180000,
-        "description": "Hard timeout for local LLM requests (ms)"
+        "description": "Hard timeout for local LLM requests (ms). Legacy alias for taskLlmTimeoutMs on the gateway/task chain when that key is absent."
+      },
+      "taskLlmTimeoutMs": {
+        "type": "number",
+        "default": 180000,
+        "description": "Timeout for the gateway/task LLM chain (ms). In gateway mode this is the primary extraction timeout. localLlmTimeoutMs is a legacy alias when this key is absent."
+      },
+      "taskLlmFallback": {
+        "type": "boolean",
+        "default": true,
+        "description": "When the local LLM path fails or is unavailable, use the gateway/task LLM chain. localLlmFallback is a legacy alias when this key is absent."
       },
       "localLlmUrl": {
         "type": "string",
@@ -7948,7 +7958,17 @@
     "localLlmFallback": {
       "label": "Local LLM Fallback",
       "advanced": true,
-      "help": "Fall back to cloud OpenAI if local LLM fails or is unavailable"
+      "help": "Legacy alias for taskLlmFallback. Use the gateway/task LLM chain when local LLM fails or is unavailable."
+    },
+    "taskLlmFallback": {
+      "label": "Task LLM Fallback",
+      "advanced": true,
+      "help": "Use the gateway/task LLM chain when the local LLM path fails or is unavailable."
+    },
+    "taskLlmTimeoutMs": {
+      "label": "Task LLM Timeout (ms)",
+      "advanced": true,
+      "help": "Timeout for the gateway/task LLM chain. In gateway mode this is the primary extraction timeout."
     },
     "localLlmHomeDir": {
       "label": "Local LLM Home Dir",

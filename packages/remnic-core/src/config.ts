@@ -48,6 +48,7 @@ import { parseSkillProjectionConfig } from "./procedural/skill-projection.js";
 import { parseDriftDetectionConfig } from "./preferences/drift-config.js";
 import { parseDeepRecallConfig } from "./deep-recall-config.js";
 import { parseContradictionLocalizationConfig, parseContradictionScanConfig } from "./contradiction-config.js";
+import { parseTaskLlmConfig } from "./task-llm-config.js";
 import { parseGraphPathScoringConfig } from "./graph-path-scoring-config.js";
 import { parseWritePathDedupConfig } from "./dedup/novelty-gate.js";
 import { hasLegacyConnectorEntries } from "./connectors/paths.js";
@@ -745,6 +746,8 @@ export function parseConfig(
     cfg = baseCfg;
   }
   validateNestedConfigBlock(cfg, "maintenance");
+
+  const taskLlm = parseTaskLlmConfig(cfg);
 
   const modelSource =
     cfg.modelSource === "gateway" ? "gateway" : "plugin";
@@ -2689,7 +2692,8 @@ export function parseConfig(
           )
         : undefined,
     localLlmAuthHeader: cfg.localLlmAuthHeader !== false,
-    localLlmFallback: cfg.localLlmFallback !== false, // default: true
+    localLlmFallback: taskLlm.fallback,
+    taskLlmFallback: taskLlm.fallback,
     localLlmHomeDir:
       typeof cfg.localLlmHomeDir === "string" && cfg.localLlmHomeDir.length > 0
         ? cfg.localLlmHomeDir
@@ -2702,8 +2706,8 @@ export function parseConfig(
       typeof cfg.localLmsBinDir === "string" && cfg.localLmsBinDir.length > 0
         ? cfg.localLmsBinDir
         : undefined,
-    localLlmTimeoutMs:
-      parseBoundedIntegerMs(cfg.localLlmTimeoutMs, 180_000, 1, 86_400_000),
+    localLlmTimeoutMs: taskLlm.localTimeoutMs,
+    taskLlmTimeoutMs: taskLlm.timeoutMs,
     localLlmMaxContext:
       parseOptionalIntegerAtLeast(cfg.localLlmMaxContext, 1024, "localLlmMaxContext"),
     // Observability (disabled by default to avoid log spam)

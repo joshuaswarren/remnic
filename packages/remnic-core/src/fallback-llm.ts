@@ -163,9 +163,10 @@ const BUILT_IN_PROVIDER_FALLBACKS: Record<string, ModelProviderConfig> = {
 };
 
 /**
- * Generic fallback LLM client that uses the gateway's default AI configuration
- * and walks through the full fallback chain (primary + fallbacks).
- * Supports OpenAI and Anthropic API formats.
+ * Gateway/task LLM client. In `modelSource: "gateway"` this is the primary
+ * configured path (taskModelChain / agent persona), not a secondary recovery
+ * client. The class name stays `FallbackLlmClient` because it is imported
+ * widely; prefer the `TaskLlmClient` alias in new code. Issue #2967.
  */
 export class FallbackLlmClient {
   private gatewayConfig: GatewayConfig | undefined;
@@ -212,7 +213,7 @@ export class FallbackLlmClient {
       options.includeDefaultModelFallback,
     );
     if (models.length === 0) {
-      log.warn("fallback LLM: no models configured in gateway");
+      log.warn("task LLM: no models configured in gateway");
       return null;
     }
 
@@ -239,11 +240,11 @@ export class FallbackLlmClient {
             };
             if (runOptions.acceptResponse && !runOptions.acceptResponse(response)) {
               lastRejectedResponse = response;
-              log.debug(`fallback LLM: ${model.modelString} returned rejected output, trying next...`);
+              log.debug(`task LLM: ${model.modelString} returned rejected output, trying next...`);
               continue;
             }
             if (isFallback) {
-              log.debug(`fallback LLM: succeeded using ${model.modelString} (fallback ${i})`);
+              log.debug(`task LLM: succeeded using ${model.modelString} (fallback ${i})`);
             }
             return response;
           }
@@ -255,7 +256,7 @@ export class FallbackLlmClient {
             (runOptions.jsonSchema || runOptions.responsesJsonSchema) &&
             isUnsupportedJsonSchemaError(err)
           ) {
-            log.debug(`fallback LLM: ${model.modelString} rejected native JSON schema; retrying without it`);
+            log.debug(`task LLM: ${model.modelString} rejected native JSON schema; retrying without it`);
             // Degrade to prompt-only for the REST of the chain too, so an
             // N-model chain where every provider rejects structured output
             // costs N+1 requests instead of 2N.
@@ -276,7 +277,7 @@ export class FallbackLlmClient {
                   return response;
                 }
                 lastRejectedResponse = response;
-                log.debug(`fallback LLM: ${model.modelString} unstructured retry output rejected by acceptResponse, trying next model...`);
+                log.debug(`task LLM: ${model.modelString} unstructured retry output rejected by acceptResponse, trying next model...`);
                 continue;
               }
             } catch (retryError) {
@@ -287,7 +288,7 @@ export class FallbackLlmClient {
                   ? retryError.message
                   : String(retryError);
               log.debug(
-                `fallback LLM: ${model.modelString} unstructured retry failed (${retryErrorMsg})`,
+                `task LLM: ${model.modelString} unstructured retry failed (${retryErrorMsg})`,
               );
             }
             continue;
@@ -297,18 +298,18 @@ export class FallbackLlmClient {
             : err instanceof Error
               ? err.message
               : String(err);
-          log.debug(`fallback LLM: ${model.modelString} failed (${errorMsg}), trying next...`);
+          log.debug(`task LLM: ${model.modelString} failed (${errorMsg}), trying next...`);
           // Continue to next model in chain
         }
       }
 
-      log.warn(`fallback LLM: all ${models.length} models in chain failed`);
+      log.warn(`task LLM: all ${models.length} models in chain failed`);
       return lastRejectedResponse;
     };
 
     if (typeof options.timeoutMs === "number") {
       if (options.timeoutMs <= 0) {
-        log.warn("fallback LLM: timed out before request started");
+        log.warn("task LLM: timed out before request started");
         return null;
       }
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -328,9 +329,9 @@ export class FallbackLlmClient {
           chain,
           new Promise<null>((resolve) => {
             timeoutHandle = setTimeout(() => {
-              log.warn(`fallback LLM: timed out after ${options.timeoutMs}ms`);
+              log.warn(`task LLM: timed out after ${options.timeoutMs}ms`);
               controller.abort(
-                new Error(`fallback LLM timed out after ${options.timeoutMs}ms`),
+                new Error(`task LLM timed out after ${options.timeoutMs}ms`),
               );
               resolve(null);
             }, options.timeoutMs);
@@ -378,7 +379,7 @@ export class FallbackLlmClient {
       // not swallow them as a provider failure, or abort-driven callers lose
       // cancellation and treat it as an extraction error (codex review).
       if (options.signal?.aborted) throw err;
-      log.warn("fallback LLM: chatCompletion threw during structured parse:", err);
+      log.warn("task LLM: chatCompletion threw during structured parse:", err);
       return { result: null, failureReason: "http_error" };
     }
     if (!response?.content) {
@@ -408,7 +409,7 @@ export class FallbackLlmClient {
       }
       return { result: null, failureReason: "empty" };
     } catch (err) {
-      log.warn("fallback LLM: failed to parse structured output:", err);
+      log.warn("task LLM: failed to parse structured output:", err);
       return { result: null, failureReason: "empty" };
     }
   }
@@ -436,9 +437,9 @@ export class FallbackLlmClient {
 
     if (modelChainOverride?.primary) {
       modelConfig = modelChainOverride;
-      log.debug("fallback LLM: using explicit model chain override");
+      log.debug("task LLM: using explicit model chain override");
     } else if (modelChainOverride) {
-      log.warn("fallback LLM: ignoring explicit model chain override without primary model");
+      log.warn("task LLM: ignoring explicit model chain override without primary model");
     }
 
     if (!modelConfig && agentId) {
@@ -447,10 +448,10 @@ export class FallbackLlmClient {
       );
       if (persona?.model) {
         modelConfig = persona.model;
-        log.debug(`fallback LLM: using agent persona "${agentId}" model chain`);
+        log.debug(`task LLM: using agent persona "${agentId}" model chain`);
       } else {
         log.warn(
-          `fallback LLM: agent persona "${agentId}" not found or has no model config, falling back to defaults`,
+          `task LLM: agent persona "${agentId}" not found or has no model config, falling back to defaults`,
         );
       }
     }
@@ -512,7 +513,7 @@ export class FallbackLlmClient {
           chain.push(defaultRef);
           modelStrings.push(trimmed); // keep dedupe correct for later default fallbacks
           log.debug(
-            `fallback LLM: appended gateway default model "${trimmed}" as implicit last resort`,
+            `task LLM: appended gateway default model "${trimmed}" as implicit last resort`,
           );
         }
       }
@@ -531,7 +532,7 @@ export class FallbackLlmClient {
     // Parse "provider/model" format (e.g., "openai/gpt-5.5", "anthropic/claude-opus-4-6")
     const parts = modelString.split("/");
     if (parts.length < 2) {
-      log.warn(`fallback LLM: invalid model format: ${modelString}`);
+      log.warn(`task LLM: invalid model format: ${modelString}`);
       return null;
     }
 
@@ -546,7 +547,7 @@ export class FallbackLlmClient {
     const providerConfig = resolvedProvider?.config;
     if (!providerConfig) {
       log.warn(
-        `fallback LLM: provider not found: ${requestedProviderId} ` +
+        `task LLM: provider not found: ${requestedProviderId} ` +
         `(tried: ${this.providerResolutionCandidates(requestedProviderId).join(", ")})`,
       );
       return null;
@@ -573,7 +574,7 @@ export class FallbackLlmClient {
       const config = providers[candidate];
       if (config) {
         if (candidate !== providerId) {
-          log.debug(`fallback LLM: provider "${providerId}" resolved via alias "${candidate}"`);
+          log.debug(`task LLM: provider "${providerId}" resolved via alias "${candidate}"`);
         }
         return { providerId: candidate, config };
       }
@@ -582,17 +583,17 @@ export class FallbackLlmClient {
       const config = this.resolveFromModelsJson(candidate);
       if (config) {
         if (candidate !== providerId) {
-          log.debug(`fallback LLM: provider "${providerId}" resolved via models.json alias "${candidate}"`);
+          log.debug(`task LLM: provider "${providerId}" resolved via models.json alias "${candidate}"`);
         }
         return { providerId: candidate, config };
       }
       const builtInConfig = BUILT_IN_PROVIDER_FALLBACKS[candidate];
       if (builtInConfig) {
         if (candidate === providerId) {
-          log.debug(`fallback LLM: provider "${providerId}" resolved from built-in defaults`);
+          log.debug(`task LLM: provider "${providerId}" resolved from built-in defaults`);
           return { providerId, config: builtInConfig };
         }
-        log.debug(`fallback LLM: provider "${providerId}" resolved via built-in alias "${candidate}"`);
+        log.debug(`task LLM: provider "${providerId}" resolved via built-in alias "${candidate}"`);
         return { providerId: candidate, config: builtInConfig };
       }
     }
@@ -614,7 +615,7 @@ export class FallbackLlmClient {
     const allProviders = loadModelsJsonProviders();
     const config = allProviders[providerId];
     if (config) {
-      log.debug(`fallback LLM: resolved provider "${providerId}" from models.json (api: ${config.api ?? "default"})`);
+      log.debug(`task LLM: resolved provider "${providerId}" from models.json (api: ${config.api ?? "default"})`);
       return config;
     }
     return null;
@@ -732,13 +733,13 @@ export class FallbackLlmClient {
 
       if (result?.apiKey || result?.baseUrl) {
         log.debug(
-          `fallback LLM: resolved runtime auth for "${model.modelString}" (source: ${result.source ?? "unknown"}, mode: ${result.mode ?? "unknown"})`,
+          `task LLM: resolved runtime auth for "${model.modelString}" (source: ${result.source ?? "unknown"}, mode: ${result.mode ?? "unknown"})`,
         );
         return { apiKey: result.apiKey, baseUrl: result.baseUrl };
       }
     } catch (err) {
       log.debug(
-        `fallback LLM: gateway runtime auth failed for "${model.modelString}": ${err instanceof Error ? err.message : String(err)}`,
+        `task LLM: gateway runtime auth failed for "${model.modelString}": ${err instanceof Error ? err.message : String(err)}`,
       );
     }
     return null;
@@ -1115,7 +1116,7 @@ export class FallbackLlmClient {
 
 function abortReason(signal: AbortSignal | undefined): Error {
   const reason = signal?.reason;
-  return reason instanceof Error ? reason : new Error("fallback LLM request aborted");
+  return reason instanceof Error ? reason : new Error("task LLM request aborted");
 }
 
 function normalizeRuntimePath(value: unknown): string | undefined {

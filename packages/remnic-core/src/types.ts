@@ -1545,14 +1545,17 @@ export interface PluginConfig
   /** If false, do not send Authorization header even when localLlmApiKey is set. */
   localLlmAuthHeader: boolean;
   localLlmFallback: boolean;
+  taskLlmFallback?: boolean;
   /** Optional home directory override for local LLM helpers (LM Studio settings, CLI PATH). */
   localLlmHomeDir?: string;
   /** Optional absolute path to LMS CLI binary (preferred over auto-detection). */
   localLmsCliPath?: string;
   /** Optional bin directory prepended to PATH for LMS CLI execution. */
   localLmsBinDir?: string;
-  /** Hard timeout for local LLM and gateway fallback requests (ms). */
+  /** Hard timeout for local LLM requests (ms). Legacy alias for the task-chain timeout when `taskLlmTimeoutMs` is absent. */
   localLlmTimeoutMs: number;
+  /** Timeout for the gateway/task LLM chain (ms). */
+  taskLlmTimeoutMs?: number;
   /** Max context window for local LLM (override auto-detection). Set lower if your LLM server defaults to smaller contexts. */
   localLlmMaxContext?: number;
   // Observability

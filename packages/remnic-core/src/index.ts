@@ -1231,6 +1231,7 @@ export {
 
 export {
   FallbackLlmClient,
+  FallbackLlmClient as TaskLlmClient,
   type FallbackLlmOptions,
   type FallbackLlmResponse,
   type FallbackLlmRuntimeContext,

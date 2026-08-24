@@ -328,6 +328,7 @@ const WRITABLE_BOOLEAN_CONFIG_KEYS = new Set([
   "localLlmDisableThinking",
   "localLlmEnabled",
   "localLlmFallback",
+  "taskLlmFallback",
   "localLlmFastEnabled",
   "memoryExtensionsEnabled",
   "namespacesEnabled",
