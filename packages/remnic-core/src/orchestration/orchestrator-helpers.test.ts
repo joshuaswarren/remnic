@@ -10,7 +10,8 @@ import {
   startupDiscoveryWithTimeout,
 } from "./startup-collection-checks.js";
 
-test("individual startup collection check aborts and returns unknown when it never settles", async () => {
+test("individual startup collection check aborts and returns unknown when it never settles", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
   const originalTimeout = process.env.REMNIC_QMD_STARTUP_COLLECTION_CHECK_TIMEOUT_MS;
   const controller = new AbortController();
   const neverSettles = new Promise<SearchCollectionState>(() => undefined);
@@ -18,11 +19,13 @@ test("individual startup collection check aborts and returns unknown when it nev
   try {
     process.env.REMNIC_QMD_STARTUP_COLLECTION_CHECK_TIMEOUT_MS = "1000";
 
-    const state = await qmdStartupCollectionCheckWithTimeout(
+    const pending = qmdStartupCollectionCheckWithTimeout(
       neverSettles,
       controller,
       "default",
     );
+    t.mock.timers.tick(1000);
+    const state = await pending;
 
     assert.equal(state, "unknown");
     assert.equal(controller.signal.aborted, true);
