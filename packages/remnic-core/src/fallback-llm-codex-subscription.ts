@@ -42,14 +42,28 @@ export function isTerminalCodexSubscriptionError(error: unknown): boolean {
 }
 
 /**
+ * Single bounded headroom shared by both sides of the Codex deadline
+ * (issue #2890): the provider gets it as SIGTERM lead time
+ * (`timeoutMs - headroom`) and the outer race as settle grace, so the hard
+ * outer bound stays `timeoutMs + headroom` (<= 25 ms past the deadline).
+ */
+export function codexDeadlineHeadroomMs(timeoutMs: number): number {
+  return Math.min(25, Math.max(1, Math.floor(timeoutMs / 10)));
+}
+
+/**
  * Settle a fallback-LLM chain at the caller deadline. Abort the in-flight
- * work, return immediately, and observe the abandoned promise so a late
- * rejection cannot become unhandled.
+ * work, then wait a bounded settle grace for the chain to surface a typed
+ * provider timeout (default: one event-loop turn). A chain that settles
+ * within the grace wins with its own result or error; one that never
+ * settles still cannot exceed `timeoutMs + settleGraceMs`. The abandoned
+ * promise is observed so a late rejection cannot become unhandled.
  */
 export async function raceFallbackLlmDeadline<T>(
   work: Promise<T>,
   timeoutMs: number,
   abortOnTimeout: () => void,
+  settleGraceMs = 0,
 ): Promise<{ timedOut: true } | { timedOut: false; value: T }> {
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(), timeoutMs);
@@ -63,15 +77,21 @@ export async function raceFallbackLlmDeadline<T>(
     return { timedOut: false, value };
   } catch (error) {
     if (!deadline.signal.aborted) throw error;
+    let graceTimer: NodeJS.Timeout | undefined;
     const afterAbort = await Promise.race([
       work.then(
         (value) => ({ state: "value" as const, value }),
         (lateError) => ({ state: "error" as const, error: lateError }),
       ),
       new Promise<{ state: "pending" }>((resolve) => {
-        setImmediate(() => resolve({ state: "pending" }));
+        if (settleGraceMs > 0) {
+          graceTimer = setTimeout(() => resolve({ state: "pending" }), settleGraceMs);
+        } else {
+          setImmediate(() => resolve({ state: "pending" }));
+        }
       }),
     ]);
+    clearTimeout(graceTimer);
     if (afterAbort.state === "value") return { timedOut: false, value: afterAbort.value };
     if (afterAbort.state === "error") throw afterAbort.error;
     void work.then(
@@ -126,11 +146,13 @@ export async function tryCodexSubscriptionProvider(
     ...(resolvedApiKey ? { apiKey: resolvedApiKey } : {}),
   };
 
-  // Let the provider surface its typed timeout before the generic outer deadline.
+  // Let the provider surface its typed timeout before the generic outer
+  // deadline: the shared bounded headroom is SIGTERM lead time here and
+  // settle grace in raceFallbackLlmDeadline (issue #2890).
   const callOptions = {
     timeoutMs: options.timeoutMs === undefined
       ? undefined
-      : Math.max(1, options.timeoutMs - Math.min(25, Math.max(1, Math.floor(options.timeoutMs / 10)))),
+      : Math.max(1, options.timeoutMs - codexDeadlineHeadroomMs(options.timeoutMs)),
     signal: options.signal,
   };
   // A host/benchmark runner on the process seam still wins. Otherwise use

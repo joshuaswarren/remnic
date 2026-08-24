@@ -11,6 +11,7 @@ import {
   __setGatewayResolverForTest,
   clearSecretCache,
 } from "./resolve-provider-secret.js";
+import { CodexSubscriptionTimeoutError } from "./providers/codex-subscription.js";
 
 test("fallback llm sends native JSON schema to chat completions", { concurrency: false }, async () => {
   clearModelsJsonCache();
@@ -978,6 +979,126 @@ test("fallback llm timeout is a hard deadline when the provider never settles", 
     );
     assert.equal(response, null);
     assert.ok(Date.now() - started < 1_000, "outer timeout must settle without waiting on the provider");
+  } finally {
+    restoreRunner();
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("codex typed timeout wins past the outer deadline within the settle grace", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const restoreRunner = __codexCliFallbackTestHooks.setRunCodexCliForTest(
+    (request) => {
+      const { promise, reject } = Promise.withResolvers<never>();
+      const onAbort = (): void => {
+        // Real timer by design: the settle grace itself is wall-clock
+        // behavior under test. Lands inside the grace (T=250 -> 25ms).
+        setTimeout(() => reject(new CodexSubscriptionTimeoutError(250)), 5);
+      };
+      if (request.options.signal?.aborted) {
+        onAbort();
+      } else {
+        request.options.signal?.addEventListener("abort", onAbort, { once: true });
+      }
+      return promise;
+    },
+  );
+
+  const llm = new FallbackLlmClient({
+    agents: {
+      defaults: {
+        model: {
+          primary: "codex-cli/gpt-custom",
+        },
+      },
+    },
+    models: {
+      providers: {
+        "codex-cli": {
+          baseUrl: "",
+          api: "codex-cli",
+          apiKey: "codex-test-key",
+          models: [],
+        },
+      },
+    },
+  });
+
+  try {
+    await assert.rejects(
+      llm.chatCompletion(
+        [{ role: "user", content: "Say OK" }],
+        { temperature: 0, maxTokens: 16, timeoutMs: 250 },
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof CodexSubscriptionTimeoutError, `expected typed timeout, got: ${error}`);
+        assert.equal(error.name, "TimeoutError");
+        return true;
+      },
+    );
+  } finally {
+    restoreRunner();
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("outer deadline stays the hard bound when the runner settles after the grace", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const lateSettled = Promise.withResolvers<void>();
+  const restoreRunner = __codexCliFallbackTestHooks.setRunCodexCliForTest(
+    (request) => {
+      const { promise, reject } = Promise.withResolvers<never>();
+      const onAbort = (): void => {
+        // Real timer by design: the hard bound must hold against a provider
+        // that outlives the grace. Lands past it (T=250 -> 25ms grace).
+        setTimeout(() => {
+          reject(new CodexSubscriptionTimeoutError(250));
+          lateSettled.resolve();
+        }, 80);
+      };
+      if (request.options.signal?.aborted) {
+        onAbort();
+      } else {
+        request.options.signal?.addEventListener("abort", onAbort, { once: true });
+      }
+      return promise;
+    },
+  );
+
+  const llm = new FallbackLlmClient({
+    agents: {
+      defaults: {
+        model: {
+          primary: "codex-cli/gpt-custom",
+        },
+      },
+    },
+    models: {
+      providers: {
+        "codex-cli": {
+          baseUrl: "",
+          api: "codex-cli",
+          apiKey: "codex-test-key",
+          models: [],
+        },
+      },
+    },
+  });
+
+  try {
+    const started = Date.now();
+    const response = await llm.chatCompletion(
+      [{ role: "user", content: "Say OK" }],
+      { temperature: 0, maxTokens: 16, timeoutMs: 250 },
+    );
+    // Await the runner's actual late rejection — observed, never unhandled.
+    await lateSettled.promise;
   } finally {
     restoreRunner();
     clearModelsJsonCache();
