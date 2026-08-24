@@ -10,6 +10,7 @@ import os
 import secrets
 import signal
 import subprocess
+import threading
 import time
 from urllib.request import Request, urlopen
 
@@ -193,14 +194,14 @@ def run_supervised(*, python: str, policy: str, remnic_bin: str, port: int) -> i
     daemon: subprocess.Popen[str] | None = None
     stopping = False
     starting_bridge = False
-    starting_daemon = False
+    starting_daemon = threading.Event()
     bridge_start_signals: list[int] = []
     daemon_start_signals: list[int] = []
 
     def request_stop(signum: int, _frame: object) -> None:
         nonlocal stopping
         stopping = True
-        if starting_daemon:
+        if starting_daemon.is_set():
             daemon_start_signals.append(signum)
         else:
             _forward_signal(daemon, signum)
@@ -223,11 +224,14 @@ def run_supervised(*, python: str, policy: str, remnic_bin: str, port: int) -> i
             return 0 if stopping else 70
         if stopping:
             return 0
-        starting_daemon = True
+        starting_daemon.set()
+        if stopping:
+            starting_daemon.clear()
+            return 0
         try:
             daemon = subprocess.Popen(remnic_cmd, text=True, env=daemon_env)
         finally:
-            starting_daemon = False
+            starting_daemon.clear()
         for signum in daemon_start_signals:
             _forward_signal(daemon, signum)
         if stopping:

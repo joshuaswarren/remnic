@@ -254,6 +254,56 @@ def test_supervisor_does_not_start_the_daemon_if_shutdown_arrives_after_readines
     assert bridge.received_signals == [signal.SIGTERM]
 
 
+def test_supervisor_rechecks_shutdown_after_marking_daemon_start():
+    """A signal in the daemon-start transition cannot launch an unsignaled daemon."""
+    from remnic_hermes.hermes_llm_supervisor import run_supervised
+
+    bridge = Process()
+    handlers: dict[int, object] = {}
+
+    def register(received_signum: int, handler: object) -> object:
+        handlers[received_signum] = handler
+        return signal.SIG_DFL
+
+    class SignalOnSet:
+        def __init__(self) -> None:
+            self.active = False
+            self.clear_calls = 0
+
+        def set(self) -> None:
+            self.active = True
+            handler = handlers[signal.SIGTERM]
+            assert callable(handler)
+            handler(signal.SIGTERM, None)
+
+        def is_set(self) -> bool:
+            return self.active
+
+        def clear(self) -> None:
+            self.active = False
+            self.clear_calls += 1
+
+    daemon_start = SignalOnSet()
+    with patch(
+        "remnic_hermes.hermes_llm_supervisor.secrets.token_urlsafe",
+        side_effect=["ready-token", "request-token"],
+    ):
+        with patch("remnic_hermes.hermes_llm_supervisor.signal.signal", side_effect=register):
+            with patch("remnic_hermes.hermes_llm_supervisor._wait_for_bridge", return_value=True):
+                with patch("remnic_hermes.hermes_llm_supervisor.threading.Event", return_value=daemon_start):
+                    with patch("remnic_hermes.hermes_llm_supervisor.subprocess.Popen", return_value=bridge) as popen:
+                        assert run_supervised(
+                            python="/opt/hermes-python",
+                            policy="/tmp/policy.json",
+                            remnic_bin="/opt/remnic-server",
+                            port=4329,
+                        ) == 0
+
+    assert popen.call_count == 1
+    assert bridge.received_signals == [signal.SIGTERM]
+    assert daemon_start.clear_calls == 1
+
+
 def test_supervisor_interrupts_readiness_when_shutdown_arrives():
     """A shutdown during bridge startup does not wait out the full readiness timeout."""
     from remnic_hermes.hermes_llm_supervisor import run_supervised
