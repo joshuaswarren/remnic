@@ -15,7 +15,7 @@
 import { z } from "zod";
 
 import { defineOperation } from "./access-boundary.js";
-import { memoryStoreRequestSchema, type MemoryStoreRequest } from "./access-schema.js";
+import { memoryStoreRequestSchema, retainedCategoryAlias, type MemoryStoreRequest } from "./access-schema.js";
 import { EngramAccessInputError } from "./access-service.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { externalWikiSearchOperation } from "./external-wiki-access.js";
@@ -154,16 +154,18 @@ export interface MemoryStoreOutput {
 export const memoryStoreOperation = defineOperation<MemoryStoreInput, MemoryStoreOutput>({
   name: "memory_store",
   description: "Store an explicit memory through the access layer.",
-  // Reuse the existing schema verbatim — the migration is behavior-preserving;
-  // the schema's external contract is NOT changing in this PR (per the issue's
-  // pitfall note).
+  // The canonical wire schema (issue #2482): its category transform already
+  // mapped compat aliases to "fact", so `input.category` is finite here. The
+  // raw spelling survives on `ctx.rawInput` for the coercion note (#2829).
   schema: memoryStoreRequestSchema,
   handler: async (input, ctx) => {
+    const rawCategory = retainedCategoryAlias(ctx.rawInput);
     const result = await ctx.service.memoryStore(
       {
         ...input,
         authenticatedPrincipal: ctx.authenticatedPrincipal,
         ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
+        ...(rawCategory ? { rawCategory } : {}),
       },
       // Forward transport-level hooks (e.g. HTTP's atomic write-quota gate)
       // so the hook still fires inside the service's idempotent-write lock —

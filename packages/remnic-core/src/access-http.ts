@@ -2118,6 +2118,8 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         sourceReason: body.sourceReason,
         cwd: body.cwd,
         projectTag: body.projectTag,
+        // #2829: raw alias spelling retained by the schema transform.
+        ...(body.rawCategory !== undefined ? { rawCategory: body.rawCategory } : {}),
         // Phase 1 provenance: server-resolved connector identity from the
         // bearer token (REST path, mirroring the MCP tools/call dispatch).
         sourceConnector: this.resolveConnector(req),

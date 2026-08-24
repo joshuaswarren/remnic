@@ -563,20 +563,7 @@ export {
   type StructuralSpawnFn,
 } from "./coding/structural-subprocess-provider.js";
 
-export {
-  validateRequest,
-  formatZodError,
-  recallRequestSchema,
-  observeRequestSchema,
-  memoryStoreRequestSchema,
-  suggestionSubmitRequestSchema,
-  type SchemaValidationError,
-  type SchemaName,
-  type RecallRequest,
-  type ObserveRequest,
-  type MemoryStoreRequest,
-  type SuggestionSubmitRequest,
-} from "./access-schema.js";
+export * from "./access-schema.js";
 
 // ---------------------------------------------------------------------------
 // Day summary / LCM
