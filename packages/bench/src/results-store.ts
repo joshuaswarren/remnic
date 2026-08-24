@@ -17,6 +17,7 @@ import {
   type ReportCardProvenanceContext,
 } from "./report-card.js";
 import { recognizeLegacyBenchmarkArtifact } from "./legacy-artifact.js";
+import { validateProviderConfigShape } from "./provider-config.js";
 
 export interface StoredBenchmarkResultSummary {
   id: string;
@@ -174,11 +175,9 @@ function isProviderConfigLike(value: unknown): boolean {
   if (value === null) {
     return true;
   }
-  return (
-    isObjectRecord(value) &&
-    typeof value.provider === "string" &&
-    typeof value.model === "string"
-  );
+  // Complete canonical shape (issue #2895): the loader shares the provider
+  // validator with the legacy adapter instead of a two-string clone.
+  return validateProviderConfigShape(value) === null;
 }
 
 function isNonEmptyString(value: unknown): value is string {
