@@ -7,7 +7,13 @@ import { spawn } from "node:child_process";
 import { test } from "node:test";
 import { ContentHashIndex, parseConfig } from "@remnic/core";
 import type { ReconcilePlan } from "@remnic/core/reconcile/plan.js";
-import { convergePlanCacheRoot, convergePlanScopeKey } from "./converge-plan-cache.js";
+import {
+  CONVERGE_PLAN_CACHE_MAX_AGE_MS,
+  ConvergePlanCache,
+  ConvergePlanCacheBusyError,
+  convergePlanCacheRoot,
+  convergePlanScopeKey,
+} from "./converge-plan-cache.js";
 import { computeConvergePlan, type ConvergePlanProgressEvent } from "./converge.js";
 
 /**
@@ -420,6 +426,125 @@ test("converge plan: peer cache entries are keyed by the peer's advertised manif
     const unversioned = createPeerMock(corpus, undefined);
     await convergedPlan(memoryDir, unversioned);
     assert.deepEqual(unversioned.manifestStreamNamespaces, NAMESPACES);
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+const HEX16 = (value: number): string => value.toString(16).padStart(16, "0");
+
+test("converge plan: a symlinked plan-cache root is rejected and never pruned (#2803)", async () => {
+  if (process.platform === "win32") return;
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-symlink-root-"));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-symlink-out-"));
+  try {
+    const canary = path.join(outside, "keep-me.json");
+    await fs.writeFile(canary, '{"keep":true}\n');
+    const root = convergePlanCacheRoot(memoryDir);
+    await fs.mkdir(path.dirname(root), { recursive: true });
+    await fs.symlink(outside, root);
+    await assert.rejects(ConvergePlanCache.open(memoryDir, HEX16(1)), /symlink/);
+    assert.equal(await fs.readFile(canary, "utf8"), '{"keep":true}\n');
+
+    const corpus = convergedCorpus();
+    await writeLocalCorpus(memoryDir, corpus);
+    const plan = await convergedPlan(memoryDir, createPeerMock(corpus));
+    assert.equal(plan.converged, true);
+    assert.equal(await fs.readFile(canary, "utf8"), '{"keep":true}\n');
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: a symlinked active scope is rejected and never pruned (#2803)", async () => {
+  if (process.platform === "win32") return;
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-symlink-scope-"));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-symlink-scope-out-"));
+  try {
+    const canary = path.join(outside, "keep-me.json");
+    await fs.writeFile(canary, '{"keep":true}\n');
+    const scope = HEX16(2);
+    const root = convergePlanCacheRoot(memoryDir);
+    await fs.mkdir(root, { recursive: true });
+    await fs.symlink(outside, path.join(root, scope));
+    await assert.rejects(ConvergePlanCache.open(memoryDir, scope), /symlink/);
+    assert.equal(await fs.readFile(canary, "utf8"), '{"keep":true}\n');
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: a lock with this PID but a different start identity is stolen (#2803)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-pid-reuse-"));
+  try {
+    const root = convergePlanCacheRoot(memoryDir);
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(
+      path.join(root, "lock.json"),
+      `${JSON.stringify({ pid: process.pid, startTicks: -1, savedAt: new Date().toISOString() })}\n`
+    );
+    const cache = await ConvergePlanCache.open(memoryDir, HEX16(3));
+    try {
+      const held = JSON.parse(await fs.readFile(path.join(root, "lock.json"), "utf8")) as {
+        pid?: unknown;
+        startTicks?: unknown;
+      };
+      assert.equal(held.pid, process.pid);
+      assert.notEqual(held.startTicks, -1);
+    } finally {
+      await cache.close();
+    }
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: a live lock with matching start identity still rejects a second opener (#2803)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-live-lock-"));
+  try {
+    const first = await ConvergePlanCache.open(memoryDir, HEX16(4));
+    try {
+      await assert.rejects(ConvergePlanCache.open(memoryDir, HEX16(5)), (error: unknown) => {
+        assert.ok(error instanceof ConvergePlanCacheBusyError);
+        return true;
+      });
+    } finally {
+      await first.close();
+    }
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: sibling overflow counts only fresh scopes (#2803)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-overflow-"));
+  try {
+    const root = convergePlanCacheRoot(memoryDir);
+    const staleAt = new Date(Date.now() - CONVERGE_PLAN_CACHE_MAX_AGE_MS - 60_000);
+    const freshNames: string[] = [];
+    for (let index = 0; index < 8; index += 1) {
+      const name = HEX16(index);
+      const dir = path.join(root, name);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, "marker.json"), "{}\n");
+      await fs.utimes(dir, staleAt, staleAt);
+    }
+    for (let index = 8; index < 15; index += 1) {
+      const name = HEX16(index);
+      const dir = path.join(root, name);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, "marker.json"), "{}\n");
+      freshNames.push(name);
+    }
+    const active = "f".repeat(16);
+    const cache = await ConvergePlanCache.open(memoryDir, active);
+    await cache.close();
+    const remaining = (await fs.readdir(root))
+      .filter((name) => /^[0-9a-f]{16}$/.test(name))
+      .sort();
+    assert.deepEqual(remaining, [...freshNames, active].sort());
   } finally {
     await fs.rm(memoryDir, { recursive: true, force: true });
   }
