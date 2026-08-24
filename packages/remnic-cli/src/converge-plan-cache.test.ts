@@ -641,7 +641,7 @@ test("converge plan: warm peer reuse requires the snapshot to request the manife
       const delegate = createPeerMock(peerCorpus);
       return {
         ...delegate,
-        fetchImpl: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        fetchImpl: (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
           if (new URL(String(input)).pathname.endsWith("/offline-sync/snapshot")) {
             snapshotUrls.push(String(input));
           }
