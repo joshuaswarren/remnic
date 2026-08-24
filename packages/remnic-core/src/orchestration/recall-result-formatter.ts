@@ -18,6 +18,7 @@
  */
 
 import { buildHandleIndexForResults } from "../recall-handles.js";
+import { formatSupersededPrefix } from "../recall-state-view.js";
 import path from "node:path";
 import { renderAuthorityBoundContent } from "../recall-context-composition.js";
 import { renderEpistemicHedge } from "../trust-score.js";
@@ -215,8 +216,17 @@ export class RecallResultFormatter {
       const snippetBody = r.snippet
         ? r.snippet.slice(0, 500).replace(/\n/g, " ")
         : "(no preview)";
+      // Historical-prefix contract (issue #1952): only a labeled superseded
+      // row gets `[superseded <date> by <id>]`; every other row — and every
+      // render with the feature off — stays byte-identical.
+      const statePrefix =
+        (r.stateLabel === "historical" || r.stateLabel === "transition") &&
+        r.supersededAt &&
+        r.supersededBy
+          ? `${formatSupersededPrefix(r.supersededAt, r.supersededBy)} `
+          : "";
       const snippet = renderAuthorityBoundContent(
-        snippetBody,
+        `${statePrefix}${snippetBody}`,
         r.origin,
         {
           enabled: this.originAuthorityEnabled,
