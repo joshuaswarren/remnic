@@ -1,0 +1,123 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import {
+  completeBackgroundGeneration,
+  parseBackgroundGenerationJson,
+} from "./background-generation.js";
+import { parseConfig } from "./config.js";
+import { HourlySummarizer } from "./summarizer.js";
+
+test("completeBackgroundGeneration posts to the dedicated endpoint with the bearer", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: '{"bullets":["one"]}' } }],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+
+  const text = await completeBackgroundGeneration(
+    {
+      backgroundGeneration: {
+        endpoint: "http://127.0.0.1:8765/v1/chat/completions",
+        token: "bridge-token-fixture",
+        timeoutSeconds: 12,
+      },
+    },
+    [{ role: "user", content: "summarize" }],
+    fetchImpl,
+  );
+
+  assert.equal(text, '{"bullets":["one"]}');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.url, "http://127.0.0.1:8765/v1/chat/completions");
+  const headers = new Headers(calls[0]?.init.headers);
+  assert.equal(headers.get("authorization"), "Bearer bridge-token-fixture");
+  assert.equal(headers.get("content-type"), "application/json");
+  assert.equal(
+    calls[0]?.init.body,
+    JSON.stringify({ messages: [{ role: "user", content: "summarize" }] }),
+  );
+});
+
+test("completeBackgroundGeneration refuses an unconfigured client", async () => {
+  await assert.rejects(
+    () => completeBackgroundGeneration({}, [{ role: "user", content: "x" }]),
+    /not configured/,
+  );
+});
+
+test("parseBackgroundGenerationJson keeps the first valid candidate", () => {
+  const parsed = parseBackgroundGenerationJson(
+    'preamble {"bullets":["kept"]} trailing',
+    (value) => {
+      const record = value as { bullets?: string[] };
+      if (!Array.isArray(record.bullets)) throw new Error("no bullets");
+      return record.bullets;
+    },
+  );
+  assert.deepEqual(parsed, ["kept"]);
+});
+
+test("HourlySummarizer uses backgroundGeneration and not openaiBaseUrl", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-bg-summary-"));
+  const previousFetch = globalThis.fetch;
+  const previousXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = memoryDir;
+  const calls: string[] = [];
+  try {
+    const config = parseConfig({
+      memoryDir,
+      openaiApiKey: "keep-me",
+      openaiBaseUrl: "http://127.0.0.1:9999/v1",
+      backgroundGeneration: {
+        endpoint: "http://127.0.0.1:8765/v1/chat/completions",
+        token: "bridge-token-fixture",
+        timeoutSeconds: 12,
+      },
+    });
+    globalThis.fetch = (async (url) => {
+      calls.push(String(url));
+      if (String(url) !== "http://127.0.0.1:8765/v1/chat/completions") {
+        return new Response("not the bridge", { status: 404 });
+      }
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: '{"bullets":["bridge-only"]}' } }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    const summarizer = new HourlySummarizer(config);
+    const summary = await summarizer.generateSummary(
+      "session-bridge",
+      new Date("2026-08-23T10:00:00.000Z"),
+      [
+        {
+          timestamp: "2026-08-23T10:01:00.000Z",
+          role: "user",
+          content: "ship the bridge",
+          sessionKey: "session-bridge",
+          turnId: "t1",
+        },
+      ],
+    );
+
+    assert.deepEqual(summary?.bullets, ["bridge-only"]);
+    assert.deepEqual(calls, ["http://127.0.0.1:8765/v1/chat/completions"]);
+    assert.equal(config.openaiBaseUrl, "http://127.0.0.1:9999/v1");
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previousXdg;
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});

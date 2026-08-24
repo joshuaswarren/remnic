@@ -11,6 +11,7 @@ import { resolveContainedPath, sanitizeFilenameSegment } from "./filename-safety
 import { writeLeaderboardArtifactsForResult } from "./leaderboard-export.js";
 import { isSecretKey } from "./security/secret-keys.js";
 import { redactUrlSecrets as redactUrlSecretMaterial } from "./security/url-secrets.js";
+import { resolveEffectiveCanaryFloor } from "./integrity/canary-adapter.js";
 import type { BenchmarkResult } from "./types.js";
 import { resolveBenchmarkRunId } from "./run-identity.js";
 
@@ -272,14 +273,23 @@ function replaceLoneSurrogates(value: string): string {
 }
 
 export async function writeBenchmarkResult(result: BenchmarkResult, outputDir: string): Promise<string> {
+  // Validate before mkdir so a malformed preset or empty env writes
+  // nothing. A present preset must be a valid floor; otherwise the env
+  // parser supplies the override or the canonical 0.1 default.
+  const canaryFloor = resolveEffectiveCanaryFloor(result.meta.canaryFloor);
   const outputRoot = path.resolve(outputDir);
   await mkdir(outputRoot, { recursive: true });
 
-  const safeBenchmark = sanitizeFilenameSegment(result.meta.benchmark);
-  const safeRemnicVersion = sanitizeFilenameSegment(result.meta.remnicVersion);
-  const timestamp = sanitizeFilenameSegment(result.meta.timestamp.replace(/[:.]/g, "-"));
+  const stamped: BenchmarkResult = {
+    ...result,
+    meta: { ...result.meta, canaryFloor },
+  };
+
+  const safeBenchmark = sanitizeFilenameSegment(stamped.meta.benchmark);
+  const safeRemnicVersion = sanitizeFilenameSegment(stamped.meta.remnicVersion);
+  const timestamp = sanitizeFilenameSegment(stamped.meta.timestamp.replace(/[:.]/g, "-"));
   const filePath = resolveContainedPath(outputRoot, `${safeBenchmark}-v${safeRemnicVersion}-${timestamp}.json`);
-  const publicBaseResult = sanitizeBenchmarkResultForJson(redactBenchmarkResultSecrets(result));
+  const publicBaseResult = sanitizeBenchmarkResultForJson(redactBenchmarkResultSecrets(stamped));
   const leaderboardArtifacts = await writeLeaderboardArtifactsForResult(publicBaseResult, outputRoot).catch(
     (error: unknown) => [
       {
