@@ -128,11 +128,21 @@ const DESCRIPTIVE_ARTICLES = new Set(["the", "a", "an"]);
 const PAST_PARTICIPLE_KEYWORDS = new Set(["fixed", "closed", "resolved"]);
 
 /**
- * All #<n> issue references in free text, deduped (issue #2067). Non-rendered
- * content is dropped first — HTML comments (template/generated <!-- ... -->
- * blocks) and fenced + inline code spans — so a hidden `<!-- related #2 -->`
- * or a hash in a code sample (a CSS hex color like #123456, a shell prompt) is
- * never mistaken for an issue ref, and the match requires GitHub
+ * Issues CLAIMED by PR-body closing keywords, deduped (issues #2067, #2919).
+ * The grammar is GitHub's closing-keyword form: keyword + optional
+ * OWNER/REPOSITORY qualifier + #<n>. Same-repo comma/"and" lists may
+ * continue as local `#<n>` only — `Fixes #1, #2 and #3`. A qualified
+ * reference needs its own keyword (`resolves octo-org/octo-repo#100`);
+ * `Fixes #1 and octo-org/octo-repo#2` does not claim the second.
+ * Local `#100` and `owner/repo#100` are distinct claims. Bare #<n>
+ * citations — ordinary prose, quoted source comments, anything without a
+ * keyword — never count, and neither do citations from touched-file
+ * contents, commit messages, or review text: the parser consumes PR text
+ * only (the workflow passes the body, #2919). Non-rendered content is
+ * dropped first — HTML comments (template/generated <!-- ... --> blocks) and
+ * fenced + inline code spans — so a hidden `<!-- related #2 -->` or a hash
+ * in a code sample (a CSS hex color like #123456, a shell prompt) is never
+ * mistaken for an issue ref, and the match requires GitHub
  * issue-reference boundaries (no adjacent alphanumerics, no leading #) so
  * `abc#12`, `#12ab`, and `##12` do not count.
  */
@@ -143,9 +153,17 @@ export function extractIssueRefs(text) {
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`[^`]*`/g, " ");
-  for (const match of prose.matchAll(
-    /(\w+\s+)?\b(fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d+)((?:\s*(?:,|and)\s*#\d+)*)/gi,
-  )) {
+  // Qualifier is captured on the keyword-headed ref only. Continuations
+  // are local `#<n>` so `Fixes #1, #2, and #3` still works, while a
+  // keywordless `owner/repo#n` after `and`/comma is not a claim.
+  const repoOrLocalHash = String.raw`(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#|#)`;
+  const closingKeywordPattern = new RegExp(
+    String.raw`(\w+\s+)?\b(fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+${repoOrLocalHash}(\d+)` +
+      String.raw`((?:(?:\s*(?:,|and)\s*)+#\d+)*)` +
+      String.raw`(?!\w)`,
+    "gi",
+  );
+  for (const match of prose.matchAll(closingKeywordPattern)) {
     // An ARTICLE in front of a PAST-PARTICIPLE keyword is a noun phrase, not a
     // claim: "follow-up to the closed #2448" names history, while "Closes
     // #2448" claims the issue. Counting the former inflated the multi-issue
@@ -160,12 +178,27 @@ export function extractIssueRefs(text) {
     const lead = (match[1] ?? "").trim().toLowerCase();
     const keyword = match[2].toLowerCase();
     if (DESCRIPTIVE_ARTICLES.has(lead) && PAST_PARTICIPLE_KEYWORDS.has(keyword)) continue;
-    issues.add(Number(match[3]));
-    for (const extra of match[4].matchAll(/#(\d+)/g)) {
+    issues.add(claimedIssue(match[3], match[4]));
+    for (const extra of match[5].matchAll(/#(\d+)/g)) {
       issues.add(Number(extra[1]));
     }
   }
   return issues;
+}
+
+function claimedIssue(repo, number) {
+  return repo ? `${repo}#${number}` : Number(number);
+}
+
+function formatClaimedIssueList(issues) {
+  return [...issues]
+    .sort((a, b) => {
+      const num = (value) =>
+        typeof value === "number" ? value : Number(String(value).slice(String(value).lastIndexOf("#") + 1));
+      return num(a) - num(b) || String(typeof a).localeCompare(String(typeof b)) || String(a).localeCompare(String(b));
+    })
+    .map((claim) => (typeof claim === "number" ? `#${claim}` : String(claim)))
+    .join(", ");
 }
 
 /**
@@ -265,10 +298,7 @@ export function evaluateScopeBudget({ files, labels, thresholds, ignorePatterns,
   const crossScopeFail = groups.size >= 2 && issues.size >= 2 && ancestorSegments < MIN_SHARED_ANCESTOR_SEGMENTS;
   const crossScopeWarn = !crossScopeFail && groups.size >= 3 && issues.size >= 2;
   const groupsList = [...groups].sort().join(", ");
-  const issuesList = [...issues]
-    .sort((a, b) => a - b)
-    .map((n) => `#${n}`)
-    .join(", ");
+  const issuesList = formatClaimedIssueList(issues);
   const scopeSummary = `changes span ${groups.size} subsystem groups (${groupsList}) across ${issues.size} referenced issues (${issuesList})`;
 
   const isExempt = labels.includes(EXEMPT_LABEL);
@@ -345,8 +375,11 @@ function main() {
   const ignorePatterns = parseIgnoreManifest(
     readFileSync(args.ignore ?? path.join(ROOT, ".github", "ai-review-ignore"), "utf8")
   );
-  // PR title + body is DATA (author-controlled), never executed — only scanned
-  // for #<n> issue references. Absent -> no multi-issue signal.
+  // PR body is DATA (author-controlled), never executed — only scanned for
+  // closing-keyword issue claims. Absent -> no multi-issue signal. The
+  // workflow passes the BODY only: closing keywords close issues from the PR
+  // description, never the title, and never commit messages or review text
+  // (#2919).
   const prText = args["pr-meta"] ? readFileSync(args["pr-meta"], "utf8") : "";
 
   const result = evaluateScopeBudget({
