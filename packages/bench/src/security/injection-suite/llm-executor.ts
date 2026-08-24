@@ -2,7 +2,15 @@
  * Live-model executor for one H5 injection-suite row (#1962).
  *
  * Talks native Ollama /api/chat by default or an OpenAI-compatible
- * /v1/chat/completions endpoint. Network/5xx/timeout become
+ * /v1/chat/completions endpoint. openai-compat attaches Authorization
+ * only for an exact allowlisted API host: integrate.api.nvidia.com uses
+ * NVIDIA_API_KEY, api.openai.com uses OPENAI_API_KEY, and every other
+ * host (including other *.openai.com / *.nvidia.com subdomains) requires
+ * REMNIC_OPENAI_COMPAT_API_KEY. Provider and non-loopback custom hosts
+ * require https before a credential is attached. Loopback HTTP
+ * (127.0.0.1 / localhost) is the only plaintext exception, for local
+ * openai-compat. Ambient keys are never reused across providers.
+ * ollama stays unauthenticated. Network/5xx/timeout become
  * HOST_API_FAULT so the suite pauses instead of cutting the row.
  */
 
@@ -65,13 +73,98 @@ function trimSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-async function postJson(url: string, body: unknown, timeoutMs: number): Promise<unknown> {
+function parseCompatUrl(baseUrl: string): { protocol: string; hostname: string } | undefined {
+  try {
+    const parsed = new URL(baseUrl);
+    let hostname = parsed.hostname.trim().toLowerCase();
+    while (hostname.endsWith(".")) hostname = hostname.slice(0, -1);
+    if (hostname.length === 0) return undefined;
+    return { protocol: parsed.protocol.toLowerCase(), hostname };
+  } catch {
+    return undefined;
+  }
+}
+
+const OPENAI_API_HOSTS = Object.freeze(["api.openai.com"] as const);
+const NVIDIA_API_HOSTS = Object.freeze(["integrate.api.nvidia.com"] as const);
+
+function isExactAllowlistedHost(hostname: string, allowlist: readonly string[]): boolean {
+  return (allowlist as readonly string[]).includes(hostname);
+}
+
+function isHttps(protocol: string): boolean {
+  return protocol === "https:";
+}
+
+/** Narrow local-dev exception: plaintext HTTP only on these hostnames. */
+function isLoopbackHttpHost(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "localhost";
+}
+
+function requireHttps(protocol: string, message: string): void {
+  if (!isHttps(protocol)) {
+    throw new InjectionSuiteHostFault(message);
+  }
+}
+
+function nonEmptyEnv(name: string): string | undefined {
+  const raw = process.env[name];
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function requireEnvToken(envName: string, message: string): string {
+  const token = nonEmptyEnv(envName);
+  if (token === undefined) {
+    throw new InjectionSuiteHostFault(message);
+  }
+  return token;
+}
+
+function resolveOpenAiCompatToken(baseUrl: string): string {
+  const parsed = parseCompatUrl(baseUrl);
+  if (parsed === undefined) {
+    throw new InjectionSuiteHostFault("openai-compat requires a valid http(s) base URL");
+  }
+  const { protocol, hostname } = parsed;
+  if (isExactAllowlistedHost(hostname, NVIDIA_API_HOSTS)) {
+    requireHttps(protocol, "openai-compat NVIDIA host requires https");
+    return requireEnvToken(
+      "NVIDIA_API_KEY",
+      "openai-compat NVIDIA host requires NVIDIA_API_KEY",
+    );
+  }
+  if (isExactAllowlistedHost(hostname, OPENAI_API_HOSTS)) {
+    requireHttps(protocol, "openai-compat OpenAI host requires https");
+    return requireEnvToken(
+      "OPENAI_API_KEY",
+      "openai-compat OpenAI host requires OPENAI_API_KEY",
+    );
+  }
+  if (!isHttps(protocol) && !isLoopbackHttpHost(hostname)) {
+    throw new InjectionSuiteHostFault(
+      "openai-compat custom host requires https (loopback HTTP is allowed only for 127.0.0.1 or localhost)",
+    );
+  }
+  return requireEnvToken(
+    "REMNIC_OPENAI_COMPAT_API_KEY",
+    "openai-compat unknown host requires REMNIC_OPENAI_COMPAT_API_KEY (or a known host: api.openai.com / integrate.api.nvidia.com); do not reuse OPENAI_API_KEY or NVIDIA_API_KEY",
+  );
+}
+
+async function postJson(
+  url: string,
+  body: unknown,
+  timeoutMs: number,
+  extraHeaders?: Record<string, string>,
+): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...extraHeaders },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -96,11 +189,17 @@ export async function completeChat(
   const model = options.model ?? DEFAULT_OLLAMA_MODEL;
   if (options.kind === "openai-compat") {
     const base = trimSlash(options.baseUrl ?? DEFAULT_OPENAI_COMPAT_BASE_URL);
-    const json = await postJson(`${base}/chat/completions`, {
-      model,
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0,
-    }, timeoutMs) as { choices?: Array<{ message?: { content?: string } }> };
+    const token = resolveOpenAiCompatToken(base);
+    const json = await postJson(
+      `${base}/chat/completions`,
+      {
+        model,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0,
+      },
+      timeoutMs,
+      { Authorization: `Bearer ${token}` },
+    ) as { choices?: Array<{ message?: { content?: string } }> };
     const text = json.choices?.[0]?.message?.content;
     if (typeof text !== "string") throw new InjectionSuiteHostFault("openai-compat response missing content");
     return text;
