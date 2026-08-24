@@ -13,6 +13,7 @@ import {
   isInternalRemnicStatePath,
   normalizeConvergePeerRequestTimeoutMs,
   parseConfig,
+  resolveAgentAccessAuthToken,
 } from "@remnic/core";
 
 import { resolveCorpusNamespaceRoots } from "@remnic/core/corpus-watermark.js";
@@ -38,7 +39,6 @@ import {
   type ReconcileSemanticAgreement,
   planReconciliation,
 } from "@remnic/core/reconcile/plan.js";
-import { ConvergePlanCache, convergePlanScopeKey, type ConvergePlanProgressEvent } from "./converge-plan-cache.js";
 import { planLocalNamespaceCensus } from "./converge-local-census.js";
 import { planPeerNamespaceCensus } from "./converge-peer-census.js";
 import {

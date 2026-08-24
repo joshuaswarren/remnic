@@ -46,6 +46,7 @@ export interface PeerCensusArgs {
   cache: ConvergePlanCache | null;
   signal?: AbortSignal;
   onProgress?: (event: ConvergePlanProgressEvent) => void;
+  citationTemplate?: string;
 }
 
 export interface PeerCensusResult {
@@ -79,7 +80,7 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
     peerManifest = {
       format: RECONCILE_MANIFEST_FORMAT,
       schemaVersion: RECONCILE_MANIFEST_SCHEMA_VERSION,
-      files: priorPeerEntry.files.map((file) => {
+      files: reusableEntry.files.map((file) => {
         const fresh = freshByPath.get(file.path);
         return fresh ? { ...file, mtimeMs: fresh.mtimeMs, bytes: fresh.bytes } : file;
       }),
