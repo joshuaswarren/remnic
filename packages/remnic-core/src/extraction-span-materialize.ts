@@ -72,6 +72,46 @@ export function buildSpanMaterializeTurns(texts: readonly string[]): SpanMateria
   return texts.map((text) => ({ text, stamp: stampSpanSource(text) }));
 }
 
+export function truncateLocalExtractionConversation(
+  conversation: string,
+  maxConversationChars: number,
+): string {
+  return conversation.length > maxConversationChars
+    ? `${conversation.slice(0, maxConversationChars)}\n\n[truncated]`
+    : conversation;
+}
+
+export function bindLocalExtractionPrompt(
+  conversation: string,
+  turns: readonly { role: string; content: string; extractionContextOnly?: boolean }[],
+  maxConversationChars: number,
+  renderedConversation: string = conversation,
+): { promptConversation: string; spanTurns: SpanMaterializeTurn[] } {
+  const promptConversation = truncateLocalExtractionConversation(conversation, maxConversationChars);
+  if (conversation.length <= maxConversationChars || !conversation.endsWith(renderedConversation)) {
+    return { promptConversation, spanTurns: buildSpanMaterializeTurns(turns.map((turn) => turn.content)) };
+  }
+  const renderedStart = conversation.length - renderedConversation.length;
+  const limit = maxConversationChars;
+  const texts: string[] = [];
+  let pos = 0;
+  for (let index = 0; index < turns.length; index += 1) {
+    const turn = turns[index];
+    if (turn === undefined) {
+      texts.push("");
+      continue;
+    }
+    if (index > 0) pos += 2;
+    const label = turn.extractionContextOnly === true ? `context ${turn.role}` : turn.role;
+    pos += `[${label}] `.length;
+    const absStart = renderedStart + pos;
+    const absEnd = absStart + turn.content.length;
+    texts.push(absEnd > absStart && limit > absStart ? conversation.slice(absStart, Math.min(absEnd, limit)) : "");
+    pos += turn.content.length;
+  }
+  return { promptConversation, spanTurns: buildSpanMaterializeTurns(texts) };
+}
+
 export function factCarriesSpan(fact: { span?: ExtractedFactSpanRef | null }): boolean {
   return fact.span !== undefined && fact.span !== null;
 }

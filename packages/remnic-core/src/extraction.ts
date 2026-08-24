@@ -63,8 +63,10 @@ import {
 export { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 import {
   applyExtractionSpanMaterialization,
+  bindLocalExtractionPrompt,
   buildSpanMaterializeTurns,
   stripUntrustedFactSpans,
+  truncateLocalExtractionConversation,
   type SpanMaterializeTurn,
 } from "./extraction-span-materialize.js";
 import { resolveLocalLlmCapabilities, resolveMemoryLifecycleCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
@@ -227,8 +229,7 @@ export class ExtractionEngine {
   /**
    * Span-mode materialization (issue #2333 Phase B): sibling module, called
    * after parse and before sanitize/grounding so downstream sees one content
-   * form. Offsets index the exact in-memory turn strings that built the
-   * prompt (`boundedTurns`) and die at materialization.
+   * form. Offsets index the exact prompt turn texts and die at materialization.
    */
   private applySpanMaterialization(
     result: ExtractionResult,
@@ -1228,7 +1229,16 @@ export class ExtractionEngine {
           this.profiler.endSpan("local-llm", extractionTraceId);
           this.emit({ kind: "llm_end", traceId, model: this.config.localLlmModel, operation: "extraction", durationMs });
           log.debug(`extraction: used local LLM — ${localResult.facts.length} facts, ${localResult.entities.length} entities`);
-          const sanitized = this.sanitizeExtractionResult(this.applySpanMaterialization(localResult, spanTurns), messageTimestamp);
+          const localSpanTurns = bindLocalExtractionPrompt(
+            conversation,
+            boundedTurns,
+            this.modelRegistry.calculateContextSizes(
+              this.config.localLlmModel,
+              this.config.localLlmMaxContext,
+            ).maxInputChars,
+            renderedConversation,
+          ).spanTurns;
+          const sanitized = this.sanitizeExtractionResult(this.applySpanMaterialization(localResult, localSpanTurns), messageTimestamp);
           const grounded = applyGroundingWithConnector(this.config, sanitized, groundingContext);
           const finalResult = await this.applyProactiveQuestionPass(conversation, grounded, groundingContext, signal);
           return this.finalizeExtractionResult(finalResult, boundedTurns, resolvedConnector, ambientCapture);
@@ -1451,9 +1461,7 @@ export class ExtractionEngine {
     log.debug(`Model context: ${contextSizes.description}`);
 
     const maxConversationChars = contextSizes.maxInputChars;
-    const truncatedConversation = conversation.length > maxConversationChars
-      ? conversation.slice(0, maxConversationChars) + "\n\n[truncated]"
-      : conversation;
+    const truncatedConversation = truncateLocalExtractionConversation(conversation, maxConversationChars);
 
     const localPrompt = `You are a memory extraction system. Extract durable, reusable memories from this conversation.
 

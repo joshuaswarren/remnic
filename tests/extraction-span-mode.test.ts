@@ -183,3 +183,107 @@ test("embedded-quote grounding fallback is off-mode zero-diff", () => {
     ["Maya's relocation: moved to Seattle last spring"],
   );
 });
+
+test("spanMode on: local truncation cannot materialize an unseen suffix", async () => {
+  const visible = "I moved to Seattle last spring";
+  const unseen = " for a new role. UNSEEN_SUFFIX";
+  const content = `${visible}${unseen}`;
+  const conversation = `[user] ${content}`;
+  const cut = conversation.indexOf(unseen);
+  const leakStart = content.indexOf("UNSEEN_SUFFIX");
+  const engine = new ExtractionEngine(
+    config("on"),
+    undefined,
+    {
+      async chatCompletion() {
+        return {
+          content: JSON.stringify({
+            facts: [
+              {
+                category: "fact",
+                content: visible,
+                confidence: 0.9,
+                tags: [],
+                span: {
+                  sourceMessageIndex: 0,
+                  charStart: leakStart,
+                  charEnd: content.length,
+                  frame: "User's relocation",
+                },
+              },
+            ],
+            entities: [],
+            questions: [],
+            profileUpdates: [],
+          }),
+        };
+      },
+    } as never,
+    undefined,
+    {
+      calculateContextSizes: () => ({
+        maxInputChars: cut,
+        maxOutputTokens: 64,
+        description: "truncation-cut fixture",
+      }),
+    } as never,
+  );
+  const result = await engine.extract([
+    { role: "user", content, timestamp: "2026-05-21T00:00:00.000Z" },
+  ]);
+  assert.equal(result.facts.length, 1);
+  assert.equal(result.facts[0]?.content, visible);
+  assert.doesNotMatch(result.facts[0]?.content ?? "", /UNSEEN_SUFFIX/);
+  assert.equal(result.facts[0]?.span, undefined);
+});
+
+test("spanMode on: local truncation materializes the visible prefix only", async () => {
+  const visible = "I moved to Seattle last spring";
+  const unseen = " for a new role. UNSEEN_SUFFIX";
+  const content = `${visible}${unseen}`;
+  const conversation = `[user] ${content}`;
+  const cut = conversation.indexOf(unseen);
+  const engine = new ExtractionEngine(
+    config("on"),
+    undefined,
+    {
+      async chatCompletion() {
+        return {
+          content: JSON.stringify({
+            facts: [
+              {
+                category: "fact",
+                content: "kept-frame",
+                confidence: 0.9,
+                tags: [],
+                span: {
+                  sourceMessageIndex: 0,
+                  charStart: 0,
+                  charEnd: visible.length,
+                  frame: "User's relocation",
+                },
+              },
+            ],
+            entities: [],
+            questions: [],
+            profileUpdates: [],
+          }),
+        };
+      },
+    } as never,
+    undefined,
+    {
+      calculateContextSizes: () => ({
+        maxInputChars: cut,
+        maxOutputTokens: 64,
+        description: "truncation-cut fixture",
+      }),
+    } as never,
+  );
+  const result = await engine.extract([
+    { role: "user", content, timestamp: "2026-05-21T00:00:00.000Z" },
+  ]);
+  assert.equal(result.facts.length, 1);
+  assert.equal(result.facts[0]?.content, `User's relocation: ${visible}`);
+  assert.doesNotMatch(result.facts[0]?.content ?? "", /UNSEEN_SUFFIX/);
+});

@@ -8,6 +8,8 @@
  * contract.
  */
 
+import { z } from "zod";
+
 export interface ExtractionSpanConfig {
   /**
    * - "off" (default): extraction generates content as before.
@@ -34,6 +36,8 @@ export interface ExtractedFactSpanRef {
 }
 
 export const EXTRACTION_SPAN_MODES = ["off", "shadow", "on"] as const;
+const extractionSpanBlockSchema = z.object({ spanMode: z.unknown().optional() }).strict();
+
 
 export function parseExtractionSpanConfig(raw: unknown): ExtractionSpanConfig {
   if (raw === undefined) {
@@ -45,6 +49,15 @@ export function parseExtractionSpanConfig(raw: unknown): ExtractionSpanConfig {
     );
   }
   const block = raw as Record<string, unknown>;
+  const parsed = extractionSpanBlockSchema.safeParse(block);
+  if (!parsed.success) {
+    const unknownKeys = parsed.error.issues.flatMap((issue) =>
+      issue.code === "unrecognized_keys" ? issue.keys : []
+    );
+    throw new Error(
+      `extraction has unknown propert${unknownKeys.length === 1 ? "y" : "ies"}: ${unknownKeys.join(", ")}. Allowed: "spanMode".`,
+    );
+  }
   const spanMode = block.spanMode;
   if (spanMode === undefined) {
     return { spanMode: "off" };

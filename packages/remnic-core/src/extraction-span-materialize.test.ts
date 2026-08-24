@@ -13,6 +13,7 @@ import test from "node:test";
 import { stampSpanSource } from "./extraction-span-source-hash.js";
 import {
   applyExtractionSpanMaterialization,
+  bindLocalExtractionPrompt,
   buildSpanMaterializeTurns,
   factCarriesSpan,
   materializeFactSpan,
@@ -21,6 +22,7 @@ import {
   SPAN_MAX_SLICE_CHARS,
   type SpanMaterializeTurn,
 } from "./extraction-span-materialize.js";
+import { renderExtractionConversation } from "./source-agent-qualifier.js";
 import { parseConfig } from "./config.js";
 import type { ExtractedFact } from "./types.js";
 import type { ExtractedFactSpanRef } from "./extraction-span-config.js";
@@ -222,6 +224,18 @@ test("config: extraction block must be an object, not an array or scalar", () =>
   assert.throws(() => parseConfig({ extraction: null }), /extraction must be an object/);
 });
 
+test("config: unknown extraction keys including spanMode typos are rejected", () => {
+  assert.throws(
+    () => parseConfig({ extraction: { spanMdoe: "on" } }),
+    /extraction has unknown property: spanMdoe/,
+  );
+  assert.throws(
+    () => parseConfig({ extraction: { spanMode: "on", extra: true } }),
+    /extraction has unknown property: extra/,
+  );
+  assert.equal(parseConfig({ extraction: { spanMode: "on" } }).extraction.spanMode, "on");
+});
+
 test("applyExtractionSpanMaterialization uses captured prompt stamps, not a restamp", () => {
   const generated = "Maya moved to Seattle last spring for a new senior role.";
   const result = {
@@ -255,4 +269,63 @@ test("span sourceHash/sourceLength must match the captured prompt stamp", () => 
     "on",
   );
   assert.equal(mismatched.outcome, "fallback");
+});
+
+test("local prompt bind stamps the truncated visible prefix, not the unseen suffix", () => {
+  const visible = "Maya moved to Seattle last spring";
+  const unseen = " for a new senior role. UNSEEN_SUFFIX";
+  const content = `${visible}${unseen}`;
+  const turns = [{ role: "user", content, timestamp: "2026-05-21T00:00:00.000Z" }];
+  const { conversation, renderedConversation } = renderExtractionConversation(turns, undefined);
+  const cut = conversation.indexOf(unseen);
+  assert.ok(cut > 0);
+  const bound = bindLocalExtractionPrompt(conversation, turns, cut, renderedConversation);
+  assert.match(bound.promptConversation, /\[truncated\]$/);
+  assert.equal(bound.spanTurns[0]?.text, visible);
+  assert.equal(bound.spanTurns[0]?.stamp.length, visible.length);
+  assert.notEqual(bound.spanTurns[0]?.stamp.hash, stampSpanSource(content).hash);
+
+  const leakStart = content.indexOf("UNSEEN_SUFFIX");
+  const againstFull = materializeFactSpan(
+    fact({ charStart: leakStart, charEnd: content.length, content: "kept-frame" }),
+    buildSpanMaterializeTurns([content]),
+    "on",
+  );
+  assert.equal(againstFull.outcome, "span");
+  assert.match(againstFull.fact.content ?? "", /UNSEEN_SUFFIX/);
+
+  const againstBound = materializeFactSpan(
+    fact({ charStart: leakStart, charEnd: content.length, content: "kept-frame" }),
+    bound.spanTurns,
+    "on",
+  );
+  assert.equal(againstBound.outcome, "fallback");
+  assert.equal(againstBound.fact.content, "kept-frame");
+
+  const visibleOk = materializeFactSpan(
+    fact({
+      charStart: 0,
+      charEnd: visible.length,
+      content: "kept-frame",
+      sourceHash: bound.spanTurns[0]?.stamp.hash,
+      sourceLength: bound.spanTurns[0]?.stamp.length,
+    }),
+    bound.spanTurns,
+    "on",
+  );
+  assert.equal(visibleOk.outcome, "span");
+  assert.equal(visibleOk.fact.quote, visible);
+  const fullStamp = stampSpanSource(content);
+  const wrongHash = materializeFactSpan(
+    fact({
+      charStart: 0,
+      charEnd: visible.length,
+      content: "kept-frame",
+      sourceHash: fullStamp.hash,
+      sourceLength: fullStamp.length,
+    }),
+    bound.spanTurns,
+    "on",
+  );
+  assert.equal(wrongHash.outcome, "fallback");
 });
