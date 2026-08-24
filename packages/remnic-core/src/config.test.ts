@@ -2571,6 +2571,7 @@ test("parseConfig forwards activity source settings", () => {
     maxMemoriesPerDay: 0,
     timeline: {
       enabled: false,
+      analysis: { enabled: false },
       journal: { enabled: false, source: "file" },
       qa: { enabled: false, maxRangeDays: 31 },
       vault: {

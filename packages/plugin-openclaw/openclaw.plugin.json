@@ -6386,36 +6386,36 @@
                 "type": "object",
                 "additionalProperties": false,
                 "default": {},
-                "description": "Optional AI analysis over deterministic timeline cards (issue #2050). Independent gate, default off: disabled makes zero provider calls and writes zero analysis artifacts.",
+                "description": "Optional evidence-bound AI analysis over timeline cards. Default off.",
                 "properties": {
                   "enabled": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Gate for evidence-bound card analysis. Default false; independent of activity capture, timeline derivation, and memory creation."
+                    "description": "Enable evidence-bound card analysis. Default false."
                   },
                   "provider": {
                     "type": "string",
                     "maxLength": 120,
                     "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
-                    "description": "Explicit provider id: 'local' routes to the local LLM client; any other identifier routes to the configured remote provider registry pinned to exactly this provider with no chain fallback. Single provider segment (letters, digits, ._:-; no '/'); at most 120 characters; required when enabled."
+                    "description": "Provider id. Use 'local' for local LLM; otherwise selects one configured remote provider. Required when enabled."
                   },
                   "model": {
                     "type": "string",
                     "maxLength": 120,
                     "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
-                    "description": "Model id (letters, digits, ._:-/); at most 120 characters. May include '/'. Required when enabled."
+                    "description": "Model id; may include '/'. Required when enabled."
                   },
                   "timeoutMs": {
                     "type": "integer",
                     "minimum": 1000,
                     "maximum": 120000,
                     "default": 15000,
-                    "description": "Per-request timeout in milliseconds. Integer 1000..120000."
+                    "description": "Request timeout in milliseconds."
                   },
                   "preferences": {
                     "type": "array",
                     "default": [],
-                    "description": "Up to 16 free-form preference strings (max 200 characters each) passed to the analysis prompt. Evidence-only payloads: no screenshots, audio, OCR output, keystrokes, clipboard contents, or media are ever sent.",
+                    "description": "Up to 16 prompt preferences, 200 characters each.",
                     "items": {
                       "type": "string"
                     }
