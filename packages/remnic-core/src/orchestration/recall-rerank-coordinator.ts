@@ -39,6 +39,7 @@ import type { TrustSignals } from "../trust-score.js";
 import { reorderRecallResultsWithMmr } from "../recall-mmr.js";
 import { applyReasoningTraceBoost } from "../reasoning-trace-recall.js";
 import { memoryMapKey } from "../recall-memory-map.js";
+import { capStateViewPackets, reconcileStateViewPairs } from "../recall-state-view.js";
 
 export interface RecallResultPartition {
   appliedResults: QmdSearchResult[];
@@ -621,12 +622,28 @@ export class RecallRerankCoordinator {
     limit: number,
     retrievalQuery?: string,
     caps: CapabilitySet = resolveCapabilities(this.getConfig()),
+    /**
+     * #2859 — state-view packet semantics. When true, superseded rows are
+     * reconciled against their successors BEFORE MMR (orphan removal can
+     * never underfill), and the cap counts complete evidence packets: a
+     * predecessor admitted alongside its successor consumes ONE slot and
+     * the slice never splits the pair at the boundary. Absent/false keeps
+     * the legacy slice byte-identical.
+     */
+    stateViewActive?: boolean,
   ): RecallResultPartition {
     const safeLimit =
       typeof limit === "number" && Number.isFinite(limit)
         ? Math.max(0, Math.floor(limit))
         : 0;
-    const candidates = Array.isArray(results) ? results : [];
+    // #2859: reconcile pairs before the user cap/MMR so orphan removal
+    // happens pre-truncation, never post-cap.
+    const candidates =
+      stateViewActive === true && Array.isArray(results)
+        ? reconcileStateViewPairs(results)
+        : Array.isArray(results)
+          ? results
+          : [];
     let orderedPool: QmdSearchResult[] | undefined;
     const resolveOrderedPool = (): QmdSearchResult[] => {
       if (orderedPool) return orderedPool;
@@ -640,15 +657,32 @@ export class RecallRerankCoordinator {
       orderedPool = this.applyMmrToQmdResults(sectionId, boosted, caps);
       return orderedPool;
     };
+    let appliedCache: QmdSearchResult[] | undefined;
+    const resolveApplied = (): QmdSearchResult[] => {
+      if (appliedCache) return appliedCache;
+      if (safeLimit === 0 || candidates.length === 0) {
+        appliedCache = [];
+        return appliedCache;
+      }
+      const ordered = resolveOrderedPool();
+      // #2859: the cap counts complete evidence packets, not rows.
+      appliedCache =
+        stateViewActive === true ? capStateViewPackets(ordered, safeLimit) : ordered.slice(0, safeLimit);
+      return appliedCache;
+    };
 
     return {
       get appliedResults(): QmdSearchResult[] {
-        if (safeLimit === 0 || candidates.length === 0) return [];
-        return resolveOrderedPool().slice(0, safeLimit);
+        return resolveApplied().slice();
       },
       get headroomResults(): QmdSearchResult[] {
         if (candidates.length === 0) return [];
-        return resolveOrderedPool().slice(safeLimit);
+        const ordered = resolveOrderedPool();
+        if (stateViewActive === true) {
+          const applied = new Set(resolveApplied());
+          return ordered.filter((row) => !applied.has(row));
+        }
+        return ordered.slice(safeLimit);
       },
     };
   }
@@ -659,6 +693,8 @@ export class RecallRerankCoordinator {
     limit: number,
     retrievalQuery?: string,
     caps: CapabilitySet = resolveCapabilities(this.getConfig()),
+    /** #2859 — see diversifyRecallResultsWithHeadroom. */
+    stateViewActive?: boolean,
   ): QmdSearchResult[] {
     return this.diversifyRecallResultsWithHeadroom(
       sectionId,
@@ -666,6 +702,7 @@ export class RecallRerankCoordinator {
       limit,
       retrievalQuery,
       caps,
+      stateViewActive,
     ).appliedResults;
   }
 
