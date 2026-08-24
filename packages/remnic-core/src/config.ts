@@ -40,7 +40,7 @@ import { coerceBool, coerceBooleanLike, coerceInstallExtension, coerceNumber } f
 import { parseSubjectRuntimeConfig } from "./subject-config.js";
 import { parseRecallStateViews } from "./recall-state-view.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
-import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
+import { parseExtractionFields } from "./extraction-span-config.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
 import { parseDependencyPropagationConfig } from "./dependency-propagation-config.js";
 import { parseProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
@@ -2332,7 +2332,7 @@ export function parseConfig(
     dreaming,
     dreamsPhases,
     procedural,
-    extractionLiveness: parseExtractionLivenessConfig(cfg),
+    ...parseExtractionFields(cfg),
     replicaPeers: parseReplicaPeersConfig(cfg),
     converge: parseConvergeConfig(cfg.converge),
     wearables,

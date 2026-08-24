@@ -497,6 +497,13 @@ Note: `recallPipeline` controls ordering and can explicitly disable sections via
 | `extractionScopeClassificationEnabled` | `true` | Classify extracted facts as `"global"` or `"project"` scope. Global facts are promoted to the shared root namespace so they are visible across all projects. |
 
 See [Coding agent mode](coding-agent.md) for full details on project detection, `cwd` auto-resolution, `projectTag` for non-git sessions, and cross-project knowledge sharing.
+
+## Span-Mode Extraction
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `extraction.spanMode` | `"off"` | `"off"` (default) — extraction generates full content restatements as before. `"shadow"` — request span offsets AND content; materialize + compare and log agreement telemetry, but persist the generated content unchanged (zero behavior change; use to evaluate on live traffic). `"on"` — persist materialized frame+span content (verbatim source slice plus a ≤15-word frame), falling back per fact to the generated frame when a span fails validation. Spans are validated against a hash of the exact per-turn text the model saw (offset drift is rejected), materialized before sanitize/grounding/dedup, and never persisted as offsets. Unrecognized values are rejected at config parse (bench-gated feature, issue #2333). |
+
 ## Coding Knowledge
 
 | Setting | Default | Description |
