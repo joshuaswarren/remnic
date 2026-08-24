@@ -1277,7 +1277,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   private readonly replicaDivergenceMonitor: ReplicaDivergenceMonitor;
   private readonly injectedSupportPassportGatewayRoute: SupportPassportModelRoute | null;
   readonly reviewDeckEnabled: boolean;
-  /** Navigation gate (issue #1956); MCP listing reads it, tests stub it. */
   readonly recallNavigationEnabled: boolean;
 
   /** AccessObserveWriteSurface (access-service decomposition). Lazy; selfDeps live wiring. */
@@ -2840,20 +2839,9 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return { ...result, rendered: renderDeepRecallResult(result) };
   }
 
-  /** Recall navigation (issue #1956): one implementation for MCP, HTTP, and CLI (rule 22). */
   async recallNavigate(request: RecallNavigationRequest): Promise<RecallNavigationResult> {
-    const principal =
-      request.authenticatedPrincipal?.trim() || resolvePrincipal(request.sessionKey, this.orchestrator.config);
-    return runRecallNavigation(
-      {
-        config: this.orchestrator.config.recallNavigation,
-        recallBudgetChars: this.orchestrator.config.recallBudgetChars,
-        recentServedIds: (sessionKey, depth) => this.orchestrator.handleHistory.recent(sessionKey, depth),
-        resolveReadableNamespace: (ns, p) => this.resolveReadableNamespace(ns, p || undefined),
-        getStorage: (namespace) => this.orchestrator.getStorage(namespace),
-      },
-      { ...request, authenticatedPrincipal: (principal ?? "").length > 0 ? principal : undefined },
-    );
+    const principal = request.authenticatedPrincipal?.trim() || resolvePrincipal(request.sessionKey, this.orchestrator.config);
+    return runRecallNavigation({ config: this.orchestrator.config.recallNavigation, recallBudgetChars: this.orchestrator.config.recallBudgetChars, recentServedIds: (sessionKey, depth) => this.orchestrator.handleHistory.recent(sessionKey, depth), resolveReadableNamespace: (ns, p) => this.resolveReadableNamespace(ns, p || undefined), getStorage: (namespace) => this.orchestrator.getStorage(namespace) }, { ...request, authenticatedPrincipal: (principal ?? "").length > 0 ? principal : undefined });
   }
 
   async recallXray(request: {

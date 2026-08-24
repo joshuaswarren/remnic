@@ -70,14 +70,16 @@ function writeConfig(config: Record<string, unknown>): string {
   return configPath;
 }
 
-type FetchCall = { url: string; init: RequestInit | undefined };
+type FetchInput = Parameters<typeof fetch>[0];
+type FetchInit = Parameters<typeof fetch>[1];
+type FetchCall = { url: string; init: FetchInit };
 
 function mockFetch(
-  handler: (url: URL, init: RequestInit | undefined) => Response,
+  handler: (url: URL, init: FetchInit) => Response,
 ): { calls: FetchCall[]; restore: () => void } {
   const original = globalThis.fetch;
   const calls: FetchCall[] = [];
-  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = ((input: FetchInput, init?: FetchInit) => {
     const url = new URL(String(input));
     calls.push({ url: url.toString(), init });
     return Promise.resolve(handler(url, init));
