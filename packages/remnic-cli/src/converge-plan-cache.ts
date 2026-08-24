@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { normalizeConvergePeerUrl } from "@remnic/core/reconcile/cursor.js";
@@ -80,12 +81,16 @@ export interface ConvergePlanCacheEntry {
   capturedAtMs: number;
   savedAt: string;
   /**
-   * Peer-ADVERTISED manifest revision this entry's identities were built
-   * with (#2803 review). Absent on local-side entries and on entries
-   * written against unversioned peers — both are exactly the cases where
-   * peer-side reuse must not happen.
+   * Peer-advertised manifest revision for streamed identity rows.
+   * Absent on local-side entries and on client-built unversioned rows.
    */
   peerManifestRevision?: string;
+  /**
+   * True when this client's parser built the identity rows (legacy
+   * per-file fallback). Those rows are safe to reuse without a peer
+   * revision; streamed rows are not.
+   */
+  clientBuilt?: boolean;
   files: ReconcileManifestFile[];
 }
 
@@ -141,7 +146,7 @@ export function censusWatermark(files: readonly { path: string; sha256: string }
 
 /** On-disk entry filename: `<side>-<nsHash16>-<watermark16>.json`. */
 function entryFileName(side: ConvergePlanCacheSide, namespace: string, watermark: string): string {
-  return `${side}-${hash16(namespace.trim().toLowerCase())}-${watermark.slice(0, 16)}.json`;
+  return `${side}-${hash16(namespace.trim())}-${watermark.slice(0, 16)}.json`;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -239,6 +244,7 @@ function normalizeEntry(
     capturedAtMs: raw.capturedAtMs,
     savedAt: raw.savedAt,
     ...(typeof raw.peerManifestRevision === "string" ? { peerManifestRevision: raw.peerManifestRevision } : {}),
+    ...(raw.clientBuilt === true ? { clientBuilt: true } : {}),
     files,
   };
 }
@@ -252,6 +258,78 @@ function processAlive(pid: number): boolean {
   }
 }
 
+function readProcessStartTicks(pid: number): number | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const closeParen = stat.lastIndexOf(")");
+    if (closeParen === -1) return null;
+    const ticks = Number(stat.slice(closeParen + 2).split(" ")[19]);
+    return Number.isFinite(ticks) ? ticks : null;
+  } catch {
+    return null;
+  }
+}
+
+const PROCESS_START_TICKS = readProcessStartTicks(process.pid);
+/** When /proc start ticks are unavailable, steal a lock older than this. */
+const LOCK_LEASE_MS = 24 * 60 * 60 * 1000;
+
+function lockOwnerLive(held: {
+  pid?: unknown;
+  startTicks?: unknown;
+  savedAt?: unknown;
+}): { live: boolean; pid: number } {
+  const pid = typeof held.pid === "number" && Number.isInteger(held.pid) ? held.pid : -1;
+  if (pid <= 0 || !processAlive(pid)) return { live: false, pid };
+  if (typeof held.startTicks === "number" && Number.isFinite(held.startTicks)) {
+    const liveTicks = readProcessStartTicks(pid);
+    if (liveTicks != null && liveTicks !== held.startTicks) return { live: false, pid };
+    if (liveTicks != null) return { live: true, pid };
+  }
+  const savedAtMs = Date.parse(typeof held.savedAt === "string" ? held.savedAt : "");
+  if (Number.isFinite(savedAtMs) && Date.now() - savedAtMs > LOCK_LEASE_MS) {
+    return { live: false, pid };
+  }
+  return { live: true, pid };
+}
+
+async function assertSafePlanCacheDir(memoryDir: string, target: string): Promise<void> {
+  const stat = await fs.lstat(target);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(`plan-cache path must be a real directory, not a symlink: ${target}`);
+  }
+  const relative = path.relative(await fs.realpath(memoryDir), await fs.realpath(target));
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`plan-cache path escapes memory dir: ${target}`);
+  }
+}
+
+async function ensureSafePlanCacheTree(memoryDir: string, target: string): Promise<void> {
+  const resolvedMemory = path.resolve(memoryDir);
+  const resolvedTarget = path.resolve(target);
+  const relative = path.relative(resolvedMemory, resolvedTarget);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`plan-cache path escapes memory dir: ${target}`);
+  }
+  await assertSafePlanCacheDir(memoryDir, resolvedMemory);
+  let current = resolvedMemory;
+  for (const part of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    try {
+      await assertSafePlanCacheDir(memoryDir, current);
+      continue;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    try {
+      await fs.mkdir(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    await assertSafePlanCacheDir(memoryDir, current);
+  }
+}
 async function listDir(dir: string): Promise<string[]> {
   try {
     return await fs.readdir(dir);
@@ -308,10 +386,10 @@ async function pruneSiblingScopes(root: string, activeScope: string): Promise<vo
   const stats = await statMtimeEntries(root, names, (name) => /^[0-9a-f]{16}$/.test(name) && name !== activeScope);
   const now = Date.now();
   const stale = stats.filter((dir) => now - dir.mtimeMs > CONVERGE_PLAN_CACHE_MAX_AGE_MS);
-  const overflow = stats
-    .filter((dir) => now - dir.mtimeMs <= CONVERGE_PLAN_CACHE_MAX_AGE_MS)
+  const fresh = stats.filter((dir) => now - dir.mtimeMs <= CONVERGE_PLAN_CACHE_MAX_AGE_MS);
+  const overflow = fresh
     .sort((left, right) => left.mtimeMs - right.mtimeMs)
-    .slice(0, Math.max(0, stats.length - (CONVERGE_PLAN_CACHE_MAX_SCOPE_DIRS - 1)));
+    .slice(0, Math.max(0, fresh.length - (CONVERGE_PLAN_CACHE_MAX_SCOPE_DIRS - 1)));
   for (const dir of [...stale, ...overflow]) {
     await fs.rm(path.join(root, dir.name), { recursive: true, force: true }).catch(() => {});
   }
@@ -340,26 +418,31 @@ export class ConvergePlanCache {
    */
   static async open(memoryDir: string, scope: string): Promise<ConvergePlanCache> {
     const root = convergePlanCacheRoot(memoryDir);
-    await fs.mkdir(path.join(root, scope), { recursive: true });
+    const scopeDir = path.join(root, scope);
+    await ensureSafePlanCacheTree(memoryDir, scopeDir);
     const lockPath = path.join(root, "lock.json");
-    const payload = `${JSON.stringify({ pid: process.pid, savedAt: new Date().toISOString() })}\n`;
+    const payload = `${JSON.stringify({
+      pid: process.pid,
+      startTicks: PROCESS_START_TICKS,
+      savedAt: new Date().toISOString(),
+    })}\n`;
     try {
       await fs.writeFile(lockPath, payload, { flag: "wx" });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      let holderPid = -1;
+      let held: { pid?: unknown; startTicks?: unknown; savedAt?: unknown } = {};
       try {
-        const held = JSON.parse(await fs.readFile(lockPath, "utf8")) as { pid?: unknown };
-        if (typeof held.pid === "number") holderPid = held.pid;
+        held = JSON.parse(await fs.readFile(lockPath, "utf8")) as {
+          pid?: unknown;
+          startTicks?: unknown;
+          savedAt?: unknown;
+        };
       } catch {
-        holderPid = -1;
+        held = {};
       }
-      // Any LIVE holder — including this same process (a concurrent
-      // in-process plan) — means a writer is active.
-      if (holderPid > 0 && processAlive(holderPid)) {
-        throw new ConvergePlanCacheBusyError(holderPid);
-      }
-      // Stale (dead owner or unreadable) — steal atomically.
+      const owner = lockOwnerLive(held);
+      if (owner.live) throw new ConvergePlanCacheBusyError(owner.pid);
+      // Stale (dead owner, reused PID, or unreadable) — steal atomically.
       // ponytail: two processes can both steal in a narrow race; worst case
       // is duplicated work plus benign identical entry writes, not corruption.
       const tmp = `${lockPath}.${process.pid}.tmp`;
@@ -383,7 +466,7 @@ export class ConvergePlanCache {
    */
   async readEntry(side: ConvergePlanCacheSide, namespace: string): Promise<ConvergePlanCacheEntry | null> {
     if (this.closed) return null;
-    const prefix = `${side}-${hash16(namespace.trim().toLowerCase())}-`;
+    const prefix = `${side}-${hash16(namespace.trim())}-`;
     let names: string[];
     try {
       names = (await fs.readdir(this.scopeDir)).filter((name) => name.startsWith(prefix) && name.endsWith(".json"));
@@ -423,7 +506,7 @@ export class ConvergePlanCache {
     try {
       // Supersede older-watermark entries for this side+namespace, then
       // enforce the bounded-entry cap.
-      const prefix = `${entry.side}-${hash16(entry.namespace.trim().toLowerCase())}-`;
+      const prefix = `${entry.side}-${hash16(entry.namespace.trim())}-`;
       for (const name of await listDir(this.scopeDir)) {
         if (name.startsWith(prefix) && name.endsWith(".json") && name !== fileName) {
           await unlinkQuiet(path.join(this.scopeDir, name));
