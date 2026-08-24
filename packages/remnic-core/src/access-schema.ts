@@ -3,7 +3,7 @@
 // field-level detail so consumers get clear feedback on malformed requests.
 
 import { z } from "zod";
-import { isMemoryCategory, MEMORY_CATEGORY_NAMES } from "./write-envelope.js";
+
 import type { MemoryCategory } from "./types.js";
 import {
   ACTION_CONFIDENCE_CONTEXT_READINESS,
@@ -267,86 +267,119 @@ export const deepRecallRequestSchema = z.object({
 // ---------------------------------------------------------------------------
 
 const writeContentSchema = z.string().min(1, "content is required").max(50000);
+// ---------------------------------------------------------------------------
+// Category wire contract (issue #2829): truthful input/output modeling.
+// ---------------------------------------------------------------------------
+
+/** Canonical input spellings — exactly the `MemoryCategory` union. */
+const MEMORY_CATEGORY_CANONICAL_INPUT = [
+  "fact", "preference", "correction", "entity", "decision",
+  "relationship", "principle", "commitment", "moment", "skill", "rule", "procedure",
+  "reasoning_trace",
+] as const satisfies readonly MemoryCategory[];
+
 /**
- * #2780: the canonical category set stays authoritative (`isMemoryCategory`),
- * with exactly four admitted input-compat aliases — the project-shaped
- * spellings fleet telemetry actually shows (`project`, `project_state`,
- * `project-state`, `project_update`) — for a project-shaped category that
- * does not exist. Exact match only, no case folding: `Project_State` and
- * near-misses like `projection` reject like any other invalid category.
- * Aliases are NOT enum members: the write-surface funnel coerces them to
- * "fact" and reports the coercion on the response. Everything else rejects
- * naming the full valid set plus a "use fact" hint so callers learn the
- * canonical name.
+ * Compatibility alias spellings admitted on input. The four project-shaped
+ * categories fleet telemetry actually shows do not exist in the taxonomy;
+ * they parse to the canonical "fact". Exact match only — no trimming, no
+ * case folding, so near-misses like `projection` or `Project_State` reject
+ * like any other invalid category, with the full valid list in the error.
  */
-const PROJECT_CATEGORY_ALIASES: Record<string, true> = {
-  project: true,
-  project_state: true,
-  "project-state": true,
-  project_update: true,
+const MEMORY_CATEGORY_ALIAS_INPUT = [
+  "project",
+  "project_state",
+  "project-state",
+  "project_update",
+] as const;
+
+export type MemoryCategoryAlias = (typeof MEMORY_CATEGORY_ALIAS_INPUT)[number];
+
+const MEMORY_CATEGORY_ALIAS_TO_CANONICAL: Readonly<
+  Record<MemoryCategoryAlias, Extract<MemoryCategory, "fact">>
+> = {
+  project: "fact",
+  project_state: "fact",
+  "project-state": "fact",
+  project_update: "fact",
 };
 
+export function isMemoryCategoryAlias(value: string): value is MemoryCategoryAlias {
+  return Object.prototype.hasOwnProperty.call(MEMORY_CATEGORY_ALIAS_TO_CANONICAL, value);
+}
+
+/** Coercion diagnostic for a write whose input category was a compat alias. */
 export interface CategoryAliasCoercion {
-  from: string;
+  from: MemoryCategoryAlias;
   to: "fact";
 }
 
-export function coerceProjectCategoryAlias<T extends { category?: string }>(
-  request: T,
-): { request: T; categoryCoercion?: CategoryAliasCoercion } {
-  const category = request.category;
-  if (category === undefined || PROJECT_CATEGORY_ALIASES[category] !== true) {
-    return { request };
-  }
-  return { request: { ...request, category: "fact" }, categoryCoercion: { from: category, to: "fact" } };
+/** Boundary-derived coercion note for a retained raw spelling. */
+export function categoryAliasCoercion(rawCategory: string | undefined): CategoryAliasCoercion | undefined {
+  return rawCategory !== undefined && isMemoryCategoryAlias(rawCategory)
+    ? { from: rawCategory, to: "fact" }
+    : undefined;
 }
 
 /**
- * #2780 fix B: an idempotent replay returns the FIRST request's stored
- * response, whose coercion note names that request's spelling. Rewrite the
- * note from the CURRENT raw request so every response identifies what its
- * caller actually sent; the stored idempotent result is reused untouched.
+ * Recover the retained alias spelling from a pre-parse raw envelope: the
+ * `rawCategory` minted by a previous parse of the same schema (the HTTP/MCP
+ * validate-then-dispatch double pass), or — for single-parse callers like the
+ * CLI store command — the as-yet-untransformed alias still sitting on
+ * `category` (issue #2889). A minted `rawCategory` always wins: it names the
+ * spelling the transform actually canonicalized.
  */
-export function reapplyCategoryCoercion<T extends { categoryCoercion?: CategoryAliasCoercion }>(
-  response: T,
-  categoryCoercion: CategoryAliasCoercion | undefined,
-): T {
-  if (categoryCoercion !== undefined) {
-    return { ...response, categoryCoercion };
-  }
-  if (response.categoryCoercion === undefined) {
-    return response;
-  }
-  const { categoryCoercion: _stored, ...rest } = response;
-  return rest as T;
+export function retainedCategoryAlias(rawInput: unknown): MemoryCategoryAlias | undefined {
+  if (!rawInput || typeof rawInput !== "object") return undefined;
+  const envelope = rawInput as Record<string, unknown>;
+  const minted = envelope.rawCategory;
+  if (typeof minted === "string" && isMemoryCategoryAlias(minted)) return minted;
+  const category = envelope.category;
+  return typeof category === "string" && isMemoryCategoryAlias(category) ? category : undefined;
 }
 
-const categorySchema = (
-  z
-    .string()
-    .superRefine((value, ctx) => {
-      if (isMemoryCategory(value)) return;
-      if (PROJECT_CATEGORY_ALIASES[value] === true) return;
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `category must be one of: ${MEMORY_CATEGORY_NAMES.join(", ")}; for project state/facts use "fact"`,
-      });
-    })
-    .optional() as unknown as z.ZodType<MemoryCategory | undefined, z.ZodTypeDef, MemoryCategory | undefined>
+/**
+ * An idempotent replay returns the FIRST request's stored response, whose
+ * coercion note names that request's spelling. Rewrite the note from the
+ * CURRENT request's retained spelling so every response identifies what its
+ * caller actually sent; the stored idempotent result is reused untouched.
+ */
+export function reapplyCategoryCoercion<T extends object>(
+  response: T,
+  categoryCoercion: CategoryAliasCoercion | undefined,
+): T & { categoryCoercion?: CategoryAliasCoercion } {
+  const restamped: T & { categoryCoercion?: CategoryAliasCoercion } = { ...response };
+  if (categoryCoercion !== undefined) {
+    restamped.categoryCoercion = categoryCoercion;
+  } else {
+    delete restamped.categoryCoercion;
+  }
+  return restamped;
+}
+
+const categoryWireSchema = z.enum(
+  [...MEMORY_CATEGORY_CANONICAL_INPUT, ...MEMORY_CATEGORY_ALIAS_INPUT],
+  {
+    errorMap: () => ({
+      message:
+        `category must be one of: ${[...MEMORY_CATEGORY_CANONICAL_INPUT, ...MEMORY_CATEGORY_ALIAS_INPUT].join(", ")}; ` +
+        'for project state/facts use "fact"',
+    }),
+  },
 );
+
 const confidenceSchema = z.number().min(0).max(1).optional();
 const tagsSchema = z.array(z.string().max(256)).max(50).optional();
 const entityRefSchema = z.string().trim().max(512).optional();
 const ttlSchema = z.string().trim().max(128).optional();
 const sourceReasonSchema = z.string().trim().max(2000).optional();
 
-export const memoryStoreRequestSchema = z.object({
+const memoryStoreRequestShape = z.object({
   schemaVersion: schemaVersionSchema,
   idempotencyKey: idempotencyKeySchema,
   dryRun: dryRunSchema,
   sessionKey: sessionKeySchema,
   content: writeContentSchema,
-  category: categorySchema,
+  category: categoryWireSchema.optional(),
   confidence: confidenceSchema,
   namespace: namespaceSchema,
   tags: tagsSchema,
@@ -360,6 +393,34 @@ export const memoryStoreRequestSchema = z.object({
   cwd: cwdSchema,
   projectTag: projectTagSchema,
 });
+
+/**
+ * Parsed memory-store request (issue #2829): the category transform maps
+ * compat aliases to the canonical "fact" DURING parsing, so the output type
+ * stays the finite `MemoryCategory` union — never an alias spelling. The raw
+ * spelling travels separately on `rawCategory`, minted only by the transform
+ * (zod strips it from client bodies), for the write surface's coercion note
+ * and idempotent-replay rebuild.
+ */
+export type MemoryStoreParsedRequest = Omit<z.infer<typeof memoryStoreRequestShape>, "category"> & {
+  category?: MemoryCategory;
+  rawCategory?: MemoryCategoryAlias;
+};
+
+export const memoryStoreRequestSchema = memoryStoreRequestShape.transform(
+  (request): MemoryStoreParsedRequest => {
+    if (request.category === undefined || !isMemoryCategoryAlias(request.category)) {
+      // Spread so the narrowed canonical category, not the wide wire union,
+      // becomes the output type.
+      return { ...request, category: request.category };
+    }
+    return {
+      ...request,
+      category: MEMORY_CATEGORY_ALIAS_TO_CANONICAL[request.category],
+      rawCategory: request.category,
+    };
+  },
+);
 
 export const suggestionSubmitRequestSchema = memoryStoreRequestSchema;
 

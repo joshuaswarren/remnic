@@ -290,8 +290,8 @@ import {
   recordMemoryOutcome,
 } from "./memory-worth-outcomes.js";
 import type { LcmMessagePartInput, MessagePartSourceFormat } from "./message-parts/index.js";
-import type { ObserveRequest, RecallRequest } from "./access-schema.js";
-import { coerceProjectCategoryAlias, type CategoryAliasCoercion } from "./access-schema.js";
+import type { CategoryAliasCoercion, ObserveRequest, RecallRequest } from "./access-schema.js";
+import { splitCanonicalWriteRequest } from "./access-observe-write-category.js";
 import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
 import { objectiveStateStoreOverrideForNamespace } from "./objective-state.js";
 import { offlineSyncStorageForSnapshot } from "./offline-sync-impression-drain.js";
@@ -963,15 +963,29 @@ export interface MemoryScopePlan {
   warnings: string[];
 }
 
+/**
+ * Raw `category` spelling retained at the request boundary when the wire
+ * schema's canonicalizing transform mapped a compat alias to "fact"
+ * (issue #2829). Diagnostic only: drives the response's `categoryCoercion`
+ * note and survives quarantine parking for replay. Never reaches the write
+ * candidate or the idempotency fingerprint, and never parses from client
+ * input (the wire schema strips it).
+ */
+export interface RetainedCategorySpelling {
+  rawCategory?: string;
+}
+
 export interface EngramAccessMemoryStoreRequest
   extends EngramAccessWriteEnvelope,
     ExplicitCaptureInput,
-    CodingScopedWriteInput {}
+    CodingScopedWriteInput,
+    RetainedCategorySpelling {}
 
 export interface EngramAccessSuggestionSubmitRequest
   extends EngramAccessWriteEnvelope,
     ExplicitCaptureInput,
-    CodingScopedWriteInput {}
+    CodingScopedWriteInput,
+    RetainedCategorySpelling {}
 
 export interface EngramAccessWriteResponse {
   schemaVersion: 1;
@@ -985,7 +999,7 @@ export interface EngramAccessWriteResponse {
   duplicateOf?: string;
   idempotencyKey?: string;
   idempotencyReplay?: boolean;
-  /** #2780: set when a project-shaped category alias was coerced to "fact". */
+  /** Present when a project-shaped category alias was coerced to "fact" (#2780/#2829). */
   categoryCoercion?: CategoryAliasCoercion;
 }
 
@@ -2946,8 +2960,8 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   async peekMemoryStoreIdempotency(
     rawRequest: EngramAccessMemoryStoreRequest
   ): Promise<EngramAccessIdempotencyStatus> {
-    // #2780: fingerprint the COERCED category so peek never diverges from the write it predicts.
-    const { request } = coerceProjectCategoryAlias(rawRequest);
+    // #2780/#2829: fingerprint the canonical category (schema transform already mapped aliases).
+    const { canonical: request } = splitCanonicalWriteRequest(rawRequest);
     const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
@@ -2984,8 +2998,8 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   async peekSuggestionSubmitIdempotency(
     rawRequest: EngramAccessSuggestionSubmitRequest
   ): Promise<EngramAccessIdempotencyStatus> {
-    // #2780: fingerprint the COERCED category so peek never diverges from the write it predicts.
-    const { request } = coerceProjectCategoryAlias(rawRequest);
+    // #2780/#2829: fingerprint the canonical category (schema transform already mapped aliases).
+    const { canonical: request } = splitCanonicalWriteRequest(rawRequest);
     const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {

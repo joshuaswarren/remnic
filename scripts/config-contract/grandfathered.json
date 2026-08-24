@@ -1706,11 +1706,6 @@
   },
   {
     "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts#d53d65700eaa",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
     "key": "packages/remnic-core/src/entity-schema.ts#3038a1b1f062",
     "issue": "#1990"
   },

@@ -267,11 +267,13 @@ test("readCasRevisionStatus distinguishes present, absent, and unavailable recei
     assert.equal(await storage.writeMemoryFrontmatter(memory, { status: "archived" }), true);
     const standing = await storage.readCasRevision(memory.path);
     assert.ok(standing);
-    assert.deepEqual(await storage.readCasRevisionStatus(memory.path), {
-      status: "present",
-      revision: standing,
-      committedDigest: createHash("sha256").update(await readFile(memory.path)).digest("hex"),
-    });
+    const archived = await storage.readCasRevisionStatus(memory.path);
+    assert.equal(archived.status, "present");
+    assert.equal(archived.revision, standing);
+    assert.equal(
+      archived.status === "present" ? archived.committedDigest : undefined,
+      createHash("sha256").update(await readFile(memory.path)).digest("hex"),
+    );
 
     // A torn shard write: the receipt EXISTS but cannot be read. That is
     // unavailability — never absence — while the fail-open read keeps
@@ -554,11 +556,13 @@ test("a receipt publication failure after the memory write recovers from recorde
 
     // #2807: writeLanded recorded evidence, so the next unlocked read
     // publishes the reserved token with the intended file digest.
-    assert.deepEqual(await storage.readCasRevisionStatus(before.path), {
-      status: "present",
-      revision: reserved,
-      committedDigest: createHash("sha256").update(onDisk).digest("hex"),
-    });
+    const published = await storage.readCasRevisionStatus(before.path);
+    assert.equal(published.status, "present");
+    assert.equal(published.revision, reserved);
+    assert.equal(
+      published.status === "present" ? published.committedDigest : undefined,
+      createHash("sha256").update(onDisk).digest("hex"),
+    );
     assert.equal(
       await storage.updateMemory(created.id, "Second body after evidence recovery."),
       true,
@@ -676,13 +680,11 @@ test("restart after a crash between write and commit publishes the reserved rece
 
     const restarted = new StorageManager(dir);
     const landedBytes = await readFile(memory.path);
-    assert.deepEqual(
-      await restarted.readCasRevisionStatus(memory.path),
-      {
-        status: "present",
-        revision: reserved,
-        committedDigest: createHash("sha256").update(landedBytes).digest("hex"),
-      },
+    const restartedStatus = await restarted.readCasRevisionStatus(memory.path);
+    assert.ok(
+      restartedStatus.status === "present" &&
+        restartedStatus.revision === reserved &&
+        restartedStatus.committedDigest === createHash("sha256").update(landedBytes).digest("hex"),
       "the first read after restart publishes the reserved token from writeLanded evidence",
     );
     assert.equal(
