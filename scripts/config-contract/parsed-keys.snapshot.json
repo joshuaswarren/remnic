@@ -122,6 +122,11 @@
     "autoPromoteMinConfidenceTier",
     "autoPromoteToSharedCategories",
     "autoPromoteToSharedEnabled",
+    "backgroundGeneration",
+    "backgroundGeneration.endpoint",
+    "backgroundGeneration.timeoutSeconds",
+    "backgroundGeneration.timeout_seconds",
+    "backgroundGeneration.token",
     "beforeResetTimeoutMs",
     "behaviorLoopAutoTuneEnabled",
     "behaviorLoopLearningWindowDays",
@@ -437,6 +442,8 @@
     "explicitCueRecallMaxChars",
     "explicitCueRecallMaxReferences",
     "externalWikis",
+    "extraction",
+    "extraction.spanMode",
     "extractionBreakerAuthCooldownMs",
     "extractionBreakerCooldownMs",
     "extractionBreakerFailureThreshold",
@@ -622,6 +629,7 @@
     "lifecyclePromoteHeatThreshold",
     "lifecycleProtectedCategories",
     "lifecycleStaleDecayThreshold",
+    "llmBridgeClientConfigPath",
     "localLlm400CooldownMs",
     "localLlm400TripThreshold",
     "localLlmApiKey",
@@ -1185,11 +1193,6 @@
       "id": "packages/remnic-core/src/config.ts#b100f6136e84"
     },
     {
-      "file": "packages/remnic-core/src/config.ts",
-      "reason": "Object.entries() over parser input — dynamic key set",
-      "id": "packages/remnic-core/src/config.ts#d53d65700eaa"
-    },
-    {
       "file": "packages/remnic-core/src/entity-schema.ts",
       "reason": "Object.entries() over parser input — dynamic key set",
       "id": "packages/remnic-core/src/entity-schema.ts#3038a1b1f062"
@@ -1263,6 +1266,8 @@
     "agentAccessHttp.writeRateLimitMaxRequests.trim",
     "agentAccessHttp.writeRateLimitWindowMs.trim",
     "autoPromoteToSharedCategories.filter",
+    "backgroundGeneration.endpoint.trim",
+    "backgroundGeneration.token.length",
     "behaviorLoopProtectedParams.filter",
     "binaryLifecycleBackendPath.trim",
     "bridgeHealthTimeoutMs.trim",
@@ -1416,6 +1421,7 @@
     "lifecycleMetricsEnabled.trim",
     "lifecyclePolicyEnabled.trim",
     "lifecycleProtectedCategories.filter",
+    "llmBridgeClientConfigPath.trim",
     "localLlmApiKey.length",
     "localLlmApiKey.replace",
     "localLlmDisableThinking.trim",

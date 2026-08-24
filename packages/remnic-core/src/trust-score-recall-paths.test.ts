@@ -175,7 +175,7 @@ test("TrustScore quarantine excludes a contradicted memory from injection but su
 
 test("X-ray capture preserves recent-scan serving while recording post-trust applied and pre-trust headroom", async () => {
   const { orchestrator, memoryDir } = await makeOrchestrator({
-    qmdMaxResults: 2,
+    qmdMaxResults: 1,
   });
   const now = Date.now();
   try {

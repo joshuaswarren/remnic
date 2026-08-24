@@ -60,7 +60,11 @@ export function applyGroundingWithConnector(
   ctx: ExtractionGroundingContext,
 ): ExtractionResult {
   const caps = resolvePipelineProcessingCapabilities(config);
-  const options = { sourceGrounding: caps.sourceGrounding, anchorTemporalExpressions: caps.delinearize };
+  const options = {
+    sourceGrounding: caps.sourceGrounding,
+    anchorTemporalExpressions: caps.delinearize,
+    spanMode: config.extraction?.spanMode ?? "off",
+  };
   const known = buildKnownConnectors(ctx.sourceConnector);
   // Scope-forcing is decoupled from strip/restore (runs without a trusted
   // connector) but gated on the capability: flag off = byte-identical pre-#2183.
