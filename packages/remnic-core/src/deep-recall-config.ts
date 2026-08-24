@@ -86,15 +86,16 @@ export function parseDeepRecallConfig(raw: unknown): DeepRecallConfig {
  * Strict request-surface parse of an optional `maxSteps` override
  * (issue #2915). Shared by MCP, HTTP, and CLI so every boundary rejects the
  * same way instead of silently defaulting: absent/null is `undefined`;
- * anything else must be a non-negative integer — a JS integer number, or a
- * string whose trimmed form is bare digits. Malformed (`"abc"`), empty
- * (`""`), fractional (`"1.5"` / `1.5`), negative, and non-number values
- * throw instead of falling back to the configured default (§39).
+ * anything else must be a non-negative safe integer — a JS safe integer, or a
+ * string whose trimmed form is bare digits that parse without overflow.
+ * Malformed (`"abc"`), empty (`""`), fractional (`"1.5"` / `1.5`), negative,
+ * unsafe (`Number.MAX_SAFE_INTEGER + 1`), and non-number values throw instead
+ * of falling back to the configured default (§39).
  */
 export function parseDeepRecallMaxSteps(raw: unknown): number | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (typeof raw === "number") {
-    if (!Number.isInteger(raw) || raw < 0) {
+    if (!Number.isSafeInteger(raw) || raw < 0) {
       throw new Error(`maxSteps must be a non-negative integer; got ${JSON.stringify(raw)}`);
     }
     return raw;
@@ -104,7 +105,11 @@ export function parseDeepRecallMaxSteps(raw: unknown): number | undefined {
     if (!/^[0-9]+$/.test(trimmed)) {
       throw new Error(`maxSteps must be a non-negative integer; got ${JSON.stringify(raw)}`);
     }
-    return Number(trimmed);
+    const parsed = Number(trimmed);
+    if (!Number.isSafeInteger(parsed)) {
+      throw new Error(`maxSteps must be a non-negative integer; got ${JSON.stringify(raw)}`);
+    }
+    return parsed;
   }
   throw new Error(`maxSteps must be a non-negative integer; got ${JSON.stringify(raw)}`);
 }

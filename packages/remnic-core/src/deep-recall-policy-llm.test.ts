@@ -3,15 +3,17 @@
  *
  * One `timeoutMs` budget must span the local and fallback legs: the fallback
  * leg receives only what the local leg left on the clock, and never starts
- * once the budget is spent. The transport cancellation signal reaches both
- * legs. Deterministic: the local leg advances a patched clock instead of
- * sleeping (the same Date.now patch pattern access-service-recall-concurrency
- * uses).
+ * once the budget is spent. A spent budget also starts neither leg. The
+ * transport cancellation signal reaches both legs and rejects as AbortError
+ * when the signal is already aborted, when abort lands during the local
+ * leg, and when abort lands during the fallback. Deterministic: legs
+ * advance a patched clock instead of sleeping.
  */
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { isAbortError } from "./abort-error.js";
 import { parseConfig } from "./config.js";
 import { callDeepRecallPolicyLlm } from "./deep-recall-policy-llm.js";
 import type { FallbackLlmClient } from "./fallback-llm.js";
@@ -149,8 +151,92 @@ test("the cancellation signal reaches both legs and stops the fallback after abo
       timeoutMs: 0,
       signal: liveController.signal,
     }),
-    (err: unknown) => err instanceof Error && err.name === "AbortError",
+    (err: unknown) => isAbortError(err),
     "cancellation after the local leg surfaces as a standard AbortError",
   );
   assert.equal(cancelled.fallbackCalls.length, 0);
+});
+
+test("a pre-aborted signal rejects before either policy leg (issue #2915)", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const clients = fakeClients({
+    localBehavior: () => {
+      throw new Error("the local leg must not start after pre-abort");
+    },
+    fallbackBehavior: () => {
+      throw new Error("the fallback leg must not start after pre-abort");
+    },
+  });
+  await assert.rejects(
+    callDeepRecallPolicyLlm({
+      statePrompt: "state",
+      config: parseConfig({}),
+      localLlm: clients.localLlm,
+      fallbackLlm: clients.fallbackLlm,
+      timeoutMs: 0,
+      signal: controller.signal,
+    }),
+    (err: unknown) => isAbortError(err),
+    "pre-aborted policy call surfaces as a standard AbortError",
+  );
+  assert.equal(clients.localCalls.length, 0, "the local leg never started");
+  assert.equal(clients.fallbackCalls.length, 0, "the fallback leg never started");
+});
+
+test("abort during the fallback leg rejects as AbortError instead of null (issue #2915)", async () => {
+  const controller = new AbortController();
+  const clients = fakeClients({
+    localBehavior: () => Promise.reject(new Error("local leg failed")),
+    fallbackBehavior: () => {
+      controller.abort();
+      return Promise.reject(new Error("fallback failed after abort"));
+    },
+  });
+  await assert.rejects(
+    callDeepRecallPolicyLlm({
+      statePrompt: "state",
+      config: parseConfig({}),
+      localLlm: clients.localLlm,
+      fallbackLlm: clients.fallbackLlm,
+      timeoutMs: 0,
+      signal: controller.signal,
+    }),
+    (err: unknown) => isAbortError(err),
+    "cancellation during the fallback leg is not converted to null",
+  );
+  assert.equal(clients.fallbackCalls.length, 1, "the fallback leg started before abort");
+});
+
+test("a spent shared budget starts neither local nor fallback (issue #2915)", async () => {
+  const realNow = Date.now;
+  const config = parseConfig({});
+  let clock = 1_000_000;
+  Date.now = () => {
+    const now = clock;
+    clock += 100;
+    return now;
+  };
+  try {
+    const { localLlm, fallbackLlm, localCalls, fallbackCalls } = fakeClients({
+      localBehavior: () => {
+        throw new Error("the local leg must not start once the step budget is spent");
+      },
+      fallbackBehavior: () => {
+        throw new Error("the fallback leg must not start once the step budget is spent");
+      },
+    });
+    const result = await callDeepRecallPolicyLlm({
+      statePrompt: "state",
+      config,
+      localLlm,
+      fallbackLlm,
+      timeoutMs: 50,
+    });
+    assert.equal(result, null, "exhausted budget is a stop, not an unbounded call");
+    assert.equal(localCalls.length, 0, "the local leg never started without a timeout");
+    assert.equal(fallbackCalls.length, 0, "the fallback leg never started");
+  } finally {
+    Date.now = realNow;
+  }
 });

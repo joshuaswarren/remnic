@@ -1,8 +1,8 @@
 /**
  * Strict `maxSteps` request parsing (issue #2915) — the one parser MCP,
  * HTTP, and CLI share. Absent means absent; everything else must be a
- * non-negative integer. Malformed (`"abc"`), empty (`""`), fractional
- * (`"1.5"` / `1.5`), negative, and non-number values throw instead of
+ * non-negative safe integer. Malformed (`"abc"`), empty (`""`), fractional
+ * (`"1.5"` / `1.5`), negative, unsafe, and non-number values throw instead of
  * silently falling back to the configured default (§39).
  */
 
@@ -22,6 +22,8 @@ test("parseDeepRecallMaxSteps: accepts non-negative integers in number and digit
   assert.equal(parseDeepRecallMaxSteps("0"), 0);
   assert.equal(parseDeepRecallMaxSteps("3"), 3);
   assert.equal(parseDeepRecallMaxSteps(" 3 "), 3);
+  assert.equal(parseDeepRecallMaxSteps(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER);
+  assert.equal(parseDeepRecallMaxSteps(String(Number.MAX_SAFE_INTEGER)), Number.MAX_SAFE_INTEGER);
 });
 
 test("parseDeepRecallMaxSteps: rejects malformed, empty, fractional, negative, and non-number input", () => {
@@ -33,4 +35,22 @@ test("parseDeepRecallMaxSteps: rejects malformed, empty, fractional, negative, a
       `must reject ${JSON.stringify(raw)}`,
     );
   }
+});
+
+test("parseDeepRecallMaxSteps: rejects unsafe integers and precision-losing digit strings", () => {
+  const overflowString = "9007199254740993";
+  const unsafe: unknown[] = [
+    Number.MAX_SAFE_INTEGER + 1,
+    String(Number.MAX_SAFE_INTEGER + 1),
+    overflowString,
+    "99999999999999999999",
+  ];
+  for (const raw of unsafe) {
+    assert.throws(
+      () => parseDeepRecallMaxSteps(raw),
+      /maxSteps must be a non-negative integer/,
+      `must reject ${String(raw)}`,
+    );
+  }
+  assert.notEqual(String(Number(overflowString)), overflowString, "Number() rounds this string; the parser must not");
 });
