@@ -659,14 +659,14 @@ function filterGroundedFact(
 ): ExtractionResult["facts"][number] | undefined {
   // Span-materialized content (issue #2333) is "frame: verbatim slice". The
   // frame is generated deixis, so full-content gating would drop a verbatim
-  // fact. Only on/shadow facts whose content is that materialized shape may
-  // fall back to the slice. Off mode stays zero-diff.
+  // fact. Only on-mode facts whose content is that materialized shape may
+  // fall back to the slice. Shadow stays zero-diff with off.
   const quote = typeof fact.quote === "string" ? fact.quote : "";
   const materializedPrefix = quote.length > 0 && fact.content.endsWith(quote) && fact.content !== quote
     ? fact.content.slice(0, fact.content.length - quote.length)
     : "";
   const embeddedQuote =
-    (spanMode === "on" || spanMode === "shadow")
+    spanMode === "on"
     && quote.trim().length > 0
     && (materializedPrefix.endsWith(": ") || /[:—-]\s$/.test(materializedPrefix))
       ? quote

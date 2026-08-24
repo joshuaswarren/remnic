@@ -93,6 +93,18 @@ test("both mode payloads parse their schemas; span facts carry a span, current f
   }
 });
 
+test("span-mode payload includes the production-required content field", () => {
+  const span = runFakeExtraction(CONV, "span", 7);
+  const goldByIndex = CONV.facts;
+  assert.equal(span.rawFacts.length, goldByIndex.length);
+  for (const [index, raw] of span.rawFacts.entries()) {
+    const fact = SpanModeFactSchema.parse(raw);
+    assert.equal(fact.content, goldByIndex[index]?.frame);
+    assert.equal(fact.span?.frame, goldByIndex[index]?.frame);
+  }
+  assert.match(span.responsePayload, /"content":/);
+});
+
 test("judge tokenization splits on non-alphanumerics and lowercases", () => {
   assert.deepEqual(tokenizeForJudge("Maya's FAI-2, tea!"), ["maya", "s", "fai", "2", "tea"]);
 });

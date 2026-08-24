@@ -176,12 +176,38 @@ test("embedded-quote grounding fallback is off-mode zero-diff", () => {
     profileUpdates: [],
   };
   const off = filterExtractionResultBySource(result, source, source, undefined, undefined, "off");
+  const shadow = filterExtractionResultBySource(result, source, source, undefined, undefined, "shadow");
+  assert.equal(shadow.facts.length, 0, "shadow must not rescue invented prefixes");
   assert.equal(off.facts.length, 0, "off mode must not rescue quote-bearing facts");
   const on = filterExtractionResultBySource(result, source, source, undefined, undefined, "on");
   assert.deepEqual(
     on.facts.map((fact) => fact.content),
     ["Maya's relocation: moved to Seattle last spring"],
   );
+});
+
+test("spanMode on: omitted span is rejected instead of persisting the frame", async () => {
+  const engine = new ExtractionEngine(config("on"), undefined, {
+    async chatCompletion() {
+      return {
+        content: JSON.stringify({
+          facts: [
+            {
+              category: "fact",
+              content: "I moved to Seattle last spring",
+              confidence: 0.9,
+              tags: ["relocation"],
+            },
+          ],
+          entities: [],
+          questions: [],
+          profileUpdates: [],
+        }),
+      };
+    },
+  } as never);
+  const result = await engine.extract(turns());
+  assert.equal(result.facts.length, 0);
 });
 
 test("spanMode on: local truncation cannot materialize an unseen suffix", async () => {

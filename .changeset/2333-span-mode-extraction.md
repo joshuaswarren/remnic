@@ -1,5 +1,5 @@
 ---
-"remnic-core": minor
+"@remnic/core": minor
 "@remnic/bench": minor
 ---
 

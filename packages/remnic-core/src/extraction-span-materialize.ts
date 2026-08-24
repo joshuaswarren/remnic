@@ -188,31 +188,25 @@ export function spanAgreesWithContent(materialized: string, content: string): bo
 /**
  * Whole-result span materialization pass (issue #2333 Phase B). Called from
  * `ExtractionEngine.applySpanMaterialization` after parse, before sanitize /
- * grounding / judge / dedup / persist. Fast path: no span refs → unchanged
- * result. "off" strips stray spans untrusted. Shadow logs agreement
- * telemetry and persists generated content; "on" persists materialized
- * frame+span content with per-fact fail-open.
+ * grounding / judge / dedup / persist. "off" strips stray spans untrusted.
+ * Shadow logs agreement telemetry and persists generated content. "on"
+ * persists materialized frame+span content; facts that omit the optional
+ * span are dropped so a short frame cannot persist as a standalone memory.
  */
 export function applyExtractionSpanMaterialization(
   result: ExtractionResult,
   turns: readonly SpanMaterializeTurn[],
   mode: SpanMode,
 ): ExtractionResult {
-  const anySpan = result.facts.some(factCarriesSpan);
-  if (!anySpan) {
-    return result;
-  }
   if (mode === "off") {
-    // Spans were never requested; a stray span is untrusted and stripped
-    // without validation (storage format unchanged either way).
     return { ...result, facts: stripUntrustedFactSpans(result.facts) };
   }
   let attempts = 0;
   let fallbacks = 0;
   let agreements = 0;
-  const facts = result.facts.map((fact) => {
+  const facts = result.facts.flatMap((fact) => {
     if (!factCarriesSpan(fact)) {
-      return fact;
+      return mode === "on" ? [] : [fact];
     }
     attempts += 1;
     const { fact: materialized, outcome, materialized: text } = materializeFactSpan(
@@ -227,7 +221,7 @@ export function applyExtractionSpanMaterialization(
         agreements += 1;
       }
     }
-    return materialized;
+    return [materialized];
   });
   if (mode === "shadow") {
     log.info(

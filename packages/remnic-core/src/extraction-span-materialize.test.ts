@@ -329,3 +329,46 @@ test("local prompt bind stamps the truncated visible prefix, not the unseen suff
   );
   assert.equal(wrongHash.outcome, "fallback");
 });
+
+test("on-mode facts that omit span are dropped instead of persisting the frame", () => {
+  const generated = {
+    facts: [
+      {
+        category: "fact" as const,
+        content: "Maya's relocation",
+        confidence: 0.9,
+        tags: ["relocation"],
+      },
+    ],
+    entities: [],
+    questions: [],
+    profileUpdates: [],
+  };
+  const on = applyExtractionSpanMaterialization(generated, turns(TURN_TEXT), "on");
+  assert.equal(on.facts.length, 0);
+  const shadow = applyExtractionSpanMaterialization(generated, turns(TURN_TEXT), "shadow");
+  assert.equal(shadow.facts[0]?.content, "Maya's relocation");
+  const off = applyExtractionSpanMaterialization(generated, turns(TURN_TEXT), "off");
+  assert.equal(off.facts[0]?.content, "Maya's relocation");
+});
+
+test("on-mode mixed batch keeps validated spans and drops omitted spans", () => {
+  const seattle = TURN_TEXT.indexOf("Seattle");
+  const result = {
+    facts: [
+      fact({ charStart: seattle, charEnd: seattle + 7 }),
+      {
+        category: "fact" as const,
+        content: "Maya's relocation",
+        confidence: 0.9,
+        tags: [],
+      },
+    ],
+    entities: [],
+    questions: [],
+    profileUpdates: [],
+  };
+  const on = applyExtractionSpanMaterialization(result, turns(TURN_TEXT), "on");
+  assert.equal(on.facts.length, 1);
+  assert.equal(on.facts[0]?.content, "Maya's relocation: Seattle");
+});

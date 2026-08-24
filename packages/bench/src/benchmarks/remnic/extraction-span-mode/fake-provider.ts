@@ -116,10 +116,14 @@ function emitSpanFact(
   const { charStart, charEnd } = goldSpan(gold, conversation);
   const messageLength = conversation.messages[gold.messageIndex].text.length;
   const roll = rng();
-  // The frame is the ONLY generated text in span mode — no content field is
-  // emitted (that omission is the token saving). Materialization falls back
-  // to the frame when the span fails validation.
-  const base = { category: gold.category, confidence: gold.confidence, tags: gold.tags };
+  // Production schema and the on-mode prompt require content. Mirror that
+  // by emitting the short frame there; that is the token saving vs restatement.
+  const base = {
+    category: gold.category,
+    confidence: gold.confidence,
+    tags: gold.tags,
+    content: gold.frame,
+  };
 
   if (roll < INVALID_SPAN_RATE) {
     const variant = Math.floor((roll / INVALID_SPAN_RATE) * 3) % 3;
