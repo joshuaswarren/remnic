@@ -155,5 +155,5 @@ plans; `none` negatives stay synthetic-only). Guarded by
 
 ## Privacy + consent
 
-* The **harvest stream** (teacher labels from shadow telemetry) is real and opt-in: `model-lab/harvest.py` requires an explicit `--consent` flag plus explicit local `--input`/`--out` paths, prints exactly what it will read, and refuses otherwise (issue #2852). No committed dataset contains harvested data — both v1 datasets remain synthetic-only; harvested blobs live under the gitignored `model-lab/**/data/` dirs and never reach git.
+* The **harvest stream** (teacher labels from shadow telemetry) is real and opt-in: `model-lab/harvest.py` requires an explicit `--consent` flag plus explicit local `--input`/`--out` paths, prints exactly what it will read, and refuses otherwise (issue #2852). The deleted `harvest-shadow-logs.py` stubs (#2847) were dead code, and the #1585 GPU-run work landed with synthetic-data training only. Shadow verdicts are already recorded (`extraction-persist.ts`, #1576). No committed dataset contains harvested data — both v1 datasets remain synthetic-only; harvested blobs live under the gitignored `model-lab/**/data/` dirs and never reach git.
 * Teacher-model outputs ("LLM traces") live under the gitignored data dir like everything else.

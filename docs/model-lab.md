@@ -177,7 +177,11 @@ a model-backed detector lands in the consuming child.
 ## Privacy + consent
 
 - The **harvest stream** (teacher labels from shadow telemetry) is real, opt-in,
-  and local-only (issue #2852). `model-lab/harvest.py` requires an explicit
+  and local-only (issue #2852). The deleted `harvest-shadow-logs.py` scripts
+  (#2847) were unimplemented stubs, and the #1585 GPU-run work landed with
+  synthetic-data training only. Shadow verdicts themselves exist —
+  `extraction-persist.ts` records them in fact frontmatter (#1576). The
+  harvest tool is `model-lab/harvest.py`: it requires an explicit
   `--consent` flag plus explicit local `--input`/`--out` paths, prints exactly
   what it will read, and refuses otherwise (exit 2, nothing read). It walks
   exactly the named directory — no vault scan, no symlink `--input` root, no
