@@ -131,12 +131,16 @@ jobs:
             fs.writeFileSync('/tmp/pr-labels.json', JSON.stringify(labels.map((l) => l.name)));
 
             const payloadPr = context.payload.pull_request;
+            // Closing keywords close issues from the PR BODY (description)
+            // only — GitHub never interprets the title, and the scope budget
+            // likewise ignores commit messages, review text, and touched-file
+            // contents (#2919). Scan the body alone.
             const pr = await fetchOrFallback(
               () => github.rest.pulls.get({ owner, repo, pull_number }),
-              { data: { title: payloadPr.title ?? '', body: payloadPr.body ?? '' } },
+              { data: { body: payloadPr.body ?? '' } },
               'Fresh PR meta fetch',
             );
-            fs.writeFileSync('/tmp/pr-meta.txt', `${pr.data.title ?? ''}\n\n${pr.data.body ?? ''}`);
+            fs.writeFileSync('/tmp/pr-meta.txt', pr.data.body ?? '');
 
             // Thresholds + ignore manifest from the BASE ref: a PR can never
             // weaken its own budget by editing them in the same head. Changes
