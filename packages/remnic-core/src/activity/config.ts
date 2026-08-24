@@ -2,7 +2,8 @@ import path from "node:path";
 
 import { coerceBooleanLike, coerceNumber } from "../connectors/coerce.js";
 import { assertValidTimezone } from "./digest.js";
-import { applyLegacyJournalHeading } from "./journal-heading.js";
+import { applyLegacyJournalHeading, validateJournalSectionName } from "./journal-heading.js";
+import { publisherOwnedSectionNames } from "./journal-read.js";
 import { checkVaultJournalPrerequisites } from "./journal-vault-prereq.js";
 import { resolveJournalSource } from "./journal-source.js";
 import { validateVaultNoteTemplate } from "./vault-path.js";
@@ -250,6 +251,7 @@ function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
     );
     if (aliased.usedLegacyHeading) {
       vault = { ...vault, readback: { ...vault.readback, journalSection: aliased.journalSection } };
+      validateReadbackJournalSection(vault);
     }
   }
   if (journal.source === "vault") {
@@ -361,8 +363,7 @@ export function parseTimelineVaultConfig(raw: unknown): ActivityTimelineVaultCon
   const readback = {
     journalSection: readbackJournalSection ?? "",
   };
-
-  return {
+  const parsed: ActivityTimelineVaultConfig = {
     enabled,
     vaultPath,
     dailyNotePath,
@@ -377,6 +378,8 @@ export function parseTimelineVaultConfig(raw: unknown): ActivityTimelineVaultCon
     properties,
     autoPublish,
   };
+  validateReadbackJournalSection(parsed);
+  return parsed;
 }
 
 function defaultVaultConfig(): ActivityTimelineVaultConfig {
@@ -400,6 +403,40 @@ function defaultVaultConfig(): ActivityTimelineVaultConfig {
     autoPublish: true,
     readback: { journalSection: "" },
   };
+}
+
+/**
+ * Config-time gate (issue #2894): the read-back heading must be a name the
+ * shared heading parser can match, and under `sectionStrategy: "heading"`
+ * it must not be publisher-owned — the selected heading itself is never
+ * passed to the stripper, so reading back the publisher's own daily
+ * section would feed generated timeline output into the journal. Weekly
+ * targets never own daily-note sections. Errors carry the config path and
+ * heading name only, never note content.
+ */
+function validateReadbackJournalSection(vault: ActivityTimelineVaultConfig): void {
+  const journalSection = vault.readback.journalSection;
+  if (journalSection.length === 0) return;
+  const grammar = validateJournalSectionName(journalSection);
+  if (!grammar.ok) {
+    const detail =
+      grammar.error === "empty_heading"
+        ? "must be a non-empty heading name, not only whitespace"
+        : grammar.error === "untrimmed_heading"
+          ? "must not have leading or trailing whitespace; the heading parser trims it and would never match"
+          : grammar.error === "control_character"
+            ? "must not contain line breaks or control characters"
+            : 'must be a heading text the journal heading parser can match exactly; a trailing "#" run is parsed as a closing sequence';
+    throw new RangeError(`activity.timeline.vault.readback.journalSection ${detail}`);
+  }
+  if (publisherOwnedSectionNames(vault).includes(journalSection)) {
+    const owners = (["timeline", "standup", "weekly", "locations"] as const)
+      .filter((kind) => vault.publish[kind].target === "daily" && vault.publish[kind].section === journalSection)
+      .map((kind) => `publish.${kind}`);
+    throw new RangeError(
+      `activity.timeline.vault.readback.journalSection "${journalSection}" is publisher-owned: it is a configured daily publish section (${owners.join(", ")}) under sectionStrategy "heading"; the journal heading must not be a publisher-owned section`,
+    );
+  }
 }
 
 function requireBool(value: unknown, key: string, fallback: boolean): boolean {
