@@ -184,7 +184,6 @@ class _MaxKey(str):
     def __lt__(self, other: object) -> bool:
         return str.__gt__(self, other)
 
-
 def require_input_dir(input_dir: Path) -> Path:
     """lstat the harvest root. Refuse a symlink or a non-directory."""
     try:
