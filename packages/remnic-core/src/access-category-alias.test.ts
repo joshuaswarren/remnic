@@ -163,7 +163,6 @@ test("#2889 retainedCategoryAlias recovers the spelling from a single-parse enve
   // A transform-minted rawCategory outranks the raw category spelling.
   assert.equal(retainedCategoryAlias({ category: "project_update", rawCategory: "project" }), "project");
 });
-
 // ---------------------------------------------------------------------------
 // Type-level regressions (enforced by tsc via check-types)
 // ---------------------------------------------------------------------------
@@ -504,7 +503,6 @@ test("#2889 suggestion_submit reports the coercion and queues the canonical cate
     assert.equal("categoryCoercion" in canonical, false, "a no-alias submit reports no coercion");
   });
 });
-
 // ---------------------------------------------------------------------------
 // Quarantine — the parked payload keeps the raw spelling for replay
 // ---------------------------------------------------------------------------
