@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- H5 injection-suite `openai-compat` executor now sends `Authorization: Bearer` from `OPENAI_API_KEY` or `NVIDIA_API_KEY` and fails closed when neither is set (`#1962`).
+
+
 ## [v9.69.35] — 2026-08-24
 
 ### Added

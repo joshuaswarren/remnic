@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { InjectionSuiteClaimLock } from "./claims.js";
 import { generateSuiteVariants } from "./generator.js";
-import { buildRecallPrompt } from "./llm-executor.js";
+import { buildRecallPrompt, completeChat, InjectionSuiteHostFault } from "./llm-executor.js";
 import {
   planInjectionSuiteRows,
   runInjectionSuiteCliCommand,
@@ -283,6 +283,171 @@ test("plan and execute accept variants-per-family above 64", async () => {
   }
 });
 
+
+function withEnv(
+  overlay: Record<string, string | undefined>,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const previous = new Map<string, string | undefined>();
+  for (const key of Object.keys(overlay)) {
+    previous.set(key, process.env[key]);
+    const next = overlay[key];
+    if (next === undefined) delete process.env[key];
+    else process.env[key] = next;
+  }
+  try {
+    await fn();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+function mockJsonFetch(responseBody: Record<string, unknown>) {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; headers: Record<string, string> }> = [];
+  globalThis.fetch = async (url, init) => {
+    const headers = new Headers(init?.headers);
+    requests.push({
+      url: String(url),
+      headers: Object.fromEntries(headers.entries()),
+    });
+    return new Response(JSON.stringify(responseBody), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  return {
+    requests,
+    restore() {
+      globalThis.fetch = originalFetch;
+    },
+  };
+}
+
+test("openai-compat sends Authorization from OPENAI_API_KEY", async () => {
+  const mock = mockJsonFetch({
+    choices: [{ message: { content: "ok" } }],
+  });
+  try {
+    await withEnv({ OPENAI_API_KEY: "test-openai-key", NVIDIA_API_KEY: undefined }, async () => {
+      const text = await completeChat(
+        { kind: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", requestTimeoutMs: 250 },
+        "hi",
+      );
+      assert.equal(text, "ok");
+      assert.equal(mock.requests.length, 1);
+      assert.equal(mock.requests[0]?.headers.authorization, "Bearer test-openai-key");
+      assert.match(mock.requests[0]?.url ?? "", /\/chat\/completions$/);
+    });
+  } finally {
+    mock.restore();
+  }
+});
+
+test("openai-compat prefers OPENAI_API_KEY over NVIDIA_API_KEY", async () => {
+  const mock = mockJsonFetch({
+    choices: [{ message: { content: "ok" } }],
+  });
+  try {
+    await withEnv(
+      { OPENAI_API_KEY: "openai-first", NVIDIA_API_KEY: "nvidia-second" },
+      async () => {
+        await completeChat(
+          { kind: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", requestTimeoutMs: 250 },
+          "hi",
+        );
+        assert.equal(mock.requests[0]?.headers.authorization, "Bearer openai-first");
+      },
+    );
+  } finally {
+    mock.restore();
+  }
+});
+
+test("openai-compat uses NVIDIA_API_KEY when OPENAI_API_KEY is unset", async () => {
+  const mock = mockJsonFetch({
+    choices: [{ message: { content: "ok" } }],
+  });
+  try {
+    await withEnv({ OPENAI_API_KEY: undefined, NVIDIA_API_KEY: "nvidia-only" }, async () => {
+      await completeChat(
+        { kind: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", requestTimeoutMs: 250 },
+        "hi",
+      );
+      assert.equal(mock.requests[0]?.headers.authorization, "Bearer nvidia-only");
+    });
+  } finally {
+    mock.restore();
+  }
+});
+
+test("openai-compat treats a blank OPENAI_API_KEY as missing", async () => {
+  const mock = mockJsonFetch({
+    choices: [{ message: { content: "ok" } }],
+  });
+  try {
+    await withEnv({ OPENAI_API_KEY: "  ", NVIDIA_API_KEY: "nvidia-blank-openai" }, async () => {
+      await completeChat(
+        { kind: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", requestTimeoutMs: 250 },
+        "hi",
+      );
+      assert.equal(mock.requests[0]?.headers.authorization, "Bearer nvidia-blank-openai");
+    });
+  } finally {
+    mock.restore();
+  }
+});
+
+test("openai-compat fails closed when no API key is set", async () => {
+  let fetchCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    await withEnv({ OPENAI_API_KEY: undefined, NVIDIA_API_KEY: undefined }, async () => {
+      await assert.rejects(
+        () =>
+          completeChat(
+            { kind: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", requestTimeoutMs: 250 },
+            "hi",
+          ),
+        (error: unknown) => {
+          assert.ok(error instanceof InjectionSuiteHostFault);
+          assert.match(error.message, /OPENAI_API_KEY/);
+          assert.match(error.message, /NVIDIA_API_KEY/);
+          return true;
+        },
+      );
+      assert.equal(fetchCalls, 0);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("ollama omits Authorization even when OPENAI_API_KEY is set", async () => {
+  const mock = mockJsonFetch({
+    message: { content: "ok" },
+  });
+  try {
+    await withEnv({ OPENAI_API_KEY: "must-not-be-sent" }, async () => {
+      const text = await completeChat(
+        { kind: "ollama", baseUrl: "http://127.0.0.1:9", requestTimeoutMs: 250 },
+        "hi",
+      );
+      assert.equal(text, "ok");
+      assert.equal(mock.requests.length, 1);
+      assert.equal(mock.requests[0]?.headers.authorization, undefined);
+    });
+  } finally {
+    mock.restore();
+  }
+});
 
 test("dead ollama endpoint pauses instead of cutting the row", async () => {
   const outputDir = await mkdtemp(path.join(tmpdir(), "h5-dead-"));
