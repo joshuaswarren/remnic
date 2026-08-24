@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 _log = logging.getLogger("remnic_hermes.llm_runtime")
 
@@ -82,21 +82,21 @@ def resolve_completion_delegate(ctx: object | None = None) -> Callable[..., Any]
     if plugin_cls is not None:
         instance = _instantiate_plugin_llm(plugin_cls)
         if instance is not None:
-            return instance.complete
+            return cast(Callable[..., Any], instance.complete)
 
     llm = getattr(ctx, "llm", None) if ctx is not None else None
     complete = getattr(llm, "complete", None) if llm is not None else None
     if not callable(complete):
         return None
     if _is_plugin_llm_shaped(llm):
-        return complete
+        return cast(Callable[..., Any], complete)
     if _is_memory_provider_collector(ctx):
         _log.warning(
             "llm_bridge enabled on a memory-provider collector without a Hermes "
             "PluginLlm runtime; bridge start deferred"
         )
         return None
-    return complete
+    return cast(Callable[..., Any], complete)
 
 
 def arm_deferred_bridge_start(ctx: object, section: object) -> None:
