@@ -291,6 +291,7 @@ import {
 } from "./memory-worth-outcomes.js";
 import type { LcmMessagePartInput, MessagePartSourceFormat } from "./message-parts/index.js";
 import type { ObserveRequest, RecallRequest } from "./access-schema.js";
+import { coerceProjectCategoryAlias, type CategoryAliasCoercion } from "./access-schema.js";
 import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
 import { objectiveStateStoreOverrideForNamespace } from "./objective-state.js";
 import { offlineSyncStorageForSnapshot } from "./offline-sync-impression-drain.js";
@@ -980,6 +981,8 @@ export interface EngramAccessWriteResponse {
   duplicateOf?: string;
   idempotencyKey?: string;
   idempotencyReplay?: boolean;
+  /** #2780: set when a project-shaped category alias was coerced to "fact". */
+  categoryCoercion?: CategoryAliasCoercion;
 }
 
 export interface EngramAccessObserveMessage {
@@ -2935,7 +2938,11 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return this.accessObserveWriteSurface.memoryStore(request, hooks);
   }
 
-  async peekMemoryStoreIdempotency(request: EngramAccessMemoryStoreRequest): Promise<EngramAccessIdempotencyStatus> {
+  async peekMemoryStoreIdempotency(
+    rawRequest: EngramAccessMemoryStoreRequest
+  ): Promise<EngramAccessIdempotencyStatus> {
+    // #2780: fingerprint the COERCED category so peek never diverges from the write it predicts.
+    const { request } = coerceProjectCategoryAlias(rawRequest);
     const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
@@ -2970,8 +2977,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   }
 
   async peekSuggestionSubmitIdempotency(
-    request: EngramAccessSuggestionSubmitRequest
+    rawRequest: EngramAccessSuggestionSubmitRequest
   ): Promise<EngramAccessIdempotencyStatus> {
+    // #2780: fingerprint the COERCED category so peek never diverges from the write it predicts.
+    const { request } = coerceProjectCategoryAlias(rawRequest);
     const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
