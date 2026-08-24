@@ -327,39 +327,56 @@ function mockJsonFetch(responseBody: Record<string, unknown>) {
   };
 }
 
-test("openai-compat sends Authorization from OPENAI_API_KEY", async () => {
-  const mock = mockJsonFetch({
-    choices: [{ message: { content: "ok" } }],
-  });
+const AUTH_CLEAR_ENV = {
+  OPENAI_API_KEY: undefined,
+  NVIDIA_API_KEY: undefined,
+  REMNIC_OPENAI_COMPAT_API_KEY: undefined,
+} as const;
+
+async function assertFailsBeforeFetch(
+  overlay: Record<string, string | undefined>,
+  options: { kind: "openai-compat"; baseUrl: string; requestTimeoutMs: number },
+  messagePattern: RegExp,
+): Promise<void> {
+  let fetchCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  };
   try {
-    await withEnv({ OPENAI_API_KEY: "test-openai-key", NVIDIA_API_KEY: undefined }, async () => {
-      const text = await completeChat(
-        { kind: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", requestTimeoutMs: 250 },
-        "hi",
+    await withEnv({ ...AUTH_CLEAR_ENV, ...overlay }, async () => {
+      await assert.rejects(
+        () => completeChat(options, "hi"),
+        (error: unknown) => {
+          assert.ok(error instanceof InjectionSuiteHostFault);
+          assert.match(error.message, messagePattern);
+          return true;
+        },
       );
-      assert.equal(text, "ok");
-      assert.equal(mock.requests.length, 1);
-      assert.equal(mock.requests[0]?.headers.authorization, "Bearer test-openai-key");
-      assert.match(mock.requests[0]?.url ?? "", /\/chat\/completions$/);
+      assert.equal(fetchCalls, 0);
     });
   } finally {
-    mock.restore();
+    globalThis.fetch = originalFetch;
   }
-});
+}
 
-test("openai-compat generic base prefers OPENAI_API_KEY when both keys are set", async () => {
+test("openai-compat OpenAI host sends Authorization from OPENAI_API_KEY", async () => {
   const mock = mockJsonFetch({
     choices: [{ message: { content: "ok" } }],
   });
   try {
     await withEnv(
-      { OPENAI_API_KEY: "openai-first", NVIDIA_API_KEY: "nvidia-second" },
+      { ...AUTH_CLEAR_ENV, OPENAI_API_KEY: "test-openai-key", NVIDIA_API_KEY: "must-not-be-sent" },
       async () => {
-        await completeChat(
-          { kind: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", requestTimeoutMs: 250 },
+        const text = await completeChat(
+          { kind: "openai-compat", baseUrl: "https://api.openai.com/v1", requestTimeoutMs: 250 },
           "hi",
         );
-        assert.equal(mock.requests[0]?.headers.authorization, "Bearer openai-first");
+        assert.equal(text, "ok");
+        assert.equal(mock.requests.length, 1);
+        assert.equal(mock.requests[0]?.headers.authorization, "Bearer test-openai-key");
+        assert.match(mock.requests[0]?.url ?? "", /\/chat\/completions$/);
       },
     );
   } finally {
@@ -367,13 +384,13 @@ test("openai-compat generic base prefers OPENAI_API_KEY when both keys are set",
   }
 });
 
-test("openai-compat NVIDIA base prefers NVIDIA_API_KEY when both keys are set", async () => {
+test("openai-compat NVIDIA host sends Authorization from NVIDIA_API_KEY", async () => {
   const mock = mockJsonFetch({
     choices: [{ message: { content: "ok" } }],
   });
   try {
     await withEnv(
-      { OPENAI_API_KEY: "openai-first", NVIDIA_API_KEY: "nvidia-second" },
+      { ...AUTH_CLEAR_ENV, OPENAI_API_KEY: "must-not-be-sent", NVIDIA_API_KEY: "nvidia-only" },
       async () => {
         await completeChat(
           {
@@ -383,7 +400,7 @@ test("openai-compat NVIDIA base prefers NVIDIA_API_KEY when both keys are set", 
           },
           "hi",
         );
-        assert.equal(mock.requests[0]?.headers.authorization, "Bearer nvidia-second");
+        assert.equal(mock.requests[0]?.headers.authorization, "Bearer nvidia-only");
         assert.match(mock.requests[0]?.url ?? "", /^https:\/\/integrate\.api\.nvidia\.com\//);
       },
     );
@@ -392,23 +409,24 @@ test("openai-compat NVIDIA base prefers NVIDIA_API_KEY when both keys are set", 
   }
 });
 
-test("openai-compat does not treat a suffix lookalike as an NVIDIA host", async () => {
+test("openai-compat unknown host sends only REMNIC_OPENAI_COMPAT_API_KEY", async () => {
   const mock = mockJsonFetch({
     choices: [{ message: { content: "ok" } }],
   });
   try {
     await withEnv(
-      { OPENAI_API_KEY: "openai-first", NVIDIA_API_KEY: "nvidia-second" },
+      {
+        ...AUTH_CLEAR_ENV,
+        OPENAI_API_KEY: "must-not-be-sent",
+        NVIDIA_API_KEY: "also-must-not-be-sent",
+        REMNIC_OPENAI_COMPAT_API_KEY: "explicit-compat-key",
+      },
       async () => {
         await completeChat(
-          {
-            kind: "openai-compat",
-            baseUrl: "https://integrate.api.nvidia.com.example/v1",
-            requestTimeoutMs: 250,
-          },
+          { kind: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", requestTimeoutMs: 250 },
           "hi",
         );
-        assert.equal(mock.requests[0]?.headers.authorization, "Bearer openai-first");
+        assert.equal(mock.requests[0]?.headers.authorization, "Bearer explicit-compat-key");
       },
     );
   } finally {
@@ -416,87 +434,48 @@ test("openai-compat does not treat a suffix lookalike as an NVIDIA host", async 
   }
 });
 
-test("openai-compat uses NVIDIA_API_KEY when OPENAI_API_KEY is unset", async () => {
-  const mock = mockJsonFetch({
-    choices: [{ message: { content: "ok" } }],
-  });
-  try {
-    await withEnv({ OPENAI_API_KEY: undefined, NVIDIA_API_KEY: "nvidia-only" }, async () => {
-      await completeChat(
-        { kind: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", requestTimeoutMs: 250 },
-        "hi",
-      );
-      assert.equal(mock.requests[0]?.headers.authorization, "Bearer nvidia-only");
-    });
-  } finally {
-    mock.restore();
-  }
+test("openai-compat NVIDIA host with only OPENAI_API_KEY fails before fetch", async () => {
+  await assertFailsBeforeFetch(
+    { OPENAI_API_KEY: "must-not-be-sent" },
+    { kind: "openai-compat", baseUrl: "https://integrate.api.nvidia.com/v1", requestTimeoutMs: 250 },
+    /NVIDIA_API_KEY/,
+  );
 });
 
-test("openai-compat treats a blank OPENAI_API_KEY as missing", async () => {
-  const mock = mockJsonFetch({
-    choices: [{ message: { content: "ok" } }],
-  });
-  try {
-    await withEnv({ OPENAI_API_KEY: "  ", NVIDIA_API_KEY: "nvidia-blank-openai" }, async () => {
-      await completeChat(
-        { kind: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", requestTimeoutMs: 250 },
-        "hi",
-      );
-      assert.equal(mock.requests[0]?.headers.authorization, "Bearer nvidia-blank-openai");
-    });
-  } finally {
-    mock.restore();
-  }
+test("openai-compat OpenAI host with only NVIDIA_API_KEY fails before fetch", async () => {
+  await assertFailsBeforeFetch(
+    { NVIDIA_API_KEY: "must-not-be-sent" },
+    { kind: "openai-compat", baseUrl: "https://api.openai.com/v1", requestTimeoutMs: 250 },
+    /OPENAI_API_KEY/,
+  );
 });
 
-test("openai-compat fails closed when no API key is set", async () => {
-  let fetchCalls = 0;
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => {
-    fetchCalls += 1;
-    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
-  };
-  try {
-    await withEnv({ OPENAI_API_KEY: undefined, NVIDIA_API_KEY: undefined }, async () => {
-      await assert.rejects(
-        () =>
-          completeChat(
-            { kind: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", requestTimeoutMs: 250 },
-            "hi",
-          ),
-        (error: unknown) => {
-          assert.ok(error instanceof InjectionSuiteHostFault);
-          assert.match(error.message, /OPENAI_API_KEY/);
-          assert.match(error.message, /NVIDIA_API_KEY/);
-          return true;
-        },
-      );
-      assert.equal(fetchCalls, 0);
-    });
-    await withEnv({ OPENAI_API_KEY: undefined, NVIDIA_API_KEY: undefined }, async () => {
-      await assert.rejects(
-        () =>
-          completeChat(
-            {
-              kind: "openai-compat",
-              baseUrl: "https://integrate.api.nvidia.com/v1",
-              requestTimeoutMs: 250,
-            },
-            "hi",
-          ),
-        (error: unknown) => {
-          assert.ok(error instanceof InjectionSuiteHostFault);
-          assert.match(error.message, /OPENAI_API_KEY/);
-          assert.match(error.message, /NVIDIA_API_KEY/);
-          return true;
-        },
-      );
-      assert.equal(fetchCalls, 0);
-    });
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+test("openai-compat unknown host with OPENAI_API_KEY fails before fetch", async () => {
+  await assertFailsBeforeFetch(
+    { OPENAI_API_KEY: "must-not-be-sent" },
+    { kind: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", requestTimeoutMs: 250 },
+    /REMNIC_OPENAI_COMPAT_API_KEY/,
+  );
+});
+
+test("openai-compat NVIDIA lookalike host does not receive OPENAI_API_KEY", async () => {
+  await assertFailsBeforeFetch(
+    { OPENAI_API_KEY: "must-not-be-sent", NVIDIA_API_KEY: "also-must-not-be-sent" },
+    {
+      kind: "openai-compat",
+      baseUrl: "https://integrate.api.nvidia.com.example/v1",
+      requestTimeoutMs: 250,
+    },
+    /REMNIC_OPENAI_COMPAT_API_KEY/,
+  );
+});
+
+test("openai-compat treats a blank NVIDIA_API_KEY as missing on NVIDIA hosts", async () => {
+  await assertFailsBeforeFetch(
+    { NVIDIA_API_KEY: "  ", OPENAI_API_KEY: "must-not-be-sent" },
+    { kind: "openai-compat", baseUrl: "https://integrate.api.nvidia.com/v1", requestTimeoutMs: 250 },
+    /NVIDIA_API_KEY/,
+  );
 });
 
 test("ollama omits Authorization even when OPENAI_API_KEY is set", async () => {

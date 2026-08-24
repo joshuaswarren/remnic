@@ -2,10 +2,11 @@
  * Live-model executor for one H5 injection-suite row (#1962).
  *
  * Talks native Ollama /api/chat by default or an OpenAI-compatible
- * /v1/chat/completions endpoint. openai-compat sends Authorization
- * from OPENAI_API_KEY or NVIDIA_API_KEY, choosing by host (NVIDIA
- * hosts prefer NVIDIA_API_KEY) and failing closed if neither is set;
- * ollama stays unauthenticated. Network/5xx/timeout become
+ * /v1/chat/completions endpoint. openai-compat attaches Authorization
+ * only for a host-matched key: NVIDIA hosts use NVIDIA_API_KEY,
+ * OpenAI hosts use OPENAI_API_KEY, and every other host requires
+ * REMNIC_OPENAI_COMPAT_API_KEY. Ambient keys are never reused across
+ * providers. ollama stays unauthenticated. Network/5xx/timeout become
  * HOST_API_FAULT so the suite pauses instead of cutting the row.
  */
 
@@ -68,9 +69,6 @@ function trimSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-const GENERIC_OPENAI_COMPAT_TOKEN_ENV = Object.freeze(["OPENAI_API_KEY", "NVIDIA_API_KEY"] as const);
-const NVIDIA_OPENAI_COMPAT_TOKEN_ENV = Object.freeze(["NVIDIA_API_KEY", "OPENAI_API_KEY"] as const);
-
 function hostnameOf(baseUrl: string): string | undefined {
   try {
     let hostname = new URL(baseUrl).hostname.trim().toLowerCase();
@@ -81,37 +79,44 @@ function hostnameOf(baseUrl: string): string | undefined {
   }
 }
 
-function isNvidiaCompatHost(hostname: string | undefined): boolean {
+function isDnsZoneHost(hostname: string | undefined, zone: string): boolean {
   if (hostname === undefined) return false;
-  return hostname === "nvidia.com" || hostname.endsWith(".nvidia.com");
+  return hostname === zone || hostname.endsWith(`.${zone}`);
 }
 
-function tokenEnvOrderForBaseUrl(
-  baseUrl: string,
-): typeof GENERIC_OPENAI_COMPAT_TOKEN_ENV | typeof NVIDIA_OPENAI_COMPAT_TOKEN_ENV {
-  return isNvidiaCompatHost(hostnameOf(baseUrl))
-    ? NVIDIA_OPENAI_COMPAT_TOKEN_ENV
-    : GENERIC_OPENAI_COMPAT_TOKEN_ENV;
+function nonEmptyEnv(name: string): string | undefined {
+  const raw = process.env[name];
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function firstNonEmptyEnv(names: readonly string[]): string | undefined {
-  for (const name of names) {
-    const raw = process.env[name];
-    if (typeof raw !== "string") continue;
-    const trimmed = raw.trim();
-    if (trimmed.length > 0) return trimmed;
+function requireEnvToken(envName: string, message: string): string {
+  const token = nonEmptyEnv(envName);
+  if (token === undefined) {
+    throw new InjectionSuiteHostFault(message);
   }
-  return undefined;
+  return token;
 }
 
 function resolveOpenAiCompatToken(baseUrl: string): string {
-  const token = firstNonEmptyEnv(tokenEnvOrderForBaseUrl(baseUrl));
-  if (token === undefined) {
-    throw new InjectionSuiteHostFault(
-      "openai-compat requires OPENAI_API_KEY or NVIDIA_API_KEY",
+  const hostname = hostnameOf(baseUrl);
+  if (isDnsZoneHost(hostname, "nvidia.com")) {
+    return requireEnvToken(
+      "NVIDIA_API_KEY",
+      "openai-compat NVIDIA host requires NVIDIA_API_KEY",
     );
   }
-  return token;
+  if (isDnsZoneHost(hostname, "openai.com")) {
+    return requireEnvToken(
+      "OPENAI_API_KEY",
+      "openai-compat OpenAI host requires OPENAI_API_KEY",
+    );
+  }
+  return requireEnvToken(
+    "REMNIC_OPENAI_COMPAT_API_KEY",
+    "openai-compat unknown host requires REMNIC_OPENAI_COMPAT_API_KEY (or a known host: *.openai.com / *.nvidia.com); do not reuse OPENAI_API_KEY or NVIDIA_API_KEY",
+  );
 }
 
 async function postJson(

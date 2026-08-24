@@ -3,4 +3,4 @@
 "@remnic/cli": patch
 ---
 
-H5 injection-suite openai-compat executor sends Authorization from OPENAI_API_KEY or NVIDIA_API_KEY (NVIDIA hosts prefer NVIDIA_API_KEY) and fails closed when neither is set (#1962).
+H5 injection-suite openai-compat executor attaches a host-matched Bearer token only (NVIDIA_API_KEY, OPENAI_API_KEY, or REMNIC_OPENAI_COMPAT_API_KEY) and fails closed rather than reusing an ambient key on the wrong host (#1962).
