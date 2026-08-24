@@ -9,8 +9,9 @@ import {
   annotateStateView,
   isChangeOrientedQuery,
   parseRecallStateViews,
-  resultStateViewId,
+  resultStateViewKey,
   shouldWidenSuperseded,
+  stateViewKey,
   type StateViewResult,
 } from "./recall-state-view.js";
 
@@ -51,21 +52,34 @@ export function widenRecallStateViews<T extends StateViewResult>(
   if (stateViewActive !== true && !isChangeOrientedQuery(query)) return results;
   const asOfActive = typeof asOfMs === "number" && Number.isFinite(asOfMs);
 
+  // #2859: matches are namespace-qualified, and a successor's `supersedes`
+  // back-pointer anchors its predecessor even when the predecessor's own
+  // `supersededBy` is absent.
   const candidateIds = new Set<string>();
+  const supersedesAnchors = new Set<string>();
   for (const result of results) {
-    const id = resultStateViewId(result);
-    if (id) candidateIds.add(id);
+    const key = resultStateViewKey(result);
+    if (!key) continue;
+    candidateIds.add(key);
+    if (result.supersedes) {
+      supersedesAnchors.add(stateViewKey(result.namespace, result.supersedes));
+    }
   }
 
   const seen = new Set(candidateIds);
   const extra: T[] = [];
   if (!asOfActive) {
     for (const item of pool) {
-      const id = resultStateViewId(item);
-      if (!id || seen.has(id)) continue;
-      if (!shouldWidenSuperseded(item.supersededBy, candidateIds)) continue;
+      const key = resultStateViewKey(item);
+      if (!key || seen.has(key)) continue;
+      const successorKey = item.supersededBy
+        ? stateViewKey(item.namespace, item.supersededBy)
+        : undefined;
+      if (!shouldWidenSuperseded(successorKey, candidateIds) && !supersedesAnchors.has(key)) {
+        continue;
+      }
       extra.push(item);
-      seen.add(id);
+      seen.add(key);
     }
   }
 

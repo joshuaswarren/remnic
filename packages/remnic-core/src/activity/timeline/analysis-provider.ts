@@ -25,6 +25,7 @@ export interface TimelineAnalysisLocalLlm {
       operation?: string;
       redactProviderErrors?: boolean;
       model?: string;
+      failureDiag?: { lastError?: unknown };
     },
   ): Promise<{ content: string } | null>;
 }
@@ -40,6 +41,7 @@ export interface TimelineAnalysisRemoteLlm {
       modelChain?: { primary?: string; fallbacks?: string[] };
       includeDefaultModelFallback?: boolean;
       redactProviderErrors?: boolean;
+      failureDiag?: { lastError?: unknown };
     },
   ): Promise<{ content: string } | null>;
 }
@@ -99,6 +101,7 @@ export function timelineAnalysisCompleteFromClients(input: {
           "timeline analysis local provider is not configured",
         );
       }
+      const failureDiag: { lastError?: unknown } = {};
       const result = await localLlm.chatCompletion(messages, {
         temperature: 0,
         maxTokens: 2048,
@@ -106,10 +109,11 @@ export function timelineAnalysisCompleteFromClients(input: {
         operation: "timeline-analysis",
         redactProviderErrors: true,
         model,
+        failureDiag,
       });
       if (result === null) {
         throw new TimelineAnalysisProviderError(
-          "provider_unavailable",
+          classifyAnalysisProviderError(failureDiag.lastError),
           "timeline analysis local provider returned no completion",
         );
       }
@@ -121,6 +125,7 @@ export function timelineAnalysisCompleteFromClients(input: {
         "timeline analysis remote provider is not configured",
       );
     }
+    const failureDiag: { lastError?: unknown } = {};
     const result = await remoteLlm.chatCompletion(messages, {
       temperature: 0,
       maxTokens: 2048,
@@ -128,10 +133,11 @@ export function timelineAnalysisCompleteFromClients(input: {
       modelChain: { primary: `${provider}/${model}` },
       includeDefaultModelFallback: false,
       redactProviderErrors: true,
+      failureDiag,
     });
     if (result === null) {
       throw new TimelineAnalysisProviderError(
-        "provider_unavailable",
+        classifyAnalysisProviderError(failureDiag.lastError),
         `timeline analysis provider "${provider}" is not configured`,
       );
     }
