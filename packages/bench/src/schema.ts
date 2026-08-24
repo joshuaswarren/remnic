@@ -50,6 +50,7 @@ export const BENCHMARK_RESULT_SCHEMA = {
         judgePromptHash: { type: "string", pattern: "^[0-9a-f]{64}$" },
         datasetHash: { type: "string", pattern: "^[0-9a-f]{64}$" },
         canaryScore: { type: "number" },
+        canaryFloor: { type: "number", minimum: 0 },
       },
     },
     config: {

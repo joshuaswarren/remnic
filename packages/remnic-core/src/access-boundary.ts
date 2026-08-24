@@ -264,6 +264,14 @@ export interface OperationContext {
   readonly abortSignal?: AbortSignal;
   /** Server-resolved connector identity (Phase 1 provenance). Set by the HTTP auth boundary from the matched token's connector; flows to write handlers so frontmatter records which connector submitted the memory. Client-supplied values are always overridden. */
   readonly sourceConnector?: string;
+  /**
+   * The PRE-validation raw envelope exactly as the transport supplied it
+   * (issue #2829). Handlers use it to retain input spellings the schema's
+   * transforms canonicalize — e.g. the memory-store category aliases — so
+   * diagnostics can name what the caller actually sent. Never trust it for
+   * behavior; only the parsed `input` is validated.
+   */
+  readonly rawInput?: unknown;
   readonly hooks?: OperationHooks;
 }
 
@@ -288,8 +296,13 @@ export interface OperationSpec<In, Out> {
   /** Canonical operation id; matches an {@link OperationName}. */
   readonly name: OperationName;
   readonly description: string;
-  /** Zod schema validating the raw request envelope. */
-  readonly schema: z.ZodType<In>;
+  /**
+   * Zod schema validating the raw request envelope. Input type may differ
+   * from the output `In` — schemas that canonicalize during parsing (issue
+   * #2829 category aliases) are first-class, declared truthfully instead of
+   * cast into an input-equals-output shape.
+   */
+  readonly schema: z.ZodType<In, z.ZodTypeDef, unknown>;
   /** Handler invoked with the parsed input; throws EngramAccessInputError for domain faults. */
   readonly handler: (input: In, ctx: OperationContext) => Promise<Out>;
   /**
@@ -480,7 +493,7 @@ export function defineOperation<In, Out>(spec: OperationSpec<In, Out>): BoundOpe
         throw new EngramAccessInputError(formatZodIssues(parseResult.error));
       }
       assertOperationAuthorizationAllowed(tokenCapabilityStore.getStore(), spec);
-      return spec.handler(parseResult.data, ctx);
+      return spec.handler(parseResult.data, { ...ctx, rawInput });
     },
   };
   // Store under the canonical name; the cast is safe because In/Out are
@@ -498,9 +511,11 @@ export function getOperation(name: OperationName): BoundOperation | undefined {
 export function operationRequiresAuthorizedNamespace(name: OperationName): boolean {
   if (name === "namespace_writable") return false;
   if (IMPLICIT_HTTP_NAMESPACE_OPERATIONS.has(name)) return true;
-  const schema = registry.get(name)?.spec.schema;
-  const objectSchema = schema instanceof z.ZodEffects ? schema.innerType() : schema;
-  return objectSchema instanceof z.ZodObject && Object.hasOwn(objectSchema.shape, "namespace");
+  let schema: unknown = registry.get(name)?.spec.schema;
+  // preprocess/transform/refine each wrap ZodEffects. One unwrap left
+  // suggestion_submit looking namespace-free after the category transform.
+  while (schema instanceof z.ZodEffects) schema = schema.innerType();
+  return schema instanceof z.ZodObject && Object.hasOwn(schema.shape, "namespace");
 }
 
 /** Whether an operation resolves its namespace from the authenticated principal. */
