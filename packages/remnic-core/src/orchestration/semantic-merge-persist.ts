@@ -57,9 +57,9 @@ import { REFUSED_MERGE_CATEGORIES } from "../dedup/merge-on-write.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { inferIntentFromText } from "../intent.js";
 import {
-  hasCitationForTemplate,
+  attachCitation,
   lastCitationMarkerForTemplate,
-  stripCitationForTemplate,
+  type CitationContext,
 } from "../source-attribution.js";
 import {
   resolveConversationContextCapabilities,
@@ -224,6 +224,14 @@ export interface ApplySemanticMergeOptions {
    * Absent (or citation-free) commits the judge's merged body unchanged.
    */
   incomingCitedContent?: string;
+  /**
+   * #2916: the citation context of THIS write (agent/session) — the same
+   * base a fresh attributed write stamps. When no incoming citation marker
+   * is liftable, the committed merged body still receives the configured
+   * inline-attribution transform exactly as a fresh attributed write would,
+   * stamped with this context and the merge's commit timestamp.
+   */
+  incomingCitationContext?: Omit<CitationContext, "ts">;
   /**
    * Finding C: async probe run after a merge verdict but before any
    * mutation. True when the would-be target already has promoted
@@ -470,30 +478,42 @@ export function createPathMergeParity(input: {
 }
 
 /**
- * Round N+7 (C): the committed merged body carries the incoming extraction's
- * citation marker (lifted from the caller's cited body for this write)
- * appended after the judge's merged text, so incoming claims stay attributed
- * even when the merged text embeds the target's older citation — quoted
- * excerpts travel without frontmatter, so `sources` alone is not enough.
- * Idempotent; a no-op when attribution is off or no marker exists.
+ * Round N+7 (C) + #2916: the citation form of the committed merged body.
+ * The incoming fact's own marker (lifted from the caller's cited body for
+ * this write) is appended after the judge's merged text, so incoming claims
+ * stay attributed even when the merged text embeds the target's older
+ * citation — quoted excerpts travel without frontmatter, so `sources`
+ * alone is not enough. When no incoming marker is liftable — a caller that
+ * supplied no cited body, or a template whose marker cannot be re-matched —
+ * the configured transform is applied to the merged body exactly as a
+ * fresh attributed write would, through the same attachCitation helper the
+ * write path uses. That helper is a no-op when the body already carries a
+ * recognized marker, so a legacy target tagged under another format and a
+ * retry of an already-attributed merge never gain a duplicate. A no-op
+ * when attribution is off.
  */
 function committedMergedBody(
   deps: ExtractionPersistDeps,
   mergedContent: string,
   incomingCitedContent: string | undefined,
+  incomingCitationContext: Omit<CitationContext, "ts"> | undefined,
+  nowIso: string,
 ): string {
-  if (
-    resolvePipelineProcessingCapabilities(deps.config).inlineSourceAttribution !== true ||
-    incomingCitedContent === undefined
-  ) {
+  if (resolvePipelineProcessingCapabilities(deps.config).inlineSourceAttribution !== true) {
     return mergedContent;
   }
-  const marker = lastCitationMarkerForTemplate(
-    incomingCitedContent,
-    deps.config.inlineSourceAttributionFormat,
+  const template = deps.config.inlineSourceAttributionFormat;
+  if (incomingCitedContent !== undefined) {
+    const marker = lastCitationMarkerForTemplate(incomingCitedContent, template);
+    if (marker) {
+      return mergedContent.endsWith(marker) ? mergedContent : `${mergedContent} ${marker}`;
+    }
+  }
+  return attachCitation(
+    mergedContent,
+    { ...incomingCitationContext, ts: nowIso },
+    template,
   );
-  if (!marker || mergedContent.endsWith(marker)) return mergedContent;
-  return `${mergedContent} ${marker}`;
 }
 
 function versioningConfigFrom(deps: ExtractionPersistDeps): VersioningConfig {
@@ -610,10 +630,19 @@ export async function applySemanticMergeAtPersist(
   if (target.content !== decision.targetContent) {
     return { action: "created", reason: "target_changed" };
   }
-  // Round N+7 (C): every mutation below commits THIS body — the judge's
-  // merged text plus the incoming citation marker — and the outcome reports
-  // it, so caller comparisons describe what storage actually holds.
-  const committedContent = committedMergedBody(deps, decision.mergedContent, options.incomingCitedContent);
+  // Round N+7 (C) + #2916: every mutation below commits THIS body — the
+  // judge's merged text in its cited form (the incoming marker when one is
+  // liftable, else the configured transform as a fresh attributed write
+  // applies it) — and the outcome reports it, so caller comparisons
+  // describe what storage actually holds.
+  const nowIso = (options.now ? options.now() : new Date()).toISOString();
+  const committedContent = committedMergedBody(
+    deps,
+    decision.mergedContent,
+    options.incomingCitedContent,
+    options.incomingCitationContext,
+    nowIso,
+  );
 
   // Create-path parity gate (final round) — ONE place enumerates every
   // trust/scope/verdict field the normal write stamps and bypasses the
@@ -713,7 +742,6 @@ export async function applySemanticMergeAtPersist(
   // snapshot just read: a writer landing between the read and the write must
   // win rather than be overwritten from a stale body. The active-target check
   // above makes a tombstone block structurally impossible here.
-  const nowIso = (options.now ? options.now() : new Date()).toISOString();
   let contentCommitted = false;
   // Captured so the success return can describe the COMMITTED frontmatter
   // (the patch's appended sources) without widening the try's scope.
