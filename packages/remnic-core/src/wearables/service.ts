@@ -13,6 +13,7 @@ import {
 } from "./corrections.js";
 import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
+import type { LocationConfig } from "../location/types.js";
 import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 import {
   bodyIsEscaped,
@@ -143,6 +144,12 @@ export interface WearablesServiceDeps {
    * fails the sync.
    */
   onDaysSynced?: (days: readonly string[]) => void | Promise<void>;
+  /**
+   * Location config for the missing-only conversation location fill
+   * (issue #2925). Absent changes nothing; the fill itself stays gated
+   * on the location tagging flags.
+   */
+  locationConfig?: LocationConfig;
 }
 
 export interface WearableTranscriptSearchResult {
@@ -351,6 +358,7 @@ export class WearablesService {
         options,
         {
           memoryDir: storage.dir,
+          locationConfig: this.deps.locationConfig,
           readDayContentHash: async (source, date) => {
             const raw = await storage.readWearableDayTranscript(source, date);
             if (raw === null) return null;

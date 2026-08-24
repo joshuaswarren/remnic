@@ -484,6 +484,8 @@ export interface EngramAccessDaySummaryRequest {
   memories?: string;
   sessionKey?: string;
   namespace?: string;
+  /** Opt-in matched-place-name context for the auto-gathered summary (issue #2925). */
+  includeLocation?: boolean;
   timeZone?: string;
 }
 
@@ -492,6 +494,8 @@ export interface EngramAccessBriefingRequest {
   since?: string;
   focus?: string;
   namespace?: string;
+  /** Opt-in matched-place-name section appended to markdown and json (issue #2925). */
+  includeLocation?: boolean;
   format?: "markdown" | "json";
   maxFollowups?: number;
   /** Caller principal for namespace access checks. Transport-bound — never from untrusted payloads. */
@@ -2463,6 +2467,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       // Auto-gather today's facts from the resolved namespace
       return this.orchestrator.generateDaySummaryAuto(namespace, {
         timeZone: request.timeZone,
+        includeLocation: request.includeLocation === true,
       });
     }
     return this.orchestrator.generateDaySummary(memories);

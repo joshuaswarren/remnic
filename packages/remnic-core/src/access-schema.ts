@@ -468,6 +468,7 @@ export const lcmCompactionRecordRequestSchema = z.object({
 
 export const daySummaryRequestSchema = z.object({
   memories: z.string().max(100000).optional(),
+  includeLocation: z.boolean().optional(),
   sessionKey: sessionKeySchema,
   namespace: namespaceSchema,
   timeZone: timeZoneSchema.optional(),

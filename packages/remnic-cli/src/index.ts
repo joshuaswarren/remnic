@@ -218,6 +218,7 @@ import type {
   TaxonomyCategory,
   TokenEntry,
 } from "@remnic/core";
+import { briefingLocationSection, locationTaggingEnabled } from "@remnic/core/location";
 // @remnic/bench is an optional install surface. Import types only at the
 // top level (erased at compile time); runtime access goes through
 // loadBenchModule() / tryLoadBenchModule() so the CLI stays functional for
@@ -5971,6 +5972,7 @@ async function cmdBriefing(rest: string[]): Promise<void> {
   const sinceFlag = resolveFlag(rest, "--since");
   const focusFlag = resolveFlag(rest, "--focus");
   const formatFlag = resolveFlag(rest, "--format");
+  const includeLocation = rest.includes("--include-location");
   const save = rest.includes("--save") || config.briefing.saveByDefault;
 
   if (hasFlag(rest, "--since") && sinceFlag === undefined) {
@@ -6059,6 +6061,20 @@ async function cmdBriefing(rest: string[]): Promise<void> {
       ? undefined
       : orchestrator.briefingChainFollowupGenerator,
   });
+
+  // Opt-in matched place names (issue #2925): same gate + section the
+  // access service appends, so CLI and server briefings stay identical.
+  if (includeLocation && locationTaggingEnabled(config.location)) {
+    const section = await briefingLocationSection(
+      storage.dir,
+      window.from.toISOString(),
+      config.location,
+    );
+    if (section) {
+      result.markdown += `\n\n${section}\n`;
+      result.json = { ...result.json, locationContext: section };
+    }
+  }
 
   const payload = format === "json" ? JSON.stringify(result.json, null, 2) : result.markdown;
   console.log(payload);

@@ -275,3 +275,21 @@ export async function renderDayLocationContext(
   });
   return `## Location context\n\n${lines.join("\n")}`;
 }
+
+/**
+ * Location context for a briefing (issue #2925): the place names of the
+ * local day containing the briefing window's start, bucketed in the
+ * location config's own timezone (the store's bucketing zone). Opt-in and
+ * labels-only — the caller decides whether to include it.
+ */
+export async function briefingLocationSection(
+  memoryDir: string,
+  windowStartUtc: string,
+  config: LocationConfig,
+): Promise<string | null> {
+  return renderDayLocationContext(
+    memoryDir,
+    localDayKey(windowStartUtc, config.timezone),
+    config,
+  );
+}

@@ -260,7 +260,7 @@ function resolveChatGptInspectorRecallSessionKey(
 }
 
 const STRICT_MCP_SCHEMA_KEYS: Partial<Record<SchemaName, readonly string[]>> = {
-  daySummary: ["memories", "sessionKey", "namespace", "timeZone", "cwd", "projectTag"],
+  daySummary: ["memories", "includeLocation", "sessionKey", "namespace", "timeZone", "cwd", "projectTag"],
   memoryStore: [
     "schemaVersion",
     "idempotencyKey",
@@ -1654,12 +1654,9 @@ export class EngramMcpServer {
                 type: "object",
                 properties: {
                   since: { type: "string", description: "Lookback window (e.g. 'yesterday', '3d', '1w', '24h')." },
-                  focus: {
-                    type: "string",
-                    description:
-                      "Optional focus filter (e.g. 'person:Jane Doe', 'project:remnic-core', 'topic:retrieval').",
-                  },
+                  focus: { type: "string", description: "Optional focus filter (e.g. 'person:Jane Doe', 'project:remnic-core', 'topic:retrieval')." },
                   namespace: { type: "string" },
+                  includeLocation: { type: "boolean", description: "Opt-in: append matched location place names (location gates apply)." },
                   format: { type: "string", enum: ["markdown", "json"] },
                   maxFollowups: {
                     type: "number",

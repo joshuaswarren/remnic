@@ -142,6 +142,25 @@ The location subsystem is off by default. It buckets place observations from reg
 | `location.sources.id` | `(required)` | Registered provider id (lowercase kebab: `a-z`, `0-9`, hyphens); must be unique across sources. |
 | `location.sources.enabled` | `true` | Set false to short-circuit this source only; other sources still sync. |
 
+### Surfaces that consume location context (issue #2925)
+
+With `location.enabled` and `location.tagging.enabled` both on:
+
+- Wearable conversations whose provider supplied no location get the matched
+  dominant-overlap place label in their `*Location:*` transcript line. A
+  source-provided or manual value is never overwritten, and non-dominant,
+  conflicting, or below-threshold matches leave the field empty.
+- `day_summary` accepts `includeLocation: true` (MCP/HTTP) to append a
+  labels-only `## Location context` section to the gathered facts for the
+  summary. Without the flag the gathered input is byte-identical to a
+  no-location build.
+- `briefing` accepts `includeLocation: true` (CLI `--include-location`,
+  MCP/HTTP) to append the same labels-only section, anchored on the local day
+  containing the briefing window's start in `location.timezone`.
+
+Only place labels and dwell durations are ever rendered; coordinates and raw
+location records never reach day summaries, briefings, or wearable outputs.
+
 ## OKF
 
 | Setting | Default | Description |

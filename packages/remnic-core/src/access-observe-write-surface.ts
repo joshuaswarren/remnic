@@ -45,6 +45,7 @@ import {
   persistExplicitCapture,
   queueExplicitCaptureForReview,
 } from "./explicit-capture.js";
+import { briefingLocationSection, locationTaggingEnabled } from "./location/tagging.js";
 import { log } from "./logger.js";
 import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
 import type { Orchestrator } from "./orchestrator.js";
@@ -471,6 +472,22 @@ export class AccessObserveWriteSurface {
       // existing deployments are unchanged.
       followupGenerator: config.openaiApiKey ? undefined : this.deps.orchestrator.briefingChainFollowupGenerator,
     });
+
+    // Opt-in matched place names (issue #2925): rendered only when the
+    // caller explicitly asked AND both location gates are on. Default
+    // requests return the briefing byte-identical to a no-location build.
+    if (request.includeLocation === true && locationTaggingEnabled(config.location)) {
+      const section = await briefingLocationSection(
+        storage.dir,
+        window.from.toISOString(),
+        config.location,
+      );
+      if (section) {
+        result.markdown += `\n\n${section}\n`;
+        result.json = { ...result.json, locationContext: section };
+      }
+    }
+
 
     return {
       format,
