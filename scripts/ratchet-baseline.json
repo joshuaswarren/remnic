@@ -27,7 +27,7 @@
       "packages/coding-graph/src/graph-store.ts": 3867,
       "packages/remnic-cli/src/bench-args.ts": 1345,
       "packages/remnic-cli/src/index.ts": 13629,
-      "packages/remnic-core/src/access-http.ts": 4019,
+      "packages/remnic-core/src/access-http.ts": 4020,
       "packages/remnic-core/src/access-mcp.ts": 2753,
       "packages/remnic-core/src/access-recall-surface.ts": 1412,
       "packages/remnic-core/src/access-service.ts": 5910,
