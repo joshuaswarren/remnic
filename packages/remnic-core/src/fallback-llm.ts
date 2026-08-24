@@ -20,10 +20,14 @@ import {
 } from "./providers/codex-subscription.js";
 import { loadModelsJsonProviders } from "./models-json.js";
 import {
+  abortReason,
   codexDeadlineHeadroomMs,
+  extractResponsesOutputText,
   isTerminalCodexSubscriptionError,
+  isUnsupportedJsonSchemaError,
   raceFallbackLlmDeadline,
   tryCodexSubscriptionProvider,
+  withCodexRuntimeShutdown,
 } from "./fallback-llm-codex-subscription.js";
 import type { CodexCliFallbackRunner } from "./cli-fallback.js";
 import { resolveHomeDir } from "./runtime/env.js";
@@ -52,6 +56,13 @@ export interface FallbackLlmOptions {
   agentId?: string;
   /** Reject a transport-successful response and continue through the configured model chain. */
   acceptResponse?: (response: FallbackLlmResponse) => boolean;
+  /**
+   * Optional out-box for the terminal failure cause (issue #2891): when every
+   * model in the chain fails, the last thrown provider error is recorded here
+   * so callers can classify it (e.g. HTTP 429 → rate-limited) in memory
+   * instead of seeing only null. Never logged.
+   */
+  failureDiag?: { lastError?: unknown };
 }
 
 export interface FallbackLlmAvailabilityOptions {
@@ -122,22 +133,6 @@ interface ModelRef {
   modelId: string;
   providerConfig: ModelProviderConfig;
   modelString: string;
-}
-
-function isUnsupportedJsonSchemaError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  // Require an HTTP status plus explicit schema/format context. A bare
-  // "unsupported" (e.g. "'temperature' is unsupported with this model") must
-  // NOT trigger the schema-stripping retry, or we pay a duplicate request
-  // for unrelated provider errors.
-  if (!/\b(?:400|404|422)\b/.test(message)) {
-    return false;
-  }
-  if (/(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output)/i.test(message)) {
-    return true;
-  }
-  // "unsupported" only counts when adjacent to schema/format terminology.
-  return /\bunsupported\b[\s\S]{0,40}\b(?:schema|format)\b/i.test(message);
 }
 
 const PROVIDER_ALIASES: Record<string, readonly string[]> = {
@@ -233,12 +228,14 @@ export class FallbackLlmClient {
       log.warn("fallback LLM: no models configured in gateway");
       return null;
     }
+    options = withCodexRuntimeShutdown(options, this.runtimeContext.codexSubscriptionRunner);
 
     const runChain = async (
       initialOptions: FallbackLlmOptions,
     ): Promise<FallbackLlmResponse | null> => {
       let runOptions = initialOptions;
       let lastRejectedResponse: FallbackLlmResponse | null = null;
+      let lastError: unknown;
       let terminalError: unknown;
       // Try each model in the chain
       for (let i = 0; i < models.length; i++) {
@@ -273,6 +270,7 @@ export class FallbackLlmClient {
           if (runOptions.signal?.aborted) {
             throw abortReason(runOptions.signal);
           }
+          lastError = err;
           if (
             (runOptions.jsonSchema || runOptions.responsesJsonSchema) &&
             isUnsupportedJsonSchemaError(err)
@@ -306,6 +304,7 @@ export class FallbackLlmClient {
                 throw retryError;
               }
               if (runOptions.signal?.aborted) throw abortReason(runOptions.signal);
+              lastError = retryError;
               const retryErrorMsg = runOptions.redactProviderErrors
                 ? "provider error details redacted"
                 : retryError instanceof Error
@@ -334,6 +333,9 @@ export class FallbackLlmClient {
       }
 
       log.warn(`fallback LLM: all ${models.length} models in chain failed`);
+      if (options.failureDiag && lastError !== undefined && !lastRejectedResponse) {
+        options.failureDiag.lastError = lastError;
+      }
       // A terminal typed provider failure must reach the caller when the
       // chain is exhausted — the documented timeout/re-login guidance
       // depends on it (issue #2833).
@@ -361,12 +363,17 @@ export class FallbackLlmClient {
         return null;
       });
       try {
+        const timeoutError = Object.assign(
+          new Error(`fallback LLM timed out after ${options.timeoutMs}ms`),
+          { name: "TimeoutError" },
+        );
         const outcome = await raceFallbackLlmDeadline(
           guarded,
           options.timeoutMs,
           () => {
             log.warn(`fallback LLM: timed out after ${options.timeoutMs}ms`);
-            controller.abort(new Error(`fallback LLM timed out after ${options.timeoutMs}ms`));
+            controller.abort(timeoutError);
+            if (options.failureDiag) options.failureDiag.lastError = timeoutError;
           },
           models.some((model) => model.providerConfig.api === "codex-cli")
             ? codexDeadlineHeadroomMs(options.timeoutMs)
@@ -845,7 +852,7 @@ export class FallbackLlmClient {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`OpenAI API error: ${response.status} ${error}`);
+      throw Object.assign(new Error(`OpenAI API error: ${response.status} ${error}`), { status: response.status });
     }
 
     const data = (await response.json()) as {
@@ -917,7 +924,7 @@ export class FallbackLlmClient {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Ollama API error: ${response.status} ${error}`);
+      throw Object.assign(new Error(`Ollama API error: ${response.status} ${error}`), { status: response.status });
     }
 
     const data = (await response.json()) as {
@@ -1015,7 +1022,7 @@ export class FallbackLlmClient {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`OpenAI Responses API error: ${response.status} ${error}`);
+      throw Object.assign(new Error(`OpenAI Responses API error: ${response.status} ${error}`), { status: response.status });
     }
 
     const data = (await response.json()) as {
@@ -1107,7 +1114,7 @@ export class FallbackLlmClient {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Anthropic API error: ${response.status} ${error}`);
+      throw Object.assign(new Error(`Anthropic API error: ${response.status} ${error}`), { status: response.status });
     }
 
     const data = (await response.json()) as {
@@ -1139,11 +1146,6 @@ export class FallbackLlmClient {
   }
 }
 
-function abortReason(signal: AbortSignal | undefined): Error {
-  const reason = signal?.reason;
-  return reason instanceof Error ? reason : new Error("fallback LLM request aborted");
-}
-
 function normalizeRuntimePath(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -1164,37 +1166,3 @@ function defaultOpenClawWorkspaceDir(): string {
   return path.join(resolveHomeDir(), ".openclaw", "workspace");
 }
 
-function extractResponsesOutputText(data: {
-  output_text?: string;
-  output?: Array<{
-    type?: string;
-    text?: string;
-    content?: Array<{
-      type?: string;
-      text?: string;
-    }>;
-  }>;
-}): string | null {
-  if (typeof data.output_text === "string" && data.output_text.trim().length > 0) {
-    return data.output_text;
-  }
-
-  const chunks: string[] = [];
-  for (const item of data.output ?? []) {
-    if (typeof item.text === "string" && item.text.trim().length > 0) {
-      chunks.push(item.text);
-    }
-    for (const part of item.content ?? []) {
-      if (
-        (part.type === "output_text" || part.type === "text") &&
-        typeof part.text === "string" &&
-        part.text.trim().length > 0
-      ) {
-        chunks.push(part.text);
-      }
-    }
-  }
-
-  const joined = chunks.join("\n").trim();
-  return joined.length > 0 ? joined : null;
-}

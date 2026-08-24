@@ -59,6 +59,11 @@ export function isCodexCliFallbackRunnerRegistered(): boolean {
   return processRunner !== undefined;
 }
 
+/** Current process-local Codex CLI runner, if any. */
+export function getCodexCliFallbackRunnerForProcess(): CodexCliFallbackRunner | undefined {
+  return processRunner;
+}
+
 /**
  * Registers the process-local Codex CLI transport. Core itself stays free of
  * child_process here; hosts and benchmark runtimes opt in, and the

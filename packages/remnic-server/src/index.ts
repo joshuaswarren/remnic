@@ -14,7 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, getCodexSubscriptionRunnerForOwner, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler, type CodexCliFallbackRunner } from "@remnic/core";
+import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, getCodexSubscriptionRunnerForOwner, beginCodexSubscriptionShutdown, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler, type CodexCliFallbackRunner } from "@remnic/core";
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
 import { envOverrides } from "./server-env.js";
@@ -699,17 +699,21 @@ async function cleanupFailedStartup(
   httpServer: EngramAccessHttpServer,
   codexRunner: CodexCliFallbackRunner,
 ): Promise<void> {
-  terminateActiveCodexSubscriptionChildren("SIGTERM", codexRunner);
+  const finishCodex = beginCodexSubscriptionShutdown(codexRunner);
   try {
-    await httpServer.stop();
-  } catch (err) {
-    log.warn(`HTTP startup failure cleanup could not stop server: ${err}`);
-  }
+    try {
+      await httpServer.stop();
+    } catch (err) {
+      log.warn(`HTTP startup failure cleanup could not stop server: ${err}`);
+    }
 
-  try {
-    await orchestrator.destroy();
-  } catch (err) {
-    log.warn(`HTTP startup failure cleanup could not destroy orchestrator: ${err}`);
+    try {
+      await orchestrator.destroy();
+    } catch (err) {
+      log.warn(`HTTP startup failure cleanup could not destroy orchestrator: ${err}`);
+    }
+  } finally {
+    finishCodex();
   }
   terminateActiveCodexSubscriptionChildren("SIGKILL", codexRunner);
 }
@@ -920,7 +924,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   const stop = async (): Promise<void> => {
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
-      terminateActiveCodexSubscriptionChildren("SIGTERM", codexRunner);
+      const finishCodex = beginCodexSubscriptionShutdown(codexRunner);
       startupSyncAbort.abort();
       readinessAbort.abort();
       supportPassportRuntime.close();
@@ -931,8 +935,11 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
         try {
           await readinessTask;
         } finally {
-          await orchestrator.destroy();
-          terminateActiveCodexSubscriptionChildren("SIGKILL", codexRunner);
+          try {
+            await orchestrator.destroy();
+          } finally {
+            finishCodex();
+          }
         }
       }
     })();

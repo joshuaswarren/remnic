@@ -1,8 +1,7 @@
 /**
- * Codex-subscription helpers for FallbackLlmClient (issue #2833).
- *
- * Terminal error classification and the `api: "codex-cli"` provider attempt
- * live here so fallback-llm.ts stays generic chain orchestration.
+ * Helpers extracted from FallbackLlmClient so fallback-llm.ts stays under
+ * the 1200-line cap: Codex-subscription lifecycle (issue #2833) plus
+ * generic chain helpers used by the same client.
  */
 
 import { raceAbort } from "./abort-error.js";
@@ -15,6 +14,8 @@ import {
   CodexSubscriptionTimeoutError,
   assertNoApiKeyConfig,
   ensureCodexSubscriptionRunnerRegistered,
+  getCodexSubscriptionShutdownSignal,
+  isDefaultRegisteredCodexSubscriptionRunner,
 } from "./providers/codex-subscription.js";
 import type { ModelProviderConfig } from "./types.js";
 
@@ -155,9 +156,10 @@ export async function tryCodexSubscriptionProvider(
       : Math.max(1, options.timeoutMs - codexDeadlineHeadroomMs(options.timeoutMs)),
     signal: options.signal,
   };
-  // A host/benchmark runner on the process seam still wins. Otherwise use
-  // the owning runtime's runner so shutdown cannot kill another instance.
-  if (isCodexCliFallbackRunnerRegistered()) {
+  // A host/benchmark runner on the process seam still wins. The core
+  // default runner does not: prefer the owning runtime so shutdown
+  // terminates the request that runtime started.
+  if (isCodexCliFallbackRunnerRegistered() && !(runner && isDefaultRegisteredCodexSubscriptionRunner())) {
     return await callCodexCliFallback(effectiveConfig, model.modelId, messages, callOptions);
   }
   if (runner) {
@@ -165,4 +167,73 @@ export async function tryCodexSubscriptionProvider(
   }
   ensureCodexSubscriptionRunnerRegistered();
   return await callCodexCliFallback(effectiveConfig, model.modelId, messages, callOptions);
+}
+
+export function abortReason(signal: AbortSignal | undefined): Error {
+  const reason = signal?.reason;
+  return reason instanceof Error ? reason : new Error("fallback LLM request aborted");
+}
+
+export function withCodexRuntimeShutdown<T extends { signal?: AbortSignal }>(
+  options: T,
+  runner: CodexCliFallbackRunner | undefined,
+): T {
+  if (!runner) return options;
+  const shutdown = getCodexSubscriptionShutdownSignal(runner);
+  if (!shutdown) return options;
+  return {
+    ...options,
+    signal: options.signal ? AbortSignal.any([options.signal, shutdown]) : shutdown,
+  };
+}
+
+export function isUnsupportedJsonSchemaError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  // Require an HTTP status plus explicit schema/format context. A bare
+  // "unsupported" (e.g. "'temperature' is unsupported with this model") must
+  // NOT trigger the schema-stripping retry, or we pay a duplicate request
+  // for unrelated provider errors.
+  if (!/\b(?:400|404|422)\b/.test(message)) {
+    return false;
+  }
+  if (/(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output)/i.test(message)) {
+    return true;
+  }
+  // "unsupported" only counts when adjacent to schema/format terminology.
+  return /\bunsupported\b[\s\S]{0,40}\b(?:schema|format)\b/i.test(message);
+}
+
+export function extractResponsesOutputText(data: {
+  output_text?: string;
+  output?: Array<{
+    type?: string;
+    text?: string;
+    content?: Array<{
+      type?: string;
+      text?: string;
+    }>;
+  }>;
+}): string | null {
+  if (typeof data.output_text === "string" && data.output_text.trim().length > 0) {
+    return data.output_text;
+  }
+
+  const chunks: string[] = [];
+  for (const item of data.output ?? []) {
+    if (typeof item.text === "string" && item.text.trim().length > 0) {
+      chunks.push(item.text);
+    }
+    for (const part of item.content ?? []) {
+      if (
+        (part.type === "output_text" || part.type === "text") &&
+        typeof part.text === "string" &&
+        part.text.trim().length > 0
+      ) {
+        chunks.push(part.text);
+      }
+    }
+  }
+
+  const joined = chunks.join("\n").trim();
+  return joined.length > 0 ? joined : null;
 }
