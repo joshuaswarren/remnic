@@ -1,56 +1,37 @@
-# Theory: Legacy mapping paths must stay inside the dataset root
+# Theory: Review deck access is a gated HTTP facade
 
 ## Problem
 
-Legacy discovery already rejects a symlink dataset dir, a symlink ancestor,
-and any symlink inside the dataset tree. MemoryAgentBench still reads
-`entity2id.json` from sibling paths under the datasets root:
+The admin console needs a one-item review deck. The access god-files have no line budget for another route family.
 
-- `processed_data/Recsys_Redial/entity2id.json`
-- `Recsys_Redial/entity2id.json`
+Existing review-queue and review-disposition routes already prove the boundary pattern. The new deck must reuse that pattern without growing `access-http.ts` or `access-service.ts` past their ratchets.
 
-Those siblings sit next to `memoryagentbench`, not inside it. A tree walk of
-the dataset dir never sees them. `lstat` on the nested file follows an
-intermediate directory symlink, so an external mapping looks like a local
-regular file. The runner then reads that file.
+## Operating theory
 
-## Operating Theory
+The deck is not a new store. It projects pending review files and writes through the existing review and lifecycle APIs.
 
-Two consumers share the same candidate list: the downloaded-marker check and
-the ReDial mapping loader. Every candidate must pass the same two checks,
-including the loose `entity2id.json` under the dataset dir:
+The access layer is only a facade:
 
-1. No-follow scan of each path component from the datasets root to the file
-2. Realpath containment under that same root
+- HTTP matching, gate, validation, and write-quota live in `ReviewDeckAccessHttpBase`.
+- Namespace ACL, snapshot paging, and mutation context live in `ReviewDeckSurface`.
+- `EngramAccessService` exposes `reviewDeckEnabled` plus three one-line delegates.
 
-A sibling `processed_data` or `Recsys_Redial` symlink then fails. A real
-directory tree under the datasets root still passes.
+A disabled gate answers 404 before any op check or body read. That keeps an off switch from changing existing review routes.
 
-The dataset-tree walk stays. It covers unused in-tree links. It does not
-cover siblings. The mapping-candidate check covers siblings.
+Principal and namespace come from the HTTP boundary. A POST body may carry those keys; the facade ignores them.
 
 ## Strategy
 
-Keep the candidate list. Change only the file check in both consumers. Do
-not invent a second discovery root. Do not follow a mapping path that left
-the datasets root.
+Follow `review_queue_list` / `review_disposition` for names and catalog rows. Extract the handler body the way support-passport extracted its HTTP base, so `access-http.ts` grows by one dispatch line.
 
-## Key Discoveries
+Cursor errors stay client errors. A bad cursor must not restart at page one.
 
-`isRegularFileNoFollow` only `lstat`s the final component. Intermediate
-directory symlinks are followed before that call.
+## Key discoveries
 
-`datasetTreeHasSymlink` walks `legacyRoot/memoryagentbench`. Sibling mapping
-dirs live on `legacyRoot` itself.
+The catalog fitness test only scans `access-http.ts` unless a sibling extractor is added. A one-line dispatch would look unmigrated without teaching that scanner about `review-deck-http-base.ts`.
 
-A real `legacyRoot/processed_data/Recsys_Redial/entity2id.json` is valid
-layout. The guard must reject the symlink case without rejecting that layout.
+`storage.readMemoryLifecycleEvents` is a tail read. The per-memory bounded reader is `getMemoryTimeline`.
 
-Closing discovery alone is not enough. An explicit `--dataset-dir` still
-reaches the runner, which used `access`/`readFile` and followed the same
-sibling symlink.
+## Open questions
 
-## Open Questions
-
-None for this hole. Further review rounds on hypothetical mutations of the
-path walk should be declined under the review-round cap.
+Whether ServerGate's boolean arrives already coerced. The service treats only `=== true` as enabled, which matches the other constructor flags.
