@@ -4352,6 +4352,33 @@
           }
         }
       },
+      "recallNavigation": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Session-scoped recall navigation (issue #1956): expand a served memory at deeper disclosure and traverse its typed links, without a fresh search (MCP memory_expand/memory_traverse tools, POST /engram|remnic/v1/memory/{expand,traverse}, remnic navigate CLI).",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Master switch. Default on (read-only surface). When false the navigation tools are absent from MCP tool listing and every surface returns a typed disabled refusal."
+          },
+          "windowSnapshots": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 3,
+            "description": "How many of the session's most recent recall snapshots an expandable or traversable id may come from."
+          },
+          "maxNeighbors": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 10,
+            "description": "Ceiling for a traverse or entity-neighbor result count."
+          }
+        }
+      },
       "extractionLiveness": {
         "type": "object",
         "additionalProperties": false,

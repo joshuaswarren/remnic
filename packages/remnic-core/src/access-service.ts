@@ -171,6 +171,7 @@ import {
 } from "./admin/admin-surfaces.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import { type DeepRecallResult, runBudgetedDeepRecall } from "./deep-recall.js";
+import { type RecallNavigationRequest, type RecallNavigationResult, runRecallNavigation } from "./recall-navigation.js";
 import { callDeepRecallPolicyLlm } from "./deep-recall-policy-llm.js";
 import { createDeepRecallSeedSearch } from "./deep-recall-seeds.js";
 import { renderDeepRecallResult } from "./deep-recall-renderer.js";
@@ -1262,6 +1263,8 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   private readonly replicaDivergenceMonitor: ReplicaDivergenceMonitor;
   private readonly injectedSupportPassportGatewayRoute: SupportPassportModelRoute | null;
   readonly reviewDeckEnabled: boolean;
+  /** Navigation gate (issue #1956); MCP listing reads it, tests stub it. */
+  readonly recallNavigationEnabled: boolean;
 
   /** AccessObserveWriteSurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessObserveWriteSurface: AccessObserveWriteSurface | undefined;
@@ -1350,6 +1353,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     this.replicaDivergenceMonitor = new ReplicaDivergenceMonitor({ resolveSecretRef: options.resolveSecretRef });
     this.injectedSupportPassportGatewayRoute = options.supportPassportGatewayRoute ?? null;
     this.reviewDeckEnabled = options.reviewDeckEnabled === true;
+    this.recallNavigationEnabled = orchestrator.config.recallNavigation.enabled;
     const accessCaps = resolveAccessSetupCapabilities(orchestrator.config); // #1566 Cluster B
     this.budget = new CrossNamespaceBudget({
       enabled: accessCaps.recallCrossNamespaceBudget,
@@ -2820,6 +2824,22 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       query
     );
     return { ...result, rendered: renderDeepRecallResult(result) };
+  }
+
+  /** Recall navigation (issue #1956): one implementation for MCP, HTTP, and CLI (rule 22). */
+  async recallNavigate(request: RecallNavigationRequest): Promise<RecallNavigationResult> {
+    const principal =
+      request.authenticatedPrincipal?.trim() || resolvePrincipal(request.sessionKey, this.orchestrator.config);
+    return runRecallNavigation(
+      {
+        config: this.orchestrator.config.recallNavigation,
+        recallBudgetChars: this.orchestrator.config.recallBudgetChars,
+        recentServedIds: (sessionKey, depth) => this.orchestrator.handleHistory.recent(sessionKey, depth),
+        resolveReadableNamespace: (ns, p) => this.resolveReadableNamespace(ns, p || undefined),
+        getStorage: (namespace) => this.orchestrator.getStorage(namespace),
+      },
+      { ...request, authenticatedPrincipal: (principal ?? "").length > 0 ? principal : undefined },
+    );
   }
 
   async recallXray(request: {

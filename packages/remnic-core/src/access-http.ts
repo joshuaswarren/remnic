@@ -25,7 +25,7 @@ import {
 } from "./access-http-offline-stream.js";
 import { nonEmptyQueryParam, optionalNamespaceKindQueryParam, optionalQueryString, positiveIntQueryParam } from "./access-http-query.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
-import { respondWearablesErrorGlue } from "./wearables/http-glue.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js"; import { respondLocationStatus, respondLocationCheck, respondLocationSync, respondLocationBackfill, respondLocationDay } from "./location/http-glue.js"; import { respondStandup } from "./standup/http-glue.js"; import { respondDeepRecall } from "./deep-recall-http-glue.js";
+import { respondWearablesErrorGlue } from "./wearables/http-glue.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js"; import { respondLocationStatus, respondLocationCheck, respondLocationSync, respondLocationBackfill, respondLocationDay } from "./location/http-glue.js"; import { respondStandup } from "./standup/http-glue.js"; import { respondDeepRecall } from "./deep-recall-http-glue.js"; import { respondMemoryExpand, respondMemoryTraverse } from "./recall-navigation-http-glue.js";
 import { EngramMcpServer, MCP_SUPPORTED_PROTOCOL_VERSIONS } from "./access-mcp.js";
 import { handleMcpGetSse } from "./access-mcp-sse.js";
 import { validateRequest, type SchemaName, type SchemaTypeFor } from "./access-schema.js";
@@ -1752,6 +1752,11 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     const meetingGetRemnic = /^\/remnic\/v1\/meetings\/([^/]+)$/.exec(pathname); if (req.method === "GET" && meetingGetRemnic) { this.enforceTokenOp("meetings_get"); await respondMeetingsGet(res, this.respondJson.bind(this), this.service, meetingGetRemnic[1] ?? "", this.wearablesScope(req, parsed.searchParams.get("namespace") ?? undefined, parsed.searchParams.get("sessionKey") ?? undefined)); return; }
     if (req.method === "POST" && (pathname === "/engram/v1/recall/deep" || pathname === "/remnic/v1/recall/deep")) {
       this.enforceTokenOp("deep_recall"); await respondDeepRecall(req, res, this.respondJson.bind(this), this.readJsonBody.bind(this), this.service, (ns, sk) => this.wearablesScope(req, ns ?? parsed.searchParams.get("namespace") ?? undefined, sk ?? parsed.searchParams.get("sessionKey") ?? undefined)); return; }
+    // Recall navigation (issue #1956): thin branches; bodies live in recall-navigation-http-glue.ts.
+    if (req.method === "POST" && (pathname === "/engram/v1/memory/expand" || pathname === "/remnic/v1/memory/expand")) {
+      this.enforceTokenOp("memory_expand"); await respondMemoryExpand(req, res, this.respondJson.bind(this), this.readJsonBody.bind(this), this.service, (ns, sk) => this.wearablesScope(req, ns ?? parsed.searchParams.get("namespace") ?? undefined, sk ?? parsed.searchParams.get("sessionKey") ?? undefined)); return; }
+    if (req.method === "POST" && (pathname === "/engram/v1/memory/traverse" || pathname === "/remnic/v1/memory/traverse")) {
+      this.enforceTokenOp("memory_traverse"); await respondMemoryTraverse(req, res, this.respondJson.bind(this), this.readJsonBody.bind(this), this.service, (ns, sk) => this.wearablesScope(req, ns ?? parsed.searchParams.get("namespace") ?? undefined, sk ?? parsed.searchParams.get("sessionKey") ?? undefined)); return; }
     // Location sync surfaces (issue #2047): thin branches; bodies + boundary dispatch live in location/http-glue.ts.
     if (req.method === "GET" && (pathname === "/engram/v1/location/status" || pathname === "/remnic/v1/location/status")) {
       this.enforceTokenOp("location_status"); await respondLocationStatus(res, this.respondJson.bind(this), this.service); return; }

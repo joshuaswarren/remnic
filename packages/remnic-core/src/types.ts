@@ -18,6 +18,7 @@ import type {
   RecallDriftAnnotation,
 } from "./preferences/drift-types.js";
 import type { DeepRecallSettings } from "./deep-recall-config.js";
+import type { RecallNavigationSettings } from "./recall-navigation-config.js";
 import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
 import type { SkillProjectionConfig } from "./procedural/skill-projection.js";
 import type { ActionGateConfig } from "./coding/action-gate.js";
@@ -689,7 +690,8 @@ export interface PluginConfig
     SecurityConfig,
     DriftDetectionSettings,
     ActiveContextConfigFields,
-    DeepRecallSettings {
+    DeepRecallSettings,
+    RecallNavigationSettings {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
   model: string;

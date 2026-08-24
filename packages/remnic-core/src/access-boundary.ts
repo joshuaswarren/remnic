@@ -84,6 +84,8 @@ export const OPERATION_NAMES = [
   "meetings_get",
   "meetings_build",
   "deep_recall",
+  "memory_expand",
+  "memory_traverse",
   "standup",
   "action_confidence",
   "chatgpt_memory_inspector",
