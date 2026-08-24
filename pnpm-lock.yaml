@@ -149,6 +149,9 @@ importers:
 
   packages/bench-ui:
     dependencies:
+      '@remnic/bench':
+        specifier: workspace:^
+        version: link:../bench
       react:
         specifier: ^19.2.0
         version: 19.2.7
