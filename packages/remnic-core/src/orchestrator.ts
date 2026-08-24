@@ -857,6 +857,7 @@ export class Orchestrator {
         indexPersistedMemory: (storage, memoryId) => this.indexPersistedMemory(storage, memoryId),
         buildGraphEdge: (storage, memoryRelPath, entityRef, memoryId, factContent, allMemsForGraph, memoryPathById, threadIdForEdge, threadEpisodeIdsForGraph, fallbackCausalPredecessor, graphCaps) =>
           this.buildGraphEdge(storage, memoryRelPath, entityRef, memoryId, factContent, allMemsForGraph, memoryPathById, threadIdForEdge, threadEpisodeIdsForGraph, fallbackCausalPredecessor, graphCaps),
+        invalidateGraphEdgeCache: (storage) => this.graphIndexFor(storage).invalidateEdgeCache(),
         updateTemporalTagIndexes: (storage, persistedIds) =>
           this.updateTemporalTagIndexes(storage, persistedIds),
       });
@@ -3227,32 +3228,21 @@ export class Orchestrator {
     );
   }
 
+  /** Delegation wrapper so the persist wiring and root-test stubs route through `this` (#2813 CI-0). */
   private async buildGraphEdge(
     storage: StorageManager,
     memoryRelPath: string,
     entityRef: string | undefined,
     memoryId: string,
     factContent: string,
-    allMemsForGraph: import("./types.js").MemoryFile[] | null | undefined,
+    allMemsForGraph: MemoryFile[] | null | undefined,
     memoryPathById: Map<string, string>,
     threadIdForEdge: string | undefined,
     threadEpisodeIdsForGraph: string[] | undefined,
     fallbackCausalPredecessor: string | undefined,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
   ): Promise<GraphEdge[]> {
-    return this.persistenceIndexCoordinator.buildGraphEdge(
-      storage,
-      memoryRelPath,
-      entityRef,
-      memoryId,
-      factContent,
-      allMemsForGraph,
-      memoryPathById,
-      threadIdForEdge,
-      threadEpisodeIdsForGraph,
-      fallbackCausalPredecessor,
-      graphCaps,
-    );
+    return this.persistenceIndexCoordinator.buildGraphEdge(storage, memoryRelPath, entityRef, memoryId, factContent, allMemsForGraph, memoryPathById, threadIdForEdge, threadEpisodeIdsForGraph, fallbackCausalPredecessor, graphCaps);
   }
 
   private graphIndexFor(storage: StorageManager): GraphIndex {

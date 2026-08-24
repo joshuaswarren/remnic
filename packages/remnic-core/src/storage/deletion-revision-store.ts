@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, rename, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { resolveSafeStoragePath } from "../storage-paths.js";
-import type { MemoryFile } from "../types.js";
+import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { withHeldFileLock, type HeldFileLockController } from "../utils/serialize-mutations.js";
 import { log } from "../logger.js";
@@ -63,6 +63,80 @@ export function invalidationCommitFingerprint(memory: Pick<MemoryFile, "content"
     .digest("hex");
 }
 
+/**
+ * #2813 (P1): revision identity stamped onto an Error thrown by a
+ * compare-and-swap write AFTER the durable mutation landed (a post-commit
+ * step failed). Body equality cannot attribute a standing body — a
+ * concurrent writer's identical deterministic merge is byte-for-byte the
+ * same — so throw-path ownership must come from this receipt, never from
+ * comparing content afterward.
+ */
+export function markCasCommittedRevision(err: unknown, revision: string): void {
+  if (err instanceof Error) {
+    (err as Error & { casCommittedRevision?: string }).casCommittedRevision = revision;
+  }
+}
+
+export function casCommittedRevisionOf(err: unknown): string | undefined {
+  return err instanceof Error
+    ? (err as Error & { casCommittedRevision?: string }).casCommittedRevision
+    : undefined;
+}
+
+/**
+ * #2813 (P1, round 3): the CAS receipt mint — the token the next durable
+ * content write records in the per-target sidecar (CasRevisionStore). NOT a
+ * bare wall-clock read: the stamp is strictly greater than the target's
+ * previous token (max(clock, prev + 1ms)), so two commits to the same target
+ * can never share a receipt — not within one millisecond, not across a
+ * backward clock step. It is a per-target monotonic sequence wearing
+ * ISO-8601 clothes; public `frontmatter.updated` never carries it (#2807).
+ */
+export function nextCasRevisionIso(previous: string | undefined, now = new Date()): string {
+  const previousMs = previous !== undefined ? new Date(previous).getTime() : Number.NaN;
+  if (Number.isFinite(previousMs) && now.getTime() <= previousMs) {
+    return new Date(previousMs + 1).toISOString();
+  }
+  return now.toISOString();
+}
+
+/**
+ * #2813 P1 (#2807 CI repair): whether a durable frontmatter rewrite changed
+ * anything SEMANTIC. Comparison is STRUCTURAL, through the same
+ * canonicalizing fingerprint the invalidation proof uses — a `!==` field
+ * loop would flag every array-valued field (tags, lineage, sources) because
+ * two parses of identical bytes are never reference-equal. Access
+ * telemetry (`accessCount`/`lastAccessed` — exactly the fields the
+ * fingerprint strips) is not semantic: an access bump must not advance the
+ * target's CAS revision token, or it would invalidate every pending
+ * conditional write. Every other change — status flips, caller-supplied
+ * `updated`, provenance — is a semantic mutation and mints a new token at
+ * the write chokepoint, so a receipt issued before it can never
+ * "recognise" the record afterwards (#2807 round 5).
+ */
+export function isSemanticFrontmatterChange(
+  before: MemoryFrontmatter,
+  after: MemoryFrontmatter,
+): boolean {
+  return invalidationCommitFingerprint({ content: "", frontmatter: before })
+    !== invalidationCommitFingerprint({ content: "", frontmatter: after });
+}
+
+/**
+ * Runs a compare-and-swap write's post-commit steps. The durable mutation
+ * has already landed by the time `run` executes, so any throw it raises is
+ * stamped with the commit receipt — callers must attribute the standing
+ * body by that identity, never by body equality (#2813 P1).
+ */
+export async function withCasCommitReceipt<T>(revision: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    markCasCommittedRevision(err, revision);
+    throw err;
+  }
+}
+
 function isValidInvalidationCommitTimestamp(value: unknown): value is number {
   return (
     typeof value === "number" &&
@@ -80,7 +154,7 @@ function isValidMemoryId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && !value.includes("\0");
 }
 
-function isValidDeletionRevisionPath(value: unknown): value is string {
+export function isValidManagedStoragePath(value: unknown): value is string {
   return (
     typeof value === "string" &&
     value.length > 0 &&
@@ -167,7 +241,7 @@ export class DeletionRevisionStore {
       const entry = rawEntry as Record<string, unknown>;
       if (
         Object.keys(entry).sort().join(",") !== "mtimeMs,path" ||
-        !isValidDeletionRevisionPath(entry.path) ||
+        !isValidManagedStoragePath(entry.path) ||
         typeof entry.mtimeMs !== "number" ||
         !Number.isFinite(entry.mtimeMs) ||
         entry.mtimeMs < 0 ||
@@ -428,7 +502,7 @@ export class DeletionRevisionStore {
     ) {
       throw new Error("Deletion revision timestamp is invalid.");
     }
-    if (!isValidDeletionRevisionPath(relativePath)) {
+    if (!isValidManagedStoragePath(relativePath)) {
       throw new Error("Deletion revision path is invalid.");
     }
     await this.withDeletionRevisionLock(async (lock) => {
@@ -452,7 +526,7 @@ export class DeletionRevisionStore {
 
   async writeManagedStorageFile(filePath: string, write: () => Promise<void>): Promise<void> {
     const { relativePath } = await this.resolveManagedStoragePath(filePath, "storage.writeManagedStorageFile");
-    if (!isValidDeletionRevisionPath(relativePath)) {
+    if (!isValidManagedStoragePath(relativePath)) {
       throw new Error("Deletion revision path is invalid.");
     }
     await this.withDeletionRevisionLock(async (lock) => {
@@ -492,7 +566,7 @@ export class DeletionRevisionStore {
         if (isErrnoCode(error, "ENOENT")) return false;
         throw error;
       }
-      if (!isValidDeletionRevisionPath(relativePath)) {
+      if (!isValidManagedStoragePath(relativePath)) {
         throw new Error("Deletion revision path is invalid.");
       }
       const revision = deletionMtimeMs === null ? undefined : (deletionMtimeMs ?? Date.now());
