@@ -238,14 +238,13 @@ test("first-start migration: respects demotionCap", async () => {
     const allMemories = await storage.readAllMemories();
     for (const m of allMemories) {
       await storage.writeMemoryFrontmatter(m, {
-        updated: "2020-01-01T00:00:00.000Z",
         created: "2020-01-01T00:00:00.000Z",
         confidence: 0.01,
       });
     }
 
     // Cap at 2 — only 2 should be demoted
-    const result = await runFirstStartMigration({ storage, config, demotionCap: 2 });
+    const result = await runFirstStartMigration({ storage, config, demotionCap: 2, now: () => new Date("2099-01-01T00:00:00.000Z") });
     assert.ok(result.demotedCount <= 2, `demotedCount ${result.demotedCount} must not exceed cap 2`);
     assert.equal(result.cappedAt, 2);
   } finally {
@@ -269,13 +268,13 @@ test("first-start migration: journals demotions and updates cold QMD collection"
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
-      updated: "2020-01-01T00:00:00.000Z",
       created: "2020-01-01T00:00:00.000Z",
       confidence: 0.01,
     });
 
     const qmdUpdates: string[] = [];
     const result = await runFirstStartMigration({
+      now: () => new Date("2099-01-01T00:00:00.000Z"),
       storage,
       config,
       qmd: makeQmdStub(qmdUpdates) as any,
@@ -309,7 +308,6 @@ test("first-start migration: retries QMD refresh after a successful move throws"
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
-      updated: "2020-01-01T00:00:00.000Z",
       created: "2020-01-01T00:00:00.000Z",
       confidence: 0.01,
     });
@@ -317,6 +315,7 @@ test("first-start migration: retries QMD refresh after a successful move throws"
     const qmdUpdates: string[] = [];
     let shouldThrow = true;
     const result = await runFirstStartMigration({
+      now: () => new Date("2099-01-01T00:00:00.000Z"),
       storage,
       config,
       qmd: {
@@ -356,7 +355,6 @@ test("first-start migration: counts completed disk demotion when no QMD exists",
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
-      updated: "2020-01-01T00:00:00.000Z",
       created: "2020-01-01T00:00:00.000Z",
       confidence: 0.01,
     });
@@ -367,7 +365,7 @@ test("first-start migration: counts completed disk demotion when no QMD exists",
       throw new Error("late disk bookkeeping failure");
     }) as StorageManager["migrateMemoryToTier"];
 
-    const result = await runFirstStartMigration({ storage, config });
+    const result = await runFirstStartMigration({ storage, config, now: () => new Date("2099-01-01T00:00:00.000Z") });
 
     assert.equal(result.demotedCount, 1);
     assert.equal(result.failureCount, 0);
@@ -392,13 +390,13 @@ test("first-start migration: late QMD retry success writes marker", async () => 
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
-      updated: "2020-01-01T00:00:00.000Z",
       created: "2020-01-01T00:00:00.000Z",
       confidence: 0.01,
     });
 
     let attempts = 0;
     const result = await runFirstStartMigration({
+      now: () => new Date("2099-01-01T00:00:00.000Z"),
       storage,
       config,
       qmd: {
@@ -433,7 +431,6 @@ test("first-start migration: pending QMD retry uses strict refresh when availabl
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
-      updated: "2020-01-01T00:00:00.000Z",
       created: "2020-01-01T00:00:00.000Z",
       confidence: 0.01,
     });
@@ -441,6 +438,7 @@ test("first-start migration: pending QMD retry uses strict refresh when availabl
     let ordinaryAttempts = 0;
     let strictAttempts = 0;
     const result = await runFirstStartMigration({
+      now: () => new Date("2099-01-01T00:00:00.000Z"),
       storage,
       config,
       qmd: {
@@ -523,7 +521,6 @@ test("first-start migration: cold orphan does not mask failed demotion while sou
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
-      updated: "2020-01-01T00:00:00.000Z",
       created: "2020-01-01T00:00:00.000Z",
       confidence: 0.01,
     });
@@ -537,7 +534,7 @@ test("first-start migration: cold orphan does not mask failed demotion while sou
       throw new Error("move failed before deleting source");
     }) as StorageManager["migrateMemoryToTier"];
 
-    const result = await runFirstStartMigration({ storage, config });
+    const result = await runFirstStartMigration({ storage, config, now: () => new Date("2099-01-01T00:00:00.000Z") });
 
     assert.equal(result.demotedCount, 0);
     assert.equal(result.failureCount, 1);
@@ -563,7 +560,6 @@ test("first-start migration: retries QMD refresh in-run when pending marker writ
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
-      updated: "2020-01-01T00:00:00.000Z",
       created: "2020-01-01T00:00:00.000Z",
       confidence: 0.01,
     });
@@ -573,6 +569,7 @@ test("first-start migration: retries QMD refresh in-run when pending marker writ
 
     let attempts = 0;
     const result = await runFirstStartMigration({
+      now: () => new Date("2099-01-01T00:00:00.000Z"),
       storage,
       config,
       qmd: {
@@ -610,7 +607,6 @@ test("first-start migration: abort signal stops demotions before writing marker"
       const memory = await storage.getMemoryById(id);
       assert.ok(memory, "expected memory to exist");
       await storage.writeMemoryFrontmatter(memory, {
-        updated: "2020-01-01T00:00:00.000Z",
         created: "2020-01-01T00:00:00.000Z",
         confidence: 0.01,
       });
@@ -618,6 +614,7 @@ test("first-start migration: abort signal stops demotions before writing marker"
 
     const controller = new AbortController();
     const result = await runFirstStartMigration({
+      now: () => new Date("2099-01-01T00:00:00.000Z"),
       storage,
       config,
       qmd: {
@@ -654,7 +651,6 @@ test("first-start migration: changed=false is not counted as a demotion", async 
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
-      updated: "2020-01-01T00:00:00.000Z",
       created: "2020-01-01T00:00:00.000Z",
       confidence: 0.01,
     });
@@ -664,7 +660,7 @@ test("first-start migration: changed=false is not counted as a demotion", async 
       targetPath: memory.path,
     });
 
-    const result = await runFirstStartMigration({ storage, config });
+    const result = await runFirstStartMigration({ storage, config, now: () => new Date("2099-01-01T00:00:00.000Z") });
 
     assert.equal(result.candidateCount, 1);
     assert.equal(result.demotedCount, 0);

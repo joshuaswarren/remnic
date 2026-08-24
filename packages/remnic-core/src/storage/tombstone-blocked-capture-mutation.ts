@@ -4,6 +4,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
+import type { CasRevisionTransaction } from "./cas-revision-store.js";
 const TOMBSTONE_CAPTURE_WRITE_LOCK_STALE_MS = 60_000;
 const CAPTURE_WRITE_LOCK_MAX_ATTEMPTS = 3;
 const CAPTURE_WRITE_LOCK_RETRY_BASE_MS = 25;
@@ -196,6 +197,7 @@ export type TombstoneBlockedMutationHost = {
   writeStorageSecureFile: (pathname: string, fileContent: string) => Promise<void>;
   withCaptureWriteLock: (task: () => Promise<void>, identity: string | readonly string[]) => Promise<void>;
   logWarning: (message: string) => void;
+  beginDurableMemoryRevision?: (pathname: string, expectedContent?: string | Buffer | null) => Promise<CasRevisionTransaction | undefined>;
 };
 
 export type TombstoneBlockedMutation = {
@@ -206,15 +208,17 @@ export type TombstoneBlockedMutation = {
   updateIndex: (rebuildMarker?: string, current?: MemoryFile | null) => Promise<void>;
   beforeIndexUpdate?: () => Promise<void>;
   coordinate?: boolean;
+  shouldMintRevision?: (current: MemoryFile | null) => boolean;
 };
 
 export async function runTombstoneBlockedMutation(
   host: TombstoneBlockedMutationHost,
   mutation: TombstoneBlockedMutation
-): Promise<void> {
+): Promise<string | undefined> {
   let lockIdentity: string | readonly string[] = mutation.identity;
   for (;;) {
     let retryIdentity: string | undefined;
+    let mintedRevision: string | undefined;
     const mutate = async (): Promise<void> => {
       const current = await host.readCurrent();
       const currentBlocked = host.isBlocked(current);
@@ -228,19 +232,73 @@ export async function runTombstoneBlockedMutation(
         }
       }
       const rebuildMarker = mutation.blocked || currentBlocked ? await host.prepareWrite() : undefined;
+      const discardRebuildMarker = async (): Promise<void> => {
+        if (!rebuildMarker) return;
+        try {
+          await host.discardWrite(rebuildMarker);
+        } catch (cleanupError) {
+          host.markUntrusted();
+          host.logWarning(`storage.tombstoneBlocked failed to clear write marker: ${cleanupError}`);
+        }
+      };
+      let transaction: CasRevisionTransaction | undefined;
       try {
+        // #2813 (P1 C): a two-phase receipt transaction under this same
+        // path lock. The PENDING reservation is minted BEFORE the durable
+        // file publish, so a failed reservation leaves the memory file
+        // untouched — never a mutated record without a receipt. The
+        // COMMITTED receipt publishes only AFTER the write lands, so a
+        // failed write can never leave the reservation posing as
+        // ownership.
+        transaction = mutation.shouldMintRevision?.(current)
+          ? await host.beginDurableMemoryRevision?.(mutation.pathname, mutation.fileContent)
+          : undefined;
         await host.writeStorageSecureFile(mutation.pathname, mutation.fileContent);
       } catch (err) {
-        if (rebuildMarker) {
+        // The memory write failed (or never ran): abort the reservation so
+        // no pending marker survives a write that did not land. A failed
+        // abort keeps the marker — ambiguity, recovered later.
+        if (transaction) {
           try {
-            await host.discardWrite(rebuildMarker);
-          } catch (cleanupError) {
-            host.markUntrusted();
-            host.logWarning(`storage.tombstoneBlocked failed to clear write marker: ${cleanupError}`);
+            await transaction.abort();
+          } catch (abortError) {
+            host.logWarning(
+              `storage.tombstoneBlocked failed to abort the reserved receipt (pending marker preserved): ${abortError}`,
+            );
           }
         }
+        await discardRebuildMarker();
         throw err;
       }
+      if (transaction) {
+        // #2807: record the post-write fingerprint in the PENDING marker
+        // BEFORE publishing, so a crash between the durable write and the
+        // COMMITTED receipt is decisively recoverable. The evidence only
+        // guards that crash window — a recording failure must not fail the
+        // landed write, so commit still runs and publishes truthfully.
+        try {
+          await transaction.writeLanded();
+        } catch (evidenceError) {
+          host.logWarning(
+            `storage.tombstoneBlocked failed to record receipt crash evidence (pending marker preserved): ${evidenceError}`,
+          );
+        }
+        try {
+          await transaction.commit();
+        } catch (err) {
+          // #2813 (P1 C): the memory file LANDED but the COMMITTED receipt
+          // never published. The PENDING marker stays: readers must see
+          // unavailable/recovery-needed — never ownership, never absence —
+          // and promotion/rollback refuse until recovery reconciles. The
+          // reservation must NOT be aborted: the write is on disk.
+          host.logWarning(
+            `storage.tombstoneBlocked receipt publication failed after the memory write (pending marker preserved for recovery): ${err}`,
+          );
+          await discardRebuildMarker();
+          throw err;
+        }
+      }
+      mintedRevision = transaction?.pendingRevision;
       if (rebuildMarker) {
         try {
           await host.commitWrite(rebuildMarker);
@@ -252,12 +310,14 @@ export async function runTombstoneBlockedMutation(
       if (rebuildMarker) await mutation.beforeIndexUpdate?.();
       await mutation.updateIndex(rebuildMarker, currentBlocked && current !== null ? current : undefined);
     };
+
     await host.withCaptureWriteLock(mutate, lockIdentity);
-    if (retryIdentity === undefined) return;
+    if (retryIdentity === undefined) return mintedRevision;
     const identities = Array.isArray(lockIdentity) ? [...lockIdentity, retryIdentity] : [lockIdentity, retryIdentity];
     lockIdentity = [...new Set(identities)];
   }
 }
+
 
 export function tombstoneBlocked(frontmatter: MemoryFrontmatter): boolean {
   return frontmatter.status === "pending_review" && Boolean(frontmatter.blockedBy);

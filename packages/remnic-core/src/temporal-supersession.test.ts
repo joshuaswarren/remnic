@@ -820,7 +820,8 @@ test("applyTemporalSupersession: supersededAt/updated are monotonic when wall cl
     assert.ok(newMem);
     await storage.writeMemoryFrontmatter(newMem!, { created: tNew, updated: tNew });
 
-    storage.invalidateAllMemoriesCacheForDir();
+    const standingBefore = (await readFrontmatterById(storage, oldId))?.updated;
+    assert.ok(standingBefore, "old record must have a standing revision before supersession");
     const result = await applyTemporalSupersession({
       storage,
       newMemoryId: newId,
@@ -842,10 +843,9 @@ test("applyTemporalSupersession: supersededAt/updated are monotonic when wall cl
       tNew,
       "supersededAt must be the monotonic max of (old.created, new.created, args.createdAt)",
     );
-    assert.equal(
-      oldFm?.updated,
-      tNew,
-      "updated must match supersededAt after supersession",
+    assert.ok(
+      new Date(oldFm!.updated).getTime() > new Date(standingBefore!).getTime(),
+      `updated is the commit revision — strictly past the standing revision (#2813 P1), got ${oldFm?.updated} after ${standingBefore}`,
     );
 
     // Sanity check: supersededAt is never earlier than the old fact's own
@@ -1591,6 +1591,8 @@ test("applyTemporalSupersession: cold-tier writes use CAS re-read and monotonic 
     await storage.writeMemoryFrontmatter(newMem!, { created: tNew, updated: tNew });
 
     storage.invalidateAllMemoriesCacheForDir();
+    const standingBefore = (await storage.readMemoryByPath(coldPath))?.frontmatter.updated;
+    assert.ok(standingBefore, "cold record must have a standing revision before supersession");
     const result = await applyTemporalSupersession({
       storage,
       newMemoryId: newId,
@@ -1613,12 +1615,10 @@ test("applyTemporalSupersession: cold-tier writes use CAS re-read and monotonic 
       tNew,
       "supersededAt for cold-tier write must be the monotonic max of (cold.created, hot.created, args.createdAt)",
     );
-    assert.equal(
-      coldMem!.frontmatter.updated,
-      tNew,
-      "updated for cold-tier write must match supersededAt",
+    assert.ok(
+      new Date(coldMem!.frontmatter.updated).getTime() > new Date(standingBefore!).getTime(),
+      `updated is the commit revision — strictly past the standing revision (#2813 P1), got ${coldMem!.frontmatter.updated} after ${standingBefore}`,
     );
-
     // Sanity: supersededAt must not predate cold.created.
     const coldCreatedMs = new Date(tCold).getTime();
     const supersededAtMs = new Date(coldMem!.frontmatter.supersededAt!).getTime();

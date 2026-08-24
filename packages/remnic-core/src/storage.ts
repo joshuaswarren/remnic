@@ -46,7 +46,8 @@ import {
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
-import { DeletionRevisionStore, invalidationCommitFingerprint } from "./storage/deletion-revision-store.js";
+import { DeletionRevisionStore, invalidationCommitFingerprint, withCasCommitReceipt } from "./storage/deletion-revision-store.js";
+import { CasRevisionHost } from "./storage/cas-revision-host.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import * as entityMigration from "./storage/entity-canonical-id-migration.js";
 import * as entityRefs from "./storage/entity-canonical-id-references.js";
@@ -115,8 +116,6 @@ import {
   type ConsolidationOperator,
 } from "./consolidation-operator.js";
 import {
-  matchEntitySchemaSection,
-  normalizeEntityStructuredSection,
   sortStructuredSectionsBySchema,
 } from "./entity-schema.js";
 import {
@@ -177,7 +176,6 @@ import type {
   ExtractionFailureClass,
   CompressionGuidelineOptimizerState,
   PluginConfig,
-  ScoredEntity,
   TopicScore,
   FileHygieneConfig,
   ProvenanceSource,
@@ -1757,6 +1755,7 @@ export type SealedWriteExtras = Omit<
 export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private knowledgeIndexCache: { result: string; builtAt: number } | null = null;
   private readonly deletionRevisionStore: DeletionRevisionStore;
+  private readonly casRevisions: CasRevisionHost;
   private artifactIndexCache: { memories: MemoryFile[]; loadedAtMs: number; writeVersion: number } | null = null;
   private projectionLedgerLagManager = new ProjectionLedgerLagManager();
   private static readonly loadedMemorySnapshots = new WeakMap<MemoryFile, string>();
@@ -2230,6 +2229,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       deletionRevisionLockPath: path.join(baseDir, ".offline-sync", "deletion-revisions.v1.json.lock"),
       assertManagedStoragePath: (filePath, method) => this.assertManagedStoragePath(filePath, method),
     });
+    this.casRevisions = new CasRevisionHost(baseDir);
     this.hotMemoriesCacheEnabled =
       hotMemoriesCacheEnabledOverride ??
       StorageManager.hotMemoriesCacheDefaultByDir.get(baseDir) ??
@@ -2714,6 +2714,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   ): Promise<boolean> {
     return this.deletionRevisionStore.hasCommittedInvalidation(memory);
   }
+  readCasRevision = (filePath: string) => this.casRevisions.readCasRevision(filePath);
+  readCasRevisionStatus = (filePath: string) => this.casRevisions.readCasRevisionStatus(filePath);
+  readDurableFileDigest = (filePath: string) => this.casRevisions.readDurableFileDigest(filePath);
+  protected beginDurableMemoryRevision = (pathname: string, expectedContent?: string | Buffer | null) => this.casRevisions.beginRevision(pathname, expectedContent);
   private async recordCommittedInvalidation(memory: MemoryFile): Promise<void> {
     return this.deletionRevisionStore.recordCommittedInvalidation(memory);
   }
@@ -4767,7 +4771,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     checkCorpusReadAbort(options);
     return memories;
   }
-
   private async readWindowUpdatedMs(filePath: string): Promise<number | null> {
     try {
       const raw = await readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
@@ -4802,6 +4805,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     );
     return results.filter((filePath): filePath is string => filePath !== null);
   }
+
 
   private orderWindowPaths(filePaths: string[]): string[] {
     const correctionPaths: string[] = [];
@@ -5288,14 +5292,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     });
   }
 
+  /** Commit the new body and return the CAS commit receipt — the sidecar
+   * revision token, never `frontmatter.updated` (#2813 P1, #2807). */
   private async updateMemoryFromCurrent(
     memory: MemoryFile,
     newContent: string,
     options?: { supersedes?: string; lineage?: string[]; actor?: string; sourceConnector?: string },
-  ): Promise<boolean> {
-    const mergedLineage = [...(memory.frontmatter.lineage ?? []), ...(options?.lineage ?? [])].filter(
-      (v, i, a) => a.indexOf(v) === i
-    );
+  ): Promise<string> {
+    const mergedLineage = [...(memory.frontmatter.lineage ?? []), ...(options?.lineage ?? [])].filter((v, i, a) => a.indexOf(v) === i);
     const refIdsAtWrite = this.currentHistoricalIds();
     const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
       {
@@ -5314,35 +5318,31 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       log.warn(`updated memory content sanitized for ${memory.frontmatter.id}; violations=${sanitized.violations.join(", ")}`);
     }
     const fileContent = `${serializeFrontmatter(this.withOkfType(updated))}\n\n${sanitized.text}\n`;
-    await this.writeTombstoneBlockedUpdate(memory, fileContent, updated, sanitized.text, async () => {
+    const receipt = await this.writeTombstoneBlockedUpdate(memory, fileContent, updated, sanitized.text, async () => {
       this.invalidateAllMemoriesCache();
       if (this.isColdOrArchiveTierPath(memory.path)) this.invalidateColdMemoriesCache();
     });
-    if (typeof memory.frontmatter.entityRef === "string") {
-      await this.entityRefRepair.repair(
-        memory.path,
-        updated,
-        memory.frontmatter.entityRef,
-        refIdsAtWrite,
-        sanitized.text,
-        { onFailRestore: memory }
-      );
-    }
-    await this.patchHotMemoriesCache({ addedPath: memory.path });
-    await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
-      memoryId: memory.frontmatter.id,
-      eventType: "updated",
-      timestamp: updated.updated,
-      actor: options?.actor ?? "storage.updateMemory",
-      before: this.summarizeLifecycleState(memory.frontmatter, memory.path),
-      after: this.summarizeLifecycleState(updated, memory.path),
-      relatedMemoryIds: [
-        ...(updated.supersedes ? [updated.supersedes] : []),
-        ...(updated.lineage ?? []).filter(Boolean),
-      ],
+    if (receipt === undefined) throw new Error(`CAS revision receipt unavailable for ${memory.frontmatter.id}`);
+    return await withCasCommitReceipt(receipt, async () => {
+      if (typeof memory.frontmatter.entityRef === "string") {
+        await this.entityRefRepair.repair(memory.path, updated, memory.frontmatter.entityRef, refIdsAtWrite, sanitized.text, { onFailRestore: memory });
+      }
+      await this.patchHotMemoriesCache({ addedPath: memory.path });
+      await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
+        memoryId: memory.frontmatter.id,
+        eventType: "updated",
+        timestamp: updated.updated,
+        actor: options?.actor ?? "storage.updateMemory",
+        before: this.summarizeLifecycleState(memory.frontmatter, memory.path),
+        after: this.summarizeLifecycleState(updated, memory.path),
+        relatedMemoryIds: [
+          ...(updated.supersedes ? [updated.supersedes] : []),
+          ...(updated.lineage ?? []).filter(Boolean),
+        ],
+      });
+      log.debug(`updated memory ${memory.frontmatter.id}`);
+      return receipt;
     });
-    log.debug(`updated memory ${memory.frontmatter.id}`);
-    return true;
   }
 
   async updateMemory(
@@ -5352,14 +5352,17 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   ): Promise<boolean> {
     const memory = (await this.readAllMemories()).find((candidate) => candidate.frontmatter.id === id);
     if (!memory) return false;
-    return await this.updateMemoryFromCurrent(memory, newContent, options);
+    await this.updateMemoryFromCurrent(memory, newContent, options);
+    return true;
   }
 
+  /** CAS content update: false when the record moved past `expected`; on
+   * success the commit receipt — the only identity that can attribute a standing body later (#2813 P1, #2807). */
   async updateMemoryIfUnchanged(
     expected: MemoryFile,
     newContent: string,
     options?: { supersedes?: string; lineage?: string[]; actor?: string; sourceConnector?: string }
-  ): Promise<boolean> {
+  ): Promise<string | false> {
     const sanitized = sanitizeMemoryContent(newContent);
     const oldIdentity = buildExplicitCaptureDedupKey(
       expected.content,
@@ -5381,11 +5384,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       [buildCapturePathLockIdentity(expected.path), oldIdentity, newIdentity]
     );
   }
-
-
   /**
-   * Update frontmatter fields without changing memory content.
-   * Returns false when the memory is not found.
+   * Update frontmatter fields without changing memory content. Returns false when the memory is not found.
    */
   async writeMemoryFrontmatter(
     memory: MemoryFile,
@@ -5395,6 +5395,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const beforeStatus = memory.frontmatter.status ?? "active";
     // Canonicalize the EFFECTIVE merged entityRef (issue #2213) — an
     // unrelated patch must not rewrite an inherited legacy ref back out.
+    // #2807: `patch.updated` is business time, persisted VERBATIM.
     const resolveIds = this.currentHistoricalIds();
     const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
       { ...memory.frontmatter, ...patch },
@@ -5471,7 +5472,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       return await this.writeMemoryFrontmatter(current, patch, lifecycle);
     });
   }
-
 
   /**
    * Update frontmatter by memory ID.

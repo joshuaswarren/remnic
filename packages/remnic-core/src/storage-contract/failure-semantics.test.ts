@@ -147,7 +147,7 @@ test("failure-semantics: selected memory snapshot tasks hold every member lock",
 
     releaseTask.resolve();
     assert.deepEqual(await snapshotTask, [first.id, second.id]);
-    assert.equal(await writePromise, true);
+    assert.ok(await writePromise);
   } finally {
     releaseTask.resolve();
     await cleanup();

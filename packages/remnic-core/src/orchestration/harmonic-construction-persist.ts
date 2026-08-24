@@ -8,7 +8,7 @@ import {
 } from "../harmonic-construction.js";
 import { log } from "../logger.js";
 import type { StorageManager } from "../index.js";
-import type { ExtractionResult } from "../types.js";
+import type { MemoryFile, ExtractionResult } from "../types.js";
 
 export interface HarmonicPersistenceEntry {
   storage: { dir: string };
@@ -57,8 +57,20 @@ export function filterHarmonicEntityMentions(
  * anchors UNION across merges — anchors are deduped by id downstream, but
  * the union keeps the earlier merge's anchors alive when the later incoming
  * fact carried none.
+ *
+ * #2807 (finding 3): the entry's metadata comes from the REREAD committed
+ * target, never the incoming fact alone. The parity gate lets an incoming
+ * fact with no entityRef merge into a target that HAS one (only a
+ * differing non-undefined incoming entity refuses), and incoming tags are
+ * a subset of the target's — so stamping the incoming fields onto the
+ * cumulative body dropped the target's committed entity association and
+ * extra tags, and `deriveHarmonicRecords` skipped the deterministic
+ * entity cue/topic linkage for the merged claims. Cue anchors stay
+ * incoming-only: they are event-specific. An unreadable or advanced record
+ * falls back to the incoming fact's own fields (fail-open, like every
+ * merge-adjacent effect).
  */
-export function enqueueMergedTargetForHarmonicConstruction(
+export async function enqueueMergedTargetForHarmonicConstruction(
   entries: Map<
     string,
     { storage: StorageManager; facts: HarmonicConstructionInput["persistedFacts"] }
@@ -71,22 +83,38 @@ export function enqueueMergedTargetForHarmonicConstruction(
   memoryId: string,
   content: string,
   insertedAt: string,
-): void {
+): Promise<void> {
+  let committed: MemoryFile | null = null;
+  try {
+    committed = await storage.getMemoryByIdIncludingArchived(memoryId);
+  } catch {
+    committed = null;
+  }
+  const derived =
+    committed && committed.content === content
+      ? {
+          ...fact,
+          category: committed.frontmatter.category,
+          tags: [...new Set([...(committed.frontmatter.tags ?? []), ...fact.tags])],
+          entityRef: committed.frontmatter.entityRef ?? fact.entityRef,
+          validAt: committed.frontmatter.valid_at ?? fact.validAt,
+        }
+      : fact;
   const entry = entries.get(storage.dir) ?? { storage, facts: [] };
   const prior = entry.facts.findIndex((existing) => existing.memoryId === memoryId);
   if (prior !== -1) {
     entry.facts[prior] = {
-      ...fact,
+      ...derived,
       content,
       memoryId,
       insertedAt,
       cueAnchors: [
         ...(entry.facts[prior]!.cueAnchors ?? []),
-        ...(fact.cueAnchors ?? []),
+        ...(derived.cueAnchors ?? []),
       ],
     };
   } else {
-    entry.facts.push({ ...fact, content, memoryId, insertedAt });
+    entry.facts.push({ ...derived, content, memoryId, insertedAt });
   }
   entries.set(storage.dir, entry);
 }

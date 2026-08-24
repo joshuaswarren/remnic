@@ -249,10 +249,15 @@ test("tier migration extraction scan prioritizes oldest hot memories for demotio
       ids.push((await storage.writeMemory("fact", `memory-${i}`, { source: "test" })).id);
     }
 
+    // Backdating a standing revision is refused by the monotonic revision
+    // clamp (#2813 P1) — a rewind is the receipt-reuse vector — so age the
+    // recent records FORWARD instead; forward jumps are honored exactly and
+    // the untouched first 12 remain the oldest for demotion ordering.
     const oldIds = ids.slice(0, 12);
-    for (const id of oldIds) {
+    const recentIds = ids.slice(12);
+    for (const id of recentIds) {
       await storage.updateMemoryFrontmatter(id, {
-        updated: "2001-01-01T00:00:00.000Z",
+        updated: "2099-01-01T00:00:00.000Z",
       });
     }
 
