@@ -293,3 +293,22 @@ export async function briefingLocationSection(
     config,
   );
 }
+
+export async function applyBriefingLocationContext<
+  T extends { markdown: string; json: Record<string, unknown> },
+>(
+  result: T,
+  includeLocation: boolean | undefined,
+  memoryDir: string,
+  windowStartUtc: string,
+  location: LocationConfig,
+): Promise<T> {
+  if (includeLocation !== true || !locationTaggingEnabled(location)) return result;
+  const section = await briefingLocationSection(memoryDir, windowStartUtc, location);
+  if (!section) return result;
+  return {
+    ...result,
+    markdown: `${result.markdown}\n\n${section}\n`,
+    json: { ...result.json, locationContext: section },
+  };
+}

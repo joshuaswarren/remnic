@@ -29,7 +29,7 @@ import {
   type MemoryScopePlan,
   NamespaceNotWritableError,
 } from "./access-service.js";
-import { reapplyCategoryCoercion, splitCanonicalWriteRequest } from "./access-observe-write-category.js";
+import { applyBriefingLocationContext, reapplyCategoryCoercion, splitCanonicalWriteRequest } from "./access-observe-write-category.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
 import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
@@ -45,7 +45,6 @@ import {
   persistExplicitCapture,
   queueExplicitCaptureForReview,
 } from "./explicit-capture.js";
-import { briefingLocationSection, locationTaggingEnabled } from "./location/tagging.js";
 import { log } from "./logger.js";
 import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
 import type { Orchestrator } from "./orchestrator.js";
@@ -455,7 +454,7 @@ export class AccessObserveWriteSurface {
       ? new FileCalendarSource(config.briefing.calendarSource)
       : undefined;
 
-    const result = await buildBriefing({
+    const result = await applyBriefingLocationContext(await buildBriefing({
       storage,
       namespace,
       window,
@@ -471,23 +470,7 @@ export class AccessObserveWriteSurface {
       // other LLM feature uses. A configured key keeps its precedence so
       // existing deployments are unchanged.
       followupGenerator: config.openaiApiKey ? undefined : this.deps.orchestrator.briefingChainFollowupGenerator,
-    });
-
-    // Opt-in matched place names (issue #2925): rendered only when the
-    // caller explicitly asked AND both location gates are on. Default
-    // requests return the briefing byte-identical to a no-location build.
-    if (request.includeLocation === true && locationTaggingEnabled(config.location)) {
-      const section = await briefingLocationSection(
-        storage.dir,
-        window.from.toISOString(),
-        config.location,
-      );
-      if (section) {
-        result.markdown += `\n\n${section}\n`;
-        result.json = { ...result.json, locationContext: section };
-      }
-    }
-
+    }), request.includeLocation, storage.dir, window.from.toISOString(), config.location);
 
     return {
       format,
