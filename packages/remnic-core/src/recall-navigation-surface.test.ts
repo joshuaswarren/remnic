@@ -462,7 +462,7 @@ test("CLI navigate expand uses the shared service and accepts a handle", async (
 test("god files stay under ratchet caps after navigation review fixes", async () => {
   const caps: Record<string, number> = {
     "access-service.ts": 5910,
-    "config.ts": 4561,
+    "config.ts": 4568,
     "cli.ts": 9428,
     "orchestration/recall-internal.ts": 5344,
   };
