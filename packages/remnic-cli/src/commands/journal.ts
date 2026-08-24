@@ -37,10 +37,10 @@ import {
   runJournalReviewExtraction,
   seedJournal,
   withJournalDateLock,
-  type BufferTurn,
   type JournalExtractionDeps,
   type PluginConfig,
 } from "@remnic/core";
+import type { BufferTurn } from "@remnic/core/types.js";
 import { resolveConfigPath } from "../config-path.js";
 
 export interface JournalCommandIo {

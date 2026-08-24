@@ -11,9 +11,11 @@ import {
   createJournalMemoryWriter,
   parseConfig,
   readJournalForDate,
+  type FallbackLlmOptions,
   type JournalExtractionDeps,
   type PluginConfig,
 } from "@remnic/core";
+import type { ExtractionResult } from "@remnic/core/types.js";
 import { createJournalCommandDeps, runJournalBinaryCommand, runJournalCommand, type JournalCommandDeps } from "./journal.js";
 
 const START = "<!-- remnic:timeline:start -->";
@@ -194,7 +196,8 @@ function reviewMemoryDirConfigFor(memoryDir: string): PluginConfig {
 
 interface RecordedWrite {
   status: string;
-  tags: string[];
+  /** SealedMemoryEnvelope.tags is readonly; the recorder only observes it. */
+  tags: readonly string[];
 }
 
 function fakeExtractionDeps(
@@ -555,6 +558,19 @@ test("production extract invokes the configured gateway provider and model", asy
     fs.mkdirSync(path.dirname(dayFile), { recursive: true });
     fs.writeFileSync(dayFile, "I decided the configured gateway must reach extraction.\n");
     const customPrimary = "journal-gw-test/custom-extract";
+    const fixtureResult: ExtractionResult = {
+      facts: [
+        {
+          content: "I decided the configured gateway must reach extraction.",
+          category: "decision",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    };
     const config = parseConfig({
       memoryDir,
       modelSource: "gateway",
@@ -583,33 +599,22 @@ test("production extract invokes the configured gateway provider and model", asy
         timeline: { journal: { enabled: true, source: "memoryDir", extractionMode: "review" } },
       },
     });
-    FallbackLlmClient.prototype.parseWithSchemaDetailed = async function (
+    // Mocked against the real parseWithSchemaDetailed signature (AGENTS.md
+    // §21 — Test Mock Signature Fidelity) so contract drift surfaces here.
+    FallbackLlmClient.prototype.parseWithSchemaDetailed = async function <T>(
       this: FallbackLlmClient,
-      _messages,
-      _schema,
-      options,
+      _messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+      _schema: { parse: (data: unknown) => T },
+      options?: FallbackLlmOptions,
     ) {
-      const gatewayConfig = (this as unknown as { gatewayConfig?: {
+      // Unchecked cast: gatewayConfig exists on the runtime instance but not
+      // the public type; the mock reads it only to assert agent wiring.
+      const holder = this as unknown as { gatewayConfig?: {
         agents?: { list?: Array<{ id: string; model?: { primary?: string } }> };
-      } }).gatewayConfig;
-      const persona = gatewayConfig?.agents?.list?.find((agent) => agent.id === "journal-extract-agent");
+      } };
+      const persona = holder.gatewayConfig?.agents?.list?.find((agent) => agent.id === "journal-extract-agent");
       seen.push({ primary: persona?.model?.primary, agentId: options?.agentId });
-      return {
-        modelUsed: customPrimary,
-        result: {
-          facts: [
-            {
-              content: "I decided the configured gateway must reach extraction.",
-              category: "decision",
-              confidence: 0.9,
-              tags: [],
-            },
-          ],
-          profileUpdates: [],
-          entities: [],
-          questions: [],
-        },
-      };
+      return { modelUsed: customPrimary, result: fixtureResult as unknown as T };
     };
     const storage = new StorageManager(config.memoryDir);
     const result = await capture(
