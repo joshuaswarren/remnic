@@ -18,7 +18,9 @@ Hard gates, all enforced BEFORE anything is read:
    existing directory (lstat; a symlink root is refused). The tool walks
    exactly that directory, skips descendant symlinks, and refuses a path
    that escapes the root. No vault scan, no home-dir discovery.
-3. ``--out`` must differ from ``--input`` and must be empty or ``--yes``.
+3. ``--out`` must not overlap ``--input`` (equal, inside it, or containing
+   it) and must be empty or ``--yes``. Overlap would let one run's outputs
+   become the next run's inputs (issue #2886).
 
 Outputs under ``--out`` (all deterministic; same input tree → same bytes):
 
@@ -116,6 +118,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--citation-template",
+        default=None,
+        help=(
+            "The inlineSourceAttributionFormat string configured where the "
+            "telemetry was persisted (faithfulness-gate only). Custom "
+            "attribution suffixes are stripped only when this template "
+            "inverts them exactly; anything else trailing is skipped as "
+            "private (#2896)."
+        ),
+    )
+    parser.add_argument(
         "--yes",
         action="store_true",
         help="Write into a non-empty --out directory without asking.",
@@ -143,13 +156,30 @@ def main(argv: list[str] | None = None) -> int:
             "your own persisted memory telemetry from --input and turns it\n"
             "into local training records. Nothing was read."
         )
+    citation_template = args.citation_template
+    if citation_template is not None:
+        if args.task != "faithfulness-gate":
+            return _refuse(
+                "--citation-template applies only to --task faithfulness-gate"
+            )
+        citation_template = citation_template.strip()
+        if not citation_template:
+            return _refuse("--citation-template must not be blank")
 
     try:
         require_input_dir(args.input)
     except (ValueError, NotADirectoryError) as err:
         return _refuse(str(err))
-    if args.out.resolve() == args.input.resolve():
-        return _refuse("--out must be a different directory from --input")
+    input_resolved = args.input.resolve()
+    out_resolved = args.out.resolve()
+    if (
+        out_resolved == input_resolved
+        or out_resolved in input_resolved.parents
+        or input_resolved in out_resolved.parents
+    ):
+        return _refuse(
+            "--out must not overlap --input (equal, ancestor, or descendant)"
+        )
     if args.out.exists() and not args.out.is_dir():
         return _refuse(f"--out exists and is not a directory: {args.out}")
     if args.out.exists() and any(args.out.iterdir()) and not args.yes:
@@ -174,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
             args.out,
             max_records=args.max_records,
             max_text_bytes=args.max_text_bytes,
+            citation_template=citation_template,
         )
     except (ValueError, NotADirectoryError) as err:
         return _refuse(f"harvest refused: {err}")

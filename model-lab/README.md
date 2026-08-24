@@ -101,20 +101,29 @@ python model-lab/faithfulness-gate/eval.py --version-tag v1             # → ma
 
 `harvest.py` turns an operator's OWN persisted shadow telemetry into labeled
 training records for either classifier. It refuses to run without `--consent`
-and explicit local `--input`/`--out` paths, reads exactly the named directory
-(no vault scan; a symlink `--input` root is refused; descendant symlinks are
-skipped), strips every private field (session keys, principals, namespaces,
-memory ids, model ids) by building records from an allowlist, derives
-`sourceId` as a hash of those approved fields plus a task salt, and skips
-redacted/never-store plans outright. Faithfulness rows keep every verified
-source quote, joined with a newline in persisted order (same as the gate).
-Unknown correction classification, status, schema version, action kind or
-required action field, or a confidence outside `[0, 1]` counts as malformed,
-never as a positive label. Polarity and `correctedAssertion` come from the
-validated action (a `retract` stays a retract even when the request text
+and explicit local `--input`/`--out` paths (`--out` may not overlap `--input`
+— equal, inside, or containing — so one run's outputs never become the next
+run's inputs, #2886), reads exactly the named directory (no vault scan; a
+symlink `--input` root is refused; descendant symlinks are skipped), strips
+every private field (session keys, principals, namespaces, memory ids, model
+ids) by building records from an allowlist, derives `sourceId` as a hash of
+those approved fields plus a task salt, and skips redacted/never-store plans
+outright. Faithfulness rows keep every verified source quote, joined with a
+newline in persisted order (same as the gate). Unknown correction
+classification, status, schema version, action kind or required action field,
+or a confidence outside `[0, 1]` counts as malformed, never as a positive
+label — and so does invalid UTF-8: input decodes strictly and never surfaces
+U+FFFD replacement text (#2886). Polarity and `correctedAssertion` come from
+the validated action (a `retract` stays a retract even when the request text
 looks like an update). Faithfulness `factText` is the pre-persist gated
 body: the `[Attributes: …]` suffix and default `[Source: …]` citation are
-stripped; leftover custom attribution is skipped as private. Child files
+stripped. A custom attribution template is honored only through
+`--citation-template` (the `inlineSourceAttributionFormat` configured where
+the telemetry was persisted): the trailing marker is stripped when the
+template inverts it exactly — matching leading/trailing literals with every
+interior separator present in order — and any other trailing
+attribution-shaped suffix (including innocuous-looking ones with no `=`,
+`/`, or `@`) is skipped as private (#2896). Child files
 with persisted `parentId` and `chunkIndex` inherit the whole-fact verdict
 and are skipped; a whole fact or independently judged body still emits.
 A post-gate sanitization rewrite is skipped when persist recorded that
@@ -124,7 +133,8 @@ Nothing in the daemon, build, or CI ever invokes it.
 ```bash
 # faithfulness-gate: memory .md files carrying the #1576 faithfulness: verdict
 python3 model-lab/harvest.py --task faithfulness-gate \
-    --input <your-memory-dir> --out model-lab/faithfulness-gate/data/harvest --consent
+    --input <your-memory-dir> --out model-lab/faithfulness-gate/data/harvest --consent \
+    --citation-template '<your inlineSourceAttributionFormat, if customized>'
 # → harvest-faithfulness-gate.jsonl (+ .manifest.json + dataset.sha256)
 
 # correction-intent: persisted correction plans (state/corrections/pending/)
@@ -135,7 +145,11 @@ python3 model-lab/harvest.py --task correction-intent \
 Deterministic and idempotent: the same input tree yields byte-identical
 dataset AND manifest (records dedup on training payload, emit in canonical
 order; the manifest carries an input fingerprint + dataset sha256 and no
-clocks or absolute paths). `--max-records` caps emitted rows.
+clocks or absolute paths). Reads stream (#2886): one payload is resident at
+a time, the fingerprint chains per-file sha256 digests in walk order, and
+the resident row set is bounded by `--max-records` (bounded top-N
+selection) — a huge telemetry tree never means a huge in-memory dataset,
+and `--max-records` still caps emitted rows.
 `--max-text-bytes` is enforced with fstat plus a bounded stream
 *before* a file is read or fingerprinted; oversized files are counted and
 skipped without a full allocation. Oversize text is skipped, never truncated.
