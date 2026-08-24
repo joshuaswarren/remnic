@@ -35,6 +35,15 @@ type CasRevisionShard = {
   writeLanded?: boolean;
   /** #2813 (P1 B): sha256 hex digest of the durable memory file when committed. */
   committedDigest?: string | null;
+  /** #2870: sha256 of the durable file's canonical SEMANTIC text — the
+   * file with the access-telemetry frontmatter keys (`accessCount:`,
+   * `lastAccessed:`) stripped, the same exclusion set
+   * `invalidationCommitFingerprint` applies to parsed records. Promotion
+   * binds to THIS, never to the byte digest: an access-tracking flush
+   * rewrites exactly those two lines without minting a receipt
+   * (`isSemanticFrontmatterChange` is false), and must not invalidate a
+   * valid promotion. null means the file was absent at commit. */
+  committedSemanticFingerprint?: string | null;
 };
 
 type CasRevisionMetadata = {
@@ -51,7 +60,7 @@ type CasRevisionMetadata = {
  *   `readRevision` collapses this into `undefined`; callers that transact
  *   on receipt identity MUST refuse instead. */
 export type CasRevisionReadStatus =
-  | { status: "present"; revision: string; committedDigest?: string }
+  | { status: "present"; revision: string; committedDigest?: string; committedSemanticFingerprint?: string }
   | { status: "absent" }
   | { status: "unavailable"; reason: string };
 
@@ -78,7 +87,7 @@ export interface CasRevisionTransaction {
 type CasShardView =
   | { kind: "missing" }
   | { kind: "foreign" }
-  | { kind: "committed"; revision: string; committedDigest?: string; foreign: boolean }
+  | { kind: "committed"; revision: string; committedDigest?: string; committedSemanticFingerprint?: string; foreign: boolean }
   | {
       kind: "pending";
       revision: string;
@@ -89,6 +98,29 @@ type CasShardView =
       writeLanded?: boolean;
     };
 
+const ACCESS_TELEMETRY_FRONTMATTER_KEY = /^(?:accessCount|lastAccessed):/;
+
+/**
+ * #2870: canonical SEMANTIC text of a durable memory file — the file with
+ * the access-telemetry frontmatter keys (`accessCount:`, `lastAccessed:`)
+ * removed. This is the file-level twin of `invalidationCommitFingerprint`
+ * (deletion-revision-store.ts): the same exclusion set, computed without
+ * parsing, so the CAS receipt can record it at commit time from the same
+ * bytes the digests come from. Only TOP-LEVEL frontmatter lines are
+ * stripped — serialized frontmatter is flat `key: value` lines, and nested
+ * blocks (links:) are indented and never match. A file without a leading
+ * frontmatter block is returned unchanged.
+ */
+export function canonicalSemanticFileText(raw: string): string {
+  const lines = raw.split("\n");
+  if (lines[0] !== "---") return raw;
+  const closing = lines.indexOf("---", 1);
+  if (closing === -1) return raw;
+  const frontmatter = lines
+    .slice(1, closing)
+    .filter((line) => !ACCESS_TELEMETRY_FRONTMATTER_KEY.test(line));
+  return [...lines.slice(0, 1), ...frontmatter, ...lines.slice(closing)].join("\n");
+}
 const CAS_REVISION_LOCK_STALE_MS = 60_000;
 const CAS_REVISION_LOCK_MAX_WAIT_MS = 120_000;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -252,6 +284,10 @@ export class CasRevisionStore {
       const foreign = root.path !== relativePath;
       const committedDigest =
         typeof root.committedDigest === "string" ? root.committedDigest : undefined;
+      const committedSemanticFingerprint =
+        typeof root.committedSemanticFingerprint === "string"
+          ? root.committedSemanticFingerprint
+          : undefined;
       return root.state === "pending"
         ? {
             kind: "pending",
@@ -262,7 +298,13 @@ export class CasRevisionStore {
             expectedDigest: root.expectedDigest as string | null | undefined,
             ...(typeof root.writeLanded === "boolean" ? { writeLanded: root.writeLanded } : {}),
           }
-        : { kind: "committed", revision: root.revision, committedDigest, foreign };
+        : {
+            kind: "committed",
+            revision: root.revision,
+            committedDigest,
+            committedSemanticFingerprint,
+            foreign,
+          };
     }
     // Pre-two-phase shard: a full-shape match reads as committed; anything
     // else keeps the legacy fall-through (legacy metadata, then absence).
@@ -274,14 +316,26 @@ export class CasRevisionStore {
     ) {
       const committedDigest =
         typeof root.committedDigest === "string" ? root.committedDigest : undefined;
-      return { kind: "committed", revision: root.revision, committedDigest, foreign: false };
+      const committedSemanticFingerprint =
+        typeof root.committedSemanticFingerprint === "string"
+          ? root.committedSemanticFingerprint
+          : undefined;
+      return {
+        kind: "committed",
+        revision: root.revision,
+        committedDigest,
+        committedSemanticFingerprint,
+        foreign: false,
+      };
     }
     return { kind: "foreign" };
   }
 
-  private async readStandingRevision(relativePath: string): Promise<string | undefined> {
+  private async readStandingRevision(relativePath: string): Promise<
+    { revision: string; committedDigest?: string; committedSemanticFingerprint?: string } | undefined
+  > {
     try {
-      return (await this.readStandingRevisionStrict(relativePath))?.revision;
+      return await this.readStandingRevisionStrict(relativePath);
     } catch (error) {
       log.warn(`CasRevisionStore failed to read standing revision for ${relativePath}: ${error}`);
       return undefined;
@@ -299,7 +353,9 @@ export class CasRevisionStore {
    * refuse instead of mistaking the failure for absence. */
   private async readStandingRevisionStrict(
     relativePath: string,
-  ): Promise<{ revision: string; committedDigest?: string } | undefined> {
+  ): Promise<
+    { revision: string; committedDigest?: string; committedSemanticFingerprint?: string } | undefined
+  > {
     const { shardPath } = await this.getSafeShardInfo(relativePath);
     const view = await this.readShardView(shardPath, relativePath);
     if (view.kind === "pending") {
@@ -308,7 +364,11 @@ export class CasRevisionStore {
       );
     }
     if (view.kind === "committed" && !view.foreign) {
-      return { revision: view.revision, committedDigest: view.committedDigest };
+      return {
+        revision: view.revision,
+        committedDigest: view.committedDigest,
+        committedSemanticFingerprint: view.committedSemanticFingerprint,
+      };
     }
     const legacyMap = await this.readLegacyMetadata();
     const legacyRev = legacyMap.get(relativePath);
@@ -326,6 +386,7 @@ export class CasRevisionStore {
       baselineDigest?: string | null;
       expectedDigest?: string | null;
       committedDigest?: string | null;
+      committedSemanticFingerprint?: string | null;
       writeLanded?: boolean;
     },
   ): Promise<void> {
@@ -334,6 +395,9 @@ export class CasRevisionStore {
       payload = { version: 1, path: relativePath, revision, state };
       if (evidence?.committedDigest !== undefined) {
         payload.committedDigest = evidence.committedDigest;
+      }
+      if (evidence?.committedSemanticFingerprint !== undefined) {
+        payload.committedSemanticFingerprint = evidence.committedSemanticFingerprint;
       }
     } else {
       payload = { version: 1, path: relativePath, revision, state };
@@ -401,7 +465,7 @@ export class CasRevisionStore {
   async readRevision(filePath: string): Promise<string | undefined> {
     try {
       const relativePath = await this.resolveRelativePath(filePath);
-      return await this.readStandingRevision(relativePath);
+      return (await this.readStandingRevision(relativePath))?.revision;
     } catch (error) {
       log.warn(`CasRevisionStore.readRevision failed for ${filePath}: ${error}`);
       return undefined;
@@ -425,6 +489,9 @@ export class CasRevisionStore {
             revision: standing.revision,
             ...(standing.committedDigest !== undefined
               ? { committedDigest: standing.committedDigest }
+              : {}),
+            ...(standing.committedSemanticFingerprint !== undefined
+              ? { committedSemanticFingerprint: standing.committedSemanticFingerprint }
               : {}),
           };
     } catch (error) {
@@ -477,19 +544,34 @@ export class CasRevisionStore {
   }
 
   public async digestDurableFile(filePath: string): Promise<string | null> {
+    const bytes = await this.readDurableBytes(filePath);
+    return bytes === null ? null : createHash("sha256").update(bytes).digest("hex");
+  }
+
+  /** #2870: canonical SEMANTIC fingerprint of the durable file — its text
+   * with the access-telemetry frontmatter keys stripped
+   * ({@link canonicalSemanticFileText}), hashed. Null means the file was
+   * absent. A fingerprint, never memory content. */
+  public async semanticFingerprintDurableFile(filePath: string): Promise<string | null> {
+    const bytes = await this.readDurableBytes(filePath);
+    return bytes === null
+      ? null
+      : createHash("sha256").update(canonicalSemanticFileText(bytes.toString("utf8"))).digest("hex");
+  }
+
+  private async readDurableBytes(filePath: string): Promise<Buffer | null> {
     const relativePath = await this.resolveRelativePath(filePath);
     const baseDir = path.resolve(this.baseDir);
     const target = await resolveSafeStoragePath(baseDir, relativePath);
-    let bytes: Buffer;
     try {
-      bytes = await readFile(target);
+      return await readFile(target);
     } catch (error) {
       if (isErrnoCode(error, "ENOENT")) return null;
       throw new Error(
         `CAS revision evidence: durable memory file ${relativePath} is unreadable: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    return createHash("sha256").update(bytes).digest("hex");
+
   }
 
   /** #2807: mark the reserved write as landed. Verifies a pre-recorded
@@ -531,8 +613,14 @@ export class CasRevisionStore {
         if (outcome === "commit") {
           const committedDigest =
             view.expectedDigest ?? (await this.digestDurableFile(relativePath));
+          // #2870: publish the canonical semantic fingerprint alongside the
+          // byte digest so promotion can bind semantic identity without
+          // refusing on access-only telemetry flushes.
+          const committedSemanticFingerprint =
+            await this.semanticFingerprintDurableFile(relativePath);
           await this.writeShard(shardPath, relativePath, token, lock, "committed", undefined, {
             committedDigest,
+            committedSemanticFingerprint,
           });
         } else if (view.previous !== undefined) {
           await this.writeShard(shardPath, relativePath, view.previous, lock, "committed");
@@ -577,8 +665,11 @@ export class CasRevisionStore {
       if (fileWriteLanded) {
         const committedDigest =
           view.expectedDigest ?? (await this.digestDurableFile(relativePath));
+        const committedSemanticFingerprint =
+          await this.semanticFingerprintDurableFile(relativePath);
         await this.writeShard(shardPath, relativePath, view.revision, lock, "committed", undefined, {
           committedDigest,
+          committedSemanticFingerprint,
         });
       } else if (view.previous !== undefined) {
         await this.writeShard(shardPath, relativePath, view.previous, lock, "committed");
@@ -623,6 +714,7 @@ export class CasRevisionStore {
       if (view.expectedDigest !== undefined && currentDigest === view.expectedDigest) {
         await this.writeShard(shardPath, relativePath, view.revision, lock, "committed", undefined, {
           committedDigest: view.expectedDigest,
+          committedSemanticFingerprint: await this.semanticFingerprintDurableFile(relativePath),
         });
         return "committed";
       }

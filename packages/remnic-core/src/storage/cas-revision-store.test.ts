@@ -226,6 +226,7 @@ test("an evidenced gated recovery defers a reserve-only marker to the path-locke
       status: "present",
       revision: b.pendingRevision,
       committedDigest: store.digestContent("landed bytes"),
+      committedSemanticFingerprint: store.digestContent("landed bytes"),
     });
   });
 });
@@ -258,6 +259,7 @@ test("recoverPendingRevision publishes a crashed reservation whose write landed 
       status: "present",
       revision: b.pendingRevision,
       committedDigest: store.digestContent("new durable bytes"),
+      committedSemanticFingerprint: store.digestContent("new durable bytes"),
     });
     assert.equal(await store.recoverPendingRevision(target), "committed", "idempotent");
   });
@@ -361,6 +363,7 @@ test("beginRevisionTransaction with expectedContent persists expectedDigest in p
       status: "present",
       revision: txn2.pendingRevision,
       committedDigest: store.digestContent(expectedContent),
+      committedSemanticFingerprint: store.digestContent(expectedContent),
     });
   });
 });
@@ -425,6 +428,7 @@ test("legacy pending shards without writeLanded treat expectedDigest as already 
       status: "present",
       revision: "2026-08-01T00:00:00.000Z",
       committedDigest: expectedDigest,
+      committedSemanticFingerprint: expectedDigest,
     });
   });
 });

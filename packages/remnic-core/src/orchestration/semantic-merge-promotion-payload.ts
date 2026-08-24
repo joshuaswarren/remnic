@@ -4,7 +4,9 @@
  * within its file-size ratchet. Everything here derives from the re-read
  * COMMITTED record; nothing reads the incoming extraction.
  */
-
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { canonicalSemanticFileText } from "../storage/cas-revision-store.js";
 import { parseOriginClass } from "../security/origin-authority.js";
 import { log } from "../logger.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
@@ -76,6 +78,15 @@ export interface MergedTargetPromotionPayload {
   committedRevision?: string;
   /** #2813 (P1 B): sha256 hex digest of the durable memory file when committed. */
   committedDigest?: string;
+  /** #2870: canonical SEMANTIC fingerprint of the durable file at
+   * payload-build time — access telemetry (`accessCount`/`lastAccessed`)
+   * excluded, the same exclusion set `invalidationCommitFingerprint`
+   * applies. The final guard re-reads the file and compares THIS, not the
+   * byte digest: an access-tracking flush between build and promotion
+   * leaves it equal (the flush mints no receipt and touches no semantic
+   * line), while any body/confidence/provenance/scope/tags/status change
+   * makes it differ. */
+  committedSemanticFingerprint?: string;
 }
 
 /**
@@ -151,13 +162,22 @@ export async function buildMergedTargetPromotionPayload(
     return { payload: null, readFailed: false };
   }
   const fm = committed.frontmatter;
-  // #2813 (P1 B): promotion reads record metadata and digest, then receipt.
-  // Compare record snapshot digest to receipt's committed digest to catch
-  // interleaving metadata writers with same body/new metadata.
+  // #2870: bind to the record's SEMANTIC identity, not its bytes. The
+  // receipt's committed semantic fingerprint — the durable file with the
+  // access-telemetry keys (`accessCount:`, `lastAccessed:`) stripped, the
+  // same exclusion set `invalidationCommitFingerprint` applies — stays
+  // equal across an access-tracking flush (which rewrites exactly those
+  // two lines without minting a receipt), so a flush between the merge
+  // commit and this reread no longer blocks a valid promotion. Any other
+  // frontmatter or body change still refuses. Shards recorded before
+  // #2870 carry no stored semantic fingerprint; those keep the stricter
+  // full-digest comparison until the next semantic write re-records the
+  // shard.
   const snapshotDigest =
     typeof storage.readDurableFileDigest === "function"
       ? await storage.readDurableFileDigest(committed.path).catch(() => null)
       : null;
+  const snapshotSemanticFingerprint = await readDurableSemanticFingerprint(committed.path);
   const receipt = await readPromotionReceiptStatus(storage, committed.path);
   if (!receipt.available) {
     log.warn(
@@ -165,7 +185,22 @@ export async function buildMergedTargetPromotionPayload(
     );
     return { payload: null, readFailed: true };
   }
-  if (receipt.committedDigest !== undefined && snapshotDigest !== receipt.committedDigest) {
+  if (
+    receipt.committedSemanticFingerprint !== undefined &&
+    snapshotSemanticFingerprint !== receipt.committedSemanticFingerprint
+  ) {
+    log.warn(
+      snapshotSemanticFingerprint == null
+        ? `semantic-merge: merged-target promotion refused for ${merge.targetId} — the semantic snapshot fingerprint is unavailable while the CAS receipt carries ${receipt.committedSemanticFingerprint}; promotion and reconciliation retry on the next merge`
+        : `semantic-merge: merged-target promotion refused for ${merge.targetId} — record semantic fingerprint (${snapshotSemanticFingerprint}) does not match committed receipt fingerprint (${receipt.committedSemanticFingerprint}); record metadata was mutated concurrently`,
+    );
+    return { payload: null, readFailed: true };
+  }
+  if (
+    receipt.committedSemanticFingerprint === undefined &&
+    receipt.committedDigest !== undefined &&
+    snapshotDigest !== receipt.committedDigest
+  ) {
     log.warn(
       snapshotDigest == null
         ? `semantic-merge: merged-target promotion refused for ${merge.targetId} — the record snapshot digest is unavailable while the CAS receipt carries committed digest ${receipt.committedDigest}; promotion and reconciliation retry on the next merge`
@@ -210,11 +245,30 @@ export async function buildMergedTargetPromotionPayload(
         : snapshotDigest !== null
           ? { committedDigest: snapshotDigest }
           : {}),
+      ...(receipt.committedSemanticFingerprint !== undefined
+        ? { committedSemanticFingerprint: receipt.committedSemanticFingerprint }
+        : snapshotSemanticFingerprint !== null
+          ? { committedSemanticFingerprint: snapshotSemanticFingerprint }
+          : {}),
     },
     readFailed: false,
   };
 }
 
+/** #2870: canonical SEMANTIC fingerprint of a durable file's CURRENT
+ * bytes — the file text with access telemetry stripped
+ * ({@link canonicalSemanticFileText}), hashed exactly the way the CAS
+ * receipt records it at commit time. Null when the file cannot be read
+ * (fail-open, like readDurableFileDigest). */
+export async function readDurableSemanticFingerprint(filePath: string): Promise<string | null> {
+  try {
+    return createHash("sha256")
+      .update(canonicalSemanticFileText(await readFile(filePath, "utf8")))
+      .digest("hex");
+  } catch {
+    return null;
+  }
+}
 /** #2813 (P1 A): read the standing receipt as a three-way truth for the
  * promotion path. Present and absent are usable identities (absent = the
  * target predates the sidecar); unavailable is not. A storage whose status
@@ -223,7 +277,7 @@ export async function readPromotionReceiptStatus(
   storage: Pick<StorageManager, "readCasRevisionStatus">,
   filePath: string,
 ): Promise<
-  | { available: true; revision: string | undefined; committedDigest?: string }
+  | { available: true; revision: string | undefined; committedDigest?: string; committedSemanticFingerprint?: string }
   | { available: false; reason: string }
 > {
   try {
@@ -233,6 +287,8 @@ export async function readPromotionReceiptStatus(
       available: true,
       revision: status.status === "present" ? status.revision : undefined,
       committedDigest: status.status === "present" ? status.committedDigest : undefined,
+      committedSemanticFingerprint:
+        status.status === "present" ? status.committedSemanticFingerprint : undefined,
     };
   } catch (err) {
     return { available: false, reason: err instanceof Error ? err.message : String(err) };
