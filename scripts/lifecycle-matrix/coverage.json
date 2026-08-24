@@ -198,6 +198,7 @@
     "packages/remnic-core/src/storage/tombstone-blocked-capture-mutation.ts": "extraction-lifecycle",
     "packages/remnic-core/src/storage/deletion-revision-store.ts": "dependency-propagation",
     "packages/remnic-core/src/storage/cas-revision-store.ts": "dependency-propagation",
+    "packages/remnic-core/src/storage/cas-revision-host.ts": "dependency-propagation",
     "packages/remnic-core/src/storage/committed-invalidation.ts": "dependency-propagation",
     "packages/remnic-core/src/storage/supersession-audit.ts": "dependency-propagation",
     "packages/remnic-core/src/session-toggles.ts": "serialized-write-chain",
