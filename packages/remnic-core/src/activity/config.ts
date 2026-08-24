@@ -8,10 +8,13 @@ import { resolveJournalSource } from "./journal-source.js";
 import { validateVaultNoteTemplate } from "./vault-path.js";
 import { headingSurvivesRoundTrip } from "./vault-publish.js";
 import { validateRegionName } from "./vault-region.js";
+import { TIMELINE_ANALYSIS_DEFAULT_TIMEOUT_MS } from "./timeline/analysis.js";
+import { ANALYSIS_METADATA_MAX_FIELD_LENGTH, isAnalysisIdentifier } from "./timeline/analysis-metadata.js";
 import type {
   ActivityConfig,
   ActivityExtractionMode,
   ActivitySourceConfig,
+  ActivityTimelineAnalysisConfig,
   ActivityTimelineConfig,
   ActivityTimelineJournalConfig,
   ActivityTimelineQaConfig,
@@ -41,6 +44,7 @@ export function defaultActivityConfig(): ActivityConfig {
     maxMemoriesPerDay: 0,
     timeline: {
       enabled: false,
+      analysis: parseTimelineAnalysisConfig(undefined),
       journal: { enabled: false, source: "memoryDir", extractionMode: "off" },
       qa: { enabled: false, maxRangeDays: 31 },
       vault: parseTimelineVaultConfig(undefined),
@@ -218,6 +222,7 @@ function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
   if (raw === undefined) {
     return {
       enabled: false,
+      analysis: parseTimelineAnalysisConfig(undefined),
       journal: { enabled: false, source: "memoryDir", extractionMode: "off" },
       qa: parseTimelineQaConfig(undefined),
       vault: parseTimelineVaultConfig(undefined),
@@ -269,9 +274,85 @@ function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
   }
   return {
     enabled: enabledValue ?? false,
+    analysis: parseTimelineAnalysisConfig(timeline.analysis),
     journal,
     qa: parseTimelineQaConfig(timeline.qa),
     vault,
+  };
+}
+
+/**
+ * Parse the `activity.timeline.analysis.*` block (issue #2050). Independent
+ * gate, default off: disabled means zero provider calls and zero analysis
+ * artifacts. Enabling requires an explicit provider and model; every invalid
+ * value is rejected at parse time — never silently defaulted or fallen back.
+ */
+function parseTimelineAnalysisConfig(raw: unknown): ActivityTimelineAnalysisConfig {
+  if (raw === undefined) return { enabled: false };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new TypeError("activity.timeline.analysis must be an object");
+  }
+  const analysis = raw as Record<string, unknown>;
+  const enabled = requireBool(analysis.enabled, "activity.timeline.analysis.enabled", false);
+  const provider = optionalNonEmptyString(analysis.provider, "activity.timeline.analysis.provider")?.trim();
+  const model = optionalNonEmptyString(analysis.model, "activity.timeline.analysis.model")?.trim();
+  for (const [key, value] of [
+    ["provider", provider],
+    ["model", model],
+  ] as const) {
+    if (value === undefined) continue;
+    if (key === "provider" && value.includes("/")) {
+      throw new RangeError(
+        "activity.timeline.analysis.provider must be a single provider segment (no '/')",
+      );
+    }
+    if (!isAnalysisIdentifier(value)) {
+      throw new RangeError(
+        `activity.timeline.analysis.${key} must be an identifier (letters, digits, and ._:-/ only)`,
+      );
+    }
+    if (value.length > ANALYSIS_METADATA_MAX_FIELD_LENGTH) {
+      throw new RangeError(
+        `activity.timeline.analysis.${key} must be at most ${ANALYSIS_METADATA_MAX_FIELD_LENGTH} characters`,
+      );
+    }
+  }
+  if (enabled && (provider === undefined || model === undefined)) {
+    throw new RangeError(
+      "activity.timeline.analysis.provider and model are required when analysis is enabled",
+    );
+  }
+  const timeoutMsValue = coerceNumber(analysis.timeoutMs, "activity.timeline.analysis.timeoutMs");
+  if (analysis.timeoutMs !== undefined && timeoutMsValue === undefined) {
+    throw new TypeError("activity.timeline.analysis.timeoutMs must be a finite number");
+  }
+  const timeoutMs = timeoutMsValue ?? TIMELINE_ANALYSIS_DEFAULT_TIMEOUT_MS;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 120_000) {
+    throw new RangeError("activity.timeline.analysis.timeoutMs must be an integer from 1000 to 120000");
+  }
+  if (analysis.preferences !== undefined) {
+    if (!Array.isArray(analysis.preferences)) {
+      throw new TypeError("activity.timeline.analysis.preferences must be an array of strings");
+    }
+    if (analysis.preferences.length > 16) {
+      throw new RangeError("activity.timeline.analysis.preferences supports at most 16 entries");
+    }
+    for (const entry of analysis.preferences) {
+      if (typeof entry !== "string" || entry.trim().length === 0) {
+        throw new TypeError("activity.timeline.analysis.preferences entries must be non-empty strings");
+      }
+      if (entry.length > 200) {
+        throw new RangeError("activity.timeline.analysis.preferences entries must be at most 200 characters");
+      }
+    }
+  }
+  const preferences = analysis.preferences as string[] | undefined;
+  return {
+    enabled,
+    ...(provider === undefined ? {} : { provider }),
+    ...(model === undefined ? {} : { model }),
+    ...(analysis.timeoutMs !== undefined || timeoutMsValue !== undefined ? { timeoutMs } : {}),
+    ...(preferences === undefined ? {} : { preferences }),
   };
 }
 
