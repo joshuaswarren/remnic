@@ -688,8 +688,11 @@ test("remnic converge apply: abort drains the rest of the started transfer batch
       }
       const signal = init?.signal;
       if (signal && !signal.aborted) {
-        const { promise, resolve } = Promise.withResolvers<void>();
-        signal.addEventListener("abort", () => resolve(), { once: true });
+        let onAbort: () => void = () => {};
+        const promise = new Promise<void>((resolvePromise) => {
+          onAbort = resolvePromise;
+        });
+        signal.addEventListener("abort", () => onAbort(), { once: true });
         await promise;
       }
       slowFinished = true;
