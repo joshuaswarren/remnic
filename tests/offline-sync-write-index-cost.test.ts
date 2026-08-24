@@ -17,9 +17,9 @@ import { StorageManager } from "../packages/remnic-core/src/storage.js";
 class CountingStorage extends StorageManager {
   readAllMemoriesCalls = 0;
 
-  override async readAllMemories(): Promise<ReturnType<StorageManager["readAllMemories"]>> {
+  override async readAllMemories(options?: Parameters<StorageManager["readAllMemories"]>[0]) {
     this.readAllMemoriesCalls += 1;
-    return super.readAllMemories();
+    return super.readAllMemories(options);
   }
 
   captureIndex() {
