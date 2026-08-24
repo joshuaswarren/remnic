@@ -665,11 +665,6 @@ function checkBuildWeekCodexDatasetPaths() {
             `\`--dataset-dir ${expected}\`; got ${datasetFlag ?? "no --dataset-dir"}`,
         );
       }
-      if (command.includes("evals/datasets")) {
-        failures.push(
-          `${rel}: Build Week Codex ${benchmark} command must not use the CLI-managed evals/datasets store`,
-        );
-      }
       if (commandTokens.includes("--quick")) {
         failures.push(
           `${rel}: Build Week Codex ${benchmark} command must not use \`--quick\`; ` +

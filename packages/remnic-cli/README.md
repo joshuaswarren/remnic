@@ -89,8 +89,8 @@ remnic benchmark run --quick longmemeval
 `--quick` uses the lightweight benchmark path with a single-item limit so you can
 smoke-test the harness without running a full benchmark pass. When a benchmark
 ships a bundled smoke fixture, `--quick` uses that tracked fixture by default;
-full runs need a real benchmark dataset. In a repo checkout the CLI will use
-`evals/datasets/<benchmark>` automatically; in packaged installs pass
+full runs need a real benchmark dataset. The CLI resolves
+`~/.remnic/bench/datasets/<benchmark>` automatically in both repo checkouts and packaged installs; alternatively pass
 `--dataset-dir <path>` explicitly.
 
 Package-backed benchmark runs also write `MANIFEST.json` in the results
