@@ -857,6 +857,7 @@ export class Orchestrator {
         indexPersistedMemory: (storage, memoryId) => this.indexPersistedMemory(storage, memoryId),
         buildGraphEdge: (storage, memoryRelPath, entityRef, memoryId, factContent, allMemsForGraph, memoryPathById, threadIdForEdge, threadEpisodeIdsForGraph, fallbackCausalPredecessor, graphCaps) =>
           this.buildGraphEdge(storage, memoryRelPath, entityRef, memoryId, factContent, allMemsForGraph, memoryPathById, threadIdForEdge, threadEpisodeIdsForGraph, fallbackCausalPredecessor, graphCaps),
+        invalidateGraphEdgeCache: (storage) => this.graphIndexFor(storage).invalidateEdgeCache(),
         updateTemporalTagIndexes: (storage, persistedIds) =>
           this.updateTemporalTagIndexes(storage, persistedIds),
       });
@@ -3227,32 +3228,21 @@ export class Orchestrator {
     );
   }
 
+  /** Delegation wrapper so the persist wiring and root-test stubs route through `this` (#2813 CI-0). */
   private async buildGraphEdge(
     storage: StorageManager,
     memoryRelPath: string,
     entityRef: string | undefined,
     memoryId: string,
     factContent: string,
-    allMemsForGraph: import("./types.js").MemoryFile[] | null | undefined,
+    allMemsForGraph: MemoryFile[] | null | undefined,
     memoryPathById: Map<string, string>,
     threadIdForEdge: string | undefined,
     threadEpisodeIdsForGraph: string[] | undefined,
     fallbackCausalPredecessor: string | undefined,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
   ): Promise<GraphEdge[]> {
-    return this.persistenceIndexCoordinator.buildGraphEdge(
-      storage,
-      memoryRelPath,
-      entityRef,
-      memoryId,
-      factContent,
-      allMemsForGraph,
-      memoryPathById,
-      threadIdForEdge,
-      threadEpisodeIdsForGraph,
-      fallbackCausalPredecessor,
-      graphCaps,
-    );
+    return this.persistenceIndexCoordinator.buildGraphEdge(storage, memoryRelPath, entityRef, memoryId, factContent, allMemsForGraph, memoryPathById, threadIdForEdge, threadEpisodeIdsForGraph, fallbackCausalPredecessor, graphCaps);
   }
 
   private graphIndexFor(storage: StorageManager): GraphIndex {
@@ -3423,27 +3413,9 @@ export class Orchestrator {
     );
   }
 
-  private publishRecallResults(options: {
-    title: string;
-    results: QmdSearchResult[];
-    sectionBuckets: RecallSectionBuckets;
-    retrievalQuery: string;
-    sessionKey: string | undefined;
-    identityInjection?: {
-      mode: IdentityInjectionMode | "none";
-      injectedChars: number;
-      truncated: boolean;
-    };
-    /**
-     * Issue #1577 — per-recall trust map. When present, quarantined items
-     * are filtered from injection on EVERY recall path (hot QMD, embedding
-     * fallback, cold archive, recent) so a faithfulness-contradicted memory
-     * cannot sneak in via a branch that bypasses trust scoring (review:
-     * fallback paths bypass trust). The map is also threaded to
-     * formatQmdResults for the epistemic hedge.
-     */
-    trustByPath?: Map<string, TrustStageResultItem> | null;
-  }): void {
+  private publishRecallResults(
+    options: Parameters<RecallEntryCoordinator["publishRecallResults"]>[0],
+  ): void {
     return (this.recallEntryCoordinator ?? new RecallEntryCoordinator(
       selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),
     )).publishRecallResults(

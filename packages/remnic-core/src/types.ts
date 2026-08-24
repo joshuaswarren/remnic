@@ -7,6 +7,7 @@ import type { WearablesConfig } from "./wearables/types.js";
 import type { ExtractionLivenessConfig } from "./extraction-liveness.js";
 import type { ReplicaPeersConfig } from "./replica-peers-config.js";
 import type { ExternalWikiRoot } from "./external-wiki-config.js";
+import type { StateViewResult } from "./recall-state-view.js";
 import type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
 import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 export type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
@@ -983,13 +984,12 @@ export interface PluginConfig
    * Default false — enable explicitly after bench validation.
    */
   recallDirectAnswerEnabled: boolean;
+  /** Recall state views (issue #1952): label current/historical/transition on change-intent queries. Default false. */
+  recallStateViews: boolean;
   /**
-   * Disclosure auto-escalation policy (issue #677 PR 4/4).  When set to
-   * `"auto"`, recalls without an explicit caller-supplied disclosure
-   * escalate from `chunk` to `section` if the top-K confidence falls
-   * below {@link recallDisclosureEscalationThreshold}.  `raw` is never
-   * auto-selected — it requires an explicit caller request.  Default
-   * `"manual"` preserves pre-#677 behavior.
+   * Disclosure auto-escalation policy (issue #677 PR 4/4).  `"auto"`
+   * escalates chunk → section when top-K confidence falls below
+   * {@link recallDisclosureEscalationThreshold}.  Default `"manual"`.
    */
   recallDisclosureEscalation: "manual" | "auto";
   /**
@@ -3476,7 +3476,7 @@ export interface ConsolidationObservation {
   merged: number;
   invalidated: number;
 }
-export interface QmdSearchResult extends OriginMetadata, RecallDriftAnnotation {
+export interface QmdSearchResult extends OriginMetadata, RecallDriftAnnotation, StateViewResult {
   docid: string;
   path: string;
   snippet: string;

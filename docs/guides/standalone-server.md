@@ -275,8 +275,9 @@ Then start the server normally with `npx remnic-server` (or `remnic daemon start
 if your config is already in place).
 
 For multi-tenant access from a single standalone instance, prefer session-key
-prefix rules. Header-based per-request principal override is not currently
-available through `remnic-server` (see [Per-Request Principal Override](#per-request-principal-override) below).
+prefix rules when possible. If you intentionally trust the bearer token to
+select a principal per request, enable `server.trustPrincipalHeader` and send
+`X-Engram-Principal` (see [Per-Request Principal Override](#per-request-principal-override) below).
 
 See the [Namespaces documentation](../namespaces.md) for full details on namespace storage layout, QMD collection configuration, and CLI tooling.
 
@@ -400,12 +401,19 @@ If `lcmEnabled` is `false`, the response will have an empty `results` array and 
 
 ## Per-request principal override
 
-Standalone `remnic-server` does not currently expose a CLI flag to enable
-trusted per-request principal override. In standalone mode, principal resolution
-comes from `server.principal` in config or from session-key prefix rules.
+Standalone `remnic-server` supports trusted per-request principal override via
+the `server.trustPrincipalHeader` config option (issue #2782):
 
-If you need `X-Engram-Principal` header trust today, use the OpenClaw-hosted HTTP
-access server instead of `remnic-server`:
+```json
+{
+  "server": {
+    "authToken": "set-me",
+    "trustPrincipalHeader": true
+  }
+}
+```
+
+The same gate exists on the OpenClaw-hosted HTTP access server as a CLI flag:
 
 ```bash
 openclaw engram access http-serve \
@@ -415,7 +423,7 @@ openclaw engram access http-serve \
   --trust-principal-header
 ```
 
-### Usage (OpenClaw compatibility path)
+### Usage (standalone and OpenClaw compatibility paths)
 
 Include the header in your requests:
 
@@ -437,9 +445,9 @@ The `X-Engram-Principal` header value becomes the authenticated principal for th
 
 ### Security considerations
 
-- **Only enable `--trust-principal-header` when the bearer token provides sufficient trust.** Anyone with the token can impersonate any principal.
+- **Only enable `server.trustPrincipalHeader` (or `--trust-principal-header` for OpenClaw) when the bearer token provides sufficient trust.** Anyone with the token can impersonate any principal.
 - If you run the server behind a reverse proxy, ensure the proxy strips or validates the `X-Engram-Principal` header from untrusted clients.
-- Without `--trust-principal-header`, the header is silently ignored — principal resolution falls back to configured principal or session key rules.
+- Without the corresponding trust gate, the header is silently ignored — principal resolution falls back to the configured principal or session key rules.
 - For production multi-tenant standalone setups, consider running separate server instances per tenant with different tokens and fixed configured principals, rather than trusting a single token with header-based principal resolution.
 
 ## Shared knowledge layer

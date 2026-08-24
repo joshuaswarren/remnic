@@ -49,7 +49,7 @@ export type DependencyPropagationRecoveryStorage = DependencyPropagationStorage 
       actor?: string;
       sourceConnector?: string;
     },
-  ) => Promise<boolean>;
+  ) => Promise<string | false>;
 };
 
 /**

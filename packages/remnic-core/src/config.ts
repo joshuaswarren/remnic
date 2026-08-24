@@ -39,6 +39,7 @@ import { expandTildePath } from "./utils/path.js";
 // config.ts → connectors/index.ts nor the reverse circular import arises.
 import { coerceBool, coerceBooleanLike, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
 import { parseSubjectRuntimeConfig } from "./subject-config.js";
+import { parseRecallStateViews } from "./recall-state-view.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
 import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
@@ -1926,6 +1927,9 @@ export function parseConfig(
     // explicitly opt in.
     recallDirectAnswerEnabled:
       coerceBool(cfg.recallDirectAnswerEnabled) ?? false,
+    // Recall state views (issue #1952). Default false; exact false/0/"false"
+    // disable (parseRecallStateViews → coerceBooleanLike).
+    recallStateViews: parseRecallStateViews(cfg.recallStateViews),
     // Disclosure auto-escalation (issue #677 PR 4/4).  Default `manual`
     // so pre-#677 callers see unchanged behavior.  Reject anything
     // outside the allow-list rather than silently defaulting (CLAUDE.md
