@@ -307,8 +307,8 @@ test("MCP memory write tools admit project-shaped category aliases (#2780)", asy
     assert.equal(result?.isError, false, `${toolName} must admit project-shaped category aliases`);
     assert.equal(
       received?.category,
-      "project_state",
-      `${toolName} must forward the alias; the write surface coerces it to "fact"`
+      "fact",
+      `${toolName} must dispatch the schema-canonicalized category`
     );
   }
 });

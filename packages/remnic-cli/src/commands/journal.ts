@@ -33,14 +33,15 @@ import {
   parseConfig,
   readJournalForDate,
   readTimelineState,
+  refreshActivityIndex,
   resolveRemnicConfigRecord,
   runJournalReviewExtraction,
   seedJournal,
   withJournalDateLock,
-  type BufferTurn,
   type JournalExtractionDeps,
   type PluginConfig,
 } from "@remnic/core";
+import type { BufferTurn } from "@remnic/core/types.js";
 import { resolveConfigPath } from "../config-path.js";
 
 export interface JournalCommandIo {
@@ -48,15 +49,26 @@ export interface JournalCommandIo {
   err(line: string): void;
 }
 
-/** Injectable seam: note reads, extraction-pass deps, and the clock. */
+/** Injectable seam: note reads, extraction-pass deps, the reindex hook, and the clock. */
 export interface JournalCommandDeps {
   readJournal: typeof readJournalForDate;
   /** Built lazily — only the `extract` action pays for storage + engine. */
   extractionDeps(): Promise<JournalExtractionDeps>;
+  /**
+   * Canonical search-index refresh (issue #2872): fired once after any
+   * candidate write (§31) so new journal memories are discoverable. Wired to
+   * `refreshActivityIndex(orchestrator.qmd, config.qmdCollection)` in the
+   * binary entrypoint — the same forced/strict seam the activity sync uses.
+   */
+  reindexSearch?(): Promise<void>;
   now(): Date;
 }
 
-function defaultDeps(config: PluginConfig, storage?: StorageManager): JournalCommandDeps {
+function defaultDeps(
+  config: PluginConfig,
+  storage?: StorageManager,
+  reindexSearch?: () => Promise<void>,
+): JournalCommandDeps {
   return {
     readJournal: readJournalForDate,
     async extractionDeps() {
@@ -70,15 +82,21 @@ function defaultDeps(config: PluginConfig, storage?: StorageManager): JournalCom
       return {
         extract: (turns: BufferTurn[]) => engine.extract(turns),
         writer: createJournalMemoryWriter(storage),
+        ...(reindexSearch === undefined ? {} : { afterWrites: reindexSearch }),
       };
     },
+    ...(reindexSearch === undefined ? {} : { reindexSearch }),
     now: () => new Date(),
   };
 }
 
 /** Build command deps with an already-resolved StorageManager (secure store, tombstones, namespace). */
-export function createJournalCommandDeps(config: PluginConfig, storage: StorageManager): JournalCommandDeps {
-  return defaultDeps(config, storage);
+export function createJournalCommandDeps(
+  config: PluginConfig,
+  storage: StorageManager,
+  reindexSearch?: () => Promise<void>,
+): JournalCommandDeps {
+  return defaultDeps(config, storage, reindexSearch);
 }
 
 function takeFlag(rest: string[], name: string): string | undefined {
@@ -159,6 +177,7 @@ export async function runJournalCommand(
         io.out(`exists:false (${read.reason})`);
         return 0;
       }
+      surfaceStripWarnings(io, read.warnings);
       // Provenance header naming the file (issue #1987): review UIs and
       // humans can trace the text back to the exact vault note.
       io.out(`# journal source: ${read.filePath} :: ${read.heading}`);
@@ -196,37 +215,43 @@ export async function runJournalCommand(
       );
       return 1;
     }
-    let text: string;
-    if (vaultMode) {
-      const read = deps.readJournal({
-        vault: config.activity.timeline.vault,
-        date,
-        timezone: config.activity.timezone,
-      });
-      if (!read.ok) {
-        io.err(`journal: cannot read the vault note (${read.reason}): ${read.filePath}`);
-        return 1;
-      }
-      // A missing note/section is a legitimate no-journal day (§22): nothing
-      // to extract, no state write, exit 0.
-      if (!read.exists) {
-        io.out(`no journal ${date} (${read.reason})`);
-        return 0;
-      }
-      text = read.text;
-    } else {
-      const filePath = journalPath(config.memoryDir, date);
-      if (!fs.existsSync(filePath)) {
-        io.out(`no journal ${date} (missing_file)`);
-        return 0;
-      }
-      text = fs.readFileSync(filePath, "utf8");
-    }
 
-    // Per-date lock covers hash reread → extract/dedup/write → state commit
-    // so two processes cannot double-extract the same day. Different dates
-    // use different lock files and may run concurrently.
+    // Per-date lock covers note read → hash reread → extract/dedup/write →
+    // state commit so two processes cannot double-extract the same day
+    // (issue #2872: the note is read AFTER the lock is acquired — a waiter
+    // queued behind a newer extraction re-reads the current note and
+    // hash-skips instead of overwriting the newer run with stale text).
+    // Different dates use different lock files and may run concurrently.
     return withJournalDateLock(config.memoryDir, date, async () => {
+      let text: string;
+      let stripWarnings: readonly string[] = [];
+      if (vaultMode) {
+        const read = deps.readJournal({
+          vault: config.activity.timeline.vault,
+          date,
+          timezone: config.activity.timezone,
+        });
+        if (!read.ok) {
+          io.err(`journal: cannot read the vault note (${read.reason}): ${read.filePath}`);
+          return 1;
+        }
+        // A missing note/section is a legitimate no-journal day (§22): nothing
+        // to extract, no state write, exit 0.
+        if (!read.exists) {
+          io.out(`no journal ${date} (${read.reason})`);
+          return 0;
+        }
+        text = read.text;
+        stripWarnings = read.warnings;
+      } else {
+        const filePath = journalPath(config.memoryDir, date);
+        if (!fs.existsSync(filePath)) {
+          io.out(`no journal ${date} (missing_file)`);
+          return 0;
+        }
+        text = fs.readFileSync(filePath, "utf8");
+      }
+      surfaceStripWarnings(io, stripWarnings);
       const state = readTimelineState(config.memoryDir);
       if (journalUnchanged(state, date, text)) {
         io.out(`unchanged ${date} (hash-skip)`);
@@ -264,6 +289,17 @@ export async function runJournalCommand(
   return 1;
 }
 
+/**
+ * Strip warnings name config/region names only — never journal content — so
+ * printing them to stderr is safe on every surface (issue #2872). They
+ * describe what the fail-closed strip removed; the remaining text is clean.
+ */
+function surfaceStripWarnings(io: JournalCommandIo, warnings: readonly string[]): void {
+  for (const warning of warnings) {
+    io.err(`journal: ${warning}`);
+  }
+}
+
 export async function runJournalBinaryCommand(rest: string[]): Promise<void> {
   // Help short-circuits BEFORE config discovery and parse (issue #1987 P2):
   // `remnic journal --help` prints usage and exits 0 even when the config
@@ -292,11 +328,16 @@ export async function runJournalBinaryCommand(rest: string[]): Promise<void> {
   try {
     let deps: JournalCommandDeps | undefined;
     if (action === "extract") {
-      orchestrator = new Orchestrator(config);
-      await orchestrator.initialize();
-      await orchestrator.deferredReady;
-      const storage = await orchestrator.getStorageForNamespace(config.defaultNamespace);
-      deps = createJournalCommandDeps(config, storage);
+      const orch = new Orchestrator(config);
+      orchestrator = orch;
+      await orch.initialize();
+      await orch.deferredReady;
+      const storage = await orch.getStorageForNamespace(config.defaultNamespace);
+      // Canonical reindex (issue #2872): the same forced/strict refresh the
+      // activity sync uses, fired once after any candidate write (§31).
+      deps = createJournalCommandDeps(config, storage, () =>
+        refreshActivityIndex(orch.qmd, config.qmdCollection),
+      );
     }
     const code = await runJournalCommand(
       config,

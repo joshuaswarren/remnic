@@ -25,6 +25,7 @@ import type {
   TriggerMode,
   TrustWeights,
 } from "./types.js";
+import { parseLocalLlmConfig } from "./local-llm-config.js";
 import { parseConvergeConfig } from "./converge-config.js";
 import { parseExternalWikiRecallGuard } from "./external-wiki-guard.js";
 import { log } from "./logger.js";
@@ -38,8 +39,9 @@ import { expandTildePath } from "./utils/path.js";
 // config.ts → connectors/index.ts nor the reverse circular import arises.
 import { coerceBool, coerceBooleanLike, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
 import { parseSubjectRuntimeConfig } from "./subject-config.js";
+import { parseRecallStateViews } from "./recall-state-view.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
-import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
+import { parseExtractionFields } from "./extraction-span-config.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
 import { parseDependencyPropagationConfig } from "./dependency-propagation-config.js";
 import { parseProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
@@ -458,6 +460,14 @@ function parseAgentAccessPrincipal(raw: unknown): string | undefined {
     readEnvVar("OPENCLAW_ENGRAM_ACCESS_PRINCIPAL")?.trim() ||
     undefined
   );
+}
+
+function parseOptionalEnvName(raw: unknown, property: string): string | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (typeof raw !== "string" || !/^[A-Z_][A-Z0-9_]*$/.test(raw)) {
+    throw new Error(`${property} must name a conventional environment variable`);
+  }
+  return raw;
 }
 
 export function resolveEnvVars(value: string): string {
@@ -1545,6 +1555,7 @@ export function parseConfig(
 
   const { wikiMergeIntoRecall, qmdCollection, qmdColdCollection } =
     parseExternalWikiRecallGuard(cfg);
+  const localLlmApiKeyEnv = parseOptionalEnvName(cfg.localLlmApiKeyEnv, "localLlmApiKeyEnv");
 
   return {
     openaiApiKey: apiKey,
@@ -1922,6 +1933,9 @@ export function parseConfig(
     // explicitly opt in.
     recallDirectAnswerEnabled:
       coerceBool(cfg.recallDirectAnswerEnabled) ?? false,
+    // Recall state views (issue #1952). Default false; exact false/0/"false"
+    // disable (parseRecallStateViews → coerceBooleanLike).
+    recallStateViews: parseRecallStateViews(cfg.recallStateViews),
     // Disclosure auto-escalation (issue #677 PR 4/4).  Default `manual`
     // so pre-#677 callers see unchanged behavior.  Reject anything
     // outside the allow-list rather than silently defaulting (CLAUDE.md
@@ -2319,7 +2333,7 @@ export function parseConfig(
     dreaming,
     dreamsPhases,
     procedural,
-    extractionLiveness: parseExtractionLivenessConfig(cfg),
+    ...parseExtractionFields(cfg),
     replicaPeers: parseReplicaPeersConfig(cfg),
     converge: parseConvergeConfig(cfg.converge),
     wearables,
@@ -2667,46 +2681,7 @@ export function parseConfig(
       typeof cfg.abstractionNodeStoreDir === "string" && cfg.abstractionNodeStoreDir.trim().length > 0
         ? cfg.abstractionNodeStoreDir.trim()
         : path.join(memoryDir, "state", "abstraction-nodes"),
-    // Local LLM Provider (v2.1)
-    localLlmEnabled: cfg.localLlmEnabled === true || cfg.localLlmEnabled === "true", // default: false
-    localLlmUrl:
-      typeof cfg.localLlmUrl === "string" && cfg.localLlmUrl.length > 0
-        ? cfg.localLlmUrl
-        : "http://localhost:1234/v1",
-    localLlmModel:
-      typeof cfg.localLlmModel === "string" && cfg.localLlmModel.length > 0
-        ? cfg.localLlmModel
-        : "local-model",
-    localLlmApiKey:
-      typeof cfg.localLlmApiKey === "string" && cfg.localLlmApiKey.length > 0
-        ? resolveEnvVars(cfg.localLlmApiKey)
-        : undefined,
-    localLlmHeaders:
-      cfg.localLlmHeaders && typeof cfg.localLlmHeaders === "object" && !Array.isArray(cfg.localLlmHeaders)
-        ? Object.fromEntries(
-            Object.entries(cfg.localLlmHeaders as Record<string, unknown>)
-              .filter(([, value]) => typeof value === "string")
-              .map(([key, value]) => [key, String(value)]),
-          )
-        : undefined,
-    localLlmAuthHeader: cfg.localLlmAuthHeader !== false,
-    localLlmFallback: cfg.localLlmFallback !== false, // default: true
-    localLlmHomeDir:
-      typeof cfg.localLlmHomeDir === "string" && cfg.localLlmHomeDir.length > 0
-        ? cfg.localLlmHomeDir
-        : undefined,
-    localLmsCliPath:
-      typeof cfg.localLmsCliPath === "string" && cfg.localLmsCliPath.length > 0
-        ? cfg.localLmsCliPath
-        : undefined,
-    localLmsBinDir:
-      typeof cfg.localLmsBinDir === "string" && cfg.localLmsBinDir.length > 0
-        ? cfg.localLmsBinDir
-        : undefined,
-    localLlmTimeoutMs:
-      parseBoundedIntegerMs(cfg.localLlmTimeoutMs, 180_000, 1, 86_400_000),
-    localLlmMaxContext:
-      parseOptionalIntegerAtLeast(cfg.localLlmMaxContext, 1024, "localLlmMaxContext"),
+    ...parseLocalLlmConfig(cfg, localLlmApiKeyEnv, resolveEnvVars),
     // Observability (disabled by default to avoid log spam)
     slowLogEnabled: cfg.slowLogEnabled === true,
     slowLogThresholdMs:

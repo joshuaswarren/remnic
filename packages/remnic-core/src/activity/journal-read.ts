@@ -28,12 +28,19 @@ export type ReadJournalResult =
   | { ok: false; reason: "duplicate_heading"; lines: readonly number[]; filePath: string }
   | { ok: false; reason: "not_directory" | "path_escape" | "symlink_escape"; filePath: string };
 
-/** Publisher-owned daily-note heading sections that must never count as journal text. */
+/**
+ * Publisher-owned daily-note heading sections that must never count as
+ * journal text (issue #2872): every daily target KNOWN TO CONFIG, enabled or
+ * not. A target that was enabled when it wrote "## Timeline" sections keeps
+ * owning them after it is disabled — disabling must not resurrect historical
+ * published output as journal text. Weekly targets never own daily-note
+ * sections.
+ */
 export function publisherOwnedSectionNames(vault: ActivityTimelineVaultConfig): string[] {
   if (vault.sectionStrategy !== "heading") return [];
   const names: string[] = [];
   for (const target of Object.values(vault.publish)) {
-    if (target.enabled && target.target === "daily" && target.section.trim().length > 0) {
+    if (target.target === "daily" && target.section.trim().length > 0) {
       names.push(target.section);
     }
   }
@@ -131,53 +138,98 @@ function symlinkRejected(): NodeJS.ErrnoException {
 }
 
 /**
- * Open the verified daily note with O_NOFOLLOW, fstat a regular file whose
- * identity still matches the path, then read that same fd once. Any symlink
- * in the root→note chain is refused.
+ * Open the daily note through a descriptor-bound parent chain (issue #2872).
+ * The vault root is pinned by fd; every later name is opened relative to that
+ * held descriptor, then bound by inode identity. Absolute paths are not
+ * re-resolved after the pin, so an ancestor rename or swap cannot redirect
+ * the note fd. Platforms without a descriptor filesystem fail closed.
+ * Exactly one readFile of the verified fd.
  */
-function readVerifiedDailyNote(root: string, filePath: string): string {
+export interface VerifiedDailyNoteIo {
+  /**
+   * Injectable open seam (tests swap directory entries mid-chain to prove the
+   * identity checks refuse). Defaults to node:fs openSync.
+   */
+  open?: (filePath: string, flags: number) => number;
+}
+
+export function readVerifiedDailyNote(
+  root: string,
+  filePath: string,
+  io: VerifiedDailyNoteIo = {},
+): string {
+  const open = io.open ?? openSync;
+  const nofollow = fsConstants.O_NOFOLLOW ?? 0;
+  const dirFlags = fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0) | nofollow;
   const relative = path.relative(root, filePath);
   const parts = relative.split(path.sep).filter((part) => part.length > 0 && part !== ".");
-  let cursor = root;
-  for (const part of parts) {
-    cursor = path.join(cursor, part);
-    const st = lstatSync(cursor);
-    if (st.isSymbolicLink()) throw symlinkRejected();
-  }
-
-  const parent = path.dirname(filePath);
-  const parentLstat = lstatSync(parent);
-  if (parentLstat.isSymbolicLink() || !parentLstat.isDirectory()) throw symlinkRejected();
-  const nofollow = fsConstants.O_NOFOLLOW ?? 0;
-  const parentFd = openSync(parent, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | nofollow);
+  if (parts.length === 0) throw symlinkRejected();
+  const held: number[] = [];
   try {
-    const parentFstat = fstatSync(parentFd);
-    if (parentFstat.ino !== parentLstat.ino || parentFstat.dev !== parentLstat.dev) {
-      throw symlinkRejected();
-    }
-  } finally {
-    closeSync(parentFd);
-  }
+    const rootLstat = lstatSync(root);
+    if (rootLstat.isSymbolicLink() || !rootLstat.isDirectory()) throw symlinkRejected();
+    const rootFd = open(root, dirFlags);
+    held.push(rootFd);
+    if (!sameNode(fstatSync(rootFd), rootLstat)) throw symlinkRejected();
 
-  const fd = openSync(filePath, fsConstants.O_RDONLY | nofollow);
-  try {
-    const opened = fstatSync(fd);
-    if (!opened.isFile()) throw symlinkRejected();
-    const pathLstat = lstatSync(filePath);
-    if (pathLstat.isSymbolicLink() || pathLstat.ino !== opened.ino || pathLstat.dev !== opened.dev) {
-      throw symlinkRejected();
+    for (let depth = 0; depth < parts.length - 1; depth += 1) {
+      const childFd = openPinnedChild(open, held[held.length - 1]!, parts[depth]!, dirFlags);
+      held.push(childFd);
+      const child = fstatSync(childFd);
+      if (!child.isDirectory() || child.ino === 0) throw symlinkRejected();
     }
+
+    const noteName = parts[parts.length - 1]!;
+    const parentFd = held[held.length - 1]!;
+    const fd = openPinnedChild(open, parentFd, noteName, fsConstants.O_RDONLY | nofollow);
     try {
-      const fdPath = realpathSync(`/proc/self/fd/${fd}`);
-      const realRoot = realpathSync(root);
-      if (fdPath !== realRoot && !fdPath.startsWith(`${realRoot}${path.sep}`)) {
-        throw symlinkRejected();
+      const opened = fstatSync(fd);
+      if (!opened.isFile() || opened.ino === 0) throw symlinkRejected();
+      const verifyFd = openPinnedChild(open, parentFd, noteName, fsConstants.O_RDONLY | nofollow);
+      try {
+        if (!sameNode(fstatSync(verifyFd), opened)) throw symlinkRejected();
+      } finally {
+        closeSync(verifyFd);
       }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ELOOP") throw err;
+      return readFileSync(fd, "utf8");
+    } finally {
+      closeSync(fd);
     }
-    return readFileSync(fd, "utf8");
   } finally {
-    closeSync(fd);
+    for (const fd of held) closeSync(fd);
   }
+}
+
+function descriptorRoot(): string {
+  if (process.platform === "linux") return "/proc/self/fd";
+  if (process.platform === "darwin" || process.platform === "freebsd" || process.platform === "openbsd") {
+    return "/dev/fd";
+  }
+  throw symlinkRejected();
+}
+
+function openPinnedChild(
+  open: (filePath: string, flags: number) => number,
+  parentFd: number,
+  name: string,
+  flags: number,
+): number {
+  if (name.length === 0 || name === "." || name === ".." || name.includes("/") || name.includes("\\") || name.includes("\0")) {
+    throw symlinkRejected();
+  }
+  const held = fstatSync(parentFd);
+  if (!held.isDirectory() || held.ino === 0) throw symlinkRejected();
+  const desc = `${descriptorRoot()}/${String(parentFd)}`;
+  let pinned;
+  try {
+    pinned = statSync(desc);
+  } catch {
+    throw symlinkRejected();
+  }
+  if (!pinned.isDirectory() || !sameNode(pinned, held)) throw symlinkRejected();
+  return open(`${desc}/${name}`, flags);
+}
+
+function sameNode(a: { ino: number; dev: number }, b: { ino: number; dev: number }): boolean {
+  return a.ino !== 0 && b.ino !== 0 && a.ino === b.ino && a.dev === b.dev;
 }

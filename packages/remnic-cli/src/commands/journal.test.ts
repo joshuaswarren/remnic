@@ -8,12 +8,19 @@ import test from "node:test";
 import {
   FallbackLlmClient,
   StorageManager,
+  commitJournalHash,
   createJournalMemoryWriter,
+  hashJournalText,
+  journalUnchanged,
   parseConfig,
   readJournalForDate,
+  readTimelineState,
+  withJournalDateLock,
+  type FallbackLlmOptions,
   type JournalExtractionDeps,
   type PluginConfig,
 } from "@remnic/core";
+import type { ExtractionResult } from "@remnic/core/types.js";
 import { createJournalCommandDeps, runJournalBinaryCommand, runJournalCommand, type JournalCommandDeps } from "./journal.js";
 
 const START = "<!-- remnic:timeline:start -->";
@@ -194,7 +201,8 @@ function reviewMemoryDirConfigFor(memoryDir: string): PluginConfig {
 
 interface RecordedWrite {
   status: string;
-  tags: string[];
+  /** SealedMemoryEnvelope.tags is readonly; the recorder only observes it. */
+  tags: readonly string[];
 }
 
 function fakeExtractionDeps(
@@ -546,6 +554,153 @@ test("extract through injected StorageManager encrypts writes and leaves no plai
   }
 });
 
+// ── issue #2872: locked rereads, surfaced strip warnings, reindex wiring ────
+
+/**
+ * Real-clock delay for the per-date lock integration test: withHeldFileLock
+ * busy-polls the lock file on the real clock (50ms interval), so fake timers
+ * cannot drive lock hand-off. The one deliberate real-timer use in this file.
+ */
+function delay(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
+
+test("extract rereads the note under the date lock — a waiter behind a newer run cannot overwrite it", async () => {
+  await withVault(async (vault) => {
+    const note = path.join(vault, "2026-08-20.md");
+    fs.writeFileSync(note, ["## Journal", "v1 body", ""].join("\n"));
+    const config = reviewVaultConfigFor(vault);
+    const memoryDir = config.memoryDir;
+    const date = "2026-08-20";
+    // No stored hash yet, so neither run can hash-skip on its own text.
+
+    const fake = fakeExtractionDeps(["v1 body fact"]);
+    let reads = 0;
+    const deps = countingDeps({
+      extractionDeps: async () => fake.deps,
+      readJournal: (input) => {
+        reads += 1;
+        return readJournalForDate(input);
+      },
+    });
+
+    // The newer run holds the per-date lock first, then updates the note and
+    // commits its hash — while the CLI waiter queues on the same lock.
+    const newerRun = withJournalDateLock(memoryDir, date, async () => {
+      // Let a pre-lock read (the pre-#2872 shape) settle on v1 before the
+      // note changes; under the fix the CLI simply keeps waiting here.
+      await delay(150);
+      fs.writeFileSync(note, ["## Journal", "v2 body", ""].join("\n"));
+      await commitJournalHash(memoryDir, date, hashJournalText("v2 body"));
+    });
+    await delay(30); // the newer run has the lock before the CLI starts.
+    const result = await capture(config, ["extract", "--date", date], deps);
+    await newerRun;
+
+    assert.equal(result.code, 0);
+    assert.equal(reads, 1, "exactly one read, taken after the lock was acquired");
+    assert.equal(fake.extractCalls(), 0, "a waiter behind a newer extraction never re-extracts");
+    assert.equal(
+      journalUnchanged(readTimelineState(memoryDir), date, "v2 body"),
+      true,
+      "the newer run's hash survives — stale v1 text cannot overwrite it",
+    );
+  });
+});
+
+test("show surfaces strip warnings on stderr without leaking stripped content", async () => {
+  await withVault(async (vault, config) => {
+    fs.writeFileSync(
+      path.join(vault, "2026-08-20.md"),
+      ["## Journal", "user secret line", START, "PUBLISHED-CARD-CONTENT", ""].join("\n"),
+    );
+    const result = await capture(config, ["show", "--date", "2026-08-20"]);
+    assert.equal(result.code, 0);
+    assert.match(result.err.join("\n"), /journal: unclosed remnic region "timeline"/);
+    assert.equal(
+      result.err.join("\n").includes("PUBLISHED-CARD-CONTENT"),
+      false,
+      "warnings never echo stripped content",
+    );
+    assert.match(result.out.join("\n"), /user secret line/);
+    assert.equal(result.out.join("\n").includes("PUBLISHED-CARD-CONTENT"), false);
+  });
+});
+
+test("extract surfaces strip warnings and extracts only the stripped text", async () => {
+  await withVault(async (vault) => {
+    fs.writeFileSync(
+      path.join(vault, "2026-08-20.md"),
+      ["## Journal", "user secret line", START, "PUBLISHED-CARD-CONTENT", ""].join("\n"),
+    );
+    const config = reviewVaultConfigFor(vault);
+    const fake = fakeExtractionDeps(["user secret line fact"]);
+    const result = await capture(config, ["extract", "--date", "2026-08-20"], countingDeps({ extractionDeps: async () => fake.deps }));
+    assert.equal(result.code, 0);
+    assert.deepEqual(result.out, ["pending_review: 1", "rejected_by_judge: 0", "skipped: 0"]);
+    assert.match(result.err.join("\n"), /journal: unclosed remnic region "timeline"/);
+    assert.equal(result.err.join("\n").includes("PUBLISHED-CARD-CONTENT"), false);
+  });
+});
+
+test("production extraction deps fire the reindex hook once after candidate writes", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-journal-cli-reindex-"));
+  try {
+    const dayFile = path.join(memoryDir, "journal", "2026-08-20.md");
+    fs.mkdirSync(path.dirname(dayFile), { recursive: true });
+    fs.writeFileSync(dayFile, `${STORAGE_FACT}\n`);
+    const config = reviewMemoryDirConfigFor(memoryDir);
+    const storage = new StorageManager(config.memoryDir);
+    await storage.ensureDirectories();
+    let reindexes = 0;
+    const deps = createJournalCommandDeps(config, storage, async () => {
+      reindexes += 1;
+    });
+    const inner = deps.extractionDeps;
+    deps.extractionDeps = async () => ({
+      ...(await inner()),
+      extract: async () => ({
+        facts: [
+          {
+            content: STORAGE_FACT,
+            category: "decision" as const,
+            confidence: 0.9,
+            tags: [],
+            entityRef: undefined,
+          },
+        ],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      }),
+    });
+    const result = await capture(config, ["extract", "--date", "2026-08-20"], deps);
+    assert.equal(result.code, 0);
+    assert.equal(result.out[0], "pending_review: 1");
+    assert.equal(reindexes, 1, "one canonical reindex after the candidate write");
+
+    const rerun = await capture(config, ["extract", "--date", "2026-08-20"], deps);
+    assert.deepEqual(rerun.out, ["unchanged 2026-08-20 (hash-skip)"]);
+    assert.equal(reindexes, 1, "hash-skipped runs never reindex");
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("without a reindex hook the extraction deps carry no afterWrites", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-journal-cli-noreindex-"));
+  try {
+    const config = reviewMemoryDirConfigFor(memoryDir);
+    const storage = new StorageManager(config.memoryDir);
+    await storage.ensureDirectories();
+    const deps = createJournalCommandDeps(config, storage);
+    assert.equal((await deps.extractionDeps()).afterWrites, undefined);
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
 test("production extract invokes the configured gateway provider and model", async () => {
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-journal-cli-gw-"));
   const originalParse = FallbackLlmClient.prototype.parseWithSchemaDetailed;
@@ -555,6 +710,19 @@ test("production extract invokes the configured gateway provider and model", asy
     fs.mkdirSync(path.dirname(dayFile), { recursive: true });
     fs.writeFileSync(dayFile, "I decided the configured gateway must reach extraction.\n");
     const customPrimary = "journal-gw-test/custom-extract";
+    const fixtureResult: ExtractionResult = {
+      facts: [
+        {
+          content: "I decided the configured gateway must reach extraction.",
+          category: "decision",
+          confidence: 0.9,
+          tags: [],
+        },
+      ],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    };
     const config = parseConfig({
       memoryDir,
       modelSource: "gateway",
@@ -583,33 +751,22 @@ test("production extract invokes the configured gateway provider and model", asy
         timeline: { journal: { enabled: true, source: "memoryDir", extractionMode: "review" } },
       },
     });
-    FallbackLlmClient.prototype.parseWithSchemaDetailed = async function (
+    // Mocked against the real parseWithSchemaDetailed signature (AGENTS.md
+    // §21 — Test Mock Signature Fidelity) so contract drift surfaces here.
+    FallbackLlmClient.prototype.parseWithSchemaDetailed = async function <T>(
       this: FallbackLlmClient,
-      _messages,
-      _schema,
-      options,
+      _messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+      _schema: { parse: (data: unknown) => T },
+      options?: FallbackLlmOptions,
     ) {
-      const gatewayConfig = (this as unknown as { gatewayConfig?: {
+      // Unchecked cast: gatewayConfig exists on the runtime instance but not
+      // the public type; the mock reads it only to assert agent wiring.
+      const holder = this as unknown as { gatewayConfig?: {
         agents?: { list?: Array<{ id: string; model?: { primary?: string } }> };
-      } }).gatewayConfig;
-      const persona = gatewayConfig?.agents?.list?.find((agent) => agent.id === "journal-extract-agent");
+      } };
+      const persona = holder.gatewayConfig?.agents?.list?.find((agent) => agent.id === "journal-extract-agent");
       seen.push({ primary: persona?.model?.primary, agentId: options?.agentId });
-      return {
-        modelUsed: customPrimary,
-        result: {
-          facts: [
-            {
-              content: "I decided the configured gateway must reach extraction.",
-              category: "decision",
-              confidence: 0.9,
-              tags: [],
-            },
-          ],
-          profileUpdates: [],
-          entities: [],
-          questions: [],
-        },
-      };
+      return { modelUsed: customPrimary, result: fixtureResult as unknown as T };
     };
     const storage = new StorageManager(config.memoryDir);
     const result = await capture(

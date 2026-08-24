@@ -45,6 +45,7 @@ import {
 } from "./recall-search-prefilter.js";
 import { shouldFilterSupersededFromRecall } from "../temporal-supersession.js";
 import { isValidAsOf, isValidityExpiredNow } from "../temporal-validity.js";
+import { StateViewAnchorTracker, stateViewPacketActive } from "../recall-state-view-anchors.js";
 import type { TrustStageResultItem } from "../trust-score-stage.js";
 import type { MemoryFile, PluginConfig, QmdSearchResult, RecallPlanMode } from "../types.js";
 import {
@@ -99,6 +100,8 @@ export interface RecallSearchPipelineDeps {
        * string at the input boundary (CLI / HTTP / MCP).
        */
       asOfMs?: number;
+      /** #1952 state-view admission — see filterSearchResultsByRecallSafety. */
+      stateViewActive?: boolean;
       requestingConnector?: string;
     },
   ): Promise<QmdSearchResult[]>;
@@ -172,6 +175,8 @@ export interface RecallSearchPipelineDeps {
       dropUnresolved?: boolean;
       recallNamespaces?: readonly string[];
       requestingConnector?: string;
+      /** #1952 state-view admission — see filterSearchResultsByRecallSafety. */
+      stateViewActive?: boolean;
     },
   ): Promise<{ results: QmdSearchResult[]; memoryByPath: Map<string, MemoryFile> }>;
   loadSearchResultMemoryMap(
@@ -598,6 +603,8 @@ export class RecallSearchPipelineCoordinator {
     deadlineAtMs?: number | null;
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
+    /** #1952 state-view admission — resolved by the caller from config/override + change intent. */
+    stateViewActive?: boolean;
   }): Promise<QmdSearchResult[]> {
     // Prefer the threaded set; fall back to a config-derived set so direct
     // callers (unit tests) behave identically to the recall pipeline (#1523).
@@ -844,6 +851,7 @@ export class RecallSearchPipelineCoordinator {
         dropUnresolved: true,
         recallNamespaces: options.recallNamespaces,
         requestingConnector: options.requestingConnector,
+        stateViewActive: options.stateViewActive,
       },
     );
     results = boostInput.results;
@@ -864,6 +872,7 @@ export class RecallSearchPipelineCoordinator {
                 {
                   allowLifecycleFiltered: true,
                   asOfMs: options.asOfMs,
+                  stateViewActive: options.stateViewActive,
                   requestingConnector: options.requestingConnector,
                 },
               ),
@@ -882,6 +891,7 @@ export class RecallSearchPipelineCoordinator {
               {
                 allowLifecycleFiltered: true,
                 asOfMs: options.asOfMs,
+                stateViewActive: options.stateViewActive,
                 requestingConnector: options.requestingConnector,
               },
             ));
@@ -978,17 +988,22 @@ export class RecallSearchPipelineCoordinator {
         options.recallResultLimit,
         options.prompt,
         caps,
+        // #2859: packet semantics are off under a historical asOf pin.
+        stateViewPacketActive(options.stateViewActive, options.asOfMs),
       );
       options.resultPartitionSink.partition = partition;
       return partition.appliedResults;
     }
-    return this.deps.diversifyAndLimitRecallResults(
-      "memories",
-      results,
-      options.recallResultLimit,
-      options.prompt,
-      caps,
-    );
+    return this.deps.recallRerankCoordinator
+      .diversifyRecallResultsWithHeadroom(
+        "memories",
+        results,
+        options.recallResultLimit,
+        options.prompt,
+        caps,
+        stateViewPacketActive(options.stateViewActive, options.asOfMs),
+      )
+      .appliedResults;
   }
 
   async loadSearchResultMemoryMap(
@@ -1108,8 +1123,49 @@ export class RecallSearchPipelineCoordinator {
       asOfMs?: number;
       blockedPaths?: Set<string>;
       requestingConnector?: string;
+      /**
+       * #1952 state-aware recall views. When true (config `recallStateViews`
+       * or per-call override, AND a change-intent query — resolved by the
+       * caller), a superseded candidate is admitted iff its successor
+       * (`frontmatter.supersededBy`) is also in this candidate set. The
+       * admitted row carries `id`/`status`/`supersededBy`/`supersededAt` so
+       * the inject seam can label it; every other path is unchanged.
+       */
+      stateViewActive?: boolean;
     },
   ): QmdSearchResult[] {
+    // #1952 state-aware recall views. A superseded row is admitted only
+    // when its successor SURVIVES this filter — a successor rejected by
+    // the connector/lifecycle/validity/dedicated-surface/status gates
+    // must never anchor (or spend a result slot on) its superseded row.
+    // #2859: anchors are namespace-qualified and include the successor
+    // `supersedes` back-pointer (see StateViewAnchorTracker); superseded
+    // rows defer admission to the post-pass fixpoint.
+    const stateViewActive = options?.stateViewActive === true;
+    const stateViewAnchors = stateViewActive ? new StateViewAnchorTracker() : null;
+    const stateViewDeferred: number[] = [];
+    const stateViewBuilt: (QmdSearchResult | null)[] | null = stateViewActive
+      ? new Array<QmdSearchResult | null>(results.length).fill(null)
+      : null;
+    const buildRecallRow = (r: QmdSearchResult, memory: MemoryFile | undefined): QmdSearchResult => ({
+      ...r,
+      sourceConnector: memory ? memory.frontmatter.sourceConnector : undefined,
+      origin: memory ? memory.frontmatter.origin : undefined,
+      // #1952: an active state view carries the chain fields the inject
+      // seam labels from (id/status/supersededBy/supersededAt).
+      ...(stateViewActive && memory
+        ? {
+            id: memory.frontmatter.id,
+            status: memory.frontmatter.status,
+            supersedes: memory.frontmatter.supersedes,
+            supersededBy: memory.frontmatter.supersededBy,
+            supersededAt: memory.frontmatter.supersededAt,
+            validAt: memory.frontmatter.valid_at,
+            invalidAt: memory.frontmatter.invalid_at,
+          }
+        : {}),
+    });
+    let stateViewAdmittedCount = 0;
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.deps.config);
     let lifecycleFilteredCount = 0;
     let temporalSupersededFilteredCount = 0;
@@ -1120,7 +1176,9 @@ export class RecallSearchPipelineCoordinator {
     let connectorPartitionFilteredCount = 0;
     let supportPassportFilteredCount = 0;
     const filtered: QmdSearchResult[] = [];
-    for (const r of results) {
+    for (let resultIdx = 0; resultIdx < results.length; resultIdx += 1) {
+      const r = results[resultIdx]!;
+      let stateViewPending = false;
       if (options?.blockedPaths && resultHasKey(options.blockedPaths, r)) {
         blockedPathFilteredCount += 1;
         continue;
@@ -1195,16 +1253,23 @@ export class RecallSearchPipelineCoordinator {
           // allowLifecycleFiltered=true to include archived/retired
           // candidates, but superseded memories must still be filtered
           // unless temporalSupersessionIncludeInRecall is set.
-          // Skipped entirely when `as_of` is active (above branch); the
-          // half-open `[valid_at, invalid_at)` evaluation in isValidAsOf
-          // is the authoritative gate for historical recall.
+          // #1952: an active state view ADMITS the superseded row when its
+          // successor also survives this filter — history never renders
+          // unanchored, and a successor rejected by any gate here can
+          // never anchor. Admission defers to the post-pass fixpoint.
+          // Skipped entirely when `as_of` is active (above branch);
+          // isValidAsOf stays the authoritative historical gate.
           shouldFilterSupersededFromRecall(memory.frontmatter, {
             enabled: lifecycleCaps.temporalSupersession,
             includeInRecall: this.deps.config.temporalSupersessionIncludeInRecall,
           })
         ) {
-          temporalSupersededFilteredCount += 1;
-          continue;
+          if (stateViewActive) {
+            stateViewPending = true;
+          } else {
+            temporalSupersededFilteredCount += 1;
+            continue;
+          }
         }
         // Bi-temporal INJECTION filter (issue #1578): when the master gate
         // is on and the caller did NOT pin `as_of`, drop facts whose event-
@@ -1243,11 +1308,54 @@ export class RecallSearchPipelineCoordinator {
       }
       // Derive persisted provenance exclusively from hydrated frontmatter.
       // The formatter parses this value at the model-context render site.
-      filtered.push({
-        ...r,
-        sourceConnector: memory ? memory.frontmatter.sourceConnector : undefined,
-        origin: memory ? memory.frontmatter.origin : undefined,
-      });
+      if (stateViewPending) {
+        // Survived every other gate; admission now hinges on the
+        // successor surviving too — decided by the fixpoint below.
+        stateViewDeferred.push(resultIdx);
+        continue;
+      }
+      const builtRow = buildRecallRow(r, memory);
+      if (stateViewBuilt !== null) {
+        stateViewBuilt[resultIdx] = builtRow;
+        if (memory && stateViewAnchors) stateViewAnchors.admit(r.namespace, memory.frontmatter);
+      }
+      filtered.push(builtRow);
+    }
+    if (stateViewDeferred.length > 0) {
+      // #1952 admission fixpoint: a deferred superseded row joins the
+      // output only when its successor is (or becomes) part of the
+      // filter-surviving set. An admitted row can itself anchor the next
+      // link of a chain, so iterate to a fixpoint.
+      const admitted = new Set<number>();
+      for (let progress = true; progress; ) {
+        progress = false;
+        for (const deferredIdx of stateViewDeferred) {
+          if (admitted.has(deferredIdx)) continue;
+          const deferredRow = results[deferredIdx]!;
+          const deferredMemory = memoryForResult(memoryByPath, deferredRow);
+          if (!deferredMemory) continue;
+          if (stateViewAnchors!.anchored(deferredRow.namespace, deferredMemory.frontmatter)) {
+            admitted.add(deferredIdx);
+            stateViewAnchors!.admit(deferredRow.namespace, deferredMemory.frontmatter);
+            progress = true;
+          }
+        }
+      }
+      for (const deferredIdx of stateViewDeferred) {
+        const deferredMemory = memoryForResult(memoryByPath, results[deferredIdx]!);
+        if (admitted.has(deferredIdx) && deferredMemory) {
+          stateViewAdmittedCount += 1;
+          stateViewBuilt![deferredIdx] = buildRecallRow(results[deferredIdx]!, deferredMemory);
+        } else {
+          temporalSupersededFilteredCount += 1;
+        }
+      }
+      // Re-emit in the order candidates entered this filter so an
+      // admitted predecessor keeps its rank position (no slot swap).
+      filtered.length = 0;
+      for (const builtRow of stateViewBuilt!) {
+        if (builtRow) filtered.push(builtRow);
+      }
     }
     if (connectorPartitionFilteredCount > 0) {
       log.debug(
@@ -1267,6 +1375,11 @@ export class RecallSearchPipelineCoordinator {
     if (temporalSupersededFilteredCount > 0) {
       log.debug(
         `temporal supersession filter removed ${temporalSupersededFilteredCount} superseded candidates`,
+      );
+    }
+    if (stateViewAdmittedCount > 0) {
+      log.debug(
+        `state views admitted ${stateViewAdmittedCount} superseded candidates anchored on in-set successors (#1952)`,
       );
     }
     if (biTemporalExpiredFilteredCount > 0) {
@@ -1304,6 +1417,8 @@ export class RecallSearchPipelineCoordinator {
       dropUnresolved?: boolean;
       recallNamespaces?: readonly string[];
       requestingConnector?: string;
+      /** #1952 state-view admission — see filterSearchResultsByRecallSafety. */
+      stateViewActive?: boolean;
     },
   ): Promise<{ results: QmdSearchResult[]; memoryByPath: Map<string, MemoryFile> }> {
     if (results.length === 0) {
@@ -1366,6 +1481,8 @@ export class RecallSearchPipelineCoordinator {
        * string at the input boundary (CLI / HTTP / MCP).
        */
       asOfMs?: number;
+      /** #1952 state-view admission — flows into filterSearchResultsForRecall. */
+      stateViewActive?: boolean;
       requestingConnector?: string;
     },
   ): Promise<QmdSearchResult[]> {

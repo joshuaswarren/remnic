@@ -48,6 +48,7 @@ export * from "./memory-projection-format.js";
 export { searchWithGenericExclusion } from "./access-memory-search-fanout.js";
 export * from "./model-registry.js";
 export * from "./contradiction/index.js";
+export * from "./recall-state-view.js";
 
 export {
   buildEvidencePack,
@@ -149,8 +150,7 @@ export {
   type CodexCliFallbackResult,
   type CodexCliFallbackRunner,
 } from "./cli-fallback.js";
-export { CODEX_SUBSCRIPTION_PROVIDER_ID, codexSubscriptionBuiltinProviderConfig, createCodexSubscriptionRunner, ensureCodexSubscriptionRunnerRegistered, CodexSubscriptionAuthError, CodexSubscriptionConfigError, CodexSubscriptionTimeoutError } from "./providers/codex-subscription.js";
-
+export { CODEX_SUBSCRIPTION_PROVIDER_ID, beginCodexSubscriptionShutdown, codexSubscriptionBuiltinProviderConfig, createCodexSubscriptionRunner, ensureCodexSubscriptionRunnerRegistered, getCodexSubscriptionRunnerForOwner, terminateActiveCodexSubscriptionChildren, CodexSubscriptionAuthError, CodexSubscriptionConfigError, CodexSubscriptionTimeoutError } from "./providers/codex-subscription.js";
 // ---------------------------------------------------------------------------
 // Smart buffer (issue #563)
 // ---------------------------------------------------------------------------
@@ -563,20 +563,7 @@ export {
   type StructuralSpawnFn,
 } from "./coding/structural-subprocess-provider.js";
 
-export {
-  validateRequest,
-  formatZodError,
-  recallRequestSchema,
-  observeRequestSchema,
-  memoryStoreRequestSchema,
-  suggestionSubmitRequestSchema,
-  type SchemaValidationError,
-  type SchemaName,
-  type RecallRequest,
-  type ObserveRequest,
-  type MemoryStoreRequest,
-  type SuggestionSubmitRequest,
-} from "./access-schema.js";
+export * from "./access-schema.js";
 
 // ---------------------------------------------------------------------------
 // Day summary / LCM

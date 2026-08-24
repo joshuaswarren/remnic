@@ -10,6 +10,9 @@ Use `openclaw engram config-review` for opinionated tuning recommendations and `
 |---------|---------|-------------|
 | `openaiApiKey` | `(env fallback in plugin mode)` | Optional OpenAI API key, `${ENV_VAR}` reference, or `false` to disable direct OpenAI entirely. When `modelSource` is `gateway`, Remnic does not inherit `OPENAI_API_KEY`; gateway provider auth is used instead. |
 | `openaiBaseUrl` | `(env fallback)` | Override OpenAI API base URL (e.g. for proxies or compatible endpoints); falls back to `OPENAI_BASE_URL` env var |
+| `backgroundGeneration.endpoint` | (unset) | Chat-completions URL for the Hermes loopback bridge. Consumed only by hourly background generation. |
+| `backgroundGeneration.token` | (unset) | Loopback bearer from the generated client file. |
+| `backgroundGeneration.timeoutSeconds` | `120` | Absolute deadline for one background-generation request. |
 | `model` | `gpt-5.5` | OpenAI model for extraction and consolidation |
 | `reasoningEffort` | `low` | `none`, `low`, `medium`, `high` |
 | `memoryDir` | `~/.openclaw/workspace/memory/local` | Memory storage root |
@@ -54,6 +57,11 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.sources.baseUrl` | `(required)` | HTTP or HTTPS URL of the local capture daemon; must target a loopback host (`localhost`, `127.0.0.0/8`, or `::1`) since the bearer token travels in the request. |
 | `activity.sources.token` | `(unset)` | Literal bearer token sent to a trusted local capture daemon over loopback. This parser does not resolve secret references or `${ENV_VAR}` placeholders; omit the field when the daemon needs no auth. |
 | `activity.timeline.enabled` | `false` | Master gate for timeline-card derivation (issue #2049). When false, no timeline cards are built or exposed. |
+| `activity.timeline.analysis.enabled` | `false` | Independent gate for optional AI analysis over deterministic timeline cards (issue #2050). Gated separately from capture, timeline derivation, and memory creation: disabled makes zero provider calls and writes zero analysis artifacts. |
+| `activity.timeline.analysis.provider` | `(required when enabled)` | Explicit provider id: `"local"` routes to the local LLM client; any other identifier routes to the configured remote provider registry pinned to exactly this provider (no chain fallback). Single provider segment only (letters, digits, `._:-`; no `/`); at most 120 characters. An invalid explicit provider fails, never silently defaults. |
+| `activity.timeline.analysis.model` | `(required when enabled)` | Model id (letters, digits, `._:-/`); at most 120 characters. May include `/`. |
+| `activity.timeline.analysis.timeoutMs` | `15000` | Per-request timeout in ms. Integer 1000..120000. |
+| `activity.timeline.analysis.preferences` | `[]` | Up to 16 free-form user preference strings (≤200 chars each) passed to the analysis prompt. Never secrets: prompt payloads are evidence-only — no screenshots, audio, OCR text, keystrokes, clipboard contents, or media are ever sent. |
 | `activity.timeline.journal.enabled` | `false` | Master gate for every `remnic journal` action — show, edit-path, seed, and extract all refuse before any journal read when false (issues #1984, #1987). Journal files live at `journal/<YYYY-MM-DD>.md` and are excluded from generic recall. |
 | `activity.timeline.journal.source` | `"memoryDir"` | Where journal text is read from (issue #1987): `"memoryDir"` reads `journal/<YYYY-MM-DD>.md`; `"vault"` reads the `activity.timeline.vault.readback.journalSection` section of the daily vault note. `"vault"` requires `activity.timeline.vault.enabled: true` and a resolvable `dailyNotePath` — parse fails naming every missing prerequisite. Legacy `"file"` is accepted as an alias of `"memoryDir"` and emits a deprecation warning. |
 | `activity.timeline.journal.extractionMode` | `"off"` | Review-only journal extraction (issue #1987): `"review"` runs a pass over changed journal text producing `pending_review` candidates only (tags `journal`, `journal-day:<date>`; `valid_at` pinned to the day; `structuredAttributes.journalSource` records the source). No auto mode by design. |
@@ -382,6 +390,7 @@ QMD, hot facts, or default recall. See [External wiki search](external-wikis.md)
 | `recallDirectAnswerImportanceFloor` | `0.7` | Minimum calibrated importance score required for direct-answer eligibility. Set to `0` to disable the gate. `verificationState: "user_confirmed"` bypasses this check. |
 | `recallDirectAnswerAmbiguityMargin` | `0.15` | If the second-best candidate scores within this ratio of the top, direct-answer defers to the hybrid tier. |
 | `recallDirectAnswerEligibleTaxonomyBuckets` | `["decisions","principles","conventions","runbooks","entities"]` | Taxonomy category IDs eligible for direct-answer routing. Set to `[]` to disable the gate without unsetting `enabled`. |
+| `recallStateViews` | `false` | Opt in to state-aware recall views (issue #1952). On change-intent queries ("when did", "used to", "switched", "changed" and conjugations), recall admits a superseded memory when its successor is also in the candidate set, labels rows `current`/`historical`/`transition`, and renders historical rows with a `[superseded <date> by <id>]` prefix. A superseded row never renders without its successor. Exact `false`/`0`/`"false"` disable; non-change queries and the disabled flag keep output byte-identical. The MCP `recall` tool also accepts a per-call `stateView` boolean that ORs with this flag. #2859 pair semantics: pairs reconcile before the user cap/MMR (orphan removal never underfills; a predecessor admitted with its successor counts as ONE evidence packet toward the cap), reverse chains derive from the successor `supersedes` back-pointer, chain identities are namespace-qualified (identical ids across namespaces never cross-anchor), and asOf labels use the temporal validity boundary (`invalidAt`, `supersededAt` only as legacy fallback), not the write-time stamp. |
 | `hotMemoriesCacheEnabled` | `true` | Serve `readAllMemories()` from a version-keyed in-process cache of the full parsed corpus (issue #1902), eliminating repeated full-corpus disk scans on the recall hot path. Cross-process coherence is preserved by an on-disk corpus version sentinel; single-file writes patch the cache in place. Set `false` to force disk scans on memory-constrained hosts (behavior then matches the pre-#1902 scan path). Version invalidation is the primary coherence mechanism; `hotMemoriesCacheTtlMs` bounds staleness from external edits. |
 | `hotMemoriesCacheTtlMs` | `60000` | Max age (ms) a hot-cache entry is served before a fresh disk scan (issue #1902). The version sentinel gives immediate coherence for writers that go through StorageManager or the corpus-bump helper, but direct filesystem edits (manual, git checkout, external tools) don't bump it; this TTL bounds how long such an edit stays stale. Set `0` to disable the TTL (version invalidation only; max performance for pure-daemon deployments with no external edits). |
 
@@ -491,6 +500,13 @@ Note: `recallPipeline` controls ordering and can explicitly disable sections via
 | `extractionScopeClassificationEnabled` | `true` | Classify extracted facts as `"global"` or `"project"` scope. Global facts are promoted to the shared root namespace so they are visible across all projects. |
 
 See [Coding agent mode](coding-agent.md) for full details on project detection, `cwd` auto-resolution, `projectTag` for non-git sessions, and cross-project knowledge sharing.
+
+## Span-Mode Extraction
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `extraction.spanMode` | `"off"` | `"off"` (default) — extraction generates full content restatements as before. `"shadow"` — request span offsets AND content; materialize + compare and log agreement telemetry, but persist the generated content unchanged (zero behavior change; use to evaluate on live traffic). `"on"` — persist materialized frame+span content (verbatim source slice plus a ≤15-word frame), falling back per fact to the generated frame when a span fails validation. Spans are validated against a hash of the exact per-turn text the model saw (offset drift is rejected), materialized before sanitize/grounding/dedup, and never persisted as offsets. Unrecognized values are rejected at config parse (bench-gated feature, issue #2333). |
+
 ## Coding Knowledge
 
 | Setting | Default | Description |
@@ -835,13 +851,30 @@ Behavior:
   `executable` (or `REMNIC_CODEX_EXECUTABLE` env), `reasoningEffort`
   (`low` | `medium` | `high` | `xhigh`, default `medium`), and
   `retryOptions.timeoutMs` (positive integer; the request deadline when the
-  caller does not set one — an explicit call timeout always wins).
+  caller does not set one — an explicit call timeout always wins). The
+  deadline covers the login precheck and the exec subprocess as one budget,
+  including waits on a login check another request already started: each
+  request times out on its own budget without cancelling the shared check.
 - Not logged in → the provider fails fast with `codex login` guidance; an
   expired or revoked session fails with re-auth guidance. Timeouts surface
-  as `TimeoutError`; caller cancellations keep their original abort reason.
-- A host or benchmark run that registers its own `codex-cli` transport
-  always wins; Remnic registers its subprocess transport only when the seam
-  is free.
+  as `TimeoutError` and survive the model chain (a sole/last
+  `codex-subscription` model propagates the typed error instead of an empty
+  result); caller cancellations keep their original abort reason. A cached
+  login is revalidated whenever the Codex auth store changes on disk, so a
+  later API-key login cannot be masked by an earlier ChatGPT cache entry.
+- Relative `HOME`/`CODEX_HOME` values resolve against the daemon's working
+  directory before either subprocess starts (same rule as the executable
+  path), so the login precheck and the exec child always see the same auth
+  home. Detached Codex child process groups are tracked by the owning
+  runtime's runner. The owning server or plugin runtime invokes
+  `beginCodexSubscriptionShutdown` on its own runner at shutdown,
+  so stopping one Remnic instance cannot kill another instance's in-flight
+  subscription requests. A SIGKILL timer starts before orchestrator drain.
+  The provider does not install process signal
+  listeners or call `process.exit`.
+  A host or benchmark run that registers its own `codex-cli` transport
+  always wins; the core default process runner does not override a
+  runtime-owned runner.
 
 ### Setup
 
@@ -918,6 +951,7 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `localLlmUrl` | `http://localhost:1234/v1` | Base URL for endpoint |
 | `localLlmModel` | `local-model` | Model ID |
 | `localLlmApiKey` | `(unset)` | Optional API key |
+| `localLlmApiKeyEnv` | `(unset)` | Optional environment-variable name for a local API key; if it is unset, local auth remains unset so read-only CLI commands can load config |
 | `localLlmHeaders` | `(unset)` | Extra HTTP headers |
 | `localLlmAuthHeader` | `true` | Send `Authorization: Bearer` header when key set |
 | `localLlmFallback` | `true` | Fall back to gateway model chain on failure |
@@ -1817,6 +1851,9 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 |---------|---------|-------------|
 | `openaiApiKey` | `(env fallback in plugin mode)` | unset when `modelSource` is `gateway`; set `false` for local-only plugin mode; otherwise explicit key or `OPENAI_API_KEY` env fallback |
 | `openaiBaseUrl` | (unset) | (unset) |
+| `backgroundGeneration.endpoint` | (unset) | (unset); hourly background generation only |
+| `backgroundGeneration.token` | (unset) | (unset); generated loopback bearer |
+| `backgroundGeneration.timeoutSeconds` | `120` | `120` |
 | `model` | `gpt-5.5` | `gpt-5.5` |
 | `reasoningEffort` | `low` | `low` |
 | `supportPassport.enabled` | `false` | `false` until an owner chooses to enable What Helps Me |

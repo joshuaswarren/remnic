@@ -1,10 +1,22 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  constants as fsConstants,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { readJournalForDate } from "./journal-read.js";
+import { publisherOwnedSectionNames, readJournalForDate, readVerifiedDailyNote } from "./journal-read.js";
 import type { ActivityTimelineVaultConfig } from "./types.js";
 
 const START = "<!-- remnic:timeline:start -->";
@@ -238,5 +250,128 @@ test("refuses an ancestor directory swapped for a symlink out of the vault", () 
   } finally {
     rmSync(vault, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+// ── issue #2872: config-known strip ownership + portable fd-chain seams ─────
+
+test("a disabled daily target keeps owning its historical heading section", () => {
+  const vault = makeVault();
+  try {
+    writeFileSync(
+      path.join(vault, "2026-08-20.md"),
+      [
+        "## Journal",
+        "user line",
+        "## Timeline",
+        "published card from before the target was disabled",
+        "## Standup",
+        "standup card from a target that was never enabled",
+        "",
+      ].join("\n"),
+    );
+    const config = vaultConfig(vault, {
+      sectionStrategy: "heading",
+      publish: {
+        timeline: { enabled: false, target: "daily", section: "Timeline" },
+        standup: { enabled: false, target: "daily", section: "Standup" },
+        weekly: { enabled: true, target: "weekly", section: "Weekly Review" },
+        locations: { enabled: true, target: "daily", section: "Locations" },
+      },
+    });
+    // Config-known daily sections are owned enabled or not; weekly is not.
+    assert.deepEqual(publisherOwnedSectionNames(config).sort(), ["Locations", "Standup", "Timeline"]);
+    const result = readJournalForDate({ vault: config, date: "2026-08-20" });
+    assert.ok(result.ok && result.exists);
+    assert.equal(result.text, "user line");
+  } finally {
+    rmSync(vault, { recursive: true, force: true });
+  }
+});
+
+test("note swapped for a symlink at open time is refused by the no-follow open", () => {
+  const vault = makeVault();
+  const outside = makeVault();
+  try {
+    const note = path.join(vault, "2026-08-20.md");
+    writeFileSync(note, "## Journal\nuser text\n");
+    writeFileSync(path.join(outside, "escaped.md"), "## Journal\nstolen\n");
+    const io = {
+      open: (openedPath: string, flags: number) => {
+        const openingNote =
+          path.basename(openedPath) === "2026-08-20.md" && (flags & (fsConstants.O_DIRECTORY ?? 0)) === 0;
+        if (openingNote && existsSync(note) && lstatSync(note).isFile()) {
+          renameSync(note, `${note}.real`);
+          symlinkSync(path.join(outside, "escaped.md"), note);
+        }
+        return openSync(openedPath, flags);
+      },
+    };
+    assert.throws(
+      () => readVerifiedDailyNote(vault, note, io),
+      (err: NodeJS.ErrnoException) => err.code === "ELOOP",
+    );
+    assert.equal(existsSync(note) && lstatSync(note).isSymbolicLink(), true);
+  } finally {
+    rmSync(vault, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("ancestor swapped after opens cannot leak outside content", () => {
+  const vault = makeVault();
+  const outside = makeVault();
+  try {
+    const days = path.join(vault, "days");
+    mkdirSync(days);
+    const note = path.join(days, "2026-08-20.md");
+    writeFileSync(note, "## Journal\nuser text\n");
+    writeFileSync(path.join(outside, "stolen.md"), "## Journal\nstolen\n");
+    let swapped = false;
+    const io = {
+      open: (openedPath: string, flags: number) => {
+        const openingNote =
+          path.basename(openedPath) === "2026-08-20.md" && (flags & (fsConstants.O_DIRECTORY ?? 0)) === 0;
+        if (openingNote && !swapped) {
+          swapped = true;
+          renameSync(days, `${days}.orig`);
+          mkdirSync(days);
+          writeFileSync(path.join(days, "2026-08-20.md"), "## Journal\nstolen\n");
+        }
+        try {
+          return openSync(openedPath, flags);
+        } finally {
+          if (openingNote && existsSync(`${days}.orig`)) {
+            rmSync(days, { recursive: true, force: true });
+            renameSync(`${days}.orig`, days);
+          }
+        }
+      },
+    };
+    let text: string | undefined;
+    try {
+      text = readVerifiedDailyNote(vault, note, io);
+    } catch (err) {
+      assert.equal(
+        (err as NodeJS.ErrnoException).code === "ELOOP" || /symlink refused/.test(String(err)),
+        true,
+      );
+      return;
+    }
+    assert.equal(text.includes("stolen"), false);
+    assert.equal(text, "## Journal\nuser text\n");
+  } finally {
+    rmSync(vault, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("the default io seam reads the verified note unchanged", () => {
+  const vault = makeVault();
+  try {
+    writeFileSync(path.join(vault, "2026-08-20.md"), "## Journal\nplain read\n");
+    assert.equal(readVerifiedDailyNote(vault, path.join(vault, "2026-08-20.md")), "## Journal\nplain read\n");
+  } finally {
+    rmSync(vault, { recursive: true, force: true });
   }
 });
