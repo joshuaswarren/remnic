@@ -480,11 +480,6 @@
             "exclusiveMinimum": 0,
             "default": 120,
             "description": "Absolute deadline in seconds for one background-generation request."
-          },
-          "timeout_seconds": {
-            "type": "number",
-            "exclusiveMinimum": 0,
-            "description": "Snake-case alias of timeoutSeconds used by the generated Hermes client file."
           }
         },
         "required": [
@@ -3261,10 +3256,6 @@
         "type": "number",
         "default": 0.65,
         "description": "Decay threshold for lifecycle demotion to stale."
-      },
-      "llmBridgeClientConfigPath": {
-        "type": "string",
-        "description": "Path to the Hermes loopback-bridge client JSON. Parsed into backgroundGeneration only. Never copied onto openaiBaseUrl."
       },
       "localLlm400CooldownMs": {
         "type": "number",

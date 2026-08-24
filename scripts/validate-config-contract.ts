@@ -288,14 +288,9 @@ function main() {
     // …), so the schema exposes them without a same-named interface key.
     "correction",
     "correctionCapture",
-    // Legacy openclawHostEmbeddingProvider* aliases: parsed as fallbacks into
-    // the hostEmbeddingProvider* PluginConfig fields.
     "openclawHostEmbeddingProviderEnabled",
     "openclawHostEmbeddingProviderId",
     "openclawHostEmbeddingProviderModel",
-    // Input-only path: parseConfig reads the generated Hermes client JSON into
-    // backgroundGeneration and does not keep this path on PluginConfig.
-    "llmBridgeClientConfigPath",
   ]);
   const expectedParseMissing = new Set<string>(["providerApiKeyResolver", "runtimeAuthForModelResolver"]);
 

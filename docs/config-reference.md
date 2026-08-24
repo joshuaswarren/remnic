@@ -10,11 +10,9 @@ Use `openclaw engram config-review` for opinionated tuning recommendations and `
 |---------|---------|-------------|
 | `openaiApiKey` | `(env fallback in plugin mode)` | Optional OpenAI API key, `${ENV_VAR}` reference, or `false` to disable direct OpenAI entirely. When `modelSource` is `gateway`, Remnic does not inherit `OPENAI_API_KEY`; gateway provider auth is used instead. |
 | `openaiBaseUrl` | `(env fallback)` | Override OpenAI API base URL (e.g. for proxies or compatible endpoints); falls back to `OPENAI_BASE_URL` env var |
-| `llmBridgeClientConfigPath` | (unset) | Path to the Hermes loopback-bridge client JSON. Parsed into `backgroundGeneration` only. Never copied onto `openaiBaseUrl`. |
 | `backgroundGeneration.endpoint` | (unset) | Chat-completions URL for the Hermes loopback bridge. Consumed only by hourly background generation. |
 | `backgroundGeneration.token` | (unset) | Loopback bearer from the generated client file. |
 | `backgroundGeneration.timeoutSeconds` | `120` | Absolute deadline for one background-generation request. |
-| `backgroundGeneration.timeout_seconds` | `120` | Snake-case alias of `timeoutSeconds` from the generated Hermes client file. |
 | `model` | `gpt-5.5` | OpenAI model for extraction and consolidation |
 | `reasoningEffort` | `low` | `none`, `low`, `medium`, `high` |
 | `memoryDir` | `~/.openclaw/workspace/memory/local` | Memory storage root |
@@ -1828,11 +1826,9 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 |---------|---------|-------------|
 | `openaiApiKey` | `(env fallback in plugin mode)` | unset when `modelSource` is `gateway`; set `false` for local-only plugin mode; otherwise explicit key or `OPENAI_API_KEY` env fallback |
 | `openaiBaseUrl` | (unset) | (unset) |
-| `llmBridgeClientConfigPath` | (unset) | (unset); parse into `backgroundGeneration` only |
 | `backgroundGeneration.endpoint` | (unset) | (unset); hourly background generation only |
 | `backgroundGeneration.token` | (unset) | (unset); generated loopback bearer |
 | `backgroundGeneration.timeoutSeconds` | `120` | `120` |
-| `backgroundGeneration.timeout_seconds` | `120` | `120`; generated-file alias |
 | `model` | `gpt-5.5` | `gpt-5.5` |
 | `reasoningEffort` | `low` | `low` |
 | `supportPassport.enabled` | `false` | `false` until an owner chooses to enable What Helps Me |

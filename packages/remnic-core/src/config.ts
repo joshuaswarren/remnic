@@ -1475,7 +1475,7 @@ export function parseConfig(
   } else if (apiKey !== undefined) {
     baseUrl = normalizeOpenaiBaseUrl(readEnvVar("OPENAI_BASE_URL"), "env");
   }
-  const backgroundGeneration = parseBackgroundGeneration(cfg, resolveEnvVars);
+  const backgroundGeneration = parseBackgroundGeneration(cfg);
 
   const sharedCrossSignalSemanticEnabled =
     cfg.sharedCrossSignalSemanticEnabled === true || cfg.crossSignalsSemanticEnabled === true;

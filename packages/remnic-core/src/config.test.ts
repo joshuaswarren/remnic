@@ -2701,28 +2701,20 @@ test("parseConfig coerces string-typed sharedContextAllowBindingAuthority from t
   }
 });
 
-test("parseConfig consumes llmBridgeClientConfigPath into backgroundGeneration only", () => {
+test("parseConfig consumes backgroundGeneration and leaves openaiBaseUrl untouched", () => {
   withIsolatedConnectorsDir(false, () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "remnic-llm-bridge-client-"));
     const previousKey = process.env.OPENAI_API_KEY;
     const previousBase = process.env.OPENAI_BASE_URL;
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
     try {
-      const file = path.join(dir, "client.json");
-      writeFileSync(
-        file,
-        JSON.stringify({
+      const parsed = parseConfig({
+        backgroundGeneration: {
           endpoint: "http://127.0.0.1:8765/v1/chat/completions",
-          health_endpoint: "http://127.0.0.1:8765/healthz",
-          bind: "127.0.0.1",
-          model_policy: "server-owned",
-          max_body_bytes: 524288,
-          timeout_seconds: 120,
           token: "bridge-token-fixture",
-        }),
-      );
-      const parsed = parseConfig({ llmBridgeClientConfigPath: file });
+          timeoutSeconds: 120,
+        },
+      });
       assert.equal(parsed.openaiBaseUrl, undefined);
       assert.equal(parsed.openaiApiKey, undefined);
       assert.deepEqual(parsed.backgroundGeneration, {
@@ -2732,7 +2724,11 @@ test("parseConfig consumes llmBridgeClientConfigPath into backgroundGeneration o
       });
 
       const explicitOpenAi = parseConfig({
-        llmBridgeClientConfigPath: file,
+        backgroundGeneration: {
+          endpoint: "http://127.0.0.1:8765/v1/chat/completions",
+          token: "bridge-token-fixture",
+          timeoutSeconds: 120,
+        },
         openaiBaseUrl: "http://127.0.0.1:9999/v1",
         openaiApiKey: "keep-me",
       });
@@ -2742,78 +2738,65 @@ test("parseConfig consumes llmBridgeClientConfigPath into backgroundGeneration o
         explicitOpenAi.backgroundGeneration?.endpoint,
         "http://127.0.0.1:8765/v1/chat/completions",
       );
-
-      const explicitBg = parseConfig({
-        backgroundGeneration: {
-          endpoint: "http://127.0.0.1:8765/v1/chat/completions",
-          token: "explicit-token",
-          timeoutSeconds: 30,
-        },
-      });
-      assert.equal(explicitBg.openaiBaseUrl, undefined);
-      assert.deepEqual(explicitBg.backgroundGeneration, {
-        endpoint: "http://127.0.0.1:8765/v1/chat/completions",
-        token: "explicit-token",
-        timeoutSeconds: 30,
-      });
     } finally {
       if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = previousKey;
       if (previousBase === undefined) delete process.env.OPENAI_BASE_URL;
       else process.env.OPENAI_BASE_URL = previousBase;
-      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
 
-test("parseConfig rejects an unreadable llmBridgeClientConfigPath", () => {
+test("parseConfig ignores llmBridgeClientConfigPath", () => {
+  withIsolatedConnectorsDir(false, () => {
+    const parsed = parseConfig({
+      llmBridgeClientConfigPath: "/no/such/remnic-llm-bridge-client.json",
+    });
+    assert.equal(parsed.backgroundGeneration, undefined);
+  });
+});
+
+test("parseConfig rejects backgroundGeneration without a token", () => {
   withIsolatedConnectorsDir(false, () => {
     assert.throws(
-      () => parseConfig({ llmBridgeClientConfigPath: "/no/such/remnic-llm-bridge-client.json" }),
-      /llmBridgeClientConfigPath could not be read/,
+      () =>
+        parseConfig({
+          backgroundGeneration: {
+            endpoint: "http://127.0.0.1:8765/v1/chat/completions",
+          },
+        }),
+      /must include a token/,
     );
   });
 });
 
-test("parseConfig rejects a bridge client file without a token", () => {
+test("parseConfig ignores Hermes timeout_seconds on backgroundGeneration", () => {
   withIsolatedConnectorsDir(false, () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "remnic-llm-bridge-client-"));
-    try {
-      const file = path.join(dir, "client.json");
-      writeFileSync(
-        file,
-        JSON.stringify({
-          endpoint: "http://127.0.0.1:8765/v1/chat/completions",
-        }),
-      );
-      assert.throws(
-        () => parseConfig({ llmBridgeClientConfigPath: file }),
-        /must include a token/,
-      );
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const parsed = parseConfig({
+      backgroundGeneration: {
+        endpoint: "http://127.0.0.1:8765/v1/chat/completions",
+        token: "bridge-token-fixture",
+        timeout_seconds: 45,
+      },
+    });
+    assert.equal(parsed.backgroundGeneration?.timeoutSeconds, 120);
   });
 });
 
-test("parseConfig keeps env openaiBaseUrl isolated from the Hermes bridge", () => {
+test("parseConfig keeps env openaiBaseUrl isolated from backgroundGeneration", () => {
   withIsolatedConnectorsDir(false, () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "remnic-llm-bridge-env-"));
     const previousKey = process.env.OPENAI_API_KEY;
     const previousBase = process.env.OPENAI_BASE_URL;
     process.env.OPENAI_API_KEY = "env-openai-key";
     process.env.OPENAI_BASE_URL = "http://127.0.0.1:9999/v1";
     try {
-      const file = path.join(dir, "client.json");
-      writeFileSync(
-        file,
-        JSON.stringify({
+      const parsed = parseConfig({
+        backgroundGeneration: {
           endpoint: "http://127.0.0.1:8765/v1/chat/completions",
           token: "bridge-token-fixture",
-          timeout_seconds: 45,
-        }),
-      );
-      const parsed = parseConfig({ llmBridgeClientConfigPath: file });
+          timeoutSeconds: 45,
+        },
+      });
       assert.equal(parsed.openaiBaseUrl, "http://127.0.0.1:9999/v1");
       assert.equal(parsed.openaiApiKey, "env-openai-key");
       assert.deepEqual(parsed.backgroundGeneration, {
@@ -2826,7 +2809,6 @@ test("parseConfig keeps env openaiBaseUrl isolated from the Hermes bridge", () =
       else process.env.OPENAI_API_KEY = previousKey;
       if (previousBase === undefined) delete process.env.OPENAI_BASE_URL;
       else process.env.OPENAI_BASE_URL = previousBase;
-      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

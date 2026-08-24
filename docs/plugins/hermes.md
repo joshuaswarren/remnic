@@ -247,20 +247,12 @@ a raw API key or OAuth token.
 
 ### Daemon configuration
 
-Point the Remnic daemon at the generated client JSON by setting
-`llmBridgeClientConfigPath` to the same path as Hermes
-`remnic.llm_bridge.client_config_path`. `parseConfig` reads `endpoint`
-and `token` into `backgroundGeneration` only. Extraction, day summary,
-dependency revalidation, and embeddings keep using `openaiBaseUrl` and
-are unchanged. Hourly summarizer is the background-generation consumer.
-
-```json
-{
-  "llmBridgeClientConfigPath": "/path/to/llm-bridge-client.json"
-}
-```
-
-Equivalent explicit fields:
+Translate the generated Hermes client file in `packages/plugin-hermes`
+(`remnic_hermes.background_generation.load_background_generation`). Copy
+the resulting object into Remnic `backgroundGeneration`. Core does not
+read the Hermes client file. Extraction, day summary, dependency
+revalidation, and embeddings keep using `openaiBaseUrl` and are unchanged.
+Hourly summarizer is the background-generation consumer.
 
 ```json
 {

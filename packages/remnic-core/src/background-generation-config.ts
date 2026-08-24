@@ -1,7 +1,3 @@
-import { readFileSync } from "node:fs";
-
-import { expandTildePath } from "./utils/path.js";
-
 export interface BackgroundGenerationConfig {
   /** Full chat-completions URL. Never used as the global OpenAI base URL. */
   endpoint: string;
@@ -53,7 +49,7 @@ function parseBackgroundGenerationObject(
   if (typeof tokenRaw !== "string" || tokenRaw.length === 0) {
     throw new Error(`${keyName} must include a token`);
   }
-  const timeoutRaw = record.timeoutSeconds ?? record.timeout_seconds;
+  const timeoutRaw = record.timeoutSeconds;
   let timeoutSeconds = 120;
   if (timeoutRaw !== undefined) {
     const parsed = typeof timeoutRaw === "number" ? timeoutRaw : Number(timeoutRaw);
@@ -71,32 +67,8 @@ function parseBackgroundGenerationObject(
 
 export function parseBackgroundGeneration(
   cfg: Record<string, unknown>,
-  expandEnv: (value: string) => string,
 ): BackgroundGenerationConfig | undefined {
-  const pathRaw = cfg.llmBridgeClientConfigPath;
-  let fromFile: BackgroundGenerationConfig | undefined;
-  if (pathRaw !== undefined && pathRaw !== null && pathRaw !== "") {
-    if (typeof pathRaw !== "string") {
-      throw new Error("llmBridgeClientConfigPath must be a string");
-    }
-    const expanded = expandTildePath(expandEnv(pathRaw.trim()));
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(expanded, "utf8"));
-    } catch {
-      throw new Error(`llmBridgeClientConfigPath could not be read: ${expanded}`);
-    }
-    fromFile = parseBackgroundGenerationObject(parsed, "llmBridgeClientConfigPath");
-  }
   const explicitRaw = cfg.backgroundGeneration;
-  const fromExplicit =
-    explicitRaw === undefined || explicitRaw === null
-      ? undefined
-      : parseBackgroundGenerationObject(explicitRaw, "backgroundGeneration");
-  if (!fromFile && !fromExplicit) return undefined;
-  return {
-    endpoint: fromExplicit?.endpoint ?? fromFile!.endpoint,
-    token: fromExplicit?.token ?? fromFile!.token,
-    timeoutSeconds: fromExplicit?.timeoutSeconds ?? fromFile!.timeoutSeconds,
-  };
+  if (explicitRaw === undefined || explicitRaw === null) return undefined;
+  return parseBackgroundGenerationObject(explicitRaw, "backgroundGeneration");
 }
