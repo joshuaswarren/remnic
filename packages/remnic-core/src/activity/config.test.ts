@@ -267,3 +267,41 @@ test("readback.journalSection must be a trimmed single-line heading (#2917)", ()
   const ok = parseActivityConfig({ timeline: { vault: { readback: { journalSection: "Journal" } } } });
   assert.equal(ok.timeline.vault.readback.journalSection, "Journal");
 });
+
+test("heading-strategy section names that cannot round-trip are rejected at config load (#2917)", () => {
+  // `## Timeline #` parses back as `Timeline`. Accepted at load, every
+  // publish would throw before producing a status.
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: {
+          vault: { sectionStrategy: "heading", publish: { timeline: { section: "Timeline #" } } },
+        },
+      }),
+    /publish\.timeline\.section must survive a heading render-and-parse round trip/,
+  );
+  const ok = parseActivityConfig({
+    timeline: {
+      vault: { sectionStrategy: "heading", publish: { timeline: { section: "Timeline" } } },
+    },
+  });
+  assert.equal(ok.timeline.vault.publish.timeline.section, "Timeline");
+});
+
+test("marker-strategy still accepts a section name that would fail heading round-trip (#2917)", () => {
+  const ok = parseActivityConfig({
+    timeline: {
+      vault: { sectionStrategy: "markers", publish: { timeline: { section: "Timeline #" } } },
+    },
+  });
+  assert.equal(ok.timeline.vault.publish.timeline.section, "Timeline #");
+});
+
+test("insertUnderHeading that cannot round-trip is rejected at config load (#2917)", () => {
+  assert.throws(
+    () => parseActivityConfig({ timeline: { vault: { insertUnderHeading: "Timeline #" } } }),
+    /insertUnderHeading must survive a heading render-and-parse round trip/,
+  );
+  const ok = parseActivityConfig({ timeline: { vault: { insertUnderHeading: "Journal" } } });
+  assert.equal(ok.timeline.vault.insertUnderHeading, "Journal");
+});

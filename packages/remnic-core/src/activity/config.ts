@@ -6,6 +6,7 @@ import { applyLegacyJournalHeading, normalizeJournalHeading } from "./journal-he
 import { checkVaultJournalPrerequisites } from "./journal-vault-prereq.js";
 import { resolveJournalSource } from "./journal-source.js";
 import { validateVaultNoteTemplate } from "./vault-path.js";
+import { headingSurvivesRoundTrip } from "./vault-publish.js";
 import { validateRegionName } from "./vault-region.js";
 import type {
   ActivityConfig,
@@ -306,6 +307,11 @@ export function parseTimelineVaultConfig(raw: unknown): ActivityTimelineVaultCon
         "activity.timeline.vault.insertUnderHeading must be a non-empty trimmed single-line heading",
       );
     }
+    if (!headingSurvivesRoundTrip(insertUnderHeading)) {
+      throw new RangeError(
+        "activity.timeline.vault.insertUnderHeading must survive a heading render-and-parse round trip",
+      );
+    }
   }
 
   if (typeof vault.sectionStrategy !== "undefined" && typeof vault.sectionStrategy !== "string") {
@@ -354,6 +360,15 @@ export function parseTimelineVaultConfig(raw: unknown): ActivityTimelineVaultCon
   }
 
   const publish = parseVaultPublishBlock(vault.publish, weeklyNotePath);
+  if (sectionStrategy === "heading") {
+    for (const kind of ["timeline", "standup", "weekly", "locations"] as const) {
+      if (!headingSurvivesRoundTrip(publish[kind].section)) {
+        throw new RangeError(
+          `activity.timeline.vault.publish.${kind}.section must survive a heading render-and-parse round trip`,
+        );
+      }
+    }
+  }
   const wikilinksRaw = vault.wikilinks;
   const wikilinks =
     wikilinksRaw === undefined

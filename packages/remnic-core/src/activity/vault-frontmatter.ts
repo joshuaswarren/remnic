@@ -64,14 +64,22 @@ const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
 // and `:` only indicate when followed by a space, so `-5` stays a plain
 // scalar while `- 5` does not.
 const INDICATOR_CHARS = ",[]{}#&*!|>'\"%@`";
-// Interior shapes that end a plain scalar or start a comment.
 const INJECTION_RE = /: | #/;
+// Flow-collection delimiters. Lists render as `[a, b]`; a bare delimiter
+// inside an item splits or closes the sequence on re-read.
+const FLOW_ITEM_DELIM_RE = /[[\]{},]/;
 
 export type ValidateVaultPropertyResult = { ok: true } | { ok: false; reason: string };
 
 /** Render a validated value the way `mergeFrontmatterKeys` writes it. */
 export function renderVaultPropertyValue(value: VaultPropertyValue): string {
   return typeof value === "string" ? value : `[${value.join(", ")}]`;
+}
+
+function hasLeadingYamlIndicator(text: string): boolean {
+  const first = text[0];
+  if (first === undefined) return false;
+  return INDICATOR_CHARS.includes(first) || ("-?:".includes(first) && text[1] === " ");
 }
 
 function validateScalar(value: string, label: string): ValidateVaultPropertyResult {
@@ -87,10 +95,8 @@ function validateScalar(value: string, label: string): ValidateVaultPropertyResu
   if (value !== value.trim()) {
     return { ok: false, reason: `${label} must not carry leading or trailing whitespace` };
   }
-  const first = value[0]!;
-  const spacedIndicator = "-?:".includes(first) && value[1] === " ";
-  if (INDICATOR_CHARS.includes(first) || spacedIndicator) {
-    return { ok: false, reason: `${label} must be a plain scalar (leading "${first}" changes its YAML shape)` };
+  if (hasLeadingYamlIndicator(value)) {
+    return { ok: false, reason: `${label} must be a plain scalar (leading "${value[0]}" changes its YAML shape)` };
   }
   if (INJECTION_RE.test(value)) {
     return { ok: false, reason: `${label} must not contain ": " or " #"` };
@@ -117,7 +123,13 @@ export function validateVaultProperties(
     if (key.length > VAULT_PROPERTY_KEY_MAX_CHARS) {
       return { ok: false, reason: `property key exceeds ${VAULT_PROPERTY_KEY_MAX_CHARS} characters` };
     }
-    if (CONTROL_RE.test(key) || key !== key.trim() || key.includes(":") || key.includes("#")) {
+    if (
+      CONTROL_RE.test(key) ||
+      key !== key.trim() ||
+      key.includes(":") ||
+      key.includes("#") ||
+      hasLeadingYamlIndicator(key)
+    ) {
       return { ok: false, reason: `property key ${JSON.stringify(key)} is not a plain mapping key` };
     }
     if (typeof value === "string") {
@@ -136,10 +148,13 @@ export function validateVaultProperties(
         }
         const scalar = validateScalar(item, `property ${key} list item`);
         if (!scalar.ok) return scalar;
-        // Lists render in flow form `[a, b]`; a bare separator inside an
+        // Lists render in flow form `[a, b]`; a bare delimiter inside an
         // item would split or close the sequence on re-read.
-        if (/[[\],]/.test(item)) {
-          return { ok: false, reason: `property ${key} list item must not contain "[", "]", or ","` };
+        if (FLOW_ITEM_DELIM_RE.test(item)) {
+          return {
+            ok: false,
+            reason: `property ${key} list item must not contain flow delimiters "[", "]", "{", "}", or ","`,
+          };
         }
       }
     }

@@ -19,7 +19,7 @@ import { chmodSync, chownSync, lstatSync, mkdirSync, readFileSync, realpathSync,
 import path from "node:path";
 
 import { expandTildePath } from "../utils/path.js";
-import { applyManagedRegion, fileLines, parseAtxHeading } from "./vault-publish.js";
+import { applyManagedRegion, fileLines, headingSurvivesRoundTrip } from "./vault-publish.js";
 import {
   renderVaultPropertyValue,
   validateVaultProperties,
@@ -119,8 +119,7 @@ export function publishVaultNote(input: PublishVaultNoteInput): VaultPublishStat
     headingsToProbe.push(input.insertUnderHeading);
   }
   for (const headingName of headingsToProbe) {
-    const parsed = parseAtxHeading(`## ${headingName}`);
-    if (parsed === null || parsed.text !== headingName) {
+    if (!headingSurvivesRoundTrip(headingName)) {
       throw new RangeError(
         `Section name ${JSON.stringify(headingName)} is not matchable by the heading parser; it must survive a render-and-parse round trip.`,
       );

@@ -99,3 +99,28 @@ test("rejects malformed keys (#2917)", () => {
   assert.equal(validateVaultProperties([{ key: "remnic#x", value: "v" }]).ok, false);
   assert.equal(validateVaultProperties([{ key: "", value: "v" }]).ok, false);
 });
+
+test("rejects a final key that starts with a YAML indicator (#2917)", () => {
+  // Prefix "[" + key "focus" is the review case: the written line would
+  // be `[focus: 220`, which is not a mapping entry.
+  for (const key of ["[focus", "{focus", "*focus", "&focus", "!focus", "%focus"]) {
+    assert.equal(
+      validateVaultProperties([{ key, value: "220" }]).ok,
+      false,
+      `key ${JSON.stringify(key)} must be rejected`,
+    );
+  }
+  assert.deepEqual(validateVaultProperties([{ key: "remnic_focus", value: "220" }]), { ok: true });
+  assert.deepEqual(validateVaultProperties([{ key: "x_focus", value: "220" }]), { ok: true });
+});
+
+test("rejects flow delimiters inside list scalar items (#2917)", () => {
+  for (const item of ["a{", "a}", "a[", "a]", "a,b"]) {
+    assert.equal(
+      validateVaultProperties([{ key: "remnic_cards", value: [item] }]).ok,
+      false,
+      `list item ${JSON.stringify(item)} must be rejected`,
+    );
+  }
+  assert.deepEqual(validateVaultProperties([{ key: "remnic_cards", value: ["a", "b"] }]), { ok: true });
+});

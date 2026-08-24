@@ -999,3 +999,55 @@ test("frontmatter property totals are bounded across sections (#2917)", () => {
   );
   assert.equal(readFileSync(notePath, "utf8"), before, "the note is untouched");
 });
+
+test("a prefix that makes the final key start with a YAML indicator is rejected before any file mutation (#2917)", () => {
+  const { vault, notePath } = makeVault();
+  const before = readFileSync(notePath, "utf8");
+  const mtime = statSync(notePath).mtimeMs;
+  assert.throws(
+    () =>
+      publishVaultNote({
+        vaultPath: vault,
+        notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+        date: DATE,
+        sections: [{ name: "timeline", content: "fresh recap", properties: { focus: "220" } }],
+        propertiesMode: "frontmatter",
+        propertiesPrefix: "[",
+      }),
+    /not a plain mapping key/,
+  );
+  assert.equal(readFileSync(notePath, "utf8"), before, "the note is untouched");
+  assert.equal(statSync(notePath).mtimeMs, mtime, "no write attempt was made");
+});
+
+test("a list item carrying a flow delimiter is rejected before any file mutation (#2917)", () => {
+  const { vault, notePath } = makeVault();
+  const before = readFileSync(notePath, "utf8");
+  const mtime = statSync(notePath).mtimeMs;
+  assert.throws(
+    () =>
+      publishVaultNote({
+        vaultPath: vault,
+        notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+        date: DATE,
+        sections: [{ name: "timeline", content: "fresh recap", properties: { cards: ["a{"] } }],
+        propertiesMode: "frontmatter",
+      }),
+    /flow delimiter/,
+  );
+  assert.equal(readFileSync(notePath, "utf8"), before, "the note is untouched");
+  assert.equal(statSync(notePath).mtimeMs, mtime, "no write attempt was made");
+});
+
+test("a valid prefix still publishes a plain final key (#2917)", () => {
+  const { vault, notePath } = makeVault();
+  publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "Daily Notes/{yyyy}/{MM}/{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "fresh recap", properties: { focus: "220" } }],
+    propertiesMode: "frontmatter",
+    propertiesPrefix: "x_",
+  });
+  assert.match(readFileSync(notePath, "utf8"), /^x_focus: 220$/m);
+});
