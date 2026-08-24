@@ -1,6 +1,6 @@
 {
   "name": "@remnic/cli",
-  "version": "9.69.34",
+  "version": "9.69.39",
   "description": "CLI for Remnic memory — init, query, doctor, daemon management",
   "type": "module",
   "main": "dist/index.js",
@@ -39,21 +39,21 @@
     "yaml": "^2.4.2"
   },
   "peerDependencies": {
-    "@remnic/bench": "^9.69.34",
-    "@remnic/plugin-openclaw": "^9.69.34",
-    "@remnic/export-weclone": "^9.69.34",
-    "@remnic/import-weclone": "^9.69.34",
-    "@remnic/import-chatgpt": "^9.69.34",
-    "@remnic/import-claude": "^9.69.34",
-    "@remnic/import-gemini": "^9.69.34",
-    "@remnic/import-lossless-claw": "^9.69.34",
-    "@remnic/import-mem0": "^9.69.34",
-    "@remnic/import-supermemory": "^9.69.34",
-    "@remnic/import-okf": "^9.69.34",
-    "@remnic/connector-limitless": "^9.69.34",
-    "@remnic/connector-bee": "^9.69.34",
-    "@remnic/connector-omi": "^9.69.34",
-    "@remnic/capture-audio": "^9.69.34"
+    "@remnic/bench": "^9.69.39",
+    "@remnic/plugin-openclaw": "^9.69.39",
+    "@remnic/export-weclone": "^9.69.39",
+    "@remnic/import-weclone": "^9.69.39",
+    "@remnic/import-chatgpt": "^9.69.39",
+    "@remnic/import-claude": "^9.69.39",
+    "@remnic/import-gemini": "^9.69.39",
+    "@remnic/import-lossless-claw": "^9.69.39",
+    "@remnic/import-mem0": "^9.69.39",
+    "@remnic/import-supermemory": "^9.69.39",
+    "@remnic/import-okf": "^9.69.39",
+    "@remnic/connector-limitless": "^9.69.39",
+    "@remnic/connector-bee": "^9.69.39",
+    "@remnic/connector-omi": "^9.69.39",
+    "@remnic/capture-audio": "^9.69.39"
   },
   "peerDependenciesMeta": {
     "@remnic/bench": {
