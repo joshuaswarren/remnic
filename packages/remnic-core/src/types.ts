@@ -13,6 +13,8 @@ import type { ContradictionLocalizationConfig, ContradictionScanConfig } from ".
 import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 export type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
 export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
+export type { BackgroundGenerationConfig } from "./background-generation-config.js";
+import type { BackgroundGenerationConfig } from "./background-generation-config.js";
 import type {
   DriftDetectionSettings,
   MemoryDriftProvenance,
@@ -685,7 +687,6 @@ export interface SemanticChunkingConfigShape {
   embeddingBatchSize: number;
   fallbackToRecursive: boolean;
 }
-
 export interface PluginConfig
   extends BoundedJsonlStateConfig,
     SecurityConfig,
@@ -695,6 +696,7 @@ export interface PluginConfig
     LocalLlmConfig {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
+  backgroundGeneration?: BackgroundGenerationConfig;
   model: string;
   reasoningEffort: ReasoningEffort;
   triggerMode: TriggerMode;
@@ -3859,7 +3861,6 @@ export interface HourlySummary {
 // ============================================================================
 // Dreams Pipeline Telemetry (issue #678 PR 3/4)
 // ============================================================================
-
 // Re-export from the authoritative source to avoid duplicate definitions.
 // dreams-ledger.ts is the single source of truth; types.ts re-exports so
 // callers that import from types.js continue to work unchanged.

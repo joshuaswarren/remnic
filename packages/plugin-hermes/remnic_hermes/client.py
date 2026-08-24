@@ -23,24 +23,33 @@ def _validate_header_value(field: str, value: str) -> str:
     return value
 
 
-def _url_host_and_scheme(host: str, allow_insecure_http: bool) -> tuple[str, str]:
+def is_loopback_host(host: str) -> bool:
+    """Classify a host as loopback (shared classifier for client and bridge).
+
+    Accepts IPv4/IPv6 literals (bracketed or bare, trailing dot stripped),
+    IPv4-mapped IPv6 loopbacks, and ``localhost``/``*.localhost`` names.
+    Wildcard addresses (``0.0.0.0``, ``::``) are NOT loopback.
+    """
     normalized_host = host.rstrip(".").removeprefix("[").removesuffix("]")
-    normalized_hostname = normalized_host.lower()
     try:
         address = ipaddress.ip_address(normalized_host)
     except ValueError:
-        is_loopback = normalized_hostname == "localhost" or normalized_hostname.endswith(
-            ".localhost"
-        )
+        normalized_hostname = normalized_host.lower()
+        return normalized_hostname == "localhost" or normalized_hostname.endswith(".localhost")
+    return address.is_loopback or bool(
+        address.version == 6 and address.ipv4_mapped and address.ipv4_mapped.is_loopback
+    )
+
+
+def _url_host_and_scheme(host: str, allow_insecure_http: bool) -> tuple[str, str]:
+    normalized_host = host.rstrip(".").removeprefix("[").removesuffix("]")
+    try:
+        address = ipaddress.ip_address(normalized_host)
+    except ValueError:
         url_host = host
     else:
-        is_loopback = address.is_loopback or bool(
-            address.version == 6
-            and address.ipv4_mapped
-            and address.ipv4_mapped.is_loopback
-        )
         url_host = f"[{address.compressed}]" if address.version == 6 else address.compressed
-    scheme = "http" if is_loopback or allow_insecure_http else "https"
+    scheme = "http" if is_loopback_host(host) or allow_insecure_http else "https"
     return url_host, scheme
 
 

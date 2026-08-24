@@ -288,8 +288,6 @@ function main() {
     // …), so the schema exposes them without a same-named interface key.
     "correction",
     "correctionCapture",
-    // Legacy openclawHostEmbeddingProvider* aliases: parsed as fallbacks into
-    // the hostEmbeddingProvider* PluginConfig fields.
     "openclawHostEmbeddingProviderEnabled",
     "openclawHostEmbeddingProviderId",
     "openclawHostEmbeddingProviderModel",

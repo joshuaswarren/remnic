@@ -6,6 +6,10 @@ import { LocalLlmClient } from "./local-llm.js";
 import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig, gatewayTaskChainOptions } from "./fallback-llm.js";
 import { ModelRegistry } from "./model-registry.js";
 import { extractJsonCandidates } from "./json-extract.js";
+import {
+  completeBackgroundGeneration,
+  parseBackgroundGenerationJson,
+} from "./background-generation.js";
 import type { HourlySummary, TranscriptEntry, PluginConfig, GatewayConfig } from "./types.js";
 import type { TranscriptManager } from "./transcript.js";
 import { readSummarySnapshot, upsertSummarySnapshot, writeSummarySnapshot } from "./summary-snapshot.js";
@@ -215,6 +219,27 @@ export class HourlySummarizer {
 
     const hourIso = hourStart.toISOString();
     const startTime = Date.now();
+
+    if (this.config.backgroundGeneration) {
+      try {
+        const text = await completeBackgroundGeneration(this.config, [
+          { role: "system", content: "You are a conversation summarization system. Output valid JSON only." },
+          { role: "user", content: `Summarize this conversation:\n\n${conversation}` },
+        ]);
+        const parsed = parseBackgroundGenerationJson(text, (value) => HourlySummarySchema.parse(value));
+        if (parsed) {
+          return {
+            hour: hourIso,
+            sessionKey,
+            bullets: parsed.bullets,
+            turnCount: entries.length,
+            generatedAt: new Date().toISOString(),
+          };
+        }
+      } catch {
+        log.info("summary generation: background generation unavailable, continuing");
+      }
+    }
 
     // Try local LLM first if enabled
     if (this.shouldUseLocalLlm) {

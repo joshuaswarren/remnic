@@ -9,6 +9,8 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - `remnic-hermes` now provides an opt-in, policy-bound IPv4-loopback LLM bridge and supervisor for deferred Remnic generation through Hermes-managed providers. The bridge owns no provider credential, authenticates its supervised local caller with a launch-scoped token, gives the daemon no provider environment variables, ignores client model selection, and fails closed if either supervised child exits unexpectedly; recall-critical rerank/planner paths remain independent (#2834).
+- Hermes `remnic.llm_bridge` can start an in-process loopback `/v1/chat/completions` listener backed by host `PluginLlm`. Bind is loopback-only, request `model`/`provider` fields are discarded, and the generated client file stores a random bearer at `0600`. Remnic consumes it only through `backgroundGeneration` (hourly summarizer); extraction and recall stay on `openaiBaseUrl` / `localLlm*` (#2857).
+
 
 ## [v9.69.31] — 2026-08-23
 
