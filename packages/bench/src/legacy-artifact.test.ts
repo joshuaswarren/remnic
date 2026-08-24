@@ -830,4 +830,3 @@ test("loadBenchmarkResult rejects a legacy artifact with a malformed provider fi
   );
 });
 
-

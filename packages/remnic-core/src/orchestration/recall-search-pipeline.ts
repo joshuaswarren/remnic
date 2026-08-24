@@ -45,6 +45,7 @@ import {
 } from "./recall-search-prefilter.js";
 import { shouldFilterSupersededFromRecall } from "../temporal-supersession.js";
 import { isValidAsOf, isValidityExpiredNow } from "../temporal-validity.js";
+import { StateViewAnchorTracker, stateViewPacketActive } from "../recall-state-view-anchors.js";
 import type { TrustStageResultItem } from "../trust-score-stage.js";
 import type { MemoryFile, PluginConfig, QmdSearchResult, RecallPlanMode } from "../types.js";
 import {
@@ -987,17 +988,22 @@ export class RecallSearchPipelineCoordinator {
         options.recallResultLimit,
         options.prompt,
         caps,
+        // #2859: packet semantics are off under a historical asOf pin.
+        stateViewPacketActive(options.stateViewActive, options.asOfMs),
       );
       options.resultPartitionSink.partition = partition;
       return partition.appliedResults;
     }
-    return this.deps.diversifyAndLimitRecallResults(
-      "memories",
-      results,
-      options.recallResultLimit,
-      options.prompt,
-      caps,
-    );
+    return this.deps.recallRerankCoordinator
+      .diversifyRecallResultsWithHeadroom(
+        "memories",
+        results,
+        options.recallResultLimit,
+        options.prompt,
+        caps,
+        stateViewPacketActive(options.stateViewActive, options.asOfMs),
+      )
+      .appliedResults;
   }
 
   async loadSearchResultMemoryMap(
@@ -1132,10 +1138,11 @@ export class RecallSearchPipelineCoordinator {
     // when its successor SURVIVES this filter — a successor rejected by
     // the connector/lifecycle/validity/dedicated-surface/status gates
     // must never anchor (or spend a result slot on) its superseded row.
-    // Anchors are therefore collected from rows that survive the pass
-    // below; superseded rows defer admission to the post-pass fixpoint.
+    // #2859: anchors are namespace-qualified and include the successor
+    // `supersedes` back-pointer (see StateViewAnchorTracker); superseded
+    // rows defer admission to the post-pass fixpoint.
     const stateViewActive = options?.stateViewActive === true;
-    const stateViewSurvivorIds = stateViewActive ? new Set<string>() : null;
+    const stateViewAnchors = stateViewActive ? new StateViewAnchorTracker() : null;
     const stateViewDeferred: number[] = [];
     const stateViewBuilt: (QmdSearchResult | null)[] | null = stateViewActive
       ? new Array<QmdSearchResult | null>(results.length).fill(null)
@@ -1150,8 +1157,11 @@ export class RecallSearchPipelineCoordinator {
         ? {
             id: memory.frontmatter.id,
             status: memory.frontmatter.status,
+            supersedes: memory.frontmatter.supersedes,
             supersededBy: memory.frontmatter.supersededBy,
             supersededAt: memory.frontmatter.supersededAt,
+            validAt: memory.frontmatter.valid_at,
+            invalidAt: memory.frontmatter.invalid_at,
           }
         : {}),
     });
@@ -1307,10 +1317,7 @@ export class RecallSearchPipelineCoordinator {
       const builtRow = buildRecallRow(r, memory);
       if (stateViewBuilt !== null) {
         stateViewBuilt[resultIdx] = builtRow;
-        if (memory) {
-          const id = memory.frontmatter.id;
-          if (typeof id === "string" && id.length > 0) stateViewSurvivorIds!.add(id);
-        }
+        if (memory && stateViewAnchors) stateViewAnchors.admit(r.namespace, memory.frontmatter);
       }
       filtered.push(builtRow);
     }
@@ -1324,12 +1331,12 @@ export class RecallSearchPipelineCoordinator {
         progress = false;
         for (const deferredIdx of stateViewDeferred) {
           if (admitted.has(deferredIdx)) continue;
-          const deferredMemory = memoryForResult(memoryByPath, results[deferredIdx]!);
+          const deferredRow = results[deferredIdx]!;
+          const deferredMemory = memoryForResult(memoryByPath, deferredRow);
           if (!deferredMemory) continue;
-          if (stateViewSurvivorIds!.has(deferredMemory.frontmatter.supersededBy ?? "")) {
+          if (stateViewAnchors!.anchored(deferredRow.namespace, deferredMemory.frontmatter)) {
             admitted.add(deferredIdx);
-            const id = deferredMemory.frontmatter.id;
-            if (typeof id === "string" && id.length > 0) stateViewSurvivorIds!.add(id);
+            stateViewAnchors!.admit(deferredRow.namespace, deferredMemory.frontmatter);
             progress = true;
           }
         }
