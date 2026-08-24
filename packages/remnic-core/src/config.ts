@@ -25,7 +25,6 @@ import type {
   TriggerMode,
   TrustWeights,
 } from "./types.js";
-import { parseExtractionSpanConfig } from "./extraction-span-config.js";
 import { parseConvergeConfig } from "./converge-config.js";
 import { parseExternalWikiRecallGuard } from "./external-wiki-guard.js";
 import { log } from "./logger.js";
@@ -41,7 +40,7 @@ import { coerceBool, coerceBooleanLike, coerceInstallExtension, coerceNumber } f
 import { parseSubjectRuntimeConfig } from "./subject-config.js";
 import { parseRecallStateViews } from "./recall-state-view.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
-import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
+import { parseExtractionFields } from "./extraction-span-config.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
 import { parseDependencyPropagationConfig } from "./dependency-propagation-config.js";
 import { parseProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
@@ -1186,8 +1185,6 @@ export function parseConfig(
     // read fallbacks so globally useful memories remain visible. CLAUDE.md #30.
     globalFallback: codingGlobalFallbackRaw === undefined ? true : codingGlobalFallbackRaw,
   };
-  // Span-mode extraction (issue #2333 Phase B): strict-enum sibling parser.
-  const extraction = parseExtractionSpanConfig(cfg.extraction);
 
   const memoryDir =
     typeof cfg.memoryDir === "string" && cfg.memoryDir.length > 0
@@ -2335,8 +2332,7 @@ export function parseConfig(
     dreaming,
     dreamsPhases,
     procedural,
-    extraction,
-    extractionLiveness: parseExtractionLivenessConfig(cfg),
+    ...parseExtractionFields(cfg),
     replicaPeers: parseReplicaPeersConfig(cfg),
     converge: parseConvergeConfig(cfg.converge),
     wearables,

@@ -9,6 +9,7 @@
  */
 
 import { z } from "zod";
+import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
 
 export interface ExtractionSpanConfig {
   /**
@@ -38,6 +39,13 @@ export interface ExtractedFactSpanRef {
 export const EXTRACTION_SPAN_MODES = ["off", "shadow", "on"] as const;
 const extractionSpanBlockSchema = z.object({ spanMode: z.unknown().optional() }).strict();
 
+/** Span + liveness fields for parseConfig. One spread keeps config.ts at the ratchet. */
+export function parseExtractionFields(cfg: Record<string, unknown>) {
+  return {
+    extraction: parseExtractionSpanConfig(cfg.extraction),
+    extractionLiveness: parseExtractionLivenessConfig(cfg),
+  };
+}
 
 export function parseExtractionSpanConfig(raw: unknown): ExtractionSpanConfig {
   if (raw === undefined) {

@@ -205,6 +205,8 @@ test("stray span in off-mode is stripped untrusted; factCarriesSpan detects span
 
 test("config: extraction.spanMode default off, valid values accepted, unknown rejected", () => {
   assert.equal(parseConfig({}).extraction.spanMode, "off");
+  assert.equal(parseConfig({}).extractionLiveness.enabled, true);
+  assert.equal(parseConfig({ extractionLiveness: { enabled: false } }).extractionLiveness.enabled, false);
   assert.equal(parseConfig({ extraction: { spanMode: "shadow" } }).extraction.spanMode, "shadow");
   assert.equal(parseConfig({ extraction: { spanMode: "on" } }).extraction.spanMode, "on");
   assert.equal(parseConfig({ extraction: {} }).extraction.spanMode, "off");
