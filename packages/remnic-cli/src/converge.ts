@@ -56,7 +56,7 @@ import {
   postPeerFileDeletion,
   streamPeerFileContent,
 } from "./converge-peer-transport.js";
-import { parseConvergeTokenFileFlag, resolveConvergeTokenChannel } from "./converge-token-channel.js";
+import { parseTokenFileFlag, resolveCredentialChannel } from "./credential-channel.js";
 import { type ConvergeWatchOutcome, convergeWatch } from "./converge-watch.js";
 import { createOfflineStorageIo } from "./offline-storage-io.js";
 export interface ConvergePlanOptions {
@@ -1031,7 +1031,7 @@ Subcommands:
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
     if (arg === "--token-file") {
-      tokenFile = parseConvergeTokenFileFlag(rest[i + 1]);
+      tokenFile = parseTokenFileFlag(rest[i + 1]);
       if (tokenFile === null) {
         process.stderr.write("converge: --token-file requires a path.\n");
         process.exitCode = 2;
@@ -1083,8 +1083,8 @@ Subcommands:
       i += 1;
     }
   }
-  const tokenChannel = resolveConvergeTokenChannel(
-    { argvToken: peerToken, tokenFile: tokenFile ?? undefined },
+  const tokenChannel = resolveCredentialChannel(
+    { argvToken: peerToken, tokenFile: tokenFile ?? undefined, envNames: ["REMNIC_CONVERGE_PEER_TOKEN"] },
     process.env
   );
   if (!tokenChannel.ok) {
