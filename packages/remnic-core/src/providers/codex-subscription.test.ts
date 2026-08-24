@@ -18,6 +18,8 @@ import {
   createCodexSubscriptionRunner,
   ensureCodexSubscriptionRunnerRegistered,
   beginCodexSubscriptionShutdown,
+  getCodexSubscriptionRunnerForOwner,
+  getCodexSubscriptionShutdownSignal,
   terminateActiveCodexSubscriptionChildren,
 } from "./codex-subscription.js";
 import { parseConfig } from "../config.js";
@@ -1353,4 +1355,115 @@ test("caller abort that mentions timeout keeps its identity", async () => {
       return true;
     },
   );
+});
+
+test("owner runner is recreated after shutdown so the same config can restart", async () => {
+  const owner = { reused: true };
+  const first = getCodexSubscriptionRunnerForOwner(owner);
+  beginCodexSubscriptionShutdown(first);
+  assert.equal(getCodexSubscriptionShutdownSignal(first)?.aborted, true);
+  const second = getCodexSubscriptionRunnerForOwner(owner);
+  assert.notEqual(second, first);
+  assert.equal(getCodexSubscriptionShutdownSignal(second)?.aborted, false);
+});
+
+test("cached login mode is revalidated from USERPROFILE when HOME is unset", async () => {
+  __codexSubscriptionTestHooks.resetLoginStatusCache();
+  const profile = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-userprofile-"));
+  const codexHome = path.join(profile, ".codex");
+  await mkdir(codexHome, { recursive: true });
+  let loginCalls = 0;
+  const runner = createCodexSubscriptionRunner({
+    env: { USERPROFILE: profile, PATH: "/usr/bin:/bin" },
+    now: () => 0,
+    runLoginStatus: async () => {
+      loginCalls++;
+      return { status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" };
+    },
+    runCodexExec: async () => ({ status: 0, stdout: "", stderr: "", outputText: "ok" }),
+  });
+  const call = () =>
+    runner({
+      config: { executable: "codex-fake" },
+      modelId: "gpt-5.6-luna",
+      messages: [{ role: "user", content: "hi" }],
+      options: {},
+    });
+
+  try {
+    await call();
+    assert.equal(loginCalls, 1);
+    await call();
+    assert.equal(loginCalls, 1);
+    await writeFile(path.join(codexHome, "auth.json"), '{"OPENAI_API_KEY":"sk-fake"}\n');
+    await call();
+    assert.equal(loginCalls, 2, "USERPROFILE auth-home mutation must invalidate the cached login check");
+  } finally {
+    await rm(profile, { force: true, recursive: true }).catch(() => {});
+  }
+});
+
+test("runtime shutdown does not start a fallback model", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+  __codexSubscriptionTestHooks.resetLoginStatusCache();
+  __codexSubscriptionTestHooks.resetCoreRunnerRegistered();
+  setCodexCliFallbackRunnerForProcess(undefined);
+  const execModels: string[] = [];
+  const runner = createCodexSubscriptionRunner({
+    env: { HOME: "/home/alice", PATH: "/usr/bin:/bin" },
+    now: () => 0,
+    runLoginStatus: async () => ({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" }),
+    runCodexExec: async (request) => {
+      const model = request.args.includes("gpt-primary") ? "primary" : "fallback";
+      execModels.push(model);
+      if (model === "primary") {
+        await new Promise<never>((_resolve, reject) => {
+          const fail = (): void => {
+            reject(request.signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+          };
+          if (request.signal?.aborted) {
+            fail();
+            return;
+          }
+          request.signal?.addEventListener("abort", fail, { once: true });
+        });
+      }
+      return { status: 0, stdout: "", stderr: "", outputText: "should-not-run" };
+    },
+  });
+  const llm = new FallbackLlmClient(
+    {
+      agents: {
+        defaults: {
+          model: {
+            primary: `${CODEX_SUBSCRIPTION_PROVIDER_ID}/gpt-primary`,
+            fallbacks: [`${CODEX_SUBSCRIPTION_PROVIDER_ID}/gpt-fallback`],
+          },
+        },
+      },
+    },
+    { codexSubscriptionRunner: runner },
+  );
+  try {
+    const pending = llm.chatCompletion([{ role: "user", content: "hi" }]);
+    const waitUntil = Date.now() + 2_000;
+    while (execModels.length === 0 && Date.now() < waitUntil) {
+      await flushLoop();
+    }
+    assert.deepEqual(execModels, ["primary"]);
+    beginCodexSubscriptionShutdown(runner);
+    await assert.rejects(pending, (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.equal(err.name, "AbortError");
+      return true;
+    });
+    assert.deepEqual(execModels, ["primary"]);
+  } finally {
+    beginCodexSubscriptionShutdown(runner);
+    setCodexCliFallbackRunnerForProcess(undefined);
+    __codexSubscriptionTestHooks.resetCoreRunnerRegistered();
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
 });

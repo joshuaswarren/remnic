@@ -17,6 +17,7 @@ import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   codexSubscriptionBuiltinProviderConfig,
   getCodexSubscriptionRunnerForOwner,
+  getCodexSubscriptionShutdownSignal,
 } from "./providers/codex-subscription.js";
 import { loadModelsJsonProviders } from "./models-json.js";
 import {
@@ -232,6 +233,7 @@ export class FallbackLlmClient {
       log.warn("fallback LLM: no models configured in gateway");
       return null;
     }
+    options = withCodexRuntimeShutdown(options, this.runtimeContext.codexSubscriptionRunner);
 
     const runChain = async (
       initialOptions: FallbackLlmOptions,
@@ -1142,6 +1144,19 @@ export class FallbackLlmClient {
 function abortReason(signal: AbortSignal | undefined): Error {
   const reason = signal?.reason;
   return reason instanceof Error ? reason : new Error("fallback LLM request aborted");
+}
+
+function withCodexRuntimeShutdown(
+  options: FallbackLlmOptions,
+  runner: CodexCliFallbackRunner | undefined,
+): FallbackLlmOptions {
+  if (!runner) return options;
+  const shutdown = getCodexSubscriptionShutdownSignal(runner);
+  if (!shutdown) return options;
+  return {
+    ...options,
+    signal: options.signal ? AbortSignal.any([options.signal, shutdown]) : shutdown,
+  };
 }
 
 function normalizeRuntimePath(value: unknown): string | undefined {

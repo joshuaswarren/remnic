@@ -249,11 +249,19 @@ export function createCodexSubscriptionRunner(deps: CodexSubscriptionRunnerDeps 
 /** One runner per owning runtime/config object so teardown cannot cross instances. */
 export function getCodexSubscriptionRunnerForOwner(owner: object): CodexCliFallbackRunner {
   let runner = runnerByOwner.get(owner);
-  if (!runner) {
+  const shutdown = runner ? shutdownByRunner.get(runner) : undefined;
+  if (!runner || shutdown?.signal.aborted) {
     runner = createCodexSubscriptionRunner();
     runnerByOwner.set(owner, runner);
   }
   return runner;
+}
+
+/** Shutdown signal for the owning runner, if this function is a core runner. */
+export function getCodexSubscriptionShutdownSignal(
+  runner: CodexCliFallbackRunner,
+): AbortSignal | undefined {
+  return shutdownByRunner.get(runner)?.signal;
 }
 
 /**
@@ -476,7 +484,7 @@ async function assertSubscriptionLogin(
   ctx: LoginCheckContext
 ): Promise<void> {
   const now = deps.now ?? Date.now;
-  const cacheKey = `${executable}\0${env.CODEX_HOME ?? env.HOME ?? ""}`;
+  const cacheKey = `${executable}\0${resolveCodexAuthHome(env) ?? ""}`;
   const cached = loginStatusCache.get(cacheKey);
   if (cached && now() - cached.at < LOGIN_STATUS_CACHE_TTL_MS) {
     if (!cached.settled || (await authStoreFingerprint(env)) === cached.fingerprint) {
@@ -607,8 +615,7 @@ async function waitForLoginEntry(
  * check and now invalidates the cached login mode.
  */
 async function authStoreFingerprint(env: NodeJS.ProcessEnv): Promise<string | null> {
-  const home = env.CODEX_HOME
-    ?? (env.HOME ? path.join(env.HOME, ".codex") : undefined);
+  const home = resolveCodexAuthHome(env);
   if (!home) {
     return null;
   }
@@ -618,6 +625,12 @@ async function authStoreFingerprint(env: NodeJS.ProcessEnv): Promise<string | nu
   } catch {
     return null;
   }
+}
+
+function resolveCodexAuthHome(env: NodeJS.ProcessEnv): string | undefined {
+  if (env.CODEX_HOME) return env.CODEX_HOME;
+  const profile = env.HOME ?? env.USERPROFILE;
+  return profile ? path.join(profile, ".codex") : undefined;
 }
 
 /**
