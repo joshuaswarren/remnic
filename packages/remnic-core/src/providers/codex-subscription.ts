@@ -270,7 +270,6 @@ export function terminateActiveCodexSubscriptionChildren(
     terminateCodexChildPid(pid, signal);
   }
 }
-
 async function runCodexSubscriptionRequest(
   request: CodexCliFallbackRequest,
   deps: CodexSubscriptionRunnerDeps,
@@ -408,7 +407,6 @@ function normalizePathEnvValue(value: string): string {
   const expanded = expandTildePath(trimmed);
   return path.isAbsolute(expanded) ? expanded : path.resolve(expanded);
 }
-
 function isAllowedEnvKey(key: string): boolean {
   const normalized = key.toUpperCase();
   return CODEX_RUNTIME_ENV_ALLOWLIST[normalized] === true || normalized.startsWith("LC_");
@@ -711,6 +709,7 @@ function execFailureError(
         "(session expired or revoked). Run `codex login` again to re-authenticate, then retry."
     );
   }
+
   const exitLabel = result.signal ? `signal ${result.signal}` : `exit ${result.status ?? "unknown"}`;
   return new Error(
     `codex-subscription: codex exec failed (${exitLabel}): ${summarizeOutput(result.stderr, result.stdout)}`

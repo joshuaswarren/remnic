@@ -130,7 +130,7 @@ export async function tryCodexSubscriptionProvider(
   const callOptions = {
     timeoutMs: options.timeoutMs === undefined
       ? undefined
-      : Math.max(1, options.timeoutMs - Math.min(25, Math.max(1, Math.floor(options.timeoutMs / 10)))),
+      : Math.max(1, options.timeoutMs - Math.min(100, Math.max(5, Math.floor(options.timeoutMs / 5)))),
     signal: options.signal,
   };
   // A host/benchmark runner on the process seam still wins. Otherwise use
