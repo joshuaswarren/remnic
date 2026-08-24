@@ -176,13 +176,34 @@ a model-backed detector lands in the consuming child.
 
 ## Privacy + consent
 
-- The **harvest stream** (teacher labels from shadow mode) is not implemented
-  and never was: the deleted `harvest-shadow-logs.py` scripts (#2847) were
-  unimplemented stubs, and the #1585 GPU-run work landed with synthetic-data
-  training only. Shadow verdicts themselves exist — `extraction-persist.ts`
-  records them in fact frontmatter (#1576) — but no tool harvests them into
-  training data. Any such enhancement is opt-in and local-only by design and
-  is tracked separately in #2852.
+- The **harvest stream** (teacher labels from shadow telemetry) is real, opt-in,
+  and local-only (issue #2852). The deleted `harvest-shadow-logs.py` scripts
+  (#2847) were unimplemented stubs, and the #1585 GPU-run work landed with
+  synthetic-data training only. Shadow verdicts themselves exist —
+  `extraction-persist.ts` records them in fact frontmatter (#1576). The
+  harvest tool is `model-lab/harvest.py`: it requires an explicit
+  `--consent` flag plus explicit local `--input`/`--out` paths, prints exactly
+  what it will read, and refuses otherwise (exit 2, nothing read). It walks
+  exactly the named directory — no vault scan, no symlink `--input` root, no
+  descendant symlink follow — strips session keys, principals, namespaces,
+  memory ids, and model ids by projecting records field-by-field from an
+  allowlist, emits an unlinkable hashed `sourceId`, keeps every verified
+  source quote (joined with a newline, same as the gate), skips
+  redacted/never-store plans, treats unknown classification/status/version/
+  action kind or required field or a confidence outside `[0, 1]` as
+  malformed, derives polarity and assertion from the action, reconstructs
+  gated `factText` by stripping the persist-time attribute suffix and
+  default inline citation, skips child files that persist `parentId` plus
+  `chunkIndex` with an inherited whole-fact verdict, skips a post-gate
+  sanitization rewrite when persist recorded that evidence or the stored
+  content hash does not match the recovered bytes, stats-and-streams
+  `--max-text-bytes` before a full read, and never
+  runs from the daemon, build, or CI. See `model-lab/README.md`
+  ("Harvesting shadow-telemetry labels") for the command recipe.
+- **No committed dataset contains harvested data.** Both v1 datasets are
+  synthetic-only; any harvested dataset lives under the gitignored
+  `model-lab/**/data/` dirs with a provenance manifest + sha256, and never
+  reaches git.
 - Teacher-model outputs ("LLM traces") live under the gitignored data dir like
   everything else.
 

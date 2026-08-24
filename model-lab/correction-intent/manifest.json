@@ -33,7 +33,7 @@
       "total": 250
     },
     "datasetSha256": "c0238a2bd44afd578a8542a61e4a9f36ad06429a66681a966967806dad612390",
-    "$comment": "Deterministic synthetic stream from the seeded morphology grammar (morphology.py): 12 correction scenarios x 10 substitution pairs = 120 corrections; 8 anti-examples x 10 + 5 clean turns x 10 = 130 none. Same seed -> identical bytes -> identical sha256 (asserted by tests/model-lab-correction-intent-data.test.mjs). Labels are trustworthy by construction: every record is a pure instantiation of a hand-verified morphology, so no model is in the loop. The harvest stream (teacher labels from #1581 telemetry) is not in this dataset — it is opt-in and waits for #1581 telemetry."
+    "$comment": "Deterministic synthetic stream from the seeded morphology grammar (morphology.py): 12 correction scenarios x 10 substitution pairs = 120 corrections; 8 anti-examples x 10 + 5 clean turns x 10 = 130 none. Same seed -> identical bytes -> identical sha256 (asserted by tests/model-lab-correction-intent-data.test.mjs). Labels are trustworthy by construction: every record is a pure instantiation of a hand-verified morphology, so no model is in the loop. The harvest stream (teacher labels from #1581 detector output, via the consent-gated local tool model-lab/harvest.py, issue #2852) is not in this dataset — no harvested data has ever been mixed in."
   },
   "trainingStack": {
     "python": "3.12.3",
