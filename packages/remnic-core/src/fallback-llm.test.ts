@@ -3,6 +3,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { FallbackLlmClient, gatewayTaskChainOptions } from "./fallback-llm.js";
+import { classifyAnalysisProviderError } from "./activity/timeline/analysis-provider.js";
 import { __codexCliFallbackTestHooks } from "./cli-fallback.js";
 import { initLogger, resetLogger } from "./logger.js";
 import { clearModelsJsonCache, __setModelsJsonForTest } from "./models-json.js";
@@ -932,6 +933,52 @@ test("fallback llm aborts codex-cli fallback requests when timeout wins", { conc
     assert.equal(response, null);
     assert.equal(capturedSignal?.aborted, true);
     assert.equal(sawAbort, true);
+  } finally {
+    restoreRunner();
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("fallback llm timeout is a hard deadline when the provider never settles", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const restoreRunner = __codexCliFallbackTestHooks.setRunCodexCliForTest(
+    async (request) =>
+      await new Promise<never>(() => {
+        request.options.signal?.addEventListener("abort", () => undefined, { once: true });
+      }),
+  );
+
+  const llm = new FallbackLlmClient({
+    agents: {
+      defaults: {
+        model: {
+          primary: "codex-cli/gpt-custom",
+        },
+      },
+    },
+    models: {
+      providers: {
+        "codex-cli": {
+          baseUrl: "",
+          api: "codex-cli",
+          apiKey: "codex-test-key",
+          models: [],
+        },
+      },
+    },
+  });
+
+  try {
+    const started = Date.now();
+    const response = await llm.chatCompletion(
+      [{ role: "user", content: "Say OK" }],
+      { temperature: 0, maxTokens: 16, timeoutMs: 30 },
+    );
+    assert.equal(response, null);
+    assert.ok(Date.now() - started < 1_000, "outer timeout must settle without waiting on the provider");
   } finally {
     restoreRunner();
     clearModelsJsonCache();
@@ -1894,6 +1941,63 @@ test("fallback llm retries without responsesJsonSchema when the Responses API re
     assert.equal((bodies[2] as { text?: { format?: unknown } }).text?.format, undefined);
   } finally {
     globalThis.fetch = originalFetch;
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("chatCompletionDetailed preserves a 429 rate-limit failure cause (issue #2891)", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+  const llm = new FallbackLlmClient({
+    agents: { defaults: { model: { primary: "openai/test-model" } } },
+    models: { providers: { openai: { baseUrl: "https://openai.example/v1", api: "openai-completions", apiKey: "key", models: [] } } },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ error: { message: "rate limit exceeded" } }), { status: 429 })) as typeof fetch;
+  try {
+    const failureDiag: { lastError?: unknown } = {};
+    assert.equal(
+      await llm.chatCompletion([{ role: "user", content: "test" }], { failureDiag }),
+      null,
+    );
+    const lastError = failureDiag.lastError;
+    assert.ok(lastError instanceof Error, "expected the terminal provider error to survive the chain");
+    assert.equal("status" in lastError ? lastError.status : undefined, 429);
+    assert.equal(classifyAnalysisProviderError(lastError), "rate_limited");
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("timeout records TimeoutError on failureDiag (issue #2891)", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+  const restoreRunner = __codexCliFallbackTestHooks.setRunCodexCliForTest(
+    async (request) =>
+      await new Promise<never>(() => {
+        request.options.signal?.addEventListener("abort", () => undefined, { once: true });
+      }),
+  );
+  const llm = new FallbackLlmClient({
+    agents: { defaults: { model: { primary: "codex-cli/gpt-custom" } } },
+    models: { providers: { "codex-cli": { baseUrl: "", api: "codex-cli", apiKey: "codex-test-key", models: [] } } },
+  });
+  try {
+    const failureDiag: { lastError?: unknown } = {};
+    assert.equal(
+      await llm.chatCompletion([{ role: "user", content: "test" }], { timeoutMs: 30, failureDiag }),
+      null,
+    );
+    const lastError = failureDiag.lastError;
+    assert.ok(lastError instanceof Error, "expected the outer timeout to survive as lastError");
+    assert.equal(lastError.name, "TimeoutError");
+    assert.equal(classifyAnalysisProviderError(lastError), "timeout");
+  } finally {
+    restoreRunner();
     clearModelsJsonCache();
     clearSecretCache();
   }

@@ -5,7 +5,7 @@ import { computeLegacyContentHash } from "../content-hash.js";
 import { attachCitation, formatCitation } from "../source-attribution.js";
 import { parseFrontmatter } from "../storage.js";
 import { ContentHashIndex } from "../storage/content-hash-index.js";
-import { type ReconcileManifest, buildReconcileManifest, collapseActiveFactDuplicates } from "./manifest.js";
+import { type ReconcileManifest, buildReconcileManifest, citationTemplateFingerprint, collapseActiveFactDuplicates, peerManifestRevision } from "./manifest.js";
 import { planReconciliation } from "./plan.js";
 
 const fileHash = (content: string): string => createHash("sha256").update(content).digest("hex");
@@ -28,6 +28,16 @@ function memoryFile(options: {
     options.content,
   ].join("\n");
 }
+
+test("peer manifest revision includes the citation-template fingerprint", () => {
+  const fallback = peerManifestRevision();
+  const custom = peerManifestRevision("{{source}}");
+  assert.match(fallback, new RegExp(`(?:^|;)citation=${citationTemplateFingerprint(undefined)}(?:;|$)`));
+  assert.match(custom, new RegExp(`(?:^|;)citation=${citationTemplateFingerprint("{{source}}")}(?:;|$)`));
+  assert.notEqual(fallback, custom);
+  assert.notEqual(custom, peerManifestRevision("{{title}}"));
+  assert.equal(peerManifestRevision("{{source}}"), custom);
+});
 
 test("reconcile manifest keeps file identity separate from canonical semantic identity", async () => {
   const content = "The deployment uses a durable queue with an enrichment suffix.";
