@@ -17,6 +17,7 @@ Canonical upstream references:
 - [Installation](#installation)
 - [How Hermes discovers the provider](#how-hermes-discovers-the-provider)
 - [Configuration reference](#configuration-reference)
+- [Optional Hermes-managed LLM bridge](#optional-hermes-managed-llm-bridge)
 - [Policy-bound LLM bridge (opt-in)](#policy-bound-llm-bridge-opt-in)
 - [Environment variable overrides](#environment-variable-overrides)
 - [Token bootstrap](#token-bootstrap)
@@ -178,6 +179,63 @@ The nested `llm_bridge` block is documented in [Policy-bound LLM bridge (opt-in)
 Remote HTTP users must set `allow_insecure_http: true` before upgrading. Remove this option after the daemon serves HTTPS.
 
 No other fields are read. Fields documented elsewhere, such as `recall_top_k`, `recall_mode`, or `token_env`, do not exist in this implementation.
+
+---
+
+## Optional Hermes-managed LLM bridge
+
+`remnic-hermes` can expose a Hermes-resolved provider to Remnic through a small **loopback-only** OpenAI-compatible bridge. This is opt-in and intended for deferred extraction, consolidation, and summary jobs — not recall-critical work with a short latency budget.
+
+The bridge policy never stores a provider API key or OAuth token. The supervisor passes provider environment variables to the bridge process only for Hermes resolution and does not forward them to the Remnic daemon. It generates a separate, launch-scoped **bridge request token** for the bridge and Remnic daemon children; that token is used solely in their local HTTP Authorization header. The daemon child receives basic runtime variables plus supported `REMNIC_*`/`ENGRAM_*` daemon settings, except the bridge readiness secret. Hermes remains the sole resolver and owner of provider credentials.
+
+### Policy
+
+Create a local policy file, for example `~/.remnic/hermes-llm-bridge/policy.json`:
+
+```json
+{
+  "provider": "openai-codex",
+  "model": "gpt-5.6-terra",
+  "timeout_seconds": 90
+}
+```
+
+These are the only accepted policy keys. The bridge rejects policy files containing credential-bearing or unrecognized fields, exposes only the policy model from `GET /v1/models`, ignores a client-supplied model selector, requires the launch-scoped bearer token on all provider-facing endpoints, and binds only `127.0.0.1`.
+
+### Remnic daemon configuration
+
+In the **Remnic daemon configuration** (not the `remnic:` block in Hermes' `config.yaml`), route deferred local-LLM work to the bridge and leave direct-provider fallback disabled:
+
+```json
+{
+  "remnic": {
+    "localLlmEnabled": true,
+    "localLlmUrl": "http://127.0.0.1:4329/v1",
+    "localLlmModel": "gpt-5.6-terra",
+    "localLlmApiKeyEnv": "REMNIC_HERMES_BRIDGE_TOKEN",
+    "localLlmAuthHeader": true,
+    "localLlmFallback": false,
+    "openaiApiKey": false,
+    "rerankEnabled": false,
+    "recallPlannerLlmEnabled": false
+  }
+}
+```
+
+The explicit `openaiApiKey: false` disables Remnic's fallback inheritance of `OPENAI_API_KEY`; it is required even on hosts that currently have no direct provider key. Keep `rerankEnabled` and `recallPlannerLlmEnabled` off unless the chosen provider has been measured against their synchronous recall budget. Their deterministic/QMD retrieval path remains independent of this bridge.
+
+### Lifecycle
+
+Run the supervisor with the Python executable that has both Hermes and `remnic-hermes` installed:
+
+```bash
+remnic-hermes-supervisor \
+  --python /absolute/path/to/hermes-python \
+  --policy "$HOME/.remnic/hermes-llm-bridge/policy.json" \
+  --remnic-bin "$(command -v remnic-server)"
+```
+
+The supervisor starts the bridge first, generates the bridge request token, requires a separate per-launch cryptographic readiness proof from that exact bridge instance, then starts the daemon with a restricted child environment containing runtime basics, supported `REMNIC_*`/`ENGRAM_*` daemon settings, and the request token. Provider environment variables are passed only to the bridge for Hermes resolution and are not forwarded to the Remnic daemon. The readiness secret is delivered to the bridge through a dedicated launch-scoped environment variable, never process arguments or the daemon environment. A different process that already owns the port cannot satisfy the readiness check, and a local process without the request token cannot use the provider-facing endpoints. An unexpected exit from either child stops its peer and makes the supervisor fail. Do not run the daemon outside this supervisor when using the `${REMNIC_HERMES_BRIDGE_TOKEN}` configuration above. On `SIGTERM` or `SIGINT`, it forwards the received signal to both children before final cleanup.
 
 ---
 
