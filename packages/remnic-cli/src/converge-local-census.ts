@@ -61,6 +61,10 @@ export async function planLocalNamespaceCensus(args: LocalCensusArgs): Promise<L
     root: rootDir,
     sourceId: "local",
     includeContent: false,
+    // Peer snapshot, manifest-stream, and apply all pin
+    // includeTranscripts=false. Including transcripts here would mark
+    // identical transcripts as local-only, then apply would reject them.
+    includeTranscripts: false,
     // Rows missing stat metadata cannot ride the fast-base path
     // (normalizeFileState requires them); they simply re-hash.
     baseFiles: priorFiles?.filter(

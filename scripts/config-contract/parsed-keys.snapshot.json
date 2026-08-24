@@ -437,6 +437,8 @@
     "explicitCueRecallMaxChars",
     "explicitCueRecallMaxReferences",
     "externalWikis",
+    "extraction",
+    "extraction.spanMode",
     "extractionBreakerAuthCooldownMs",
     "extractionBreakerCooldownMs",
     "extractionBreakerFailureThreshold",

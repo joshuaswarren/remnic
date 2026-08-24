@@ -29,6 +29,13 @@ export interface BenchmarkIntegrityMeta {
    * Omitted only during the canary's own run.
    */
   canaryScore?: number;
+  /**
+   * Effective canary floor that gated `canaryScore` (custom
+   * `REMNIC_BENCH_CANARY_FLOOR` or the canonical default), persisted by
+   * `writeBenchmarkResult`. Readers apply it without the env so a custom
+   * floor survives restarts.
+   */
+  canaryFloor?: number;
 }
 
 export const INTEGRITY_META_FIELDS = [
@@ -50,6 +57,7 @@ export const BENCHMARK_INTEGRITY_META_SCHEMA = {
     judgePromptHash: { type: "string", pattern: "^[0-9a-f]{64}$" },
     datasetHash: { type: "string", pattern: "^[0-9a-f]{64}$" },
     canaryScore: { type: "number" },
+    canaryFloor: { type: "number", minimum: 0 },
   },
 } as const;
 
@@ -76,6 +84,14 @@ export function integrityMetaIsComplete(
   if (
     candidate.canaryScore !== undefined &&
     (typeof candidate.canaryScore !== "number" || !Number.isFinite(candidate.canaryScore))
+  ) {
+    return false;
+  }
+  if (
+    candidate.canaryFloor !== undefined &&
+    (typeof candidate.canaryFloor !== "number" ||
+      !Number.isFinite(candidate.canaryFloor) ||
+      candidate.canaryFloor < 0)
   ) {
     return false;
   }
@@ -114,6 +130,14 @@ export function assertIntegrityMetaPresent(value: unknown): asserts value is Ben
     (typeof candidate.canaryScore !== "number" || !Number.isFinite(candidate.canaryScore))
   ) {
     missing.push("canaryScore");
+  }
+  if (
+    candidate.canaryFloor !== undefined &&
+    (typeof candidate.canaryFloor !== "number" ||
+      !Number.isFinite(candidate.canaryFloor) ||
+      candidate.canaryFloor < 0)
+  ) {
+    missing.push("canaryFloor");
   }
   if (missing.length > 0) {
     throw new Error(

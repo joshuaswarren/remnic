@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.69.35",
+  "version": "9.69.36",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -7392,6 +7392,24 @@
         "maximum": 120000,
         "default": 10000,
         "description": "Total timeout in milliseconds for delegate liveness and older-daemon detailed-health fallback probes."
+      },
+      "extraction": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Span-mode extraction (issue #2333 Phase B, bench-gated). Default off; shadow requests spans alongside content and persists the generated content unchanged.",
+        "properties": {
+          "spanMode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "shadow",
+              "on"
+            ],
+            "default": "off",
+            "description": "\"off\" (default) generates content as before. \"shadow\" requests spans AND content, materializes for comparison telemetry only, and persists the generated content (zero behavior change). \"on\" persists materialized frame+span content, falling back per fact to generated content when a span fails validation. Unrecognized values are rejected at config parse."
+          }
+        }
       }
     }
   },

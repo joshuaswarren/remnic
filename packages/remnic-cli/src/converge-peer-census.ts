@@ -43,10 +43,11 @@ export interface PeerCensusArgs {
   peerManifestRevision: string | undefined;
   /** Warm per-file cache from the local manifest, for the per-file fallback path. */
   localManifestFiles: readonly ReconcileManifestFile[] | undefined;
+  /** Citation template used by the legacy per-file fallback manifest build. */
+  citationTemplate?: string;
   cache: ConvergePlanCache | null;
   signal?: AbortSignal;
   onProgress?: (event: ConvergePlanProgressEvent) => void;
-  citationTemplate?: string;
 }
 
 export interface PeerCensusResult {

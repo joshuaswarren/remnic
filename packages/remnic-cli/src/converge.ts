@@ -8,7 +8,6 @@ import {
   type PluginConfig,
   type ResolveSecretRefFn,
   applyOfflineSyncFileContentChunk,
-  buildOfflineSyncSnapshotFromBase,
   envConvergePeerRequestTimeoutMs,
   isInternalRemnicStatePath,
   normalizeConvergePeerRequestTimeoutMs,
@@ -20,18 +19,13 @@ import { resolveCorpusNamespaceRoots } from "@remnic/core/corpus-watermark.js";
 import { listNamespaces } from "@remnic/core/namespaces/migrate.js";
 import {
   type ConvergeCursorState,
-  convergeIdentityCachePath,
   defaultConvergeCursorPath,
   deriveConvergeCursorBase,
   normalizeConvergePeerUrl,
   readConvergeCursor,
   writeConvergeCursor,
 } from "@remnic/core/reconcile/cursor.js";
-import {
-  type ReconcileManifest,
-  buildReconcileManifest,
-  collapseActiveFactDuplicates,
-} from "@remnic/core/reconcile/manifest.js";
+import { type ReconcileManifest, collapseActiveFactDuplicates } from "@remnic/core/reconcile/manifest.js";
 import {
   type ReconcileFileState,
   type ReconcileNamespaceInput,
@@ -47,7 +41,7 @@ import {
   convergePlanScopeKey,
   type ConvergePlanProgressEvent,
 } from "./converge-plan-cache.js";
-import { parseFrontmatter } from "@remnic/core/storage.js";
+
 import type { ConvergeConflictPolicy } from "@remnic/core/types.js";
 import { loadConvergeIdentityCache, saveConvergeIdentityCache } from "./converge-identity-cache.js";
 import { formatConvergeApplyReport, formatConvergeReport } from "./converge-report.js";

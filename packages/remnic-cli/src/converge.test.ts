@@ -728,7 +728,6 @@ test("remnic converge apply: abort drains the rest of the started transfer batch
     else process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = originalConcurrency;
   }
 });
-
 test("remnic converge apply: a newer local deletion uses the guarded remote delete contract", async () => {
   const filePath = "facts/deleted-locally.md";
   const peerContent = Buffer.from("peer v2");

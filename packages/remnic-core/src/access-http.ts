@@ -1204,7 +1204,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         version: 1,
         convergenceFinalization: true,
         manifestStream: true,
-        manifestRevision: peerManifestRevision(),
+        manifestRevision: peerManifestRevision(this.service.configRef?.inlineSourceAttributionFormat),
       });
       return;
     }
