@@ -15,7 +15,14 @@ import type { DreamsPhase, RecallDisclosure, RecallPlanMode } from "./types.js";
 import type { RemnicChatGptMemoryInspectorInput } from "./mcp-memory-inspector-app.js";
 import { defineOperation } from "./access-boundary.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
-import { type ObserveRequest, observeRequestSchema, type RecallRequest, recallRequestSchema } from "./access-schema.js";
+import {
+  type ObserveRequest,
+  observeRequestSchema,
+  type RecallRequest,
+  recallRequestSchema,
+  retainedCategoryAlias,
+  suggestionSubmitRequestSchema,
+} from "./access-schema.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
@@ -231,7 +238,26 @@ defineOperation({ name: "procedure_library_maintenance", description: "Run proce
 
 // === MEMORY/ENTITY/OBSERVE/LCM ===
 defineOperation({ name: "memory_timeline", description: "Memory timeline.", schema: strictSchema({ memoryId: S.str, namespace: S.str, limit: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.memoryTimeline(optStr(input.memoryId) ?? "", optStr(input.namespace), optNum(input.limit) ?? 200, ctx.authenticatedPrincipal) }) });
-defineOperation({ name: "suggestion_submit", description: "Submit suggestion.", schema: strictSchema({ schemaVersion: S.num, idempotencyKey: S.str, dryRun: S.bool, sessionKey: S.str, content: S.str, category: S.str, confidence: S.num, namespace: S.str, tags: S.strArr, entityRef: S.str, ttl: S.str, sourceReason: S.str, cwd: S.str, projectTag: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.suggestionSubmit({ schemaVersion: optNum(input.schemaVersion), idempotencyKey: optStr(input.idempotencyKey), dryRun: input.dryRun === true, sessionKey: optStr(input.sessionKey), authenticatedPrincipal: ctx.authenticatedPrincipal, ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}), content: optStr(input.content) ?? "", category: optStr(input.category), confidence: optNum(input.confidence), namespace: optStr(input.namespace), tags: optStrArr(input.tags), entityRef: optStr(input.entityRef), ttl: optStr(input.ttl), sourceReason: optStr(input.sourceReason), cwd: optStr(input.cwd), projectTag: optStr(input.projectTag) }) }) });
+// Issue #2482/#2829: suggestion_submit validates through the canonical
+// suggestionSubmitRequestSchema — the SAME schema the HTTP transport and the
+// MCP wire parse use, category alias transform included. The raw spelling
+// survives on `ctx.rawInput` for the coercion note.
+defineOperation({
+  name: "suggestion_submit",
+  description: "Submit suggestion.",
+  schema: z.preprocess((data) => stripNullsExcept(data, ["codingContext"]), suggestionSubmitRequestSchema),
+  handler: async (input, ctx) => {
+    const rawCategory = retainedCategoryAlias(ctx.rawInput);
+    return {
+      result: await ctx.service.suggestionSubmit({
+        ...input,
+        authenticatedPrincipal: ctx.authenticatedPrincipal,
+        ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
+        ...(rawCategory ? { rawCategory } : {}),
+      }),
+    };
+  },
+});
 defineOperation({ name: "entity_get", description: "Get entity.", schema: strictSchema({ name: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.entityGet(optStr(input.name) ?? "", optStr(input.namespace)) }) });
 defineOperation({ name: "review_queue_list", description: "List review queue.", schema: strictSchema({ runId: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.reviewQueue(optStr(input.runId) ?? "", optStr(input.namespace), ctx.authenticatedPrincipal) }) });
 // Issue #2482: observe validates through the canonical observeRequestSchema
