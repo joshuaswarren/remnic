@@ -30,7 +30,8 @@ Options:
                             local = deterministic screen/fence (default)
                             ollama = native /api/chat
                             openai-compat = /v1/chat/completions
-                            (Authorization from OPENAI_API_KEY or NVIDIA_API_KEY)
+                            (NVIDIA *.nvidia.com hosts prefer NVIDIA_API_KEY;
+                            otherwise OPENAI_API_KEY then NVIDIA_API_KEY)
   --base-url URL            Endpoint (default: http://127.0.0.1:11434)
   --model NAME              Model id (default: qwen3.8-27b-64k:latest)
   --request-timeout-ms N    Per-call timeout (default: 300000)
