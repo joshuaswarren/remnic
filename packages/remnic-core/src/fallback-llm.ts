@@ -353,42 +353,30 @@ export class FallbackLlmClient {
         controller.abort(abortReason(options.signal));
       };
       options.signal?.addEventListener("abort", onCallerAbort, { once: true });
-      if (options.signal?.aborted) {
-        onCallerAbort();
-      }
+      if (options.signal?.aborted) onCallerAbort();
       const timedOptions = { ...options, signal: controller.signal };
       const chain = runChain(timedOptions);
-      const guarded = chain.then(
-        (value) => value,
-        (err) => {
-          if (isTerminalCodexSubscriptionError(err)) throw err;
-          return null;
-        },
-      );
+      const guarded = chain.catch((err) => {
+        if (isTerminalCodexSubscriptionError(err)) throw err;
+        return null;
+      });
       try {
-        // Codex chains get the shared bounded headroom as settle grace so a
-        // typed provider timeout wins when the provider settles, while the
-        // outer deadline stays the hard bound (issue #2890).
-        const settleGraceMs = models.some((m) => m.providerConfig.api === "codex-cli")
-          ? codexDeadlineHeadroomMs(options.timeoutMs)
-          : 0;
         const outcome = await raceFallbackLlmDeadline(
           guarded,
           options.timeoutMs,
           () => {
             log.warn(`fallback LLM: timed out after ${options.timeoutMs}ms`);
-            controller.abort(
-              new Error(`fallback LLM timed out after ${options.timeoutMs}ms`),
-            );
+            controller.abort(new Error(`fallback LLM timed out after ${options.timeoutMs}ms`));
           },
-          settleGraceMs,
+          models.some((model) => model.providerConfig.api === "codex-cli")
+            ? codexDeadlineHeadroomMs(options.timeoutMs)
+            : 0,
         );
         return outcome.timedOut ? null : outcome.value;
       } finally {
         options.signal?.removeEventListener("abort", onCallerAbort);
       }
     }
-
     return await runChain(options);
   }
 
