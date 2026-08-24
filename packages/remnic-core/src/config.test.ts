@@ -969,6 +969,30 @@ test("parseConfig openaiApiKey string 0 is not treated as a direct OpenAI opt-ou
   }
 });
 
+test("parseConfig localLlmApiKeyEnv resolves a present launch token but tolerates its absence", () => {
+  const variable = "REMNIC_TEST_LOCAL_LLM_TOKEN";
+  const previous = process.env[variable];
+  try {
+    delete process.env[variable];
+    const absent = parseConfig({ localLlmApiKeyEnv: variable });
+    assert.equal(absent.localLlmApiKey, undefined);
+    assert.equal(absent.localLlmApiKeyEnv, variable);
+
+    process.env[variable] = "launch-scoped-local-token";
+    const present = parseConfig({ localLlmApiKeyEnv: variable });
+    assert.equal(present.localLlmApiKey, "launch-scoped-local-token");
+    assert.equal(present.localLlmApiKeyEnv, variable);
+
+    assert.throws(
+      () => parseConfig({ localLlmApiKeyEnv: "not-an-environment-variable" }),
+      /localLlmApiKeyEnv must name a conventional environment variable/,
+    );
+  } finally {
+    if (previous === undefined) delete process.env[variable];
+    else process.env[variable] = previous;
+  }
+});
+
 test("parseConfig localLlmTimeoutMs accepts CLI-style numeric strings for gateway fallback", () => {
   const cfg = parseConfig({ localLlmTimeoutMs: "600000" });
   assert.equal(cfg.localLlmTimeoutMs, 600_000);

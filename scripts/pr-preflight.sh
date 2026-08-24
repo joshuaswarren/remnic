@@ -130,7 +130,14 @@ quick_package_scope() {
       [[ -n "$package_name" ]] || continue
       package_dir="packages/$package_name"
       if [[ -d "$package_dir" ]]; then
-        checked_packages+=("$package_name")
+        if [[ -f "$package_dir/package.json" ]]; then
+          checked_packages+=("$package_name")
+        else
+          # Python-only or other non-pnpm packages cannot satisfy a pnpm filter.
+          # Run the complete root type gate instead of a broken partial path.
+          scope_all=1
+          break
+        fi
       fi
     done < <(printf '%s\n' "$files" | sed -n 's#^packages/\([^/]*\)\(/.*\)\?$#\1#p' | sort -u)
 

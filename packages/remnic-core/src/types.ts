@@ -22,6 +22,7 @@ import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-confi
 import type { SkillProjectionConfig } from "./procedural/skill-projection.js";
 import type { ActionGateConfig } from "./coding/action-gate.js";
 import type { ActiveContextConfigFields } from "./active-context-config.js";
+import type { LocalLlmConfig } from "./local-llm-config.js";
 import type { AmbientCaptureProvenance, BufferTurnOwner, SecurityConfig, OriginMetadata } from "./security/types.js";
 export type MemorySubject = "user" | "agent";
 export type SubjectGuardMode = "off" | "warn" | "enforce";
@@ -689,7 +690,8 @@ export interface PluginConfig
     SecurityConfig,
     DriftDetectionSettings,
     ActiveContextConfigFields,
-    DeepRecallSettings {
+    DeepRecallSettings,
+    LocalLlmConfig {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
   model: string;
@@ -1534,27 +1536,6 @@ export interface PluginConfig
   workProjectIndexEnabled: boolean;
   workIndexAutoRebuildEnabled: boolean;
   workIndexAutoRebuildDebounceMs: number;
-  // Local LLM Provider (v2.1)
-  localLlmEnabled: boolean;
-  localLlmUrl: string;
-  localLlmModel: string;
-  /** Optional API key for authenticated OpenAI-compatible endpoints. */
-  localLlmApiKey?: string;
-  /** Additional headers for local/compatible endpoint requests. */
-  localLlmHeaders?: Record<string, string>;
-  /** If false, do not send Authorization header even when localLlmApiKey is set. */
-  localLlmAuthHeader: boolean;
-  localLlmFallback: boolean;
-  /** Optional home directory override for local LLM helpers (LM Studio settings, CLI PATH). */
-  localLlmHomeDir?: string;
-  /** Optional absolute path to LMS CLI binary (preferred over auto-detection). */
-  localLmsCliPath?: string;
-  /** Optional bin directory prepended to PATH for LMS CLI execution. */
-  localLmsBinDir?: string;
-  /** Hard timeout for local LLM and gateway fallback requests (ms). */
-  localLlmTimeoutMs: number;
-  /** Max context window for local LLM (override auto-detection). Set lower if your LLM server defaults to smaller contexts. */
-  localLlmMaxContext?: number;
   // Observability
   /** If true, log slow operations (local LLM + related I/O) with durations and metadata (no content). */
   slowLogEnabled: boolean;
