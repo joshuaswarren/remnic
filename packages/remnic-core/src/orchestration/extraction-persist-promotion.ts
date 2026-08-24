@@ -22,7 +22,7 @@ import {
 } from "../capabilities.js";
 import type { MemoryFile, PluginConfig } from "../types.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
-import type { MergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
+import { readPromotionReceiptStatus, type MergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
 
 export const confidenceTierOrder = [
   "explicit",
@@ -361,9 +361,24 @@ export async function promoteAndReconcileMergedTarget(args: {
   sourceMemoryId: string;
   /** Null = payload builder refused (degraded merge / target replaced mid-flight). */
   mergedPromotion: MergedTargetPromotionPayload | null;
+  /** #2807 (finding 1): the builder's post-commit reread FAILED — the payload is unknown, not refused. Skips the destructive reconciliation. */
+  mergedPromotionReadFailed?: boolean;
   normalize: (content: string) => string;
   onReconciled?: () => void;
 }): Promise<void> {
+  // #2807 (finding 1): an unreadable payload is not a no-promotion
+  // verdict. Reconciling anyway rereads the record successfully a moment
+  // later and interprets the missing payload as "no promotion warranted" —
+  // retiring a concurrently published PRE-merge copy with no current-body
+  // replacement and removing an otherwise eligible memory from the
+  // shared/profile layer. Skip the destructive pass; the next merge
+  // retries promotion and reconciliation against a readable record.
+  if (args.mergedPromotion === null && args.mergedPromotionReadFailed === true) {
+    log.warn(
+      `persistExtraction: merged-target promotion reconciliation skipped for ${args.sourceMemoryId} — the committed record was unreadable at payload-build time, so no promotion outcome is confirmed`,
+    );
+    return;
+  }
   let promotedCopyId: string | undefined;
   if (args.mergedPromotion) {
     const payload = args.mergedPromotion;
@@ -373,11 +388,35 @@ export async function promoteAndReconcileMergedTarget(args: {
     if (
       !current ||
       inferMemoryStatus(current.frontmatter, current.path) !== "active" ||
-      current.content !== payload.content ||
-      (current.frontmatter.updated ?? undefined) !== (payload.committedRevision ?? undefined)
+      current.content !== payload.content
     ) {
       log.warn(
         `persistExtraction: merged-target promotion abandoned for ${args.sourceMemoryId} — the committed record advanced past the cached payload, so the newer writer's copy stands`,
+      );
+      return;
+    }
+    // #2813 (P1 A, P1 B): confirm the cached payload against a TRUTHFUL receipt
+    // read and digest check. An unavailable sidecar or digest mismatch abandons the
+    // promotion — the previous undefined-vs-undefined comparison confirmed any
+    // payload whose receipt identity had become unreadable. A genuinely absent receipt
+    // still compares equal and promotes.
+    const standingReceipt = await readPromotionReceiptStatus(args.sourceStorage, current.path);
+    const standingDigest =
+      typeof args.sourceStorage.readDurableFileDigest === "function"
+        ? await args.sourceStorage.readDurableFileDigest(current.path).catch(() => null)
+        : null;
+    if (
+      !standingReceipt.available ||
+      (standingReceipt.revision ?? undefined) !== (payload.committedRevision ?? undefined) ||
+      (payload.committedDigest !== undefined &&
+        standingReceipt.committedDigest !== undefined &&
+        standingReceipt.committedDigest !== payload.committedDigest) ||
+      (payload.committedDigest !== undefined &&
+        standingDigest !== null &&
+        standingDigest !== payload.committedDigest)
+    ) {
+      log.warn(
+        `persistExtraction: merged-target promotion abandoned for ${args.sourceMemoryId} — the committed record's CAS receipt or digest ${standingReceipt.available ? "does not match the cached payload's" : "is unreadable"}, so the cached body is not confirmed`,
       );
       return;
     }
