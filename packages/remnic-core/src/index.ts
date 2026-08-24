@@ -48,6 +48,7 @@ export * from "./memory-projection-format.js";
 export { searchWithGenericExclusion } from "./access-memory-search-fanout.js";
 export * from "./model-registry.js";
 export * from "./contradiction/index.js";
+export * from "./recall-state-view.js";
 
 export {
   buildEvidencePack,
