@@ -20,6 +20,8 @@ export interface AnalysisRunMetadata {
 }
 
 export const ANALYSIS_METADATA_MAX_FIELD_LENGTH = 120;
+/** True when value is an identifier-safe provider/model/promptVersion string. */
+export const isAnalysisIdentifier = (value: string): boolean => IDENTIFIER.test(value);
 
 /**
  * Identifier syntax for provider and model: letters, digits, and the

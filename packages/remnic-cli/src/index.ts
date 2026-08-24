@@ -188,6 +188,7 @@ import { runRecallNavigateCommand } from "./commands/recall-navigate.js";
 // optional-weclone-export.ts for the install-hint behaviour.
 import { loadWecloneExportModule } from "./optional-weclone-export.js";
 import { cmdConverge } from "./converge.js";
+import { resolveCredentialChannel } from "./credential-channel.js";
 import {
   type ConfiguredNamespace,
   readConfiguredNamespace,
@@ -273,12 +274,6 @@ import {
   findLatestBenchStatusFile,
   readBenchStatus,
 } from "./bench-status.js";
-import {
-  buildBenchRunnerArgs,
-  createFallbackBenchOutputDir,
-  findUnsupportedFallbackBenchOptions,
-  resolveFallbackBenchResultPath,
-} from "./bench-fallback.js";
 import {
   atomicWriteFileSync, cleanupRollbackDirectoryBestEffort,
   createOpenclawUpgradeRollbackFailure,
@@ -479,7 +474,6 @@ const LOG_FILE = path.join(PID_DIR, "server.log");
 const LEGACY_LOG_FILE = path.join(LEGACY_PID_DIR, "server.log");
 const CLI_MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLI_REPO_ROOT = path.resolve(CLI_MODULE_DIR, "../../..");
-const EVAL_RUNNER_PATH = path.join(CLI_REPO_ROOT, "evals", "run.ts");
 const OPENCLAW_GATEWAY_LABEL = "ai.openclaw.gateway";
 // QMD teardown and cache reads can leave short-lived filesystem requests after
 // successful one-shot commands; give them enough time to drain before forcing.
@@ -1175,6 +1169,13 @@ async function loadBenchDefinitionsFromPackage(): Promise<BenchmarkDefinition[] 
   return Array.isArray(result) ? result : undefined;
 }
 
+// Shared install hint for `bench run` paths that need @remnic/bench — the
+// only benchmark runtime since the legacy evals fallback was removed
+// (issue #2798). Used by both the per-benchmark run loop and the --all
+// expansion guard so every missing-runtime exit reads the same.
+const MISSING_BENCH_RUNTIME_HINT =
+  "@remnic/bench. Build the workspace packages (or install @remnic/bench) and retry.";
+
 async function resolveAllBenchmarks(): Promise<string[]> {
   const packageBenchmarks = await loadBenchDefinitionsFromPackage();
   if (packageBenchmarks) {
@@ -1182,14 +1183,7 @@ async function resolveAllBenchmarks(): Promise<string[]> {
       .filter((entry) => entry.runnerAvailable)
       .map((entry) => entry.id);
   }
-
-  if (!fs.existsSync(EVAL_RUNNER_PATH)) {
-    return [];
-  }
-
-  return BENCHMARK_CATALOG
-    .filter((entry) => entry.category !== "ingestion")
-    .map((entry) => entry.id);
+  return [];
 }
 
 async function resolveKnownBenchmarkIds(): Promise<Set<string>> {
@@ -1203,70 +1197,6 @@ async function resolveKnownBenchmarkIds(): Promise<Set<string>> {
   return knownIds;
 }
 
-async function runBenchViaFallback(
-  parsed: ParsedBenchArgs,
-  benchmarkId: string,
-  runtimeProfile: BenchRuntimeProfile,
-): Promise<string> {
-  if (parsed.taskIdsFile) {
-    throw new Error(
-      "Fallback benchmark runner does not support hash-pinned LoCoMo task selection. Build/install @remnic/bench to use --task-ids-file.",
-    );
-  }
-  if (runtimeProfile === "real" && parsed.remnicConfigPath) {
-    resolveExistingBenchRemnicConfigPath(parsed.remnicConfigPath);
-  }
-  if (runtimeProfile === "openclaw-chain" && parsed.openclawConfigPath) {
-    resolveExistingBenchOpenclawConfigPath(parsed.openclawConfigPath);
-  }
-  if (runtimeProfile === "real") {
-    throw new Error(
-      'Fallback benchmark runner does not support --runtime-profile "real". Build/install @remnic/bench to use package-backed runtime profiles.',
-    );
-  }
-  if (runtimeProfile === "openclaw-chain") {
-    throw new Error(
-      'Fallback benchmark runner does not support --runtime-profile "openclaw-chain". Build/install @remnic/bench to use package-backed runtime profiles.',
-    );
-  }
-  if (runtimeProfile === "local-lab") {
-    throw new Error(
-      'Fallback benchmark runner does not support --runtime-profile "local-lab". Build/install @remnic/bench to use package-backed runtime profiles with local-lab manifests.',
-    );
-  }
-  const unsupportedOptions = findUnsupportedFallbackBenchOptions(parsed);
-  if (unsupportedOptions.length > 0) {
-    throw new Error(
-      `Fallback benchmark runner does not support provider-backed, gateway, or thinking/timeout flags (${unsupportedOptions.join(", ")}). Build/install @remnic/bench to use those options.`,
-    );
-  }
-  if (!fs.existsSync(EVAL_RUNNER_PATH)) {
-    console.error(
-      "Benchmark runner not found. Expected eval runner at evals/run.ts or a phase-1 @remnic/bench runtime export.",
-    );
-    process.exit(1);
-  }
-
-  const tsxCandidates = [
-    path.join(CLI_REPO_ROOT, "node_modules", ".bin", "tsx"),
-    path.join(CLI_REPO_ROOT, "packages", "remnic-cli", "node_modules", ".bin", "tsx"),
-  ];
-  const tsxCmd = tsxCandidates.find((candidate) => fs.existsSync(candidate)) ?? "tsx";
-  const fallbackOutputDir = createFallbackBenchOutputDir(
-    parsed.resultsDir ?? resolveBenchOutputDir(),
-    benchmarkId,
-    process.pid,
-  );
-  const fallbackArgs = [
-    EVAL_RUNNER_PATH,
-    ...buildBenchRunnerArgs(parsed, benchmarkId, fallbackOutputDir),
-  ];
-  childProcess.execFileSync(tsxCmd, fallbackArgs, {
-    stdio: "inherit",
-    env: process.env,
-  });
-  return resolveFallbackBenchResultPath(fallbackOutputDir);
-}
 
 function resolveBenchOutputDir(): string {
   return path.join(resolveHomeDir(), ".remnic", "bench", "results");
@@ -1685,18 +1615,10 @@ async function launchBenchUi(resultsDir: string): Promise<void> {
   });
 }
 
-// Resolve the dataset root. In a monorepo checkout we keep using
-// evals/datasets so local dev state stays stable; in a published CLI
-// install CLI_REPO_ROOT points under node_modules (not user-writable
-// and missing the repo-only evals/ tree) so we fall back to
-// ~/.remnic/bench/datasets.
-function resolveRepoDatasetRoot(): string {
-  const repoCandidate = path.join(CLI_REPO_ROOT, "evals", "datasets");
-  if (isRepoCheckout()) {
-    return repoCandidate;
-  }
-  return path.join(resolveHomeDir(), ".remnic", "bench", "datasets");
-}
+// Canonical user-writable dataset store for both repo checkouts and
+// published installs. The legacy repo-local dataset default died with
+// the deleted evals tree (issue #2798).
+const BENCH_DATASET_ROOT = path.join(resolveHomeDir(), ".remnic", "bench", "datasets");
 
 function listDownloadableBenchmarks(): string[] {
   return [...DOWNLOADABLE_BENCHMARK_DATASETS];
@@ -1711,18 +1633,7 @@ function resolveDatasetDownloadScriptPath(): string {
   if (fs.existsSync(bundled)) {
     return bundled;
   }
-  return path.join(CLI_REPO_ROOT, "evals", "scripts", "download-datasets.sh");
-}
-
-function isRepoCheckout(): boolean {
-  // Treat the install as a repo checkout only when the monorepo
-  // marker files are present next to CLI_REPO_ROOT. In published
-  // @remnic/cli installs, CLI_REPO_ROOT points inside node_modules
-  // where these files do not exist.
-  return (
-    fs.existsSync(path.join(CLI_REPO_ROOT, "pnpm-workspace.yaml")) &&
-    fs.existsSync(path.join(CLI_REPO_ROOT, "evals", "scripts", "download-datasets.sh"))
-  );
+  return path.join(CLI_REPO_ROOT, "packages", "remnic-cli", "assets", "download-datasets.sh");
 }
 
 function runDatasetDownloadScript(
@@ -1808,11 +1719,9 @@ function resolveBenchDatasetDir(
   // an explicit `--dataset-dir` override. Gate auto-selection on the
   // same per-benchmark content markers as `datasets status` so a
   // partial/interrupted download doesn't silently feed an empty
-  // directory into the benchmark loader. `resolveRepoDatasetRoot`
-  // already picks the correct layout (evals/datasets in monorepo
-  // checkouts, ~/.remnic/bench/datasets in packaged installs), so one
-  // lookup covers both install modes.
-  const datasetDir = path.join(resolveRepoDatasetRoot(), benchmarkId);
+  // directory into the benchmark loader. BENCH_DATASET_ROOT covers
+  // both install modes, so one lookup suffices.
+  const datasetDir = path.join(BENCH_DATASET_ROOT, benchmarkId);
   if (isDatasetDownloaded(datasetDir, benchmarkId)) {
     return datasetDir;
   }
@@ -2166,7 +2075,7 @@ async function exportBenchPackageResult(parsed: ParsedBenchArgs): Promise<void> 
 }
 
 async function manageBenchDatasets(parsed: ParsedBenchArgs): Promise<void> {
-  const datasetRoot = resolveRepoDatasetRoot();
+  const datasetRoot = BENCH_DATASET_ROOT;
   const supported = listDownloadableBenchmarks();
 
   if (parsed.datasetAction === "status") {
@@ -6985,18 +6894,38 @@ function resolveOfflineRemoteUrl(args: string[]): string {
   return parsed;
 }
 
-function resolveOfflineToken(args: string[]): string {
-  const token =
-    resolveRequiredValueFlag(args, "--token") ??
-    process.env.REMNIC_OFFLINE_TOKEN ??
-    process.env.REMNIC_AUTH_TOKEN ??
-    process.env.ENGRAM_AUTH_TOKEN;
-  if (!token || token.trim().length === 0) {
-    throw new Error(
-      "offline mode requires --token <token>, REMNIC_OFFLINE_TOKEN, or REMNIC_AUTH_TOKEN",
+/** Env credential chain for offline commands, highest precedence first (#2831). */
+const OFFLINE_TOKEN_ENV_NAMES = ["REMNIC_OFFLINE_TOKEN", "REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN"] as const;
+
+/**
+ * Resolve the offline bearer token through the shared credential channel
+ * (#2831): --token > --token-file > REMNIC_OFFLINE_TOKEN > REMNIC_AUTH_TOKEN
+ * > ENGRAM_AUTH_TOKEN. Every PRESENT source is validated for all four offline
+ * subcommands — status included, so a bad --token-file or an empty env
+ * credential is reported even where no network call happens. Absence is not
+ * an error here; the remote-hitting callers (prepare/sync/watch) require the
+ * token themselves.
+ */
+function resolveOfflineToken(args: string[]): string | undefined {
+  const channel = resolveCredentialChannel(
+    {
+      argvToken: resolveRequiredValueFlag(args, "--token"),
+      tokenFile: resolveRequiredValueFlag(args, "--token-file"),
+      envNames: OFFLINE_TOKEN_ENV_NAMES,
+    },
+    process.env
+  );
+  if (!channel.ok) {
+    throw new Error(`offline: ${channel.error}`);
+  }
+  if (channel.tokenFromArgv) {
+    // Warn once per invocation — resolution runs exactly once per command —
+    // and never echo the value: the warning itself must not leak the token.
+    process.stderr.write(
+      "offline: note: --token is argv-visible; prefer --token-file or REMNIC_OFFLINE_TOKEN\n"
     );
   }
-  return token.trim();
+  return channel.token?.trim();
 }
 
 function offlineEndpoint(
@@ -9230,7 +9159,9 @@ async function cmdOffline(action: string, rest: string[], json: boolean): Promis
 
 Options:
   --remote-url <url>       Remote Remnic server URL, e.g. http://home:4242 (--remote alias accepted)
-  --token <token>          Bearer token for the remote server
+  --token <token>          Bearer token for the remote server (argv-visible;
+                           prefer --token-file or the env fallbacks)
+  --token-file <path>      Read the bearer token from a 0600 regular file
   --namespace <name>       Namespace to sync
   --memory-dir <dir>       Local memory dir (defaults to resolved memoryDir)
   --state <path>           Override offline sync state file
@@ -9242,7 +9173,9 @@ Options:
   --json                   JSON output
 
 Environment fallbacks:
-  REMNIC_OFFLINE_REMOTE_URL, REMNIC_OFFLINE_TOKEN, REMNIC_AUTH_TOKEN`);
+  REMNIC_OFFLINE_REMOTE_URL, REMNIC_OFFLINE_TOKEN, REMNIC_AUTH_TOKEN,
+  ENGRAM_AUTH_TOKEN (legacy). Token precedence: --token > --token-file >
+  REMNIC_OFFLINE_TOKEN > REMNIC_AUTH_TOKEN > ENGRAM_AUTH_TOKEN.`);
     return;
   }
 
@@ -9269,7 +9202,11 @@ Environment fallbacks:
   const remoteUrl = needsRemote
     ? resolveOfflineRemoteUrl(rest)
     : resolveOptionalOfflineRemoteUrl(rest);
-  const token = needsRemote ? resolveOfflineToken(rest) : undefined;
+  // All four offline subcommands validate credential sources through the
+  // shared channel (#2831) — status included. Unknown actions fall through
+  // to the usage banner below; they must not die on flag parsing first.
+  const knownAction = needsRemote || action === "status";
+  const token = knownAction ? resolveOfflineToken(rest) : undefined;
   const statePath = statePathExplicit
     ? path.resolve(expandTilde(stateOverride))
     : remoteUrl !== undefined
@@ -10529,6 +10466,15 @@ async function cmdBench(rest: string[]): Promise<void> {
     return;
   }
 
+  // --all expands from the @remnic/bench registry; without the optional
+  // package there is nothing to expand. Fail here with the same
+  // actionable install hint a named benchmark gets, before the empty
+  // expansion can be misread as "no runnable benchmarks in this install".
+  if (parsed.all && !(await tryLoadBenchModule())) {
+    console.error(`ERROR: bench run --all requires ${MISSING_BENCH_RUNTIME_HINT}`);
+    process.exit(1);
+  }
+
   let selectedBenchmarks = parsed.all
     ? await resolveAllBenchmarks()
     : parsed.benchmarks;
@@ -10655,9 +10601,11 @@ async function cmdBench(rest: string[]): Promise<void> {
             }
             try { await updateBenchmarkCompleted(benchStatusPath, statusId, handledByPackage.writtenPath ?? ""); } catch { /* non-fatal */ }
           } else {
-            const fallbackResultPath = await runBenchViaFallback(parsed, benchmarkId, runtimeProfile);
-            writtenPaths.push(fallbackResultPath);
-            try { await updateBenchmarkCompleted(benchStatusPath, statusId, fallbackResultPath); } catch { /* non-fatal */ }
+            // The legacy eval-runner fallback was removed (issue #2798);
+            // @remnic/bench is the only benchmark runtime.
+            throw new Error(
+              `Benchmark "${benchmarkId}" requires ${MISSING_BENCH_RUNTIME_HINT}`,
+            );
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

@@ -54,9 +54,14 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.sources.baseUrl` | `(required)` | HTTP or HTTPS URL of the local capture daemon; must target a loopback host (`localhost`, `127.0.0.0/8`, or `::1`) since the bearer token travels in the request. |
 | `activity.sources.token` | `(unset)` | Literal bearer token sent to a trusted local capture daemon over loopback. This parser does not resolve secret references or `${ENV_VAR}` placeholders; omit the field when the daemon needs no auth. |
 | `activity.timeline.enabled` | `false` | Master gate for timeline-card derivation (issue #2049). When false, no timeline cards are built or exposed. |
-| `activity.timeline.journal.enabled` | `false` | Master gate for daily journal seed/show (issue #1984). Journal files live at `journal/<YYYY-MM-DD>.md` and are excluded from generic recall. |
-| `activity.timeline.journal.source` | `"file"` | Where journal text is read from (issue #1987): `"file"` reads `journal/<YYYY-MM-DD>.md`; `"vault"` reads a section of the daily vault note named by `heading`. |
-| `activity.timeline.journal.heading` | `(unset)` | Vault section heading required when `source` is `"vault"`; trimmed on parse, rejected when empty or whitespace-only. Ignored (not stored) in `"file"` mode. |
+| `activity.timeline.analysis.enabled` | `false` | Independent gate for optional AI analysis over deterministic timeline cards (issue #2050). Gated separately from capture, timeline derivation, and memory creation: disabled makes zero provider calls and writes zero analysis artifacts. |
+| `activity.timeline.analysis.provider` | `(required when enabled)` | Explicit provider id: `"local"` routes to the local LLM client; any other identifier routes to the configured remote provider registry pinned to exactly this provider (no chain fallback). Single provider segment only (letters, digits, `._:-`; no `/`); at most 120 characters. An invalid explicit provider fails, never silently defaults. |
+| `activity.timeline.analysis.model` | `(required when enabled)` | Model id (letters, digits, `._:-/`); at most 120 characters. May include `/`. |
+| `activity.timeline.analysis.timeoutMs` | `15000` | Per-request timeout in ms. Integer 1000..120000. |
+| `activity.timeline.analysis.preferences` | `[]` | Up to 16 free-form user preference strings (≤200 chars each) passed to the analysis prompt. Never secrets: prompt payloads are evidence-only — no screenshots, audio, OCR text, keystrokes, clipboard contents, or media are ever sent. |
+| `activity.timeline.journal.enabled` | `false` | Master gate for every `remnic journal` action — show, edit-path, seed, and extract all refuse before any journal read when false (issues #1984, #1987). Journal files live at `journal/<YYYY-MM-DD>.md` and are excluded from generic recall. |
+| `activity.timeline.journal.source` | `"memoryDir"` | Where journal text is read from (issue #1987): `"memoryDir"` reads `journal/<YYYY-MM-DD>.md`; `"vault"` reads the `activity.timeline.vault.readback.journalSection` section of the daily vault note. `"vault"` requires `activity.timeline.vault.enabled: true` and a resolvable `dailyNotePath` — parse fails naming every missing prerequisite. Legacy `"file"` is accepted as an alias of `"memoryDir"` and emits a deprecation warning. |
+| `activity.timeline.journal.extractionMode` | `"off"` | Review-only journal extraction (issue #1987): `"review"` runs a pass over changed journal text producing `pending_review` candidates only (tags `journal`, `journal-day:<date>`; `valid_at` pinned to the day; `structuredAttributes.journalSource` records the source). No auto mode by design. |
 | `activity.timeline.qa.enabled` | `false` | Gate for `remnic timeline range|search` (issue #1983). |
 | `activity.timeline.qa.maxRangeDays` | `31` | Maximum `timeline_range` span in days. Integer 1..366. |
 | `activity.timeline.vault.enabled` | `false` | Master gate for the markdown-vault publisher (issue #1985). When false, no vault reads or writes ever occur. |
@@ -83,6 +88,8 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.timeline.vault.wikilinks.placesFolder` | `"Places"` | Vault folder for place wikilink targets. |
 | `activity.timeline.vault.properties.mode` | `"off"` | `"off"` writes no properties; `"frontmatter"` adds/updates only prefix-owned keys via targeted line edits (key order and formatting of everything else preserved byte-exactly); `"dataview-inline"` appends `key:: value` lines inside the managed region. |
 | `activity.timeline.vault.properties.prefix` | `"remnic_"` | Property key prefix (e.g. `remnic_focus_minutes`). |
+| `activity.timeline.vault.readback.journalSection` | `""` | Heading whose section of the daily note is the user's journal (issue #1987). Arbitrary user-chosen text — any language, emoji, or punctuation — matched exactly. Required non-empty when `activity.timeline.journal.source` is `"vault"`. Legacy `activity.timeline.journal.heading` is copied here when this key is empty and ignored (with a deprecation warning) when this key is set. |
+| `activity.timeline.journal.heading` | _(unset)_ | Deprecated alias of `activity.timeline.vault.readback.journalSection`. Used only when the new key is absent; the new key wins if both are present. |
 | `activity.timeline.vault.autoPublish` | `true` | Publish after each successful artifact generation, once those hooks land. The `remnic timeline publish` CLI is always available. |
 
 ### Timeline cards (issue #2049)
@@ -380,6 +387,7 @@ QMD, hot facts, or default recall. See [External wiki search](external-wikis.md)
 | `recallDirectAnswerImportanceFloor` | `0.7` | Minimum calibrated importance score required for direct-answer eligibility. Set to `0` to disable the gate. `verificationState: "user_confirmed"` bypasses this check. |
 | `recallDirectAnswerAmbiguityMargin` | `0.15` | If the second-best candidate scores within this ratio of the top, direct-answer defers to the hybrid tier. |
 | `recallDirectAnswerEligibleTaxonomyBuckets` | `["decisions","principles","conventions","runbooks","entities"]` | Taxonomy category IDs eligible for direct-answer routing. Set to `[]` to disable the gate without unsetting `enabled`. |
+| `recallStateViews` | `false` | Opt in to state-aware recall views (issue #1952). On change-intent queries ("when did", "used to", "switched", "changed" and conjugations), recall admits a superseded memory when its successor is also in the candidate set, labels rows `current`/`historical`/`transition`, and renders historical rows with a `[superseded <date> by <id>]` prefix. A superseded row never renders without its successor. Exact `false`/`0`/`"false"` disable; non-change queries and the disabled flag keep output byte-identical. The MCP `recall` tool also accepts a per-call `stateView` boolean that ORs with this flag. |
 | `hotMemoriesCacheEnabled` | `true` | Serve `readAllMemories()` from a version-keyed in-process cache of the full parsed corpus (issue #1902), eliminating repeated full-corpus disk scans on the recall hot path. Cross-process coherence is preserved by an on-disk corpus version sentinel; single-file writes patch the cache in place. Set `false` to force disk scans on memory-constrained hosts (behavior then matches the pre-#1902 scan path). Version invalidation is the primary coherence mechanism; `hotMemoriesCacheTtlMs` bounds staleness from external edits. |
 | `hotMemoriesCacheTtlMs` | `60000` | Max age (ms) a hot-cache entry is served before a fresh disk scan (issue #1902). The version sentinel gives immediate coherence for writers that go through StorageManager or the corpus-bump helper, but direct filesystem edits (manual, git checkout, external tools) don't bump it; this TTL bounds how long such an edit stays stale. Set `0` to disable the TTL (version invalidation only; max performance for pure-daemon deployments with no external edits). |
 
@@ -802,6 +810,44 @@ Notes:
 - A reachable `agents.defaults.model` is appended as an implicit last resort to a `taskModelChain` only, so an exhausted task chain never blocks a flush. Persona/default chains are never augmented this way.
 - It **only applies in `gateway` mode.** In `plugin` mode it is ignored and Remnic logs a startup warning. Plugin-mode users who hit non-OpenAI model-ID failures at the direct client should switch to `modelSource: "gateway"` and use `taskModelChain` (see issue #1365).
 - A present-but-malformed value (missing `primary`, wrong types) is rejected at config-parse time rather than silently ignored.
+
+#### Codex subscription provider (`codex-subscription`)
+
+Built-in provider (issue #2784) that runs extraction and consolidation LLM
+calls through the `codex` CLI, authenticated by your Codex subscription
+login — no OpenAI API key and no codex-openai-proxy. Reference it in any
+gateway-mode model chain:
+
+```jsonc
+{
+  "modelSource": "gateway",
+  "taskModelChain": {
+    "primary": "codex-subscription/gpt-5.5"
+  }
+}
+```
+
+Behavior:
+
+- Credentials come exclusively from `codex login` (ChatGPT account). The
+  provider never reads, accepts, or logs tokens; an `apiKey` in the provider
+  config is rejected with a pointer to `codex login`.
+- Requests run sandboxed and ephemeral (`codex exec` with tools, hooks,
+  plugins, memories, and web search disabled), so extraction cannot touch
+  your machine and transcript text cannot cause browsing.
+- Ambient `OPENAI_API_KEY` / `OPENAI_BASE_URL` are stripped from the child
+  environment so the subscription login — not metered API auth — is used.
+- Optional provider overrides via `models.providers["codex-subscription"]`:
+  `executable` (or `REMNIC_CODEX_EXECUTABLE` env), `reasoningEffort`
+  (`low` | `medium` | `high` | `xhigh`, default `medium`), and
+  `retryOptions.timeoutMs` (positive integer; the request deadline when the
+  caller does not set one — an explicit call timeout always wins).
+- Not logged in → the provider fails fast with `codex login` guidance; an
+  expired or revoked session fails with re-auth guidance. Timeouts surface
+  as `TimeoutError`; caller cancellations keep their original abort reason.
+- A host or benchmark run that registers its own `codex-cli` transport
+  always wins; Remnic registers its subprocess transport only when the seam
+  is free.
 
 ### Setup
 
@@ -2350,8 +2396,8 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `activity.maxMemoriesPerDay` | `0` | `0` (no count cap) |
 | `activity.timeline.enabled` | `false` | `false` |
 | `activity.timeline.journal.enabled` | `false` | `false` |
-| `activity.timeline.journal.source` | `"file"` | `"file"`; `"vault"` only once vault-section journals are deliberately adopted |
-| `activity.timeline.journal.heading` | `(unset)` | `(unset)`; required non-empty when `source` is `"vault"` |
+| `activity.timeline.journal.source` | `"memoryDir"` | `"memoryDir"`; `"vault"` only once vault-section journals are deliberately adopted |
+| `activity.timeline.journal.extractionMode` | `"off"` | `"off"` |
 | `activity.timeline.qa.enabled` | `false` | `false` |
 | `activity.timeline.qa.maxRangeDays` | `31` | `31` |
 

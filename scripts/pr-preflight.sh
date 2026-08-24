@@ -52,12 +52,11 @@ changed_files() {
   fi
 }
 all_package_dirs() {
-  node -e '
-    const { existsSync, readdirSync } = require("node:fs");
-    for (const name of readdirSync("packages").sort()) {
-      if (existsSync(`packages/${name}/package.json`)) console.log(name);
-    }
-  '
+  node scripts/check-type-packages.mjs --list-manifests
+}
+
+check_type_package_dirs() {
+  node scripts/check-type-packages.mjs --list
 }
 
 package_dependents() {
@@ -112,11 +111,14 @@ quick_package_scope() {
   local package_dir
   local scope_seeds
   local expanded_scope
-  local -a all_packages=()
+  local -a manifest_packages=()
+  local -a check_type_packages=()
   local -a checked_packages=()
+  local -a checkable_packages=()
   local -a skipped_packages=()
 
-  mapfile -t all_packages < <(all_package_dirs)
+  mapfile -t manifest_packages < <(all_package_dirs)
+  mapfile -t check_type_packages < <(check_type_package_dirs)
   if ! files="$(quick_changed_files)"; then
     scope_all=1
   elif [[ -z "$files" ]]; then
@@ -146,11 +148,22 @@ quick_package_scope() {
     fi
   fi
 
+  # Only manifests that declare scripts.check-types are actually type-checked
+  # (#2851): drop the documented no-check-type packages from the reported
+  # scope so "Checked packages" states exactly what runs.
+  for package_name in "${checked_packages[@]}"; do
+    [[ -n "$package_name" ]] || continue
+    if printf '%s\n' "${check_type_packages[@]}" | grep -Fxq "$package_name"; then
+      checkable_packages+=("$package_name")
+    fi
+  done
+  checked_packages=("${checkable_packages[@]}")
+
   if ((scope_all)); then
-    checked_packages=("${all_packages[@]}")
+    checked_packages=("${check_type_packages[@]}")
   fi
 
-  for package_name in "${all_packages[@]}"; do
+  for package_name in "${manifest_packages[@]}"; do
     if printf '%s\n' "${checked_packages[@]}" | grep -Fxq "$package_name"; then
       continue
     fi

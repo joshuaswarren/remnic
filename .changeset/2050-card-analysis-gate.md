@@ -1,0 +1,5 @@
+---
+"@remnic/core": minor
+---
+
+Add the `activity.timeline.analysis` config gate and provider contract for optional evidence-bound timeline-card analysis (issue #2050). The gate is independent of capture, timeline derivation, and memory creation and defaults off: disabled makes zero provider calls and writes zero analysis artifacts. `provider: "local"` routes to the local LLM client; any other identifier is pinned as a single-model remote chain with no fallback, and an invalid explicit provider/model/config value is rejected at parse time. `runTimelineCardAnalysis` composes the parsed config with local/remote client seams over the DST-aware day window; every malformed, partial, empty, timed-out, aborted, rate-limited, or provider-failed response leaves the deterministic cards byte-identical and returns a typed failure status with provider/model/prompt-version metadata. Prompt payloads stay evidence-only: no screenshots, audio, OCR output, keystrokes, clipboard contents, or media are sent, and prompts/responses are never logged. Closes the remaining #2050 slices after the first-slice helpers.
