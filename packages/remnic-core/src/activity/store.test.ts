@@ -224,3 +224,21 @@ test("insertSnapshot rejects an unknown textSource", async () => {
     assert.throws(() => store.insertSnapshot(snapshot({ textSource: "screen" as unknown as "ax" })), RangeError);
   });
 });
+
+test("snapshotCaptureExtent is null on an empty store", async () => {
+  await withStore((store) => {
+    assert.equal(store.snapshotCaptureExtent(), null);
+  });
+});
+
+test("snapshotCaptureExtent returns the min and max capture instants", async () => {
+  await withStore((store) => {
+    store.insertSnapshot(snapshot({ contentHash: "mid", capturedAtUtc: "2026-03-10T14:00:00.000Z" }));
+    store.insertSnapshot(snapshot({ contentHash: "old", capturedAtUtc: "2026-02-01T09:00:00.000Z" }));
+    store.insertSnapshot(snapshot({ contentHash: "new", capturedAtUtc: "2026-05-20T23:00:00.000Z" }));
+    assert.deepEqual(store.snapshotCaptureExtent(), {
+      firstUtc: "2026-02-01T09:00:00.000Z",
+      lastUtc: "2026-05-20T23:00:00.000Z",
+    });
+  });
+});
