@@ -43,6 +43,7 @@ export interface ServerConfig {
     port?: unknown;
     authToken?: string;
     principal?: string;
+    trustPrincipalHeader?: boolean;
     maxBodyBytes?: number;
     /** Max write requests per rolling window before 429 write_rate_limited (issue #1937). */
     writeRateLimitMaxRequests?: number;
@@ -59,7 +60,6 @@ export interface ServerConfig {
     oauth?: unknown;
   } & AdminConsoleServerFields;
 }
-
 function parseServerPort(value: unknown, source: string): number {
   const port = typeof value === "string" ? Number(value.trim()) : value;
   if (
@@ -115,6 +115,7 @@ export interface ParsedServerConfig extends ParsedAdminConsoleConfig {
   port: number;
   authToken?: string;
   principal?: string;
+  trustPrincipalHeader?: boolean;
   maxBodyBytes?: number;
   writeRateLimitMaxRequests?: number;
   writeRateLimitWindowMs?: number;
@@ -133,6 +134,7 @@ export function parseServerConfig(
       : parseServerPort(raw.port, options?.portSource ?? "server.port"),
     authToken: parseOptionalString(raw.authToken, "server.authToken"),
     principal: parseOptionalString(raw.principal, "server.principal"),
+    trustPrincipalHeader: parseOptionalBoolean(raw.trustPrincipalHeader, "server.trustPrincipalHeader") ?? false,
     maxBodyBytes: parseOptionalPositiveInteger(raw.maxBodyBytes, "server.maxBodyBytes"),
     writeRateLimitMaxRequests: parseOptionalPositiveInteger(
       raw.writeRateLimitMaxRequests,
@@ -207,6 +209,8 @@ type ServerRuntimeOptions = {
   host?: string;
   port?: number;
   authToken?: string;
+  /** Test/programmatic-only: bind an OS-assigned ephemeral port (port 0). */
+  allowEphemeralPort?: boolean;
 };
 
 type EffectiveServerRuntimeConfig = {
@@ -225,9 +229,12 @@ function resolveEffectiveServerRuntimeConfig(
   const { remnic: envRemnic, ...envServer } = envOverrides();
   const cliServerConfig: Partial<ServerConfig["server"]> = {};
   if (options?.host !== undefined) cliServerConfig.host = options.host;
-  if (options?.port !== undefined) cliServerConfig.port = parseServerPort(options.port, "options.port");
   if (options?.authToken !== undefined) cliServerConfig.authToken = options.authToken;
-
+  if (options?.port !== undefined) cliServerConfig.port = options.port;
+  // User-facing config (server.port, REMNIC_PORT, --port) stays 1-65535 so
+  // runServerHealthcheck's configured-port probe never targets port 0.
+  // allowEphemeralPort bypasses the parser AFTER validation instead.
+  const ephemeralRequested = options?.allowEphemeralPort === true && options.port === undefined;
   const serverConfig = {
     ...fileConfig.server,
     ...envServer,
@@ -239,12 +246,14 @@ function resolveEffectiveServerRuntimeConfig(
       ? "REMNIC_PORT/ENGRAM_PORT"
       : "server.port";
 
+  const parsedServerConfig = parseServerConfig(serverConfig, { portSource });
+  if (ephemeralRequested) parsedServerConfig.port = 0;
   return {
     resolvedConfigPath,
     fileConfig,
     envRemnic,
     serverConfig,
-    parsedServerConfig: parseServerConfig(serverConfig, { portSource }),
+    parsedServerConfig,
   };
 }
 
@@ -816,6 +825,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     tokenPathPolicy: (connector, pathname) => connector !== "chatgpt" || pathname === "/mcp",
     readiness: () => readiness,
     principal: parsedServerConfig.principal,
+    trustPrincipalHeader: parsedServerConfig.trustPrincipalHeader,
     maxBodyBytes: parsedServerConfig.maxBodyBytes,
     writeRateLimitMaxRequests: parsedServerConfig.writeRateLimitMaxRequests,
     writeRateLimitWindowMs: parsedServerConfig.writeRateLimitWindowMs,
