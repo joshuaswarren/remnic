@@ -125,7 +125,7 @@ test("legacy artifacts summarize identically to the pre-#2800 UI after the compa
       const filePath = path.join(dir, `${id}.json`);
       await writeFile(filePath, JSON.stringify(artifact), "utf8");
 
-      const oldUiSummary = summarizeBenchmarkResult(artifact as Parameters<typeof summarizeBenchmarkResult>[0], filePath);
+      const oldUiSummary = summarizeBenchmarkResult(await loadBenchmarkResult(filePath), filePath);
       assert.ok(oldUiSummary, `old UI parser must accept the ${name}`);
 
       const upgraded = await loadBenchmarkResult(filePath);
@@ -147,7 +147,7 @@ test("legacy artifacts summarize identically to the pre-#2800 UI after the compa
     );
     for (const { name, id, artifact } of legacyArtifacts) {
       const filePath = path.join(dir, `${id}.json`);
-      const oldUiSummary = summarizeBenchmarkResult(artifact as Parameters<typeof summarizeBenchmarkResult>[0], filePath);
+      const oldUiSummary = summarizeBenchmarkResult(await loadBenchmarkResult(filePath), filePath);
       assert.ok(oldUiSummary, `old UI parser must accept the ${name}`);
       const uiSummary = uiPayload.summaries.find((summary) => summary.id === id);
       assert.ok(uiSummary, `UI loader must surface ${name}`);
