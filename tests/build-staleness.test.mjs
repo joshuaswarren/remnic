@@ -173,6 +173,7 @@ test("fingerprint scan does not follow source symlinks outside the package", asy
     await utimes(outsideFile, newer, newer);
     await ensure();
     assert.equal(state.builds, 1);
+
   } finally {
     await rm(root, { recursive: true, force: true });
   }

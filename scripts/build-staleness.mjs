@@ -321,7 +321,6 @@ function lockIdentityMatches(expected, actual) {
   }
   return ownersMatch(expected, actual);
 }
-
 function readLockOwner(lockDir) {
   try {
     const parsed = JSON.parse(fs.readFileSync(path.join(lockDir, "owner.json"), "utf8"));
