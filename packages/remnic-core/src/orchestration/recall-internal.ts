@@ -102,7 +102,7 @@ import {
   filterRecentScanMemories,
   resolveRecallStateViewFlags,
 } from "../recall-state-view-anchors.js";
-import { applyRecallStateViews } from "../recall-state-view-wire.js";
+import { indexStateViewAnnotatedResults } from "../recall-state-view-admission.js";
 import type { RecallSectionBuckets } from "./recall-section-coordinator.js";
 import {
   reconcileRecallResultPartition,
@@ -5050,8 +5050,8 @@ export class RecallInternalCoordinator {
         // explain data (e.g. reinforcementBoost) from the result that
         // boostSearchResults annotated before surfacing to xray.
         // #1952: label the captured branch through the same inject-seam annotator.
-        const xrayResultByPath = new Map<string, QmdSearchResult>(
-          applyRecallStateViews(xrayRecalledResults, retrievalQuery, this.deps.config, stateViewActive, asOfMs).map((xr) => [`${xr.namespace ?? ""}\0${xr.path}`, xr]),
+        const xrayResultByPath = indexStateViewAnnotatedResults(
+          xrayRecalledResults, retrievalQuery, this.deps.config, stateViewActive, asOfMs,
         );
         const results: RecallXrayResult[] = [];
         for (let xrayIdx = 0; xrayIdx < recalledMemoryPaths.length; xrayIdx += 1) {

@@ -10,6 +10,11 @@ Use `openclaw engram config-review` for opinionated tuning recommendations and `
 |---------|---------|-------------|
 | `openaiApiKey` | `(env fallback in plugin mode)` | Optional OpenAI API key, `${ENV_VAR}` reference, or `false` to disable direct OpenAI entirely. When `modelSource` is `gateway`, Remnic does not inherit `OPENAI_API_KEY`; gateway provider auth is used instead. |
 | `openaiBaseUrl` | `(env fallback)` | Override OpenAI API base URL (e.g. for proxies or compatible endpoints); falls back to `OPENAI_BASE_URL` env var |
+| `llmBridgeClientConfigPath` | (unset) | Path to the Hermes loopback-bridge client JSON. Parsed into `backgroundGeneration` only. Never copied onto `openaiBaseUrl`. |
+| `backgroundGeneration.endpoint` | (unset) | Chat-completions URL for the Hermes loopback bridge. Consumed only by hourly background generation. |
+| `backgroundGeneration.token` | (unset) | Loopback bearer from the generated client file. |
+| `backgroundGeneration.timeoutSeconds` | `120` | Absolute deadline for one background-generation request. |
+| `backgroundGeneration.timeout_seconds` | `120` | Snake-case alias of `timeoutSeconds` from the generated Hermes client file. |
 | `model` | `gpt-5.5` | OpenAI model for extraction and consolidation |
 | `reasoningEffort` | `low` | `none`, `low`, `medium`, `high` |
 | `memoryDir` | `~/.openclaw/workspace/memory/local` | Memory storage root |
@@ -497,6 +502,13 @@ Note: `recallPipeline` controls ordering and can explicitly disable sections via
 | `extractionScopeClassificationEnabled` | `true` | Classify extracted facts as `"global"` or `"project"` scope. Global facts are promoted to the shared root namespace so they are visible across all projects. |
 
 See [Coding agent mode](coding-agent.md) for full details on project detection, `cwd` auto-resolution, `projectTag` for non-git sessions, and cross-project knowledge sharing.
+
+## Span-Mode Extraction
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `extraction.spanMode` | `"off"` | `"off"` (default) — extraction generates full content restatements as before. `"shadow"` — request span offsets AND content; materialize + compare and log agreement telemetry, but persist the generated content unchanged (zero behavior change; use to evaluate on live traffic). `"on"` — persist materialized frame+span content (verbatim source slice plus a ≤15-word frame), falling back per fact to the generated frame when a span fails validation. Spans are validated against a hash of the exact per-turn text the model saw (offset drift is rejected), materialized before sanitize/grounding/dedup, and never persisted as offsets. Unrecognized values are rejected at config parse (bench-gated feature, issue #2333). |
+
 ## Coding Knowledge
 
 | Setting | Default | Description |
@@ -841,13 +853,30 @@ Behavior:
   `executable` (or `REMNIC_CODEX_EXECUTABLE` env), `reasoningEffort`
   (`low` | `medium` | `high` | `xhigh`, default `medium`), and
   `retryOptions.timeoutMs` (positive integer; the request deadline when the
-  caller does not set one — an explicit call timeout always wins).
+  caller does not set one — an explicit call timeout always wins). The
+  deadline covers the login precheck and the exec subprocess as one budget,
+  including waits on a login check another request already started: each
+  request times out on its own budget without cancelling the shared check.
 - Not logged in → the provider fails fast with `codex login` guidance; an
   expired or revoked session fails with re-auth guidance. Timeouts surface
-  as `TimeoutError`; caller cancellations keep their original abort reason.
-- A host or benchmark run that registers its own `codex-cli` transport
-  always wins; Remnic registers its subprocess transport only when the seam
-  is free.
+  as `TimeoutError` and survive the model chain (a sole/last
+  `codex-subscription` model propagates the typed error instead of an empty
+  result); caller cancellations keep their original abort reason. A cached
+  login is revalidated whenever the Codex auth store changes on disk, so a
+  later API-key login cannot be masked by an earlier ChatGPT cache entry.
+- Relative `HOME`/`CODEX_HOME` values resolve against the daemon's working
+  directory before either subprocess starts (same rule as the executable
+  path), so the login precheck and the exec child always see the same auth
+  home. Detached Codex child process groups are tracked by the owning
+  runtime's runner. The owning server or plugin runtime invokes
+  `beginCodexSubscriptionShutdown` on its own runner at shutdown,
+  so stopping one Remnic instance cannot kill another instance's in-flight
+  subscription requests. A SIGKILL timer starts before orchestrator drain.
+  The provider does not install process signal
+  listeners or call `process.exit`.
+  A host or benchmark run that registers its own `codex-cli` transport
+  always wins; the core default process runner does not override a
+  runtime-owned runner.
 
 ### Setup
 
@@ -1824,6 +1853,11 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 |---------|---------|-------------|
 | `openaiApiKey` | `(env fallback in plugin mode)` | unset when `modelSource` is `gateway`; set `false` for local-only plugin mode; otherwise explicit key or `OPENAI_API_KEY` env fallback |
 | `openaiBaseUrl` | (unset) | (unset) |
+| `llmBridgeClientConfigPath` | (unset) | (unset); parse into `backgroundGeneration` only |
+| `backgroundGeneration.endpoint` | (unset) | (unset); hourly background generation only |
+| `backgroundGeneration.token` | (unset) | (unset); generated loopback bearer |
+| `backgroundGeneration.timeoutSeconds` | `120` | `120` |
+| `backgroundGeneration.timeout_seconds` | `120` | `120`; generated-file alias |
 | `model` | `gpt-5.5` | `gpt-5.5` |
 | `reasoningEffort` | `low` | `low` |
 | `supportPassport.enabled` | `false` | `false` until an owner chooses to enable What Helps Me |

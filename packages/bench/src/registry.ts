@@ -48,6 +48,10 @@ import {
   runExtractionJudgeCalibrationBenchmark,
 } from "./benchmarks/remnic/extraction-judge-calibration/runner.js";
 import {
+  extractionSpanModeDefinition,
+  runExtractionSpanModeBenchmark,
+} from "./benchmarks/remnic/extraction-span-mode/runner.js";
+import {
   enrichmentFidelityDefinition,
   runEnrichmentFidelityBenchmark,
 } from "./benchmarks/remnic/enrichment-fidelity/runner.js";
@@ -196,6 +200,10 @@ const REGISTERED_BENCHMARKS: RegisteredBenchmark[] = [
   {
     ...extractionJudgeCalibrationDefinition,
     run: runExtractionJudgeCalibrationBenchmark,
+  },
+  {
+    ...extractionSpanModeDefinition,
+    run: runExtractionSpanModeBenchmark,
   },
   {
     ...enrichmentFidelityDefinition,

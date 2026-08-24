@@ -340,6 +340,14 @@ export function stateViewPacketKeys<T extends StateViewResult>(
   return keys.map((key) => root(key));
 }
 
+/**
+ * #2859 — packet-counting cap. A predecessor/successor chain admitted
+ * together is ONE complete evidence packet: it consumes a single slot of
+ * the user cap, and the slice never splits a packet at the boundary (no
+ * underfill from post-cap orphan removal). Rows keep their incoming
+ * (MMR) order; packets are ordered by first appearance. Call
+ * reconcileStateViewPairs first so orphans never consume a slot.
+ */
 export function capStateViewPackets<T extends StateViewResult>(
   ordered: readonly T[],
   limit: number,
