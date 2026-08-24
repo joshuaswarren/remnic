@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
 import test from "node:test";
 
 import { parseConfig } from "../config.js";
-import type { StorageManager } from "../index.js";
-import type { MemoryFile, QmdSearchResult } from "../types.js";
 import { RecallSearchPipelineCoordinator } from "./recall-search-pipeline.js";
 import type { RecallSearchPipelineDeps } from "./recall-search-pipeline.js";
+import type { MemoryFile, QmdSearchResult } from "../types.js";
+import type { StorageManager } from "../index.js";
 
 function result(path_: string, score = 1): QmdSearchResult {
   return { docid: `qmd-${path_}`, path: path_, score, snippet: path_ };
@@ -74,7 +74,7 @@ test("state view admits a superseded candidate when its successor is in the set"
     assert.deepEqual(
       safe.map((r) => r.path).sort(),
       [NEW, OLD],
-      "superseded row must be admitted alongside its successor"
+      "superseded row must be admitted alongside its successor",
     );
     const old = safe.find((r) => r.path === OLD);
     assert.equal(old?.id, "m-old", "admitted row carries the frontmatter id");
@@ -96,14 +96,8 @@ test("default (stateViewActive unset) keeps filtering superseded — zero-diff b
     const explicitOff = coordinator.filterSearchResultsByRecallSafety(results, memories, {
       stateViewActive: false,
     });
-    assert.deepEqual(
-      baseline.map((r) => r.path),
-      [NEW]
-    );
-    assert.deepEqual(
-      explicitOff.map((r) => r.path),
-      [NEW]
-    );
+    assert.deepEqual(baseline.map((r) => r.path), [NEW]);
+    assert.deepEqual(explicitOff.map((r) => r.path), [NEW]);
     // No chain fields leak onto survivors when the view is off.
     assert.equal(baseline[0]?.supersededBy, undefined);
     assert.equal(baseline[0]?.id, undefined);
@@ -164,7 +158,7 @@ test("a successor rejected by the status gate cannot anchor its superseded row (
     assert.deepEqual(
       safe.map((r) => r.path),
       [OTHER],
-      "a filter-rejected successor must not anchor its superseded row, and the orphaned row must not consume a slot"
+      "a filter-rejected successor must not anchor its superseded row, and the orphaned row must not consume a slot",
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -208,7 +202,7 @@ test("an anchored predecessor keeps its rank position when admitted", async () =
     assert.deepEqual(
       safe.map((r) => r.path),
       [NEW, OLD],
-      "admission must not reorder candidates relative to their incoming rank"
+      "admission must not reorder candidates relative to their incoming rank",
     );
     assert.equal(safe[1]?.supersededBy, "m-new", "admitted row carries the chain fields");
   } finally {

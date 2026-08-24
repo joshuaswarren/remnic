@@ -4,7 +4,7 @@ type ProcessOptions = Record<string, unknown>;
 type ProcessStream = {
   destroyed?: boolean;
   destroy: () => void;
-  end: () => void;
+  end: (chunk?: string | Buffer, callback?: (error?: Error | null) => void) => void;
   on: (event: string, listener: (...args: any[]) => void) => ProcessStream;
   once: (event: string, listener: (...args: any[]) => void) => ProcessStream;
   setEncoding: (encoding: BufferEncoding) => void;
