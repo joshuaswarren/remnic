@@ -134,6 +134,12 @@ the workflow itself. Executes:
    benchmark, the workflow fails and the benchmark is flagged as
    exploitable.
 
+   The effective floor (custom override or canonical default) is persisted
+   into every canonical benchmark result's `meta.canaryFloor` by
+   `writeBenchmarkResult`, so summaries and exported feeds keep judging
+   `canaryScore` against the producing run's floor after restart, without
+   the environment variable.
+
 ### Publishing
 
 `buildBenchmarkPublishFeed` refuses any result whose `meta` is missing
@@ -151,6 +157,7 @@ Results with `splitType: "public"` are skipped from the leaderboard feed.
 | `judgePromptHash`  | `string` (64-char hex) | Yes      | SHA-256 of the rendered judge prompt.                     |
 | `datasetHash`      | `string` (64-char hex) | Yes      | SHA-256 of the dataset payload served to the runner.      |
 | `canaryScore`      | `number`              | No       | Canary-adapter score from the audit run that produced this result. |
+| `canaryFloor`       | `number` (≥ 0)       | No       | Effective canary floor that gated `canaryScore`; persisted by `writeBenchmarkResult`. |
 
 ## Randomization
 
