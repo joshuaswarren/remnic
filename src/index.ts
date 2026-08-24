@@ -16,6 +16,7 @@ import {
   sanitizeSessionKeyForFilename,
   defaultWorkspaceDir,
 } from "@remnic/core/orchestrator";
+import { beginCodexSubscriptionShutdown, getCodexSubscriptionRunnerForOwner } from "@remnic/core";
 import { registerTools } from "./tools.js";
 import { registerLcmTools } from "@remnic/core/lcm/index";
 import { estimateTokens as estimateLcmTokens } from "@remnic/core/lcm/archive";
@@ -5535,30 +5536,38 @@ const pluginDefinition = {
             log.debug(`engram opik exporter unsubscribe failed: ${err}`);
           }
           activeOpikExporter = null;
+          // Abort in-flight Codex work before HTTP close. An access request
+          // blocked on a Codex child keeps server.close() pending until the
+          // runner is aborted and the force-kill timer starts.
+          const finishCodex = beginCodexSubscriptionShutdown(getCodexSubscriptionRunnerForOwner(cfg));
           try {
-            await accessHttpServer.stop();
-          } catch (err) {
-            log.debug(`engram access HTTP stop failed: ${err}`);
-          }
-          stopDreamWatcher?.();
-          stopDreamWatcher = null;
-          stopHeartbeatWatcher?.();
-          stopHeartbeatWatcher = null;
-          removeDreamingObserver?.();
-          removeDreamingObserver = null;
-          // Tear down the orchestrator itself (#1537): destroy() clears the
-          // QMD maintenance timer and disposes the QMD client, the namespace
-          // router's per-namespace backends, and conversation QMD — releasing
-          // their refcounted shared daemon sessions (close-on-zero). Without
-          // this, every stop/start cycle stranded refs, the shared daemon map
-          // could never reach zero, and qmd child processes plus their map
-          // entries leaked across gateway reloads. The global slot is cleared
-          // (identity-guarded) so a subsequent start() constructs a fresh
-          // orchestrator instead of reusing a destroyed one.
-          try {
-            await orchestrator.destroy();
-          } catch (err) {
-            log.debug(`engram orchestrator destroy on stop failed: ${err}`);
+            try {
+              await accessHttpServer.stop();
+            } catch (err) {
+              log.debug(`engram access HTTP stop failed: ${err}`);
+            }
+            stopDreamWatcher?.();
+            stopDreamWatcher = null;
+            stopHeartbeatWatcher?.();
+            stopHeartbeatWatcher = null;
+            removeDreamingObserver?.();
+            removeDreamingObserver = null;
+            // Tear down the orchestrator itself (#1537): destroy() clears the
+            // QMD maintenance timer and disposes the QMD client, the namespace
+            // router's per-namespace backends, and conversation QMD — releasing
+            // their refcounted shared daemon sessions (close-on-zero). Without
+            // this, every stop/start cycle stranded refs, the shared daemon map
+            // could never reach zero, and qmd child processes plus their map
+            // entries leaked across gateway reloads. The global slot is cleared
+            // (identity-guarded) so a subsequent start() constructs a fresh
+            // orchestrator instead of reusing a destroyed one.
+            try {
+              await orchestrator.destroy();
+            } catch (err) {
+              log.debug(`engram orchestrator destroy on stop failed: ${err}`);
+            }
+          } finally {
+            finishCodex();
           }
           if ((globalThis as any)[keys.ORCHESTRATOR] === orchestrator) {
             delete (globalThis as any)[keys.ORCHESTRATOR];

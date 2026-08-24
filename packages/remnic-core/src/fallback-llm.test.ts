@@ -939,6 +939,52 @@ test("fallback llm aborts codex-cli fallback requests when timeout wins", { conc
   }
 });
 
+test("fallback llm timeout is a hard deadline when the provider never settles", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const restoreRunner = __codexCliFallbackTestHooks.setRunCodexCliForTest(
+    async (request) =>
+      await new Promise<never>(() => {
+        request.options.signal?.addEventListener("abort", () => undefined, { once: true });
+      }),
+  );
+
+  const llm = new FallbackLlmClient({
+    agents: {
+      defaults: {
+        model: {
+          primary: "codex-cli/gpt-custom",
+        },
+      },
+    },
+    models: {
+      providers: {
+        "codex-cli": {
+          baseUrl: "",
+          api: "codex-cli",
+          apiKey: "codex-test-key",
+          models: [],
+        },
+      },
+    },
+  });
+
+  try {
+    const started = Date.now();
+    const response = await llm.chatCompletion(
+      [{ role: "user", content: "Say OK" }],
+      { temperature: 0, maxTokens: 16, timeoutMs: 30 },
+    );
+    assert.equal(response, null);
+    assert.ok(Date.now() - started < 1_000, "outer timeout must settle without waiting on the provider");
+  } finally {
+    restoreRunner();
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
 test("fallback llm can call Ollama native chat and suppress thinking", { concurrency: false }, async () => {
   clearModelsJsonCache();
   clearSecretCache();
