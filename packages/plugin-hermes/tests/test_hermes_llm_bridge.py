@@ -184,6 +184,55 @@ def test_models_endpoint_returns_a_safe_client_error_when_policy_changes_to_incl
         worker.join(timeout=2)
 
 
+def test_invoke_completion_accepts_remnic_max_output_budget(tmp_path):
+    """The bridge accepts the full output budget emitted by Remnic's model registry."""
+    from remnic_hermes.hermes_llm_bridge import invoke_completion, load_policy
+
+    calls: list[dict[str, object]] = []
+
+    def call_llm(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="full budget response"))])
+
+    result = invoke_completion(
+        {"messages": [{"role": "user", "content": "extract"}], "max_tokens": 16_384},
+        load_policy(_policy_path(tmp_path)),
+        call_llm=call_llm,
+    )
+
+    assert result["choices"][0]["message"]["content"] == "full budget response"
+    assert calls[0]["max_tokens"] == 16_384
+
+
+def test_bridge_returns_gateway_error_for_malformed_provider_response(tmp_path):
+    """Provider response corruption is retryable upstream failure, not a client 400."""
+    from remnic_hermes.hermes_llm_bridge import make_handler
+
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        make_handler(
+            _policy_path(tmp_path),
+            call_llm=lambda **_: SimpleNamespace(choices=[]),
+            request_token=BRIDGE_REQUEST_TOKEN,
+        ),
+    )
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        with pytest.raises(HTTPError) as error:
+            _request(
+                server,
+                "/v1/chat/completions",
+                body={"messages": [{"role": "user", "content": "extract"}]},
+            )
+        assert error.value.code == 502
+        assert json.loads(error.value.read())["error"]["message"] == "Hermes provider call failed"
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
+
+
 def test_invoke_completion_rejects_nonfinite_temperature(tmp_path):
     """JSON non-finite floats must not enter an upstream provider request."""
     from remnic_hermes.hermes_llm_bridge import PolicyError, invoke_completion, load_policy

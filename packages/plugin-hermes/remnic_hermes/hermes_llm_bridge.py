@@ -25,11 +25,16 @@ class PolicyError(ValueError):
     """A bridge request or policy exceeds the documented contract."""
 
 
+class ProviderResponseError(RuntimeError):
+    """Hermes returned a response that cannot satisfy the OpenAI-compatible contract."""
+
+
 _PROVIDER_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,255}$")
 _ALLOWED_POLICY_KEYS = frozenset({"provider", "model", "timeout_seconds"})
 _ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 _MAX_REQUEST_BYTES = 1_000_000
+_MAX_COMPLETION_TOKENS = 16_384
 
 
 @dataclass(frozen=True)
@@ -87,10 +92,10 @@ def _content_from_response(response: Any) -> str:
     try:
         content = response.choices[0].message.content
     except (AttributeError, IndexError, TypeError) as exc:
-        raise PolicyError("Hermes provider returned no completion content") from exc
+        raise ProviderResponseError("Hermes provider returned no completion content") from exc
     if isinstance(content, str) and content:
         return content
-    raise PolicyError("Hermes provider returned empty completion content")
+    raise ProviderResponseError("Hermes provider returned empty completion content")
 
 
 def invoke_completion(
@@ -110,9 +115,11 @@ def invoke_completion(
         raise PolicyError("temperature must be a finite number")
     max_tokens = body.get("max_tokens", body.get("max_completion_tokens"))
     if max_tokens is not None and (
-        isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or not 1 <= max_tokens <= 8192
+        isinstance(max_tokens, bool)
+        or not isinstance(max_tokens, int)
+        or not 1 <= max_tokens <= _MAX_COMPLETION_TOKENS
     ):
-        raise PolicyError("max_tokens must be an integer from 1 through 8192")
+        raise PolicyError(f"max_tokens must be an integer from 1 through {_MAX_COMPLETION_TOKENS}")
 
     response = call_llm(
         provider=policy.provider,
@@ -248,6 +255,8 @@ def make_handler(
                 if not isinstance(body, dict):
                     raise PolicyError("request body must be an object")
                 self._send_json(HTTPStatus.OK, invoke_completion(body, load_policy(policy_path), call_llm=call_llm))
+            except ProviderResponseError:
+                self._send_json(HTTPStatus.BAD_GATEWAY, {"error": {"message": "Hermes provider call failed"}})
             except (PolicyError, ValueError, json.JSONDecodeError) as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": {"message": str(exc)}})
             except Exception:
