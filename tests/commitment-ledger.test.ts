@@ -10,14 +10,14 @@ import {
   resolveCommitmentLedgerDir,
   transitionCommitmentLedgerEntryState,
   validateCommitmentLedgerEntry,
-} from "../src/commitment-ledger.js";
+} from "@remnic/core/commitment-ledger";
 import {
   runCommitmentLifecycleCliCommand,
   registerCli,
   runCommitmentRecordCliCommand,
   runCommitmentSetStateCliCommand,
   runCommitmentStatusCliCommand,
-} from "../src/cli.js";
+} from "@remnic/core/cli";
 
 test("commitment ledger path resolves under memoryDir by default", () => {
   assert.equal(

@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { StorageManager } from "../src/storage.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import type { PluginConfig } from "../src/types.js";
-import { parseConfig } from "../src/config.js";
+import { StorageManager } from "@remnic/core/storage";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import type { PluginConfig } from "@remnic/core/types";
+import { parseConfig } from "@remnic/core/config";
 
 function tmpDir(prefix: string): string {
   return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);

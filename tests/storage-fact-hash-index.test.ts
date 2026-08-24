@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, rm, readFile, unlink } from "node:fs/promises";
-import { ContentHashIndex, StorageManager } from "../src/storage.ts";
-import { clearMemoryCache } from "../src/memory-cache.ts";
-import { sanitizeMemoryContent } from "../src/sanitize.ts";
-import { attachCitation } from "../src/source-attribution.ts";
+import { ContentHashIndex, StorageManager } from "@remnic/core/storage";
+import { clearMemoryCache } from "@remnic/core/memory-cache";
+import { sanitizeMemoryContent } from "@remnic/core/sanitize";
+import { attachCitation } from "@remnic/core/source-attribution";
 import { computeLegacyContentHash } from "../packages/remnic-core/src/content-hash.ts";
 
 test("legacy hash-index entries cannot suppress writes after Unicode normalization migration", async () => {

@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AdapterRegistry } from "../src/adapters/registry.js";
-import { ClaudeCodeAdapter } from "../src/adapters/claude-code.js";
-import { CodexAdapter } from "../src/adapters/codex.js";
-import { ReplitAdapter } from "../src/adapters/replit.js";
-import { HermesAdapter } from "../src/adapters/hermes.js";
+import { AdapterRegistry } from "@remnic/core/adapters/registry";
+import { ClaudeCodeAdapter } from "@remnic/core/adapters/claude-code";
+import { CodexAdapter } from "@remnic/core/adapters/codex";
+import { ReplitAdapter } from "@remnic/core/adapters/replit";
+import { HermesAdapter } from "@remnic/core/adapters/hermes";
 
 // -- Registry --
 

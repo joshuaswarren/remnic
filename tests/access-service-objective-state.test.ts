@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { EngramAccessService } from "../src/access-service.js";
-import { getObjectiveStateStoreStatus } from "../src/objective-state.js";
+import { getObjectiveStateStoreStatus } from "@remnic/core/objective-state";
 
 function createObjectiveStateObserveService(
   memoryDir: string,

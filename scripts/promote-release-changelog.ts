@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { promoteUnreleasedChangelog } from "../src/release-changelog.js";
+import { promoteUnreleasedChangelog } from "@remnic/core/release-changelog";
 
 async function main(): Promise<void> {
   const version = process.argv[2]?.replace(/^v/i, "");

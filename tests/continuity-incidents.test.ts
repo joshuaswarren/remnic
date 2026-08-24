@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { registerTools } from "../src/tools.ts";
-import type { ContinuityIncidentRecord } from "../src/types.ts";
+import type { ContinuityIncidentRecord } from "@remnic/core/types";
 
 type RegisteredTool = {
   name: string;

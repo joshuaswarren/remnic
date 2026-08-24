@@ -4,10 +4,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
 import { stripOkfProfileFrontmatter } from "../packages/remnic-core/src/storage/profile-header.js";
-import type { ExtractionResult } from "../src/types.js";
+import type { ExtractionResult } from "@remnic/core/types";
 
 const WRITE_TIME = "2030-01-02T03:04:05.000Z";
 const STALE_HEADER = "*Last updated: 2024-01-02T03:04:05.000Z*";

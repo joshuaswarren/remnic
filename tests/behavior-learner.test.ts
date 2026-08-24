@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { learnBehaviorPolicyAdjustments } from "../src/behavior-learner.ts";
-import type { BehaviorSignalEvent } from "../src/types.ts";
+import { learnBehaviorPolicyAdjustments } from "@remnic/core/behavior-learner";
+import type { BehaviorSignalEvent } from "@remnic/core/types";
 
 function signal(overrides: Partial<BehaviorSignalEvent> = {}): BehaviorSignalEvent {
   return {

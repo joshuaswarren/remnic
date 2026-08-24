@@ -4,7 +4,7 @@ import { access, mkdtemp, readFile, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { writeFixtureMemoryDir, writeSensitiveTransferFixtureEntries } from "./transfer-fixtures.js";
-import { backupMemoryDir } from "../src/transfer/backup.js";
+import { backupMemoryDir } from "@remnic/core/transfer/backup";
 
 async function assertPathMissing(filePath: string): Promise<void> {
   await assert.rejects(access(filePath), { code: "ENOENT" });

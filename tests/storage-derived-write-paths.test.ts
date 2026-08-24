@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 import type { VersioningConfig } from "@remnic/core";
 
 function versioningConfig(): VersioningConfig {

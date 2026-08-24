@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import { QmdClient } from "../src/qmd.ts";
+import { QmdClient } from "@remnic/core/qmd";
 import { LastRecallStore } from "../packages/remnic-core/src/recall-state.js";
 import type { SearchDegradation } from "../packages/remnic-core/src/search/port.js";
 

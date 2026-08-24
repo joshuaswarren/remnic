@@ -9,7 +9,7 @@ import { existsSync, symlinkSync } from "node:fs";
 import {
   migrateFromEngram,
   rollbackFromEngramMigration,
-} from "../src/migrate/from-engram.js";
+} from "@remnic/core/migrate/from-engram";
 
 async function makeTempHome(prefix: string): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), prefix));

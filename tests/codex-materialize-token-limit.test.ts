@@ -5,8 +5,8 @@ import {
   approximateTokenCount,
   renderMemorySummary,
   truncateToTokenBudget,
-} from "../src/connectors/codex-materialize.js";
-import type { MemoryFile } from "../src/types.js";
+} from "@remnic/core/connectors/codex-materialize";
+import type { MemoryFile } from "@remnic/core/types";
 
 function makeMemory(content: string, id: string): MemoryFile {
   return {

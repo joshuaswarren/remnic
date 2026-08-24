@@ -7,7 +7,7 @@ import {
   applyUtilityPromotionRuntimePolicy,
   applyUtilityRankingRuntimeDelta,
   loadUtilityRuntimeValues,
-} from "../src/utility-runtime.js";
+} from "@remnic/core/utility-runtime";
 
 test("utility runtime stays disabled until both rollout gates are enabled", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-utility-runtime-disabled-"));

@@ -8,7 +8,7 @@ import {
   runEvalBenchmarkCiGate,
   validateEvalBaselineSnapshot,
   validateEvalRunSummary,
-} from "../src/evals.js";
+} from "@remnic/core/evals";
 
 function validRun(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {

@@ -4,7 +4,7 @@ import { getEventListeners } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import { chmod, mkdtemp, writeFile } from "node:fs/promises";
-import { QmdClient } from "../src/qmd.ts";
+import { QmdClient } from "@remnic/core/qmd";
 
 test("search returns empty when daemon returns empty (no subprocess fallback)", async () => {
   const client = new QmdClient("openclaw-engram", 5) as any;

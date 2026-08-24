@@ -19,12 +19,12 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 import {
   runConsolidationProvenanceCheck,
   type ConsolidationProvenanceReport,
-} from "../src/consolidation-provenance-check.ts";
-import { summarizeConsolidationProvenance } from "../src/operator-toolkit.ts";
+} from "@remnic/core/consolidation-provenance-check";
+import { summarizeConsolidationProvenance } from "@remnic/core/operator-toolkit";
 
 const versioning = { enabled: true, maxVersionsPerPage: 10, sidecarDir: ".versions" } as const;
 

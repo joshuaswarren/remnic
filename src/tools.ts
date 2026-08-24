@@ -6,22 +6,22 @@ import type {
   ContinuityImprovementLoop,
   MemoryActionType,
   MemoryCategory,
-} from "./types.js";
-import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
+} from "@remnic/core/types";
+import { indexMemoryAsync, indexesExistAsync } from "@remnic/core/temporal-index";
 import {
   persistExplicitCapture,
   queueExplicitCaptureForReview,
   validateExplicitCaptureInput,
 } from "./explicit-capture.js";
-import { log } from "./logger.js";
+import { log } from "@remnic/core/logger";
 import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
 import { executeMemoryPromote } from "./memory-promote.js";
 import { openClawToolWriteOrigin } from "./tool-write-origin.js";
 import { WorkStorage } from "@remnic/core/work/storage";
 import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "@remnic/core/work/board";
 import { wrapWorkLayerContext } from "@remnic/core/work/boundary";
-import { VALID_MEMORY_CATEGORIES } from "./config.js";
-import { formatProfileTraceAscii } from "./profiling.js";
+import { VALID_MEMORY_CATEGORIES } from "@remnic/core/config";
+import { formatProfileTraceAscii } from "@remnic/core/profiling";
 import { runMemoryGovernance } from "@remnic/core/maintenance/memory-governance";
 import {
   blocksSupportPassportMutation,

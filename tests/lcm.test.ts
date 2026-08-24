@@ -5,12 +5,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdirSync } from "node:fs";
 import Database from "better-sqlite3";
-import { openLcmDatabase, ensureLcmStateDir } from "../src/lcm/schema.js";
-import { LcmArchive, estimateTokens } from "../src/lcm/archive.js";
-import { LcmDag } from "../src/lcm/dag.js";
-import { LcmSummarizer, type SummarizeFn } from "../src/lcm/summarizer.js";
+import { openLcmDatabase, ensureLcmStateDir } from "@remnic/core/lcm/schema";
+import { LcmArchive, estimateTokens } from "@remnic/core/lcm/archive";
+import { LcmDag } from "@remnic/core/lcm/dag";
+import { LcmSummarizer, type SummarizeFn } from "@remnic/core/lcm/summarizer";
 import { estimateTokenCount } from "@remnic/core/token-estimate";
-import { assembleCompressedHistory } from "../src/lcm/recall.js";
+import { assembleCompressedHistory } from "@remnic/core/lcm/recall";
 
 function createTempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "engram-lcm-test-"));
@@ -654,7 +654,7 @@ test("estimateTokens gives rough count", () => {
 test("LCM config fields parse correctly", async () => {
   // This test validates the config parsing by importing parseConfig
   // and checking the LCM fields are present with defaults
-  const { parseConfig } = await import("../src/config.js");
+  const { parseConfig } = await import("@remnic/core/config");
 
   const config = parseConfig({
     openaiApiKey: "test",
@@ -675,7 +675,7 @@ test("LCM config fields parse correctly", async () => {
 });
 
 test("LCM config fields accept custom values", async () => {
-  const { parseConfig } = await import("../src/config.js");
+  const { parseConfig } = await import("@remnic/core/config");
 
   const config = parseConfig({
     openaiApiKey: "test",
@@ -705,7 +705,7 @@ test("LCM config fields accept custom values", async () => {
 });
 
 test("LCM config clamps values to valid ranges", async () => {
-  const { parseConfig } = await import("../src/config.js");
+  const { parseConfig } = await import("@remnic/core/config");
 
   const config = parseConfig({
     openaiApiKey: "test",

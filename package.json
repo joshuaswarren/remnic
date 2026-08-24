@@ -46,220 +46,364 @@
       "import": "./dist/index.js"
     },
     "./memory-projection-format": {
-      "import": "./dist/memory-projection-format.js"
+      "types": "./packages/remnic-core/dist/memory-projection-format.d.ts",
+      "remnic-source": "./packages/remnic-core/src/memory-projection-format.ts",
+      "import": "./packages/remnic-core/dist/memory-projection-format.js"
     },
     "./memory-projection-format.js": {
-      "import": "./dist/memory-projection-format.js"
+      "types": "./packages/remnic-core/dist/memory-projection-format.d.ts",
+      "remnic-source": "./packages/remnic-core/src/memory-projection-format.ts",
+      "import": "./packages/remnic-core/dist/memory-projection-format.js"
     },
     "./model-registry": {
-      "import": "./dist/model-registry.js"
+      "types": "./packages/remnic-core/dist/model-registry.d.ts",
+      "remnic-source": "./packages/remnic-core/src/model-registry.ts",
+      "import": "./packages/remnic-core/dist/model-registry.js"
     },
     "./model-registry.js": {
-      "import": "./dist/model-registry.js"
+      "types": "./packages/remnic-core/dist/model-registry.d.ts",
+      "remnic-source": "./packages/remnic-core/src/model-registry.ts",
+      "import": "./packages/remnic-core/dist/model-registry.js"
     },
     "./models-json": {
-      "import": "./dist/models-json.js"
+      "types": "./packages/remnic-core/dist/models-json.d.ts",
+      "remnic-source": "./packages/remnic-core/src/models-json.ts",
+      "import": "./packages/remnic-core/dist/models-json.js"
     },
     "./models-json.js": {
-      "import": "./dist/models-json.js"
+      "types": "./packages/remnic-core/dist/models-json.d.ts",
+      "remnic-source": "./packages/remnic-core/src/models-json.ts",
+      "import": "./packages/remnic-core/dist/models-json.js"
     },
     "./orchestrator": {
-      "import": "./dist/orchestrator.js"
+      "types": "./packages/remnic-core/dist/orchestrator.d.ts",
+      "remnic-source": "./packages/remnic-core/src/orchestrator.ts",
+      "import": "./packages/remnic-core/dist/orchestrator.js"
     },
     "./orchestrator.js": {
-      "import": "./dist/orchestrator.js"
+      "types": "./packages/remnic-core/dist/orchestrator.d.ts",
+      "remnic-source": "./packages/remnic-core/src/orchestrator.ts",
+      "import": "./packages/remnic-core/dist/orchestrator.js"
     },
     "./access-cli": {
-      "import": "./dist/access-cli.js"
+      "types": "./packages/remnic-core/dist/access-cli.d.ts",
+      "remnic-source": "./packages/remnic-core/src/access-cli.ts",
+      "import": "./packages/remnic-core/dist/access-cli.js"
     },
     "./access-cli.js": {
-      "import": "./dist/access-cli.js"
+      "types": "./packages/remnic-core/dist/access-cli.d.ts",
+      "remnic-source": "./packages/remnic-core/src/access-cli.ts",
+      "import": "./packages/remnic-core/dist/access-cli.js"
     },
     "./secure-store": {
-      "import": "./dist/secure-store/index.js"
+      "types": "./packages/remnic-core/dist/secure-store/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/secure-store/index.ts",
+      "import": "./packages/remnic-core/dist/secure-store/index.js"
     },
     "./secure-store.js": {
-      "import": "./dist/secure-store/index.js"
+      "types": "./packages/remnic-core/dist/secure-store/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/secure-store/index.ts",
+      "import": "./packages/remnic-core/dist/secure-store/index.js"
     },
     "./secure-store/index": {
-      "import": "./dist/secure-store/index.js"
+      "types": "./packages/remnic-core/dist/secure-store/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/secure-store/index.ts",
+      "import": "./packages/remnic-core/dist/secure-store/index.js"
     },
     "./secure-store/index.js": {
-      "import": "./dist/secure-store/index.js"
+      "types": "./packages/remnic-core/dist/secure-store/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/secure-store/index.ts",
+      "import": "./packages/remnic-core/dist/secure-store/index.js"
     },
     "./adapters": {
-      "import": "./dist/adapters/index.js"
+      "types": "./packages/remnic-core/dist/adapters/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/index.ts",
+      "import": "./packages/remnic-core/dist/adapters/index.js"
     },
     "./adapters.js": {
-      "import": "./dist/adapters/index.js"
+      "types": "./packages/remnic-core/dist/adapters/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/index.ts",
+      "import": "./packages/remnic-core/dist/adapters/index.js"
     },
     "./adapters/claude-code": {
-      "import": "./dist/adapters/claude-code.js"
+      "types": "./packages/remnic-core/dist/adapters/claude-code.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/claude-code.ts",
+      "import": "./packages/remnic-core/dist/adapters/claude-code.js"
     },
     "./adapters/claude-code.js": {
-      "import": "./dist/adapters/claude-code.js"
+      "types": "./packages/remnic-core/dist/adapters/claude-code.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/claude-code.ts",
+      "import": "./packages/remnic-core/dist/adapters/claude-code.js"
     },
     "./adapters/codex": {
-      "import": "./dist/adapters/codex.js"
+      "types": "./packages/remnic-core/dist/adapters/codex.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/codex.ts",
+      "import": "./packages/remnic-core/dist/adapters/codex.js"
     },
     "./adapters/codex.js": {
-      "import": "./dist/adapters/codex.js"
+      "types": "./packages/remnic-core/dist/adapters/codex.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/codex.ts",
+      "import": "./packages/remnic-core/dist/adapters/codex.js"
     },
     "./adapters/hermes": {
-      "import": "./dist/adapters/hermes.js"
+      "types": "./packages/remnic-core/dist/adapters/hermes.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/hermes.ts",
+      "import": "./packages/remnic-core/dist/adapters/hermes.js"
     },
     "./adapters/hermes.js": {
-      "import": "./dist/adapters/hermes.js"
+      "types": "./packages/remnic-core/dist/adapters/hermes.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/hermes.ts",
+      "import": "./packages/remnic-core/dist/adapters/hermes.js"
     },
     "./adapters/index": {
-      "import": "./dist/adapters/index.js"
+      "types": "./packages/remnic-core/dist/adapters/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/index.ts",
+      "import": "./packages/remnic-core/dist/adapters/index.js"
     },
     "./adapters/index.js": {
-      "import": "./dist/adapters/index.js"
+      "types": "./packages/remnic-core/dist/adapters/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/index.ts",
+      "import": "./packages/remnic-core/dist/adapters/index.js"
     },
     "./adapters/registry": {
-      "import": "./dist/adapters/registry.js"
+      "types": "./packages/remnic-core/dist/adapters/registry.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/registry.ts",
+      "import": "./packages/remnic-core/dist/adapters/registry.js"
     },
     "./adapters/registry.js": {
-      "import": "./dist/adapters/registry.js"
+      "types": "./packages/remnic-core/dist/adapters/registry.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/registry.ts",
+      "import": "./packages/remnic-core/dist/adapters/registry.js"
     },
     "./adapters/replit": {
-      "import": "./dist/adapters/replit.js"
+      "types": "./packages/remnic-core/dist/adapters/replit.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/replit.ts",
+      "import": "./packages/remnic-core/dist/adapters/replit.js"
     },
     "./adapters/replit.js": {
-      "import": "./dist/adapters/replit.js"
+      "types": "./packages/remnic-core/dist/adapters/replit.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/replit.ts",
+      "import": "./packages/remnic-core/dist/adapters/replit.js"
     },
     "./adapters/types": {
-      "import": "./dist/adapters/types.js"
+      "types": "./packages/remnic-core/dist/adapters/types.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/types.ts",
+      "import": "./packages/remnic-core/dist/adapters/types.js"
     },
     "./adapters/types.js": {
-      "import": "./dist/adapters/types.js"
+      "types": "./packages/remnic-core/dist/adapters/types.d.ts",
+      "remnic-source": "./packages/remnic-core/src/adapters/types.ts",
+      "import": "./packages/remnic-core/dist/adapters/types.js"
     },
     "./cli": {
-      "import": "./dist/cli.js"
+      "types": "./packages/remnic-core/dist/cli.d.ts",
+      "remnic-source": "./packages/remnic-core/src/cli.ts",
+      "import": "./packages/remnic-core/dist/cli.js"
     },
     "./cli.js": {
-      "import": "./dist/cli.js"
+      "types": "./packages/remnic-core/dist/cli.d.ts",
+      "remnic-source": "./packages/remnic-core/src/cli.ts",
+      "import": "./packages/remnic-core/dist/cli.js"
     },
     "./compat/checks": {
-      "import": "./dist/compat/checks.js"
+      "types": "./packages/remnic-core/dist/compat/checks.d.ts",
+      "remnic-source": "./packages/remnic-core/src/compat/checks.ts",
+      "import": "./packages/remnic-core/dist/compat/checks.js"
     },
     "./compat/checks.js": {
-      "import": "./dist/compat/checks.js"
+      "types": "./packages/remnic-core/dist/compat/checks.d.ts",
+      "remnic-source": "./packages/remnic-core/src/compat/checks.ts",
+      "import": "./packages/remnic-core/dist/compat/checks.js"
     },
     "./compat/types": {
-      "import": "./dist/compat/types.js"
+      "types": "./packages/remnic-core/dist/compat/types.d.ts",
+      "remnic-source": "./packages/remnic-core/src/compat/types.ts",
+      "import": "./packages/remnic-core/dist/compat/types.js"
     },
     "./compat/types.js": {
-      "import": "./dist/compat/types.js"
+      "types": "./packages/remnic-core/dist/compat/types.d.ts",
+      "remnic-source": "./packages/remnic-core/src/compat/types.ts",
+      "import": "./packages/remnic-core/dist/compat/types.js"
     },
     "./connectors": {
-      "import": "./dist/connectors/index.js"
+      "types": "./packages/remnic-core/dist/connectors/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/connectors/index.ts",
+      "import": "./packages/remnic-core/dist/connectors/index.js"
     },
     "./connectors.js": {
-      "import": "./dist/connectors/index.js"
+      "types": "./packages/remnic-core/dist/connectors/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/connectors/index.ts",
+      "import": "./packages/remnic-core/dist/connectors/index.js"
     },
     "./connectors/codex-materialize": {
-      "import": "./dist/connectors/codex-materialize.js"
+      "types": "./packages/remnic-core/dist/connectors/codex-materialize.d.ts",
+      "remnic-source": "./packages/remnic-core/src/connectors/codex-materialize.ts",
+      "import": "./packages/remnic-core/dist/connectors/codex-materialize.js"
     },
     "./connectors/codex-materialize.js": {
-      "import": "./dist/connectors/codex-materialize.js"
+      "types": "./packages/remnic-core/dist/connectors/codex-materialize.d.ts",
+      "remnic-source": "./packages/remnic-core/src/connectors/codex-materialize.ts",
+      "import": "./packages/remnic-core/dist/connectors/codex-materialize.js"
     },
     "./connectors/codex-materialize-runner": {
-      "import": "./dist/connectors/codex-materialize-runner.js"
+      "types": "./packages/remnic-core/dist/connectors/codex-materialize-runner.d.ts",
+      "remnic-source": "./packages/remnic-core/src/connectors/codex-materialize-runner.ts",
+      "import": "./packages/remnic-core/dist/connectors/codex-materialize-runner.js"
     },
     "./connectors/codex-materialize-runner.js": {
-      "import": "./dist/connectors/codex-materialize-runner.js"
+      "types": "./packages/remnic-core/dist/connectors/codex-materialize-runner.d.ts",
+      "remnic-source": "./packages/remnic-core/src/connectors/codex-materialize-runner.ts",
+      "import": "./packages/remnic-core/dist/connectors/codex-materialize-runner.js"
     },
     "./conversation-index/backend": {
-      "import": "./dist/conversation-index/backend.js"
+      "types": "./packages/remnic-core/dist/conversation-index/backend.d.ts",
+      "remnic-source": "./packages/remnic-core/src/conversation-index/backend.ts",
+      "import": "./packages/remnic-core/dist/conversation-index/backend.js"
     },
     "./conversation-index/backend.js": {
-      "import": "./dist/conversation-index/backend.js"
+      "types": "./packages/remnic-core/dist/conversation-index/backend.d.ts",
+      "remnic-source": "./packages/remnic-core/src/conversation-index/backend.ts",
+      "import": "./packages/remnic-core/dist/conversation-index/backend.js"
     },
     "./conversation-index/chunker": {
-      "import": "./dist/conversation-index/chunker.js"
+      "types": "./packages/remnic-core/dist/conversation-index/chunker.d.ts",
+      "remnic-source": "./packages/remnic-core/src/conversation-index/chunker.ts",
+      "import": "./packages/remnic-core/dist/conversation-index/chunker.js"
     },
     "./conversation-index/chunker.js": {
-      "import": "./dist/conversation-index/chunker.js"
+      "types": "./packages/remnic-core/dist/conversation-index/chunker.d.ts",
+      "remnic-source": "./packages/remnic-core/src/conversation-index/chunker.ts",
+      "import": "./packages/remnic-core/dist/conversation-index/chunker.js"
     },
     "./conversation-index/cleanup": {
-      "import": "./dist/conversation-index/cleanup.js"
+      "types": "./packages/remnic-core/dist/conversation-index/cleanup.d.ts",
+      "remnic-source": "./packages/remnic-core/src/conversation-index/cleanup.ts",
+      "import": "./packages/remnic-core/dist/conversation-index/cleanup.js"
     },
     "./conversation-index/cleanup.js": {
-      "import": "./dist/conversation-index/cleanup.js"
+      "types": "./packages/remnic-core/dist/conversation-index/cleanup.d.ts",
+      "remnic-source": "./packages/remnic-core/src/conversation-index/cleanup.ts",
+      "import": "./packages/remnic-core/dist/conversation-index/cleanup.js"
     },
     "./conversation-index/faiss-adapter": {
-      "import": "./dist/conversation-index/faiss-adapter.js"
+      "types": "./packages/remnic-core/dist/conversation-index/faiss-adapter.d.ts",
+      "remnic-source": "./packages/remnic-core/src/conversation-index/faiss-adapter.ts",
+      "import": "./packages/remnic-core/dist/conversation-index/faiss-adapter.js"
     },
     "./conversation-index/faiss-adapter.js": {
-      "import": "./dist/conversation-index/faiss-adapter.js"
+      "types": "./packages/remnic-core/dist/conversation-index/faiss-adapter.d.ts",
+      "remnic-source": "./packages/remnic-core/src/conversation-index/faiss-adapter.ts",
+      "import": "./packages/remnic-core/dist/conversation-index/faiss-adapter.js"
     },
     "./conversation-index/indexer": {
-      "import": "./dist/conversation-index/indexer.js"
+      "types": "./packages/remnic-core/dist/conversation-index/indexer.d.ts",
+      "remnic-source": "./packages/remnic-core/src/conversation-index/indexer.ts",
+      "import": "./packages/remnic-core/dist/conversation-index/indexer.js"
     },
     "./conversation-index/indexer.js": {
-      "import": "./dist/conversation-index/indexer.js"
+      "types": "./packages/remnic-core/dist/conversation-index/indexer.d.ts",
+      "remnic-source": "./packages/remnic-core/src/conversation-index/indexer.ts",
+      "import": "./packages/remnic-core/dist/conversation-index/indexer.js"
     },
     "./conversation-index/search": {
-      "import": "./dist/conversation-index/search.js"
+      "types": "./packages/remnic-core/dist/conversation-index/search.d.ts",
+      "remnic-source": "./packages/remnic-core/src/conversation-index/search.ts",
+      "import": "./packages/remnic-core/dist/conversation-index/search.js"
     },
     "./conversation-index/search.js": {
-      "import": "./dist/conversation-index/search.js"
+      "types": "./packages/remnic-core/dist/conversation-index/search.d.ts",
+      "remnic-source": "./packages/remnic-core/src/conversation-index/search.ts",
+      "import": "./packages/remnic-core/dist/conversation-index/search.js"
     },
     "./consolidation-provenance-check": {
-      "import": "./dist/consolidation-provenance-check.js"
+      "types": "./packages/remnic-core/dist/consolidation-provenance-check.d.ts",
+      "remnic-source": "./packages/remnic-core/src/consolidation-provenance-check.ts",
+      "import": "./packages/remnic-core/dist/consolidation-provenance-check.js"
     },
     "./consolidation-provenance-check.js": {
-      "import": "./dist/consolidation-provenance-check.js"
+      "types": "./packages/remnic-core/dist/consolidation-provenance-check.d.ts",
+      "remnic-source": "./packages/remnic-core/src/consolidation-provenance-check.ts",
+      "import": "./packages/remnic-core/dist/consolidation-provenance-check.js"
     },
     "./consolidation-operator": {
-      "import": "./dist/consolidation-operator.js"
+      "types": "./packages/remnic-core/dist/consolidation-operator.d.ts",
+      "remnic-source": "./packages/remnic-core/src/consolidation-operator.ts",
+      "import": "./packages/remnic-core/dist/consolidation-operator.js"
     },
     "./consolidation-operator.js": {
-      "import": "./dist/consolidation-operator.js"
+      "types": "./packages/remnic-core/dist/consolidation-operator.d.ts",
+      "remnic-source": "./packages/remnic-core/src/consolidation-operator.ts",
+      "import": "./packages/remnic-core/dist/consolidation-operator.js"
     },
     "./consolidation-undo": {
-      "import": "./dist/consolidation-undo.js"
+      "types": "./packages/remnic-core/dist/consolidation-undo.d.ts",
+      "remnic-source": "./packages/remnic-core/src/consolidation-undo.ts",
+      "import": "./packages/remnic-core/dist/consolidation-undo.js"
     },
     "./consolidation-undo.js": {
-      "import": "./dist/consolidation-undo.js"
+      "types": "./packages/remnic-core/dist/consolidation-undo.d.ts",
+      "remnic-source": "./packages/remnic-core/src/consolidation-undo.ts",
+      "import": "./packages/remnic-core/dist/consolidation-undo.js"
     },
     "./delinearize": {
-      "import": "./dist/delinearize.js"
+      "types": "./packages/remnic-core/dist/delinearize.d.ts",
+      "remnic-source": "./packages/remnic-core/src/delinearize.ts",
+      "import": "./packages/remnic-core/dist/delinearize.js"
     },
     "./delinearize.js": {
-      "import": "./dist/delinearize.js"
+      "types": "./packages/remnic-core/dist/delinearize.d.ts",
+      "remnic-source": "./packages/remnic-core/src/delinearize.ts",
+      "import": "./packages/remnic-core/dist/delinearize.js"
     },
     "./embedding-fallback": {
-      "import": "./dist/embedding-fallback.js"
+      "types": "./packages/remnic-core/dist/embedding-fallback.d.ts",
+      "remnic-source": "./packages/remnic-core/src/embedding-fallback.ts",
+      "import": "./packages/remnic-core/dist/embedding-fallback.js"
     },
     "./embedding-fallback.js": {
-      "import": "./dist/embedding-fallback.js"
+      "types": "./packages/remnic-core/dist/embedding-fallback.d.ts",
+      "remnic-source": "./packages/remnic-core/src/embedding-fallback.ts",
+      "import": "./packages/remnic-core/dist/embedding-fallback.js"
     },
     "./enrichment": {
-      "import": "./dist/enrichment.js"
+      "types": "./packages/remnic-core/dist/enrichment/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/enrichment/index.ts",
+      "import": "./packages/remnic-core/dist/enrichment/index.js"
     },
     "./enrichment.js": {
-      "import": "./dist/enrichment.js"
+      "types": "./packages/remnic-core/dist/enrichment/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/enrichment/index.ts",
+      "import": "./packages/remnic-core/dist/enrichment/index.js"
     },
     "./entity-retrieval": {
-      "import": "./dist/entity-retrieval.js"
+      "types": "./packages/remnic-core/dist/entity-retrieval.d.ts",
+      "remnic-source": "./packages/remnic-core/src/entity-retrieval.ts",
+      "import": "./packages/remnic-core/dist/entity-retrieval.js"
     },
     "./entity-retrieval.js": {
-      "import": "./dist/entity-retrieval.js"
+      "types": "./packages/remnic-core/dist/entity-retrieval.d.ts",
+      "remnic-source": "./packages/remnic-core/src/entity-retrieval.ts",
+      "import": "./packages/remnic-core/dist/entity-retrieval.js"
     },
     "./evals": {
-      "import": "./dist/evals.js"
+      "types": "./packages/remnic-core/dist/evals.d.ts",
+      "remnic-source": "./packages/remnic-core/src/evals.ts",
+      "import": "./packages/remnic-core/dist/evals.js"
     },
     "./evals.js": {
-      "import": "./dist/evals.js"
+      "types": "./packages/remnic-core/dist/evals.d.ts",
+      "remnic-source": "./packages/remnic-core/src/evals.ts",
+      "import": "./packages/remnic-core/dist/evals.js"
     },
     "./extraction": {
-      "import": "./dist/extraction.js"
+      "types": "./packages/remnic-core/dist/extraction.d.ts",
+      "remnic-source": "./packages/remnic-core/src/extraction.ts",
+      "import": "./packages/remnic-core/dist/extraction.js"
     },
     "./extraction.js": {
-      "import": "./dist/extraction.js"
+      "types": "./packages/remnic-core/dist/extraction.d.ts",
+      "remnic-source": "./packages/remnic-core/src/extraction.ts",
+      "import": "./packages/remnic-core/dist/extraction.js"
     },
     "./explicit-capture": {
       "import": "./dist/explicit-capture.js"
@@ -268,694 +412,1154 @@
       "import": "./dist/explicit-capture.js"
     },
     "./fallback-llm": {
-      "import": "./dist/fallback-llm.js"
+      "types": "./packages/remnic-core/dist/fallback-llm.d.ts",
+      "remnic-source": "./packages/remnic-core/src/fallback-llm.ts",
+      "import": "./packages/remnic-core/dist/fallback-llm.js"
     },
     "./fallback-llm.js": {
-      "import": "./dist/fallback-llm.js"
+      "types": "./packages/remnic-core/dist/fallback-llm.d.ts",
+      "remnic-source": "./packages/remnic-core/src/fallback-llm.ts",
+      "import": "./packages/remnic-core/dist/fallback-llm.js"
     },
     "./graph": {
-      "import": "./dist/graph.js"
+      "types": "./packages/remnic-core/dist/graph.d.ts",
+      "remnic-source": "./packages/remnic-core/src/graph.ts",
+      "import": "./packages/remnic-core/dist/graph.js"
     },
     "./graph.js": {
-      "import": "./dist/graph.js"
+      "types": "./packages/remnic-core/dist/graph.d.ts",
+      "remnic-source": "./packages/remnic-core/src/graph.ts",
+      "import": "./packages/remnic-core/dist/graph.js"
     },
     "./graph-dashboard-diff": {
-      "import": "./dist/graph-dashboard-diff.js"
+      "types": "./packages/remnic-core/dist/graph-dashboard-diff.d.ts",
+      "remnic-source": "./packages/remnic-core/src/graph-dashboard-diff.ts",
+      "import": "./packages/remnic-core/dist/graph-dashboard-diff.js"
     },
     "./graph-dashboard-diff.js": {
-      "import": "./dist/graph-dashboard-diff.js"
+      "types": "./packages/remnic-core/dist/graph-dashboard-diff.d.ts",
+      "remnic-source": "./packages/remnic-core/src/graph-dashboard-diff.ts",
+      "import": "./packages/remnic-core/dist/graph-dashboard-diff.js"
     },
     "./graph-dashboard-key": {
-      "import": "./dist/graph-dashboard-key.js"
+      "types": "./packages/remnic-core/dist/graph-dashboard-key.d.ts",
+      "remnic-source": "./packages/remnic-core/src/graph-dashboard-key.ts",
+      "import": "./packages/remnic-core/dist/graph-dashboard-key.js"
     },
     "./graph-dashboard-key.js": {
-      "import": "./dist/graph-dashboard-key.js"
+      "types": "./packages/remnic-core/dist/graph-dashboard-key.d.ts",
+      "remnic-source": "./packages/remnic-core/src/graph-dashboard-key.ts",
+      "import": "./packages/remnic-core/dist/graph-dashboard-key.js"
     },
     "./graph-dashboard-parser": {
-      "import": "./dist/graph-dashboard-parser.js"
+      "types": "./packages/remnic-core/dist/graph-dashboard-parser.d.ts",
+      "remnic-source": "./packages/remnic-core/src/graph-dashboard-parser.ts",
+      "import": "./packages/remnic-core/dist/graph-dashboard-parser.js"
     },
     "./graph-dashboard-parser.js": {
-      "import": "./dist/graph-dashboard-parser.js"
+      "types": "./packages/remnic-core/dist/graph-dashboard-parser.d.ts",
+      "remnic-source": "./packages/remnic-core/src/graph-dashboard-parser.ts",
+      "import": "./packages/remnic-core/dist/graph-dashboard-parser.js"
     },
     "./graph-edge-reinforcement": {
-      "import": "./dist/graph-edge-reinforcement.js"
+      "types": "./packages/remnic-core/dist/graph-edge-reinforcement.d.ts",
+      "remnic-source": "./packages/remnic-core/src/graph-edge-reinforcement.ts",
+      "import": "./packages/remnic-core/dist/graph-edge-reinforcement.js"
     },
     "./graph-edge-reinforcement.js": {
-      "import": "./dist/graph-edge-reinforcement.js"
+      "types": "./packages/remnic-core/dist/graph-edge-reinforcement.d.ts",
+      "remnic-source": "./packages/remnic-core/src/graph-edge-reinforcement.ts",
+      "import": "./packages/remnic-core/dist/graph-edge-reinforcement.js"
     },
     "./graph-events": {
-      "import": "./dist/graph-events.js"
+      "types": "./packages/remnic-core/dist/graph-events.d.ts",
+      "remnic-source": "./packages/remnic-core/src/graph-events.ts",
+      "import": "./packages/remnic-core/dist/graph-events.js"
     },
     "./graph-events.js": {
-      "import": "./dist/graph-events.js"
+      "types": "./packages/remnic-core/dist/graph-events.d.ts",
+      "remnic-source": "./packages/remnic-core/src/graph-events.ts",
+      "import": "./packages/remnic-core/dist/graph-events.js"
     },
     "./graph-snapshot": {
-      "import": "./dist/graph-snapshot.js"
+      "types": "./packages/remnic-core/dist/graph-snapshot.d.ts",
+      "remnic-source": "./packages/remnic-core/src/graph-snapshot.ts",
+      "import": "./packages/remnic-core/dist/graph-snapshot.js"
     },
     "./graph-snapshot.js": {
-      "import": "./dist/graph-snapshot.js"
+      "types": "./packages/remnic-core/dist/graph-snapshot.d.ts",
+      "remnic-source": "./packages/remnic-core/src/graph-snapshot.ts",
+      "import": "./packages/remnic-core/dist/graph-snapshot.js"
     },
     "./harmonic-retrieval": {
-      "import": "./dist/harmonic-retrieval.js"
+      "types": "./packages/remnic-core/dist/harmonic-retrieval.d.ts",
+      "remnic-source": "./packages/remnic-core/src/harmonic-retrieval.ts",
+      "import": "./packages/remnic-core/dist/harmonic-retrieval.js"
     },
     "./harmonic-retrieval.js": {
-      "import": "./dist/harmonic-retrieval.js"
+      "types": "./packages/remnic-core/dist/harmonic-retrieval.d.ts",
+      "remnic-source": "./packages/remnic-core/src/harmonic-retrieval.ts",
+      "import": "./packages/remnic-core/dist/harmonic-retrieval.js"
     },
     "./himem": {
-      "import": "./dist/himem.js"
+      "types": "./packages/remnic-core/dist/himem.d.ts",
+      "remnic-source": "./packages/remnic-core/src/himem.ts",
+      "import": "./packages/remnic-core/dist/himem.js"
     },
     "./himem.js": {
-      "import": "./dist/himem.js"
+      "types": "./packages/remnic-core/dist/himem.d.ts",
+      "remnic-source": "./packages/remnic-core/src/himem.ts",
+      "import": "./packages/remnic-core/dist/himem.js"
     },
     "./hygiene": {
-      "import": "./dist/hygiene.js"
+      "types": "./packages/remnic-core/dist/hygiene.d.ts",
+      "remnic-source": "./packages/remnic-core/src/hygiene.ts",
+      "import": "./packages/remnic-core/dist/hygiene.js"
     },
     "./hygiene.js": {
-      "import": "./dist/hygiene.js"
+      "types": "./packages/remnic-core/dist/hygiene.d.ts",
+      "remnic-source": "./packages/remnic-core/src/hygiene.ts",
+      "import": "./packages/remnic-core/dist/hygiene.js"
     },
     "./identity-continuity": {
-      "import": "./dist/identity-continuity.js"
+      "types": "./packages/remnic-core/dist/identity-continuity.d.ts",
+      "remnic-source": "./packages/remnic-core/src/identity-continuity.ts",
+      "import": "./packages/remnic-core/dist/identity-continuity.js"
     },
     "./identity-continuity.js": {
-      "import": "./dist/identity-continuity.js"
+      "types": "./packages/remnic-core/dist/identity-continuity.d.ts",
+      "remnic-source": "./packages/remnic-core/src/identity-continuity.ts",
+      "import": "./packages/remnic-core/dist/identity-continuity.js"
     },
     "./importance": {
-      "import": "./dist/importance.js"
+      "types": "./packages/remnic-core/dist/importance.d.ts",
+      "remnic-source": "./packages/remnic-core/src/importance.ts",
+      "import": "./packages/remnic-core/dist/importance.js"
     },
     "./importance.js": {
-      "import": "./dist/importance.js"
+      "types": "./packages/remnic-core/dist/importance.d.ts",
+      "remnic-source": "./packages/remnic-core/src/importance.ts",
+      "import": "./packages/remnic-core/dist/importance.js"
     },
     "./json-store": {
-      "import": "./dist/json-store.js"
+      "types": "./packages/remnic-core/dist/json-store.d.ts",
+      "remnic-source": "./packages/remnic-core/src/json-store.ts",
+      "import": "./packages/remnic-core/dist/json-store.js"
     },
     "./json-store.js": {
-      "import": "./dist/json-store.js"
+      "types": "./packages/remnic-core/dist/json-store.d.ts",
+      "remnic-source": "./packages/remnic-core/src/json-store.ts",
+      "import": "./packages/remnic-core/dist/json-store.js"
     },
     "./lcm": {
-      "import": "./dist/lcm/index.js"
+      "types": "./packages/remnic-core/dist/lcm/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/index.ts",
+      "import": "./packages/remnic-core/dist/lcm/index.js"
     },
     "./lcm.js": {
-      "import": "./dist/lcm/index.js"
+      "types": "./packages/remnic-core/dist/lcm/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/index.ts",
+      "import": "./packages/remnic-core/dist/lcm/index.js"
     },
     "./lcm/index": {
-      "import": "./dist/lcm/index.js"
+      "types": "./packages/remnic-core/dist/lcm/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/index.ts",
+      "import": "./packages/remnic-core/dist/lcm/index.js"
     },
     "./lcm/index.js": {
-      "import": "./dist/lcm/index.js"
+      "types": "./packages/remnic-core/dist/lcm/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/index.ts",
+      "import": "./packages/remnic-core/dist/lcm/index.js"
     },
     "./lcm/archive": {
-      "import": "./dist/lcm/archive.js"
+      "types": "./packages/remnic-core/dist/lcm/archive.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/archive.ts",
+      "import": "./packages/remnic-core/dist/lcm/archive.js"
     },
     "./lcm/archive.js": {
-      "import": "./dist/lcm/archive.js"
+      "types": "./packages/remnic-core/dist/lcm/archive.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/archive.ts",
+      "import": "./packages/remnic-core/dist/lcm/archive.js"
     },
     "./lcm/dag": {
-      "import": "./dist/lcm/dag.js"
+      "types": "./packages/remnic-core/dist/lcm/dag.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/dag.ts",
+      "import": "./packages/remnic-core/dist/lcm/dag.js"
     },
     "./lcm/dag.js": {
-      "import": "./dist/lcm/dag.js"
+      "types": "./packages/remnic-core/dist/lcm/dag.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/dag.ts",
+      "import": "./packages/remnic-core/dist/lcm/dag.js"
     },
     "./lcm/engine": {
-      "import": "./dist/lcm/engine.js"
+      "types": "./packages/remnic-core/dist/lcm/engine.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/engine.ts",
+      "import": "./packages/remnic-core/dist/lcm/engine.js"
     },
     "./lcm/engine.js": {
-      "import": "./dist/lcm/engine.js"
+      "types": "./packages/remnic-core/dist/lcm/engine.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/engine.ts",
+      "import": "./packages/remnic-core/dist/lcm/engine.js"
     },
     "./lcm/queue": {
-      "import": "./dist/lcm/queue.js"
+      "types": "./packages/remnic-core/dist/lcm/queue.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/queue.ts",
+      "import": "./packages/remnic-core/dist/lcm/queue.js"
     },
     "./lcm/queue.js": {
-      "import": "./dist/lcm/queue.js"
+      "types": "./packages/remnic-core/dist/lcm/queue.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/queue.ts",
+      "import": "./packages/remnic-core/dist/lcm/queue.js"
     },
     "./lcm/recall": {
-      "import": "./dist/lcm/recall.js"
+      "types": "./packages/remnic-core/dist/lcm/recall.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/recall.ts",
+      "import": "./packages/remnic-core/dist/lcm/recall.js"
     },
     "./lcm/recall.js": {
-      "import": "./dist/lcm/recall.js"
+      "types": "./packages/remnic-core/dist/lcm/recall.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/recall.ts",
+      "import": "./packages/remnic-core/dist/lcm/recall.js"
     },
     "./lcm/schema": {
-      "import": "./dist/lcm/schema.js"
+      "types": "./packages/remnic-core/dist/lcm/schema.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/schema.ts",
+      "import": "./packages/remnic-core/dist/lcm/schema.js"
     },
     "./lcm/schema.js": {
-      "import": "./dist/lcm/schema.js"
+      "types": "./packages/remnic-core/dist/lcm/schema.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/schema.ts",
+      "import": "./packages/remnic-core/dist/lcm/schema.js"
     },
     "./lcm/summarizer": {
-      "import": "./dist/lcm/summarizer.js"
+      "types": "./packages/remnic-core/dist/lcm/summarizer.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/summarizer.ts",
+      "import": "./packages/remnic-core/dist/lcm/summarizer.js"
     },
     "./lcm/summarizer.js": {
-      "import": "./dist/lcm/summarizer.js"
+      "types": "./packages/remnic-core/dist/lcm/summarizer.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/summarizer.ts",
+      "import": "./packages/remnic-core/dist/lcm/summarizer.js"
     },
     "./lcm/tools": {
-      "import": "./dist/lcm/tools.js"
+      "types": "./packages/remnic-core/dist/lcm/tools.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/tools.ts",
+      "import": "./packages/remnic-core/dist/lcm/tools.js"
     },
     "./lcm/tools.js": {
-      "import": "./dist/lcm/tools.js"
+      "types": "./packages/remnic-core/dist/lcm/tools.d.ts",
+      "remnic-source": "./packages/remnic-core/src/lcm/tools.ts",
+      "import": "./packages/remnic-core/dist/lcm/tools.js"
     },
     "./memory-projection-store": {
-      "import": "./dist/memory-projection-store.js"
+      "types": "./packages/remnic-core/dist/memory-projection-store.d.ts",
+      "remnic-source": "./packages/remnic-core/src/memory-projection-store.ts",
+      "import": "./packages/remnic-core/dist/memory-projection-store.js"
     },
     "./memory-projection-store.js": {
-      "import": "./dist/memory-projection-store.js"
+      "types": "./packages/remnic-core/dist/memory-projection-store.d.ts",
+      "remnic-source": "./packages/remnic-core/src/memory-projection-store.ts",
+      "import": "./packages/remnic-core/dist/memory-projection-store.js"
     },
     "./migrate/from-engram": {
-      "import": "./dist/migrate/from-engram.js"
+      "types": "./packages/remnic-core/dist/migrate/from-engram.d.ts",
+      "remnic-source": "./packages/remnic-core/src/migrate/from-engram.ts",
+      "import": "./packages/remnic-core/dist/migrate/from-engram.js"
     },
     "./migrate/from-engram.js": {
-      "import": "./dist/migrate/from-engram.js"
+      "types": "./packages/remnic-core/dist/migrate/from-engram.d.ts",
+      "remnic-source": "./packages/remnic-core/src/migrate/from-engram.ts",
+      "import": "./packages/remnic-core/dist/migrate/from-engram.js"
     },
     "./namespaces/migrate": {
-      "import": "./dist/namespaces/migrate.js"
+      "types": "./packages/remnic-core/dist/namespaces/migrate.d.ts",
+      "remnic-source": "./packages/remnic-core/src/namespaces/migrate.ts",
+      "import": "./packages/remnic-core/dist/namespaces/migrate.js"
     },
     "./namespaces/migrate.js": {
-      "import": "./dist/namespaces/migrate.js"
+      "types": "./packages/remnic-core/dist/namespaces/migrate.d.ts",
+      "remnic-source": "./packages/remnic-core/src/namespaces/migrate.ts",
+      "import": "./packages/remnic-core/dist/namespaces/migrate.js"
     },
     "./namespaces/principal": {
-      "import": "./dist/namespaces/principal.js"
+      "types": "./packages/remnic-core/dist/namespaces/principal.d.ts",
+      "remnic-source": "./packages/remnic-core/src/namespaces/principal.ts",
+      "import": "./packages/remnic-core/dist/namespaces/principal.js"
     },
     "./namespaces/principal.js": {
-      "import": "./dist/namespaces/principal.js"
+      "types": "./packages/remnic-core/dist/namespaces/principal.d.ts",
+      "remnic-source": "./packages/remnic-core/src/namespaces/principal.ts",
+      "import": "./packages/remnic-core/dist/namespaces/principal.js"
     },
     "./namespaces/search": {
-      "import": "./dist/namespaces/search.js"
+      "types": "./packages/remnic-core/dist/namespaces/search.d.ts",
+      "remnic-source": "./packages/remnic-core/src/namespaces/search.ts",
+      "import": "./packages/remnic-core/dist/namespaces/search.js"
     },
     "./namespaces/search.js": {
-      "import": "./dist/namespaces/search.js"
+      "types": "./packages/remnic-core/dist/namespaces/search.d.ts",
+      "remnic-source": "./packages/remnic-core/src/namespaces/search.ts",
+      "import": "./packages/remnic-core/dist/namespaces/search.js"
     },
     "./namespaces/storage": {
-      "import": "./dist/namespaces/storage.js"
+      "types": "./packages/remnic-core/dist/namespaces/storage.d.ts",
+      "remnic-source": "./packages/remnic-core/src/namespaces/storage.ts",
+      "import": "./packages/remnic-core/dist/namespaces/storage.js"
     },
     "./namespaces/storage.js": {
-      "import": "./dist/namespaces/storage.js"
+      "types": "./packages/remnic-core/dist/namespaces/storage.d.ts",
+      "remnic-source": "./packages/remnic-core/src/namespaces/storage.ts",
+      "import": "./packages/remnic-core/dist/namespaces/storage.js"
     },
     "./openai-chat-compat": {
-      "import": "./dist/openai-chat-compat.js"
+      "types": "./packages/remnic-core/dist/openai-chat-compat.d.ts",
+      "remnic-source": "./packages/remnic-core/src/openai-chat-compat.ts",
+      "import": "./packages/remnic-core/dist/openai-chat-compat.js"
     },
     "./openai-chat-compat.js": {
-      "import": "./dist/openai-chat-compat.js"
+      "types": "./packages/remnic-core/dist/openai-chat-compat.d.ts",
+      "remnic-source": "./packages/remnic-core/src/openai-chat-compat.ts",
+      "import": "./packages/remnic-core/dist/openai-chat-compat.js"
     },
     "./operator-toolkit": {
-      "import": "./dist/operator-toolkit.js"
+      "types": "./packages/remnic-core/dist/operator-toolkit.d.ts",
+      "remnic-source": "./packages/remnic-core/src/operator-toolkit.ts",
+      "import": "./packages/remnic-core/dist/operator-toolkit.js"
     },
     "./operator-toolkit.js": {
-      "import": "./dist/operator-toolkit.js"
+      "types": "./packages/remnic-core/dist/operator-toolkit.d.ts",
+      "remnic-source": "./packages/remnic-core/src/operator-toolkit.ts",
+      "import": "./packages/remnic-core/dist/operator-toolkit.js"
     },
     "./opik-exporter": {
-      "import": "./dist/opik-exporter.js"
+      "types": "./packages/remnic-core/dist/opik-exporter.d.ts",
+      "remnic-source": "./packages/remnic-core/src/opik-exporter.ts",
+      "import": "./packages/remnic-core/dist/opik-exporter.js"
     },
     "./opik-exporter.js": {
-      "import": "./dist/opik-exporter.js"
+      "types": "./packages/remnic-core/dist/opik-exporter.d.ts",
+      "remnic-source": "./packages/remnic-core/src/opik-exporter.ts",
+      "import": "./packages/remnic-core/dist/opik-exporter.js"
     },
     "./profiling": {
-      "import": "./dist/profiling.js"
+      "types": "./packages/remnic-core/dist/profiling.d.ts",
+      "remnic-source": "./packages/remnic-core/src/profiling.ts",
+      "import": "./packages/remnic-core/dist/profiling.js"
     },
     "./profiling.js": {
-      "import": "./dist/profiling.js"
+      "types": "./packages/remnic-core/dist/profiling.d.ts",
+      "remnic-source": "./packages/remnic-core/src/profiling.ts",
+      "import": "./packages/remnic-core/dist/profiling.js"
     },
     "./qmd": {
-      "import": "./dist/qmd.js"
+      "types": "./packages/remnic-core/dist/qmd.d.ts",
+      "remnic-source": "./packages/remnic-core/src/qmd.ts",
+      "import": "./packages/remnic-core/dist/qmd.js"
     },
     "./qmd.js": {
-      "import": "./dist/qmd.js"
+      "types": "./packages/remnic-core/dist/qmd.d.ts",
+      "remnic-source": "./packages/remnic-core/src/qmd.ts",
+      "import": "./packages/remnic-core/dist/qmd.js"
     },
     "./qmd-recall-cache": {
-      "import": "./dist/qmd-recall-cache.js"
+      "types": "./packages/remnic-core/dist/qmd-recall-cache.d.ts",
+      "remnic-source": "./packages/remnic-core/src/qmd-recall-cache.ts",
+      "import": "./packages/remnic-core/dist/qmd-recall-cache.js"
     },
     "./qmd-recall-cache.js": {
-      "import": "./dist/qmd-recall-cache.js"
+      "types": "./packages/remnic-core/dist/qmd-recall-cache.d.ts",
+      "remnic-source": "./packages/remnic-core/src/qmd-recall-cache.ts",
+      "import": "./packages/remnic-core/dist/qmd-recall-cache.js"
     },
     "./reconstruct": {
-      "import": "./dist/reconstruct.js"
+      "types": "./packages/remnic-core/dist/reconstruct.d.ts",
+      "remnic-source": "./packages/remnic-core/src/reconstruct.ts",
+      "import": "./packages/remnic-core/dist/reconstruct.js"
     },
     "./reconstruct.js": {
-      "import": "./dist/reconstruct.js"
+      "types": "./packages/remnic-core/dist/reconstruct.d.ts",
+      "remnic-source": "./packages/remnic-core/src/reconstruct.ts",
+      "import": "./packages/remnic-core/dist/reconstruct.js"
     },
     "./relevance": {
-      "import": "./dist/relevance.js"
+      "types": "./packages/remnic-core/dist/relevance.d.ts",
+      "remnic-source": "./packages/remnic-core/src/relevance.ts",
+      "import": "./packages/remnic-core/dist/relevance.js"
     },
     "./relevance.js": {
-      "import": "./dist/relevance.js"
+      "types": "./packages/remnic-core/dist/relevance.d.ts",
+      "remnic-source": "./packages/remnic-core/src/relevance.ts",
+      "import": "./packages/remnic-core/dist/relevance.js"
     },
     "./rerank": {
-      "import": "./dist/rerank.js"
+      "types": "./packages/remnic-core/dist/rerank.d.ts",
+      "remnic-source": "./packages/remnic-core/src/rerank.ts",
+      "import": "./packages/remnic-core/dist/rerank.js"
     },
     "./rerank.js": {
-      "import": "./dist/rerank.js"
+      "types": "./packages/remnic-core/dist/rerank.d.ts",
+      "remnic-source": "./packages/remnic-core/src/rerank.ts",
+      "import": "./packages/remnic-core/dist/rerank.js"
     },
     "./retrieval": {
-      "import": "./dist/retrieval.js"
+      "types": "./packages/remnic-core/dist/retrieval.d.ts",
+      "remnic-source": "./packages/remnic-core/src/retrieval.ts",
+      "import": "./packages/remnic-core/dist/retrieval.js"
     },
     "./retrieval.js": {
-      "import": "./dist/retrieval.js"
+      "types": "./packages/remnic-core/dist/retrieval.d.ts",
+      "remnic-source": "./packages/remnic-core/src/retrieval.ts",
+      "import": "./packages/remnic-core/dist/retrieval.js"
     },
     "./retrieval-agents": {
-      "import": "./dist/retrieval-agents.js"
+      "types": "./packages/remnic-core/dist/retrieval-agents.d.ts",
+      "remnic-source": "./packages/remnic-core/src/retrieval-agents.ts",
+      "import": "./packages/remnic-core/dist/retrieval-agents.js"
     },
     "./retrieval-agents.js": {
-      "import": "./dist/retrieval-agents.js"
+      "types": "./packages/remnic-core/dist/retrieval-agents.d.ts",
+      "remnic-source": "./packages/remnic-core/src/retrieval-agents.ts",
+      "import": "./packages/remnic-core/dist/retrieval-agents.js"
     },
     "./replay/normalizers/chatgpt": {
-      "import": "./dist/replay/normalizers/chatgpt.js"
+      "types": "./packages/remnic-core/dist/replay/normalizers/chatgpt.d.ts",
+      "remnic-source": "./packages/remnic-core/src/replay/normalizers/chatgpt.ts",
+      "import": "./packages/remnic-core/dist/replay/normalizers/chatgpt.js"
     },
     "./replay/normalizers/chatgpt.js": {
-      "import": "./dist/replay/normalizers/chatgpt.js"
+      "types": "./packages/remnic-core/dist/replay/normalizers/chatgpt.d.ts",
+      "remnic-source": "./packages/remnic-core/src/replay/normalizers/chatgpt.ts",
+      "import": "./packages/remnic-core/dist/replay/normalizers/chatgpt.js"
     },
     "./replay/normalizers/claude": {
-      "import": "./dist/replay/normalizers/claude.js"
+      "types": "./packages/remnic-core/dist/replay/normalizers/claude.d.ts",
+      "remnic-source": "./packages/remnic-core/src/replay/normalizers/claude.ts",
+      "import": "./packages/remnic-core/dist/replay/normalizers/claude.js"
     },
     "./replay/normalizers/claude.js": {
-      "import": "./dist/replay/normalizers/claude.js"
+      "types": "./packages/remnic-core/dist/replay/normalizers/claude.d.ts",
+      "remnic-source": "./packages/remnic-core/src/replay/normalizers/claude.ts",
+      "import": "./packages/remnic-core/dist/replay/normalizers/claude.js"
     },
     "./replay/normalizers/openclaw": {
-      "import": "./dist/replay/normalizers/openclaw.js"
+      "types": "./packages/remnic-core/dist/replay/normalizers/openclaw.d.ts",
+      "remnic-source": "./packages/remnic-core/src/replay/normalizers/openclaw.ts",
+      "import": "./packages/remnic-core/dist/replay/normalizers/openclaw.js"
     },
     "./replay/normalizers/openclaw.js": {
-      "import": "./dist/replay/normalizers/openclaw.js"
+      "types": "./packages/remnic-core/dist/replay/normalizers/openclaw.d.ts",
+      "remnic-source": "./packages/remnic-core/src/replay/normalizers/openclaw.ts",
+      "import": "./packages/remnic-core/dist/replay/normalizers/openclaw.js"
     },
     "./replay/normalizers/shared": {
-      "import": "./dist/replay/normalizers/shared.js"
+      "types": "./packages/remnic-core/dist/replay/normalizers/shared.d.ts",
+      "remnic-source": "./packages/remnic-core/src/replay/normalizers/shared.ts",
+      "import": "./packages/remnic-core/dist/replay/normalizers/shared.js"
     },
     "./replay/normalizers/shared.js": {
-      "import": "./dist/replay/normalizers/shared.js"
+      "types": "./packages/remnic-core/dist/replay/normalizers/shared.d.ts",
+      "remnic-source": "./packages/remnic-core/src/replay/normalizers/shared.ts",
+      "import": "./packages/remnic-core/dist/replay/normalizers/shared.js"
     },
     "./replay/runner": {
-      "import": "./dist/replay/runner.js"
+      "types": "./packages/remnic-core/dist/replay/runner.d.ts",
+      "remnic-source": "./packages/remnic-core/src/replay/runner.ts",
+      "import": "./packages/remnic-core/dist/replay/runner.js"
     },
     "./replay/runner.js": {
-      "import": "./dist/replay/runner.js"
+      "types": "./packages/remnic-core/dist/replay/runner.d.ts",
+      "remnic-source": "./packages/remnic-core/src/replay/runner.ts",
+      "import": "./packages/remnic-core/dist/replay/runner.js"
     },
     "./replay/types": {
-      "import": "./dist/replay/types.js"
+      "types": "./packages/remnic-core/dist/replay/types.d.ts",
+      "remnic-source": "./packages/remnic-core/src/replay/types.ts",
+      "import": "./packages/remnic-core/dist/replay/types.js"
     },
     "./replay/types.js": {
-      "import": "./dist/replay/types.js"
+      "types": "./packages/remnic-core/dist/replay/types.d.ts",
+      "remnic-source": "./packages/remnic-core/src/replay/types.ts",
+      "import": "./packages/remnic-core/dist/replay/types.js"
     },
     "./resume-bundles": {
-      "import": "./dist/resume-bundles.js"
+      "types": "./packages/remnic-core/dist/resume-bundles.d.ts",
+      "remnic-source": "./packages/remnic-core/src/resume-bundles.ts",
+      "import": "./packages/remnic-core/dist/resume-bundles.js"
     },
     "./resume-bundles.js": {
-      "import": "./dist/resume-bundles.js"
+      "types": "./packages/remnic-core/dist/resume-bundles.d.ts",
+      "remnic-source": "./packages/remnic-core/src/resume-bundles.ts",
+      "import": "./packages/remnic-core/dist/resume-bundles.js"
     },
     "./maintenance/archive-observations": {
-      "import": "./dist/maintenance/archive-observations.js"
+      "types": "./packages/remnic-core/dist/maintenance/archive-observations.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/archive-observations.ts",
+      "import": "./packages/remnic-core/dist/maintenance/archive-observations.js"
     },
     "./maintenance/archive-observations.js": {
-      "import": "./dist/maintenance/archive-observations.js"
+      "types": "./packages/remnic-core/dist/maintenance/archive-observations.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/archive-observations.ts",
+      "import": "./packages/remnic-core/dist/maintenance/archive-observations.js"
     },
     "./maintenance/backup-stamp": {
-      "import": "./dist/maintenance/backup-stamp.js"
+      "types": "./packages/remnic-core/dist/maintenance/backup-stamp.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/backup-stamp.ts",
+      "import": "./packages/remnic-core/dist/maintenance/backup-stamp.js"
     },
     "./maintenance/backup-stamp.js": {
-      "import": "./dist/maintenance/backup-stamp.js"
+      "types": "./packages/remnic-core/dist/maintenance/backup-stamp.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/backup-stamp.ts",
+      "import": "./packages/remnic-core/dist/maintenance/backup-stamp.js"
     },
     "./maintenance/memory-governance": {
-      "import": "./dist/maintenance/memory-governance.js"
+      "types": "./packages/remnic-core/dist/maintenance/memory-governance.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/memory-governance.ts",
+      "import": "./packages/remnic-core/dist/maintenance/memory-governance.js"
     },
     "./maintenance/memory-governance.js": {
-      "import": "./dist/maintenance/memory-governance.js"
+      "types": "./packages/remnic-core/dist/maintenance/memory-governance.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/memory-governance.ts",
+      "import": "./packages/remnic-core/dist/maintenance/memory-governance.js"
     },
     "./maintenance/memory-governance-cron": {
-      "import": "./dist/maintenance/memory-governance-cron.js"
+      "types": "./packages/remnic-core/dist/maintenance/memory-governance-cron.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/memory-governance-cron.ts",
+      "import": "./packages/remnic-core/dist/maintenance/memory-governance-cron.js"
     },
     "./maintenance/memory-governance-cron.js": {
-      "import": "./dist/maintenance/memory-governance-cron.js"
+      "types": "./packages/remnic-core/dist/maintenance/memory-governance-cron.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/memory-governance-cron.ts",
+      "import": "./packages/remnic-core/dist/maintenance/memory-governance-cron.js"
     },
     "./maintenance/migrate-observations": {
-      "import": "./dist/maintenance/migrate-observations.js"
+      "types": "./packages/remnic-core/dist/maintenance/migrate-observations.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/migrate-observations.ts",
+      "import": "./packages/remnic-core/dist/maintenance/migrate-observations.js"
     },
     "./maintenance/migrate-observations.js": {
-      "import": "./dist/maintenance/migrate-observations.js"
+      "types": "./packages/remnic-core/dist/maintenance/migrate-observations.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/migrate-observations.ts",
+      "import": "./packages/remnic-core/dist/maintenance/migrate-observations.js"
     },
     "./maintenance/observation-ledger-utils": {
-      "import": "./dist/maintenance/observation-ledger-utils.js"
+      "types": "./packages/remnic-core/dist/maintenance/observation-ledger-utils.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/observation-ledger-utils.ts",
+      "import": "./packages/remnic-core/dist/maintenance/observation-ledger-utils.js"
     },
     "./maintenance/observation-ledger-utils.js": {
-      "import": "./dist/maintenance/observation-ledger-utils.js"
+      "types": "./packages/remnic-core/dist/maintenance/observation-ledger-utils.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/observation-ledger-utils.ts",
+      "import": "./packages/remnic-core/dist/maintenance/observation-ledger-utils.js"
     },
     "./maintenance/rebuild-memory-lifecycle-ledger": {
-      "import": "./dist/maintenance/rebuild-memory-lifecycle-ledger.js"
+      "types": "./packages/remnic-core/dist/maintenance/rebuild-memory-lifecycle-ledger.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/rebuild-memory-lifecycle-ledger.ts",
+      "import": "./packages/remnic-core/dist/maintenance/rebuild-memory-lifecycle-ledger.js"
     },
     "./maintenance/rebuild-memory-lifecycle-ledger.js": {
-      "import": "./dist/maintenance/rebuild-memory-lifecycle-ledger.js"
+      "types": "./packages/remnic-core/dist/maintenance/rebuild-memory-lifecycle-ledger.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/rebuild-memory-lifecycle-ledger.ts",
+      "import": "./packages/remnic-core/dist/maintenance/rebuild-memory-lifecycle-ledger.js"
     },
     "./maintenance/rebuild-memory-projection": {
-      "import": "./dist/maintenance/rebuild-memory-projection.js"
+      "types": "./packages/remnic-core/dist/maintenance/rebuild-memory-projection.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/rebuild-memory-projection.ts",
+      "import": "./packages/remnic-core/dist/maintenance/rebuild-memory-projection.js"
     },
     "./maintenance/rebuild-memory-projection.js": {
-      "import": "./dist/maintenance/rebuild-memory-projection.js"
+      "types": "./packages/remnic-core/dist/maintenance/rebuild-memory-projection.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/rebuild-memory-projection.ts",
+      "import": "./packages/remnic-core/dist/maintenance/rebuild-memory-projection.js"
     },
     "./maintenance/rebuild-observations": {
-      "import": "./dist/maintenance/rebuild-observations.js"
+      "types": "./packages/remnic-core/dist/maintenance/rebuild-observations.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/rebuild-observations.ts",
+      "import": "./packages/remnic-core/dist/maintenance/rebuild-observations.js"
     },
     "./maintenance/rebuild-observations.js": {
-      "import": "./dist/maintenance/rebuild-observations.js"
+      "types": "./packages/remnic-core/dist/maintenance/rebuild-observations.d.ts",
+      "remnic-source": "./packages/remnic-core/src/maintenance/rebuild-observations.ts",
+      "import": "./packages/remnic-core/dist/maintenance/rebuild-observations.js"
     },
     "./routing/engine": {
-      "import": "./dist/routing/engine.js"
+      "types": "./packages/remnic-core/dist/routing/engine.d.ts",
+      "remnic-source": "./packages/remnic-core/src/routing/engine.ts",
+      "import": "./packages/remnic-core/dist/routing/engine.js"
     },
     "./routing/engine.js": {
-      "import": "./dist/routing/engine.js"
+      "types": "./packages/remnic-core/dist/routing/engine.d.ts",
+      "remnic-source": "./packages/remnic-core/src/routing/engine.ts",
+      "import": "./packages/remnic-core/dist/routing/engine.js"
     },
     "./routing/store": {
-      "import": "./dist/routing/store.js"
+      "types": "./packages/remnic-core/dist/routing/store.d.ts",
+      "remnic-source": "./packages/remnic-core/src/routing/store.ts",
+      "import": "./packages/remnic-core/dist/routing/store.js"
     },
     "./routing/store.js": {
-      "import": "./dist/routing/store.js"
+      "types": "./packages/remnic-core/dist/routing/store.d.ts",
+      "remnic-source": "./packages/remnic-core/src/routing/store.ts",
+      "import": "./packages/remnic-core/dist/routing/store.js"
     },
     "./runtime/better-sqlite": {
-      "import": "./dist/runtime/better-sqlite.js"
+      "types": "./packages/remnic-core/dist/runtime/better-sqlite.d.ts",
+      "remnic-source": "./packages/remnic-core/src/runtime/better-sqlite.ts",
+      "import": "./packages/remnic-core/dist/runtime/better-sqlite.js"
     },
     "./runtime/better-sqlite.js": {
-      "import": "./dist/runtime/better-sqlite.js"
+      "types": "./packages/remnic-core/dist/runtime/better-sqlite.d.ts",
+      "remnic-source": "./packages/remnic-core/src/runtime/better-sqlite.ts",
+      "import": "./packages/remnic-core/dist/runtime/better-sqlite.js"
     },
     "./runtime/child-process": {
-      "import": "./dist/runtime/child-process.js"
+      "types": "./packages/remnic-core/dist/runtime/child-process.d.ts",
+      "remnic-source": "./packages/remnic-core/src/runtime/child-process.ts",
+      "import": "./packages/remnic-core/dist/runtime/child-process.js"
     },
     "./runtime/child-process.js": {
-      "import": "./dist/runtime/child-process.js"
+      "types": "./packages/remnic-core/dist/runtime/child-process.d.ts",
+      "remnic-source": "./packages/remnic-core/src/runtime/child-process.ts",
+      "import": "./packages/remnic-core/dist/runtime/child-process.js"
     },
     "./runtime/env": {
-      "import": "./dist/runtime/env.js"
+      "types": "./packages/remnic-core/dist/runtime/env.d.ts",
+      "remnic-source": "./packages/remnic-core/src/runtime/env.ts",
+      "import": "./packages/remnic-core/dist/runtime/env.js"
     },
     "./runtime/env.js": {
-      "import": "./dist/runtime/env.js"
+      "types": "./packages/remnic-core/dist/runtime/env.d.ts",
+      "remnic-source": "./packages/remnic-core/src/runtime/env.ts",
+      "import": "./packages/remnic-core/dist/runtime/env.js"
     },
     "./sanitize": {
-      "import": "./dist/sanitize.js"
+      "types": "./packages/remnic-core/dist/sanitize.d.ts",
+      "remnic-source": "./packages/remnic-core/src/sanitize.ts",
+      "import": "./packages/remnic-core/dist/sanitize.js"
     },
     "./sanitize.js": {
-      "import": "./dist/sanitize.js"
+      "types": "./packages/remnic-core/dist/sanitize.d.ts",
+      "remnic-source": "./packages/remnic-core/src/sanitize.ts",
+      "import": "./packages/remnic-core/dist/sanitize.js"
     },
     "./search": {
-      "import": "./dist/search/index.js"
+      "types": "./packages/remnic-core/dist/search/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/index.ts",
+      "import": "./packages/remnic-core/dist/search/index.js"
     },
     "./search.js": {
-      "import": "./dist/search/index.js"
+      "types": "./packages/remnic-core/dist/search/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/index.ts",
+      "import": "./packages/remnic-core/dist/search/index.js"
     },
     "./search/document-scanner": {
-      "import": "./dist/search/document-scanner.js"
+      "types": "./packages/remnic-core/dist/search/document-scanner.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/document-scanner.ts",
+      "import": "./packages/remnic-core/dist/search/document-scanner.js"
     },
     "./search/document-scanner.js": {
-      "import": "./dist/search/document-scanner.js"
+      "types": "./packages/remnic-core/dist/search/document-scanner.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/document-scanner.ts",
+      "import": "./packages/remnic-core/dist/search/document-scanner.js"
     },
     "./search/embed-helper": {
-      "import": "./dist/search/embed-helper.js"
+      "types": "./packages/remnic-core/dist/search/embed-helper.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/embed-helper.ts",
+      "import": "./packages/remnic-core/dist/search/embed-helper.js"
     },
     "./search/embed-helper.js": {
-      "import": "./dist/search/embed-helper.js"
+      "types": "./packages/remnic-core/dist/search/embed-helper.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/embed-helper.ts",
+      "import": "./packages/remnic-core/dist/search/embed-helper.js"
     },
     "./search/factory": {
-      "import": "./dist/search/factory.js"
+      "types": "./packages/remnic-core/dist/search/factory.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/factory.ts",
+      "import": "./packages/remnic-core/dist/search/factory.js"
     },
     "./search/factory.js": {
-      "import": "./dist/search/factory.js"
+      "types": "./packages/remnic-core/dist/search/factory.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/factory.ts",
+      "import": "./packages/remnic-core/dist/search/factory.js"
     },
     "./search/index": {
-      "import": "./dist/search/index.js"
+      "types": "./packages/remnic-core/dist/search/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/index.ts",
+      "import": "./packages/remnic-core/dist/search/index.js"
     },
     "./search/index.js": {
-      "import": "./dist/search/index.js"
+      "types": "./packages/remnic-core/dist/search/index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/index.ts",
+      "import": "./packages/remnic-core/dist/search/index.js"
     },
     "./search/lancedb-backend": {
-      "import": "./dist/search/lancedb-backend.js"
+      "types": "./packages/remnic-core/dist/search/lancedb-backend.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/lancedb-backend.ts",
+      "import": "./packages/remnic-core/dist/search/lancedb-backend.js"
     },
     "./search/lancedb-backend.js": {
-      "import": "./dist/search/lancedb-backend.js"
+      "types": "./packages/remnic-core/dist/search/lancedb-backend.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/lancedb-backend.ts",
+      "import": "./packages/remnic-core/dist/search/lancedb-backend.js"
     },
     "./search/meilisearch-backend": {
-      "import": "./dist/search/meilisearch-backend.js"
+      "types": "./packages/remnic-core/dist/search/meilisearch-backend.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/meilisearch-backend.ts",
+      "import": "./packages/remnic-core/dist/search/meilisearch-backend.js"
     },
     "./search/meilisearch-backend.js": {
-      "import": "./dist/search/meilisearch-backend.js"
+      "types": "./packages/remnic-core/dist/search/meilisearch-backend.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/meilisearch-backend.ts",
+      "import": "./packages/remnic-core/dist/search/meilisearch-backend.js"
     },
     "./search/noop-backend": {
-      "import": "./dist/search/noop-backend.js"
+      "types": "./packages/remnic-core/dist/search/noop-backend.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/noop-backend.ts",
+      "import": "./packages/remnic-core/dist/search/noop-backend.js"
     },
     "./search/noop-backend.js": {
-      "import": "./dist/search/noop-backend.js"
+      "types": "./packages/remnic-core/dist/search/noop-backend.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/noop-backend.ts",
+      "import": "./packages/remnic-core/dist/search/noop-backend.js"
     },
     "./search/orama-backend": {
-      "import": "./dist/search/orama-backend.js"
+      "types": "./packages/remnic-core/dist/search/orama-backend.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/orama-backend.ts",
+      "import": "./packages/remnic-core/dist/search/orama-backend.js"
     },
     "./search/orama-backend.js": {
-      "import": "./dist/search/orama-backend.js"
+      "types": "./packages/remnic-core/dist/search/orama-backend.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/orama-backend.ts",
+      "import": "./packages/remnic-core/dist/search/orama-backend.js"
     },
     "./search/port": {
-      "import": "./dist/search/port.js"
+      "types": "./packages/remnic-core/dist/search/port.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/port.ts",
+      "import": "./packages/remnic-core/dist/search/port.js"
     },
     "./search/port.js": {
-      "import": "./dist/search/port.js"
+      "types": "./packages/remnic-core/dist/search/port.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/port.ts",
+      "import": "./packages/remnic-core/dist/search/port.js"
     },
     "./search/remote-backend": {
-      "import": "./dist/search/remote-backend.js"
+      "types": "./packages/remnic-core/dist/search/remote-backend.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/remote-backend.ts",
+      "import": "./packages/remnic-core/dist/search/remote-backend.js"
     },
     "./search/remote-backend.js": {
-      "import": "./dist/search/remote-backend.js"
+      "types": "./packages/remnic-core/dist/search/remote-backend.d.ts",
+      "remnic-source": "./packages/remnic-core/src/search/remote-backend.ts",
+      "import": "./packages/remnic-core/dist/search/remote-backend.js"
     },
     "./schemas": {
-      "import": "./dist/schemas.js"
+      "types": "./packages/remnic-core/dist/schemas.d.ts",
+      "remnic-source": "./packages/remnic-core/src/schemas.ts",
+      "import": "./packages/remnic-core/dist/schemas.js"
     },
     "./schemas.js": {
-      "import": "./dist/schemas.js"
+      "types": "./packages/remnic-core/dist/schemas.d.ts",
+      "remnic-source": "./packages/remnic-core/src/schemas.ts",
+      "import": "./packages/remnic-core/dist/schemas.js"
     },
     "./sdk-compat": {
-      "import": "./dist/sdk-compat.js"
+      "types": "./packages/remnic-core/dist/sdk-compat.d.ts",
+      "remnic-source": "./packages/remnic-core/src/sdk-compat.ts",
+      "import": "./packages/remnic-core/dist/sdk-compat.js"
     },
     "./sdk-compat.js": {
-      "import": "./dist/sdk-compat.js"
+      "types": "./packages/remnic-core/dist/sdk-compat.d.ts",
+      "remnic-source": "./packages/remnic-core/src/sdk-compat.ts",
+      "import": "./packages/remnic-core/dist/sdk-compat.js"
     },
     "./signal": {
-      "import": "./dist/signal.js"
+      "types": "./packages/remnic-core/dist/signal.d.ts",
+      "remnic-source": "./packages/remnic-core/src/signal.ts",
+      "import": "./packages/remnic-core/dist/signal.js"
     },
     "./signal.js": {
-      "import": "./dist/signal.js"
+      "types": "./packages/remnic-core/dist/signal.d.ts",
+      "remnic-source": "./packages/remnic-core/src/signal.ts",
+      "import": "./packages/remnic-core/dist/signal.js"
     },
     "./source-attribution": {
-      "import": "./dist/source-attribution.js"
+      "types": "./packages/remnic-core/dist/source-attribution.d.ts",
+      "remnic-source": "./packages/remnic-core/src/source-attribution.ts",
+      "import": "./packages/remnic-core/dist/source-attribution.js"
     },
     "./source-attribution.js": {
-      "import": "./dist/source-attribution.js"
+      "types": "./packages/remnic-core/dist/source-attribution.d.ts",
+      "remnic-source": "./packages/remnic-core/src/source-attribution.ts",
+      "import": "./packages/remnic-core/dist/source-attribution.js"
     },
     "./summarizer": {
-      "import": "./dist/summarizer.js"
+      "types": "./packages/remnic-core/dist/summarizer.d.ts",
+      "remnic-source": "./packages/remnic-core/src/summarizer.ts",
+      "import": "./packages/remnic-core/dist/summarizer.js"
     },
     "./summarizer.js": {
-      "import": "./dist/summarizer.js"
+      "types": "./packages/remnic-core/dist/summarizer.d.ts",
+      "remnic-source": "./packages/remnic-core/src/summarizer.ts",
+      "import": "./packages/remnic-core/dist/summarizer.js"
     },
     "./summary-snapshot": {
-      "import": "./dist/summary-snapshot.js"
+      "types": "./packages/remnic-core/dist/summary-snapshot.d.ts",
+      "remnic-source": "./packages/remnic-core/src/summary-snapshot.ts",
+      "import": "./packages/remnic-core/dist/summary-snapshot.js"
     },
     "./summary-snapshot.js": {
-      "import": "./dist/summary-snapshot.js"
+      "types": "./packages/remnic-core/dist/summary-snapshot.d.ts",
+      "remnic-source": "./packages/remnic-core/src/summary-snapshot.ts",
+      "import": "./packages/remnic-core/dist/summary-snapshot.js"
     },
     "./temporal-index": {
-      "import": "./dist/temporal-index.js"
+      "types": "./packages/remnic-core/dist/temporal-index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/temporal-index.ts",
+      "import": "./packages/remnic-core/dist/temporal-index.js"
     },
     "./temporal-index.js": {
-      "import": "./dist/temporal-index.js"
+      "types": "./packages/remnic-core/dist/temporal-index.d.ts",
+      "remnic-source": "./packages/remnic-core/src/temporal-index.ts",
+      "import": "./packages/remnic-core/dist/temporal-index.js"
     },
     "./temporal-validity": {
-      "import": "./dist/temporal-validity.js"
+      "types": "./packages/remnic-core/dist/temporal-validity.d.ts",
+      "remnic-source": "./packages/remnic-core/src/temporal-validity.ts",
+      "import": "./packages/remnic-core/dist/temporal-validity.js"
     },
     "./temporal-validity.js": {
-      "import": "./dist/temporal-validity.js"
+      "types": "./packages/remnic-core/dist/temporal-validity.d.ts",
+      "remnic-source": "./packages/remnic-core/src/temporal-validity.ts",
+      "import": "./packages/remnic-core/dist/temporal-validity.js"
     },
     "./tier-migration": {
-      "import": "./dist/tier-migration.js"
+      "types": "./packages/remnic-core/dist/tier-migration.d.ts",
+      "remnic-source": "./packages/remnic-core/src/tier-migration.ts",
+      "import": "./packages/remnic-core/dist/tier-migration.js"
     },
     "./tier-migration.js": {
-      "import": "./dist/tier-migration.js"
+      "types": "./packages/remnic-core/dist/tier-migration.d.ts",
+      "remnic-source": "./packages/remnic-core/src/tier-migration.ts",
+      "import": "./packages/remnic-core/dist/tier-migration.js"
     },
     "./tier-routing": {
-      "import": "./dist/tier-routing.js"
+      "types": "./packages/remnic-core/dist/tier-routing.d.ts",
+      "remnic-source": "./packages/remnic-core/src/tier-routing.ts",
+      "import": "./packages/remnic-core/dist/tier-routing.js"
     },
     "./tier-routing.js": {
-      "import": "./dist/tier-routing.js"
+      "types": "./packages/remnic-core/dist/tier-routing.d.ts",
+      "remnic-source": "./packages/remnic-core/src/tier-routing.ts",
+      "import": "./packages/remnic-core/dist/tier-routing.js"
     },
     "./threading": {
-      "import": "./dist/threading.js"
+      "types": "./packages/remnic-core/dist/threading.d.ts",
+      "remnic-source": "./packages/remnic-core/src/threading.ts",
+      "import": "./packages/remnic-core/dist/threading.js"
     },
     "./threading.js": {
-      "import": "./dist/threading.js"
+      "types": "./packages/remnic-core/dist/threading.d.ts",
+      "remnic-source": "./packages/remnic-core/src/threading.ts",
+      "import": "./packages/remnic-core/dist/threading.js"
     },
     "./tmt": {
-      "import": "./dist/tmt.js"
+      "types": "./packages/remnic-core/dist/tmt.d.ts",
+      "remnic-source": "./packages/remnic-core/src/tmt.ts",
+      "import": "./packages/remnic-core/dist/tmt.js"
     },
     "./tmt.js": {
-      "import": "./dist/tmt.js"
+      "types": "./packages/remnic-core/dist/tmt.d.ts",
+      "remnic-source": "./packages/remnic-core/src/tmt.ts",
+      "import": "./packages/remnic-core/dist/tmt.js"
     },
     "./topics": {
-      "import": "./dist/topics.js"
+      "types": "./packages/remnic-core/dist/topics.d.ts",
+      "remnic-source": "./packages/remnic-core/src/topics.ts",
+      "import": "./packages/remnic-core/dist/topics.js"
     },
     "./topics.js": {
-      "import": "./dist/topics.js"
+      "types": "./packages/remnic-core/dist/topics.d.ts",
+      "remnic-source": "./packages/remnic-core/src/topics.ts",
+      "import": "./packages/remnic-core/dist/topics.js"
     },
     "./transcript": {
-      "import": "./dist/transcript.js"
+      "types": "./packages/remnic-core/dist/transcript.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transcript.ts",
+      "import": "./packages/remnic-core/dist/transcript.js"
     },
     "./transcript.js": {
-      "import": "./dist/transcript.js"
+      "types": "./packages/remnic-core/dist/transcript.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transcript.ts",
+      "import": "./packages/remnic-core/dist/transcript.js"
     },
     "./trust-zones": {
-      "import": "./dist/trust-zones.js"
+      "types": "./packages/remnic-core/dist/trust-zones.d.ts",
+      "remnic-source": "./packages/remnic-core/src/trust-zones.ts",
+      "import": "./packages/remnic-core/dist/trust-zones.js"
     },
     "./trust-zones.js": {
-      "import": "./dist/trust-zones.js"
+      "types": "./packages/remnic-core/dist/trust-zones.d.ts",
+      "remnic-source": "./packages/remnic-core/src/trust-zones.ts",
+      "import": "./packages/remnic-core/dist/trust-zones.js"
     },
     "./types": {
-      "import": "./dist/types.js"
+      "types": "./packages/remnic-core/dist/types.d.ts",
+      "remnic-source": "./packages/remnic-core/src/types.ts",
+      "import": "./packages/remnic-core/dist/types.js"
     },
     "./types.js": {
-      "import": "./dist/types.js"
+      "types": "./packages/remnic-core/dist/types.d.ts",
+      "remnic-source": "./packages/remnic-core/src/types.ts",
+      "import": "./packages/remnic-core/dist/types.js"
     },
     "./utility-learner": {
-      "import": "./dist/utility-learner.js"
+      "types": "./packages/remnic-core/dist/utility-learner.d.ts",
+      "remnic-source": "./packages/remnic-core/src/utility-learner.ts",
+      "import": "./packages/remnic-core/dist/utility-learner.js"
     },
     "./utility-learner.js": {
-      "import": "./dist/utility-learner.js"
+      "types": "./packages/remnic-core/dist/utility-learner.d.ts",
+      "remnic-source": "./packages/remnic-core/src/utility-learner.ts",
+      "import": "./packages/remnic-core/dist/utility-learner.js"
     },
     "./utility-telemetry": {
-      "import": "./dist/utility-telemetry.js"
+      "types": "./packages/remnic-core/dist/utility-telemetry.d.ts",
+      "remnic-source": "./packages/remnic-core/src/utility-telemetry.ts",
+      "import": "./packages/remnic-core/dist/utility-telemetry.js"
     },
     "./utility-telemetry.js": {
-      "import": "./dist/utility-telemetry.js"
+      "types": "./packages/remnic-core/dist/utility-telemetry.d.ts",
+      "remnic-source": "./packages/remnic-core/src/utility-telemetry.ts",
+      "import": "./packages/remnic-core/dist/utility-telemetry.js"
     },
     "./session-observer-bands": {
-      "import": "./dist/session-observer-bands.js"
+      "types": "./packages/remnic-core/dist/session-observer-bands.d.ts",
+      "remnic-source": "./packages/remnic-core/src/session-observer-bands.ts",
+      "import": "./packages/remnic-core/dist/session-observer-bands.js"
     },
     "./session-observer-bands.js": {
-      "import": "./dist/session-observer-bands.js"
+      "types": "./packages/remnic-core/dist/session-observer-bands.d.ts",
+      "remnic-source": "./packages/remnic-core/src/session-observer-bands.ts",
+      "import": "./packages/remnic-core/dist/session-observer-bands.js"
     },
     "./session-observer-state": {
-      "import": "./dist/session-observer-state.js"
+      "types": "./packages/remnic-core/dist/session-observer-state.d.ts",
+      "remnic-source": "./packages/remnic-core/src/session-observer-state.ts",
+      "import": "./packages/remnic-core/dist/session-observer-state.js"
     },
     "./session-observer-state.js": {
-      "import": "./dist/session-observer-state.js"
+      "types": "./packages/remnic-core/dist/session-observer-state.d.ts",
+      "remnic-source": "./packages/remnic-core/src/session-observer-state.ts",
+      "import": "./packages/remnic-core/dist/session-observer-state.js"
     },
     "./session-integrity": {
-      "import": "./dist/session-integrity.js"
+      "types": "./packages/remnic-core/dist/session-integrity.d.ts",
+      "remnic-source": "./packages/remnic-core/src/session-integrity.ts",
+      "import": "./packages/remnic-core/dist/session-integrity.js"
     },
     "./session-integrity.js": {
-      "import": "./dist/session-integrity.js"
+      "types": "./packages/remnic-core/dist/session-integrity.d.ts",
+      "remnic-source": "./packages/remnic-core/src/session-integrity.ts",
+      "import": "./packages/remnic-core/dist/session-integrity.js"
     },
     "./store-contract": {
-      "import": "./dist/store-contract.js"
+      "types": "./packages/remnic-core/dist/store-contract.d.ts",
+      "remnic-source": "./packages/remnic-core/src/store-contract.ts",
+      "import": "./packages/remnic-core/dist/store-contract.js"
     },
     "./store-contract.js": {
-      "import": "./dist/store-contract.js"
+      "types": "./packages/remnic-core/dist/store-contract.d.ts",
+      "remnic-source": "./packages/remnic-core/src/store-contract.ts",
+      "import": "./packages/remnic-core/dist/store-contract.js"
     },
     "./shared-context/manager": {
-      "import": "./dist/shared-context/manager.js"
+      "types": "./packages/remnic-core/dist/shared-context/manager.d.ts",
+      "remnic-source": "./packages/remnic-core/src/shared-context/manager.ts",
+      "import": "./packages/remnic-core/dist/shared-context/manager.js"
     },
     "./shared-context/manager.js": {
-      "import": "./dist/shared-context/manager.js"
+      "types": "./packages/remnic-core/dist/shared-context/manager.d.ts",
+      "remnic-source": "./packages/remnic-core/src/shared-context/manager.ts",
+      "import": "./packages/remnic-core/dist/shared-context/manager.js"
     },
     "./work/board": {
-      "import": "./dist/work/board.js"
+      "types": "./packages/remnic-core/dist/work/board.d.ts",
+      "remnic-source": "./packages/remnic-core/src/work/board.ts",
+      "import": "./packages/remnic-core/dist/work/board.js"
     },
     "./work/board.js": {
-      "import": "./dist/work/board.js"
+      "types": "./packages/remnic-core/dist/work/board.d.ts",
+      "remnic-source": "./packages/remnic-core/src/work/board.ts",
+      "import": "./packages/remnic-core/dist/work/board.js"
     },
     "./work/boundary": {
-      "import": "./dist/work/boundary.js"
+      "types": "./packages/remnic-core/dist/work/boundary.d.ts",
+      "remnic-source": "./packages/remnic-core/src/work/boundary.ts",
+      "import": "./packages/remnic-core/dist/work/boundary.js"
     },
     "./work/boundary.js": {
-      "import": "./dist/work/boundary.js"
+      "types": "./packages/remnic-core/dist/work/boundary.d.ts",
+      "remnic-source": "./packages/remnic-core/src/work/boundary.ts",
+      "import": "./packages/remnic-core/dist/work/boundary.js"
     },
     "./work/storage": {
-      "import": "./dist/work/storage.js"
+      "types": "./packages/remnic-core/dist/work/storage.d.ts",
+      "remnic-source": "./packages/remnic-core/src/work/storage.ts",
+      "import": "./packages/remnic-core/dist/work/storage.js"
     },
     "./work/storage.js": {
-      "import": "./dist/work/storage.js"
+      "types": "./packages/remnic-core/dist/work/storage.d.ts",
+      "remnic-source": "./packages/remnic-core/src/work/storage.ts",
+      "import": "./packages/remnic-core/dist/work/storage.js"
     },
     "./work/types": {
-      "import": "./dist/work/types.js"
+      "types": "./packages/remnic-core/dist/work/types.d.ts",
+      "remnic-source": "./packages/remnic-core/src/work/types.ts",
+      "import": "./packages/remnic-core/dist/work/types.js"
     },
     "./work/types.js": {
-      "import": "./dist/work/types.js"
+      "types": "./packages/remnic-core/dist/work/types.d.ts",
+      "remnic-source": "./packages/remnic-core/src/work/types.ts",
+      "import": "./packages/remnic-core/dist/work/types.js"
     },
     "./transfer/autodetect": {
-      "import": "./dist/transfer/autodetect.js"
+      "types": "./packages/remnic-core/dist/transfer/autodetect.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/autodetect.ts",
+      "import": "./packages/remnic-core/dist/transfer/autodetect.js"
     },
     "./transfer/autodetect.js": {
-      "import": "./dist/transfer/autodetect.js"
+      "types": "./packages/remnic-core/dist/transfer/autodetect.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/autodetect.ts",
+      "import": "./packages/remnic-core/dist/transfer/autodetect.js"
     },
     "./transfer/backup": {
-      "import": "./dist/transfer/backup.js"
+      "types": "./packages/remnic-core/dist/transfer/backup.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/backup.ts",
+      "import": "./packages/remnic-core/dist/transfer/backup.js"
     },
     "./transfer/backup.js": {
-      "import": "./dist/transfer/backup.js"
+      "types": "./packages/remnic-core/dist/transfer/backup.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/backup.ts",
+      "import": "./packages/remnic-core/dist/transfer/backup.js"
     },
     "./transfer/capsule-export": {
-      "import": "./dist/transfer/capsule-export.js"
+      "types": "./packages/remnic-core/dist/transfer/capsule-export.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/capsule-export.ts",
+      "import": "./packages/remnic-core/dist/transfer/capsule-export.js"
     },
     "./transfer/capsule-export.js": {
-      "import": "./dist/transfer/capsule-export.js"
+      "types": "./packages/remnic-core/dist/transfer/capsule-export.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/capsule-export.ts",
+      "import": "./packages/remnic-core/dist/transfer/capsule-export.js"
     },
     "./transfer/capsule-import": {
-      "import": "./dist/transfer/capsule-import.js"
+      "types": "./packages/remnic-core/dist/transfer/capsule-import.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/capsule-import.ts",
+      "import": "./packages/remnic-core/dist/transfer/capsule-import.js"
     },
     "./transfer/capsule-import.js": {
-      "import": "./dist/transfer/capsule-import.js"
+      "types": "./packages/remnic-core/dist/transfer/capsule-import.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/capsule-import.ts",
+      "import": "./packages/remnic-core/dist/transfer/capsule-import.js"
     },
     "./transfer/constants": {
-      "import": "./dist/transfer/constants.js"
+      "types": "./packages/remnic-core/dist/transfer/constants.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/constants.ts",
+      "import": "./packages/remnic-core/dist/transfer/constants.js"
     },
     "./transfer/constants.js": {
-      "import": "./dist/transfer/constants.js"
+      "types": "./packages/remnic-core/dist/transfer/constants.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/constants.ts",
+      "import": "./packages/remnic-core/dist/transfer/constants.js"
     },
     "./transfer/export-json": {
-      "import": "./dist/transfer/export-json.js"
+      "types": "./packages/remnic-core/dist/transfer/export-json.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/export-json.ts",
+      "import": "./packages/remnic-core/dist/transfer/export-json.js"
     },
     "./transfer/export-json.js": {
-      "import": "./dist/transfer/export-json.js"
+      "types": "./packages/remnic-core/dist/transfer/export-json.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/export-json.ts",
+      "import": "./packages/remnic-core/dist/transfer/export-json.js"
     },
     "./transfer/export-md": {
-      "import": "./dist/transfer/export-md.js"
+      "types": "./packages/remnic-core/dist/transfer/export-md.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/export-md.ts",
+      "import": "./packages/remnic-core/dist/transfer/export-md.js"
     },
     "./transfer/export-md.js": {
-      "import": "./dist/transfer/export-md.js"
+      "types": "./packages/remnic-core/dist/transfer/export-md.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/export-md.ts",
+      "import": "./packages/remnic-core/dist/transfer/export-md.js"
     },
     "./transfer/export-sqlite": {
-      "import": "./dist/transfer/export-sqlite.js"
+      "types": "./packages/remnic-core/dist/transfer/export-sqlite.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/export-sqlite.ts",
+      "import": "./packages/remnic-core/dist/transfer/export-sqlite.js"
     },
     "./transfer/export-sqlite.js": {
-      "import": "./dist/transfer/export-sqlite.js"
+      "types": "./packages/remnic-core/dist/transfer/export-sqlite.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/export-sqlite.ts",
+      "import": "./packages/remnic-core/dist/transfer/export-sqlite.js"
     },
     "./transfer/fs-utils": {
-      "import": "./dist/transfer/fs-utils.js"
+      "types": "./packages/remnic-core/dist/transfer/fs-utils.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/fs-utils.ts",
+      "import": "./packages/remnic-core/dist/transfer/fs-utils.js"
     },
     "./transfer/fs-utils.js": {
-      "import": "./dist/transfer/fs-utils.js"
+      "types": "./packages/remnic-core/dist/transfer/fs-utils.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/fs-utils.ts",
+      "import": "./packages/remnic-core/dist/transfer/fs-utils.js"
     },
     "./transfer/import-json": {
-      "import": "./dist/transfer/import-json.js"
+      "types": "./packages/remnic-core/dist/transfer/import-json.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/import-json.ts",
+      "import": "./packages/remnic-core/dist/transfer/import-json.js"
     },
     "./transfer/import-json.js": {
-      "import": "./dist/transfer/import-json.js"
+      "types": "./packages/remnic-core/dist/transfer/import-json.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/import-json.ts",
+      "import": "./packages/remnic-core/dist/transfer/import-json.js"
     },
     "./transfer/import-md": {
-      "import": "./dist/transfer/import-md.js"
+      "types": "./packages/remnic-core/dist/transfer/import-md.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/import-md.ts",
+      "import": "./packages/remnic-core/dist/transfer/import-md.js"
     },
     "./transfer/import-md.js": {
-      "import": "./dist/transfer/import-md.js"
+      "types": "./packages/remnic-core/dist/transfer/import-md.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/import-md.ts",
+      "import": "./packages/remnic-core/dist/transfer/import-md.js"
     },
     "./transfer/import-sqlite": {
-      "import": "./dist/transfer/import-sqlite.js"
+      "types": "./packages/remnic-core/dist/transfer/import-sqlite.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/import-sqlite.ts",
+      "import": "./packages/remnic-core/dist/transfer/import-sqlite.js"
     },
     "./transfer/import-sqlite.js": {
-      "import": "./dist/transfer/import-sqlite.js"
+      "types": "./packages/remnic-core/dist/transfer/import-sqlite.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/import-sqlite.ts",
+      "import": "./packages/remnic-core/dist/transfer/import-sqlite.js"
     },
     "./transfer/sqlite-schema": {
-      "import": "./dist/transfer/sqlite-schema.js"
+      "types": "./packages/remnic-core/dist/transfer/sqlite-schema.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/sqlite-schema.ts",
+      "import": "./packages/remnic-core/dist/transfer/sqlite-schema.js"
     },
     "./transfer/sqlite-schema.js": {
-      "import": "./dist/transfer/sqlite-schema.js"
+      "types": "./packages/remnic-core/dist/transfer/sqlite-schema.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/sqlite-schema.ts",
+      "import": "./packages/remnic-core/dist/transfer/sqlite-schema.js"
     },
     "./transfer/types": {
-      "import": "./dist/transfer/types.js"
+      "types": "./packages/remnic-core/dist/transfer/types.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/types.ts",
+      "import": "./packages/remnic-core/dist/transfer/types.js"
     },
     "./transfer/types.js": {
-      "import": "./dist/transfer/types.js"
+      "types": "./packages/remnic-core/dist/transfer/types.d.ts",
+      "remnic-source": "./packages/remnic-core/src/transfer/types.ts",
+      "import": "./packages/remnic-core/dist/transfer/types.js"
     }
   },
   "files": ["dist", "bin/engram-access.js", "openclaw.plugin.json", "scripts/ensure-better-sqlite3.mjs"],

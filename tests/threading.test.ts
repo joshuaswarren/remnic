@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { ThreadingManager } from "../src/threading.js";
+import { ThreadingManager } from "@remnic/core/threading";
 
 async function makeTmp(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "engram-threading-"));

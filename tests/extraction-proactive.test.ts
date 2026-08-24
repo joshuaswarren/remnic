@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ExtractionEngine } from "../src/extraction.ts";
-import { parseConfig } from "../src/config.ts";
-import { ExtractionResultSchema, ProactiveExtractionResultSchema } from "../src/schemas.ts";
-import type { ExtractionResult } from "../src/types.ts";
+import { ExtractionEngine } from "@remnic/core/extraction";
+import { parseConfig } from "@remnic/core/config";
+import { ExtractionResultSchema, ProactiveExtractionResultSchema } from "@remnic/core/schemas";
+import type { ExtractionResult } from "@remnic/core/types";
 
 // applyProactiveQuestionPass now takes a bundled ExtractionGroundingContext
 // (source-agent-qualifier.ts) instead of positional grounding args.

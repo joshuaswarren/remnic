@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import { StorageManager } from "../src/storage.js";
-import { parseConfig } from "../src/config.js";
+import { StorageManager } from "@remnic/core/storage";
+import { parseConfig } from "@remnic/core/config";
 
 test("buildKnowledgeIndex applies per-call overrides without stale cache leakage", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-ki-"));

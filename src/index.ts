@@ -1,16 +1,16 @@
-export { loadDaySummaryPrompt } from "./day-summary.js";
+export { loadDaySummaryPrompt } from "@remnic/core/day-summary";
 export type { MemoryObservation } from "@remnic/core/types";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import OpenAI from "openai";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { parseConfig } from "./config.js";
-import { initLogger, log } from "./logger.js";
+import { parseConfig } from "@remnic/core/config";
+import { initLogger, log } from "@remnic/core/logger";
 import {
   detectSdkCapabilities,
   type OpenClawRegistrationMode,
   type SdkCapabilities,
-} from "./sdk-compat.js";
+} from "@remnic/core/sdk-compat";
 import {
   Orchestrator,
   sanitizeSessionKeyForFilename,
@@ -24,14 +24,14 @@ import {
   FallbackLlmClient,
   fallbackLlmRuntimeContextFromConfig,
 } from "@remnic/core/fallback-llm";
-import { objectiveStateStoreOverrideForNamespace } from "./objective-state.js";
-import { recordObjectiveStateSnapshotsFromAgentMessages } from "./objective-state-writers.js";
+import { objectiveStateStoreOverrideForNamespace } from "@remnic/core/objective-state";
+import { recordObjectiveStateSnapshotsFromAgentMessages } from "@remnic/core/objective-state-writers";
 import { probeQmdAvailability } from "./qmd-availability-probe.js";
 import {
   EngramAccessService,
   createConfiguredSupportPassportGatewayRoute,
 } from "./access-service.js";
-import { EngramAccessHttpServer } from "./access-http.js";
+import { EngramAccessHttpServer } from "@remnic/core/access-http";
 
 import {
   InlineExplicitCaptureProcessor,
@@ -41,10 +41,10 @@ import {
 } from "./explicit-capture.js";
 import path from "node:path";
 import os from "node:os";
-import { createOpikExporter } from "./opik-exporter.js";
+import { createOpikExporter } from "@remnic/core/opik-exporter";
 import { readEnvVar, resolveHomeDir } from "@remnic/core/runtime/env";
 import { displayErrorDetail } from "@remnic/core/runtime/better-sqlite";
-import { migrateFromEngram } from "./migrate/from-engram.js";
+import { migrateFromEngram } from "@remnic/core/migrate/from-engram";
 import {
   createOpenClawUserMessageCleaner,
 } from "./user-message-cleaning.js";
@@ -5111,7 +5111,7 @@ const pluginDefinition = {
     // Duplicate start() calls are safe: the per-serviceId SERVICE_STARTED guard
     // inside start() makes initialize() idempotent within a process lifetime.
     // stop() clears the flag so restart cycles reinitialize correctly.
-    let activeOpikExporter: import("./opik-exporter.js").OpikExporter | null =
+    let activeOpikExporter: import("@remnic/core/opik-exporter").OpikExporter | null =
       null;
     // Whether this specific registry's start() claimed a slot in ACTIVE_REGISTRIES.
     // Ensures stop() only decrements the count for registries whose start() ran

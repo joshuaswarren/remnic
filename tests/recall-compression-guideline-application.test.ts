@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { formatCompressionGuidelinesForRecall } from "../src/orchestrator.ts";
-import { CompressionGuidelineCoordinator } from "../src/orchestration/compression-guideline-coordinator.js";
+import { formatCompressionGuidelinesForRecall } from "@remnic/core/orchestrator";
+import { CompressionGuidelineCoordinator } from "@remnic/core/orchestration/compression-guideline-coordinator";
 /** Build a CompressionGuidelineCoordinator from a fake ctx (config + storage),
  *  mirroring the old Orchestrator.prototype-based unit tests. The logic now
  *  lives on the coordinator (#1526 seam 4). */

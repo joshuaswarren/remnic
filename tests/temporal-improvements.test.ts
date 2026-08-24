@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isTemporalQuery, recencyWindowBoundsFromPrompt, recencyWindowFromPrompt } from "../src/temporal-index.ts";
+import { isTemporalQuery, recencyWindowBoundsFromPrompt, recencyWindowFromPrompt } from "@remnic/core/temporal-index";
 
 // ── isTemporalQuery: existing patterns still work ──
 

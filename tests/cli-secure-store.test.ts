@@ -38,7 +38,7 @@ import {
   validateHeader,
   verifyKey,
   writeHeader,
-} from "../src/secure-store/index.js";
+} from "@remnic/core/secure-store/index";
 import {
   buildHeaderFromPassphrase,
   deriveKeyFromHeader,

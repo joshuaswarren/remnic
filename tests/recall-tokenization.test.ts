@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { countRecallTokenOverlap, normalizeRecallTokens } from "../src/recall-tokenization.js";
+import { countRecallTokenOverlap, normalizeRecallTokens } from "@remnic/core/recall-tokenization";
 
 test("normalizeRecallTokens preserves non-Latin word tokens", () => {
   const tokens = normalizeRecallTokens("Привет, мир! Καλημέρα κόσμε. שלום לצוות. مرحبا بالعالم.");

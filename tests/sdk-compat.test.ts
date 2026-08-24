@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { detectSdkCapabilities } from "../src/sdk-compat.js";
+import { detectSdkCapabilities } from "@remnic/core/sdk-compat";
 
 test("legacy api (no new fields) → all capabilities false, sdkVersion 'legacy'", () => {
   const api: Record<string, unknown> = {

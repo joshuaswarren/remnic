@@ -6,12 +6,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import {
   runTierMigrateCliCommand,
   runTierStatusCliCommand,
-} from "../src/cli.js";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import { StorageManager } from "../src/storage.js";
-import type { SearchBackend } from "../src/search/port.js";
-import type { TierMigrationStatusSnapshot } from "../src/recall-state.js";
+} from "@remnic/core/cli";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import { StorageManager } from "@remnic/core/storage";
+import type { SearchBackend } from "@remnic/core/search/port";
+import type { TierMigrationStatusSnapshot } from "@remnic/core/recall-state";
 
 test("runTierStatusCliCommand returns coordinator status payload", async () => {
   const expected: TierMigrationStatusSnapshot = {

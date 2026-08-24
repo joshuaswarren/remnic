@@ -6,11 +6,11 @@ import {
   shouldAssumeOpenAiChatCompletions,
   supportsTemperature,
   usesMaxCompletionTokens,
-} from "../src/openai-chat-compat.ts";
-import { parseConfig } from "../src/config.ts";
-import { ExtractionEngine } from "../src/extraction.ts";
-import { FallbackLlmClient } from "../src/fallback-llm.ts";
-import type { GatewayConfig } from "../src/types.ts";
+} from "@remnic/core/openai-chat-compat";
+import { parseConfig } from "@remnic/core/config";
+import { ExtractionEngine } from "@remnic/core/extraction";
+import { FallbackLlmClient } from "@remnic/core/fallback-llm";
+import type { GatewayConfig } from "@remnic/core/types";
 
 test("usesMaxCompletionTokens detects newer OpenAI chat-completions models", () => {
   assert.equal(usesMaxCompletionTokens("gpt-5.5", { assumeOpenAI: true }), true);

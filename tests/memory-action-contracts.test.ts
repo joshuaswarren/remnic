@@ -5,7 +5,7 @@ import {
   MemoryActionTypeSchema,
   parseMemoryActionEligibilityContext,
   parseMemoryActionType,
-} from "../src/schemas.js";
+} from "@remnic/core/schemas";
 
 test("MemoryActionTypeSchema supports the full v8.13 action taxonomy", () => {
   const allowed = [

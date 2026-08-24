@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { runCompatCliCommand } from "../src/cli.js";
+import { runCompatCliCommand } from "@remnic/core/cli";
 
 async function writeHealthyFixture(baseDir: string): Promise<void> {
   await mkdir(path.join(baseDir, "src"), { recursive: true });

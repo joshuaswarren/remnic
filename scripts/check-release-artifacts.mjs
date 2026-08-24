@@ -16,12 +16,12 @@ function normalizeJson(raw) {
 
 const requiredFiles = [
   "dist/index.js",
-  "dist/access-cli.js",
-  "dist/cli.js",
-  "dist/connectors/index.js",
-  "dist/connectors/codex-materialize.js",
-  "dist/connectors/codex-materialize-runner.js",
-  "dist/migrate/from-engram.js",
+  "packages/remnic-core/dist/access-cli.js",
+  "packages/remnic-core/dist/cli.js",
+  "packages/remnic-core/dist/connectors/index.js",
+  "packages/remnic-core/dist/connectors/codex-materialize.js",
+  "packages/remnic-core/dist/connectors/codex-materialize-runner.js",
+  "packages/remnic-core/dist/migrate/from-engram.js",
   "dist/admin-console/public/index.html",
   "dist/admin-console/public/app.js",
   "dist/admin-console/public/relay/index.html",

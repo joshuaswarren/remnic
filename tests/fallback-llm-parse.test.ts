@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { FallbackLlmClient } from "../src/fallback-llm.ts";
+import { FallbackLlmClient } from "@remnic/core/fallback-llm";
 
 test("FallbackLlmClient.parseWithSchema extracts the correct JSON when multiple JSON blocks exist", async () => {
   const Schema = z.object({ ok: z.literal(true) });

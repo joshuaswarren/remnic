@@ -198,15 +198,21 @@ packages:
 }
 ```
 
-## Compatibility shims
+## Root compatibility surface
 
-The root `src/` directory still exists for OpenClaw runtime entrypoints and compatibility wiring that have not fully moved into `packages/plugin-openclaw`:
+The copy-only root shims are gone (issue #2913, phase 2 of #2801). What
+remains at the root serves OpenClaw runtime entrypoints that have not fully
+moved into `packages/plugin-openclaw`: `src/index.ts`, `src/tools.ts`,
+`src/explicit-capture.ts`, and the `src/openclaw-*` wiring files.
 
-```typescript
-// src/orchestrator.ts
-export * from "@remnic/core/orchestrator";
-```
+Root `package.json` keeps every public export name, but each export whose
+implementation was only a re-export now aliases the `@remnic/core` export
+contract directly (`types`, `remnic-source`, and `import` conditions under
+`./packages/remnic-core/`). Root `tsup` builds only the real root
+entrypoints, and root `tests/` import `@remnic/core` subpaths directly.
+`tests/root-shim-collapse-contract.test.ts` pins this state: zero copy-only
+tsup entries, preserved export names, and identical resolution through the
+root and core specifiers.
 
-These keep root `tests/` working during migration, let the root `tsup` build produce a valid `dist/index.js` for the OpenClaw plugin, and avoid breaking external code that imports from the root package.
-
-Do not put new cross-platform semantics in root `src/`. Add them to `@remnic/core` and let adapters consume them.
+Do not put new cross-platform semantics in root `src/`. Add them to
+`@remnic/core` and let adapters consume them.

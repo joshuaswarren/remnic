@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { parseConfig } from "../src/config.js";
-import { CompoundingEngine } from "../src/compounding/engine.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import type { PluginConfig } from "../src/types.js";
+import { parseConfig } from "@remnic/core/config";
+import { CompoundingEngine } from "@remnic/core/compounding/engine";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import type { PluginConfig } from "@remnic/core/types";
 
 function tmpDir(prefix: string): string {
   return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);

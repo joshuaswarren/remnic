@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import type { PluginConfig } from "../src/types.js";
-import { parseConfig } from "../src/config.js";
-import { NamespaceStorageRouter } from "../src/namespaces/storage.js";
-import { keyring, secureStoreDir } from "../src/secure-store/index.js";
+import type { PluginConfig } from "@remnic/core/types";
+import { parseConfig } from "@remnic/core/config";
+import { NamespaceStorageRouter } from "@remnic/core/namespaces/storage";
+import { keyring, secureStoreDir } from "@remnic/core/secure-store/index";
 
 function tmpDir(prefix: string): string {
   return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);

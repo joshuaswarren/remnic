@@ -7,7 +7,7 @@ import {
   lifecycleRecallScoreAdjustment,
   mergeArtifactRecallCandidates,
   shouldFilterLifecycleRecallCandidate,
-} from "../src/orchestrator.ts";
+} from "@remnic/core/orchestrator";
 import {
   isActivityDigestPath,
 } from "../packages/remnic-core/src/orchestration/orchestrator-helpers.ts";

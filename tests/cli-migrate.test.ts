@@ -8,8 +8,8 @@ import {
   runMigrateRechunkCliCommand,
   runMigrateReextractCliCommand,
   runMigrateRescoreImportanceCliCommand,
-} from "../src/cli.js";
-import { StorageManager } from "../src/storage.js";
+} from "@remnic/core/cli";
+import { StorageManager } from "@remnic/core/storage";
 
 function buildMigrateOrchestrator(storage: StorageManager) {
   return {

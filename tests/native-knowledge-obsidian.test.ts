@@ -7,8 +7,8 @@ import {
   collectNativeKnowledgeChunks,
   resolveNativeKnowledgeStatePath,
   searchNativeKnowledge,
-} from "../src/native-knowledge.js";
-import type { NativeKnowledgeConfig } from "../src/types.js";
+} from "@remnic/core/native-knowledge";
+import type { NativeKnowledgeConfig } from "@remnic/core/types";
 
 async function buildHarness(prefix: string): Promise<{
   memoryDir: string;
