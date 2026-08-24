@@ -17,8 +17,8 @@ import type { GraphEdge, GraphType } from "../graph.js";
 import { readFile } from "node:fs/promises";
 import { removeNodeEdgesForRewrite, rollbackNodeEdgeRewrite } from "../graph-jsonl.js";
 import {
-  hasCitationForTemplate,
-  stripCitationForTemplate,
+  citationTemplatesForMerge,
+  stripRecognizedCitations,
 } from "../source-attribution.js";
 import { resolvePipelineProcessingCapabilities } from "../capabilities.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
@@ -271,25 +271,15 @@ export async function rewriteMergedTargetGraphEdges(
 
 /**
  * Round N+2 (C) — the canonical RAW pre-citation merged body for hashing.
- * The judge composes mergedContent from the stored target body, which
- * carries an appended citation marker when inline source attribution is
- * enabled; the ordinary write path hashes `contentHashSource` — the raw
- * fact text BEFORE any citation is attached. Hashing the cited body would
- * give the merged record a different identity than the equivalent raw
- * write (checklist #13), so the configured citation form is stripped
- * first, exactly like the write path's `rawChunkedContent`
- * canonicalization. Lives in this sibling (extracted from
- * semantic-merge-persist.ts) so that file stays within its file-size
- * ratchet cap.
+ * Strips every recognized citation form (current, default, and any prior
+ * configured template still in history). All-placeholder templates are
+ * not attached on the merge path, so they never reach this hash input.
  */
 export function rawPreCitationMergedBody(deps: ExtractionPersistDeps, mergedContent: string): string {
   if (resolvePipelineProcessingCapabilities(deps.config).inlineSourceAttribution !== true) {
     return mergedContent;
   }
-  const template = deps.config.inlineSourceAttributionFormat;
-  return hasCitationForTemplate(mergedContent, template)
-    ? stripCitationForTemplate(mergedContent, template)
-    : mergedContent;
+  return stripRecognizedCitations(mergedContent, citationTemplatesForMerge(deps.config));
 }
 
 /**

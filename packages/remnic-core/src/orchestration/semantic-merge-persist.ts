@@ -58,7 +58,9 @@ import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { inferIntentFromText } from "../intent.js";
 import {
   attachCitation,
-  lastCitationMarkerForTemplate,
+  citationTemplateIsDetectable,
+  citationTemplatesForMerge,
+  lastRecognizedCitationMarker,
   type CitationContext,
 } from "../source-attribution.js";
 import {
@@ -479,18 +481,11 @@ export function createPathMergeParity(input: {
 
 /**
  * Round N+7 (C) + #2916: the citation form of the committed merged body.
- * The incoming fact's own marker (lifted from the caller's cited body for
- * this write) is appended after the judge's merged text, so incoming claims
- * stay attributed even when the merged text embeds the target's older
- * citation — quoted excerpts travel without frontmatter, so `sources`
- * alone is not enough. When no incoming marker is liftable — a caller that
- * supplied no cited body, or a template whose marker cannot be re-matched —
- * the configured transform is applied to the merged body exactly as a
- * fresh attributed write would, through the same attachCitation helper the
- * write path uses. That helper is a no-op when the body already carries a
- * recognized marker, so a legacy target tagged under another format and a
- * retry of an already-attributed merge never gain a duplicate. A no-op
- * when attribution is off.
+ * A liftable incoming marker still wins. The fallback attaches only when
+ * the current template can be re-matched later. An already-recognized
+ * marker — current, default, or a prior configured format still in
+ * history — is left in place so a template change does not duplicate it.
+ * All-placeholder templates cannot be stripped, so they are not attached.
  */
 function committedMergedBody(
   deps: ExtractionPersistDeps,
@@ -503,12 +498,15 @@ function committedMergedBody(
     return mergedContent;
   }
   const template = deps.config.inlineSourceAttributionFormat;
+  const templates = citationTemplatesForMerge(deps.config);
   if (incomingCitedContent !== undefined) {
-    const marker = lastCitationMarkerForTemplate(incomingCitedContent, template);
+    const marker = lastRecognizedCitationMarker(incomingCitedContent, templates);
     if (marker) {
       return mergedContent.endsWith(marker) ? mergedContent : `${mergedContent} ${marker}`;
     }
   }
+  if (!citationTemplateIsDetectable(template)) return mergedContent;
+  if (lastRecognizedCitationMarker(mergedContent, templates)) return mergedContent;
   return attachCitation(
     mergedContent,
     { ...incomingCitationContext, ts: nowIso },

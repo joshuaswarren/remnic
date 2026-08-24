@@ -9,6 +9,9 @@ import { ContentHashIndex, StorageManager } from "./storage.js";
 import {
   DEFAULT_CITATION_FORMAT,
   attachCitation,
+  citationTemplateIsDetectable,
+  citationTemplatesForMerge,
+  citationTemplatesToRecognize,
   deriveSessionId,
   formatCitation,
   hasCitation,
@@ -17,6 +20,7 @@ import {
   parseCitation,
   stripCitation,
   stripCitationForTemplate,
+  stripRecognizedCitations,
 } from "./source-attribution.js";
 
 test("formatCitation emits the default template with provided fields", () => {
@@ -537,6 +541,24 @@ test("hasCitationForTemplate: '{agent}{sessionId}' all-placeholder template retu
     false,
     "no sentinel / no literal — must return false",
   );
+});
+
+test("citationTemplateIsDetectable rejects all-placeholder templates", () => {
+  assert.equal(citationTemplateIsDetectable("{agent}{sessionId}"), false);
+  assert.equal(citationTemplateIsDetectable(DEFAULT_CITATION_FORMAT), true);
+  assert.equal(citationTemplateIsDetectable("[src:{agent}/{sessionId}@{date}]"), true);
+});
+
+test("citationTemplatesToRecognize drops undetectable shapes and keeps prior history", () => {
+  const prior = "[src:{agent}/{sessionId}@{date}]";
+  const recognized = citationTemplatesToRecognize("{agent}{sessionId}", [prior]);
+  assert.deepEqual(recognized, [DEFAULT_CITATION_FORMAT, prior]);
+  const body = "The cadence is weekly. [src:agent-a/s-old@2026-08-19]";
+  assert.equal(stripRecognizedCitations(body, recognized), "The cadence is weekly.");
+  assert.deepEqual(citationTemplatesForMerge({ inlineSourceAttributionFormat: prior }), [
+    DEFAULT_CITATION_FORMAT,
+    prior,
+  ]);
 });
 
 test("formatCitation: substituted values containing placeholder syntax are not re-interpreted", () => {

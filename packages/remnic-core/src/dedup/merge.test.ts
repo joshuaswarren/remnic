@@ -3200,6 +3200,106 @@ test("applySemanticMergeAtPersist: a rolled-back merge restores the marker-free 
   assert.equal(committed?.content, EXISTING, "rollback restores the exact pre-merge body");
 });
 
+test("applySemanticMergeAtPersist: an all-placeholder template does not attach or hash a citation", async () => {
+  const TEMPLATE = "{agent}{sessionId}";
+  const CONTEXT = { agent: "agent-a", session: "project:s-42" };
+  const h = await harness({
+    topLevelConfig: {
+      inlineSourceAttributionEnabled: true,
+      inlineSourceAttributionFormat: TEMPLATE,
+    },
+  });
+  const first = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingCitationContext: CONTEXT,
+    now: () => new Date("2026-08-23T00:00:00.000Z"),
+    judgeCall: (options) => acceptingJudge(options),
+  } as ApplySemanticMergeOptions);
+  assert.equal(first.action, "merged");
+  const committed = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(committed?.content, MERGED, "unmatchable templates must not attach a marker");
+  assert.equal(
+    h.calls.frontmatterPatches.at(-1)?.patch.contentHash,
+    ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text),
+  );
+
+  const retry = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingCitationContext: CONTEXT,
+    now: () => new Date("2026-08-23T00:00:01.000Z"),
+    judgeCall: (options) => acceptingJudge(options),
+  } as ApplySemanticMergeOptions);
+  assert.equal(retry.action, "merged");
+  const retried = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(retried?.content, MERGED, "retry must not accumulate an unmatchable marker");
+});
+
+test("applySemanticMergeAtPersist: a prior-template marker is preserved and stripped from the hash", async () => {
+  const PRIOR = "[src:{agent}/{sessionId}@{date}]";
+  const PRIOR_CIT = "[src:agent-a/s-old@2026-08-19]";
+  const CURRENT = "[via:{agent}]";
+  const MERGED_WITH_PRIOR = `${MERGED} ${PRIOR_CIT}`;
+  const h = await harness({
+    topLevelConfig: {
+      inlineSourceAttributionEnabled: true,
+      inlineSourceAttributionFormat: CURRENT,
+    },
+  });
+  Object.assign(h.deps.config, { inlineSourceAttributionFormatHistory: [PRIOR] });
+  await h.setTargetContent(`${EXISTING} ${PRIOR_CIT}`);
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingCitationContext: { agent: "agent-a", session: "project:s-42" },
+    now: () => new Date("2026-08-23T00:00:00.000Z"),
+    judgeCall: async () => ({
+      decision: "merge" as const,
+      targetId: "fact-target",
+      mergedContent: MERGED_WITH_PRIOR,
+      reason: "template migration keeps the prior marker",
+    }),
+  } as ApplySemanticMergeOptions);
+  assert.equal(outcome.action, "merged");
+  const committed = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(committed?.content, MERGED_WITH_PRIOR, "the prior marker stays and is not duplicated");
+  assert.equal(committed?.content.includes("[via:"), false);
+  assert.equal(
+    h.calls.frontmatterPatches.at(-1)?.patch.contentHash,
+    ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text),
+    "the prior marker is stripped before hashing",
+  );
+});
+
+test("applySemanticMergeAtPersist: a lost CAS race does not hash an all-placeholder citation", async () => {
+  const RACED = "Billing service deploys happen on Tuesdays, except during a freeze.";
+  const h = await harness({
+    mutateOnWrite: RACED,
+    topLevelConfig: {
+      inlineSourceAttributionEnabled: true,
+      inlineSourceAttributionFormat: "{agent}{sessionId}",
+    },
+  });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingCitationContext: { agent: "agent-a", session: "project:s-42" },
+    now: () => new Date("2026-08-23T00:00:00.000Z"),
+    judgeCall: (options) => acceptingJudge(options),
+  } as ApplySemanticMergeOptions);
+  assert.deepEqual(outcome, { action: "created", reason: "target_changed" });
+  assert.deepEqual(h.calls.contentUpdates, []);
+  assert.deepEqual(h.calls.hashRegistrations, []);
+  const onDisk = await readFile(h.target.path, "utf8");
+  assert.equal(onDisk.includes(RACED), true);
+  assert.equal(onDisk.includes("agent-a"), false);
+});
+
 /** Minimal real-dir harness for the merged-target post-effects executor. */
 async function postEffectsHarness(options: {
   graphEdgeThrows?: boolean;
