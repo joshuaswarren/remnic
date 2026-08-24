@@ -627,6 +627,7 @@
     "localLlm400CooldownMs",
     "localLlm400TripThreshold",
     "localLlmApiKey",
+    "localLlmApiKeyEnv",
     "localLlmAuthHeader",
     "localLlmDisableThinking",
     "localLlmEnabled",
