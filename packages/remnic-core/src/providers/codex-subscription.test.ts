@@ -1249,6 +1249,7 @@ test(
     clearModelsJsonCache();
     clearSecretCache();
     __codexSubscriptionTestHooks.resetLoginStatusCache();
+    __codexSubscriptionTestHooks.resetCoreRunnerRegistered();
     const runner = createCodexSubscriptionRunner({
       env: { HOME: "/home/alice", PATH: "/usr/bin:/bin" },
       now: () => 0,
