@@ -7,12 +7,15 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - `remnic converge plan`/`watch` now reuses `StorageManager`'s persisted digest cache instead of re-hashing every file each cycle, and applies `offlineSyncExcludes` plus `includeTranscripts: false` so node-local state and transcripts are not planned as failed pushes. Plan-phase stderr reports identity-cache hit/miss counts and snapshot/manifest wall time.
+- H5 injection-suite `openai-compat` executor attaches a host-matched `Authorization: Bearer` token only (`NVIDIA_API_KEY` on `integrate.api.nvidia.com`, `OPENAI_API_KEY` on `api.openai.com`, `REMNIC_OPENAI_COMPAT_API_KEY` on every other host including other `*.openai.com` / `*.nvidia.com` subdomains), requires `https` except loopback HTTP (`127.0.0.1` / `localhost`), and fails closed rather than reusing an ambient key on the wrong host (`#1962`).
 
 ## [v9.69.35] — 2026-08-24
 
 ### Added
 
 - `remnic-hermes` now provides an opt-in, policy-bound IPv4-loopback LLM bridge and supervisor for deferred Remnic generation through Hermes-managed providers. The bridge owns no provider credential, authenticates its supervised local caller with a launch-scoped token, gives the daemon no provider environment variables, ignores client model selection, and fails closed if either supervised child exits unexpectedly; recall-critical rerank/planner paths remain independent (#2834).
+- Hermes `remnic.llm_bridge` can start an in-process loopback `/v1/chat/completions` listener backed by host `PluginLlm`. Bind is loopback-only, request `model`/`provider` fields are discarded, and the generated client file stores a random bearer at `0600`. Remnic consumes it only through `backgroundGeneration` (hourly summarizer); extraction and recall stay on `openaiBaseUrl` / `localLlm*` (#2857).
+
 
 ## [v9.69.31] — 2026-08-23
 
