@@ -346,6 +346,20 @@ export class ActivityStore {
     return ids.length;
   }
 
+  /**
+   * First and last stored capture instants (canonical UTC strings), or null
+   * when no snapshots exist. Backs the unbounded timeline search window.
+   */
+  snapshotCaptureExtent(): { firstUtc: string; lastUtc: string } | null {
+    const row = this.db
+      .prepare("SELECT MIN(captured_at_utc) AS first, MAX(captured_at_utc) AS last FROM activity_snapshots")
+      .get();
+    if (!isRecord(row) || typeof row.first !== "string" || typeof row.last !== "string") {
+      return null;
+    }
+    return { firstUtc: row.first, lastUtc: row.last };
+  }
+
   close(): void {
     this.db.close();
   }

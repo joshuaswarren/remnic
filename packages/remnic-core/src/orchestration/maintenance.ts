@@ -167,6 +167,7 @@ export class MaintenanceScheduler {
       secureStoreEnabled: resolveRecallAuxiliaryCapabilities(deps.config).secureStore,
       getQmd: () => deps.getQmd(),
       requestReindexRetry: () => this.requestQmdMaintenanceForTool("activity-reindex-retry"),
+      pluginConfig: deps.config,
       ...(deps.onActivitySynced ? { onSynced: deps.onActivitySynced } : {}),
     });
   }

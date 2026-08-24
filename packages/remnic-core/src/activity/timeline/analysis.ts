@@ -1,9 +1,13 @@
 /**
- * Optional AI analysis over deterministic timeline cards (issue #2050 first slice).
- *
- * Injected provider only. parseConfig, registries, and surfaces wait.
- * Failures leave cards unchanged. Disabled makes zero provider calls.
+ * Optional evidence-bound AI analysis over deterministic timeline cards
+ * (issue #2050). Provider calls arrive through the injected `complete`
+ * function; hosts build it from the local/remote seams in analysis-provider.js
+ * and the parsed `activity.timeline.analysis` config. Failures leave the
+ * cards unchanged and carry a typed failure kind. Disabled makes zero
+ * provider calls.
  */
+import { classifyAnalysisFailure, type AnalysisFailure, type AnalysisFailureKind } from "./analysis-failure.js";
+import { classifyAnalysisProviderError } from "./analysis-provider.js";
 import { extractJsonCandidates } from "../../json-extract.js";
 import { log } from "../../logger.js";
 import { DEFAULT_TIMELINE_CATEGORIES } from "./categories.js";
@@ -55,6 +59,8 @@ export interface TimelineAnalysisResult {
   provider?: string;
   model?: string;
   promptVersion?: number;
+  /** Typed failure detail; present only when status is a failure. */
+  failure?: AnalysisFailure;
 }
 
 interface AnalysisOp {
@@ -82,6 +88,7 @@ function fail(
   cards: readonly TimelineCard[],
   provider: string,
   model: string,
+  kind: AnalysisFailureKind,
 ): TimelineAnalysisResult {
   log.info(`timeline analysis status=${status} provider=${provider} model=${model} promptVersion=${TIMELINE_ANALYSIS_PROMPT_VERSION}`);
   return {
@@ -90,6 +97,7 @@ function fail(
     provider,
     model,
     promptVersion: TIMELINE_ANALYSIS_PROMPT_VERSION,
+    failure: classifyAnalysisFailure(kind),
   };
 }
 
@@ -206,32 +214,6 @@ async function callComplete(
   }
 }
 
-function parseOps(raw: string): AnalysisOp[] | null {
-  if (typeof raw !== "string" || raw.trim().length === 0) return null;
-  for (const candidate of extractJsonCandidates(raw)) {
-    try {
-      const parsed: unknown = JSON.parse(candidate);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !("ops" in parsed)) continue;
-      const ops = parsed.ops;
-      if (!Array.isArray(ops)) continue;
-      const out: AnalysisOp[] = [];
-      let valid = true;
-      for (const item of ops) {
-        const op = asOp(item);
-        if (!op) {
-          valid = false;
-          break;
-        }
-        out.push(op);
-      }
-      if (valid) return out;
-    } catch {
-      continue;
-    }
-  }
-  return null;
-}
-
 function asOp(value: unknown): AnalysisOp | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   if (!("cardId" in value) || typeof value.cardId !== "string" || value.cardId.length === 0) return null;
@@ -260,6 +242,45 @@ function asOp(value: unknown): AnalysisOp | null {
     uncertainty: "uncertainty" in value && typeof value.uncertainty === "string" ? value.uncertainty : undefined,
     evidenceRange: { firstKey: range.firstKey, lastKey: range.lastKey },
   };
+}
+
+type ParseOpsResult = { ok: true; ops: AnalysisOp[] } | { ok: false; kind: AnalysisFailureKind };
+
+/**
+ * Parse the provider response. An empty/whitespace body is `partial_output`
+ * (nothing came back); a body whose JSON candidates never parse is
+ * `malformed_json`; parseable JSON in the wrong shape — missing `ops`, or an
+ * op that fails validation — is `invalid_schema`.
+ */
+function parseOps(raw: string): ParseOpsResult {
+  if (typeof raw !== "string" || raw.trim().length === 0) return { ok: false, kind: "partial_output" };
+  let sawParsableShape = false;
+  for (const candidate of extractJsonCandidates(raw)) {
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      if (!("ops" in parsed) || !Array.isArray(parsed.ops)) {
+        sawParsableShape = true;
+        continue;
+      }
+      const out: AnalysisOp[] = [];
+      let valid = true;
+      for (const item of parsed.ops) {
+        const op = asOp(item);
+        if (!op) {
+          valid = false;
+          break;
+        }
+        out.push(op);
+      }
+      if (valid) return { ok: true, ops: out };
+      sawParsableShape = true;
+    } catch {
+      continue;
+    }
+  }
+  if (sawParsableShape) return { ok: false, kind: "invalid_schema" };
+  return { ok: false, kind: "malformed_json" };
 }
 
 function knownEvidenceKeys(cards: readonly TimelineCard[], observations: readonly TimelineObservation[]): Set<string> {
@@ -320,7 +341,15 @@ export async function analyzeTimelineCards(input: TimelineAnalysisInput): Promis
     throw new TimelineAnalysisConfigError("timeoutMs must be a positive integer");
   }
   if (input.cards.length === 0 && input.observations.length === 0) {
-    return fail("invalid_output", cards, provider, model);
+    // Caller-side guard, not a provider failure: nothing to analyze and zero
+    // calls must be made, so no typed response failure is attached.
+    return {
+      status: "invalid_output",
+      cards,
+      provider,
+      model,
+      promptVersion: TIMELINE_ANALYSIS_PROMPT_VERSION,
+    };
   }
 
   const categories = input.categories ?? DEFAULT_TIMELINE_CATEGORIES;
@@ -340,16 +369,16 @@ export async function analyzeTimelineCards(input: TimelineAnalysisInput): Promis
         priorEdits: input.priorEdits,
       });
       const raw = await callComplete(complete, prompt, provider, model, timeoutMs, input.signal);
-      const ops = parseOps(raw);
-      if (!ops) return fail("invalid_output", cards, provider, model);
-      for (const op of ops) merged.set(op.cardId, op);
+      const parsed = parseOps(raw);
+      if (!parsed.ok) return fail("invalid_output", cards, provider, model, parsed.kind);
+      for (const op of parsed.ops) merged.set(op.cardId, op);
     }
-  } catch {
-    return fail("provider_failed", cards, provider, model);
+  } catch (error) {
+    return fail("provider_failed", cards, provider, model, classifyAnalysisProviderError(error));
   }
 
   const applied = applyOps(cards, [...merged.values()], categories, knownEvidenceKeys(cards, ordered));
-  if (!applied) return fail("invalid_output", cards, provider, model);
+  if (!applied) return fail("invalid_output", cards, provider, model, "invalid_schema");
 
   log.info(`timeline analysis status=ok provider=${provider} model=${model} promptVersion=${TIMELINE_ANALYSIS_PROMPT_VERSION}`);
   return {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import { activityDatabasePath, ActivityStore } from "./store.js";
 import { activityDigestPath } from "./digest.js";
 import { runActivitySyncOnce } from "./runner.js";
 import { activityCursorKey } from "./pipeline.js";
+import { timelineDayPath } from "./timeline/regenerate.js";
 import { defaultActivityConfig } from "./config.js";
 import type {
   ActivityConfig,
@@ -485,6 +486,120 @@ test("runActivitySyncOnce reports every local date that gained snapshots (issue 
       ["2026-07-21", "2026-07-22"],
       "both days that inserted snapshots are reported so meetings rebuild the older day too",
     );
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("runActivitySyncOnce regenerates timeline analysis once per day", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-runner-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    const pages = new Map<string | null, ActivitySnapshotPage>([
+      [null, { snapshots: [snapshot()], nextCursor: null }],
+    ]);
+    const client = fixtureClient("workstation-a", pages);
+    let calls = 0;
+    const base = defaultActivityConfig();
+    const summary = await runActivitySyncOnce({
+      config: enabledConfig({
+        timeline: {
+          ...base.timeline,
+          enabled: true,
+          analysis: { enabled: true, provider: "openai", model: "gpt-test" },
+        },
+      }),
+      memoryDir,
+      store,
+      now: NOW,
+      createSourceClient: () => client,
+      analysisDeps: {
+        remoteLlm: {
+          chatCompletion: async () => {
+            calls += 1;
+            return { content: '{"ops":[]}' };
+          },
+        },
+      },
+    });
+    assert.equal(summary.ranCount, 1);
+    assert.equal(calls, 1);
+    await runActivitySyncOnce({
+      config: enabledConfig({
+        timeline: {
+          ...base.timeline,
+          enabled: true,
+          analysis: { enabled: true, provider: "openai", model: "gpt-test" },
+        },
+      }),
+      memoryDir,
+      store,
+      now: NOW,
+      createSourceClient: () => client,
+      analysisDeps: {
+        remoteLlm: {
+          chatCompletion: async () => {
+            calls += 1;
+            return { content: '{"ops":[]}' };
+          },
+        },
+      },
+    });
+    assert.equal(calls, 1, "second sync must not re-run analysis for unchanged evidence");
+  } finally {
+    store.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("next sync re-analyzes a pending day and does not repeat a failed analysis", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-activity-runner-"));
+  const store = ActivityStore.open(memoryDir);
+  try {
+    const pages = new Map<string | null, ActivitySnapshotPage>([
+      [null, { snapshots: [snapshot()], nextCursor: null }],
+    ]);
+    const client = fixtureClient("workstation-a", pages);
+    const base = defaultActivityConfig();
+    const analysis = { enabled: true, provider: "openai", model: "gpt-test" };
+    const syncOpts = {
+      config: enabledConfig({ timeline: { ...base.timeline, enabled: true, analysis } }),
+      memoryDir,
+      store,
+      now: NOW,
+      createSourceClient: () => client,
+      analysisDeps: {
+        remoteLlm: {
+          chatCompletion: async () => {
+            throw new Error("unused");
+          },
+        },
+      },
+    };
+    let calls = 0;
+    const okRemote = {
+      remoteLlm: {
+        chatCompletion: async (): Promise<{ content: string }> => {
+          calls += 1;
+          return { content: '{"ops":[]}' };
+        },
+      },
+    };
+    await runActivitySyncOnce({ ...syncOpts, analysisDeps: okRemote });
+    assert.equal(calls, 1);
+    const dayPath = timelineDayPath(memoryDir, "2026-07-22");
+    const persisted = JSON.parse(await readFile(dayPath, "utf8")) as { status: string };
+    // A crash after the deterministic prewrite leaves "pending" on disk.
+    persisted.status = "pending";
+    await writeFile(dayPath, `${JSON.stringify(persisted)}\n`);
+    await runActivitySyncOnce({ ...syncOpts, analysisDeps: okRemote });
+    assert.equal(calls, 2, "a pending prewrite must be re-analyzed by the next sync");
+    // A completed provider failure is terminal: no repeated spend.
+    persisted.status = "provider_failed";
+    await writeFile(dayPath, `${JSON.stringify(persisted)}\n`);
+    await runActivitySyncOnce({ ...syncOpts, analysisDeps: okRemote });
+    assert.equal(calls, 2, "a completed provider failure must not repeat the provider call");
   } finally {
     store.close();
     await rm(memoryDir, { recursive: true, force: true });
