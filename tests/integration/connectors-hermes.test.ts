@@ -142,7 +142,11 @@ function withTempHome(fn: (tmpHome: string) => void): void {
     delete process.env.XDG_CONFIG_HOME;
     fn(tmpHome);
   } finally {
-    process.env.HOME = originalHome;
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
     if (originalHermesHome === undefined) {
       delete process.env.HERMES_HOME;
     } else {
@@ -157,19 +161,28 @@ function withTempHome(fn: (tmpHome: string) => void): void {
   }
 }
 
-test("withTempHome clears and restores an inherited HERMES_HOME", () => {
+test("withTempHome clears inherited HERMES_HOME and restores the exact environment", () => {
   const inheritedHermesHome = fs.mkdtempSync(
     path.join(os.tmpdir(), "remnic-hermes-inherited-home-"),
   );
+  const originalHome = process.env.HOME;
   const originalHermesHome = process.env.HERMES_HOME;
   try {
+    delete process.env.HOME;
     process.env.HERMES_HOME = inheritedHermesHome;
-    withTempHome(() => {
+    withTempHome((tmpHome) => {
+      assert.equal(process.env.HOME, tmpHome);
       assert.equal(process.env.HERMES_HOME, undefined);
     });
+    assert.equal(Object.hasOwn(process.env, "HOME"), false);
     assert.equal(process.env.HERMES_HOME, inheritedHermesHome);
     assert.deepEqual(fs.readdirSync(inheritedHermesHome), []);
   } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
     if (originalHermesHome === undefined) {
       delete process.env.HERMES_HOME;
     } else {
