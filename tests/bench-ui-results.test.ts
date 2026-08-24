@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -21,6 +21,7 @@ import {
   selectLowestScoringTasks,
 } from "../packages/bench-ui/src/pages/BenchmarkDetail.js";
 import { canCompareBenchRuns, filterComparableCandidateRuns } from "../packages/bench-ui/src/pages/Compare.js";
+import { writeBenchmarkResult } from "../packages/bench/src/reporter.js";
 import type { MetricAggregate } from "@remnic/bench";
 import { loadBenchResultSummaries } from "../packages/bench-ui/src/results.js";
 import { validResultFixture } from "../packages/bench-ui/src/testing/result-fixture.js";
@@ -148,6 +149,82 @@ test("bench UI loader honors a per-result canaryFloor when present", async () =>
   assert.ok(summary);
   assert.equal(summary.integrity.canaryFloor, 0.05);
   assert.equal(summary.integrity.canaryUnderFloor, false);
+});
+
+test("artifact written under a custom canary floor judges over-floor after reload without the env", async () => {
+  // Producer-path parity: every canonical producer (CLI run, partial
+  // capture, custom benchmark, coding-graph suite) persists the floor via
+  // writeBenchmarkResult, so exercising the writer IS exercising each path.
+  const saved = process.env.REMNIC_BENCH_CANARY_FLOOR;
+  const resultsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-ui-e2e-floor-"));
+  try {
+    process.env.REMNIC_BENCH_CANARY_FLOOR = "0.05";
+    await writeBenchmarkResult(
+      {
+        meta: {
+          id: "custom-floor-e2e",
+          benchmark: "longmemeval",
+          benchmarkTier: "published",
+          version: "1.0.0",
+          remnicVersion: "9.69.33",
+          gitSha: "deadbeef",
+          timestamp: "2026-04-18T10:00:00.000Z",
+          mode: "full",
+          runCount: 1,
+          seeds: [0],
+          canaryScore: 0.08,
+        },
+        config: {
+          systemProvider: null,
+          judgeProvider: null,
+          adapterMode: "direct",
+          remnicConfig: {},
+        },
+        cost: {
+          totalTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          estimatedCostUsd: 0,
+          totalLatencyMs: 0,
+          meanQueryLatencyMs: 0,
+        },
+        results: { tasks: [], aggregates: {} },
+        environment: { os: "linux", nodeVersion: process.version },
+      },
+      resultsDir,
+    );
+  } finally {
+    if (saved === undefined) {
+      delete process.env.REMNIC_BENCH_CANARY_FLOOR;
+    } else {
+      process.env.REMNIC_BENCH_CANARY_FLOOR = saved;
+    }
+  }
+
+  // Restart condition: the env override is gone; only the persisted
+  // meta.canaryFloor can mark this 0.08 canary as over-floor.
+  const payload = await loadBenchResultSummaries(resultsDir);
+  const summary = payload.summaries[0];
+  assert.ok(summary);
+  assert.equal(summary.integrity.canaryFloor, 0.05);
+  assert.equal(summary.integrity.canaryScore, 0.08);
+  assert.equal(summary.integrity.canaryUnderFloor, false);
+  await rm(resultsDir, { recursive: true, force: true });
+});
+
+test("artifact without a persisted canaryFloor judges against the canonical default", async () => {
+  const resultsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-ui-legacy-floor-"));
+  const artifact = validResultFixture("legacy-no-floor-run");
+  artifact.meta.canaryScore = 0.08;
+  delete artifact.meta.canaryFloor;
+  await writeFile(path.join(resultsDir, "legacy-no-floor.json"), JSON.stringify(artifact));
+
+  const payload = await loadBenchResultSummaries(resultsDir);
+  const summary = payload.summaries[0];
+  assert.ok(summary);
+  assert.equal(summary.integrity.canaryFloor, 0.1);
+  assert.equal(summary.integrity.canaryUnderFloor, true);
+  await rm(resultsDir, { recursive: true, force: true });
 });
 
 test("bench UI loader marks legacy results without integrity metadata as unknown split", async () => {

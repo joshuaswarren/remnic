@@ -209,9 +209,10 @@ export interface BenchmarkResult {
      */
     canaryScore?: number;
     /**
-     * Canary floor in force when this result was produced. Artifacts written
-     * under a custom floor persist it here so tooling badges against the
-     * gate that actually ran; absent means `CANARY_SCORE_FLOOR` applied.
+     * Effective canary floor (validated `REMNIC_BENCH_CANARY_FLOOR` or the
+     * canonical default) that gated `canaryScore`. Persisted by
+     * `writeBenchmarkResult` so readers judge the score against the
+     * producing run's floor without the environment variable.
      */
     canaryFloor?: number;
     /** "partial" if the benchmark was interrupted; absent or "complete" otherwise. */

@@ -12,6 +12,7 @@
  * for the `bench-exploit-audit` CI workflow.
  */
 
+import process from "node:process";
 import type {
   BenchMemoryAdapter,
   MemoryStats,
@@ -24,6 +25,53 @@ export const CANARY_FIXED_RECALL = "__remnic_canary_response__";
 
 /** The score floor the canary must NOT exceed for any benchmark. */
 export const CANARY_SCORE_FLOOR = 0.1;
+
+/**
+ * Accept a finite canary floor >= 0. Reject NaN, infinities, negatives,
+ * and non-numbers. Callers treat absence separately so a malformed
+ * present value is never rewritten to the default.
+ */
+export function parseCanaryFloor(value: unknown, label = "canary floor"): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`Invalid ${label}: ${String(value)}`);
+  }
+  return value;
+}
+
+/**
+ * Effective canary floor for this process: a validated
+ * `REMNIC_BENCH_CANARY_FLOOR` override, else the canonical default.
+ * An explicitly empty override is invalid, not absent.
+ */
+export function resolveCanaryFloorFromEnv(
+  raw: string | undefined = process.env.REMNIC_BENCH_CANARY_FLOOR,
+): number {
+  if (raw === undefined) {
+    return CANARY_SCORE_FLOOR;
+  }
+  if (raw === "") {
+    throw new Error(`Invalid REMNIC_BENCH_CANARY_FLOOR: ${raw}`);
+  }
+  try {
+    return parseCanaryFloor(Number(raw), "REMNIC_BENCH_CANARY_FLOOR");
+  } catch {
+    throw new Error(`Invalid REMNIC_BENCH_CANARY_FLOOR: ${raw}`);
+  }
+}
+
+/**
+ * Producer/audit precedence: a present preset must be a valid floor;
+ * otherwise fall through to the env parser (absent env → 0.1).
+ */
+export function resolveEffectiveCanaryFloor(
+  preset: unknown = undefined,
+  envRaw: string | undefined = process.env.REMNIC_BENCH_CANARY_FLOOR,
+): number {
+  if (preset !== undefined) {
+    return parseCanaryFloor(preset);
+  }
+  return resolveCanaryFloorFromEnv(envRaw);
+}
 
 export interface CanaryAdapterOptions {
   /**
@@ -115,16 +163,14 @@ export function assertCanaryUnderFloor(
   score: number,
   floor: number = CANARY_SCORE_FLOOR,
 ): CanaryFloorCheck {
-  if (!Number.isFinite(floor) || floor < 0) {
-    throw new Error(`Canary floor must be a non-negative finite number; got ${floor}.`);
-  }
+  const validatedFloor = parseCanaryFloor(floor);
   if (!Number.isFinite(score)) {
-    return { benchmark, score, floor, passed: false };
+    return { benchmark, score, floor: validatedFloor, passed: false };
   }
   return {
     benchmark,
     score,
-    floor,
-    passed: score <= floor,
+    floor: validatedFloor,
+    passed: score <= validatedFloor,
   };
 }
