@@ -30,3 +30,32 @@ test("CLI source wires remnic bench ui to the local bench-ui package", async () 
   assert.match(source, /shell:\s*process\.platform === "win32"/);
   assert.match(source, /childProcess\.spawn\(pnpmCmd, \["exec", "vite", "--host", "127\.0\.0\.1"\]/);
 });
+
+test("bench-ui dev and type-check scripts prepare the bench dependency build", async () => {
+  const [pkgRaw, helper, buildHelper] = await Promise.all([
+    readFile("packages/bench-ui/package.json", "utf8"),
+    readFile("scripts/ensure-bench-ui-build-deps.mjs", "utf8"),
+    readFile("scripts/build-staleness.mjs", "utf8"),
+  ]);
+  const pkg = JSON.parse(pkgRaw) as { scripts?: Record<string, string> };
+
+  // Fresh workspaces have no packages/bench/dist, and bench-ui's vite
+  // config plus tsc both resolve @remnic/bench through its dist exports.
+  // Every script that needs the dist prepares it first — the same
+  // dependency-build preparation the CLI performs — while the test script
+  // keeps resolving bench from source via the remnic-source condition
+  // (PR #2860 review).
+  assert.equal(pkg.scripts?.predev, "node ../../scripts/ensure-bench-ui-build-deps.mjs");
+  assert.equal(
+    pkg.scripts?.["precheck-types"],
+    "node ../../scripts/ensure-bench-ui-build-deps.mjs",
+  );
+  assert.match(pkg.scripts?.test ?? "", /--conditions=remnic-source/);
+  assert.equal(pkg.scripts?.["check-types"], "tsc --noEmit");
+  assert.match(pkg.scripts?.build ?? "", /check-types && vite build/);
+
+  assert.match(helper, /from "\.\/build-staleness\.mjs"/);
+  assert.match(helper, /ensurePackageBuild\(\s*repoRoot,\s*"@remnic\/bench"/);
+  assert.match(helper, /packages", "bench", "dist", "index\.js"/);
+  assert.match(buildHelper, /runPnpm\(repoRoot, \["--filter", pkgName, "build"\]\);/);
+});
