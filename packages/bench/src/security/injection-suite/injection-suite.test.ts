@@ -458,6 +458,22 @@ test("openai-compat unknown host with OPENAI_API_KEY fails before fetch", async 
   );
 });
 
+test("openai-compat unrelated openai.com subdomain does not receive OPENAI_API_KEY", async () => {
+  await assertFailsBeforeFetch(
+    { OPENAI_API_KEY: "must-not-be-sent" },
+    { kind: "openai-compat", baseUrl: "https://something.openai.com/v1", requestTimeoutMs: 250 },
+    /REMNIC_OPENAI_COMPAT_API_KEY/,
+  );
+});
+
+test("openai-compat unrelated nvidia.com subdomain does not receive NVIDIA_API_KEY", async () => {
+  await assertFailsBeforeFetch(
+    { NVIDIA_API_KEY: "must-not-be-sent" },
+    { kind: "openai-compat", baseUrl: "https://evil.nvidia.com/v1", requestTimeoutMs: 250 },
+    /REMNIC_OPENAI_COMPAT_API_KEY/,
+  );
+});
+
 test("openai-compat NVIDIA lookalike host does not receive OPENAI_API_KEY", async () => {
   await assertFailsBeforeFetch(
     { OPENAI_API_KEY: "must-not-be-sent", NVIDIA_API_KEY: "also-must-not-be-sent" },

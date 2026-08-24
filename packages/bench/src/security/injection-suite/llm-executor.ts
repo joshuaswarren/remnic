@@ -3,8 +3,9 @@
  *
  * Talks native Ollama /api/chat by default or an OpenAI-compatible
  * /v1/chat/completions endpoint. openai-compat attaches Authorization
- * only for a host-matched key: NVIDIA hosts use NVIDIA_API_KEY,
- * OpenAI hosts use OPENAI_API_KEY, and every other host requires
+ * only for an exact allowlisted API host: integrate.api.nvidia.com uses
+ * NVIDIA_API_KEY, api.openai.com uses OPENAI_API_KEY, and every other
+ * host (including other *.openai.com / *.nvidia.com subdomains) requires
  * REMNIC_OPENAI_COMPAT_API_KEY. Provider and non-loopback custom hosts
  * require https before a credential is attached. Loopback HTTP
  * (127.0.0.1 / localhost) is the only plaintext exception, for local
@@ -84,8 +85,11 @@ function parseCompatUrl(baseUrl: string): { protocol: string; hostname: string }
   }
 }
 
-function isDnsZoneHost(hostname: string, zone: string): boolean {
-  return hostname === zone || hostname.endsWith(`.${zone}`);
+const OPENAI_API_HOSTS = Object.freeze(["api.openai.com"] as const);
+const NVIDIA_API_HOSTS = Object.freeze(["integrate.api.nvidia.com"] as const);
+
+function isExactAllowlistedHost(hostname: string, allowlist: readonly string[]): boolean {
+  return (allowlist as readonly string[]).includes(hostname);
 }
 
 function isHttps(protocol: string): boolean {
@@ -124,14 +128,14 @@ function resolveOpenAiCompatToken(baseUrl: string): string {
     throw new InjectionSuiteHostFault("openai-compat requires a valid http(s) base URL");
   }
   const { protocol, hostname } = parsed;
-  if (isDnsZoneHost(hostname, "nvidia.com")) {
+  if (isExactAllowlistedHost(hostname, NVIDIA_API_HOSTS)) {
     requireHttps(protocol, "openai-compat NVIDIA host requires https");
     return requireEnvToken(
       "NVIDIA_API_KEY",
       "openai-compat NVIDIA host requires NVIDIA_API_KEY",
     );
   }
-  if (isDnsZoneHost(hostname, "openai.com")) {
+  if (isExactAllowlistedHost(hostname, OPENAI_API_HOSTS)) {
     requireHttps(protocol, "openai-compat OpenAI host requires https");
     return requireEnvToken(
       "OPENAI_API_KEY",
@@ -145,7 +149,7 @@ function resolveOpenAiCompatToken(baseUrl: string): string {
   }
   return requireEnvToken(
     "REMNIC_OPENAI_COMPAT_API_KEY",
-    "openai-compat unknown host requires REMNIC_OPENAI_COMPAT_API_KEY (or a known host: *.openai.com / *.nvidia.com); do not reuse OPENAI_API_KEY or NVIDIA_API_KEY",
+    "openai-compat unknown host requires REMNIC_OPENAI_COMPAT_API_KEY (or a known host: api.openai.com / integrate.api.nvidia.com); do not reuse OPENAI_API_KEY or NVIDIA_API_KEY",
   );
 }
 
