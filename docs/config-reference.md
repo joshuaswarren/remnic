@@ -924,6 +924,7 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `localLlmUrl` | `http://localhost:1234/v1` | Base URL for endpoint |
 | `localLlmModel` | `local-model` | Model ID |
 | `localLlmApiKey` | `(unset)` | Optional API key |
+| `localLlmApiKeyEnv` | `(unset)` | Optional environment-variable name for a local API key; if it is unset, local auth remains unset so read-only CLI commands can load config |
 | `localLlmHeaders` | `(unset)` | Extra HTTP headers |
 | `localLlmAuthHeader` | `true` | Send `Authorization: Bearer` header when key set |
 | `localLlmFallback` | `true` | Fall back to gateway model chain on failure |

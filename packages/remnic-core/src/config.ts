@@ -461,6 +461,14 @@ function parseAgentAccessPrincipal(raw: unknown): string | undefined {
   );
 }
 
+function parseOptionalEnvName(raw: unknown, property: string): string | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (typeof raw !== "string" || !/^[A-Z_][A-Z0-9_]*$/.test(raw)) {
+    throw new Error(`${property} must name a conventional environment variable`);
+  }
+  return raw;
+}
+
 export function resolveEnvVars(value: string): string {
   const resolved = value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, envVar: string) => {
     const envValue = readEnvVar(envVar);
@@ -1546,6 +1554,7 @@ export function parseConfig(
 
   const { wikiMergeIntoRecall, qmdCollection, qmdColdCollection } =
     parseExternalWikiRecallGuard(cfg);
+  const localLlmApiKeyEnv = parseOptionalEnvName(cfg.localLlmApiKeyEnv, "localLlmApiKeyEnv");
 
   return {
     openaiApiKey: apiKey,
@@ -2684,7 +2693,10 @@ export function parseConfig(
     localLlmApiKey:
       typeof cfg.localLlmApiKey === "string" && cfg.localLlmApiKey.length > 0
         ? resolveEnvVars(cfg.localLlmApiKey)
-        : undefined,
+        : localLlmApiKeyEnv === undefined
+          ? undefined
+          : readEnvVar(localLlmApiKeyEnv),
+    localLlmApiKeyEnv,
     localLlmHeaders:
       cfg.localLlmHeaders && typeof cfg.localLlmHeaders === "object" && !Array.isArray(cfg.localLlmHeaders)
         ? Object.fromEntries(
