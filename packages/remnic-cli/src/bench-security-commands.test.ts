@@ -56,7 +56,7 @@ test("unknown security subcommand is rejected", () => {
 });
 
 test("openai-compat help names host-isolated credential env vars", () => {
-  assert.match(BENCH_SECURITY_USAGE, /NVIDIA\/OpenAI hosts require https/);
+  assert.match(BENCH_SECURITY_USAGE, /api\.openai\.com \/ integrate\.api\.nvidia\.com require/);
   assert.match(BENCH_SECURITY_USAGE, /REMNIC_OPENAI_COMPAT_API_KEY/);
   assert.match(BENCH_SECURITY_USAGE, /loopback HTTP on 127\.0\.0\.1 or localhost/);
 });
