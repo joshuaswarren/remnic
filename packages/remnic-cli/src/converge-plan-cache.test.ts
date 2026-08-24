@@ -85,6 +85,8 @@ interface PeerMock {
   /** Namespaces whose manifest-stream was fetched (in order). */
   manifestStreamNamespaces: string[];
   snapshotNamespaces: string[];
+  /** Paths fetched through the legacy per-file content route (in order). */
+  fileContentPaths: string[];
   failManifestFor: Set<string>;
   onSnapshot?: (namespace: string) => void;
 }
@@ -92,16 +94,18 @@ interface PeerMock {
 function createPeerMock(
   filesByNamespace: Map<string, FixtureFile[]>,
   /** Advertised peer manifest revision; `undefined` models an unversioned peer. */
-  manifestRevision: string | undefined = "rev-1"
+  manifestRevision: string | undefined = "rev-1",
+  /** Advertise the streaming manifest route? `false` forces the per-file fallback. */
+  manifestStream = true
 ): PeerMock {
   const mock: PeerMock = {
-    fetchImpl: async (input) => {
+    fetchImpl: async (input, init) => {
       const url = new URL(String(input));
       if (url.pathname.endsWith("/offline-sync/capabilities")) {
         return Response.json({
           version: 1,
           convergenceFinalization: true,
-          manifestStream: true,
+          manifestStream,
           ...(manifestRevision !== undefined ? { manifestRevision } : {}),
         });
       }
@@ -109,12 +113,19 @@ function createPeerMock(
       if (url.pathname.endsWith("/offline-sync/snapshot")) {
         mock.snapshotNamespaces.push(namespace);
         mock.onSnapshot?.(namespace);
-        const files = (filesByNamespace.get(namespace) ?? []).map((file) => ({
-          path: file.path,
-          sha256: createHash("sha256").update(file.content).digest("hex"),
-          bytes: Buffer.byteLength(file.content),
-          mtimeMs: 2000,
-        }));
+        // Real servers include transcript files unless the request pins
+        // include_transcripts=false: manifests and transfers always exclude
+        // them, so a transcript-inclusive snapshot describes a DIFFERENT
+        // file set than the manifest it validates (#2927).
+        const includeTranscripts = url.searchParams.get("include_transcripts") !== "false";
+        const files = (filesByNamespace.get(namespace) ?? [])
+          .filter((file) => includeTranscripts || file.path.split("/")[0] !== "transcripts")
+          .map((file) => ({
+            path: file.path,
+            sha256: createHash("sha256").update(file.content).digest("hex"),
+            bytes: Buffer.byteLength(file.content),
+            mtimeMs: 2000,
+          }));
         return Response.json({ files, tombstones: [] });
       }
       if (url.pathname.endsWith("/offline-sync/manifest-stream")) {
@@ -125,7 +136,9 @@ function createPeerMock(
         const rows = [
           JSON.stringify({ type: "manifest", namespace, format: "remnic-reconcile-manifest", schemaVersion: 1 }),
         ];
-        for (const file of filesByNamespace.get(namespace) ?? []) {
+        for (const file of (filesByNamespace.get(namespace) ?? []).filter(
+          (entry) => entry.path.split("/")[0] !== "transcripts"
+        )) {
           const body = file.content.split("---\n")[2] ?? "";
           rows.push(
             JSON.stringify({
@@ -147,10 +160,35 @@ function createPeerMock(
         }
         return new Response([...rows, ""].join("\n"));
       }
+      if (url.pathname.endsWith("/offline-sync/file-content")) {
+        const request = JSON.parse(String(init?.body)) as {
+          namespace: string;
+          path: string;
+          offset: number;
+          length: number;
+        };
+        const file = (filesByNamespace.get(request.namespace) ?? []).find(
+          (entry) => entry.path === request.path
+        );
+        if (!file) return new Response(null, { status: 404 });
+        mock.fileContentPaths.push(request.path);
+        const content = Buffer.from(file.content, "utf8");
+        const chunk = content.subarray(request.offset, request.offset + request.length);
+        return new Response(chunk, {
+          headers: {
+            "x-remnic-chunk-offset": String(request.offset),
+            "x-remnic-chunk-bytes": String(chunk.length),
+            "x-remnic-file-bytes": String(content.length),
+            "x-remnic-file-mtime-ms": "2000",
+            "x-remnic-file-sha256": createHash("sha256").update(content).digest("hex"),
+          },
+        });
+      }
       return new Response(null, { status: 404 });
     },
     manifestStreamNamespaces: [],
     snapshotNamespaces: [],
+    fileContentPaths: [],
     failManifestFor: new Set(),
   };
   return mock;
@@ -424,3 +462,148 @@ test("converge plan: peer cache entries are keyed by the peer's advertised manif
     await fs.rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("converge plan: warm peer reuse requires the snapshot to request the manifest's transcript set (#2927)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-transcripts-"));
+  try {
+    // The local replica and the converged set are transcript-free; the peer
+    // ALSO holds a transcript file that only transcript-inclusive snapshots
+    // expose. A correct client never sees it.
+    const corpus = convergedCorpus();
+    await writeLocalCorpus(memoryDir, corpus);
+    const peerCorpus = new Map(corpus);
+    peerCorpus.set("alpha", [
+      ...(corpus.get("alpha") ?? []),
+      { path: "transcripts/2026-08-01/alpha-day.md", content: "transcript body never converged" },
+    ]);
+
+    const snapshotUrls: string[] = [];
+    const recordingMock = () => {
+      const delegate = createPeerMock(peerCorpus);
+      return {
+        ...delegate,
+        fetchImpl: (async (input: RequestInfo | URL, init?: RequestInit) => {
+          if (new URL(String(input)).pathname.endsWith("/offline-sync/snapshot")) {
+            snapshotUrls.push(String(input));
+          }
+          return delegate.fetchImpl(input, init);
+        }) as typeof fetch,
+      };
+    };
+
+    const cold = recordingMock();
+    const coldPlan = await convergedPlan(memoryDir, cold);
+    assert.equal(coldPlan.converged, true, JSON.stringify(coldPlan.byNamespace));
+    assert.deepEqual(cold.manifestStreamNamespaces, ["alpha", "beta", "default", "shared"]);
+    assert.ok(snapshotUrls.length > 0, "cold run must fetch snapshots");
+
+    // Warm run: identical peer set ⇒ every namespace must hit the cache and
+    // skip the manifest stream. This is the exact condition that stayed
+    // false when the snapshot included transcripts the manifest excludes.
+    const warm = recordingMock();
+    const warmPlan = await convergedPlan(memoryDir, warm);
+    assert.equal(warmPlan.converged, true, JSON.stringify(warmPlan.byNamespace));
+    assert.deepEqual(warm.manifestStreamNamespaces, [], "warm run must reuse the cached peer manifests");
+
+    // Every snapshot request must pin the manifest's transcript set.
+    for (const url of snapshotUrls) {
+      assert.equal(new URL(url).searchParams.get("include_transcripts"), "false", url);
+    }
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: negative manifest rows keep their version stamps across warm cycles (#2927)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-negstamps-"));
+  const noIdFile = (name: string): FixtureFile => ({
+    path: `facts/2026-08-01/${name}.md`,
+    // Memory-shaped but WITHOUT an id: parses as a negative row whose "no
+    // identity" verdict is only cacheable while its stamps survive.
+    content: ["---", "category: fact", "---", `body for ${name} without an id`].join("\n"),
+  });
+  const corpus = new Map<string, FixtureFile[]>(NAMESPACES.map((namespace) => [namespace, []]));
+  corpus.set("default", [noIdFile("default-noid")]);
+  try {
+    await writeLocalCorpus(memoryDir, corpus);
+    // No streaming route: the fallback manifest build is where cached
+    // negative rows pay off, fetched one memory file at a time.
+    const cold = createPeerMock(corpus, "rev-1", false);
+    const coldPlan = await convergedPlan(memoryDir, cold);
+    assert.equal(coldPlan.converged, true, JSON.stringify(coldPlan.byNamespace));
+    const addFile = async (slug: string): Promise<string> => {
+      const file: FixtureFile = { path: `facts/2026-08-01/${slug}.md`, content: memoryFileBody(`body for ${slug}`) };
+      corpus.get("default")!.push(file);
+      const localPath = path.join(memoryDir, "namespaces", "default", file.path);
+      await fs.mkdir(path.dirname(localPath), { recursive: true });
+      await fs.writeFile(localPath, file.content);
+      return file.path;
+    };
+
+    // A new positive file changes the watermark, forcing a manifest-level
+    // rebuild through the cached rows. The UNCHANGED negative row must be
+    // reused from the peer cache instead of being reread — the exact
+    // regression dropped top-level stamps caused.
+    const secondPath = await addFile("second fact with an id");
+    const warm = createPeerMock(corpus, "rev-1", false);
+    await convergedPlan(memoryDir, warm);
+    assert.deepEqual(
+      warm.fileContentPaths,
+      [secondPath],
+      "unchanged negative row must not be reread on a warm cycle"
+    );
+
+    // An upgrade reclassifies: stale stamps on the cached negative row force
+    // a reread of a byte-identical file (the new file is fetched too; the
+    // current-stamped positive row stays reused).
+    await mutateCachedPeerRow(memoryDir, "default", (row) => {
+      row.normalizerVersion = 999;
+      row.identityResolutionVersion = 999;
+    });
+    const thirdPath = await addFile("third fact with an id");
+    const upgraded = createPeerMock(corpus, "rev-1", false);
+    await convergedPlan(memoryDir, upgraded);
+    assert.deepEqual(upgraded.fileContentPaths, ["facts/2026-08-01/default-noid.md", thirdPath]);
+
+    // A stampless (pre-upgrade) negative row is never reused either.
+    await mutateCachedPeerRow(memoryDir, "default", (row) => {
+      delete row.normalizerVersion;
+      delete row.identityResolutionVersion;
+    });
+    const fourthPath = await addFile("fourth fact with an id");
+    const stampless = createPeerMock(corpus, "rev-1", false);
+    await convergedPlan(memoryDir, stampless);
+    assert.deepEqual(stampless.fileContentPaths, ["facts/2026-08-01/default-noid.md", fourthPath]);
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+async function mutateCachedPeerRow(
+  memoryDir: string,
+  namespace: string,
+  mutate: (row: Record<string, unknown>) => void
+): Promise<void> {
+  const root = convergePlanCacheRoot(memoryDir);
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    for (const name of await fs.readdir(dir)) {
+      const entryPath = path.join(dir, name);
+      if ((await fs.stat(entryPath)).isDirectory()) {
+        stack.push(entryPath);
+        continue;
+      }
+      if (!name.startsWith("peer-")) continue;
+      const entry = JSON.parse(await fs.readFile(entryPath, "utf8")) as {
+        namespace?: string;
+        files?: Array<Record<string, unknown>>;
+      };
+      if (entry.namespace !== namespace) continue;
+      for (const row of entry.files ?? []) {
+        if (row.memory === undefined && typeof row.path === "string" && row.path.includes("noid")) mutate(row);
+      }
+      await fs.writeFile(entryPath, JSON.stringify(entry));
+    }
+  }
+}

@@ -131,8 +131,13 @@ export async function fetchPeerSnapshot(
 }> {
   const base = normalizePeerBaseUrl(peerUrl);
   const routes = [
-    `/remnic/v1/offline-sync/snapshot?namespace=${encodeURIComponent(namespace)}&content=false`,
-    `/engram/v1/offline-sync/snapshot?namespace=${encodeURIComponent(namespace)}&content=false`,
+    // The snapshot validates the cached peer manifest, whose file set
+    // excludes transcripts (the manifest-stream and transfer routes pin
+    // include_transcripts=false). Requesting the server's default
+    // transcript-inclusive set would make the watermark/fileCount cache
+    // check compare different sets and never hit (#2927).
+    `/remnic/v1/offline-sync/snapshot?namespace=${encodeURIComponent(namespace)}&include_transcripts=false&content=false`,
+    `/engram/v1/offline-sync/snapshot?namespace=${encodeURIComponent(namespace)}&include_transcripts=false&content=false`,
   ];
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
   let lastFailure = "no snapshot route responded";

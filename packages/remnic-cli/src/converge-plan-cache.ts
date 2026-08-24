@@ -187,12 +187,27 @@ function normalizeEntryFile(raw: unknown): ReconcileManifestFile | null {
       ...(contentHashAliases !== undefined ? { contentHashAliases } : {}),
     };
   }
+  // Negative rows (no `memory`) carry their invalidation stamps at the top
+  // level (#2927): dropping them made every warm run treat the cached "no
+  // identity" verdict as a miss and reread the file indefinitely. Never
+  // fabricate a `memory` here — a stampless negative row stays negative and
+  // simply misses, forcing a safe cold reparse.
+  const negativeNormalizerVersion =
+    memory === undefined && typeof raw.normalizerVersion === "number" ? raw.normalizerVersion : undefined;
+  const negativeIdentityResolutionVersion =
+    memory === undefined && typeof raw.identityResolutionVersion === "number"
+      ? raw.identityResolutionVersion
+      : undefined;
   return {
     path: raw.path,
     sha256: raw.sha256,
     ...(mtimeMs !== undefined ? { mtimeMs } : {}),
     ...(bytes !== undefined ? { bytes } : {}),
     ...(memory ? { memory } : {}),
+    ...(negativeNormalizerVersion !== undefined ? { normalizerVersion: negativeNormalizerVersion } : {}),
+    ...(negativeIdentityResolutionVersion !== undefined
+      ? { identityResolutionVersion: negativeIdentityResolutionVersion }
+      : {}),
   };
 }
 

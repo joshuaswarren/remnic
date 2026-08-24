@@ -27,7 +27,7 @@ test("peer transport canonicalizes request URLs without credentials or request-o
 
   assert.equal(
     requestedUrl,
-    "https://peer.example.com/Memory/remnic/v1/offline-sync/snapshot?namespace=default&content=false",
+    "https://peer.example.com/Memory/remnic/v1/offline-sync/snapshot?namespace=default&include_transcripts=false&content=false",
   );
   assert.ok(requestSignal instanceof AbortSignal);
 });
