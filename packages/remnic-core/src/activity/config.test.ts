@@ -244,3 +244,26 @@ test("an enabled vault rejects relative or whitespace-only vaultPath at config l
   const inert = parseActivityConfig({ timeline: { vault: { enabled: false, vaultPath: "." } } });
   assert.equal(inert.timeline.vault.vaultPath, ".");
 });
+
+test("insertUnderHeading must be a trimmed single-line heading (#2917)", () => {
+  for (const insertUnderHeading of ["   ", "  Journal  ", "Journal\nExtra"]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { vault: { insertUnderHeading } } }),
+      /insertUnderHeading must be a non-empty trimmed single-line heading/,
+      `value ${JSON.stringify(insertUnderHeading)} must be rejected`,
+    );
+  }
+  const ok = parseActivityConfig({ timeline: { vault: { insertUnderHeading: "Journal" } } });
+  assert.equal(ok.timeline.vault.insertUnderHeading, "Journal");
+});
+
+test("readback.journalSection must be a trimmed single-line heading (#2917)", () => {
+  for (const journalSection of ["  Journal  ", "Journal\r\nExtra"]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { vault: { readback: { journalSection } } } }),
+      /journalSection must be a non-empty trimmed single-line heading/,
+    );
+  }
+  const ok = parseActivityConfig({ timeline: { vault: { readback: { journalSection: "Journal" } } } });
+  assert.equal(ok.timeline.vault.readback.journalSection, "Journal");
+});
