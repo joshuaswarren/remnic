@@ -59,3 +59,14 @@ export function parseSharedWriteOutputControls(raw: unknown): SharedWriteOutputC
   }
   return controls;
 }
+
+const WRITE_INPUT_PREFIXES = [
+  "shared-context write origin mismatch",
+  "applyDefaultEnvelope:",
+  "composeWriteEnvelope:",
+  "shared-context write output:",
+] as const;
+
+export function isSharedContextWriteInputError(message: string): boolean {
+  return WRITE_INPUT_PREFIXES.some((prefix) => message.startsWith(prefix));
+}

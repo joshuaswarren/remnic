@@ -35,6 +35,7 @@ import { ReplicaDivergenceMonitor } from "./replica-divergence.js";
 import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 import { buildAccessWriteRequestFingerprint, buildObserveRequestFingerprint } from "./write-envelope.js";
 import { UNATTRIBUTED_ACCESS_WRITE_ORIGIN } from "./shared-context/envelope-io.js";
+import { isSharedContextWriteInputError } from "./shared-context/write-output-controls.js";
 export type { EngramAccessHealthResponse, EngramAccessQmdCollectionState, EngramAccessQmdHealthResponse };
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import {
@@ -4595,10 +4596,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     agentId: string;
     title: string;
     content: string;
-    /** Envelope controls (issue #2920). Validated by composeWriteEnvelope. */
-    authority?: string;
-    expiresAt?: string;
-    supersedes?: string;
+    authority?: string; expiresAt?: string; supersedes?: string;
     /** Authenticated principal resolved by the surface, never client-supplied. */
     principal?: string;
   }): Promise<unknown> {
@@ -4614,27 +4612,13 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
         authority: request.authority,
         expiresAt: request.expiresAt,
         supersedes: request.supersedes,
-        // The origin is server-owned in BOTH cases (issue #1957 review
-        // round 4): the authenticated principal when one resolved, and a
-        // reserved unattributed token otherwise — a principal-less
-        // authenticated request must never stamp the client's `agentId`
-        // as audit metadata. The client label survives only as the
-        // producer, which feeds grouping and display, never authority.
         ...(request.principal
           ? { authenticatedIdentity: request.principal }
           : { unattributedOrigin: UNATTRIBUTED_ACCESS_WRITE_ORIGIN }),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // Envelope validation failures (authority allow-list, binding gate,
-      // expiry TTL policy, supersedes id shape, surface-parse policy) are
-      // client input errors — 400, never a 500 (issue #2920).
-      if (
-        message.startsWith("shared-context write origin mismatch")
-        || message.startsWith("applyDefaultEnvelope:")
-        || message.startsWith("composeWriteEnvelope:")
-        || message.startsWith("shared-context write output:")
-      ) {
+      if (isSharedContextWriteInputError(message)) {
         throw new EngramAccessInputError(message);
       }
       throw error;
