@@ -195,6 +195,7 @@ import { runRecallNavigateCommand } from "./commands/recall-navigate.js";
 // optional-weclone-export.ts for the install-hint behaviour.
 import { loadWecloneExportModule } from "./optional-weclone-export.js";
 import { cmdConverge } from "./converge.js";
+import { resolveCredentialChannel } from "./credential-channel.js";
 import {
   type ConfiguredNamespace,
   readConfiguredNamespace,
@@ -6514,18 +6515,38 @@ function resolveOfflineRemoteUrl(args: string[]): string {
   return parsed;
 }
 
-function resolveOfflineToken(args: string[]): string {
-  const token =
-    resolveRequiredValueFlag(args, "--token") ??
-    process.env.REMNIC_OFFLINE_TOKEN ??
-    process.env.REMNIC_AUTH_TOKEN ??
-    process.env.ENGRAM_AUTH_TOKEN;
-  if (!token || token.trim().length === 0) {
-    throw new Error(
-      "offline mode requires --token <token>, REMNIC_OFFLINE_TOKEN, or REMNIC_AUTH_TOKEN",
+/** Env credential chain for offline commands, highest precedence first (#2831). */
+const OFFLINE_TOKEN_ENV_NAMES = ["REMNIC_OFFLINE_TOKEN", "REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN"] as const;
+
+/**
+ * Resolve the offline bearer token through the shared credential channel
+ * (#2831): --token > --token-file > REMNIC_OFFLINE_TOKEN > REMNIC_AUTH_TOKEN
+ * > ENGRAM_AUTH_TOKEN. Every PRESENT source is validated for all four offline
+ * subcommands — status included, so a bad --token-file or an empty env
+ * credential is reported even where no network call happens. Absence is not
+ * an error here; the remote-hitting callers (prepare/sync/watch) require the
+ * token themselves.
+ */
+function resolveOfflineToken(args: string[]): string | undefined {
+  const channel = resolveCredentialChannel(
+    {
+      argvToken: resolveRequiredValueFlag(args, "--token"),
+      tokenFile: resolveRequiredValueFlag(args, "--token-file"),
+      envNames: OFFLINE_TOKEN_ENV_NAMES,
+    },
+    process.env
+  );
+  if (!channel.ok) {
+    throw new Error(`offline: ${channel.error}`);
+  }
+  if (channel.tokenFromArgv) {
+    // Warn once per invocation — resolution runs exactly once per command —
+    // and never echo the value: the warning itself must not leak the token.
+    process.stderr.write(
+      "offline: note: --token is argv-visible; prefer --token-file or REMNIC_OFFLINE_TOKEN\n"
     );
   }
-  return token.trim();
+  return channel.token?.trim();
 }
 
 function offlineEndpoint(
@@ -8759,7 +8780,9 @@ async function cmdOffline(action: string, rest: string[], json: boolean): Promis
 
 Options:
   --remote-url <url>       Remote Remnic server URL, e.g. http://home:4242 (--remote alias accepted)
-  --token <token>          Bearer token for the remote server
+  --token <token>          Bearer token for the remote server (argv-visible;
+                           prefer --token-file or the env fallbacks)
+  --token-file <path>      Read the bearer token from a 0600 regular file
   --namespace <name>       Namespace to sync
   --memory-dir <dir>       Local memory dir (defaults to resolved memoryDir)
   --state <path>           Override offline sync state file
@@ -8771,7 +8794,9 @@ Options:
   --json                   JSON output
 
 Environment fallbacks:
-  REMNIC_OFFLINE_REMOTE_URL, REMNIC_OFFLINE_TOKEN, REMNIC_AUTH_TOKEN`);
+  REMNIC_OFFLINE_REMOTE_URL, REMNIC_OFFLINE_TOKEN, REMNIC_AUTH_TOKEN,
+  ENGRAM_AUTH_TOKEN (legacy). Token precedence: --token > --token-file >
+  REMNIC_OFFLINE_TOKEN > REMNIC_AUTH_TOKEN > ENGRAM_AUTH_TOKEN.`);
     return;
   }
 
@@ -8798,7 +8823,11 @@ Environment fallbacks:
   const remoteUrl = needsRemote
     ? resolveOfflineRemoteUrl(rest)
     : resolveOptionalOfflineRemoteUrl(rest);
-  const token = needsRemote ? resolveOfflineToken(rest) : undefined;
+  // All four offline subcommands validate credential sources through the
+  // shared channel (#2831) — status included. Unknown actions fall through
+  // to the usage banner below; they must not die on flag parsing first.
+  const knownAction = needsRemote || action === "status";
+  const token = knownAction ? resolveOfflineToken(rest) : undefined;
   const statePath = statePathExplicit
     ? path.resolve(expandTilde(stateOverride))
     : remoteUrl !== undefined

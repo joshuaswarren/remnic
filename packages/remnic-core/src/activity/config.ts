@@ -2,13 +2,18 @@ import path from "node:path";
 
 import { coerceBooleanLike, coerceNumber } from "../connectors/coerce.js";
 import { assertValidTimezone } from "./digest.js";
+import { applyLegacyJournalHeading } from "./journal-heading.js";
+import { checkVaultJournalPrerequisites } from "./journal-vault-prereq.js";
 import { resolveJournalSource } from "./journal-source.js";
 import { validateVaultNoteTemplate } from "./vault-path.js";
 import { validateRegionName } from "./vault-region.js";
+import { TIMELINE_ANALYSIS_DEFAULT_TIMEOUT_MS } from "./timeline/analysis.js";
+import { ANALYSIS_METADATA_MAX_FIELD_LENGTH, isAnalysisIdentifier } from "./timeline/analysis-metadata.js";
 import type {
   ActivityConfig,
   ActivityExtractionMode,
   ActivitySourceConfig,
+  ActivityTimelineAnalysisConfig,
   ActivityTimelineConfig,
   ActivityTimelineJournalConfig,
   ActivityTimelineQaConfig,
@@ -38,7 +43,8 @@ export function defaultActivityConfig(): ActivityConfig {
     maxMemoriesPerDay: 0,
     timeline: {
       enabled: false,
-      journal: { enabled: false, source: "file" },
+      analysis: parseTimelineAnalysisConfig(undefined),
+      journal: { enabled: false, source: "memoryDir", extractionMode: "off" },
       qa: { enabled: false, maxRangeDays: 31 },
       vault: parseTimelineVaultConfig(undefined),
     },
@@ -215,7 +221,8 @@ function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
   if (raw === undefined) {
     return {
       enabled: false,
-      journal: { enabled: false, source: "file" },
+      analysis: parseTimelineAnalysisConfig(undefined),
+      journal: { enabled: false, source: "memoryDir", extractionMode: "off" },
       qa: parseTimelineQaConfig(undefined),
       vault: parseTimelineVaultConfig(undefined),
     };
@@ -228,11 +235,123 @@ function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
   if (timeline.enabled !== undefined && enabledValue === undefined) {
     throw new TypeError("activity.timeline.enabled must be a boolean");
   }
+  const journal = parseTimelineJournalConfig(timeline.journal);
+  let vault = parseTimelineVaultConfig(timeline.vault);
+  const journalRaw = timeline.journal;
+  const headingRaw =
+    typeof journalRaw === "object" && journalRaw !== null && !Array.isArray(journalRaw)
+      ? (journalRaw as Record<string, unknown>).heading
+      : undefined;
+  if (headingRaw !== undefined) {
+    const aliased = applyLegacyJournalHeading({
+      journalSection: vault.readback.journalSection,
+      heading: headingRaw,
+    });
+    process.emitWarning(
+      aliased.ignoredLegacyHeading
+        ? 'activity.timeline.journal.heading is deprecated and ignored because activity.timeline.vault.readback.journalSection is set; use vault.readback.journalSection.'
+        : 'activity.timeline.journal.heading is deprecated; use activity.timeline.vault.readback.journalSection.',
+      { type: "DeprecationWarning", code: "REMNIC_DEP_JOURNAL_HEADING" },
+    );
+    if (aliased.usedLegacyHeading) {
+      vault = { ...vault, readback: { ...vault.readback, journalSection: aliased.journalSection } };
+    }
+  }
+  if (journal.source === "vault") {
+    // Parse-time prerequisite gate (issue #1987): the error names EVERY
+    // missing prerequisite, never just the first (§1/§39).
+    const prereq = checkVaultJournalPrerequisites({
+      vaultEnabled: vault.enabled,
+      dailyNotePath: vault.dailyNotePath,
+      journalSection: vault.readback.journalSection,
+    });
+    if (!prereq.ok) {
+      throw new RangeError(
+        `activity.timeline.journal.source "vault" requires ${prereq.message}`,
+      );
+    }
+  }
   return {
     enabled: enabledValue ?? false,
-    journal: parseTimelineJournalConfig(timeline.journal),
+    analysis: parseTimelineAnalysisConfig(timeline.analysis),
+    journal,
     qa: parseTimelineQaConfig(timeline.qa),
-    vault: parseTimelineVaultConfig(timeline.vault),
+    vault,
+  };
+}
+
+/**
+ * Parse the `activity.timeline.analysis.*` block (issue #2050). Independent
+ * gate, default off: disabled means zero provider calls and zero analysis
+ * artifacts. Enabling requires an explicit provider and model; every invalid
+ * value is rejected at parse time — never silently defaulted or fallen back.
+ */
+function parseTimelineAnalysisConfig(raw: unknown): ActivityTimelineAnalysisConfig {
+  if (raw === undefined) return { enabled: false };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new TypeError("activity.timeline.analysis must be an object");
+  }
+  const analysis = raw as Record<string, unknown>;
+  const enabled = requireBool(analysis.enabled, "activity.timeline.analysis.enabled", false);
+  const provider = optionalNonEmptyString(analysis.provider, "activity.timeline.analysis.provider")?.trim();
+  const model = optionalNonEmptyString(analysis.model, "activity.timeline.analysis.model")?.trim();
+  for (const [key, value] of [
+    ["provider", provider],
+    ["model", model],
+  ] as const) {
+    if (value === undefined) continue;
+    if (key === "provider" && value.includes("/")) {
+      throw new RangeError(
+        "activity.timeline.analysis.provider must be a single provider segment (no '/')",
+      );
+    }
+    if (!isAnalysisIdentifier(value)) {
+      throw new RangeError(
+        `activity.timeline.analysis.${key} must be an identifier (letters, digits, and ._:-/ only)`,
+      );
+    }
+    if (value.length > ANALYSIS_METADATA_MAX_FIELD_LENGTH) {
+      throw new RangeError(
+        `activity.timeline.analysis.${key} must be at most ${ANALYSIS_METADATA_MAX_FIELD_LENGTH} characters`,
+      );
+    }
+  }
+  if (enabled && (provider === undefined || model === undefined)) {
+    throw new RangeError(
+      "activity.timeline.analysis.provider and model are required when analysis is enabled",
+    );
+  }
+  const timeoutMsValue = coerceNumber(analysis.timeoutMs, "activity.timeline.analysis.timeoutMs");
+  if (analysis.timeoutMs !== undefined && timeoutMsValue === undefined) {
+    throw new TypeError("activity.timeline.analysis.timeoutMs must be a finite number");
+  }
+  const timeoutMs = timeoutMsValue ?? TIMELINE_ANALYSIS_DEFAULT_TIMEOUT_MS;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 120_000) {
+    throw new RangeError("activity.timeline.analysis.timeoutMs must be an integer from 1000 to 120000");
+  }
+  if (analysis.preferences !== undefined) {
+    if (!Array.isArray(analysis.preferences)) {
+      throw new TypeError("activity.timeline.analysis.preferences must be an array of strings");
+    }
+    if (analysis.preferences.length > 16) {
+      throw new RangeError("activity.timeline.analysis.preferences supports at most 16 entries");
+    }
+    for (const entry of analysis.preferences) {
+      if (typeof entry !== "string" || entry.trim().length === 0) {
+        throw new TypeError("activity.timeline.analysis.preferences entries must be non-empty strings");
+      }
+      if (entry.length > 200) {
+        throw new RangeError("activity.timeline.analysis.preferences entries must be at most 200 characters");
+      }
+    }
+  }
+  const preferences = analysis.preferences as string[] | undefined;
+  return {
+    enabled,
+    ...(provider === undefined ? {} : { provider }),
+    ...(model === undefined ? {} : { model }),
+    ...(analysis.timeoutMs !== undefined || timeoutMsValue !== undefined ? { timeoutMs } : {}),
+    ...(preferences === undefined ? {} : { preferences }),
   };
 }
 
@@ -312,6 +431,17 @@ export function parseTimelineVaultConfig(raw: unknown): ActivityTimelineVaultCon
   const propertiesRaw = vault.properties;
   const properties: ActivityTimelineVaultConfig["properties"] =
     propertiesRaw === undefined ? { mode: "off", prefix: "remnic_" } : parseVaultProperties(propertiesRaw);
+  const readbackRaw = vault.readback;
+  if (readbackRaw !== undefined && (typeof readbackRaw !== "object" || readbackRaw === null || Array.isArray(readbackRaw))) {
+    throw new TypeError("activity.timeline.vault.readback must be an object");
+  }
+  const readbackJournalSection = optionalNonEmptyString(
+    (readbackRaw as Record<string, unknown> | undefined)?.journalSection,
+    "activity.timeline.vault.readback.journalSection",
+  );
+  const readback = {
+    journalSection: readbackJournalSection ?? "",
+  };
 
   return {
     enabled,
@@ -323,6 +453,7 @@ export function parseTimelineVaultConfig(raw: unknown): ActivityTimelineVaultCon
     sectionStrategy,
     publish,
     insertUnderHeading,
+    readback,
     wikilinks,
     properties,
     autoPublish,
@@ -348,6 +479,7 @@ function defaultVaultConfig(): ActivityTimelineVaultConfig {
     wikilinks: { places: false, placesFolder: "Places" },
     properties: { mode: "off", prefix: "remnic_" },
     autoPublish: true,
+    readback: { journalSection: "" },
   };
 }
 
@@ -470,7 +602,7 @@ function parseVaultProperties(raw: unknown): ActivityTimelineVaultConfig["proper
 }
 
 function parseTimelineJournalConfig(raw: unknown): ActivityTimelineJournalConfig {
-  if (raw === undefined) return { enabled: false, source: "file" };
+  if (raw === undefined) return { enabled: false, source: "memoryDir", extractionMode: "off" };
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new TypeError("activity.timeline.journal must be an object");
   }
@@ -479,22 +611,22 @@ function parseTimelineJournalConfig(raw: unknown): ActivityTimelineJournalConfig
   if (journal.enabled !== undefined && enabledValue === undefined) {
     throw new TypeError("activity.timeline.journal.enabled must be a boolean");
   }
-  const heading = journal.heading;
-  if (heading !== undefined && typeof heading !== "string") {
-    throw new TypeError("activity.timeline.journal.heading must be a string");
-  }
-  const source = journal.source === undefined ? "file" : typeof journal.source === "string" ? journal.source : "";
-  const resolved = resolveJournalSource({ source, heading: heading ?? "" });
+  const source = journal.source === undefined ? "memoryDir" : typeof journal.source === "string" ? journal.source : "";
+  const resolved = resolveJournalSource({ source });
   if (!resolved.ok) {
-    if (resolved.error === "unknown_source") {
-      throw new RangeError('activity.timeline.journal.source must be one of "file", "vault"');
-    }
-    throw new RangeError('activity.timeline.journal.heading must be a non-empty string when source is "vault"');
+    throw new RangeError('activity.timeline.journal.source must be one of "memoryDir", "vault"');
   }
-  if (resolved.mode === "vault") {
-    return { enabled: enabledValue ?? false, source: "vault", heading: resolved.heading };
+  if (resolved.deprecatedAlias === "file") {
+    process.emitWarning(
+      'activity.timeline.journal.source "file" is deprecated; use "memoryDir".',
+      { type: "DeprecationWarning", code: "REMNIC_DEP_JOURNAL_SOURCE_FILE" },
+    );
   }
-  return { enabled: enabledValue ?? false, source: "file" };
+  const extractionMode = journal.extractionMode === undefined ? "off" : journal.extractionMode;
+  if (extractionMode !== "off" && extractionMode !== "review") {
+    throw new RangeError('activity.timeline.journal.extractionMode must be one of "off", "review"');
+  }
+  return { enabled: enabledValue ?? false, source: resolved.mode, extractionMode };
 }
 
 function parseTimelineQaConfig(raw: unknown): ActivityTimelineQaConfig {
