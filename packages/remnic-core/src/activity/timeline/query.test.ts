@@ -196,3 +196,74 @@ test("CLI runner accepts in-memory cards and does not need a store", async () =>
   assert.deepEqual(JSON.parse(out), { ok: false, error: "store_unreadable" });
   assert.equal(err, "");
 });
+
+test("CLI range validates the full request before loading production cards", async () => {
+  const windows: Array<{ from?: string; to?: string }> = [];
+  let err = "";
+  const io = {
+    stdout: { write: () => true },
+    stderr: { write: (chunk: string) => (err += chunk) },
+  };
+  const deps = {
+    cards: null,
+    qa: { enabled: true, maxRangeDays: 1 },
+    timelineEnabled: true,
+    loadCards: async (window: { from?: string; to?: string }) => {
+      windows.push(window);
+      return [];
+    },
+  };
+  const overWide = await runTimelineCliCommand(
+    deps,
+    ["range", "--from", "2026-01-01T00:00:00.000Z", "--to", "2026-06-01T00:00:00.000Z"],
+    io,
+  );
+  assert.equal(overWide, 1);
+  assert.match(err, /maxRangeDays \(1\)/);
+  err = "";
+  const reversed = await runTimelineCliCommand(
+    deps,
+    ["range", "--from", "2026-06-01T00:00:00.000Z", "--to", "2026-01-01T00:00:00.000Z"],
+    io,
+  );
+  assert.equal(reversed, 1);
+  assert.match(err, /reversed range/);
+  err = "";
+  const malformed = await runTimelineCliCommand(
+    deps,
+    ["range", "--from", "not-a-date", "--to", "2026-01-02T00:00:00.000Z"],
+    io,
+  );
+  assert.equal(malformed, 1);
+  assert.match(err, /must be an ISO date or datetime/);
+  assert.deepEqual(windows, [], "an invalid range must never reach the card loader");
+});
+
+test("CLI search validates bounds before loading and passes an unbounded window through", async () => {
+  const windows: Array<{ from?: string; to?: string }> = [];
+  let err = "";
+  const io = {
+    stdout: { write: () => true },
+    stderr: { write: (chunk: string) => (err += chunk) },
+  };
+  const deps = {
+    cards: null,
+    qa: { enabled: true, maxRangeDays: 31 },
+    timelineEnabled: true,
+    loadCards: async (window: { from?: string; to?: string }) => {
+      windows.push(window);
+      return [];
+    },
+  };
+  const reversed = await runTimelineCliCommand(
+    deps,
+    ["search", "--query", "x", "--from", "2027-01-05T00:00:00.000Z", "--to", "2026-01-01T00:00:00.000Z"],
+    io,
+  );
+  assert.equal(reversed, 1);
+  assert.match(err, /reversed range/);
+  assert.deepEqual(windows, [], "invalid search bounds must never reach the card loader");
+  const unbounded = await runTimelineCliCommand(deps, ["search", "--query", "x"], io);
+  assert.equal(unbounded, 0);
+  assert.deepEqual(windows, [{ from: undefined, to: undefined }]);
+});
