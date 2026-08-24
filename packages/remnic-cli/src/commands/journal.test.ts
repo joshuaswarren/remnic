@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  FallbackLlmClient,
   StorageManager,
   commitJournalHash,
   createJournalMemoryWriter,
@@ -694,6 +695,89 @@ test("without a reindex hook the extraction deps carry no afterWrites", async ()
     const deps = createJournalCommandDeps(config, storage);
     assert.equal((await deps.extractionDeps()).afterWrites, undefined);
   } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("production extract invokes the configured gateway provider and model", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-journal-cli-gw-"));
+  const originalParse = FallbackLlmClient.prototype.parseWithSchemaDetailed;
+  const seen: Array<{ primary?: string; agentId?: string }> = [];
+  try {
+    const dayFile = path.join(memoryDir, "journal", "2026-08-20.md");
+    fs.mkdirSync(path.dirname(dayFile), { recursive: true });
+    fs.writeFileSync(dayFile, "I decided the configured gateway must reach extraction.\n");
+    const customPrimary = "journal-gw-test/custom-extract";
+    const config = parseConfig({
+      memoryDir,
+      modelSource: "gateway",
+      gatewayAgentId: "journal-extract-agent",
+      gatewayConfig: {
+        agents: {
+          defaults: { model: { primary: "other/default-model" } },
+          list: [{ id: "journal-extract-agent", model: { primary: customPrimary } }],
+        },
+        models: {
+          providers: {
+            "journal-gw-test": {
+              api: "openai-completions",
+              baseUrl: "http://127.0.0.1:9",
+              models: [{ id: "custom-extract", name: "custom-extract" }],
+            },
+            other: {
+              api: "openai-completions",
+              baseUrl: "http://127.0.0.1:9",
+              models: [{ id: "default-model", name: "default-model" }],
+            },
+          },
+        },
+      },
+      activity: {
+        timeline: { journal: { enabled: true, source: "memoryDir", extractionMode: "review" } },
+      },
+    });
+    FallbackLlmClient.prototype.parseWithSchemaDetailed = async function (
+      this: FallbackLlmClient,
+      _messages,
+      _schema,
+      options,
+    ) {
+      // Test-only inspection of the private config passed to the real client.
+      const clientWithGateway = this as unknown as { gatewayConfig?: {
+        agents?: { list?: Array<{ id: string; model?: { primary?: string } }> };
+      } };
+      const gatewayConfig = clientWithGateway.gatewayConfig;
+      const persona = gatewayConfig?.agents?.list?.find((agent) => agent.id === "journal-extract-agent");
+      seen.push({ primary: persona?.model?.primary, agentId: options?.agentId });
+      return {
+        modelUsed: customPrimary,
+        result: {
+          facts: [
+            {
+              content: "I decided the configured gateway must reach extraction.",
+              category: "decision",
+              confidence: 0.9,
+              tags: [],
+            },
+          ],
+          profileUpdates: [],
+          entities: [],
+          questions: [],
+        },
+      };
+    };
+    const storage = new StorageManager(config.memoryDir);
+    const result = await capture(
+      config,
+      ["extract", "--date", "2026-08-20"],
+      createJournalCommandDeps(config, storage),
+    );
+    assert.equal(result.code, 0);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.primary, customPrimary);
+    assert.equal(seen[0]?.agentId, "journal-extract-agent");
+  } finally {
+    FallbackLlmClient.prototype.parseWithSchemaDetailed = originalParse;
     rmSync(memoryDir, { recursive: true, force: true });
   }
 });

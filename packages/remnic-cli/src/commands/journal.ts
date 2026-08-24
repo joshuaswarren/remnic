@@ -77,7 +77,7 @@ function defaultDeps(
         );
       }
       await storage.ensureDirectories();
-      const engine = new ExtractionEngine(config);
+      const engine = new ExtractionEngine(config, undefined, undefined, config.gatewayConfig);
       return {
         extract: (turns: Parameters<JournalExtractionDeps["extract"]>[0]) => engine.extract(turns),
         writer: createJournalMemoryWriter(storage),
