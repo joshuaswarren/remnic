@@ -23,7 +23,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 
-import { parseTokenFileFlag, resolveCredentialChannel } from "./credential-channel.js";
+import { expandTokenFilePath, parseTokenFileFlag, resolveCredentialChannel } from "./credential-channel.js";
 import { runCli } from "./run-cli.js";
 
 const OFFLINE_ENV = ["REMNIC_OFFLINE_TOKEN", "REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN"] as const;
@@ -324,6 +324,135 @@ test("parseTokenFileFlag maps absent and empty values to null", () => {
   assert.equal(parseTokenFileFlag(undefined), null);
   assert.equal(parseTokenFileFlag(""), null);
   assert.equal(parseTokenFileFlag("/home/user/secrets/peer.token"), "/home/user/secrets/peer.token");
+});
+
+// ── Token-file path expansion (#2888) ────────────────────────────────────────
+
+test("expandTokenFilePath expands the documented leading forms against the injected env", () => {
+  const env = { HOME: "/home/alice" };
+  assert.deepEqual(expandTokenFilePath("~", env), { ok: true, path: "/home/alice" });
+  assert.deepEqual(expandTokenFilePath("~/.config/remnic/token", env), {
+    ok: true,
+    path: "/home/alice/.config/remnic/token",
+  });
+  assert.deepEqual(expandTokenFilePath("$HOME/t", env), { ok: true, path: "/home/alice/t" });
+  assert.deepEqual(expandTokenFilePath("${HOME}/t", env), { ok: true, path: "/home/alice/t" });
+  assert.deepEqual(expandTokenFilePath("$HOME", env), { ok: true, path: "/home/alice" });
+  assert.deepEqual(expandTokenFilePath("${HOME}", env), { ok: true, path: "/home/alice" });
+});
+
+test("expandTokenFilePath falls back to USERPROFILE when HOME is unset or empty", () => {
+  const env = { HOME: "", USERPROFILE: "C:\\Users\\JaneDoe" };
+  assert.deepEqual(expandTokenFilePath("~/t", env), { ok: true, path: "C:\\Users\\JaneDoe/t" });
+  assert.deepEqual(expandTokenFilePath("$HOME\\t", env), { ok: true, path: "C:\\Users\\JaneDoe\\t" });
+});
+
+test("expandTokenFilePath rejects unsupported '~user' and non-HOME variables", () => {
+  const env = { HOME: "/home/alice" };
+  for (const raw of ["~bob", "~bob/t", "~x", "$REMNIC_HOME/t", "${REMNIC_HOME}/t", "$HOMEx/t"]) {
+    const result = expandTokenFilePath(raw, env);
+    assert.equal(result.ok, false, raw);
+    assert.match(!result.ok ? result.error : "", /unsupported/, raw);
+  }
+});
+
+test("expandTokenFilePath rejects malformed variable syntax and an unset home", () => {
+  const env = { HOME: "/home/alice" };
+  for (const raw of ["$", "${}", "${HOME/t", "$/t", "$HOME$"]) {
+    assert.equal(expandTokenFilePath(raw, env).ok, false, raw);
+  }
+  const noHome = expandTokenFilePath("~/t", {});
+  assert.equal(noHome.ok, false);
+  assert.match(!noHome.ok ? noHome.error : "", /neither HOME nor USERPROFILE is set/);
+});
+
+test("expandTokenFilePath leaves plain and non-leading-sigil paths untouched", () => {
+  const env = { HOME: "/home/alice" };
+  for (const p of ["/etc/remnic/token", "rel/token", "/opt/x$HOME/y", "/opt/~note", "C:\\secrets\\t"]) {
+    assert.deepEqual(expandTokenFilePath(p, env), { ok: true, path: p });
+  }
+});
+
+test("a '~/', '$HOME/', or '${HOME}/' token file resolves through the safe open (#2888)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-token-home-"));
+  try {
+    const configDir = path.join(dir, ".config");
+    await mkdir(configDir, { recursive: true });
+    await makeTokenFile(configDir, "peer.token", "  file-secret\n");
+    for (const form of ["~/.config/peer.token", "$HOME/.config/peer.token", "${HOME}/.config/peer.token"]) {
+      const result = resolveCredentialChannel(
+        { argvToken: undefined, tokenFile: form, envNames: OFFLINE_ENV },
+        { HOME: dir }
+      );
+      assert.deepEqual(result, { ok: true, token: "file-secret", tokenFromArgv: false }, form);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an expanded '~/' path keeps the 0600 policy check (#2888)", async () => {
+  if (process.platform === "win32") return;
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-token-home-"));
+  try {
+    await makeTokenFile(dir, "open.token", "file-secret\n", 0o644);
+    const result = resolveCredentialChannel(
+      { argvToken: undefined, tokenFile: "~/open.token", envNames: OFFLINE_ENV },
+      { HOME: dir }
+    );
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.error : "", /must not be group- or world-readable/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an expanded '~/' path that is a symlink is still rejected (#2888)", async () => {
+  if (process.platform === "win32") return;
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-token-home-"));
+  try {
+    await makeTokenFile(dir, "real.token", "file-secret\n");
+    const link = path.join(dir, "link.token");
+    await symlink("real.token", link);
+    const result = resolveCredentialChannel(
+      { argvToken: undefined, tokenFile: "~/link.token", envNames: OFFLINE_ENV },
+      { HOME: dir }
+    );
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.error : "", /not a symlink/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unsupported token-file form is rejected before any filesystem access (#2888)", () => {
+  for (const [raw, pattern] of [
+    ["~root/.secret/t", /unsupported '~user' path/],
+    ["$TOKENFILE", /unsupported variable '\$TOKENFILE'/],
+  ] as const) {
+    const result = resolveCredentialChannel(
+      { argvToken: undefined, tokenFile: raw, envNames: OFFLINE_ENV },
+      { HOME: "/home/alice" }
+    );
+    assert.equal(result.ok, false, raw);
+    assert.match(!result.ok ? result.error : "", pattern, raw);
+  }
+});
+
+test("offline status accepts an unexpanded '~/' token-file path end to end (#2888)", async () => {
+  const configDir = path.join(tempHome, ".config");
+  await mkdir(configDir, { recursive: true });
+  const tokenFile = await makeTokenFile(configDir, "offline.token", "file-secret\n");
+  try {
+    const result = await runCli(["offline", "status", "--token-file", "~/.config/offline.token"], {
+      env: NO_TOKEN_ENV,
+    });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.stderr.includes("file-secret"), false);
+    assert.equal(result.stdout.includes("file-secret"), false);
+  } finally {
+    await rm(tokenFile, { force: true });
+  }
 });
 
 // ── Offline CLI routing tests ────────────────────────────────────────────────

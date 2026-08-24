@@ -7,6 +7,12 @@
  * and env are the operator-safe channels; --token still works but callers
  * should warn once per invocation and never echo the value.
  *
+ * Token-file paths are expanded before the safe open (#2888): the documented
+ * user-facing forms `~`, `~/`, `$HOME/`, and `${HOME}/` resolve through the
+ * injected env, any other `~user` or `$VAR` form is rejected outright, and
+ * plain paths pass through untouched. Expansion never weakens the open
+ * invariants below (O_NOFOLLOW/O_NONBLOCK, regular-file, mode, inode).
+ *
  * Precedence (--token > --token-file > env chain) is presence-tracked: an
  * EMPTY higher-precedence source is a hard error, never a silent fall-through
  * to a lower-precedence channel. `envNames` lets each command declare its own
@@ -31,6 +37,54 @@ export type CredentialChannelResult =
 /** Parse the --token-file flag value: a non-empty path, or null when absent/empty. */
 export function parseTokenFileFlag(raw: string | undefined): string | null {
   return raw !== undefined && raw.length > 0 ? raw : null;
+}
+
+/**
+ * Deterministic expansion for --token-file paths (#2888).
+ *
+ * Services and quoted launchers hand the CLI unexpanded documented forms
+ * (`~/.config/remnic/token`), which previously failed with ENOENT on a
+ * literal `~`. Mirrors the CLI's documented path forms (path-utils
+ * expandTilde): leading `~`/`$HOME`/`${HOME}` expand against the injected
+ * env; every other leading `~...` or `$VAR` form is REJECTED rather than
+ * silently opened as a literal pathname; paths without a leading sigil are
+ * returned unchanged.
+ */
+export type ExpandedTokenFilePath = { ok: true; path: string } | { ok: false; error: string };
+
+const LEADING_ENV_VAR = /^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/;
+
+export function expandTokenFilePath(raw: string, env: NodeJS.ProcessEnv): ExpandedTokenFilePath {
+  const home = (): ExpandedTokenFilePath => {
+    const dir = env.HOME || env.USERPROFILE;
+    return dir
+      ? { ok: true, path: dir }
+      : { ok: false, error: "cannot expand home directory: neither HOME nor USERPROFILE is set" };
+  };
+  if (raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\")) {
+    const h = home();
+    return h.ok ? { ok: true, path: h.path + raw.slice(1) } : h;
+  }
+  if (raw.startsWith("~")) {
+    return { ok: false, error: "unsupported '~user' path; use '~/' or an absolute path" };
+  }
+  if (raw.startsWith("$")) {
+    const match = LEADING_ENV_VAR.exec(raw);
+    const name = match?.[1] ?? match?.[2];
+    if (match && name !== undefined) {
+      if (name !== "HOME") {
+        return { ok: false, error: `unsupported variable '$${name}'; only \$HOME and \${HOME} are expanded` };
+      }
+      const rest = raw.slice(match[0].length);
+      if (rest !== "" && !rest.startsWith("/") && !rest.startsWith("\\")) {
+        return { ok: false, error: "malformed '$HOME' path; use '${HOME}' with a separator after the variable" };
+      }
+      const h = home();
+      return h.ok ? { ok: true, path: h.path + rest } : h;
+    }
+    return { ok: false, error: "malformed '$' path; only $HOME and ${HOME} are expanded" };
+  }
+  return { ok: true, path: raw };
 }
 
 /**
@@ -137,7 +191,11 @@ export function resolveCredentialChannel(
     if (input.tokenFile.length === 0) {
       return { ok: false, error: "--token-file requires a non-empty path" };
     }
-    return readTokenFileSameInode(input.tokenFile, hooks?.afterTokenFileValidated);
+    const expanded = expandTokenFilePath(input.tokenFile, env);
+    if (!expanded.ok) {
+      return { ok: false, error: `--token-file ${input.tokenFile}: ${expanded.error}` };
+    }
+    return readTokenFileSameInode(expanded.path, hooks?.afterTokenFileValidated);
   }
   for (const name of input.envNames) {
     const value = env[name];
