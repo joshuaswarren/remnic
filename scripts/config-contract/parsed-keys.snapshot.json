@@ -1649,6 +1649,7 @@
     "sessionObserverBands.map",
     "sharedContextAllowBindingAuthority.trim",
     "sharedContextDir.length",
+    "sharedContextEnabled.trim",
     "sharedNamespace.length",
     "subjectClassification.enabled.trim",
     "summaryModel.length",

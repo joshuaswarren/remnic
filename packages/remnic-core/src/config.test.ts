@@ -2699,3 +2699,22 @@ test("parseConfig coerces string-typed sharedContextAllowBindingAuthority from t
     );
   }
 });
+test("parseConfig coerces string-typed sharedContextEnabled from the CLI", () => {
+  // `--config sharedContextEnabled=true` arrives as a string, so a strict
+  // `=== true` silently left the feature off for anyone who enabled it.
+  // Parity with sharedContextAllowBindingAuthority (issue #2918).
+  for (const enabled of ["true", "1", "yes", "on", true]) {
+    assert.equal(
+      parseConfig({ sharedContextEnabled: enabled }).sharedContextEnabled,
+      true,
+      `${JSON.stringify(enabled)} must enable shared context`,
+    );
+  }
+  for (const disabled of ["false", "0", "no", "off", false, undefined, "", "garbage"]) {
+    assert.equal(
+      parseConfig({ sharedContextEnabled: disabled }).sharedContextEnabled,
+      false,
+      `${JSON.stringify(disabled)} must leave shared context off (malformed input never activates)`,
+    );
+  }
+});

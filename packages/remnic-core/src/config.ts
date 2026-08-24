@@ -3032,10 +3032,12 @@ export function parseConfig(
         ? cfg.routingRulesStateFile.trim()
         : "state/routing-rules.json",
 
-    // v4.0 shared-context (default off)
-    sharedContextEnabled: cfg.sharedContextEnabled === true,
-    // CLI values arrive as strings (`--config sharedContextAllowBindingAuthority=true`),
-    // so a strict `=== true` silently keeps the feature off. Default stays false.
+    // v4.0 shared-context (default off). CLI values arrive as strings
+    // (`--config sharedContextEnabled=true`), so a strict `=== true` silently
+    // kept the feature off for anyone who enabled it. Malformed input warns and
+    // stays off (never silently activates). Default stays false.
+    sharedContextEnabled: coerceBool(cfg.sharedContextEnabled, "sharedContextEnabled") ?? false,
+    // Same coercion contract for the binding-authority sibling (#2918 parity).
     sharedContextAllowBindingAuthority:
       coerceBool(cfg.sharedContextAllowBindingAuthority, "sharedContextAllowBindingAuthority") ?? false,
     sharedContextDir:
