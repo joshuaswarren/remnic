@@ -132,7 +132,9 @@ export function publishVaultNote(input: PublishVaultNoteInput): VaultPublishStat
   const propertyEntries: Array<{ key: string; value: VaultPropertyValue }> = [];
   for (const section of input.sections) {
     if (!section.properties) continue;
-    for (const [key, value] of Object.entries(section.properties)) {
+    for (const key of Object.keys(section.properties)) {
+      const value = section.properties[key];
+      if (value === undefined) continue;
       propertyEntries.push({ key: `${prefix}${key}`, value });
     }
   }
