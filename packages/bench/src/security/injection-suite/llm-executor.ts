@@ -2,7 +2,9 @@
  * Live-model executor for one H5 injection-suite row (#1962).
  *
  * Talks native Ollama /api/chat by default or an OpenAI-compatible
- * /v1/chat/completions endpoint. Network/5xx/timeout become
+ * /v1/chat/completions endpoint. openai-compat sends Authorization
+ * from OPENAI_API_KEY or NVIDIA_API_KEY and fails closed if neither
+ * is set; ollama stays unauthenticated. Network/5xx/timeout become
  * HOST_API_FAULT so the suite pauses instead of cutting the row.
  */
 
@@ -65,13 +67,40 @@ function trimSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-async function postJson(url: string, body: unknown, timeoutMs: number): Promise<unknown> {
+const OPENAI_COMPAT_TOKEN_ENV = Object.freeze(["OPENAI_API_KEY", "NVIDIA_API_KEY"] as const);
+
+function firstNonEmptyEnv(names: readonly string[]): string | undefined {
+  for (const name of names) {
+    const raw = process.env[name];
+    if (typeof raw !== "string") continue;
+    const trimmed = raw.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return undefined;
+}
+
+function resolveOpenAiCompatToken(): string {
+  const token = firstNonEmptyEnv(OPENAI_COMPAT_TOKEN_ENV);
+  if (token === undefined) {
+    throw new InjectionSuiteHostFault(
+      "openai-compat requires OPENAI_API_KEY or NVIDIA_API_KEY",
+    );
+  }
+  return token;
+}
+
+async function postJson(
+  url: string,
+  body: unknown,
+  timeoutMs: number,
+  extraHeaders?: Record<string, string>,
+): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...extraHeaders },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -95,12 +124,18 @@ export async function completeChat(
   const timeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const model = options.model ?? DEFAULT_OLLAMA_MODEL;
   if (options.kind === "openai-compat") {
+    const token = resolveOpenAiCompatToken();
     const base = trimSlash(options.baseUrl ?? DEFAULT_OPENAI_COMPAT_BASE_URL);
-    const json = await postJson(`${base}/chat/completions`, {
-      model,
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0,
-    }, timeoutMs) as { choices?: Array<{ message?: { content?: string } }> };
+    const json = await postJson(
+      `${base}/chat/completions`,
+      {
+        model,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0,
+      },
+      timeoutMs,
+      { Authorization: `Bearer ${token}` },
+    ) as { choices?: Array<{ message?: { content?: string } }> };
     const text = json.choices?.[0]?.message?.content;
     if (typeof text !== "string") throw new InjectionSuiteHostFault("openai-compat response missing content");
     return text;
