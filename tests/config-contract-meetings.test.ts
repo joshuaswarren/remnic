@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
@@ -119,4 +120,60 @@ test("contract check reports zero meetings violations and zero meetings grandfat
     [],
     "meetings keys grandfathered in scripts/config-contract/grandfathered.json — the contract may not carry meetings exceptions",
   );
+});
+
+test("raw duplicate meetings members fail closed before JSON.parse collapses them (#2940)", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "config-contract-dup-"));
+  try {
+    fs.writeFileSync(
+      path.join(root, "parser.ts"),
+      `
+type Rec = Record<string, unknown>;
+export function parseRootConfig(raw: unknown): Rec {
+  const cfg = raw && typeof raw === "object" ? (raw as Rec) : {};
+  const meetings = cfg.meetings && typeof cfg.meetings === "object" ? (cfg.meetings as Rec) : {};
+  return { meetings: { enabled: meetings.enabled === true } };
+}
+`,
+    );
+    // Raw text — JSON.stringify cannot emit the duplicate members this guards.
+    fs.writeFileSync(
+      path.join(root, "manifest.json"),
+      `{
+  "configSchema": {
+    "properties": {
+      "meetings": {
+        "type": "object",
+        "properties": { "enabled": { "type": "boolean" } }
+      },
+      "meetings": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "mergeGapMinutes": { "type": "number" }
+        }
+      }
+    }
+  }
+}
+`,
+    );
+    fs.writeFileSync(path.join(root, "docs.md"), "Config keys: `meetings.enabled`.\n");
+    assert.throws(
+      () =>
+        runContractCheck({
+          repoRoot: root,
+          entryFile: path.join(root, "parser.ts"),
+          entryFunction: "parseRootConfig",
+          includeFiles: [],
+          manifestPaths: [path.join(root, "manifest.json")],
+          docsPath: path.join(root, "docs.md"),
+          grandfatherPath: path.join(root, "grandfathered.json"),
+          checkGrandfatherBaseline: false,
+        }),
+      /duplicate JSON member "meetings"/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
