@@ -1,18 +1,9 @@
 {
+  "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "lib": [
-      "ES2022",
-      "ES2024.Promise"
-    ],
+    "lib": ["ES2022", "ES2024.Promise"],
+    "isolatedModules": false,
     "rootDir": ".",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
@@ -56,7 +47,6 @@
   },
   "include": [
     "src/**/*.ts",
-    "src/**/*.d.ts",
     "packages/remnic-core/src/**/*.ts"
   ],
   "exclude": [
