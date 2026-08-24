@@ -69,6 +69,8 @@ export interface PublishedBenchmarkFeedEntry {
     judgePromptHash: string;
     datasetHash: string;
     canaryScore?: number;
+    /** Effective canary floor persisted with the result (see meta.canaryFloor). */
+    canaryFloor?: number;
   };
 }
 
@@ -849,6 +851,9 @@ function toPublishedBenchmarkFeedEntry(
       datasetHash: result.meta.datasetHash,
       ...(result.meta.canaryScore !== undefined
         ? { canaryScore: result.meta.canaryScore }
+        : {}),
+      ...(result.meta.canaryFloor !== undefined
+        ? { canaryFloor: result.meta.canaryFloor }
         : {}),
     },
   };

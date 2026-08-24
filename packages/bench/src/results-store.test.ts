@@ -48,6 +48,9 @@ test("loadBenchmarkResult still rejects files missing the legacy identity floor"
 
 test("loadBenchmarkResult upgrades legacy files missing cost fields to zero-cost", async () => {
   const result: Record<string, unknown> = { ...validResult() };
+  // A true legacy shape carries no provenance markers. A modern artifact
+  // that merely lost cost fields keeps its provenance and must reject
+  // instead of upgrading, so strip the modern meta here.
   result.meta = {
     id: "run-valid",
     benchmark: "sample",
@@ -67,6 +70,26 @@ test("loadBenchmarkResult upgrades legacy files missing cost fields to zero-cost
     const loaded = await loadBenchmarkResult(filePath);
     assert.equal(loaded.cost.totalTokens, 0);
     assert.equal(loaded.cost.inputTokens, 0);
+  });
+});
+
+test("loadBenchmarkResult rejects a modern artifact that lost cost fields", async () => {
+  const result: Record<string, unknown> = { ...validResult() };
+  result.cost = {
+    inputTokens: 0,
+    outputTokens: 0,
+    estimatedCostUsd: 0,
+    totalLatencyMs: 0,
+    meanQueryLatencyMs: 0,
+  };
+
+  await withResultFile(result, async (filePath) => {
+    // Provenance markers claim the modern contract; a missing required
+    // cost field is corruption, not a legacy upgrade (issue #2885).
+    await assert.rejects(
+      () => loadBenchmarkResult(filePath),
+      /modern provenance\/integrity markers present; not a legacy artifact/,
+    );
   });
 });
 
