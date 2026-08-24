@@ -55,7 +55,8 @@ test("unknown security subcommand is rejected", () => {
   assert.throws(() => parseBenchSecurityArgs(["nope"]), /unknown bench security subcommand/);
 });
 
-test("openai-compat help names host-based OPENAI_API_KEY and NVIDIA_API_KEY order", () => {
-  assert.match(BENCH_SECURITY_USAGE, /NVIDIA \*\.nvidia\.com hosts prefer NVIDIA_API_KEY/);
-  assert.match(BENCH_SECURITY_USAGE, /OPENAI_API_KEY then NVIDIA_API_KEY/);
+test("openai-compat help names host-isolated credential env vars", () => {
+  assert.match(BENCH_SECURITY_USAGE, /NVIDIA hosts use NVIDIA_API_KEY/);
+  assert.match(BENCH_SECURITY_USAGE, /OpenAI hosts use\s+OPENAI_API_KEY/);
+  assert.match(BENCH_SECURITY_USAGE, /REMNIC_OPENAI_COMPAT_API_KEY/);
 });
