@@ -48,6 +48,12 @@ test("loadBenchmarkResult still rejects files missing the legacy identity floor"
 
 test("loadBenchmarkResult upgrades legacy files missing cost fields to zero-cost", async () => {
   const result: Record<string, unknown> = { ...validResult() };
+  result.meta = {
+    id: "run-valid",
+    benchmark: "sample",
+    timestamp: "2026-05-21T00:00:00.000Z",
+    mode: "quick",
+  };
   result.cost = {
     inputTokens: 0,
     outputTokens: 0,
