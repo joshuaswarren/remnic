@@ -17,8 +17,12 @@ import type { GraphEdge, GraphType } from "../graph.js";
 import { readFile } from "node:fs/promises";
 import { removeNodeEdgesForRewrite, rollbackNodeEdgeRewrite } from "../graph-jsonl.js";
 import {
+  attachCitation,
+  citationTemplateIsDetectable,
   citationTemplatesForMerge,
+  lastRecognizedCitationMarker,
   stripRecognizedCitations,
+  type CitationContext,
 } from "../source-attribution.js";
 import { resolvePipelineProcessingCapabilities } from "../capabilities.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
@@ -137,31 +141,85 @@ export async function readTargetSnapshot(
 
 /**
  * Undo a merged body whose provenance patch never landed, and report what is
- * actually true of storage afterwards: `true` means the target no longer holds
- * unprovenanced merged text, so the caller may honestly create the fact.
+ * actually true of storage afterwards:
+ *  - "reverted" — the target no longer holds this merge's unprovenanced text
+ *    (ours was restored away, or another writer already replaced the body
+ *  - "superseded" — the standing merged body is ANOTHER writer's commit
+ *    (#2813 P1): `committedRevision` names the receipt token OUR CAS minted,
+ *    the reread holds a different standing token, and a concurrent writer's
+ *    deterministic merge is byte-for-byte our merged text — so only the
+ *    token can attribute the standing record. Never revert theirs; the
+ *    caller discards its own staged duplicate and reports the degraded merge;
+ *  - "stands" — unverifiable (unreadable target), or the restore lost its
+ *    race, so assume the merged text stands and refuse to create a duplicate.
  *
- * Three states, because only one of them is ours to undo:
- *  - the body is still our merged text → restore the pre-merge body under a
- *    compare-and-swap on the re-read snapshot;
- *  - another writer already replaced it → nothing of ours remains, so the
- *    restore is skipped rather than clobbering that writer's body;
- *  - the target is unreadable → unverifiable, so assume the merged text stands
- *    and refuse to create a duplicate.
+ * `committedRevision` is the CAS commit receipt (markCasCommittedRevision,
+ * or the successful CAS's return value): the dedicated per-target revision
+ * token from the durable sidecar (#2807) — unique per commit even within one
+ * millisecond. Public `frontmatter.updated` never identifies a commit.
+ * Callers without identity omit it and keep the body-equality
+ * classification above.
  */
+export type RevertMergedContentResult = "reverted" | "superseded" | "stands";
+
 export async function revertMergedContent(
   storage: StorageManager,
   target: MemoryFile,
   mergedContent: string,
-): Promise<boolean> {
+  committedRevision?: string,
+): Promise<RevertMergedContentResult> {
   try {
     const current = await readTargetSnapshot(storage, target);
-    if (!current) return false;
-    if (current.content !== mergedContent) return true;
-    return await storage.updateMemoryIfUnchanged(current, target.content, {
+    if (!current) return "stands";
+    if (current.content !== mergedContent) return "reverted";
+    // #2813 (P1): the merged body standing is provably OURS only while the
+    // target still carries the revision token our CAS minted. A different
+    // token means a concurrent writer committed the same deterministic
+    // body after our lock was released — reverting would delete their valid
+    // merge while their provenance patch may already have landed.
+    if (committedRevision !== undefined) {
+      // #2813 (P1 B): the standing receipt is a THREE-WAY truth. Only a
+      // PROVEN foreign token may take the superseded path — that proof is
+      // what licenses discarding this writer's staged snapshot. The old
+      // fail-open read collapsed an unreadable sidecar into undefined,
+      // which classified as superseded and discarded the recovery
+      // snapshot on unproven grounds. Unavailable (transiently
+      // unreadable, or a reservation pending finalization) and absent
+      // (which cannot corroborate EITHER writer while this receipt is in
+      // hand) are keep-side: the degraded branch preserves the snapshot
+      // and reconciliation retries.
+      let standing: Awaited<ReturnType<StorageManager["readCasRevisionStatus"]>>;
+      try {
+        standing = await storage.readCasRevisionStatus(target.path);
+      } catch (err) {
+        standing = {
+          status: "unavailable",
+          reason: err instanceof Error ? err.message : String(err),
+        };
+      }
+      if (standing.status === "present") {
+        if (standing.revision !== committedRevision) {
+          return "superseded";
+        }
+      } else if (standing.status === "unavailable") {
+        log.warn(
+          `revertMergedContent: CAS revision status for ${target.path} is unavailable (${standing.reason}); ownership cannot be verified — keeping the recovery snapshot instead of discarding or reverting`,
+        );
+        return "stands";
+      } else {
+        log.warn(
+          `revertMergedContent: CAS revision receipt for ${target.path} is absent although this writer holds receipt ${committedRevision}; ownership cannot be verified — keeping the recovery snapshot`,
+        );
+        return "stands";
+      }
+    }
+    return (await storage.updateMemoryIfUnchanged(current, target.content, {
       actor: "semantic-merge-rollback",
-    });
+    }))
+      ? "reverted"
+      : "stands";
   } catch {
-    return false;
+    return "stands";
   }
 }
 
@@ -225,12 +283,13 @@ export async function rewriteMergedTargetGraphEdges(
   storage: {
     dir: string;
     getMemoryByIdIncludingArchived: (id: string) => Promise<MemoryFile | null>;
+    readCasRevision: (filePath: string) => Promise<string | undefined>;
   },
   input: {
     targetId: string;
     memoryRelPath: string;
     mergedContent: string;
-    /** The frontmatter `updated` value the committed-body check validated. */
+    /** The CAS revision token the committed-body check observed. */
     revisionChecked: string | undefined;
     rewriteTypes: readonly GraphType[];
     build: () => Promise<GraphEdge[] | void>;
@@ -247,10 +306,14 @@ export async function rewriteMergedTargetGraphEdges(
   try {
     appended = (await input.build()) ?? undefined;
     const committedNow = await storage.getMemoryByIdIncludingArchived(input.targetId);
+    const committedRevision = committedNow === null ? undefined : await storage.readCasRevision(committedNow.path).catch((err) => {
+      log.warn(`rewriteMergedTargetGraphEdges: failed to read CAS revision for ${committedNow.path}: ${err}`);
+      return undefined;
+    });
     if (
       !committedNow ||
       committedNow.content !== input.mergedContent ||
-      committedNow.frontmatter.updated !== input.revisionChecked
+      committedRevision !== input.revisionChecked
     ) {
       await rollbackNodeEdgeRewrite(storage.dir, input.memoryRelPath, input.rewriteTypes, removedEdges, input.targetId, appended);
       return false;
@@ -267,6 +330,41 @@ export async function rewriteMergedTargetGraphEdges(
     );
     throw buildErr;
   }
+}
+
+/**
+ * Round N+7 (C) + #2916: the citation form of the committed merged body.
+ * A liftable incoming marker still wins. The fallback attaches only when
+ * the current template can be re-matched later. An already-recognized
+ * marker — current, default, or a prior configured format still in
+ * history — is left in place so a template change does not duplicate it.
+ * All-placeholder templates cannot be stripped, so they are not attached.
+ */
+export function committedMergedBody(
+  deps: ExtractionPersistDeps,
+  mergedContent: string,
+  incomingCitedContent: string | undefined,
+  incomingCitationContext: Omit<CitationContext, "ts"> | undefined,
+  nowIso: string,
+): string {
+  if (resolvePipelineProcessingCapabilities(deps.config).inlineSourceAttribution !== true) {
+    return mergedContent;
+  }
+  const template = deps.config.inlineSourceAttributionFormat;
+  const templates = citationTemplatesForMerge(deps.config);
+  if (incomingCitedContent !== undefined) {
+    const marker = lastRecognizedCitationMarker(incomingCitedContent, templates);
+    if (marker) {
+      return mergedContent.endsWith(marker) ? mergedContent : `${mergedContent} ${marker}`;
+    }
+  }
+  if (!citationTemplateIsDetectable(template)) return mergedContent;
+  if (lastRecognizedCitationMarker(mergedContent, templates)) return mergedContent;
+  return attachCitation(
+    mergedContent,
+    { ...incomingCitationContext, ts: nowIso },
+    template,
+  );
 }
 
 /**

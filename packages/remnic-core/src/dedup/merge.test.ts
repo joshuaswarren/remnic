@@ -47,7 +47,8 @@ import {
   type MergeJudgeRawVerdict,
 } from "./merge.js";
 import type { SemanticDedupHit } from "./semantic.js";
-import { invalidationCommitFingerprint } from "../storage/deletion-revision-store.js";
+import { invalidationCommitFingerprint, isSemanticFrontmatterChange, markCasCommittedRevision, nextCasRevisionIso } from "../storage/deletion-revision-store.js";
+import type { CasRevisionReadStatus } from "../storage/cas-revision-store.js";
 import { attachCitation } from "../source-attribution.js";
 
 // The merge snapshot trigger must stay a literal union: a widened
@@ -456,7 +457,7 @@ interface MergeHarness {
   storage: StorageManager;
   target: MemoryFile;
   /** Simulate another writer committing a new body to the target. */
-  setTargetContent: (content: string) => Promise<void>;
+  setTargetContent: (content: string, revision?: string) => Promise<string>;
   calls: {
     contentUpdates: Array<{ id: string; content: string; actor?: string }>;
     frontmatterPatches: Array<{ id: string; patch: Partial<MemoryFrontmatter>; actor?: string }>;
@@ -465,6 +466,8 @@ interface MergeHarness {
     hashRegistrations: Array<{ id: string; hash: string }>;
     reindexed: string[];
     lookupStorages: string[];
+    /** Every revision `commit()` stamped, in order — [0] is the content CAS's receipt. */
+    commitRevisions: string[];
   };
 }
 
@@ -507,6 +510,15 @@ async function harness(
     targetMemoryKind?: MemoryFrontmatter["memoryKind"];
     /** Stamp stale intent routing fields on the target's frontmatter (round N+3 A). */
     targetIntent?: { goal: string; actionType: string; entityTypes: string[] };
+    /** Seed `updated` on the target's frontmatter (receipt-clock tests). */
+    targetUpdated?: string;
+    /**
+     * Model what StorageManager.writeMemoryFrontmatter does on success: the
+     * accepted patch becomes the standing record's frontmatter — INCLUDING
+     * `updated` — so a patch that regresses the revision below an issued CAS
+     * receipt is observable (#2813 P1, round 3).
+     */
+    applyFrontmatterPatches?: boolean;
     /** Top-level parseConfig overrides (citation enablement, round N+2 C). */
     topLevelConfig?: Record<string, unknown>;
     lookupHits?: SemanticDedupHit[];
@@ -517,10 +529,34 @@ async function harness(
      * open.
      */
     mutateAtPatch?: string;
+    /**
+     * #2807 (P1 exception round): a concurrent correction retirement inside
+     * the patch window — a SEMANTIC frontmatter mutation whose patch omits
+     * `updated` (retireMemoryFn). Routed through the production
+     * `frontmatterWriteRevision` so the test exercises the real revision
+     * decision, not the stub's opinion.
+     */
+    retireAtPatch?: boolean;
     /** Force the frontmatter patch to fail after the content update commits. */
     frontmatterFails?: boolean;
     /** Force the automatic rollback of that committed content to fail. */
     rollbackFails?: boolean;
+    /**
+     * #2807: force `updateMemoryIfUnchanged` itself to THROW on the
+     * semantic-merge actor — "before" fails at lock acquisition (target
+     * untouched), "after" commits the merged body and then throws (lock
+     * release failure past the write; storage stamps the commit receipt),
+     * "concurrent" (#2813 P1) has another writer commit the IDENTICAL
+     * deterministic merged body before this writer's lock acquisition
+     * fails, so the throw carries no receipt.
+     */
+    contentCasThrows?: "before" | "after" | "concurrent" | "after-concurrent";
+    /**
+     * #2813 (P1 B): force the three-way receipt read inside the rollback's
+     * ownership check — "unavailable" simulates a transiently unreadable
+     * sidecar, "absent" a sidecar that corroborates neither writer.
+     */
+    receiptStatus?: "unavailable" | "absent";
   } = {},
 ): Promise<MergeHarness> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-"));
@@ -547,6 +583,7 @@ async function harness(
     ...(overrides.targetValidAt ? { valid_at: overrides.targetValidAt } : {}),
     ...(overrides.targetInvalidAt ? { invalid_at: overrides.targetInvalidAt } : {}),
     ...(overrides.targetMemoryKind ? { memoryKind: overrides.targetMemoryKind } : {}),
+    ...(overrides.targetUpdated ? { updated: overrides.targetUpdated } : {}),
     ...(overrides.targetIntent
       ? {
           intentGoal: overrides.targetIntent.goal,
@@ -561,6 +598,10 @@ async function harness(
   // Live state: the CAS compares against what is on disk NOW, so a stub that
   // returned the original snapshot forever could never fail a compare.
   let state: MemoryFile = { ...target };
+  // #2807: the dedicated CAS receipt identity — a sidecar simulation,
+  // exactly like StorageManager's CasRevisionStore. Public
+  // `frontmatter.updated` is business time and never carries it.
+  let casRevision: string | undefined;
 
   const calls: MergeHarness["calls"] = {
     contentUpdates: [],
@@ -570,10 +611,27 @@ async function harness(
     hashRegistrations: [],
     reindexed: [],
     lookupStorages: [],
+    commitRevisions: [],
   };
-  const commit = async (content: string): Promise<void> => {
-    state = { ...state, content };
+  const commit = async (content: string, revision?: string): Promise<string> => {
+    // Signature-faithful to updateMemoryFromCurrent (#2807): the durable
+    // write stamps public `updated` with the wall clock (business time,
+    // monotonic within the fake so two same-millisecond commits stay
+    // fingerprint-distinct, as real milliseconds are) and mints the receipt
+    // from the per-target sidecar token (nextCasRevisionIso) — unique per
+    // commit even inside one millisecond.
+    casRevision = revision ?? nextCasRevisionIso(casRevision);
+    calls.commitRevisions.push(casRevision);
+    state = {
+      ...state,
+      content,
+      frontmatter: {
+        ...state.frontmatter,
+        updated: nextCasRevisionIso(state.frontmatter.updated),
+      },
+    };
     await writeFile(targetPath, `---\nid: fact-target\ncategory: fact\n---\n\n${content}\n`, "utf8");
+    return casRevision;
   };
   // Live state: reads come off the file, so a stub can neither invent a
   // restore that never touched storage nor compare a snapshot against itself.
@@ -616,13 +674,49 @@ async function harness(
       options?: { actor?: string },
     ) => {
       if (overrides.rollbackFails && options?.actor === "semantic-merge-rollback") return false;
+      if (overrides.contentCasThrows === "before" && options?.actor === "semantic-merge") {
+        throw new Error("storage lock acquisition timed out");
+      }
+      if (overrides.contentCasThrows === "concurrent" && options?.actor === "semantic-merge") {
+        // #2813 (P1): a concurrent writer wins the lock and commits the
+        // IDENTICAL deterministic merged body; this writer's CAS then throws
+        // before its own mutation — no commit receipt is stamped.
+        calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: "other-writer" });
+        await commit(content);
+        throw new Error("storage lock acquisition timed out");
+      }
       if (overrides.mutateOnWrite !== undefined && options?.actor === "semantic-merge") {
         await commit(overrides.mutateOnWrite);
       }
+      if (overrides.contentCasThrows === "after" && options?.actor === "semantic-merge") {
+        calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: options?.actor });
+        const revision = await commit(content);
+        // Signature-faithful to the real CAS: the durable write landed, so
+        // storage stamps the post-commit throw with the commit receipt.
+        const err = new Error("lock release failed after the content write committed");
+        markCasCommittedRevision(err, revision);
+        throw err;
+      }
+      if (overrides.contentCasThrows === "after-concurrent" && options?.actor === "semantic-merge") {
+        // #2813 (P1, round 2): THIS writer's CAS commits the merged body and
+        // its post-commit work throws with the commit receipt stamped — then
+        // a concurrent writer commits the IDENTICAL deterministic merged body
+        // after the lock is released, before this writer's catch path
+        // performs its rollback. Fix B: both commits land inside the SAME
+        // millisecond; only the monotonic revision stamp tells them apart.
+        calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: options?.actor });
+        const revision = await commit(content);
+        calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: "other-writer" });
+        const foreign = await commit(content);
+        assert.notEqual(foreign, revision, "same-millisecond identical commits must carry distinct receipts");
+        const err = new Error("lock release failed after the content write committed");
+        markCasCommittedRevision(err, revision);
+        throw err;
+      }
       if (!(await unchanged(expected))) return false;
       calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: options?.actor });
-      await commit(content);
-      return true;
+      // Signature-faithful: a successful CAS returns its commit receipt.
+      return await commit(content);
     },
     // Signature-faithful to StorageManager.writeMemoryFrontmatterIfUnchanged.
     writeMemoryFrontmatterIfUnchanged: async (
@@ -633,8 +727,37 @@ async function harness(
       // A concurrent writer inside the patch window: after the caller's
       // verifying read, before storage takes its own lock.
       if (overrides.mutateAtPatch !== undefined) await commit(overrides.mutateAtPatch);
+      // #2807 (P1 exception round): a concurrent correction retirement in
+      // the same window — status flip with NO proposed revision, stamped
+      // through the production boundary exactly as
+      // StorageManager.writeMemoryFrontmatter stamps it.
+      if (overrides.retireAtPatch) {
+        // #2807: the patch applies VERBATIM (business time untouched — no
+        // `updated` rewrite) and, being semantic, mints the next sidecar
+        // token exactly as StorageManager.writeMemoryFrontmatter's
+        // chokepoint does.
+        const retired: MemoryFrontmatter = {
+          ...state.frontmatter,
+          status: "superseded",
+          supersededBy: "fact-replacement",
+        };
+        if (isSemanticFrontmatterChange(state.frontmatter, retired)) {
+          casRevision = nextCasRevisionIso(casRevision);
+        }
+        state = { ...state, frontmatter: retired };
+      }
       if (!(await unchanged(expected))) return false;
       calls.frontmatterPatches.push({ id: expected.frontmatter.id, patch, actor: options?.actor });
+      // #2807: the accepted patch becomes the standing record's frontmatter
+      // VERBATIM (including caller `updated`), and a semantic change mints
+      // the next sidecar token — mirroring StorageManager.writeMemoryFrontmatter.
+      if (overrides.applyFrontmatterPatches) {
+        const merged = { ...state.frontmatter, ...patch };
+        if (isSemanticFrontmatterChange(state.frontmatter, merged)) {
+          casRevision = nextCasRevisionIso(casRevision);
+        }
+        state = { ...state, frontmatter: merged };
+      }
       return overrides.frontmatterFails !== true;
     },
     removeFactContentHashesForMemories: async (memories: MemoryFile[]) => {
@@ -645,6 +768,15 @@ async function harness(
     },
     registerFactContentHash: async (id: string, hash: string, _expectedContent: string) => {
       calls.hashRegistrations.push({ id, hash });
+    },
+    readCasRevision: async (p: string) => (p === targetPath ? casRevision : undefined),
+    readCasRevisionStatus: async (p: string): Promise<CasRevisionReadStatus> => {
+      if (p !== targetPath) return { status: "absent" };
+      if (overrides.receiptStatus === "unavailable") {
+        return { status: "unavailable", reason: "simulated transient sidecar read failure" };
+      }
+      if (overrides.receiptStatus === "absent") return { status: "absent" };
+      return casRevision === undefined ? { status: "absent" } : { status: "present", revision: casRevision };
     },
   } as unknown as StorageManager;
 
@@ -1172,10 +1304,7 @@ test("registerFactContentHash: exact dedup finds the degraded record's merged bo
     // compare-and-swapped to the merged text while the frontmatter keeps the
     // old identity (updateMemoryIfUnchanged preserves contentHash).
     const before = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id)!;
-    assert.equal(
-      await storage.updateMemoryIfUnchanged(before, MERGED, { actor: "semantic-merge" }),
-      true,
-    );
+    assert.ok(await storage.updateMemoryIfUnchanged(before, MERGED, { actor: "semantic-merge" }));
     const degraded = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id)!;
     const staleHash = degraded.frontmatter.contentHash;
     const mergedHash = ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text);
@@ -1253,7 +1382,7 @@ test("persistRepairedContentHash: the repaired hash survives a restart's corpus 
     // compare-and-swapped to the merged text while the frontmatter keeps the
     // old identity (updateMemoryIfUnchanged preserves contentHash).
     const before = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id)!;
-    assert.equal(await storage.updateMemoryIfUnchanged(before, MERGED, { actor: "semantic-merge" }), true);
+    assert.ok(await storage.updateMemoryIfUnchanged(before, MERGED, { actor: "semantic-merge" }));
     const mergedHash = ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text);
     // The N+16 C repair alone (process-local registration).
     await storage.registerFactContentHash(id, mergedHash, MERGED);
@@ -2359,7 +2488,7 @@ test("applySemanticMergeAtPersist: the committed merged record carries the lower
   assert.equal(committed?.frontmatter.confidenceTier, "inferred");
   // The committed record is the promotion payload's sole source, so the
   // shared/profile copy stamps the downgraded value too.
-  const payload = await buildMergedTargetPromotionPayload(storage, {
+  const { payload } = await buildMergedTargetPromotionPayload(storage, {
     targetId: created.id,
     mergedContent: MERGED,
     provenancePatched: true,
@@ -2415,7 +2544,7 @@ test("buildMergedTargetPromotionPayload: never promotes from an inactive committ
   // reread: the multi-writer interleaving, simulated directly.
   const snapshot = await storage.getMemoryByIdIncludingArchived(created.id);
   assert.ok(snapshot);
-  assert.equal(await storage.updateMemoryIfUnchanged(snapshot, MERGED), true);
+  assert.ok(await storage.updateMemoryIfUnchanged(snapshot, MERGED));
   for (const status of ["superseded", "archived"] as const) {
     assert.equal(
       await storage.updateMemoryFrontmatter(created.id, { status }),
@@ -2425,11 +2554,11 @@ test("buildMergedTargetPromotionPayload: never promotes from an inactive committ
     // Null, never a payload: the caller skips promoteMemoryToShared, so no
     // new active copy resurrects what the lifecycle operation retired.
     assert.equal(
-      await buildMergedTargetPromotionPayload(storage, {
+      (await buildMergedTargetPromotionPayload(storage, {
         targetId: created.id,
         mergedContent: MERGED,
     provenancePatched: true,
-      }),
+      })).payload,
       null,
       status,
     );
@@ -2439,7 +2568,7 @@ test("buildMergedTargetPromotionPayload: never promotes from an inactive committ
     await storage.updateMemoryFrontmatter(created.id, { status: "active" }),
     true,
   );
-  const payload = await buildMergedTargetPromotionPayload(storage, {
+  const { payload } = await buildMergedTargetPromotionPayload(storage, {
     targetId: created.id,
     mergedContent: MERGED,
     provenancePatched: true,
@@ -2490,7 +2619,7 @@ test("buildMergedTargetPromotionPayload: carries the committed tool-scope marker
     },
   );
   assert.equal(outcome.action, "merged");
-  const payload = await buildMergedTargetPromotionPayload(storage, {
+  const { payload } = await buildMergedTargetPromotionPayload(storage, {
     targetId: created.id,
     mergedContent: MERGED,
     provenancePatched: true,
@@ -2524,7 +2653,7 @@ test("buildMergedTargetPromotionPayload: an unscoped target promotes a payload w
     judgeCall: (options) => acceptingJudge(options),
   });
   assert.equal(outcome.action, "merged");
-  const payload = await buildMergedTargetPromotionPayload(storage, {
+  const { payload } = await buildMergedTargetPromotionPayload(storage, {
     targetId: created.id,
     mergedContent: MERGED,
     provenancePatched: true,
@@ -2884,7 +3013,7 @@ test("buildMergedTargetPromotionPayload: a degraded merge never yields a promoti
   if (degraded.action !== "merged") return;
   assert.equal(degraded.provenancePatched, false);
   assert.equal(
-    await buildMergedTargetPromotionPayload(h.storage, degraded),
+    (await buildMergedTargetPromotionPayload(h.storage, degraded)).payload,
     null,
     "no shared/profile copy may be built from an unpatched provenance record",
   );
@@ -2900,7 +3029,7 @@ test("buildMergedTargetPromotionPayload: a degraded merge never yields a promoti
   assert.equal(patched.action, "merged");
   if (patched.action !== "merged") return;
   assert.equal(patched.provenancePatched, true);
-  const payload = await buildMergedTargetPromotionPayload(ok.storage, patched);
+  const { payload } = await buildMergedTargetPromotionPayload(ok.storage, patched);
   assert.ok(payload);
   assert.equal(payload?.sourceMemoryId, "fact-target");
 });
@@ -2926,12 +3055,13 @@ test("buildMergedTargetPromotionPayload: a failed post-commit reread fails open 
         throw new Error("secure store locked");
       },
     } as unknown as StorageManager;
-    const payload = await buildMergedTargetPromotionPayload(lockedStore, {
+    const { payload, readFailed } = await buildMergedTargetPromotionPayload(lockedStore, {
       targetId: "fact-target",
       mergedContent: "merged body",
       provenancePatched: true,
     });
     assert.equal(payload, null, "a reread failure must resolve to null, not a rejection");
+    assert.equal(readFailed, true, "#2807: the null must be identifiable as a read failure, not a refusal");
     const line = entries.find(
       (e) => e.level === "warn" && e.message.includes("semantic-merge") && e.message.includes("fact-target"),
     )?.message;
@@ -3049,7 +3179,7 @@ test("applySemanticMergeAtPersist: a legacy target with no liftable marker still
   const stamped = h.calls.frontmatterPatches.at(-1)?.patch.contentHash;
   assert.equal(stamped, ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text));
   // Promotion parity: the committed attributed record still yields a payload.
-  const payload = await buildMergedTargetPromotionPayload(h.storage, outcome);
+  const { payload } = await buildMergedTargetPromotionPayload(h.storage, outcome);
   assert.ok(payload, "a fully patched attributed merge must still promote");
   assert.equal(payload?.sourceMemoryId, "fact-target");
 });
@@ -3176,7 +3306,7 @@ test("applySemanticMergeAtPersist: a degraded merge registers the RAW identity o
     { id: "fact-target", hash: ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text) },
   ]);
   assert.equal(
-    await buildMergedTargetPromotionPayload(h.storage, degraded),
+    (await buildMergedTargetPromotionPayload(h.storage, degraded)).payload,
     null,
     "a degraded merge never yields a promotion payload",
   );
@@ -3328,6 +3458,9 @@ async function postEffectsHarness(options: {
             content: MERGED,
           }
         : null,
+    // #2807: static token — these fixtures drive the rollback paths, not
+    // ownership attribution.
+    readCasRevision: async () => "2026-08-20T00:00:00.000Z",
   } as unknown as StorageManager;
   const deps = {
     config: parseConfig({ memoryDir: dir }),
@@ -3658,14 +3791,17 @@ test("runMergedTargetPostEffects: a stale writer's rollback preserves the newer 
               id,
               category: "fact",
               entityRef: "entity-billing-service",
-              // B's commit flips both the body and the revision once A's
-              // rebuild has begun: the initial committed-body check sees A's
-              // state, everything from the build onward sees B's.
-              ...(buildStarted ? { updated: "2026-08-22T01:00:00.000Z" } : {}),
+              // B's commit flips the body once A's rebuild has begun: the
+              // initial committed-body check sees A's state, everything from
+              // the build onward sees B's.
             },
             content: buildStarted ? NEWER_BODY : MERGED,
           }
         : null,
+    // #2807: B's mid-rebuild commit mints a NEW token — the identity the
+    // revision guard compares (public `updated` no longer carries it).
+    readCasRevision: async () =>
+      buildStarted ? "2026-08-22T01:00:00.001Z" : "2026-08-20T00:00:00.000Z",
   } as unknown as StorageManager;
   const graphConfig = parseConfig({ memoryDir: h.dir });
   const graphIndex = new GraphIndex(h.dir, graphConfig);
@@ -3797,6 +3933,503 @@ test("runMergedTargetPostEffects: a THROWING build's rollback preserves the newe
   }
 });
 
+
+// ── #2807: deferred P2 follow-ups from the #2771 round cap ──────────────────
+
+test("applySemanticMergeAtPersist: a content CAS that throws before changing the target discards the staged snapshot (#2807)", async () => {
+  // Scenario A — the CAS throws at lock acquisition: the target was never
+  // touched, yet the old catch left the staged snapshot `pending` forever
+  // (pruneExcessVersions excludes pending entries), so repeated contention
+  // grew version history past maxVersionsPerPage with duplicates of an
+  // unchanged body. The reread confirms the pre-merge body → discard.
+  const before = await harness({ contentCasThrows: "before" });
+  const outcomeA = await applySemanticMergeAtPersist(before.deps, {
+    storage: before.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcomeA, { action: "created", reason: "update_failed" });
+  const bodyA = await before.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(bodyA?.content, EXISTING, "the throw preceded the write — the target is untouched");
+  assert.equal(
+    (
+      await listVersions(
+        before.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        before.storage.dir,
+      )
+    ).versions.length,
+    0,
+    "a snapshot of a body that never changed must not survive the aborted attempt",
+  );
+
+  // Scenario B — the CAS commits the merged body and THEN throws (lock
+  // release past the write): `contentCommitted` never flipped, so the old
+  // code both stranded the snapshot AND reported `created` while storage
+  // held the unprovenanced merged body (the duplicate-fact hazard the
+  // catch's own contract forbids). The reread must see the landed body,
+  // revert it, and drop the now-duplicate snapshot.
+  const after = await harness({ contentCasThrows: "after" });
+  const outcomeB = await applySemanticMergeAtPersist(after.deps, {
+    storage: after.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcomeB, { action: "created", reason: "update_failed" });
+  const bodyB = await after.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(bodyB?.content, EXISTING, "the landed merged body is rolled back before `created` is honest");
+  assert.deepEqual(
+    after.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [
+      { content: MERGED, actor: "semantic-merge" },
+      { content: EXISTING, actor: "semantic-merge-rollback" },
+    ],
+  );
+  assert.equal(
+    (
+      await listVersions(
+        after.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        after.storage.dir,
+      )
+    ).versions.length,
+    0,
+    "the reverted attempt leaves no snapshot: the recovery point would hold the body storage already returned to",
+  );
+});
+
+test("applySemanticMergeAtPersist: a concurrent identical commit is never claimed as this writer's (#2813 P1)", async () => {
+  // The P1 hole — body-equality ownership. This writer's CAS throws before
+  // mutating anything, but a concurrent writer commits the IDENTICAL
+  // deterministic merged body. The old reread saw "the merged body
+  // standing" and claimed the commit as ours, so revertMergedContent
+  // CAS-replaced the other writer's valid merge with the pre-merge body
+  // while their patched provenance stood. Ownership now comes from the CAS
+  // commit receipt: absent → the standing body is theirs. This writer
+  // discards only its own staged duplicate snapshot and reports the
+  // degraded merged outcome (never `created` — storage already holds
+  // these claims, so writing the fact again would duplicate them).
+  const h = await harness({ contentCasThrows: "concurrent" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, {
+    action: "merged",
+    targetId: "fact-target",
+    mergedContent: MERGED,
+    provenancePatched: false,
+  });
+  const body = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(body?.content, MERGED, "the concurrent writer's commit stands — never reverted");
+  assert.deepEqual(
+    h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [{ content: MERGED, actor: "other-writer" }],
+    "neither a semantic-merge write nor a semantic-merge-rollback ran — the concurrent commit's state is untouched",
+  );
+  assert.equal(
+    (
+      await listVersions(
+        h.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        h.storage.dir,
+      )
+    ).versions.length,
+    0,
+    "this writer's staged duplicate snapshot is cleaned up, not finalized into history",
+  );
+});
+
+test("applySemanticMergeAtPersist: a rollback never reverts a concurrent identical commit that landed after this writer's receipt (#2813 P1)", async () => {
+  // The round-2 P1 hole — the receipt used only as a boolean. This writer's
+  // CAS COMMITS the merged body and its post-commit work throws with the
+  // commit receipt stamped; before the catch path runs its rollback, a
+  // concurrent writer commits the IDENTICAL deterministic merged body under a
+  // later revision. Body equality cannot tell the two commits apart, so the
+  // old rollback reread "the merged body standing", CAS-restored the
+  // pre-merge body over the concurrent writer's valid merge, and discarded
+  // the snapshot while their provenance update may already have landed. The
+  // rollback now compares the standing record's revision with the receipt:
+  // equal → ours, safe to revert; advanced → theirs — the other-writer
+  // handling from the previous fix (discard our staged duplicate, repair
+  // indexes for the standing body, report the degraded merge; never revert
+  // theirs).
+  const h = await harness({ contentCasThrows: "after-concurrent" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, {
+    action: "merged",
+    targetId: "fact-target",
+    mergedContent: MERGED,
+    provenancePatched: false,
+  });
+  const body = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(
+    body?.content,
+    MERGED,
+    "the concurrent writer's identical commit stands — never reverted to the pre-merge body",
+  );
+  assert.deepEqual(
+    h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [
+      { content: MERGED, actor: "semantic-merge" },
+      { content: MERGED, actor: "other-writer" },
+    ],
+    "no semantic-merge-rollback write runs — the pre-merge restore must never fire against another writer's commit",
+  );
+  assert.equal(
+    h.calls.hashRegistrations.length,
+    1,
+    "the degraded path repairs the hash indexes for the standing merged body",
+  );
+  assert.equal(
+    (
+      await listVersions(
+        h.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        h.storage.dir,
+      )
+    ).versions.length,
+    0,
+    "this writer's staged duplicate snapshot is discarded, not finalized into history",
+  );
+});
+
+test("applySemanticMergeAtPersist: a successful content CAS retains its receipt, so a same-millisecond identical commit survives a failed provenance patch (#2813 P1)", async () => {
+  // Fix A — the receipt was captured only from the THROWING CAS
+  // (casCommittedRevisionOf). When the content CAS SUCCEEDED and a later
+  // step threw (provenance patch rejected), the catch rolled back with NO
+  // revision: revertMergedContent skipped its ownership comparison, body
+  // equality attributed the standing record to this writer, and the
+  // pre-merge restore deleted the concurrent writer's valid identical merge
+  // (here committed inside the patch window, the SAME millisecond — fix B's
+  // wall-clock collision). The success path now retains the landed revision,
+  // the monotonic stamp keeps the two same-ms commits distinct, and the
+  // rollback classifies the standing body as superseded — never reverted.
+  const h = await harness({ mutateAtPatch: MERGED });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, {
+    action: "merged",
+    targetId: "fact-target",
+    mergedContent: MERGED,
+    provenancePatched: false,
+  });
+  const body = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(
+    body?.content,
+    MERGED,
+    "the concurrent writer's identical commit stands — never reverted to the pre-merge body",
+  );
+  assert.deepEqual(
+    h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [{ content: MERGED, actor: "semantic-merge" }],
+    "no semantic-merge-rollback write runs — the pre-merge restore must never fire against another writer's commit",
+  );
+  assert.equal(
+    h.calls.hashRegistrations.length,
+    1,
+    "the degraded path repairs the hash indexes for the standing merged body",
+  );
+  assert.equal(
+    (
+      await listVersions(
+        h.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        h.storage.dir,
+      )
+    ).versions.length,
+    0,
+    "this writer's staged duplicate snapshot is discarded, not finalized into history",
+  );
+});
+
+test("applySemanticMergeAtPersist: a timestamp-less retirement between the content CAS and the provenance patch is never rolled back over (#2807 P1)", async () => {
+  // The exception-round P1 hole — the PRESERVED revision. This writer's
+  // content CAS commits the merged body (receipt T+1) and, before the
+  // provenance patch takes its lock, a concurrent correction retirement
+  // lands: a semantic frontmatter mutation whose patch omits `updated`
+  // (retireMemoryFn). The status flip makes the provenance patch's
+  // fingerprint compare reject it, so the catch path rolls back holding the
+  // content CAS's receipt. Pre-fix, the timestamp-less write PRESERVED the
+  // standing revision, so the retired record still carried this writer's
+  // receipt — the rollback claimed the foreign record as its own and
+  // CAS-restored the pre-merge body, leaving the retirement metadata
+  // (superseded/supersededBy) attached to content it never described. The
+  // boundary fix advances the revision on EVERY semantic frontmatter
+  // mutation, so the failure handler detects the foreign revision and the
+  // retired record is never touched.
+  const h = await harness({ retireAtPatch: true });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, {
+    action: "merged",
+    targetId: "fact-target",
+    mergedContent: MERGED,
+    provenancePatched: false,
+  });
+  const body = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.ok(body);
+  assert.equal(body.content, MERGED, "the merged body is never rolled back over the concurrent retirement");
+  assert.equal(body.frontmatter.status, "superseded", "the retirement metadata survives untouched");
+  assert.equal(body.frontmatter.supersededBy, "fact-replacement");
+  // The failure handler detected the FOREIGN revision: the standing
+  // revision advanced strictly past the content CAS's receipt — the
+  // identity the rollback compares.
+  const receipt = h.calls.commitRevisions[0];
+  assert.ok(receipt, "the content CAS stamped a receipt");
+  const standingToken = await h.storage.readCasRevision(h.target.path);
+  assert.ok(standingToken, "the retirement minted a new token");
+  assert.notEqual(standingToken, receipt, "the timestamp-less retirement retired the CAS's receipt token");
+  assert.ok(
+    new Date(standingToken).getTime() > new Date(receipt).getTime(),
+    "the timestamp-less retirement advanced the token strictly past the CAS receipt",
+  );
+  assert.deepEqual(
+    h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [{ content: MERGED, actor: "semantic-merge" }],
+    "no semantic-merge-rollback write runs — the retired record is another writer's",
+  );
+  assert.equal(
+    h.calls.hashRegistrations.length,
+    1,
+    "the degraded path repairs the hash indexes for the standing merged body",
+  );
+  assert.equal(
+    (
+      await listVersions(
+        h.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        h.storage.dir,
+      )
+    ).versions.length,
+    0,
+    "this writer's staged duplicate snapshot is discarded, not finalized into history",
+  );
+});
+
+test("applySemanticMergeAtPersist: the monotonic receipt survives the metadata patch — three same-millisecond merges, A's rollback never restores over C's commit (#2813 P1)", async () => {
+  // Round-3 P1 hole — the receipt was monotonic only until the metadata
+  // patch. The patch stamped the PRE-CAS wall clock (mergePatch.updated), so
+  // a successful writer REGRESSED frontmatter.updated below the receipt its
+  // own CAS had just issued. Three writers merging into the same target
+  // inside one millisecond (target seeded at T, every writer's clock T):
+  // The seed sits AHEAD of the real wall clock on purpose: the fake's commit
+  // stamps via nextCasRevisionIso against the real clock, so a future seed
+  // forces every stamp into the +1ms monotonic branch — the sequence is
+  // pinned to T+n exactly as inside the finding's single millisecond.
+  // #2807: the patch now stamps business time (mergePatch.updated) verbatim;
+  // monotonicity lives in the sidecar token, minted by storage's write
+  // chokepoint — never in `frontmatter.updated`. C's token lands past every
+  // prior receipt, A classifies the standing record as superseded, and C's
+  // commit survives A's failure.
+  const T = new Date(Date.now() + 60_000);
+  const h = await harness({
+    targetUpdated: T.toISOString(),
+    applyFrontmatterPatches: true,
+  });
+  const realPatch = h.storage.writeMemoryFrontmatterIfUnchanged.bind(h.storage);
+  let patchCalls = 0;
+  let releaseC!: () => void;
+  const cGate = new Promise<void>((resolve) => {
+    releaseC = resolve;
+  });
+  let cArrived!: () => void;
+  const cArrivedGate = new Promise<void>((resolve) => {
+    cArrived = resolve;
+  });
+  let cMerge: Promise<{ action: string }> | undefined;
+  h.storage.writeMemoryFrontmatterIfUnchanged = (async (
+    expected: MemoryFile,
+    patch: Partial<MemoryFrontmatter>,
+    options?: { actor?: string },
+  ) => {
+    if (options?.actor !== "semantic-merge") {
+      return await realPatch(expected, patch, options);
+    }
+    patchCalls += 1;
+    if (patchCalls === 1) {
+      // A's patch: B commits fully (CAS + patch) while A's post-commit work
+      // is failing; C commits its CAS and suspends INSIDE its own patch —
+      // exactly the finding's window, where C's commit stands at the reused
+      // receipt and its patch has not landed.
+      const bOutcome = await applySemanticMergeAtPersist(h.deps, {
+        storage: h.storage,
+        content: INCOMING,
+        category: "fact",
+        judgeCall: (options) => acceptingJudge(options),
+        now: () => T,
+      });
+      assert.equal(bOutcome.action, "merged", "B's merge commits fully");
+      cMerge = applySemanticMergeAtPersist(h.deps, {
+        storage: h.storage,
+        content: INCOMING,
+        category: "fact",
+        judgeCall: (options) => acceptingJudge(options),
+        now: () => T,
+      });
+      await cArrivedGate;
+      return false; // A's patch is rejected — A enters its post-commit failure path
+    }
+    if (patchCalls === 3) {
+      // C's patch: suspended until A's rollback has compared the standing
+      // record, so A's classification runs against C's bare CAS commit.
+      cArrived();
+      await cGate;
+    }
+    return await realPatch(expected, patch, options);
+  }) as StorageManager["writeMemoryFrontmatterIfUnchanged"];
+
+  const aOutcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+    now: () => T,
+  });
+  releaseC();
+  const cOutcome = await cMerge!;
+
+  assert.deepEqual(aOutcome, {
+    action: "merged",
+    targetId: "fact-target",
+    mergedContent: MERGED,
+    provenancePatched: false,
+  });
+  assert.deepEqual(cOutcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
+  const body = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(
+    body?.content,
+    MERGED,
+    "C's commit stands — A's rollback must not restore the pre-merge body over it",
+  );
+  assert.equal(
+    body?.frontmatter.updated,
+    T.toISOString(),
+    "#2807: the metadata patch stamps business time (mergePatch.updated) verbatim — never a revision",
+  );
+  const standingToken = await h.storage.readCasRevision(h.target.path);
+  const [aReceipt, bReceipt, cReceipt2] = h.calls.commitRevisions;
+  assert.ok(aReceipt && bReceipt && cReceipt2);
+  assert.ok(aReceipt < bReceipt && bReceipt < cReceipt2, "A, B, C receipts are unique and strictly increasing");
+  assert.ok(
+    standingToken !== undefined && standingToken > cReceipt2,
+    "the standing token advanced past every issued CAS receipt through the metadata patches",
+  );
+  assert.notEqual(standingToken, aReceipt, "A's retired receipt no longer matches the standing token");
+  assert.deepEqual(
+    h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [
+      { content: MERGED, actor: "semantic-merge" },
+      { content: MERGED, actor: "semantic-merge" },
+      { content: MERGED, actor: "semantic-merge" },
+    ],
+    "exactly the three CAS commits — no semantic-merge-rollback write ever fires",
+  );
+});
+
+test("runMergedTargetPostEffects: a rolled-back edge rewrite invalidates the graph edge cache (#2807)", async () => {
+  // The warm-cache hole: the target had no prior generated rows (the
+  // removal is a disk no-op, so the cache baseline survives), the build's
+  // onMemoryWritten incrementally pushes the appended rows into
+  // GraphIndex.edgeCache, and a writer that advanced the target past the
+  // revision check triggers the rollback — which repairs only the JSONL
+  // files. Without invalidating the owning index, spreadingActivation kept
+  // serving the rolled-back edges for the full five-minute TTL.
+  const h = await postEffectsHarness();
+  const OTHER = "facts/2026-08-19/other.md";
+  const UNRELATED_FROM = "facts/2026-08-18/unrelated-a.md";
+  const UNRELATED_TO = "facts/2026-08-18/unrelated-b.md";
+  const unrelated: GraphEdge = {
+    from: UNRELATED_FROM, to: UNRELATED_TO, type: "entity", weight: 1,
+    label: "entity-unrelated", ts: "2026-08-18T00:00:00.000Z",
+  };
+  await seedGraphFile(h.dir, "entity", [unrelated]);
+  const NEWER_BODY = "Billing service deploys run on Tuesdays at 09:00 UTC, paging the on-call engineer.";
+  const targetPath = path.join(h.dir, h.targetRelPath);
+  let buildStarted = false;
+  const storage = {
+    dir: h.dir,
+    getMemoryByIdIncludingArchived: async (id: string) =>
+      id === "fact-target"
+        ? {
+            path: targetPath,
+            frontmatter: {
+              id,
+              category: "fact",
+              entityRef: "entity-billing-service",
+              ...(buildStarted ? { updated: "2026-08-22T01:00:00.000Z" } : {}),
+            },
+            content: buildStarted ? NEWER_BODY : MERGED,
+          }
+        : null,
+  } as unknown as StorageManager;
+  const graphConfig = parseConfig({ memoryDir: h.dir, multiGraphMemoryEnabled: true });
+  const graphIndex = new GraphIndex(h.dir, graphConfig);
+  const coordinator = new PersistenceIndexCoordinator({
+    config: graphConfig,
+    graphIndexFor: () => graphIndex,
+  } as unknown as ConstructorParameters<typeof PersistenceIndexCoordinator>[0]);
+  // Warm the cache from the seeded file BEFORE the rewrite runs.
+  await graphIndex.spreadingActivation([UNRELATED_FROM]);
+  const realBuild = coordinator.buildGraphEdge.bind(coordinator);
+  const sibling = {
+    path: path.join(h.dir, OTHER),
+    frontmatter: { id: "mem-sibling", category: "fact", entityRef: "entity-billing-service" },
+    content: "Sibling fact sharing the billing entity.",
+  } as unknown as MemoryFile;
+  const deps = {
+    ...h.deps,
+    buildGraphEdge: async (...args: Parameters<typeof realBuild>) => {
+      buildStarted = true;
+      return realBuild(...args);
+    },
+    invalidateGraphEdgeCache: () => graphIndex.invalidateEdgeCache(),
+  } as unknown as ExtractionPersistDeps;
+  await runMergedTargetPostEffects(
+    deps,
+    storage,
+    { targetId: "fact-target", mergedContent: MERGED },
+    {
+      category: "fact",
+      incomingContent: INCOMING,
+      incomingConfidence: 0.9,
+      namespace: "default",
+      graphCaps: { entityGraph: true, timeGraph: false, causalGraph: false, multiGraphMemory: true, graphWriteSessionAdjacency: false },
+      graphContext: { allMemsForGraph: [sibling], memoryPathById: new Map() },
+      threadIdForEdge: undefined,
+      threadEpisodeIdsForGraph: undefined,
+    },
+  );
+  assert.deepEqual(
+    await readGraphFile(h.dir, "entity"),
+    [unrelated],
+    "the superseded rewrite's rows are rolled back out of the entity file",
+  );
+  const served = await graphIndex.spreadingActivation([h.targetRelPath]);
+  assert.equal(
+    served.filter((result) => result.path === OTHER).length,
+    0,
+    `the cache must not serve the rolled-back target→sibling edge after the rollback (served: ${JSON.stringify(served)})`,
+  );
+});
+
 test("persistMergedTargetThreadEpisode: a re-merge moves an existing earlier target to the durable thread tail (round N+12 D)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-thread-"));
   try {
@@ -3822,4 +4455,78 @@ test("persistMergedTargetThreadEpisode: a re-merge moves an existing earlier tar
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("applySemanticMergeAtPersist: a transiently unreadable receipt preserves the recovery snapshot instead of discarding it (#2813 P1 B)", async () => {
+  // The P1 B hole: the content CAS COMMITTED, the provenance patch failed,
+  // and the rollback's ownership check hit a sidecar it could not read. The
+  // fail-open read returned undefined, which classified the standing merged
+  // body as superseded and DISCARDED the staged recovery snapshot on
+  // unproven grounds — the degraded state lost its recovery point. The
+  // three-way status keeps every unproven branch keep-side: the rollback
+  // refuses, the snapshot is preserved as the recovery point, and the
+  // outcome stays the degraded merged report.
+  const h = await harness({ frontmatterFails: true, receiptStatus: "unavailable" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, {
+    action: "merged",
+    targetId: "fact-target",
+    mergedContent: MERGED,
+    provenancePatched: false,
+  });
+  assert.deepEqual(
+    h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [{ content: MERGED, actor: "semantic-merge" }],
+    "no semantic-merge-rollback runs while receipt identity is unavailable",
+  );
+  assert.equal(
+    (
+      await listVersions(
+        h.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        h.storage.dir,
+      )
+    ).versions.length,
+    1,
+    "the recovery snapshot is preserved — an unreadable receipt never proves supersession",
+  );
+});
+
+test("applySemanticMergeAtPersist: an absent receipt while this writer holds a commit receipt is keep-side (#2813 P1 B)", async () => {
+  // Absent-with-receipt-in-hand corroborates NEITHER writer, so it takes
+  // the same keep-side handling as unavailable: never the superseded
+  // branch, never the discard it licenses.
+  const h = await harness({ frontmatterFails: true, receiptStatus: "absent" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, {
+    action: "merged",
+    targetId: "fact-target",
+    mergedContent: MERGED,
+    provenancePatched: false,
+  });
+  assert.deepEqual(
+    h.calls.contentUpdates.map((c) => ({ content: c.content, actor: c.actor })),
+    [{ content: MERGED, actor: "semantic-merge" }],
+  );
+  assert.equal(
+    (
+      await listVersions(
+        h.target.path,
+        { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" },
+        h.storage.dir,
+      )
+    ).versions.length,
+    1,
+    "the recovery snapshot is preserved when the sidecar corroborates neither writer",
+  );
 });

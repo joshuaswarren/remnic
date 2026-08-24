@@ -212,10 +212,9 @@ test("purgeMemories: dryRun=false (hard-delete) removes files and updates QMD", 
     const memFile = memories.find((m) => m.frontmatter.id === id);
     assert.ok(memFile, "memory must exist on disk");
 
-    // Manually backdate it by writing updated timestamp to past
-    await storage.writeMemoryFrontmatter(memFile!, {
-      updated: "2020-01-01T00:00:00.000Z",
-    });
+    // #2813 P1: backdating a standing revision is refused by the monotonic
+    // clamp, so the freshly-written record qualifies via the future-pinned
+    // purge clock below instead.
 
     const { updatedCollections, stub: qmd } = makeQmdStub();
 
@@ -227,7 +226,7 @@ test("purgeMemories: dryRun=false (hard-delete) removes files and updates QMD", 
       qmd: qmd as any,
       hotCollection: "openclaw-engram",
       coldCollection: "openclaw-engram-cold",
-      now: () => new Date("2026-04-27T00:00:00.000Z"),
+      now: () => new Date("2099-01-01T00:00:00.000Z"),
     });
 
     assert.equal(result.dryRun, false);
@@ -322,9 +321,7 @@ test("purgeMemories: audit ledger failure is reported without blocking hard-dele
     });
     const [memory] = await storage.readAllMemories();
     assert.ok(memory, "expected memory to exist");
-    await storage.writeMemoryFrontmatter(memory, {
-      updated: "2020-01-01T00:00:00.000Z",
-    });
+    // Fresh record qualifies via the future-pinned purge clock (#2813 P1).
 
     const ledgerDir = path.join(dir, "state", "observation-ledger");
     await mkdir(path.dirname(ledgerDir), { recursive: true });
@@ -335,7 +332,7 @@ test("purgeMemories: audit ledger failure is reported without blocking hard-dele
       olderThanMs: 365 * 86_400_000,
       tier: "all",
       dryRun: false,
-      now: () => new Date("2026-04-27T00:00:00.000Z"),
+      now: () => new Date("2099-01-01T00:00:00.000Z"),
     });
 
     const stillThere = await storage.getMemoryById(id);
