@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -479,6 +479,92 @@ test("MemoryAgentBench ReDial datasets require entity mapping before adapter wor
     assert.equal(resetCalled, false);
   } finally {
     await rm(datasetDir, { recursive: true, force: true });
+  }
+});
+
+test("MemoryAgentBench ReDial datasets reject a sibling processed_data mapping symlink", async () => {
+  const tmpDir = await mkdtemp(path.join(tmpdir(), "remnic-mab-redial-map-symlink-"));
+  const datasetDir = path.join(tmpDir, "datasets", "memoryagentbench");
+  const outsideMapping = path.join(tmpDir, "outside", "Recsys_Redial");
+  let resetCalled = false;
+
+  try {
+    await mkdir(datasetDir, { recursive: true });
+    await mkdir(outsideMapping, { recursive: true });
+    await writeFile(
+      path.join(outsideMapping, "entity2id.json"),
+      JSON.stringify({ "/movie/The_Big_Lebowski_(1998)": 7008 }),
+      "utf8",
+    );
+    await symlink(path.join(tmpDir, "outside"), path.join(tmpDir, "datasets", "processed_data"));
+    await writeFile(
+      path.join(datasetDir, "memoryagentbench.json"),
+      JSON.stringify([
+        {
+          context: "The user asked for cyberpunk action movies.",
+          questions: ["User: I want a cyberpunk action movie. Recommender:"],
+          answers: [["1"]],
+          metadata: {
+            source: "recsys_redial",
+            qa_pair_ids: ["redial-symlink-map"],
+            question_types: ["recommendation"],
+          },
+        },
+      ]),
+      "utf8",
+    );
+
+    await assert.rejects(
+      runMemoryAgentBenchBenchmark({
+        benchmark: memoryAgentBenchDefinition,
+        mode: "full",
+        datasetDir,
+        adapterMode: "dry-run",
+        system: {
+          async reset() {
+            resetCalled = true;
+          },
+          async store() {},
+          async recall() {
+            return "";
+          },
+          async search() {
+            return [];
+          },
+          async destroy() {},
+          async getStats() {
+            return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+          },
+          responder: {
+            async respond() {
+              return {
+                text: "",
+                tokens: { input: 0, output: 0 },
+                latencyMs: 0,
+                model: "mab-test-responder",
+              };
+            },
+          },
+          judge: {
+            async score() {
+              return 0;
+            },
+            async scoreWithMetrics() {
+              return {
+                score: 0,
+                tokens: { input: 0, output: 0 },
+                latencyMs: 0,
+                model: "mab-test-judge",
+              };
+            },
+          },
+        },
+      }),
+      /ReDial samples require a valid ReDial entity mapping/,
+    );
+    assert.equal(resetCalled, false);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
   }
 });
 
