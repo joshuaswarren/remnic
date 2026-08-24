@@ -1482,7 +1482,15 @@ export function parseConfig(
       : typeof cfg.crossSignalsSemanticTimeoutMs === "number"
         ? Math.max(1, Math.floor(cfg.crossSignalsSemanticTimeoutMs))
         : 4000;
-  const recallPipelineConfig = buildRecallPipelineConfig(cfg);
+  // Coerce once. The default recall-pipeline shared-context gate reads
+  // `cfg.sharedContextEnabled === true`, so it must see this boolean —
+  // not the raw CLI/config string. Custom `recallPipeline` is unchanged.
+  const sharedContextEnabled =
+    coerceBool(cfg.sharedContextEnabled, "sharedContextEnabled") ?? false;
+  const recallPipelineConfig = buildRecallPipelineConfig({
+    ...cfg,
+    sharedContextEnabled,
+  });
   const maintenanceNamespaceFanoutEnabled = resolveBooleanConfig(
     readFlatOrNestedConfig(
       cfg,
@@ -3032,11 +3040,8 @@ export function parseConfig(
         ? cfg.routingRulesStateFile.trim()
         : "state/routing-rules.json",
 
-    // v4.0 shared-context (default off). CLI values arrive as strings
-    // (`--config sharedContextEnabled=true`), so a strict `=== true` silently
-    // kept the feature off for anyone who enabled it. Malformed input warns and
-    // stays off (never silently activates). Default stays false.
-    sharedContextEnabled: coerceBool(cfg.sharedContextEnabled, "sharedContextEnabled") ?? false,
+    // Reuse the hoisted coerce above (default pipeline already saw it).
+    sharedContextEnabled,
     // Same coercion contract for the binding-authority sibling (#2918 parity).
     sharedContextAllowBindingAuthority:
       coerceBool(cfg.sharedContextAllowBindingAuthority, "sharedContextAllowBindingAuthority") ?? false,
@@ -4248,6 +4253,7 @@ function buildDefaultRecallPipeline(cfg: Record<string, unknown>): RecallSection
   return [
     {
       id: "shared-context",
+      // Already coerced in parseConfig; do not coerce again.
       enabled: cfg.sharedContextEnabled === true,
       maxChars:
         typeof cfg.sharedContextMaxInjectChars === "number"

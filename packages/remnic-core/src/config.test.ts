@@ -2703,18 +2703,57 @@ test("parseConfig coerces string-typed sharedContextEnabled from the CLI", () =>
   // `--config sharedContextEnabled=true` arrives as a string, so a strict
   // `=== true` silently left the feature off for anyone who enabled it.
   // Parity with sharedContextAllowBindingAuthority (issue #2918).
+  // The default recall-pipeline shared-context gate must use the same
+  // coerced boolean — string true with no custom pipeline enables the
+  // section; false/malformed stay off.
   for (const enabled of ["true", "1", "yes", "on", true]) {
+    const parsed = parseConfig({ sharedContextEnabled: enabled });
     assert.equal(
-      parseConfig({ sharedContextEnabled: enabled }).sharedContextEnabled,
+      parsed.sharedContextEnabled,
       true,
       `${JSON.stringify(enabled)} must enable shared context`,
     );
+    assert.equal(
+      parsed.recallPipeline.find((section) => section.id === "shared-context")?.enabled,
+      true,
+      `${JSON.stringify(enabled)} must enable the default shared-context section`,
+    );
   }
   for (const disabled of ["false", "0", "no", "off", false, undefined, "", "garbage"]) {
+    const parsed = parseConfig({ sharedContextEnabled: disabled });
     assert.equal(
-      parseConfig({ sharedContextEnabled: disabled }).sharedContextEnabled,
+      parsed.sharedContextEnabled,
       false,
       `${JSON.stringify(disabled)} must leave shared context off (malformed input never activates)`,
     );
+    assert.equal(
+      parsed.recallPipeline.find((section) => section.id === "shared-context")?.enabled,
+      false,
+      `${JSON.stringify(disabled)} must leave the default shared-context section off`,
+    );
   }
+});
+
+test("custom recallPipeline keeps operator shared-context enabled (#2918)", () => {
+  const customOff = parseConfig({
+    sharedContextEnabled: "true",
+    recallPipeline: [{ id: "shared-context", enabled: false, maxChars: 1000 }],
+  });
+  assert.equal(customOff.sharedContextEnabled, true);
+  assert.equal(
+    customOff.recallPipeline.find((section) => section.id === "shared-context")?.enabled,
+    false,
+    "custom pipeline must not silently activate shared-context",
+  );
+
+  const customOn = parseConfig({
+    sharedContextEnabled: "false",
+    recallPipeline: [{ id: "shared-context", enabled: true, maxChars: 1000 }],
+  });
+  assert.equal(customOn.sharedContextEnabled, false);
+  assert.equal(
+    customOn.recallPipeline.find((section) => section.id === "shared-context")?.enabled,
+    true,
+    "custom pipeline enabled stays as specified",
+  );
 });
