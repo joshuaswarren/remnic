@@ -1179,7 +1179,7 @@ See [shared-context.md](shared-context.md).
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `sharedContextAllowBindingAuthority` | `false` | Allow shared-context items to carry binding authority. In-process writers must still request it explicitly; the MCP and OpenClaw tool surfaces cannot request it yet, so tool writes stay `informational` |
+| `sharedContextAllowBindingAuthority` | `false` | Allow shared-context items to carry binding authority. Writers must still request it explicitly. MCP and OpenClaw tool surfaces can request `binding`; the write is rejected unless this flag is true |
 | `sharedContextEnabled` | `false` | Enable shared cross-agent context |
 | `sharedContextDir` | `(unset)` | Directory for shared context files |
 | `sharedContextMaxInjectChars` | `4000` | Max chars injected from shared context |
@@ -2226,7 +2226,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `autoPromoteMinConfidenceTier` | `explicit` | `implied` (recommended) |
 | `routingRulesEnabled` | `false` | `false` |
 | `routingRulesStateFile` | `state/routing-rules.json` | `state/routing-rules.json` |
-| `sharedContextAllowBindingAuthority` | `false` | `false` unless in-process writers need to publish binding-authority shared items (tool surfaces cannot request it yet) |
+| `sharedContextAllowBindingAuthority` | `false` | `false` unless writers need to publish binding-authority shared items (MCP and OpenClaw tools can request binding when this is true) |
 | `sharedContextEnabled` | `false` | `false` unless you are actively using cross-agent memory sharing |
 | `sharedContextDir` | (unset) | (unset) |
 | `sharedContextMaxInjectChars` | `4000` | `4000` |

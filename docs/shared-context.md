@@ -68,8 +68,10 @@ route through, so no surface can be looser than another. A client-supplied
 `principal` or `namespace` is rejected on both surfaces: identity is resolved
 by the surface (the authenticated principal on the Access surface, the host's
 runtime agent id on OpenClaw), never accepted from the caller. Invalid
-controls are rejected with an input error (HTTP 400), never silently
-defaulted.
+controls are rejected, never silently defaulted. Access HTTP maps those
+input errors to HTTP 400. The OpenClaw `shared_context_write_output` handler
+reports the same failures as tool-result error text
+(`shared_context_write_output error: ...`), not as an HTTP response.
 
 ## Tools
 
