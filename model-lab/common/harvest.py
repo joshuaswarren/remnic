@@ -14,7 +14,10 @@ model-lab tasks:
   as private (#2896). Child files with persisted ``parentId`` and
   ``chunkIndex`` inherit the whole-fact verdict; they are skipped so a
   chunk body is not labeled as the gated fact. A whole fact, or a file
-  judged on its own body without those chunk fields, still emits.
+  judged on its own body without those chunk fields, still emits. A
+  post-gate sanitization rewrite is skipped when persist recorded that
+  evidence or the stored content hash does not match the recovered bytes;
+  unchanged bytes still emit.
 * ``correction-intent`` — persisted correction-plan JSON (#1581 durable output).
   ``confidence`` must be finite and in ``[0, 1]``. Every action is validated
   against the product kind/field contract. Polarity and assertion come from
@@ -69,6 +72,7 @@ import os
 import re
 import stat
 import sys
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from importlib.util import module_from_spec, spec_from_file_location
@@ -469,6 +473,67 @@ def _inherited_whole_fact_chunk(scalars: dict[str, str]) -> bool:
     return index >= 0
 
 
+def _parse_frontmatter_tags(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    text = raw.strip()
+    if not text.startswith("["):
+        return []
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item.strip() for item in parsed if isinstance(item, str) and item.strip()]
+
+
+def _explicit_sanitization_evidence(scalars: dict[str, str]) -> bool:
+    """True when persist recorded sanitization or injection-screen provenance."""
+    for key in ("sanitized", "contentSanitized"):
+        if scalars.get(key, "").strip().lower() in {"true", "yes", "1"}:
+            return True
+    if scalars.get("clean", "").strip().lower() == "false":
+        return True
+    return any(
+        tag.startswith("injection-screen:")
+        for tag in _parse_frontmatter_tags(scalars.get("tags"))
+    )
+
+
+def _normalize_product_content(text: str) -> str:
+    """Same identity fold as remnic-core ``normalizeContent``."""
+    pieces: list[str] = []
+    prev_space = False
+    for char in unicodedata.normalize("NFC", text).lower():
+        category = unicodedata.category(char)
+        if category[0] in {"L", "M", "N"}:
+            pieces.append(char)
+            prev_space = False
+        elif not prev_space:
+            pieces.append(" ")
+            prev_space = True
+    return "".join(pieces).strip()
+
+
+def _product_content_hash(text: str) -> str:
+    return sha256_bytes(_normalize_product_content(text).encode("utf-8"))
+
+
+def _post_gate_sanitization_rewrote(
+    scalars: dict[str, str],
+    body: str,
+    fact_text: str,
+) -> bool:
+    """True when persist rewrote gated bytes. Evidence or exact hash only."""
+    stored_hash = scalars.get("contentHash", "").strip().lower()
+    if stored_hash:
+        candidates = (fact_text, body.strip(), _strip_attributes_suffix(body))
+        if all(stored_hash != _product_content_hash(item) for item in candidates):
+            return True
+    return _explicit_sanitization_evidence(scalars)
+
+
 def _reconstruct_gated_fact(
     body: str,
     citation_template: str | None = None,
@@ -601,9 +666,15 @@ def build_faithfulness_record(
     quote = _joined_verified_quotes(scalars.get("sources"))
     if not quote:
         return None, "no_quote"
+    hash_candidate = _strip_default_citations(_strip_attributes_suffix(body))
+    if citation_template:
+        hash_candidate = _strip_custom_citations(hash_candidate, citation_template)
+    if _post_gate_sanitization_rewrote(scalars, body, hash_candidate):
+        return None, "sanitized"
     fact_text, fact_reason = _reconstruct_gated_fact(body, citation_template)
     if fact_reason is not None:
         return None, fact_reason
+
     approved = {
         "factText": fact_text,
         "quote": quote,

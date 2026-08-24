@@ -177,7 +177,11 @@ a model-backed detector lands in the consuming child.
 ## Privacy + consent
 
 - The **harvest stream** (teacher labels from shadow telemetry) is real, opt-in,
-  and local-only (issue #2852). `model-lab/harvest.py` requires an explicit
+  and local-only (issue #2852). The deleted `harvest-shadow-logs.py` scripts
+  (#2847) were unimplemented stubs, and the #1585 GPU-run work landed with
+  synthetic-data training only. Shadow verdicts themselves exist —
+  `extraction-persist.ts` records them in fact frontmatter (#1576). The
+  harvest tool is `model-lab/harvest.py`: it requires an explicit
   `--consent` flag plus explicit local `--input`/`--out` paths, prints exactly
   what it will read, and refuses otherwise (exit 2, nothing read). It walks
   exactly the named directory — no vault scan, no symlink `--input` root, no
@@ -197,9 +201,11 @@ a model-backed detector lands in the consuming child.
   trailing attribution-shaped suffix as private — no punctuation
   heuristics (#2896),
   skips child files that persist `parentId` plus `chunkIndex` with an inherited
-  whole-fact verdict, streams reads (one payload resident at a time, fingerprint
-  chained per-file in walk order, row set bounded by `--max-records`),
-  stats-and-streams `--max-text-bytes` before a full read, and never
+  whole-fact verdict, skips a post-gate sanitization rewrite when persist
+  recorded that evidence or the stored content hash does not match the recovered
+  bytes, streams reads (one payload resident at a time, fingerprint chained
+  per-file in walk order, row set bounded by `--max-records`), stats-and-streams
+  `--max-text-bytes` before a full read, and never
   runs from the daemon, build, or CI. See `model-lab/README.md`
   ("Harvesting shadow-telemetry labels") for the command recipe.
 - **No committed dataset contains harvested data.** Both v1 datasets are
