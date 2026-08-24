@@ -48,6 +48,7 @@ export * from "./memory-projection-format.js";
 export { searchWithGenericExclusion } from "./access-memory-search-fanout.js";
 export * from "./model-registry.js";
 export * from "./contradiction/index.js";
+export * from "./recall-state-view.js";
 
 export {
   buildEvidencePack,
@@ -149,6 +150,7 @@ export {
   type CodexCliFallbackResult,
   type CodexCliFallbackRunner,
 } from "./cli-fallback.js";
+export { CODEX_SUBSCRIPTION_PROVIDER_ID, codexSubscriptionBuiltinProviderConfig, createCodexSubscriptionRunner, ensureCodexSubscriptionRunnerRegistered, CodexSubscriptionAuthError, CodexSubscriptionConfigError, CodexSubscriptionTimeoutError } from "./providers/codex-subscription.js";
 
 // ---------------------------------------------------------------------------
 // Smart buffer (issue #563)

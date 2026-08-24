@@ -261,7 +261,6 @@ exit "\${STUB_EXIT:-0}"
     rmSync(noWorkspaceRoot, { recursive: true, force: true });
   }
 }
-
 // CLI --packages-dir: reject incomplete values before enumeration (#2856).
 {
   const spawnCli = (args) => spawnSync(process.execPath, [modulePath, ...args], { encoding: "utf8" });
