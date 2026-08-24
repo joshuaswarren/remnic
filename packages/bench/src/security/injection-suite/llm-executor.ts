@@ -5,8 +5,11 @@
  * /v1/chat/completions endpoint. openai-compat attaches Authorization
  * only for a host-matched key: NVIDIA hosts use NVIDIA_API_KEY,
  * OpenAI hosts use OPENAI_API_KEY, and every other host requires
- * REMNIC_OPENAI_COMPAT_API_KEY. Ambient keys are never reused across
- * providers. ollama stays unauthenticated. Network/5xx/timeout become
+ * REMNIC_OPENAI_COMPAT_API_KEY. Provider and non-loopback custom hosts
+ * require https before a credential is attached. Loopback HTTP
+ * (127.0.0.1 / localhost) is the only plaintext exception, for local
+ * openai-compat. Ambient keys are never reused across providers.
+ * ollama stays unauthenticated. Network/5xx/timeout become
  * HOST_API_FAULT so the suite pauses instead of cutting the row.
  */
 
@@ -69,19 +72,35 @@ function trimSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-function hostnameOf(baseUrl: string): string | undefined {
+function parseCompatUrl(baseUrl: string): { protocol: string; hostname: string } | undefined {
   try {
-    let hostname = new URL(baseUrl).hostname.trim().toLowerCase();
+    const parsed = new URL(baseUrl);
+    let hostname = parsed.hostname.trim().toLowerCase();
     while (hostname.endsWith(".")) hostname = hostname.slice(0, -1);
-    return hostname.length > 0 ? hostname : undefined;
+    if (hostname.length === 0) return undefined;
+    return { protocol: parsed.protocol.toLowerCase(), hostname };
   } catch {
     return undefined;
   }
 }
 
-function isDnsZoneHost(hostname: string | undefined, zone: string): boolean {
-  if (hostname === undefined) return false;
+function isDnsZoneHost(hostname: string, zone: string): boolean {
   return hostname === zone || hostname.endsWith(`.${zone}`);
+}
+
+function isHttps(protocol: string): boolean {
+  return protocol === "https:";
+}
+
+/** Narrow local-dev exception: plaintext HTTP only on these hostnames. */
+function isLoopbackHttpHost(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "localhost";
+}
+
+function requireHttps(protocol: string, message: string): void {
+  if (!isHttps(protocol)) {
+    throw new InjectionSuiteHostFault(message);
+  }
 }
 
 function nonEmptyEnv(name: string): string | undefined {
@@ -100,17 +119,28 @@ function requireEnvToken(envName: string, message: string): string {
 }
 
 function resolveOpenAiCompatToken(baseUrl: string): string {
-  const hostname = hostnameOf(baseUrl);
+  const parsed = parseCompatUrl(baseUrl);
+  if (parsed === undefined) {
+    throw new InjectionSuiteHostFault("openai-compat requires a valid http(s) base URL");
+  }
+  const { protocol, hostname } = parsed;
   if (isDnsZoneHost(hostname, "nvidia.com")) {
+    requireHttps(protocol, "openai-compat NVIDIA host requires https");
     return requireEnvToken(
       "NVIDIA_API_KEY",
       "openai-compat NVIDIA host requires NVIDIA_API_KEY",
     );
   }
   if (isDnsZoneHost(hostname, "openai.com")) {
+    requireHttps(protocol, "openai-compat OpenAI host requires https");
     return requireEnvToken(
       "OPENAI_API_KEY",
       "openai-compat OpenAI host requires OPENAI_API_KEY",
+    );
+  }
+  if (!isHttps(protocol) && !isLoopbackHttpHost(hostname)) {
+    throw new InjectionSuiteHostFault(
+      "openai-compat custom host requires https (loopback HTTP is allowed only for 127.0.0.1 or localhost)",
     );
   }
   return requireEnvToken(
