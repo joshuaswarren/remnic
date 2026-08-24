@@ -55,6 +55,16 @@ function parseLocalLlmMaxContext(value: unknown): number | undefined {
   return coerced;
 }
 
+function copyStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const headers: Record<string, string> = {};
+  for (const key of Object.getOwnPropertyNames(value)) {
+    const headerValue = Reflect.get(value, key);
+    if (typeof headerValue === "string") headers[key] = headerValue;
+  }
+  return headers;
+}
+
 export function parseLocalLlmConfig(
   cfg: Record<string, unknown>,
   localLlmApiKeyEnv: string | undefined,
@@ -78,14 +88,7 @@ export function parseLocalLlmConfig(
           ? undefined
           : readEnvVar(localLlmApiKeyEnv),
     localLlmApiKeyEnv,
-    localLlmHeaders:
-      cfg.localLlmHeaders && typeof cfg.localLlmHeaders === "object" && !Array.isArray(cfg.localLlmHeaders)
-        ? Object.fromEntries(
-            Object.entries(cfg.localLlmHeaders as Record<string, unknown>)
-              .filter(([, value]) => typeof value === "string")
-              .map(([key, value]) => [key, String(value)]),
-          )
-        : undefined,
+    localLlmHeaders: copyStringRecord(cfg.localLlmHeaders),
     localLlmAuthHeader: cfg.localLlmAuthHeader !== false,
     localLlmFallback: cfg.localLlmFallback !== false,
     localLlmHomeDir:

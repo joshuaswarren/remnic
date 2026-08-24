@@ -1189,11 +1189,6 @@
       "id": "packages/remnic-core/src/config.ts#b100f6136e84"
     },
     {
-      "file": "packages/remnic-core/src/config.ts",
-      "reason": "Object.entries() over parser input — dynamic key set",
-      "id": "packages/remnic-core/src/config.ts#d53d65700eaa"
-    },
-    {
       "file": "packages/remnic-core/src/entity-schema.ts",
       "reason": "Object.entries() over parser input — dynamic key set",
       "id": "packages/remnic-core/src/entity-schema.ts#3038a1b1f062"
