@@ -108,6 +108,15 @@ export class TimelineCorrectionStore {
   }
 }
 
+/** Corrections whose cardId is in `cards`, in incoming list order. */
+export function correctionsForCards(
+  cards: readonly TimelineCard[],
+  corrections: readonly TimelineCorrection[],
+): TimelineCorrection[] {
+  const ids = new Set(cards.map((card) => card.id));
+  return corrections.filter((correction) => ids.has(correction.cardId));
+}
+
 /**
  * Apply corrections to built cards. Overrides title/category, sets confidence
  * to 1 (a human confirmed it), and stamps manual-edit provenance. Uncorrected
