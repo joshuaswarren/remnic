@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.69.34",
+  "version": "9.69.39",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -461,6 +461,36 @@
         "type": "boolean",
         "default": false,
         "description": "If enabled, Engram may auto-promote selected categories to shared (reserved; conservative)."
+      },
+      "backgroundGeneration": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Chat-only Hermes loopback bridge. Consumed only by hourly background generation. Never assigned to openaiBaseUrl.",
+        "properties": {
+          "endpoint": {
+            "type": "string",
+            "description": "Full chat-completions URL for the Hermes loopback bridge."
+          },
+          "token": {
+            "type": "string",
+            "description": "Loopback bearer from the generated client file."
+          },
+          "timeoutSeconds": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "default": 120,
+            "description": "Absolute deadline in seconds for one background-generation request."
+          },
+          "timeout_seconds": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Snake-case alias of timeoutSeconds used by the generated Hermes client file."
+          }
+        },
+        "required": [
+          "endpoint",
+          "token"
+        ]
       },
       "beforeResetTimeoutMs": {
         "type": "integer",
@@ -3231,6 +3261,10 @@
         "type": "number",
         "default": 0.65,
         "description": "Decay threshold for lifecycle demotion to stale."
+      },
+      "llmBridgeClientConfigPath": {
+        "type": "string",
+        "description": "Path to the Hermes loopback-bridge client JSON. Parsed into backgroundGeneration only. Never copied onto openaiBaseUrl."
       },
       "localLlm400CooldownMs": {
         "type": "number",
@@ -7395,6 +7429,24 @@
         "maximum": 120000,
         "default": 10000,
         "description": "Total timeout in milliseconds for delegate liveness and older-daemon detailed-health fallback probes."
+      },
+      "extraction": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Span-mode extraction (issue #2333 Phase B, bench-gated). Default off; shadow requests spans alongside content and persists the generated content unchanged.",
+        "properties": {
+          "spanMode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "shadow",
+              "on"
+            ],
+            "default": "off",
+            "description": "\"off\" (default) generates content as before. \"shadow\" requests spans AND content, materializes for comparison telemetry only, and persists the generated content (zero behavior change). \"on\" persists materialized frame+span content, falling back per fact to generated content when a span fails validation. Unrecognized values are rejected at config parse."
+          }
+        }
       }
     }
   },

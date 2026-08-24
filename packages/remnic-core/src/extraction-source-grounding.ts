@@ -99,6 +99,7 @@ export function filterExtractionResultBySource(
   assertionSource?: string,
   roleAssertionSources?: ExtractionGroundingRoleSources,
   eventTimeNormalizer?: (eventTime: string) => string,
+  spanMode: "off" | "shadow" | "on" = "off",
 ): ExtractionResult {
-  return filterGroundingRules(result, source, assertionSource, roleAssertionSources, eventTimeNormalizer);
+  return filterGroundingRules(result, source, assertionSource, roleAssertionSources, eventTimeNormalizer, spanMode);
 }

@@ -114,7 +114,6 @@ function priorEditsFromPrompt(prompt: string): unknown {
   return parsed.priorEdits;
 }
 
-
 test("disabled analysis persists deterministic cards and makes zero provider calls", async () => {
   await withStore(async (store, memoryDir) => {
     store.insertSnapshot(snapshot());
@@ -461,6 +460,88 @@ test("listPersistedTimelineDates lists only valid day files", async () => {
   }
 });
 
+test("a timezone change invalidates the cached day and re-analyzes (issue #2891)", async () => {
+  await withStore(async (store, memoryDir) => {
+    store.insertSnapshot(snapshot());
+    const remote = fakeRemote(async () => ({ content: '{"ops":[]}' }));
+    const analysis = parseActivityConfig({
+      timeline: { analysis: { enabled: true, provider: "openai", model: "gpt-test" } },
+    }).timeline.analysis;
+    const first = await regenerateTimelineDay({
+      date: DATE,
+      timezone: TZ,
+      memoryDir,
+      store,
+      timelineEnabled: true,
+      analysis,
+      deps: { remoteLlm: remote.remoteLlm },
+    });
+    assert.equal(first.status, "ok");
+    assert.equal(remote.calls, 1);
+    const sameTz = await regenerateTimelineDay({
+      date: DATE,
+      timezone: TZ,
+      memoryDir,
+      store,
+      timelineEnabled: true,
+      analysis,
+      deps: { remoteLlm: remote.remoteLlm },
+    });
+    assert.equal(sameTz.written, false);
+    assert.equal(remote.calls, 1);
+    const shifted = await regenerateTimelineDay({
+      date: DATE,
+      timezone: "America/New_York",
+      memoryDir,
+      store,
+      timelineEnabled: true,
+      analysis,
+      deps: { remoteLlm: remote.remoteLlm },
+    });
+    assert.equal(shifted.status, "ok");
+    assert.equal(shifted.written, true);
+    assert.equal(shifted.analyzed, true);
+    assert.equal(remote.calls, 2);
+    const persisted = JSON.parse(await readFile(timelineDayPath(memoryDir, DATE), "utf8"));
+    assert.equal(persisted.timezone, "America/New_York");
+  });
+});
+
+test("an empty day cached under one timezone is rebuilt under another (issue #2891)", async () => {
+  await withStore(async (store, memoryDir) => {
+    const remote = fakeRemote(async () => ({ content: '{"ops":[]}' }));
+    const analysis = parseActivityConfig({
+      timeline: { analysis: { enabled: true, provider: "openai", model: "gpt-test" } },
+    }).timeline.analysis;
+    const first = await regenerateTimelineDay({
+      date: DATE,
+      timezone: TZ,
+      memoryDir,
+      store,
+      timelineEnabled: true,
+      analysis,
+      deps: { remoteLlm: remote.remoteLlm },
+    });
+    assert.equal(first.status, "invalid_output");
+    assert.equal(first.analyzed, false);
+    assert.equal(remote.calls, 0);
+    const shifted = await regenerateTimelineDay({
+      date: DATE,
+      timezone: "America/New_York",
+      memoryDir,
+      store,
+      timelineEnabled: true,
+      analysis,
+      deps: { remoteLlm: remote.remoteLlm },
+    });
+    // Zero observations under any timezone: still a rebuild, never the
+    // UTC-cached file served with the old day derivation.
+    assert.equal(shifted.written, true);
+    const persisted = JSON.parse(await readFile(timelineDayPath(memoryDir, DATE), "utf8"));
+    assert.equal(persisted.timezone, "America/New_York");
+  });
+});
+
 test("a correction for another day does not change this day's hash, cache, or provider input", async () => {
   await withStore(async (store, memoryDir) => {
     store.insertSnapshot(snapshot());
@@ -550,4 +631,3 @@ test("a same-day correction updates hash, cards, and priorEdits", async () => {
     assert.notEqual(persistedSourceHash(await readFile(timelineDayPath(memoryDir, DATE), "utf8")), firstHash);
   });
 });
-
