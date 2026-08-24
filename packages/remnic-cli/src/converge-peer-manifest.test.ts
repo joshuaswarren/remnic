@@ -76,6 +76,62 @@ test("peer manifest parser rejects malformed headers and raw body fields", async
   );
 });
 
+test("peer manifest parser retains negative-row version stamps and rejects invalid ones (#2927)", async () => {
+  const header = JSON.stringify({
+    type: "manifest",
+    namespace: "team",
+    format: "remnic-reconcile-manifest",
+    schemaVersion: 1,
+  });
+  const negativeRow = (extra: Record<string, unknown>) =>
+    JSON.stringify({
+      type: "file",
+      file: { path: "facts/noid.md", sha256: "a".repeat(64), bytes: 10, ...extra },
+    });
+
+  // A negative row (no `memory`) keeps its top-level invalidation stamps so
+  // the client's caches can reuse the "no identity here" verdict.
+  const retained = await parsePeerManifestStream(
+    streamedResponse(
+      [header, negativeRow({ normalizerVersion: 4, identityResolutionVersion: 2 })],
+      40
+    ),
+    "team"
+  );
+  assert.equal(retained.files[0]?.memory, undefined);
+  assert.equal(retained.files[0]?.normalizerVersion, 4);
+  assert.equal(retained.files[0]?.identityResolutionVersion, 2);
+
+  // A positive row never carries top-level stamps; if one does, it is not
+  // copied onto the parsed row.
+  const positive = await parsePeerManifestStream(
+    streamedResponse(
+      [
+        header,
+        JSON.stringify({
+          type: "file",
+          file: {
+            path: "facts/a.md",
+            sha256: "b".repeat(64),
+            normalizerVersion: 4,
+            memory: { id: "fact-a", category: "fact", status: "active", contentHash: "c".repeat(64) },
+          },
+        }),
+      ],
+      40
+    ),
+    "team"
+  );
+  assert.equal(positive.files[0]?.normalizerVersion, undefined);
+
+  // Stamps share the wire contract of the other numeric fields: malformed
+  // values are rejected, not silently reinterpreted.
+  await assert.rejects(
+    parsePeerManifestStream(streamedResponse([header, negativeRow({ normalizerVersion: "four" })], 40), "team"),
+    /invalid normalizerVersion/
+  );
+});
+
 test("peer manifest transport falls back only when both route aliases are unsupported", async () => {
   let calls = 0;
   const unsupported: typeof fetch = async () => {

@@ -23,6 +23,7 @@ import {
   respondOfflineManifestStream,
   respondOfflineSnapshotStream,
 } from "./access-http-offline-stream.js";
+import { peerManifestRevision } from "./reconcile/manifest.js";
 import { nonEmptyQueryParam, optionalNamespaceKindQueryParam, optionalQueryString, positiveIntQueryParam } from "./access-http-query.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { respondWearablesErrorGlue } from "./wearables/http-glue.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js"; import { respondLocationStatus, respondLocationCheck, respondLocationSync, respondLocationBackfill, respondLocationDay } from "./location/http-glue.js"; import { respondStandup } from "./standup/http-glue.js"; import { respondDeepRecall } from "./deep-recall-http-glue.js";
@@ -1203,6 +1204,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         version: 1,
         convergenceFinalization: true,
         manifestStream: true,
+        manifestRevision: peerManifestRevision(this.service.configRef?.inlineSourceAttributionFormat),
       });
       return;
     }
