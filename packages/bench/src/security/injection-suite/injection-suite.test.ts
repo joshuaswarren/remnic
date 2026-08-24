@@ -478,6 +478,64 @@ test("openai-compat treats a blank NVIDIA_API_KEY as missing on NVIDIA hosts", a
   );
 });
 
+test("openai-compat refuses HTTP OpenAI hosts before fetch", async () => {
+  await assertFailsBeforeFetch(
+    { OPENAI_API_KEY: "must-not-be-sent" },
+    { kind: "openai-compat", baseUrl: "http://api.openai.com/v1", requestTimeoutMs: 250 },
+    /https/,
+  );
+});
+
+test("openai-compat refuses HTTP NVIDIA hosts before fetch", async () => {
+  await assertFailsBeforeFetch(
+    { NVIDIA_API_KEY: "must-not-be-sent" },
+    { kind: "openai-compat", baseUrl: "http://integrate.api.nvidia.com/v1", requestTimeoutMs: 250 },
+    /https/,
+  );
+});
+
+test("openai-compat refuses HTTP custom non-loopback hosts before fetch", async () => {
+  await assertFailsBeforeFetch(
+    { REMNIC_OPENAI_COMPAT_API_KEY: "must-not-be-sent" },
+    { kind: "openai-compat", baseUrl: "http://compat.example/v1", requestTimeoutMs: 250 },
+    /https/,
+  );
+});
+
+test("openai-compat allows loopback HTTP with REMNIC_OPENAI_COMPAT_API_KEY", async () => {
+  const mock = mockJsonFetch({
+    choices: [{ message: { content: "ok" } }],
+  });
+  try {
+    await withEnv({ ...AUTH_CLEAR_ENV, REMNIC_OPENAI_COMPAT_API_KEY: "loopback-key" }, async () => {
+      await completeChat(
+        { kind: "openai-compat", baseUrl: "http://localhost:9/v1", requestTimeoutMs: 250 },
+        "hi",
+      );
+      assert.equal(mock.requests[0]?.headers.authorization, "Bearer loopback-key");
+    });
+  } finally {
+    mock.restore();
+  }
+});
+
+test("openai-compat custom https host sends REMNIC_OPENAI_COMPAT_API_KEY", async () => {
+  const mock = mockJsonFetch({
+    choices: [{ message: { content: "ok" } }],
+  });
+  try {
+    await withEnv({ ...AUTH_CLEAR_ENV, REMNIC_OPENAI_COMPAT_API_KEY: "custom-https-key" }, async () => {
+      await completeChat(
+        { kind: "openai-compat", baseUrl: "https://compat.example/v1", requestTimeoutMs: 250 },
+        "hi",
+      );
+      assert.equal(mock.requests[0]?.headers.authorization, "Bearer custom-https-key");
+    });
+  } finally {
+    mock.restore();
+  }
+});
+
 test("ollama omits Authorization even when OPENAI_API_KEY is set", async () => {
   const mock = mockJsonFetch({
     message: { content: "ok" },
