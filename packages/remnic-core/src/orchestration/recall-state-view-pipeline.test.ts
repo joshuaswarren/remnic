@@ -209,3 +209,92 @@ test("an anchored predecessor keeps its rank position when admitted", async () =
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("#2859 namespace fanout collision: a same-id successor in another namespace cannot anchor", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-sv-fanout-"));
+  try {
+    const coordinator = await makeCoordinator(memoryDir);
+    const A_OLD = "facts/a-old.md";
+    const B_NEW = "facts/b-new.md";
+    // ns-a: superseded predecessor whose successor id m-1 is NOT in the
+    // candidate set. ns-b: an unrelated active row that reuses id m-1.
+    // Bare-id matching (pre-#2859) admitted the ns-a predecessor on the
+    // ns-b anchor; qualified keys must not.
+    const results: QmdSearchResult[] = [
+      { ...result(B_NEW, 0.9), namespace: "ns-b" },
+      { ...result(A_OLD, 0.7), namespace: "ns-a" },
+    ];
+    const memories = new Map<string, MemoryFile>([
+      [`ns-b\0${B_NEW}`, memory(B_NEW, { id: "m-1", status: "active" })],
+      [
+        `ns-a\0${A_OLD}`,
+        memory(A_OLD, {
+          id: "m-0",
+          status: "superseded",
+          supersededBy: "m-1",
+          supersededAt: "2026-08-01",
+        }),
+      ],
+    ]);
+    const safe = coordinator.filterSearchResultsByRecallSafety(results, memories, {
+      stateViewActive: true,
+    });
+    assert.deepEqual(
+      safe.map((r) => r.path),
+      [B_NEW],
+      "a foreign-namespace successor must never anchor the superseded row"
+    );
+
+    // Positive control: ns-a's own m-1 present → the pair is admitted.
+    const A_NEW = "facts/a-new.md";
+    const pairResults: QmdSearchResult[] = [
+      { ...result(A_NEW, 0.9), namespace: "ns-a" },
+      { ...result(A_OLD, 0.7), namespace: "ns-a" },
+    ];
+    const pairMemories = new Map<string, MemoryFile>([
+      [`ns-a\0${A_NEW}`, memory(A_NEW, { id: "m-1", status: "active" })],
+      [`ns-a\0${A_OLD}`, memories.get(`ns-a\0${A_OLD}`)!],
+    ]);
+    const pair = coordinator.filterSearchResultsByRecallSafety(pairResults, pairMemories, {
+      stateViewActive: true,
+    });
+    assert.deepEqual(
+      pair.map((r) => r.path),
+      [A_NEW, A_OLD],
+      "the same-namespace successor anchors the pair as before"
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#2859 back-pointer anchors a deferred row whose supersededBy is absent", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-sv-backptr-"));
+  try {
+    const coordinator = await makeCoordinator(memoryDir);
+    const results = [result(NEW, 0.9), result(OLD, 0.7)];
+    const memories = new Map<string, MemoryFile>([
+      [NEW, memory(NEW, { id: "m-new", status: "active", supersedes: "m-old" })],
+      [
+        OLD,
+        memory(OLD, {
+          id: "m-old",
+          status: "superseded",
+          supersededAt: "2026-08-01",
+        }),
+      ],
+    ]);
+    const safe = coordinator.filterSearchResultsByRecallSafety(results, memories, {
+      stateViewActive: true,
+    });
+    assert.deepEqual(
+      safe.map((r) => r.path),
+      [NEW, OLD],
+      "the successor's supersedes back-pointer must admit its predecessor"
+    );
+    assert.equal(safe[1]?.supersedes, undefined, "the admitted row itself has no back-pointer");
+    assert.equal(safe[0]?.supersedes, "m-old", "the survivor carries its supersedes back-pointer");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

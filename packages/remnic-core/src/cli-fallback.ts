@@ -59,6 +59,11 @@ export function isCodexCliFallbackRunnerRegistered(): boolean {
   return processRunner !== undefined;
 }
 
+/** Current process-local Codex CLI runner, if any. */
+export function getCodexCliFallbackRunnerForProcess(): CodexCliFallbackRunner | undefined {
+  return processRunner;
+}
+
 /**
  * Registers the process-local Codex CLI transport. Core itself stays free of
  * child_process here; hosts and benchmark runtimes opt in, and the
@@ -79,14 +84,15 @@ export async function callCodexCliFallback(
   modelId: string,
   messages: CodexCliFallbackMessage[],
   options: CodexCliFallbackOptions = {},
+  runner: CodexCliFallbackRunner | undefined = processRunner,
 ): Promise<CodexCliFallbackResult> {
-  if (!processRunner) {
+  if (!runner) {
     throw new Error(
       'codex-cli fallback transport is not registered; install a runner with setCodexCliFallbackRunnerForProcess() before using api: "codex-cli"',
     );
   }
 
-  return await processRunner({
+  return await runner({
     config: normalizeCodexCliFallbackConfig(config),
     modelId: normalizeCodexCliModel(modelId),
     messages,
