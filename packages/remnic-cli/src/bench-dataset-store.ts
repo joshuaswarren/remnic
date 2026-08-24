@@ -392,16 +392,10 @@ export function isDatasetDownloaded(datasetPath: string, benchmarkId: string): b
   return false;
 }
 
-// Resolve the dataset root. In a monorepo checkout we keep using
-// evals/datasets so local dev state stays stable; in a published CLI
-// install CLI_REPO_ROOT points under node_modules (not user-writable
-// and missing the repo-only evals/ tree) so we fall back to
-// ~/.remnic/bench/datasets.
+// After #2798 the canonical root is ~/.remnic/bench/datasets in both
+// repo checkouts and published installs. The repo-local evals/datasets
+// tree is reserved for read-only fallback discovery (#2867).
 export function resolveRepoDatasetRoot(): string {
-  const repoCandidate = path.join(CLI_REPO_ROOT, "evals", "datasets");
-  if (isRepoCheckout()) {
-    return repoCandidate;
-  }
   return path.join(resolveHomeDir(), ".remnic", "bench", "datasets");
 }
 
@@ -421,9 +415,14 @@ const warnedLegacyDatasetBenchmarkIds = new Set<string>();
 
 // Containment guard for legacy discovery: the resolved (real) path of
 // `candidate` must be a strict subdirectory of the resolved `root`.
-// Rejects `..` traversal, absolute-path smuggling, and symlink escape.
+// Rejects `..` traversal, absolute-path smuggling, symlink escape, and a
+// symlinked root (lstat before realpath so an external target cannot
+// masquerade as contained).
 function isPathContainedWithinRoot(candidate: string, root: string): boolean {
   try {
+    if (fs.lstatSync(root).isSymbolicLink()) {
+      return false;
+    }
     const rootReal = fs.realpathSync(root);
     const candidateReal = fs.realpathSync(candidate);
     const rel = path.relative(rootReal, candidateReal);
@@ -449,8 +448,7 @@ export function discoverBenchDatasetDir(
 
   const legacyRoot = roots?.legacyRoot ?? LEGACY_EVALS_DATASET_ROOT;
   const legacyDir = path.join(legacyRoot, benchmarkId);
-  // Repo checkouts where the legacy root is still the canonical root have
-  // nothing to fall back to (same path, already probed above).
+  // Identical roots have nothing to fall back to (already probed above).
   if (legacyDir === canonicalDir) {
     return undefined;
   }
@@ -477,17 +475,6 @@ export function discoverBenchDatasetDir(
 
 export function listDownloadableBenchmarks(): string[] {
   return [...DOWNLOADABLE_BENCHMARK_DATASETS];
-}
-
-function isRepoCheckout(): boolean {
-  // Treat the install as a repo checkout only when the monorepo
-  // marker files are present next to CLI_REPO_ROOT. In published
-  // @remnic/cli installs, CLI_REPO_ROOT points inside node_modules
-  // where these files do not exist.
-  return (
-    fs.existsSync(path.join(CLI_REPO_ROOT, "pnpm-workspace.yaml")) &&
-    fs.existsSync(path.join(CLI_REPO_ROOT, "evals", "scripts", "download-datasets.sh"))
-  );
 }
 
 // Test seam: reset the once-per-process legacy-location warning state.

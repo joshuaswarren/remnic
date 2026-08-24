@@ -281,12 +281,6 @@ import {
   readBenchStatus,
 } from "./bench-status.js";
 import {
-  buildBenchRunnerArgs,
-  createFallbackBenchOutputDir,
-  findUnsupportedFallbackBenchOptions,
-  resolveFallbackBenchResultPath,
-} from "./bench-fallback.js";
-import {
   atomicWriteFileSync, cleanupRollbackDirectoryBestEffort,
   createOpenclawUpgradeRollbackFailure,
   runBestEffortGatewayRestart,
@@ -486,7 +480,6 @@ const LOG_FILE = path.join(PID_DIR, "server.log");
 const LEGACY_LOG_FILE = path.join(LEGACY_PID_DIR, "server.log");
 const CLI_MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLI_REPO_ROOT = path.resolve(CLI_MODULE_DIR, "../../..");
-const EVAL_RUNNER_PATH = path.join(CLI_REPO_ROOT, "evals", "run.ts");
 const OPENCLAW_GATEWAY_LABEL = "ai.openclaw.gateway";
 // QMD teardown and cache reads can leave short-lived filesystem requests after
 // successful one-shot commands; give them enough time to drain before forcing.
@@ -1182,6 +1175,13 @@ async function loadBenchDefinitionsFromPackage(): Promise<BenchmarkDefinition[] 
   return Array.isArray(result) ? result : undefined;
 }
 
+// Shared install hint for `bench run` paths that need @remnic/bench — the
+// only benchmark runtime since the legacy evals fallback was removed
+// (issue #2798). Used by both the per-benchmark run loop and the --all
+// expansion guard so every missing-runtime exit reads the same.
+const MISSING_BENCH_RUNTIME_HINT =
+  "@remnic/bench. Build the workspace packages (or install @remnic/bench) and retry.";
+
 async function resolveAllBenchmarks(): Promise<string[]> {
   const packageBenchmarks = await loadBenchDefinitionsFromPackage();
   if (packageBenchmarks) {
@@ -1189,14 +1189,7 @@ async function resolveAllBenchmarks(): Promise<string[]> {
       .filter((entry) => entry.runnerAvailable)
       .map((entry) => entry.id);
   }
-
-  if (!fs.existsSync(EVAL_RUNNER_PATH)) {
-    return [];
-  }
-
-  return BENCHMARK_CATALOG
-    .filter((entry) => entry.category !== "ingestion")
-    .map((entry) => entry.id);
+  return [];
 }
 
 async function resolveKnownBenchmarkIds(): Promise<Set<string>> {
@@ -1210,70 +1203,6 @@ async function resolveKnownBenchmarkIds(): Promise<Set<string>> {
   return knownIds;
 }
 
-async function runBenchViaFallback(
-  parsed: ParsedBenchArgs,
-  benchmarkId: string,
-  runtimeProfile: BenchRuntimeProfile,
-): Promise<string> {
-  if (parsed.taskIdsFile) {
-    throw new Error(
-      "Fallback benchmark runner does not support hash-pinned LoCoMo task selection. Build/install @remnic/bench to use --task-ids-file.",
-    );
-  }
-  if (runtimeProfile === "real" && parsed.remnicConfigPath) {
-    resolveExistingBenchRemnicConfigPath(parsed.remnicConfigPath);
-  }
-  if (runtimeProfile === "openclaw-chain" && parsed.openclawConfigPath) {
-    resolveExistingBenchOpenclawConfigPath(parsed.openclawConfigPath);
-  }
-  if (runtimeProfile === "real") {
-    throw new Error(
-      'Fallback benchmark runner does not support --runtime-profile "real". Build/install @remnic/bench to use package-backed runtime profiles.',
-    );
-  }
-  if (runtimeProfile === "openclaw-chain") {
-    throw new Error(
-      'Fallback benchmark runner does not support --runtime-profile "openclaw-chain". Build/install @remnic/bench to use package-backed runtime profiles.',
-    );
-  }
-  if (runtimeProfile === "local-lab") {
-    throw new Error(
-      'Fallback benchmark runner does not support --runtime-profile "local-lab". Build/install @remnic/bench to use package-backed runtime profiles with local-lab manifests.',
-    );
-  }
-  const unsupportedOptions = findUnsupportedFallbackBenchOptions(parsed);
-  if (unsupportedOptions.length > 0) {
-    throw new Error(
-      `Fallback benchmark runner does not support provider-backed, gateway, or thinking/timeout flags (${unsupportedOptions.join(", ")}). Build/install @remnic/bench to use those options.`,
-    );
-  }
-  if (!fs.existsSync(EVAL_RUNNER_PATH)) {
-    console.error(
-      "Benchmark runner not found. Expected eval runner at evals/run.ts or a phase-1 @remnic/bench runtime export.",
-    );
-    process.exit(1);
-  }
-
-  const tsxCandidates = [
-    path.join(CLI_REPO_ROOT, "node_modules", ".bin", "tsx"),
-    path.join(CLI_REPO_ROOT, "packages", "remnic-cli", "node_modules", ".bin", "tsx"),
-  ];
-  const tsxCmd = tsxCandidates.find((candidate) => fs.existsSync(candidate)) ?? "tsx";
-  const fallbackOutputDir = createFallbackBenchOutputDir(
-    parsed.resultsDir ?? resolveBenchOutputDir(),
-    benchmarkId,
-    process.pid,
-  );
-  const fallbackArgs = [
-    EVAL_RUNNER_PATH,
-    ...buildBenchRunnerArgs(parsed, benchmarkId, fallbackOutputDir),
-  ];
-  childProcess.execFileSync(tsxCmd, fallbackArgs, {
-    stdio: "inherit",
-    env: process.env,
-  });
-  return resolveFallbackBenchResultPath(fallbackOutputDir);
-}
 
 function resolveBenchOutputDir(): string {
   return path.join(resolveHomeDir(), ".remnic", "bench", "results");
@@ -1323,7 +1252,7 @@ function resolveDatasetDownloadScriptPath(): string {
   if (fs.existsSync(bundled)) {
     return bundled;
   }
-  return path.join(CLI_REPO_ROOT, "evals", "scripts", "download-datasets.sh");
+  return path.join(CLI_REPO_ROOT, "packages", "remnic-cli", "assets", "download-datasets.sh");
 }
 
 function runDatasetDownloadScript(
@@ -10129,6 +10058,15 @@ async function cmdBench(rest: string[]): Promise<void> {
     return;
   }
 
+  // --all expands from the @remnic/bench registry; without the optional
+  // package there is nothing to expand. Fail here with the same
+  // actionable install hint a named benchmark gets, before the empty
+  // expansion can be misread as "no runnable benchmarks in this install".
+  if (parsed.all && !(await tryLoadBenchModule())) {
+    console.error(`ERROR: bench run --all requires ${MISSING_BENCH_RUNTIME_HINT}`);
+    process.exit(1);
+  }
+
   let selectedBenchmarks = parsed.all
     ? await resolveAllBenchmarks()
     : parsed.benchmarks;
@@ -10255,9 +10193,11 @@ async function cmdBench(rest: string[]): Promise<void> {
             }
             try { await updateBenchmarkCompleted(benchStatusPath, statusId, handledByPackage.writtenPath ?? ""); } catch { /* non-fatal */ }
           } else {
-            const fallbackResultPath = await runBenchViaFallback(parsed, benchmarkId, runtimeProfile);
-            writtenPaths.push(fallbackResultPath);
-            try { await updateBenchmarkCompleted(benchStatusPath, statusId, fallbackResultPath); } catch { /* non-fatal */ }
+            // The legacy eval-runner fallback was removed (issue #2798);
+            // @remnic/bench is the only benchmark runtime.
+            throw new Error(
+              `Benchmark "${benchmarkId}" requires ${MISSING_BENCH_RUNTIME_HINT}`,
+            );
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

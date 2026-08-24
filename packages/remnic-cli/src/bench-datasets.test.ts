@@ -9,6 +9,8 @@ import {
   __benchDatasetTestHooks,
   type PairedAnswerReplayCache,
 } from "./index.js";
+import { resolveRepoDatasetRoot } from "./bench-dataset-store.js";
+import { resolveHomeDir } from "./path-utils.js";
 
 test("paired answer replay cache is exclusive to LoCoMo", () => {
   const cache = new Map();
@@ -453,4 +455,38 @@ test("discoverBenchDatasetDir rejects legacy paths that escape the legacy root v
   } finally {
     captured.restore();
   }
+});
+
+test("discoverBenchDatasetDir rejects a symlinked legacy dataset root", async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "remnic-dataset-root-symlink-"));
+  const canonicalRoot = path.join(base, "canonical");
+  const legacyRoot = path.join(base, "evals", "datasets");
+  const outsideRoot = path.join(base, "outside");
+  await writeLocomoDataset(path.join(outsideRoot, "locomo"));
+  await mkdir(path.dirname(legacyRoot), { recursive: true });
+  await symlink(outsideRoot, legacyRoot);
+  const outsideHashBefore = await hashTree(outsideRoot);
+
+  __benchDatasetTestHooks.resetLegacyDatasetDiscoveryWarningForTest();
+  const captured = captureConsoleError();
+  try {
+    assert.equal(
+      __benchDatasetTestHooks.discoverBenchDatasetDir("locomo", {
+        canonicalRoot,
+        legacyRoot,
+      }),
+      undefined,
+    );
+    assert.deepEqual(captured.lines(), []);
+  } finally {
+    captured.restore();
+  }
+  assert.equal(await hashTree(outsideRoot), outsideHashBefore);
+});
+
+test("resolveRepoDatasetRoot uses the post-migration home store in a repo checkout", () => {
+  assert.equal(
+    resolveRepoDatasetRoot(),
+    path.join(resolveHomeDir(), ".remnic", "bench", "datasets"),
+  );
 });

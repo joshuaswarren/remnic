@@ -13,8 +13,9 @@ coverage
 logs
 state
 bench-datasets
-evals/datasets
 docs/benchmarks/results
+evals/datasets
+evals/results
 packages/plugin-openclaw/reports
 
 .env
