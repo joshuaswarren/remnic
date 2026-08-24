@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.69.34",
+  "version": "9.69.38",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -1034,6 +1034,46 @@
       "types": "./dist/extraction.d.ts",
       "remnic-source": "./src/extraction.ts",
       "import": "./dist/extraction.js"
+    },
+    "./extraction-span-fallback": {
+      "types": "./dist/extraction-span-fallback.d.ts",
+      "remnic-source": "./src/extraction-span-fallback.ts",
+      "import": "./dist/extraction-span-fallback.js"
+    },
+    "./extraction-span-fallback.js": {
+      "types": "./dist/extraction-span-fallback.d.ts",
+      "remnic-source": "./src/extraction-span-fallback.ts",
+      "import": "./dist/extraction-span-fallback.js"
+    },
+    "./extraction-span-gate": {
+      "types": "./dist/extraction-span-gate.d.ts",
+      "remnic-source": "./src/extraction-span-gate.ts",
+      "import": "./dist/extraction-span-gate.js"
+    },
+    "./extraction-span-gate.js": {
+      "types": "./dist/extraction-span-gate.d.ts",
+      "remnic-source": "./src/extraction-span-gate.ts",
+      "import": "./dist/extraction-span-gate.js"
+    },
+    "./extraction-span-source-hash": {
+      "types": "./dist/extraction-span-source-hash.d.ts",
+      "remnic-source": "./src/extraction-span-source-hash.ts",
+      "import": "./dist/extraction-span-source-hash.js"
+    },
+    "./extraction-span-source-hash.js": {
+      "types": "./dist/extraction-span-source-hash.d.ts",
+      "remnic-source": "./src/extraction-span-source-hash.ts",
+      "import": "./dist/extraction-span-source-hash.js"
+    },
+    "./extraction-span-tokens": {
+      "types": "./dist/extraction-span-tokens.d.ts",
+      "remnic-source": "./src/extraction-span-tokens.ts",
+      "import": "./dist/extraction-span-tokens.js"
+    },
+    "./extraction-span-tokens.js": {
+      "types": "./dist/extraction-span-tokens.d.ts",
+      "remnic-source": "./src/extraction-span-tokens.ts",
+      "import": "./dist/extraction-span-tokens.js"
     },
     "./fallback-llm": {
       "types": "./dist/fallback-llm.d.ts",
@@ -3264,7 +3304,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^9.69.34"
+    "@remnic/coding-graph": "^9.69.38"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {

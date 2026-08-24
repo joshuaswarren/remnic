@@ -29,6 +29,7 @@ import {
 export interface ExtractionSourceGroundingOptions {
   sourceGrounding: boolean;
   anchorTemporalExpressions: boolean;
+  spanMode?: "off" | "shadow" | "on";
 }
 
 export function applyExtractionSourceGrounding(
@@ -60,6 +61,7 @@ export function applyExtractionSourceGrounding(
     anchorSource(assertionSourceText),
     anchoredRoleSources,
     options.anchorTemporalExpressions ? anchorSource : undefined,
+    options.spanMode ?? "off",
   );
 }
 
@@ -653,18 +655,51 @@ function filterGroundedFact(
   assertionSource: string | undefined,
   roleAssertionSources: ExtractionGroundingRoleSources | undefined,
   eventTimeNormalizer: ((eventTime: string) => string) | undefined,
+  spanMode: "off" | "shadow" | "on" = "off",
 ): ExtractionResult["facts"][number] | undefined {
-  const factContext = selectGroundingContext(
+  // Span-materialized content (issue #2333) is "frame: verbatim slice". The
+  // frame is generated deixis, so full-content gating would drop a verbatim
+  // fact. Only on-mode facts whose content is that materialized shape may
+  // fall back to the slice. Shadow stays zero-diff with off.
+  const quote = typeof fact.quote === "string" ? fact.quote : "";
+  const materializedPrefix = quote.length > 0 && fact.content.endsWith(quote) && fact.content !== quote
+    ? fact.content.slice(0, fact.content.length - quote.length)
+    : "";
+  const embeddedQuote =
+    spanMode === "on"
+    && quote.trim().length > 0
+    && (materializedPrefix.endsWith(": ") || /[:—-]\s$/.test(materializedPrefix))
+      ? quote
+      : undefined;
+  const contentContext = selectGroundingContext(
     fact.content,
     resolveGroundingContext(fact.content, source, assertionSource, roleAssertionSources),
   );
-  if (!isGroundedCandidate(
-    fact.content,
-    factContext.source,
-    factContext.assertionSource,
-    false,
-    factContext.allowRoleNormalization,
-  )) return undefined;
+  let gateContent = fact.content;
+  let factContext = contentContext;
+  if (
+    !isGroundedCandidate(
+      fact.content,
+      contentContext.source,
+      contentContext.assertionSource,
+      false,
+      contentContext.allowRoleNormalization,
+    )
+  ) {
+    if (embeddedQuote === undefined) return undefined;
+    gateContent = embeddedQuote;
+    factContext = selectGroundingContext(
+      gateContent,
+      resolveGroundingContext(gateContent, source, assertionSource, roleAssertionSources),
+    );
+    if (!isGroundedCandidate(
+      gateContent,
+      factContext.source,
+      factContext.assertionSource,
+      false,
+      factContext.allowRoleNormalization,
+    )) return undefined;
+  }
   const factEventTime = fact.eventTime;
   const groundedFactEventTime = factEventTime === undefined
     ? undefined
@@ -672,7 +707,7 @@ function filterGroundedFact(
   const factSupportingSentences = sourceSentences(factContext.assertionSource ?? factContext.source).filter(
     (sentence) =>
     isGroundedCandidate(
-      fact.content,
+      gateContent,
       sentence,
       undefined,
       false,
@@ -1068,6 +1103,7 @@ export function filterExtractionResultBySource(
   assertionSource?: string,
   roleAssertionSources?: ExtractionGroundingRoleSources,
   eventTimeNormalizer?: (eventTime: string) => string,
+  spanMode: "off" | "shadow" | "on" = "off",
 ): ExtractionResult {
   if (source.trim().length === 0) {
     return {
@@ -1088,6 +1124,7 @@ export function filterExtractionResultBySource(
       assertionSource,
       roleAssertionSources,
       eventTimeNormalizer,
+      spanMode,
     );
     return grounded === undefined ? [] : [grounded];
   });
