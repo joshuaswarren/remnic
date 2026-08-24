@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readVaultJournal, stripRemnicOwnedRegions } from "./journal-vault-read.js";
+import { readVaultJournal } from "./journal-vault-read.js";
+import { stripRemnicOwnedRegions } from "./journal-strip.js";
 
 const START = "<!-- remnic:timeline:start -->";
 const END = "<!-- remnic:timeline:end -->";
@@ -146,7 +147,7 @@ test("stripRemnicOwnedRegions returns only user text after injected regions", ()
   for (const name of names) {
     const region = `<!-- remnic:${name}:start -->\nOWNED ${name}\n<!-- remnic:${name}:end -->\n`;
     const mixed = `${region}${user}${region}${user}`;
-    const stripped = stripRemnicOwnedRegions(mixed);
+    const stripped = stripRemnicOwnedRegions(mixed, []);
     assert.equal(stripped.text, `${user}${user}`);
     assert.deepEqual(stripped.warnings, []);
   }

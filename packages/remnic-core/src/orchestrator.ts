@@ -3413,27 +3413,9 @@ export class Orchestrator {
     );
   }
 
-  private publishRecallResults(options: {
-    title: string;
-    results: QmdSearchResult[];
-    sectionBuckets: RecallSectionBuckets;
-    retrievalQuery: string;
-    sessionKey: string | undefined;
-    identityInjection?: {
-      mode: IdentityInjectionMode | "none";
-      injectedChars: number;
-      truncated: boolean;
-    };
-    /**
-     * Issue #1577 — per-recall trust map. When present, quarantined items
-     * are filtered from injection on EVERY recall path (hot QMD, embedding
-     * fallback, cold archive, recent) so a faithfulness-contradicted memory
-     * cannot sneak in via a branch that bypasses trust scoring (review:
-     * fallback paths bypass trust). The map is also threaded to
-     * formatQmdResults for the epistemic hedge.
-     */
-    trustByPath?: Map<string, TrustStageResultItem> | null;
-  }): void {
+  private publishRecallResults(
+    options: Parameters<RecallEntryCoordinator["publishRecallResults"]>[0],
+  ): void {
     return (this.recallEntryCoordinator ?? new RecallEntryCoordinator(
       selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),
     )).publishRecallResults(
