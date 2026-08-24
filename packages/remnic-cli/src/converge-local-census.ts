@@ -3,11 +3,13 @@ import { buildOfflineSyncSnapshotFromBase, isInternalRemnicStatePath } from "@re
 import { parseFrontmatter } from "@remnic/core/storage.js";
 import type { ReconcileFileState } from "@remnic/core/reconcile/plan.js";
 import { buildReconcileManifest, type ReconcileManifest } from "@remnic/core/reconcile/manifest.js";
+import { convergeIdentityCachePath } from "@remnic/core/reconcile/cursor.js";
 import type { ConvergePlanCache } from "./converge-plan-cache.js";
 import type { ConvergePlanProgressEvent } from "./converge-plan-cache.js";
 import { censusWatermark } from "./converge-plan-cache.js";
 import { readLocalTombstoneEvidence, tombstonedFileDigests } from "./converge-tombstones.js";
 import { createOfflineStorageIo } from "./offline-storage-io.js";
+import { loadConvergeIdentityCache, saveConvergeIdentityCache } from "./converge-identity-cache.js";
 
 /**
  * Local-side census phase for one namespace root (issue #2803, extracted
@@ -24,6 +26,8 @@ export interface LocalCensusArgs {
   cache: ConvergePlanCache | null;
   signal?: AbortSignal;
   onProgress?: (event: ConvergePlanProgressEvent) => void;
+  memoryDir?: string;
+  peerUrl?: string;
 }
 
 export interface LocalCensusResult {
@@ -35,7 +39,18 @@ export interface LocalCensusResult {
 export async function planLocalNamespaceCensus(args: LocalCensusArgs): Promise<LocalCensusResult> {
   const { rootDir, ns } = { rootDir: args.rootDir, ns: args.namespace };
   args.signal?.throwIfAborted();
-  const io = await createOfflineStorageIo(rootDir);
+  const identityCachePath = args.memoryDir
+    ? convergeIdentityCachePath(args.memoryDir, args.peerUrl ?? "local", ns)
+    : undefined;
+  const identityCache = await loadConvergeIdentityCache(identityCachePath, args.citationTemplate);
+  const classificationUpdates = new Map<string, { statIdentity: string; excluded: boolean }>();
+  const io = await createOfflineStorageIo(
+    rootDir,
+    undefined,
+    identityCachePath === undefined
+      ? undefined
+      : { persisted: identityCache, updates: classificationUpdates }
+  );
   const priorEntry = args.cache ? await args.cache.readEntry("local", ns) : null;
   const priorFiles = priorEntry?.files;
   const capturedAtMs = Date.now();
@@ -72,7 +87,7 @@ export async function planLocalNamespaceCensus(args: LocalCensusArgs): Promise<L
     files,
     parseMemory: parseFrontmatter,
     citationTemplate: args.citationTemplate,
-    cachedFiles: priorFiles,
+    cachedFiles: identityCache.size > 0 ? [...identityCache.values()] : priorFiles,
     readFile: async (file) => {
       const readFile = io.readFile;
       if (!readFile) {
@@ -94,6 +109,13 @@ export async function planLocalNamespaceCensus(args: LocalCensusArgs): Promise<L
   if (manifestReadFailed) {
     throw new Error(`failed to build local reconciliation manifest for namespace ${ns}`);
   }
+  await saveConvergeIdentityCache(
+    identityCachePath,
+    manifest,
+    args.citationTemplate,
+    identityCache,
+    classificationUpdates
+  );
   if (args.cache) {
     const priorByPath = new Map((priorFiles ?? []).map((file) => [file.path, file.sha256.toLowerCase()]));
     let reused = 0;

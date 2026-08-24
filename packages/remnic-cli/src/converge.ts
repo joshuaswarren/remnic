@@ -263,6 +263,8 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
           cache,
           signal: options.signal,
           onProgress: options.onProgress,
+          memoryDir,
+          peerUrl: options.peerUrl,
         });
         localMap.set(rootInfo.namespace, census.files);
         localManifests.set(rootInfo.namespace, census.manifest);
