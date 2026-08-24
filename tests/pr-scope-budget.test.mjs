@@ -244,9 +244,17 @@ test("claimed issues come only from PR-body closing keywords (this-run #2919)", 
   const bodies = [
     ["single", "Fixes #2919", [2919]],
     ["comma list", "Closes #1, #2, and #3", [1, 2, 3]],
-    ["cross-repo", "Fixes octo-org/octo-repo#100", [100]],
-    ["docs mixed list", "Resolves #10, resolves #123, resolves octo-org/octo-repo#100", [10, 100, 123]],
-    ["qualified continuation", "Fixes #1 and octo-org/octo-repo#2", [1, 2]],
+    ["cross-repo", "Fixes octo-org/octo-repo#100", ["octo-org/octo-repo#100"]],
+    [
+      "docs mixed list",
+      "Resolves #10, resolves #123, resolves octo-org/octo-repo#100",
+      [10, 123, "octo-org/octo-repo#100"],
+    ],
+    ["qualified continuation", "Fixes #1 and octo-org/octo-repo#2", [1]],
+    ["comma qualified continuation", "Fixes #1, octo-org/octo-repo#2", [1]],
+    ["qualified-to-qualified continuation", "Fixes octo-org/octo-repo#1 and acme/widgets#2", ["octo-org/octo-repo#1"]],
+    ["same-number mixed", "Fixes #100. Fixes octo-org/octo-repo#100", [100, "octo-org/octo-repo#100"]],
+    ["repeated keyword mixed", "Fixes #1 and fixes octo-org/octo-repo#2", [1, "octo-org/octo-repo#2"]],
     ["mixed case", "FIXES #7 cLoSeD #8 ReSoLvEs #9", [7, 8, 9]],
     ["fenced code", "Fixes #42\n\n```\nFixes #999\n```", [42]],
     ["ordinary citations", "Follow-up to #2448. See #12. Part of #34. As reported in #99.", []],
@@ -257,11 +265,7 @@ test("claimed issues come only from PR-body closing keywords (this-run #2919)", 
     ],
   ];
   for (const [name, body, expected] of bodies) {
-    assert.deepEqual(
-      [...extractIssueRefs(body)].sort((a, b) => a - b),
-      expected,
-      name,
-    );
+    assert.deepEqual(extractIssueRefs(body), new Set(expected), name);
   }
 });
 
@@ -312,7 +316,28 @@ test("gate level: cross-repo claims count as multi-issue; citations alone stay s
     prText: "Fixes #2919 and fixes octo-org/octo-repo#100",
   });
   assert.equal(loud.verdict, "fail");
-  assert.match(loud.detail, /#100, #2919/);
+  assert.match(loud.detail, /octo-org\/octo-repo#100, #2919/);
+
+  const sameNumber = evaluateScopeBudget({
+    files,
+    labels: [],
+    thresholds: THRESHOLDS,
+    ignorePatterns: NO_IGNORES,
+    subsystemGroups: GROUPS,
+    prText: "Fixes #100. Fixes octo-org/octo-repo#100",
+  });
+  assert.equal(sameNumber.verdict, "fail", "local #100 and owner/repo#100 are distinct claims");
+  assert.match(sameNumber.detail, /2 referenced issues \(#100, octo-org\/octo-repo#100\)/);
+
+  const keywordless = evaluateScopeBudget({
+    files,
+    labels: [],
+    thresholds: THRESHOLDS,
+    ignorePatterns: NO_IGNORES,
+    subsystemGroups: GROUPS,
+    prText: "Fixes #1 and octo-org/octo-repo#2",
+  });
+  assert.equal(keywordless.verdict, "pass", "keywordless qualified continuation is not a second claim");
 });
 
 test("classifySubsystem picks the longest matching prefix", () => {

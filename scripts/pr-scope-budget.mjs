@@ -130,8 +130,11 @@ const PAST_PARTICIPLE_KEYWORDS = new Set(["fixed", "closed", "resolved"]);
 /**
  * Issues CLAIMED by PR-body closing keywords, deduped (issues #2067, #2919).
  * The grammar is GitHub's closing-keyword form: keyword + optional
- * OWNER/REPOSITORY qualifier + #<n>, with comma/"and" list continuations —
- * `Fixes #1, #2 and #3`, `resolves octo-org/octo-repo#100`. Bare #<n>
+ * OWNER/REPOSITORY qualifier + #<n>. Same-repo comma/"and" lists may
+ * continue as local `#<n>` only — `Fixes #1, #2 and #3`. A qualified
+ * reference needs its own keyword (`resolves octo-org/octo-repo#100`);
+ * `Fixes #1 and octo-org/octo-repo#2` does not claim the second.
+ * Local `#100` and `owner/repo#100` are distinct claims. Bare #<n>
  * citations — ordinary prose, quoted source comments, anything without a
  * keyword — never count, and neither do citations from touched-file
  * contents, commit messages, or review text: the parser consumes PR text
@@ -150,15 +153,13 @@ export function extractIssueRefs(text) {
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`[^`]*`/g, " ");
-  // The optional OWNER/REPOSITORY qualifier accepts GitHub's cross-repo
-  // closing form (`Fixes octo-org/octo-repo#100`) in both the head ref and
-  // every comma/"and" list continuation (this-run #2919). A separator RUN
-  // ("#1, #2, and #3" — comma + "and" between elements) counts as one
-  // separator, so Oxford-comma lists never truncate.
-  const qualifiedRef = String.raw`(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#`;
+  // Qualifier is captured on the keyword-headed ref only. Continuations
+  // are local `#<n>` so `Fixes #1, #2, and #3` still works, while a
+  // keywordless `owner/repo#n` after `and`/comma is not a claim.
+  const repoOrLocalHash = String.raw`(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#|#)`;
   const closingKeywordPattern = new RegExp(
-    String.raw`(\w+\s+)?\b(fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+${qualifiedRef}(\d+)` +
-      String.raw`((?:(?:\s*(?:,|and)\s*)+${qualifiedRef}\d+)*)` +
+    String.raw`(\w+\s+)?\b(fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+${repoOrLocalHash}(\d+)` +
+      String.raw`((?:(?:\s*(?:,|and)\s*)+#\d+)*)` +
       String.raw`(?!\w)`,
     "gi",
   );
@@ -177,12 +178,27 @@ export function extractIssueRefs(text) {
     const lead = (match[1] ?? "").trim().toLowerCase();
     const keyword = match[2].toLowerCase();
     if (DESCRIPTIVE_ARTICLES.has(lead) && PAST_PARTICIPLE_KEYWORDS.has(keyword)) continue;
-    issues.add(Number(match[3]));
-    for (const extra of match[4].matchAll(/#(\d+)/g)) {
+    issues.add(claimedIssue(match[3], match[4]));
+    for (const extra of match[5].matchAll(/#(\d+)/g)) {
       issues.add(Number(extra[1]));
     }
   }
   return issues;
+}
+
+function claimedIssue(repo, number) {
+  return repo ? `${repo}#${number}` : Number(number);
+}
+
+function formatClaimedIssueList(issues) {
+  return [...issues]
+    .sort((a, b) => {
+      const num = (value) =>
+        typeof value === "number" ? value : Number(String(value).slice(String(value).lastIndexOf("#") + 1));
+      return num(a) - num(b) || String(typeof a).localeCompare(String(typeof b)) || String(a).localeCompare(String(b));
+    })
+    .map((claim) => (typeof claim === "number" ? `#${claim}` : String(claim)))
+    .join(", ");
 }
 
 /**
@@ -282,10 +298,7 @@ export function evaluateScopeBudget({ files, labels, thresholds, ignorePatterns,
   const crossScopeFail = groups.size >= 2 && issues.size >= 2 && ancestorSegments < MIN_SHARED_ANCESTOR_SEGMENTS;
   const crossScopeWarn = !crossScopeFail && groups.size >= 3 && issues.size >= 2;
   const groupsList = [...groups].sort().join(", ");
-  const issuesList = [...issues]
-    .sort((a, b) => a - b)
-    .map((n) => `#${n}`)
-    .join(", ");
+  const issuesList = formatClaimedIssueList(issues);
   const scopeSummary = `changes span ${groups.size} subsystem groups (${groupsList}) across ${issues.size} referenced issues (${issuesList})`;
 
   const isExempt = labels.includes(EXEMPT_LABEL);
