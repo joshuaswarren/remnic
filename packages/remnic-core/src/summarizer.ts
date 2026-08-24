@@ -223,7 +223,11 @@ export class HourlySummarizer {
     if (this.config.backgroundGeneration) {
       try {
         const text = await completeBackgroundGeneration(this.config, [
-          { role: "system", content: "You are a conversation summarization system. Output valid JSON only." },
+          {
+            role: "system",
+            content:
+              "You are a conversation summarization system. Summarize the following conversation transcript into 3-5 concise bullet points.\n\nGuidelines:\n- Focus on what was accomplished, decided, or discussed\n- Include specific topics, projects, or entities mentioned\n- Note any significant user requests or agent actions\n- Keep bullets brief but informative (1-2 sentences each)\n- Skip trivial greetings or meta-conversation\n- Use present tense for ongoing work, past for completed items\n\nRespond with valid JSON only, matching this schema:\n{\"bullets\": [\"bullet 1\", \"bullet 2\", \"bullet 3\"]}",
+          },
           { role: "user", content: `Summarize this conversation:\n\n${conversation}` },
         ]);
         const parsed = parseBackgroundGenerationJson(text, (value) => HourlySummarySchema.parse(value));

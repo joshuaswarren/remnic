@@ -22,6 +22,7 @@ from remnic_hermes import register
 from remnic_hermes.llm_bridge import (
     BridgePolicy,
     HermesLlmBridge,
+    _plugin_llm_child_complete,
     start_bridge_from_config,
 )
 
@@ -80,6 +81,10 @@ def _gated_complete(messages: list[dict[str, str]], gate_path: str | None = None
     return _delegate_result()
 
 
+def _no_timeout_delegate(messages: list[dict[str, str]]) -> Any:
+    """Pickleable delegate with no explicit timeout: must run in a killable worker."""
+    return _delegate_result()
+
 class RecordingDelegate:
     """Delegate that records exactly how it was invoked."""
 
@@ -92,8 +97,8 @@ class RecordingDelegate:
     def __getstate__(self) -> object:
         raise TypeError("RecordingDelegate is local to the parent process")
 
-    def __call__(self, messages: Any) -> Any:
-        self.calls.append({"args": (messages,), "kwargs": {}})
+    def __call__(self, messages: Any, timeout: float | None = None) -> Any:
+        self.calls.append({"args": (messages,), "kwargs": {"timeout": timeout}})
         if self._delay:
             time.sleep(self._delay)
         if self._error is not None:
@@ -225,6 +230,21 @@ class TestPolicyParsing:
         with pytest.raises((TypeError, ValueError)):
             BridgePolicy.from_config({"enabled": True, field: value})
 
+    def test_client_config_path_requires_fixed_port(self) -> None:
+        """An ephemeral port would move the endpoint out from under the daemon."""
+        with pytest.raises(ValueError, match="fixed port"):
+            BridgePolicy.from_config(
+                {"enabled": True, "client_config_path": "/tmp/client.json", "port": 0}
+            )
+
+    def test_client_config_path_with_fixed_port_is_accepted(self) -> None:
+        policy = BridgePolicy.from_config(
+            {"enabled": True, "client_config_path": "/tmp/client.json", "port": 8765}
+        )
+        assert policy.port == 8765
+
+    def test_ephemeral_port_still_allowed_without_client_config(self) -> None:
+        assert BridgePolicy.from_config({"enabled": True, "port": 0}).port == 0
     def test_policy_dataclass_has_no_model_provider_or_credential_field(self) -> None:
         names = {field.name for field in dataclasses.fields(BridgePolicy)}
         assert not any(
@@ -259,7 +279,8 @@ class TestRoutingIsServerOwned:
         # Delegate got exactly one positional argument: the message list.
         assert len(delegate.calls) == 1
         assert len(delegate.calls[0]["args"]) == 1
-        assert delegate.calls[0]["kwargs"] == {}
+        assert set(delegate.calls[0]["kwargs"]) == {"timeout"}
+        assert delegate.calls[0]["kwargs"]["timeout"] > 0
         # The answer reports the host's model, never the caller's.
         assert body["model"] == "host-active-model"
         assert "gpt-attacker-model" not in json.dumps(body)
@@ -282,14 +303,14 @@ class TestRoutingIsServerOwned:
         )
         assert status == 200
         assert delegate.calls[0]["args"] == ([{"role": "user", "content": "hi"}],)
-        assert delegate.calls[0]["kwargs"] == {}
+        assert set(delegate.calls[0]["kwargs"]) == {"timeout"}
 
-    def test_wiring_lambda_forwards_no_model_or_provider_to_host_resolver(self) -> None:
-        """The register() wiring may only pass purpose/timeout to ctx.llm."""
+    def test_wiring_forwards_no_model_or_provider_to_host_resolver(self) -> None:
+        """Only the message list plus a deadline may reach the host resolver."""
         host_calls: list[dict[str, Any]] = []
 
-        def llm_complete(*args: Any, **kwargs: Any) -> Any:
-            host_calls.append({"args": args, "kwargs": kwargs})
+        def llm_complete(messages: list[dict[str, str]], timeout: float | None = None) -> Any:
+            host_calls.append({"args": (messages,), "kwargs": {"timeout": timeout}})
             return _delegate_result()
 
         bridge = start_bridge_from_config(
@@ -310,10 +331,10 @@ class TestRoutingIsServerOwned:
             assert status == 200
             assert len(host_calls) == 1
             assert len(host_calls[0]["args"]) == 1
-            assert set(host_calls[0]["kwargs"]) <= {"purpose", "timeout"}
+            assert set(host_calls[0]["kwargs"]) == {"timeout"}
+            assert host_calls[0]["kwargs"]["timeout"] > 0
             assert "model" not in host_calls[0]["kwargs"]
             assert "provider" not in host_calls[0]["kwargs"]
-            assert host_calls[0]["kwargs"].get("purpose") == "remnic-llm-bridge"
         finally:
             bridge.stop()
 
@@ -388,10 +409,13 @@ class TestCredentialsNeverWritten:
     def test_client_config_file_contains_no_runtime_secrets(self, tmp_path: Any) -> None:
         """Provider tokens visible to the process must not leak into the file."""
         path = tmp_path / "client.json"
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            fixed_port = probe.getsockname()[1]
         section = {
             "enabled": True,
             "client_config_path": str(path),
-            "port": 0,
+            "port": fixed_port,
         }
         with patch.dict(
             os.environ,
@@ -400,7 +424,9 @@ class TestCredentialsNeverWritten:
                 "REMNIC_TOKEN": "remnic-live-token-456",
             },
         ):
-            bridge = start_bridge_from_config(section, lambda *a, **k: _delegate_result())
+            bridge = start_bridge_from_config(
+                section, lambda messages, timeout=None: _delegate_result()
+            )
         assert bridge is not None
         try:
             text = path.read_text(encoding="utf-8")
@@ -419,6 +445,46 @@ class TestCredentialsNeverWritten:
         assert config["model_policy"] == "server-owned"
         assert not any("model" in str(key).lower() for key in config if key != "model_policy")
 
+    def test_auth_token_and_endpoint_are_stable_across_restarts(self, tmp_path: Any) -> None:
+        """The daemon reads the client file once; restarts must not strand it."""
+        path = tmp_path / "client.json"
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            fixed_port = probe.getsockname()[1]
+        section = {
+            "enabled": True,
+            "client_config_path": str(path),
+            "port": fixed_port,
+        }
+
+        def delegate(messages: list[dict[str, str]], timeout: float | None = None) -> Any:
+            return _delegate_result()
+
+        first = start_bridge_from_config(section, delegate)
+        assert first is not None
+        try:
+            token = first.auth_token
+            written = json.loads(path.read_text(encoding="utf-8"))
+            assert written["token"] == token
+        finally:
+            first.stop()
+        second = start_bridge_from_config(section, delegate)
+        assert second is not None
+        try:
+            assert second.auth_token == token
+            rewritten = json.loads(path.read_text(encoding="utf-8"))
+            assert rewritten["token"] == token
+            assert rewritten["endpoint"] == written["endpoint"]
+        finally:
+            second.stop()
+
+    def test_fresh_token_when_existing_client_config_is_unusable(self, tmp_path: Any) -> None:
+        path = tmp_path / "client.json"
+        path.write_text("{not json", encoding="utf-8")
+        bridge = HermesLlmBridge(
+            BridgePolicy(enabled=True, client_config_path=str(path)), RecordingDelegate()
+        )
+        assert len(bridge.auth_token) >= 32
 
 class TestBodyBoundsAndAbort:
     def test_oversized_content_length_is_rejected_without_delegation(self) -> None:
@@ -594,6 +660,121 @@ class TestSingleDeadline:
 
 
 
+class TestDelegateIsolation:
+    def test_rejects_delegate_that_cannot_be_deadline_isolated(self) -> None:
+        """An unbounded in-thread call would ignore timeout_seconds (issue #2884)."""
+
+        class LocalDelegate:
+            def __call__(self, messages: Any) -> Any:
+                return _delegate_result()
+
+            def __getstate__(self) -> object:
+                raise TypeError("local delegates cannot be pickled")
+
+        with pytest.raises(ValueError, match="deadline-isolated"):
+            HermesLlmBridge(BridgePolicy(enabled=True), LocalDelegate())
+
+    def test_non_isolatable_delegate_disables_bridge(self) -> None:
+        class LocalDelegate:
+            def __call__(self, messages: Any) -> Any:
+                return _delegate_result()
+
+            def __getstate__(self) -> object:
+                raise TypeError("local delegates cannot be pickled")
+
+        assert start_bridge_from_config({"enabled": True}, LocalDelegate()) is None
+
+    def test_pickleable_no_timeout_delegate_runs_in_killable_worker(self) -> None:
+        bridge = HermesLlmBridge(
+            BridgePolicy(enabled=True, timeout_seconds=5), _no_timeout_delegate
+        )
+        assert bridge._use_process is True
+        result = bridge.complete_with_deadline([{"role": "user", "content": "x"}])
+        assert result.text == "bridged answer"
+        assert bridge.active_work == 0
+
+
+class TestPurposeForwarding:
+    def test_purpose_is_passed_only_when_signature_accepts_it(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        class WithPurpose:
+            plugin_id = "remnic"
+
+            def complete(self, messages: Any, *, purpose: str | None = None) -> Any:
+                seen.append({"purpose": purpose})
+                return _delegate_result()
+
+            def complete_structured(self, *args: Any, **kwargs: Any) -> Any:
+                return None
+
+        with (
+            patch(
+                "remnic_hermes.llm_runtime._discover_plugin_llm_class",
+                return_value=WithPurpose,
+            ),
+            patch(
+                "remnic_hermes.llm_runtime._instantiate_plugin_llm",
+                return_value=WithPurpose(),
+            ),
+        ):
+            _plugin_llm_child_complete([{"role": "user", "content": "x"}])
+        assert seen == [{"purpose": "remnic-llm-bridge"}]
+
+    def test_purpose_omitted_when_delegate_does_not_accept_it(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        class WithoutPurpose:
+            plugin_id = "remnic"
+
+            def complete(self, messages: Any) -> Any:
+                seen.append({"messages": messages})
+                return _delegate_result()
+
+            def complete_structured(self, *args: Any, **kwargs: Any) -> Any:
+                return None
+
+        with (
+            patch(
+                "remnic_hermes.llm_runtime._discover_plugin_llm_class",
+                return_value=WithoutPurpose,
+            ),
+            patch(
+                "remnic_hermes.llm_runtime._instantiate_plugin_llm",
+                return_value=WithoutPurpose(),
+            ),
+        ):
+            _plugin_llm_child_complete([{"role": "user", "content": "x"}])
+        assert len(seen) == 1
+
+    def test_internal_typeerror_is_not_retried_as_unsupported_kwarg(self) -> None:
+        """A TypeError from inside the provider must not trigger a second call."""
+        calls: list[int] = []
+
+        class Exploding:
+            plugin_id = "remnic"
+
+            def complete(self, messages: Any, *, purpose: str | None = None) -> Any:
+                calls.append(1)
+                raise TypeError("provider internals exploded")
+
+            def complete_structured(self, *args: Any, **kwargs: Any) -> Any:
+                return None
+
+        with (
+            patch(
+                "remnic_hermes.llm_runtime._discover_plugin_llm_class",
+                return_value=Exploding,
+            ),
+            patch(
+                "remnic_hermes.llm_runtime._instantiate_plugin_llm",
+                return_value=Exploding(),
+            ),
+        ):
+            with pytest.raises(TypeError, match="provider internals exploded"):
+                _plugin_llm_child_complete([{"role": "user", "content": "x"}])
+        assert len(calls) == 1
+
 class TestOptInDefaults:
     def test_no_section_starts_nothing(self) -> None:
         assert start_bridge_from_config(None, lambda *a, **k: _delegate_result()) is None
@@ -615,6 +796,14 @@ class TestOptInDefaults:
             is None
         )
 
+    def test_client_config_path_with_ephemeral_port_returns_none(self) -> None:
+        assert (
+            start_bridge_from_config(
+                {"enabled": True, "client_config_path": "/tmp/client.json"},
+                lambda messages, timeout=None: _delegate_result(),
+            )
+            is None
+        )
 
 class TestRegisterWiring:
     def _ctx(self, config: dict[str, Any], with_llm: bool = True) -> Any:
@@ -724,16 +913,6 @@ class TestRegisterWiring:
             assert bridge.bound_port > 0
             assert bridge.active_work == 0
 
-    def test_opaque_runtime_facade_completes_when_plugin_llm_is_not_importable(self) -> None:
-        complete = UnpickleablePluginLlm().complete
-        with patch("remnic_hermes.llm_runtime._discover_plugin_llm_class", return_value=None):
-            with running_bridge(BridgePolicy(enabled=True), complete) as bridge:
-                status, body = _authed_post(
-                    bridge,
-                    json.dumps({"messages": [{"role": "user", "content": "summarize today"}]}),
-                )
-        assert status == 200
-        assert body["choices"][0]["message"]["content"] == "bridged answer"
 
     def test_register_swallows_bridge_setup_failures(self) -> None:
         ctx = self._ctx({"remnic": {"llm_bridge": {"enabled": True}}}, with_llm=False)

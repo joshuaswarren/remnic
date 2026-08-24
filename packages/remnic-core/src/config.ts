@@ -25,6 +25,7 @@ import type {
   TriggerMode,
   TrustWeights,
 } from "./types.js";
+import { parseBackgroundGeneration } from "./background-generation-config.js";
 import { parseLocalLlmConfig } from "./local-llm-config.js";
 import { parseConvergeConfig } from "./converge-config.js";
 import { parseExternalWikiRecallGuard } from "./external-wiki-guard.js";
@@ -518,6 +519,7 @@ function normalizeOpenaiBaseUrl(value: string | undefined, source: "config" | "e
   while (url.endsWith("/")) url = url.slice(0, -1);
   return url;
 }
+
 
 function normalizeMemoryRelativeDir(raw: unknown, fallback: string): string {
   if (typeof raw !== "string") return fallback;
@@ -1482,6 +1484,7 @@ export function parseConfig(
   } else if (apiKey !== undefined) {
     baseUrl = normalizeOpenaiBaseUrl(readEnvVar("OPENAI_BASE_URL"), "env");
   }
+  const backgroundGeneration = parseBackgroundGeneration(cfg, resolveEnvVars);
 
   const sharedCrossSignalSemanticEnabled =
     cfg.sharedCrossSignalSemanticEnabled === true || cfg.crossSignalsSemanticEnabled === true;
@@ -1560,6 +1563,7 @@ export function parseConfig(
   return {
     openaiApiKey: apiKey,
     openaiBaseUrl: baseUrl,
+    backgroundGeneration,
     model,
     reasoningEffort,
     triggerMode,

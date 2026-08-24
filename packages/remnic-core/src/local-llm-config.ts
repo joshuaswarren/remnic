@@ -71,7 +71,7 @@ export function parseLocalLlmConfig(
   resolveEnvVars: (value: string) => string,
 ): LocalLlmParseResult {
   return {
-    backgroundGeneration: parseBackgroundGeneration(cfg),
+    backgroundGeneration: parseBackgroundGeneration(cfg, resolveEnvVars),
     localLlmEnabled: cfg.localLlmEnabled === true || cfg.localLlmEnabled === "true",
     localLlmUrl:
       typeof cfg.localLlmUrl === "string" && cfg.localLlmUrl.length > 0
