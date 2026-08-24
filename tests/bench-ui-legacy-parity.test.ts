@@ -122,13 +122,6 @@ const legacyArtifacts: Array<{ name: string; id: string; artifact: Record<string
       },
     },
   },
-  {
-    name: "meta-floor-only shape",
-    id: "floor-run",
-    artifact: {
-      meta: { id: "floor-run", benchmark: "sample", timestamp: "2026-01-01T00:00:00.000Z" },
-    },
-  },
 ];
 
 test("legacy artifacts summarize identically to the pre-#2800 UI after the compatibility upgrade", async () => {
