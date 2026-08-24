@@ -16,7 +16,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -44,15 +44,34 @@ export function checkTypePackageDirs(packagesDir = join(repoRoot, "packages")) {
 export function noCheckTypePackageDirs(packagesDir = join(repoRoot, "packages")) {
   return manifestPackageDirs(packagesDir).filter((name) => !hasCheckTypesScript(packagesDir, name));
 }
+/**
+ * Workspace root that owns packagesDir: the parent directory, validated by
+ * the pnpm workspace contract. `--filter ./packages/<name>` selectors are
+ * cwd-relative, so pnpm must execute with this root as its working directory
+ * (#2873) — running from the caller's cwd filters whatever workspace the
+ * caller happens to sit in, never the enumerated one.
+ */
+export function resolveWorkspaceRoot(packagesDir) {
+  const root = dirname(resolve(packagesDir));
+  return existsSync(join(root, "pnpm-workspace.yaml")) ? root : null;
+}
 
 /**
  * Run check-types in exactly the covered packages through the pinned pnpm
- * wrapper, one explicit --filter per package. Replaces the environment-
+ * wrapper, one explicit --filter per package, with the enumerated workspace
+ * root as pnpm's cwd — never the caller's (#2873). Replaces the environment-
  * dependent `--filter="./packages/*"` glob sweep, whose matched set followed
  * pnpm workspace-resolution state and skipped covered packages on clean CI
  * checkouts (#2851).
  */
 export function runCheckTypePackages(packagesDir = join(repoRoot, "packages")) {
+  const workspaceRoot = resolveWorkspaceRoot(packagesDir);
+  if (!workspaceRoot) {
+    console.error(
+      `[check-type-packages] not a pnpm workspace: no pnpm-workspace.yaml next to ${packagesDir}`
+    );
+    return 1;
+  }
   const covered = checkTypePackageDirs(packagesDir);
   if (covered.length === 0) {
     console.log("[check-type-packages] No packages declare scripts.check-types; nothing to run");
@@ -63,6 +82,7 @@ export function runCheckTypePackages(packagesDir = join(repoRoot, "packages")) {
   args.push("run", "check-types");
   const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "pnpm.mjs"), ...args], {
     stdio: "inherit",
+    cwd: workspaceRoot,
   });
   if (result.error) {
     console.error(result.error.message);
@@ -74,19 +94,23 @@ export function runCheckTypePackages(packagesDir = join(repoRoot, "packages")) {
 const USAGE =
   "usage: check-type-packages.mjs [--list | --list-manifests | --run] [--packages-dir <dir>]";
 
+/**
+ * Strict grammar per USAGE (#2883): argv[0] is the single mode token (the
+ * default list mode only when argv is empty), followed by at most one
+ * `--packages-dir <dir>` pair. Every other token — a second mode, an unknown
+ * flag, a positional — is a usage error, never silently ignored: a typo like
+ * `--list --run` used to downgrade the gate to a non-running list operation.
+ */
 function parseCliArgs(argv) {
   const mode = argv[0] ?? "--list";
   if (mode !== "--list" && mode !== "--list-manifests" && mode !== "--run") return null;
   let packagesDir;
-  let sawPackagesDir = false;
-  for (let i = 0; i < argv.length; i += 1) {
-    if (argv[i] !== "--packages-dir") continue;
+  for (let i = 1; i < argv.length; i += 1) {
+    if (argv[i] !== "--packages-dir") return null;
     const value = argv[i + 1];
-    if (sawPackagesDir || value === undefined || value.startsWith("-") || value.trim() === "") {
-      return null;
-    }
+    if (value === undefined || value.startsWith("-") || value.trim() === "") return null;
+    if (packagesDir !== undefined) return null;
     packagesDir = value;
-    sawPackagesDir = true;
     i += 1;
   }
   return { mode, packagesDir: packagesDir ?? join(repoRoot, "packages") };

@@ -6,6 +6,10 @@ import { LocalLlmClient } from "./local-llm.js";
 import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig, gatewayTaskChainOptions } from "./fallback-llm.js";
 import { ModelRegistry } from "./model-registry.js";
 import { extractJsonCandidates } from "./json-extract.js";
+import {
+  completeBackgroundGeneration,
+  parseBackgroundGenerationJson,
+} from "./background-generation.js";
 import type { HourlySummary, TranscriptEntry, PluginConfig, GatewayConfig } from "./types.js";
 import type { TranscriptManager } from "./transcript.js";
 import { readSummarySnapshot, upsertSummarySnapshot, writeSummarySnapshot } from "./summary-snapshot.js";
@@ -215,6 +219,31 @@ export class HourlySummarizer {
 
     const hourIso = hourStart.toISOString();
     const startTime = Date.now();
+
+    if (this.config.backgroundGeneration) {
+      try {
+        const text = await completeBackgroundGeneration(this.config, [
+          {
+            role: "system",
+            content:
+              "You are a conversation summarization system. Summarize the following conversation transcript into 3-5 concise bullet points.\n\nGuidelines:\n- Focus on what was accomplished, decided, or discussed\n- Include specific topics, projects, or entities mentioned\n- Note any significant user requests or agent actions\n- Keep bullets brief but informative (1-2 sentences each)\n- Skip trivial greetings or meta-conversation\n- Use present tense for ongoing work, past for completed items\n\nRespond with valid JSON only, matching this schema:\n{\"bullets\": [\"bullet 1\", \"bullet 2\", \"bullet 3\"]}",
+          },
+          { role: "user", content: `Summarize this conversation:\n\n${conversation}` },
+        ]);
+        const parsed = parseBackgroundGenerationJson(text, (value) => HourlySummarySchema.parse(value));
+        if (parsed) {
+          return {
+            hour: hourIso,
+            sessionKey,
+            bullets: parsed.bullets,
+            turnCount: entries.length,
+            generatedAt: new Date().toISOString(),
+          };
+        }
+      } catch {
+        log.info("summary generation: background generation unavailable, continuing");
+      }
+    }
 
     // Try local LLM first if enabled
     if (this.shouldUseLocalLlm) {

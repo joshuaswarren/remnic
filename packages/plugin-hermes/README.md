@@ -285,6 +285,18 @@ remnic connectors remove hermes
 
 LCM runs daemon-side and reaches Hermes through the `memory_provider` recall path. Remnic does not register, and does not need, a Hermes `context_engine` slot for this feature.
 
+## Policy-bound LLM bridge (opt-in)
+
+Set `remnic.llm_bridge.enabled: true` in Hermes `config.yaml` to expose one
+OpenAI-compatible completion endpoint on loopback, backed by the host's
+`PluginLlm` runtime resolver. Provider credentials stay host-managed: the model
+policy is server-owned (request `model`/`provider` fields are discarded),
+the listener rejects any non-loopback bind, and the generated client config
+stores a random loopback bearer at `0600`. Unauthenticated local callers are
+denied. The bridge serves optional background generation only — memory recall
+never routes through it. Details and daemon
+configuration: [docs/plugins/hermes.md](../../docs/plugins/hermes.md#policy-bound-llm-bridge-opt-in).
+
 ## Further reading
 
 - [Full reference: docs/plugins/hermes.md](../../docs/plugins/hermes.md) — complete config schema, recall/observe/extract internals, profile isolation examples, and migration notes from the Engram era.
