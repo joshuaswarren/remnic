@@ -178,3 +178,48 @@ test("property: injected regions vanish and user text survives byte-for-byte", (
     assert.deepEqual(result.warnings, [], `iteration ${iteration} must be warning-free`);
   }
 });
+
+// Issue #2882: markers and owned headings inside code samples are sample
+// text. Classification comes from the same shared fileLines() scanner the
+// vault publisher uses — fenced (backtick/tilde), indented, and unclosed
+// fences all resolve toward stripping MORE live text, never toward eating
+// the user's code examples.
+test("markers inside a fenced example are sample text and pass through", () => {
+  const text = ["```", START(), "sample", END(), "```", "kept"].join("\n");
+  const result = stripRemnicOwnedRegions(text, []);
+  assert.equal(result.text, text);
+  assert.deepEqual(result.warnings, []);
+});
+
+test("an owned heading inside a fenced example is not stripped", () => {
+  const text = ["## Journal", "```markdown", "## Timeline", "sample card", "```", "kept"].join("\n");
+  assert.equal(stripRemnicOwnedRegions(text, ["Timeline"]).text, text);
+});
+
+test("a fenced end marker does not close a live region — the region runs to the real end marker", () => {
+  const text = ["kept", START(), "```", END(), "```", "owned tail", END(), "also kept"].join("\n");
+  const result = stripRemnicOwnedRegions(text, []);
+  assert.equal(result.text, "kept\nalso kept");
+  assert.deepEqual(result.warnings, []);
+});
+
+test("an indented marker is code, not a region boundary", () => {
+  // Before #2882 the trim-first marker parser recognized indented markers;
+  // the publisher's scanner never does.
+  const text = ["kept", `    ${START()}`, "    indented sample", `    ${END()}`, "kept too"].join("\n");
+  const result = stripRemnicOwnedRegions(text, []);
+  assert.equal(result.text, text);
+  assert.deepEqual(result.warnings, []);
+});
+
+test("an unclosed fence makes following markers sample text — nothing is stripped, no warning", () => {
+  const text = ["kept line", "```", START(), "never closed"].join("\n");
+  const result = stripRemnicOwnedRegions(text, []);
+  assert.equal(result.text, text);
+  assert.deepEqual(result.warnings, []);
+});
+
+test("strip preserves the trailing newline of untouched text", () => {
+  const text = "first\n\n";
+  assert.equal(stripRemnicOwnedRegions(text, ["Timeline"]).text, text);
+});

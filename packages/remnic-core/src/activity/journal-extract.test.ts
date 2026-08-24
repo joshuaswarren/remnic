@@ -34,7 +34,10 @@ function fakeWriter(existing: string[] = []): {
         });
         return {};
       },
-      hasJournalMemoryContent: async (content) => known.has(content.trim().toLowerCase()),
+      openDedupeSnapshot: async () => ({
+        has: async (content: string) => known.has(content.trim().toLowerCase()),
+        record: (content: string) => known.add(content.trim().toLowerCase()),
+      }),
     },
   };
 }
@@ -309,6 +312,90 @@ test("createJournalMemoryWriter dedups journal-tagged memories beyond the fact h
     ],
   };
   const writer = createJournalMemoryWriter(storage);
-  assert.equal(await writer.hasJournalMemoryContent("stored line"), true);
-  assert.equal(await writer.hasJournalMemoryContent("other line"), false);
+  const snapshot = await writer.openDedupeSnapshot();
+  assert.equal(await snapshot.has("stored line"), true);
+  assert.equal(await snapshot.has("other line"), false);
+  assert.deepEqual(calls, ["hash:stored line", "hash:other line"]);
+});
+
+test("one extraction pass reads the journal corpus once, however many candidates write (issue #2882)", async () => {
+  // Before #2882 every candidate rescanned readAllMemories (each write
+  // invalidates the corpus cache): candidates × full-corpus parses under the
+  // per-day lock. The snapshot must read once per pass.
+  let corpusReads = 0;
+  const storage = {
+    writeSealedMemory: async () => ({}),
+    hasFactContentHash: async () => false,
+    readAllMemories: async () => {
+      corpusReads += 1;
+      return [{ path: "facts/x.md", frontmatter: { tags: ["journal"] }, content: "unrelated" }];
+    },
+  };
+  const { deps } = makeDeps([
+    { content: "first decision" },
+    { content: "second decision" },
+    { content: "third decision" },
+  ]);
+  deps.writer = createJournalMemoryWriter(storage);
+  const result = await runJournalReviewExtraction({
+    date: "2026-08-20",
+    journalText: "text",
+    source: "vault",
+    journalConfig: REVIEW,
+    deps,
+  });
+  assert.equal(result.pendingReview, 3);
+  assert.equal(corpusReads, 1);
+});
+
+test("a mid-pass corpus change never mixes versions into one pass's decisions (issue #2882)", async () => {
+  // The corpus MUTATES after the first write — exactly what the pre-#2882
+  // per-candidate rescan picked up mid-pass. One extraction decision must
+  // answer from one corpus version: the pass-start snapshot plus this
+  // pass's own writes, so the second candidate still writes.
+  const corpus: Array<{ path: string; frontmatter: { tags: string[] }; content: string }> = [];
+  const storage = {
+    writeSealedMemory: async () => {
+      corpus.push({ path: "facts/injected.md", frontmatter: { tags: ["journal"] }, content: "second decision" });
+      return {};
+    },
+    hasFactContentHash: async () => false,
+    readAllMemories: async () => [...corpus],
+  };
+  const { deps } = makeDeps([{ content: "first decision" }, { content: "second decision" }]);
+  deps.writer = createJournalMemoryWriter(storage);
+  const result = await runJournalReviewExtraction({
+    date: "2026-08-20",
+    journalText: "text",
+    source: "vault",
+    journalConfig: REVIEW,
+    deps,
+  });
+  assert.equal(result.pendingReview, 2);
+  assert.equal(result.skipped, 0);
+});
+
+test("the snapshot folds this pass's writes back in — attribute variants dedupe (issue #2882)", async () => {
+  // dedupeInRun keys on raw content, so attribute-suffixed variants pass it;
+  // record() must close the loop against the pass's own writes.
+  const corpus: Array<{ path: string; frontmatter: { tags: string[] }; content: string }> = [];
+  const storage = {
+    writeSealedMemory: async () => ({}),
+    hasFactContentHash: async () => false,
+    readAllMemories: async () => [...corpus],
+  };
+  const { deps } = makeDeps([
+    { content: "ship the parser\n[Attributes: k=v]" },
+    { content: "ship the parser" },
+  ]);
+  deps.writer = createJournalMemoryWriter(storage);
+  const result = await runJournalReviewExtraction({
+    date: "2026-08-20",
+    journalText: "text",
+    source: "vault",
+    journalConfig: REVIEW,
+    deps,
+  });
+  assert.equal(result.pendingReview, 1);
+  assert.equal(result.skipped, 1);
 });

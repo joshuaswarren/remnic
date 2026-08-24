@@ -233,7 +233,7 @@ function fakeExtractionDeps(
         writes.push({ status: extras.status, tags: envelope.tags });
         return {};
       },
-      hasJournalMemoryContent: async () => false,
+      openDedupeSnapshot: async () => ({ has: async () => false, record: () => {} }),
     },
   };
   return { deps, writes, extractCalls: () => extractCalls };

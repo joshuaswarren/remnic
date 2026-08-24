@@ -152,3 +152,57 @@ test("stripRemnicOwnedRegions returns only user text after injected regions", ()
     assert.deepEqual(stripped.warnings, []);
   }
 });
+
+test("a fenced journal-heading example does not duplicate the real heading (issue #2882)", () => {
+  // Before #2882 the fenced example counted as a live `## Journal`, so the
+  // real heading became a false duplicate_heading refusal.
+  const fileText = ["```markdown", "## Journal", "```", "", "## Journal", "real body", ""].join("\n");
+  const result = readVaultJournal({ fileText, journalSection: "Journal" });
+  assert.ok(result.ok && result.exists);
+  if (!result.ok || !result.exists) return;
+  assert.equal(result.text, "real body");
+  assert.deepEqual(result.warnings, []);
+});
+
+test("a tilde-fenced journal-heading example does not duplicate the real heading (issue #2882)", () => {
+  const fileText = ["~~~", "## Journal", "~~~", "", "## Journal", "real body", ""].join("\n");
+  const result = readVaultJournal({ fileText, journalSection: "Journal" });
+  assert.ok(result.ok && result.exists);
+  if (!result.ok || !result.exists) return;
+  assert.equal(result.text, "real body");
+});
+
+test("a journal heading that exists only inside a fence is missing, never the example (issue #2882)", () => {
+  // Before #2882 the fenced example became the extracted section, feeding
+  // sample text to extraction as journal prose.
+  const fileText = ["## Notes", "note body", "", "```markdown", "## Journal", "example body", "```", ""].join("\n");
+  const result = readVaultJournal({ fileText, journalSection: "Journal" });
+  assert.deepEqual(result, { ok: true, exists: false, reason: "missing_heading" });
+});
+
+test("a fenced same-level heading does not end the journal section early (issue #2882)", () => {
+  // Before #2882 the fenced `## Notes` terminated the section, so the journal
+  // text came back empty and the real Notes body leaked out of the section.
+  const fileText = ["## Journal", "```", "## Notes", "```", "", "## Notes", "after the fence", ""].join("\n");
+  const result = readVaultJournal({ fileText, journalSection: "Journal" });
+  assert.ok(result.ok && result.exists);
+  if (!result.ok || !result.exists) return;
+  assert.equal(result.text, ["```", "## Notes", "```"].join("\n"));
+});
+
+test("an unclosed fence keeps following headings fenced — the section extends, never mis-reads (issue #2882)", () => {
+  const fileText = ["# Top", "", "```", "## Journal", "example body"].join("\n");
+  assert.deepEqual(readVaultJournal({ fileText, journalSection: "Journal" }), {
+    ok: true,
+    exists: false,
+    reason: "missing_heading",
+  });
+});
+
+test("an unclosed fence inside the journal section extends it to the end of the note (issue #2882)", () => {
+  const fileText = ["## Journal", "real line", "```", "## Notes", "still journal", ""].join("\n");
+  const result = readVaultJournal({ fileText, journalSection: "Journal" });
+  assert.ok(result.ok && result.exists);
+  if (!result.ok || !result.exists) return;
+  assert.equal(result.text, ["real line", "```", "## Notes", "still journal"].join("\n"));
+});

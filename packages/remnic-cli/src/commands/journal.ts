@@ -41,7 +41,6 @@ import {
   type JournalExtractionDeps,
   type PluginConfig,
 } from "@remnic/core";
-import type { BufferTurn } from "@remnic/core/types.js";
 import { resolveConfigPath } from "../config-path.js";
 
 export interface JournalCommandIo {
@@ -80,7 +79,7 @@ function defaultDeps(
       await storage.ensureDirectories();
       const engine = new ExtractionEngine(config, undefined, undefined, config.gatewayConfig);
       return {
-        extract: (turns: BufferTurn[]) => engine.extract(turns),
+        extract: (turns: Parameters<JournalExtractionDeps["extract"]>[0]) => engine.extract(turns),
         writer: createJournalMemoryWriter(storage),
         ...(reindexSearch === undefined ? {} : { afterWrites: reindexSearch }),
       };
