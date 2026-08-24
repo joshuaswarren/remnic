@@ -20,7 +20,7 @@ test("parseActivityConfig defaults to an inert, search-only configuration", () =
     timeline: {
       enabled: false,
       analysis: { enabled: false },
-      journal: { enabled: false, source: "file" },
+      journal: { enabled: false, source: "memoryDir", extractionMode: "off" },
       qa: { enabled: false, maxRangeDays: 31 },
       vault: {
         enabled: false,
@@ -37,6 +37,7 @@ test("parseActivityConfig defaults to an inert, search-only configuration", () =
           locations: { enabled: false, target: "daily", section: "Locations" },
         },
         insertUnderHeading: "",
+        readback: { journalSection: "" },
         wikilinks: { places: false, placesFolder: "Places" },
         properties: { mode: "off", prefix: "remnic_" },
         autoPublish: true,

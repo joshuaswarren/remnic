@@ -2572,7 +2572,7 @@ test("parseConfig forwards activity source settings", () => {
     timeline: {
       enabled: false,
       analysis: { enabled: false },
-      journal: { enabled: false, source: "file" },
+      journal: { enabled: false, source: "memoryDir", extractionMode: "off" },
       qa: { enabled: false, maxRangeDays: 31 },
       vault: {
         enabled: false,
@@ -2589,6 +2589,7 @@ test("parseConfig forwards activity source settings", () => {
           locations: { enabled: false, target: "daily", section: "Locations" },
         },
         insertUnderHeading: "",
+        readback: { journalSection: "" },
         wikilinks: { places: false, placesFolder: "Places" },
         properties: { mode: "off", prefix: "remnic_" },
         autoPublish: true,

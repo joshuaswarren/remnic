@@ -226,3 +226,23 @@ test("MCP engram.recall inputSchema advertises the `disclosure` enum", () => {
   assert.ok(props && "disclosure" in props, "engram.recall inputSchema must declare 'disclosure'");
   assert.deepStrictEqual(props?.disclosure?.enum, ["chunk", "section", "raw"]);
 });
+
+test("recallRequestSchema and MCP inputSchema carry the #1952 stateView boolean", () => {
+  const base = { query: "when did the job change?", sessionKey: "s" };
+  const ok = recallRequestSchema.safeParse({ ...base, stateView: true });
+  assert.equal(ok.success, true, "stateView: true must validate");
+  assert.equal(ok.success && ok.data.stateView, true);
+  const off = recallRequestSchema.safeParse({ ...base, stateView: false });
+  assert.equal(off.success && off.data.stateView, false);
+  const absent = recallRequestSchema.safeParse(base);
+  assert.equal(absent.success && absent.data.stateView, undefined);
+  const bad = recallRequestSchema.safeParse({ ...base, stateView: "yes" });
+  assert.equal(bad.success, false, "non-boolean stateView must be rejected");
+
+  const { service } = makeMcpRecallSpyService();
+  const server = new EngramMcpServer(service);
+  const tools = (server as unknown as { tools: Array<{ name: string; inputSchema: { properties?: Record<string, unknown> } }> }).tools;
+  const recallTool = tools.find((t) => t.name === "engram.recall");
+  const props = recallTool?.inputSchema?.properties as Record<string, { type?: string }> | undefined;
+  assert.ok(props && props.stateView?.type === "boolean", "engram.recall inputSchema must declare stateView: boolean");
+});
