@@ -270,6 +270,10 @@ test("readCasRevisionStatus distinguishes present, absent, and unavailable recei
     const archived = await storage.readCasRevisionStatus(memory.path);
     assert.equal(archived.status, "present");
     assert.equal(archived.revision, standing);
+    assert.equal(
+      archived.status === "present" ? archived.committedDigest : undefined,
+      createHash("sha256").update(await readFile(memory.path)).digest("hex"),
+    );
 
     // A torn shard write: the receipt EXISTS but cannot be read. That is
     // unavailability — never absence — while the fail-open read keeps
@@ -550,13 +554,15 @@ test("a receipt publication failure after the memory write recovers from recorde
     const onDisk = await readFile(before.path);
     assert.match(onDisk.toString("utf8"), /Body whose receipt never publishes\./, "the durable memory write landed");
 
-    // #2807: the pending marker carries the post-write fingerprint, so the
-    // next read — not a manual reconcile — decisively publishes the
-    // reserved token. The marker was never ownership and never absence
-    // until this evidence spoke.
+    // #2807: writeLanded recorded evidence, so the next unlocked read
+    // publishes the reserved token with the intended file digest.
     const published = await storage.readCasRevisionStatus(before.path);
     assert.equal(published.status, "present");
     assert.equal(published.revision, reserved);
+    assert.equal(
+      published.status === "present" ? published.committedDigest : undefined,
+      createHash("sha256").update(onDisk).digest("hex"),
+    );
     assert.equal(
       await storage.updateMemory(created.id, "Second body after evidence recovery."),
       true,
@@ -673,10 +679,13 @@ test("restart after a crash between write and commit publishes the reserved rece
     StorageManager.clearAllStaticCaches();
 
     const restarted = new StorageManager(dir);
+    const landedBytes = await readFile(memory.path);
     const restartedStatus = await restarted.readCasRevisionStatus(memory.path);
     assert.ok(
-      restartedStatus.status === "present" && restartedStatus.revision === reserved,
-      "the first read after restart publishes the reserved token from the recorded evidence",
+      restartedStatus.status === "present" &&
+        restartedStatus.revision === reserved &&
+        restartedStatus.committedDigest === createHash("sha256").update(landedBytes).digest("hex"),
+      "the first read after restart publishes the reserved token from writeLanded evidence",
     );
     assert.equal(
       await restarted.updateMemory(created.id, "Body after evidence-published restart."),

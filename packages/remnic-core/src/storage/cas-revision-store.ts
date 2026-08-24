@@ -121,7 +121,6 @@ export function canonicalSemanticFileText(raw: string): string {
     .filter((line) => !ACCESS_TELEMETRY_FRONTMATTER_KEY.test(line));
   return [...lines.slice(0, 1), ...frontmatter, ...lines.slice(closing)].join("\n");
 }
-
 const CAS_REVISION_LOCK_STALE_MS = 60_000;
 const CAS_REVISION_LOCK_MAX_WAIT_MS = 120_000;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -572,6 +571,7 @@ export class CasRevisionStore {
         `CAS revision evidence: durable memory file ${relativePath} is unreadable: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+
   }
 
   /** #2807: mark the reserved write as landed. Verifies a pre-recorded

@@ -269,7 +269,6 @@ export async function readDurableSemanticFingerprint(filePath: string): Promise<
     return null;
   }
 }
-
 /** #2813 (P1 A): read the standing receipt as a three-way truth for the
  * promotion path. Present and absent are usable identities (absent = the
  * target predates the sidecar); unavailable is not. A storage whose status

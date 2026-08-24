@@ -985,6 +985,12 @@ test("legacy receipt with unavailable snapshot digest refuses promotion (#2813 P
   await commitWriterMerge(s.source, target.id, A_MERGED_BODY);
   const committedRow = await s.source.getMemoryByIdIncludingArchived(target.id);
   assert.ok(committedRow);
+  const status = await s.source.readCasRevisionStatus(committedRow.path);
+  assert.equal(status.status, "present", "the merge minted a standing receipt");
+  assert.ok(
+    status.status === "present" && status.committedDigest,
+    "the standing receipt carries a committed digest",
+  );
   const shardPath = casShardPath(s.source.dir, committedRow.path);
   const shard = JSON.parse(await readFile(shardPath, "utf8")) as Record<string, unknown>;
   delete shard.committedSemanticFingerprint;
