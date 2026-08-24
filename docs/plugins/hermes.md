@@ -340,7 +340,7 @@ No upstream Hermes feature request is needed from this audit: each OpenClaw life
 | `remnic_work_task` | `action: string`, `id?: string`, `title?: string`, `description?: string`, `status?: string`, `priority?: string`, `owner?: string`, `assignee?: string`, `projectId?: string`, `tags?: string[]`, `dueAt?: string` | Manage work-layer tasks |
 | `remnic_work_project` | `action: string`, `id?: string`, `name?: string`, `description?: string`, `status?: string`, `owner?: string`, `tags?: string[]`, `taskId?: string`, `projectId?: string` | Manage work-layer projects |
 | `remnic_work_board` | `action: string`, `projectId?: string`, `snapshotJson?: string`, `linkToMemory?: boolean` | Export or import work-layer board snapshots and markdown |
-| `remnic_shared_context_write_output` | `agentId: string`, `title: string`, `content: string` | Write agent work product into shared context |
+| `remnic_shared_context_write_output` | `agentId: string`, `title: string`, `content: string`, `authority?: string` (`informational`\|`advisory`\|`binding`), `expiresAt?: string` (future ISO-8601, ≤10y), `supersedes?: string` | Write agent work product into shared context |
 | `remnic_shared_feedback_record` | `agent: string`, `decision: string`, `reason: string` | Record shared feedback for peer modeling |
 | `remnic_shared_priorities_append` | `agentId: string`, `text: string` | Append priorities notes for curator merge |
 | `remnic_shared_context_cross_signals_run` | `date?: string` | Generate shared-context cross-signal artifacts |

@@ -341,10 +341,16 @@ class RemnicClient:
     async def work_board(self, action: str, **kwargs: Any) -> dict[str, Any]:
         return await self._mcp_tool("engram.work_board", {"action": action, **kwargs})
 
-    async def shared_context_write_output(self, agent_id: str, title: str, content: str) -> dict[str, Any]:
+    async def shared_context_write_output(
+        self,
+        agent_id: str,
+        title: str,
+        content: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         return await self._mcp_tool(
             "engram.shared_context_write_output",
-            {"agentId": agent_id, "title": title, "content": content},
+            {"agentId": agent_id, "title": title, "content": content, **kwargs},
         )
 
     async def shared_feedback_record(self, agent: str, decision: str, reason: str, **kwargs: Any) -> dict[str, Any]:

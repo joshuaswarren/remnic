@@ -4581,6 +4581,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     agentId: string;
     title: string;
     content: string;
+    /** Envelope controls (issue #2920). Validated by composeWriteEnvelope. */
+    authority?: string;
+    expiresAt?: string;
+    supersedes?: string;
     /** Authenticated principal resolved by the surface, never client-supplied. */
     principal?: string;
   }): Promise<unknown> {
@@ -4593,6 +4597,9 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
         agentId: request.agentId,
         title: request.title,
         content: request.content,
+        authority: request.authority,
+        expiresAt: request.expiresAt,
+        supersedes: request.supersedes,
         // The origin is server-owned in BOTH cases (issue #1957 review
         // round 4): the authenticated principal when one resolved, and a
         // reserved unattributed token otherwise — a principal-less
@@ -4605,7 +4612,15 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.startsWith("shared-context write origin mismatch")) {
+      // Envelope validation failures (authority allow-list, binding gate,
+      // expiry TTL policy, supersedes id shape, surface-parse policy) are
+      // client input errors — 400, never a 500 (issue #2920).
+      if (
+        message.startsWith("shared-context write origin mismatch")
+        || message.startsWith("applyDefaultEnvelope:")
+        || message.startsWith("composeWriteEnvelope:")
+        || message.startsWith("shared-context write output:")
+      ) {
         throw new EngramAccessInputError(message);
       }
       throw error;
