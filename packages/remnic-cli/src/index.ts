@@ -31,6 +31,13 @@
  */
 
 import { persistEnrichmentCandidate } from "./enrichment-persist.js";
+import {
+  discoverBenchDatasetDir,
+  isDatasetDownloaded,
+  listDownloadableBenchmarks,
+  resolveRepoDatasetRoot,
+  resetLegacyDatasetWarningState,
+} from "./bench-dataset-store.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1202,383 +1209,6 @@ function resolveBenchOutputDir(): string {
   return path.join(resolveHomeDir(), ".remnic", "bench", "results");
 }
 
-const DOWNLOADABLE_BENCHMARK_DATASETS = [
-  "ama-bench",
-  "memory-arena",
-  "amemgym",
-  "longmemeval",
-  "locomo",
-  "beam",
-  "personamem",
-  "membench",
-  "memoryagentbench",
-] as const;
-
-const MEMORY_ARENA_WEBSHOP_PRODUCT_SIDECAR_FILENAMES = [
-  "webshop-products.jsonl",
-  "webshop-products.json",
-  "memory-arena-webshop-products.jsonl",
-  "memory-arena-webshop-products.json",
-] as const;
-
-const MEMORY_AGENT_BENCH_BUNDLE_FILENAMES = [
-  "memoryagentbench.json",
-  "memoryagentbench.jsonl",
-  "MemoryAgentBench.json",
-  "MemoryAgentBench.jsonl",
-] as const;
-
-const MEMORY_AGENT_BENCH_SPLIT_FILENAMES = [
-  "Accurate_Retrieval.json",
-  "Accurate_Retrieval.jsonl",
-  "accurate_retrieval.json",
-  "accurate_retrieval.jsonl",
-  "Test_Time_Learning.json",
-  "Test_Time_Learning.jsonl",
-  "test_time_learning.json",
-  "test_time_learning.jsonl",
-  "Long_Range_Understanding.json",
-  "Long_Range_Understanding.jsonl",
-  "long_range_understanding.json",
-  "long_range_understanding.jsonl",
-  "Conflict_Resolution.json",
-  "Conflict_Resolution.jsonl",
-  "conflict_resolution.json",
-  "conflict_resolution.jsonl",
-] as const;
-
-const MEMORY_AGENT_BENCH_ENTITY_MAPPING_CANDIDATES = [
-  "entity2id.json",
-  path.join("processed_data", "Recsys_Redial", "entity2id.json"),
-  path.join("Recsys_Redial", "entity2id.json"),
-] as const;
-
-type DownloadedDatasetMarker = {
-  anyOf?: string[];
-  allOf?: string[];
-  ext?: string;
-  exclude?: readonly string[];
-};
-
-// Required content markers per benchmark. `anyOf` lists the filenames
-// a benchmark runner will accept — a dataset directory is considered
-// "downloaded" as soon as any one of them is present. `allOf` lists
-// required sidecar files. `ext` matches any file in the directory with
-// the given extension. The filename sets mirror the dataset loaders
-// under packages/bench/src/benchmarks so `datasets status` and
-// `resolveBenchDatasetDir` never disagree with the runner about whether
-// a dataset is ready.
-const DOWNLOADED_DATASET_MARKERS: Record<string, DownloadedDatasetMarker> = {
-  "ama-bench": { anyOf: ["open_end_qa_set.jsonl"] },
-  longmemeval: {
-    // Keep this list in lock-step with `LONG_MEM_EVAL_DATASET_FILENAMES`
-    // in packages/bench/src/benchmarks/published/dataset-loader.ts so
-    // `datasets status` never disagrees with the runner about what
-    // counts as "downloaded".
-    anyOf: [
-      "longmemeval_s_cleaned.json",
-      "longmemeval_s.json",
-      "longmemeval.json",
-      "longmemeval_oracle.json",
-    ],
-  },
-  amemgym: {
-    anyOf: ["amemgym-v1-base.json", "amemgym-tasks.json", "data.json"],
-  },
-  locomo: { anyOf: ["locomo10.json", "locomo.json"] },
-  "memory-arena": {
-    ext: ".jsonl",
-    exclude: MEMORY_ARENA_WEBSHOP_PRODUCT_SIDECAR_FILENAMES,
-  },
-  beam: {
-    anyOf: [
-      "beam_100k.json",
-      "beam_500k.json",
-      "beam_1m.json",
-      "beam_10m.json",
-      "100k.json",
-      "500k.json",
-      "1m.json",
-      "10m.json",
-      "data/100K-00000-of-00001.parquet",
-      "data/500K-00000-of-00001.parquet",
-      "data/1M-00000-of-00001.parquet",
-      "data/10M-00000-of-00002.parquet",
-      "data/10M-00001-of-00002.parquet",
-    ],
-  },
-  personamem: {
-    anyOf: [
-      "benchmark/text/benchmark.csv",
-      "benchmark/benchmark.csv",
-      "benchmark.csv",
-    ],
-  },
-  membench: {
-    anyOf: [
-      "membench.json",
-      "membench.jsonl",
-      "data.json",
-      "FirstAgentDataLowLevel.json",
-      "FirstAgentDataHighLevel.json",
-      "ThirdAgentDataLowLevel.json",
-      "ThirdAgentDataHighLevel.json",
-      "FirstAgentDataLowLevel.jsonl",
-      "FirstAgentDataHighLevel.jsonl",
-      "ThirdAgentDataLowLevel.jsonl",
-      "ThirdAgentDataHighLevel.jsonl",
-    ],
-  },
-  memoryagentbench: {
-    anyOf: [
-      ...MEMORY_AGENT_BENCH_BUNDLE_FILENAMES,
-      ...MEMORY_AGENT_BENCH_SPLIT_FILENAMES,
-    ],
-  },
-};
-
-const PERSONAMEM_DATASET_FILE_CANDIDATES = [
-  "benchmark/text/benchmark.csv",
-  "benchmark/benchmark.csv",
-  "benchmark.csv",
-] as const;
-
-const PERSONAMEM_COMPLETION_MARKER = path.join(
-  "data",
-  "chat_history_32k",
-  ".download-complete",
-);
-
-function resolveRealpathWithinDataset(
-  datasetPath: string,
-  relativePath: string,
-): string | null {
-  try {
-    const datasetRoot = fs.realpathSync(datasetPath);
-    const candidatePath = path.resolve(datasetRoot, relativePath);
-    const candidateRealPath = fs.realpathSync(candidatePath);
-    const relativeToRoot = path.relative(datasetRoot, candidateRealPath);
-    if (
-      relativeToRoot.startsWith("..")
-      || path.isAbsolute(relativeToRoot)
-    ) {
-      return null;
-    }
-    return candidateRealPath;
-  } catch {
-    return null;
-  }
-}
-
-function parseCsvRows(raw: string): string[][] {
-  const rows: string[][] = [];
-  let currentRow: string[] = [];
-  let currentField = "";
-  let inQuotes = false;
-
-  const pushRow = () => {
-    const values = [...currentRow, currentField];
-    const isHeader = rows.length === 0;
-    const isBlank = values.every((value) => value.trim().length === 0);
-    if (isHeader || !isBlank) {
-      rows.push(values);
-    }
-    currentRow = [];
-    currentField = "";
-  };
-
-  for (let index = 0; index < raw.length; index += 1) {
-    const char = raw[index]!;
-    const next = raw[index + 1];
-
-    if (char === "\"") {
-      if (inQuotes && next === "\"") {
-        currentField += "\"";
-        index += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-
-    if (!inQuotes && char === ",") {
-      currentRow.push(currentField);
-      currentField = "";
-      continue;
-    }
-
-    if (!inQuotes && (char === "\n" || char === "\r")) {
-      if (char === "\r" && next === "\n") {
-        index += 1;
-      }
-      pushRow();
-      continue;
-    }
-
-    currentField += char;
-  }
-
-  if (currentField.length > 0 || currentRow.length > 0) {
-    pushRow();
-  }
-
-  return rows;
-}
-
-function isPersonaMemDatasetComplete(datasetPath: string): boolean {
-  try {
-    const completionMarkerPath = path.join(datasetPath, PERSONAMEM_COMPLETION_MARKER);
-    if (fs.statSync(completionMarkerPath).isFile()) {
-      return true;
-    }
-  } catch {
-    // Fall back to verifying every CSV-linked history file for pre-marker mirrors.
-  }
-
-  const datasetFile = PERSONAMEM_DATASET_FILE_CANDIDATES.find((candidate) => {
-    try {
-      return fs.statSync(path.join(datasetPath, candidate)).isFile();
-    } catch {
-      return false;
-    }
-  });
-  if (!datasetFile) {
-    return false;
-  }
-
-  try {
-    const rows = parseCsvRows(fs.readFileSync(path.join(datasetPath, datasetFile), "utf8"));
-    if (rows.length < 2) {
-      return false;
-    }
-    const [header, ...dataRows] = rows;
-    const chatHistoryIndex = header.indexOf("chat_history_32k_link");
-    if (chatHistoryIndex < 0) {
-      return false;
-    }
-    const historyPaths = dataRows
-      .map((row) => row[chatHistoryIndex]?.trim() ?? "")
-      .filter((value) => value.length > 0);
-    if (historyPaths.length === 0) {
-      return false;
-    }
-    return historyPaths.every((relativePath) => {
-      const resolvedPath = resolveRealpathWithinDataset(datasetPath, relativePath);
-      return resolvedPath !== null && fs.statSync(resolvedPath).isFile();
-    });
-  } catch {
-    return false;
-  }
-}
-
-function hasDatasetFile(datasetPath: string, relativePath: string): boolean {
-  try {
-    return fs.statSync(path.join(datasetPath, relativePath)).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function hasMemoryAgentBenchEntityMapping(datasetPath: string): boolean {
-  const absoluteDatasetPath = path.resolve(datasetPath);
-  const roots = [absoluteDatasetPath, path.dirname(absoluteDatasetPath)];
-  return (
-    hasDatasetFile(absoluteDatasetPath, "entity2id.json") ||
-    roots.some((root) =>
-      MEMORY_AGENT_BENCH_ENTITY_MAPPING_CANDIDATES
-        .filter((relativePath) => relativePath !== "entity2id.json")
-        .some((relativePath) => hasDatasetFile(root, relativePath)),
-    )
-  );
-}
-
-function memoryAgentBenchDatasetHasRecSysSamples(datasetPath: string): boolean {
-  const candidateFilenames = [
-    ...MEMORY_AGENT_BENCH_BUNDLE_FILENAMES,
-    ...MEMORY_AGENT_BENCH_SPLIT_FILENAMES,
-  ];
-  return candidateFilenames.some((filename) => {
-    const filePath = path.join(datasetPath, filename);
-    try {
-      if (!fs.statSync(filePath).isFile()) {
-        return false;
-      }
-      const raw = fs.readFileSync(filePath, "utf8");
-      return /"source"\s*:\s*"recsys[_-]/i.test(raw);
-    } catch {
-      return false;
-    }
-  });
-}
-
-function isMemoryAgentBenchDatasetComplete(datasetPath: string): boolean {
-  if (hasMemoryAgentBenchEntityMapping(datasetPath)) {
-    return true;
-  }
-  return !memoryAgentBenchDatasetHasRecSysSamples(datasetPath);
-}
-
-function isDatasetDownloaded(datasetPath: string, benchmarkId: string): boolean {
-  let stats: fs.Stats;
-  try {
-    stats = fs.statSync(datasetPath);
-  } catch {
-    return false;
-  }
-  if (!stats.isDirectory()) {
-    return false;
-  }
-  const marker = DOWNLOADED_DATASET_MARKERS[benchmarkId];
-  if (!marker) {
-    // Unknown benchmark: fall back to "directory has at least one file".
-    try {
-      return fs.readdirSync(datasetPath).length > 0;
-    } catch {
-      return false;
-    }
-  }
-  if (marker.allOf) {
-    const hasAllRequiredFiles = marker.allOf.every((name) => {
-      try {
-        return fs.statSync(path.join(datasetPath, name)).isFile();
-      } catch {
-        return false;
-      }
-    });
-    if (!hasAllRequiredFiles) {
-      return false;
-    }
-  }
-  if (marker.anyOf) {
-    const hasMarkerFile = marker.anyOf.some((name) => {
-      try {
-        return fs.statSync(path.join(datasetPath, name)).isFile();
-      } catch {
-        return false;
-      }
-    });
-    if (!hasMarkerFile) {
-      return false;
-    }
-    if (benchmarkId === "personamem") {
-      return isPersonaMemDatasetComplete(datasetPath);
-    }
-    if (benchmarkId === "memoryagentbench") {
-      return isMemoryAgentBenchDatasetComplete(datasetPath);
-    }
-    return true;
-  }
-  if (marker.ext) {
-    try {
-      return fs.readdirSync(datasetPath).some((name) =>
-        name.endsWith(marker.ext!) && !marker.exclude?.includes(name),
-      );
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
 
 async function launchBenchUi(resultsDir: string): Promise<void> {
   const benchUiDir = path.join(CLI_REPO_ROOT, "packages", "bench-ui");
@@ -1609,19 +1239,9 @@ async function launchBenchUi(resultsDir: string): Promise<void> {
         resolve();
         return;
       }
-
       reject(new Error(`bench UI exited with code ${code ?? "unknown"}`));
     });
   });
-}
-
-// Canonical user-writable dataset store for both repo checkouts and
-// published installs. The legacy repo-local dataset default died with
-// the deleted evals tree (issue #2798).
-const BENCH_DATASET_ROOT = path.join(resolveHomeDir(), ".remnic", "bench", "datasets");
-
-function listDownloadableBenchmarks(): string[] {
-  return [...DOWNLOADABLE_BENCHMARK_DATASETS];
 }
 
 // The download script is shipped with the CLI package at
@@ -1713,20 +1333,15 @@ function resolveBenchDatasetDir(
     return undefined;
   }
 
-  // Match the dataset root that `datasets download` and `datasets
-  // status` use so full benchmark runs can consume a dataset that
-  // was just downloaded through the packaged CLI without requiring
-  // an explicit `--dataset-dir` override. Gate auto-selection on the
-  // same per-benchmark content markers as `datasets status` so a
-  // partial/interrupted download doesn't silently feed an empty
-  // directory into the benchmark loader. BENCH_DATASET_ROOT covers
-  // both install modes, so one lookup suffices.
-  const datasetDir = path.join(BENCH_DATASET_ROOT, benchmarkId);
-  if (isDatasetDownloaded(datasetDir, benchmarkId)) {
-    return datasetDir;
-  }
-
-  return undefined;
+  // Match the dataset discovery that `datasets download` and `datasets
+  // status` use so full benchmark runs can consume a dataset that was just
+  // downloaded through the packaged CLI without requiring an explicit
+  // `--dataset-dir` override. `discoverBenchDatasetDir` gates auto-selection
+  // on the same per-benchmark content markers as `datasets status` (so a
+  // partial/interrupted download doesn't silently feed an empty directory
+  // into the benchmark loader) and falls back to a read-only legacy
+  // evals/datasets copy when the canonical store is missing (#2867).
+  return discoverBenchDatasetDir(benchmarkId)?.dir;
 }
 
 function resolveDownloadedBenchDatasetDir(
@@ -1750,6 +1365,8 @@ export const __benchDatasetTestHooks = {
   resolveBenchDatasetDir,
   resolveDownloadedBenchDatasetDir,
   pairedAnswerReplayCacheForBenchmark,
+  discoverBenchDatasetDir,
+  resetLegacyDatasetDiscoveryWarningForTest: resetLegacyDatasetWarningState,
   orderPairedLoCoMoWorkItemsForTest: orderPairedLoCoMoWorkItems,
   buildPublishedBenchmarkOptionsForTest(
     benchmarkId: string,
@@ -2075,7 +1692,7 @@ async function exportBenchPackageResult(parsed: ParsedBenchArgs): Promise<void> 
 }
 
 async function manageBenchDatasets(parsed: ParsedBenchArgs): Promise<void> {
-  const datasetRoot = BENCH_DATASET_ROOT;
+  const datasetRoot = resolveRepoDatasetRoot();
   const supported = listDownloadableBenchmarks();
 
   if (parsed.datasetAction === "status") {
@@ -2087,11 +1704,15 @@ async function manageBenchDatasets(parsed: ParsedBenchArgs): Promise<void> {
     }
 
     const status = supported.map((benchmarkId) => {
-      const datasetPath = path.join(datasetRoot, benchmarkId);
+      // Read discovery shares the run path's single seam (#2867): a
+      // benchmark present only at the legacy evals/datasets location
+      // reports as downloaded there (read-only), not as missing.
+      const discovered = discoverBenchDatasetDir(benchmarkId);
       return {
         benchmark: benchmarkId,
-        downloaded: isDatasetDownloaded(datasetPath, benchmarkId),
-        path: datasetPath,
+        downloaded: discovered !== undefined,
+        path: discovered ? discovered.dir : path.join(datasetRoot, benchmarkId),
+        source: discovered?.source ?? "canonical",
       };
     });
 
