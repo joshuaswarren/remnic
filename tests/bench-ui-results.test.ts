@@ -212,26 +212,12 @@ test("artifact written under a custom canary floor judges over-floor after reloa
   await rm(resultsDir, { recursive: true, force: true });
 });
 
-test("legacy artifact without a persisted canaryFloor judges against the canonical default", async () => {
+test("artifact without a persisted canaryFloor judges against the canonical default", async () => {
   const resultsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-ui-legacy-floor-"));
-  await writeFile(
-    path.join(resultsDir, "legacy-no-floor.json"),
-    JSON.stringify({
-      meta: {
-        id: "legacy-no-floor-run",
-        benchmark: "longmemeval",
-        timestamp: "2026-04-18T10:00:00.000Z",
-        mode: "full",
-        splitType: "holdout",
-        qrelsSealedHash: "a".repeat(64),
-        judgePromptHash: "b".repeat(64),
-        datasetHash: "c".repeat(64),
-        canaryScore: 0.08,
-      },
-      cost: {},
-      results: { tasks: [], aggregates: {} },
-    }),
-  );
+  const artifact = validResultFixture("legacy-no-floor-run");
+  artifact.meta.canaryScore = 0.08;
+  delete artifact.meta.canaryFloor;
+  await writeFile(path.join(resultsDir, "legacy-no-floor.json"), JSON.stringify(artifact));
 
   const payload = await loadBenchResultSummaries(resultsDir);
   const summary = payload.summaries[0];
