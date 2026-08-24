@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `remnic converge plan`/`watch` now reuses `StorageManager`'s persisted digest cache instead of re-hashing every file each cycle, and applies `offlineSyncExcludes` plus `includeTranscripts: false` so node-local state and transcripts are not planned as failed pushes. Plan-phase stderr reports identity-cache hit/miss counts and snapshot/manifest wall time.
+
 ## [v9.69.35] — 2026-08-24
 
 ### Added

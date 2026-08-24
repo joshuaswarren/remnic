@@ -1933,3 +1933,40 @@ test("converge rejects invalid REMNIC_CONVERGE_TRANSFER_CONCURRENCY (#2832)", as
     else process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = prev;
   }
 });
+
+test("converge plan honors offlineSyncExcludes so node-local state is not a push", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-excludes-"));
+  try {
+    await fs.mkdir(path.join(rootDir, "facts"), { recursive: true });
+    await fs.mkdir(path.join(rootDir, "state"), { recursive: true });
+    await fs.writeFile(path.join(rootDir, "facts/keep.md"), "keep\n");
+    await fs.writeFile(path.join(rootDir, "state/last_recall.json"), "{\"n\":1}\n");
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/offline-sync/capabilities")) {
+        return new Response(null, { status: 404 });
+      }
+      if (url.pathname.endsWith("/offline-sync/snapshot")) {
+        return Response.json({ files: [], tombstones: [] });
+      }
+      return new Response(null, { status: 404 });
+    };
+    const plan = await computeConvergePlan({
+      config: parseConfig({
+        memoryDir: rootDir,
+        offlineSyncExcludes: ["**/state/last_*.json"],
+      }),
+      peerUrl: "https://peer.example.test",
+      fetchImpl,
+    });
+    assert.equal(
+      plan.entries.some((entry) => entry.path.includes("last_recall")),
+      false,
+      JSON.stringify(plan.entries.map((entry) => entry.path))
+    );
+    assert.ok(plan.entries.some((entry) => entry.path === "facts/keep.md"));
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+

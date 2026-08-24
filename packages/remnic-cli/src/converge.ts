@@ -9,6 +9,7 @@ import {
   type ResolveSecretRefFn,
   applyOfflineSyncFileContentChunk,
   buildOfflineSyncSnapshotFromBase,
+  compileOfflineSyncExcludeGlobs,
   envConvergePeerRequestTimeoutMs,
   isInternalRemnicStatePath,
   normalizeConvergePeerRequestTimeoutMs,
@@ -252,6 +253,8 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     }
   }
   const memoryDir = options.cursorDir ?? config?.memoryDir;
+  const userExcludeRegexps = compileOfflineSyncExcludeGlobs(config?.offlineSyncExcludes ?? []);
+
 
   if (!options.localFilesByNamespace && config) {
     const roots = await resolveCorpusNamespaceRoots({ config });
@@ -274,14 +277,23 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
         persisted: identityCache,
         updates: classificationUpdates,
       });
+      const snapshotStarted = Date.now();
       const snapshot = await buildOfflineSyncSnapshotFromBase({
         root: rootInfo.rootDir,
         sourceId: "local",
         includeContent: false,
+        // Peer manifest-stream is include_transcripts=false; apply-file-content
+        // also rejects transcripts. Listing them locally made them look like
+        // pushes and then counted as failed.
+        includeTranscripts: false,
+        userExcludeRegexps,
         readFile: io.readFile,
         readFileDigest: io.readFileDigest,
         excludeFile: io.excludeFile,
       });
+      const snapshotMs = Date.now() - snapshotStarted;
+
+
       const files: ReconcileFileState[] = snapshot.files
         .filter((record) => !isInternalRemnicStatePath(record.path))
         .map((record) => ({
@@ -293,6 +305,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       localMap.set(ns, files);
       const evidence = await readLocalTombstoneEvidence(rootInfo.rootDir);
       let manifestReadFailed = false;
+      const manifestStarted = Date.now();
       const manifest = await buildReconcileManifest({
         files,
         parseMemory: parseFrontmatter,
@@ -316,6 +329,13 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
           }
         },
       });
+      const identityHits = files.reduce(
+        (count, file) => count + (identityCache.get(file.path)?.sha256 === file.sha256 ? 1 : 0),
+        0
+      );
+      console.error(
+        `converge plan: namespace=${ns} identityCache=${identityCache.size} identityHits=${identityHits} identityMisses=${files.length - identityHits} snapshotFiles=${files.length} snapshotMs=${snapshotMs} manifestMs=${Date.now() - manifestStarted}`
+      );
       if (manifestReadFailed) {
         throw new Error(`failed to build local reconciliation manifest for namespace ${ns}`);
       }
