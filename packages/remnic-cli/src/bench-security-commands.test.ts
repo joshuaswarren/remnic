@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { parseBenchSecurityArgs } from "./bench-security-commands.js";
+import { BENCH_SECURITY_USAGE, parseBenchSecurityArgs } from "./bench-security-commands.js";
 import { resolveHomeDir } from "./path-utils.js";
 
 test("injection-suite parser requires --seeds and defaults outside the checkout", () => {
@@ -53,4 +53,10 @@ test("unknown executor is rejected", () => {
 
 test("unknown security subcommand is rejected", () => {
   assert.throws(() => parseBenchSecurityArgs(["nope"]), /unknown bench security subcommand/);
+});
+
+test("openai-compat help names host-isolated credential env vars", () => {
+  assert.match(BENCH_SECURITY_USAGE, /api\.openai\.com \/ integrate\.api\.nvidia\.com require/);
+  assert.match(BENCH_SECURITY_USAGE, /REMNIC_OPENAI_COMPAT_API_KEY/);
+  assert.match(BENCH_SECURITY_USAGE, /loopback HTTP on 127\.0\.0\.1 or localhost/);
 });
