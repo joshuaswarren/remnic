@@ -3,8 +3,9 @@
  *
  * Talks native Ollama /api/chat by default or an OpenAI-compatible
  * /v1/chat/completions endpoint. openai-compat sends Authorization
- * from OPENAI_API_KEY or NVIDIA_API_KEY and fails closed if neither
- * is set; ollama stays unauthenticated. Network/5xx/timeout become
+ * from OPENAI_API_KEY or NVIDIA_API_KEY, choosing by host (NVIDIA
+ * hosts prefer NVIDIA_API_KEY) and failing closed if neither is set;
+ * ollama stays unauthenticated. Network/5xx/timeout become
  * HOST_API_FAULT so the suite pauses instead of cutting the row.
  */
 
@@ -67,7 +68,31 @@ function trimSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-const OPENAI_COMPAT_TOKEN_ENV = Object.freeze(["OPENAI_API_KEY", "NVIDIA_API_KEY"] as const);
+const GENERIC_OPENAI_COMPAT_TOKEN_ENV = Object.freeze(["OPENAI_API_KEY", "NVIDIA_API_KEY"] as const);
+const NVIDIA_OPENAI_COMPAT_TOKEN_ENV = Object.freeze(["NVIDIA_API_KEY", "OPENAI_API_KEY"] as const);
+
+function hostnameOf(baseUrl: string): string | undefined {
+  try {
+    let hostname = new URL(baseUrl).hostname.trim().toLowerCase();
+    while (hostname.endsWith(".")) hostname = hostname.slice(0, -1);
+    return hostname.length > 0 ? hostname : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isNvidiaCompatHost(hostname: string | undefined): boolean {
+  if (hostname === undefined) return false;
+  return hostname === "nvidia.com" || hostname.endsWith(".nvidia.com");
+}
+
+function tokenEnvOrderForBaseUrl(
+  baseUrl: string,
+): typeof GENERIC_OPENAI_COMPAT_TOKEN_ENV | typeof NVIDIA_OPENAI_COMPAT_TOKEN_ENV {
+  return isNvidiaCompatHost(hostnameOf(baseUrl))
+    ? NVIDIA_OPENAI_COMPAT_TOKEN_ENV
+    : GENERIC_OPENAI_COMPAT_TOKEN_ENV;
+}
 
 function firstNonEmptyEnv(names: readonly string[]): string | undefined {
   for (const name of names) {
@@ -79,8 +104,8 @@ function firstNonEmptyEnv(names: readonly string[]): string | undefined {
   return undefined;
 }
 
-function resolveOpenAiCompatToken(): string {
-  const token = firstNonEmptyEnv(OPENAI_COMPAT_TOKEN_ENV);
+function resolveOpenAiCompatToken(baseUrl: string): string {
+  const token = firstNonEmptyEnv(tokenEnvOrderForBaseUrl(baseUrl));
   if (token === undefined) {
     throw new InjectionSuiteHostFault(
       "openai-compat requires OPENAI_API_KEY or NVIDIA_API_KEY",
@@ -124,8 +149,8 @@ export async function completeChat(
   const timeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const model = options.model ?? DEFAULT_OLLAMA_MODEL;
   if (options.kind === "openai-compat") {
-    const token = resolveOpenAiCompatToken();
     const base = trimSlash(options.baseUrl ?? DEFAULT_OPENAI_COMPAT_BASE_URL);
+    const token = resolveOpenAiCompatToken(base);
     const json = await postJson(
       `${base}/chat/completions`,
       {
