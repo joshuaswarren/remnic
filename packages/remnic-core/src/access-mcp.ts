@@ -687,8 +687,7 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      ...WEARABLES_MCP_TOOLS, ...MEETINGS_MCP_TOOLS, ...WHO_KNOWS_MCP_TOOLS, ...PROMOTION_CANDIDATES_MCP_TOOLS, ...LOCATION_MCP_TOOLS, ...STANDUP_MCP_TOOLS, ...DEEP_RECALL_MCP_TOOLS,
-      ...(service.recallNavigationEnabled !== false ? RECALL_NAVIGATION_MCP_TOOLS : []),
+      ...WEARABLES_MCP_TOOLS, ...MEETINGS_MCP_TOOLS, ...WHO_KNOWS_MCP_TOOLS, ...PROMOTION_CANDIDATES_MCP_TOOLS, ...LOCATION_MCP_TOOLS, ...STANDUP_MCP_TOOLS, ...DEEP_RECALL_MCP_TOOLS, ...(service.recallNavigationEnabled !== false ? RECALL_NAVIGATION_MCP_TOOLS : []),
       ...(service.supportPassportEnabled ? SUPPORT_PASSPORT_MCP_TOOLS : []),
       {
         name: "engram.action_confidence",

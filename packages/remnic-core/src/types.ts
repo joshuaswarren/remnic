@@ -690,8 +690,7 @@ export interface PluginConfig
     SecurityConfig,
     DriftDetectionSettings,
     ActiveContextConfigFields,
-    DeepRecallSettings,
-    RecallNavigationSettings {
+    DeepRecallSettings, RecallNavigationSettings {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
   model: string;

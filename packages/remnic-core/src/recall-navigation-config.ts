@@ -33,6 +33,14 @@ export const RECALL_NAVIGATION_CONFIG_DEFAULTS: RecallNavigationConfig = {
   maxNeighbors: 10,
 };
 
+/** Record served ids when display handles or navigation authority needs them. */
+export function shouldRecordRecallAuthorityHistory(config: {
+  recallMemoryHandles?: boolean;
+  recallNavigation?: { enabled?: boolean };
+}): boolean {
+  return config.recallMemoryHandles === true || config.recallNavigation?.enabled === true;
+}
+
 function parseFlag(src: Record<string, unknown>, key: string, fallback: boolean): boolean {
   const value = src[key];
   if (value === undefined || value === null) return fallback;
@@ -74,6 +82,11 @@ export function parseRecallNavigationConfig(raw: unknown): RecallNavigationConfi
     throw new Error(`recallNavigation must be an object; got ${JSON.stringify(raw)}`);
   }
   const src = raw as Record<string, unknown>;
+  const { enabled: _enabled, windowSnapshots: _windowSnapshots, maxNeighbors: _maxNeighbors, ...unknown } = src;
+  const unknownKey = Object.keys(unknown)[0];
+  if (unknownKey !== undefined) {
+    throw new Error(`recallNavigation contains unknown key ${JSON.stringify(unknownKey)}`);
+  }
   return {
     enabled: parseFlag(src, "enabled", RECALL_NAVIGATION_CONFIG_DEFAULTS.enabled),
     windowSnapshots: parseBoundedInt(

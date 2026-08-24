@@ -111,27 +111,29 @@ async function respondNavigation(
     namespace: scope.namespace,
     authenticatedPrincipal: scope.authenticatedPrincipal,
   });
-  respondJson(res, 200, result);
+  const { rendered: _rendered, ...payload } = result;
+  respondJson(res, 200, payload);
 }
 
-export async function respondMemoryExpand(
+export async function maybeRespondRecallNavigation(
   req: IncomingMessage,
   res: ServerResponse,
+  pathname: string,
+  method: string | undefined,
+  enforceTokenOp: (op: "memory_expand" | "memory_traverse") => void,
   respondJson: RespondJson,
   readJsonBody: ReadJsonBody,
   service: EngramAccessService,
   scopeFor: ScopeFor,
-): Promise<void> {
-  await respondNavigation(req, res, respondJson, readJsonBody, service, scopeFor, "expand");
-}
-
-export async function respondMemoryTraverse(
-  req: IncomingMessage,
-  res: ServerResponse,
-  respondJson: RespondJson,
-  readJsonBody: ReadJsonBody,
-  service: EngramAccessService,
-  scopeFor: ScopeFor,
-): Promise<void> {
-  await respondNavigation(req, res, respondJson, readJsonBody, service, scopeFor, "traverse");
+): Promise<boolean> {
+  const action =
+    method === "POST" && (pathname === "/engram/v1/memory/expand" || pathname === "/remnic/v1/memory/expand")
+      ? "expand" as const
+      : method === "POST" && (pathname === "/engram/v1/memory/traverse" || pathname === "/remnic/v1/memory/traverse")
+        ? "traverse" as const
+        : undefined;
+  if (action === undefined) return false;
+  enforceTokenOp(action === "expand" ? "memory_expand" : "memory_traverse");
+  await respondNavigation(req, res, respondJson, readJsonBody, service, scopeFor, action);
+  return true;
 }

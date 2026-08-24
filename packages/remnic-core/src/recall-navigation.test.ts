@@ -14,6 +14,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { EngramAccessInputError } from "./access-errors.js";
+import { renderHandle } from "./recall-handles.js";
 import { runRecallNavigation, type RecallNavigationDeps } from "./recall-navigation.js";
 import { RECALL_NAVIGATION_CONFIG_DEFAULTS } from "./recall-navigation-config.js";
 import { RecallHandleHistoryStore } from "./recall-state.js";
@@ -224,7 +225,7 @@ test("traverse filters by relation, clamps limits, and skips foreign-namespace t
 });
 
 test("budget caps expansion output and reports disclosure spend", async () => {
-  const f = await fixture({ recallBudgetChars: 40 });
+  const f = await fixture({ recallBudgetChars: 800 });
   try {
     const storage = f.storages.default!;
     const long = "x".repeat(500);
@@ -238,13 +239,13 @@ test("budget caps expansion output and reports disclosure spend", async () => {
       disclosure: "raw",
     });
     assert.ok(result.ok);
-    assert.equal(result.budget.chars, 40);
-    assert.ok(result.budget.used <= 40, `used ${result.budget.used} must respect the cap`);
+    assert.equal(result.budget.chars, 800);
+    const { rendered: _rendered, ...structured } = result;
+    assert.equal(result.budget.used, JSON.stringify(structured).length);
+    assert.ok(result.budget.used <= 800, `used ${result.budget.used} must respect the cap`);
     assert.ok(result.truncated);
-    const item = result.items[0]!;
-    assert.ok((item.preview.length + (item.content?.length ?? 0)) <= 40);
     assert.equal(result.disclosureSpend.raw.count, 1);
-    assert.match(result.rendered, /- budget: \d+\/40 chars \(truncated\)/);
+    assert.match(result.rendered, /- budget: \d+\/800 chars \(truncated\)/);
     assert.match(result.rendered, /- disclosure spend: chunk=\d+t, section=\d+t, raw=\d+t/);
   } finally {
     await f.cleanup();
@@ -316,6 +317,88 @@ test("disabled config and missing sessionKey are explicit refusals", async () =>
       }),
       /positive integer/,
     );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("expand resolves a documented [m:xxxx] handle before the authority check", async () => {
+  const f = await fixture();
+  try {
+    const storage = f.storages.default!;
+    const id = await writeMemory(storage, "Handle-cited memory body.");
+    await f.history.record(SESSION, [id]);
+    const viaHandle = await runRecallNavigation(f.depsFor(), {
+      action: "expand",
+      memoryId: renderHandle(id),
+      sessionKey: SESSION,
+      disclosure: "raw",
+    });
+    assert.ok(viaHandle.ok);
+    assert.equal(viaHandle.memoryId, id);
+    assert.match(viaHandle.items[0]?.content ?? "", /Handle-cited/);
+
+    const unknown = await runRecallNavigation(f.depsFor(), {
+      action: "expand",
+      memoryId: "[m:dead]",
+      sessionKey: SESSION,
+      disclosure: "raw",
+    });
+    assert.ok(!unknown.ok);
+    assert.equal(unknown.error, "not_served");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("traverse truncated is true when the relation set exceeds the limit", async () => {
+  const f = await fixture();
+  try {
+    const storage = f.storages.default!;
+    const a = await writeMemory(storage, "Neighbor A.");
+    const b = await writeMemory(storage, "Neighbor B.");
+    const c = await writeMemory(storage, "Neighbor C.");
+    const source = await writeMemory(storage, "Source with three follows.", {
+      links: [
+        { targetId: a, linkType: "follows", strength: 0.9 },
+        { targetId: b, linkType: "follows", strength: 0.8 },
+        { targetId: c, linkType: "follows", strength: 0.7 },
+      ],
+    });
+    await f.history.record(SESSION, [source]);
+    const limited = await runRecallNavigation(f.depsFor(), {
+      action: "traverse",
+      memoryId: source,
+      sessionKey: SESSION,
+      limit: 1,
+    });
+    assert.ok(limited.ok);
+    assert.equal(limited.items.length, 1);
+    assert.equal(limited.truncated, true, "limit truncation must survive a budget that fits the kept neighbor");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("budget used is the serialized payload size including metadata, not preview+content twice", async () => {
+  const f = await fixture({ recallBudgetChars: 1800 });
+  try {
+    const storage = f.storages.default!;
+    const id = await writeMemory(storage, "Serialized budget body.");
+    await f.history.record(SESSION, [id]);
+    const result = await runRecallNavigation(f.depsFor(), {
+      action: "expand",
+      memoryId: id,
+      sessionKey: SESSION,
+      disclosure: "raw",
+    });
+    assert.ok(result.ok);
+    const { rendered: _rendered, ...structured } = result;
+    const serialized = JSON.stringify(structured);
+    assert.equal(result.budget.used, serialized.length);
+    assert.ok(result.budget.used <= result.budget.chars);
+    const bodyChars = (result.items[0]?.preview.length ?? 0) + (result.items[0]?.content?.length ?? 0);
+    assert.ok(result.budget.used > bodyChars, "metadata must count toward used");
   } finally {
     await f.cleanup();
   }

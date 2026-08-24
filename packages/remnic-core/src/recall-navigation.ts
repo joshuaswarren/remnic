@@ -21,6 +21,8 @@
  */
 
 import { EngramAccessInputError, shapeMemorySummary, type EngramAccessMemorySummary } from "./access-service.js";
+import { parseIdOrHandle, resolveHandle } from "./recall-handles.js";
+import { takeNavigateBudget } from "./recall-navigate-budget.js";
 import { estimateRecallTokens, summarizeDisclosureTokens, type RecallXrayDisclosureSummary } from "./recall-xray.js";
 import { assertIdInNavigationWindow } from "./recall-navigate-window.js";
 import { parseNavigateLinkType } from "./recall-navigate-link.js";
@@ -134,36 +136,107 @@ function toNavigationItem(
   return item;
 }
 
-/** Greedy budget fill: keeps whole items while they fit; the cap is a hard ceiling. */
+/** Greedy fill against JSON.stringify of the structured result (no rendered). */
 function applyBudget(
-  items: NavigationItem[],
-  budgetChars: number,
+  request: RecallNavigationRequest,
+  extras: { memoryId: string; namespace: string; items: NavigationItem[]; truncated: boolean; budgetChars: number },
 ): { items: NavigationItem[]; truncated: boolean; used: number } {
   const kept: NavigationItem[] = [];
-  let used = 0;
-  for (const item of items) {
-    const cost = item.preview.length + (item.content !== undefined ? item.content.length : 0);
-    if (used + cost > budgetChars) {
-      if (kept.length === 0 && cost > budgetChars && item.content !== undefined) {
-        // Single oversized expansion: shrink preview to a fifth of the
-        // budget and content to the remainder, so the combined payload
-        // respects the cap rather than returning nothing.
-        const previewLen = Math.min(item.preview.length, Math.floor(budgetChars / 5));
-        const contentLen = Math.max(0, budgetChars - previewLen);
-        kept.push({
-          ...item,
-          preview: item.preview.slice(0, previewLen),
-          content: item.content.slice(0, contentLen),
-        });
-        used = previewLen + Math.min(item.content.length, contentLen);
-        return { items: kept, truncated: true, used };
+  let truncated = extras.truncated;
+  for (const item of extras.items) {
+    const candidate = [...kept, item];
+    const cost = structuredCost(request, extras, candidate, truncated);
+    if (!takeNavigateBudget(extras.budgetChars, cost).ok) {
+      if (kept.length === 0) {
+        const shrunk = shrinkItemToBudget(request, extras, item);
+        if (shrunk !== undefined) {
+          return finalizeBudget(request, extras, [shrunk], true);
+        }
       }
-      return { items: kept, truncated: true, used };
+      truncated = true;
+      break;
     }
     kept.push(item);
-    used += cost;
   }
-  return { items: kept, truncated: false, used };
+  return finalizeBudget(request, extras, kept, truncated);
+}
+
+function finalizeBudget(
+  request: RecallNavigationRequest,
+  extras: { memoryId: string; namespace: string; budgetChars: number },
+  items: NavigationItem[],
+  truncated: boolean,
+): { items: NavigationItem[]; truncated: boolean; used: number } {
+  let kept = items;
+  let flag = truncated;
+  let used = measuredUsed(request, extras, kept, flag);
+  while (used > extras.budgetChars && kept.length > 0) {
+    kept = kept.slice(0, -1);
+    flag = true;
+    used = measuredUsed(request, extras, kept, flag);
+  }
+  return { items: kept, truncated: flag, used };
+}
+
+function structuredBody(
+  request: RecallNavigationRequest,
+  extras: { memoryId: string; namespace: string; budgetChars: number },
+  items: NavigationItem[],
+  truncated: boolean,
+  used: number,
+) {
+  return {
+    ok: true as const,
+    action: request.action,
+    memoryId: extras.memoryId,
+    namespace: extras.namespace,
+    items,
+    truncated,
+    budget: { chars: extras.budgetChars, used },
+    disclosureSpend: summarizeDisclosureTokens(
+      items.map((item) => ({ disclosure: item.disclosure, estimatedTokens: item.estimatedTokens })),
+    ),
+  };
+}
+
+function structuredCost(
+  request: RecallNavigationRequest,
+  extras: { memoryId: string; namespace: string; budgetChars: number },
+  items: NavigationItem[],
+  truncated: boolean,
+  used = 0,
+): number {
+  return JSON.stringify(structuredBody(request, extras, items, truncated, used)).length;
+}
+
+function measuredUsed(
+  request: RecallNavigationRequest,
+  extras: { memoryId: string; namespace: string; budgetChars: number },
+  items: NavigationItem[],
+  truncated: boolean,
+): number {
+  return structuredCost(request, extras, items, truncated, structuredCost(request, extras, items, truncated));
+}
+
+function shrinkItemToBudget(
+  request: RecallNavigationRequest,
+  extras: { memoryId: string; namespace: string; budgetChars: number },
+  item: NavigationItem,
+): NavigationItem | undefined {
+  let preview = item.preview;
+  let content = item.content ?? "";
+  const hasContent = item.content !== undefined;
+  while (preview.length > 0 || content.length > 0) {
+    const candidate: NavigationItem = hasContent
+      ? { ...item, preview, content }
+      : { ...item, preview };
+    if (takeNavigateBudget(extras.budgetChars, structuredCost(request, extras, [candidate], true)).ok) {
+      return candidate;
+    }
+    if (content.length > 0) content = content.slice(0, Math.max(0, content.length - 16));
+    else preview = preview.slice(0, Math.max(0, preview.length - 16));
+  }
+  return undefined;
 }
 
 function errorResult(
@@ -176,23 +249,32 @@ function errorResult(
 
 function successResult(
   request: RecallNavigationRequest,
-  extras: { memoryId: string; namespace: string; items: NavigationItem[]; truncated: boolean; budgetChars: number; used: number },
+  extras: { memoryId: string; namespace: string; items: NavigationItem[]; truncated: boolean; budgetChars: number },
 ): RecallNavigationResult {
-  const disclosureSpend = summarizeDisclosureTokens(
-    extras.items.map((item) => ({ disclosure: item.disclosure, estimatedTokens: item.estimatedTokens })),
-  );
-  const result: RecallNavigationResult = {
-    ok: true,
-    action: request.action,
-    memoryId: extras.memoryId,
-    namespace: extras.namespace,
-    items: extras.items,
-    truncated: extras.truncated,
-    budget: { chars: extras.budgetChars, used: extras.used },
-    disclosureSpend,
-    rendered: "",
-  };
+  const budgeted = applyBudget(request, extras);
+  const result = structuredBody(request, extras, budgeted.items, budgeted.truncated, budgeted.used);
   return { ...result, rendered: renderNavigationResult(result) };
+}
+
+function resolveRequestedMemoryId(
+  request: RecallNavigationRequest,
+  snapshots: ReadonlyArray<readonly string[]>,
+  windowSnapshots: number,
+): { ok: true; memoryId: string } | { ok: false } {
+  const parsed = parseIdOrHandle(request.memoryId);
+  if (!parsed.isHandle) return { ok: true, memoryId: parsed.value };
+  const resolved = resolveHandle(
+    request.memoryId,
+    snapshots.map((memoryIds) => ({ memoryIds })),
+    windowSnapshots,
+  );
+  if (resolved.ok) return { ok: true, memoryId: resolved.memoryId };
+  if (resolved.reason === "ambiguous") {
+    throw new EngramAccessInputError(
+      `Memory handle ${request.memoryId} is ambiguous in session ${request.sessionKey}: ${resolved.candidates.join(", ")}. Cite a unique memory id instead.`,
+    );
+  }
+  return { ok: false };
 }
 
 function clampLimit(requested: number | undefined, ceiling: number): number {
@@ -228,9 +310,18 @@ export async function runRecallNavigation(
     clampLimit(request.limit, deps.config.maxNeighbors);
   }
   const windowSnapshots = deps.config.windowSnapshots;
+  const servedIds = deps.recentServedIds(sessionKey, windowSnapshots);
+  const resolved = resolveRequestedMemoryId(request, servedIds, windowSnapshots);
+  if (!resolved.ok) {
+    return errorResult(
+      request,
+      "not_served",
+      `memory ${request.memoryId} was not served to session ${sessionKey} within the last ${windowSnapshots} recall snapshots; run recall first`,
+    );
+  }
   const authority = assertIdInNavigationWindow({
-    snapshots: deps.recentServedIds(sessionKey, windowSnapshots).map((servedIds) => ({ servedIds })),
-    memoryId: request.memoryId,
+    snapshots: servedIds.map((ids) => ({ servedIds: ids })),
+    memoryId: resolved.memoryId,
     windowSnapshots,
   });
   if (!authority.ok) {
@@ -263,8 +354,13 @@ export async function runRecallNavigation(
       return errorResult(request, step.error, message);
     }
     const summary = shapeMemorySummary(memory, storage.dir, target);
-    const budgeted = applyBudget([toNavigationItem(summary)], deps.recallBudgetChars);
-    return successResult(request, { memoryId, namespace, ...budgeted, budgetChars: deps.recallBudgetChars });
+    return successResult(request, {
+      memoryId,
+      namespace,
+      items: [toNavigationItem(summary)],
+      truncated: false,
+      budgetChars: deps.recallBudgetChars,
+    });
   }
 
   if (request.action === "traverse") {
@@ -299,8 +395,13 @@ export async function runRecallNavigation(
       if (!neighborMemory) continue;
       items.push(toNavigationItem(shapeMemorySummary(neighborMemory, storage.dir, "chunk"), { linkType: neighbor.linkType }));
     }
-    const budgeted = applyBudget(items, deps.recallBudgetChars);
-    return successResult(request, { memoryId, namespace, ...budgeted, budgetChars: deps.recallBudgetChars });
+    return successResult(request, {
+      memoryId,
+      namespace,
+      items,
+      truncated: selection.truncated,
+      budgetChars: deps.recallBudgetChars,
+    });
   }
 
   // entity_neighbors: memories sharing the source memory's entityRef, capped
@@ -308,7 +409,7 @@ export async function runRecallNavigation(
   // an honest answer, not an error).
   const entityRef = memory.frontmatter.entityRef?.trim();
   if (!entityRef) {
-    return successResult(request, { memoryId, namespace, items: [], truncated: false, used: 0, budgetChars: deps.recallBudgetChars });
+    return successResult(request, { memoryId, namespace, items: [], truncated: false, budgetChars: deps.recallBudgetChars });
   }
   const window = await storage.readMemoriesWindow();
   const candidates: NavigationItem[] = [];
@@ -318,6 +419,11 @@ export async function runRecallNavigation(
     candidates.push(toNavigationItem(shapeMemorySummary(candidate, storage.dir, "chunk")));
     if (candidates.length >= clampLimit(request.limit, deps.config.maxNeighbors)) break;
   }
-  const budgeted = applyBudget(candidates, deps.recallBudgetChars);
-  return successResult(request, { memoryId, namespace, ...budgeted, budgetChars: deps.recallBudgetChars });
+  return successResult(request, {
+    memoryId,
+    namespace,
+    items: candidates,
+    truncated: false,
+    budgetChars: deps.recallBudgetChars,
+  });
 }
