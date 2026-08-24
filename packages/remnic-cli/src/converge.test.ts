@@ -608,6 +608,62 @@ test("remnic converge apply: uses chunked offline-sync HTTP contracts for pull a
   assert.equal(new Headers(pushRequest.init?.headers).get("x-remnic-file-bytes"), String(localContent.length));
 });
 
+test("remnic converge apply: an aborted signal stops transfer batches instead of continuing to mutate", async () => {
+  const originalConcurrency = process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY;
+  process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = "1";
+  try {
+    const controller = new AbortController();
+    const pushes: string[] = [];
+    const requestSignals: Array<unknown> = [];
+    const mkFile = (name: string) => {
+      const content = Buffer.from(`local body ${name}`);
+      return { content, sha256: createHash("sha256").update(content).digest("hex") };
+    };
+    const files = [mkFile("one"), mkFile("two"), mkFile("three")];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes("/offline-sync/apply-file-content")) {
+        pushes.push(url);
+        requestSignals.push(init?.signal);
+        // The operator hits Ctrl+C while the FIRST transfer is in flight.
+        controller.abort();
+        return Response.json({ done: true, applied: true, skipped: false });
+      }
+      return new Response(null, { status: 404 });
+    };
+    await assert.rejects(
+      executeConvergeApply({
+        peerUrl: "https://peer.example.test",
+        fetchImpl,
+        signal: controller.signal,
+        localFilesByNamespace: new Map([
+          [
+            "default",
+            files.map((file, index) => ({
+              path: `facts/local-${index}.md`,
+              sha256: file.sha256,
+              bytes: file.content.length,
+              mtimeMs: 1000,
+            })),
+          ],
+        ]),
+        peerFilesByNamespace: new Map([["default", []]]),
+        localFileBuffers: new Map([
+          ["default", new Map(files.map((file, index) => [`facts/local-${index}.md`, file.content]))],
+        ]),
+      }),
+      (error: unknown) => error instanceof Error && /abort/i.test(error.message)
+    );
+    // Only the in-flight transfer reached the wire; the remaining entries
+    // and the convergence finalization never mutated the peer.
+    assert.equal(pushes.length, 1);
+    assert.ok(requestSignals[0], "apply-file-content request must carry the abort signal");
+  } finally {
+    if (originalConcurrency === undefined) delete process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY;
+    else process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = originalConcurrency;
+  }
+});
+
 test("remnic converge apply: a newer local deletion uses the guarded remote delete contract", async () => {
   const filePath = "facts/deleted-locally.md";
   const peerContent = Buffer.from("peer v2");

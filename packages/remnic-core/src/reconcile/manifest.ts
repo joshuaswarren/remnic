@@ -30,6 +30,18 @@ export const CONTENT_HASH_NORMALIZER_VERSION = 4;
  */
 export const IDENTITY_RESOLUTION_VERSION = 2;
 
+/**
+ * Identity of the manifest-affecting implementation this peer builds
+ * STREAMED manifests with. Advertised via offline-sync capabilities so the
+ * client can key peer-side plan caches on it: a peer that upgrades its
+ * normalization logic or citation template without rewriting stored files
+ * keeps the same file hashes, and only this revision invalidates the stale
+ * cached identities (#2803 / #2956 review).
+ */
+export function peerManifestRevision(citationTemplate?: string): string {
+  return `schema=${RECONCILE_MANIFEST_SCHEMA_VERSION};normalizer=${CONTENT_HASH_NORMALIZER_VERSION};identity=${IDENTITY_RESOLUTION_VERSION};citation=${citationTemplateFingerprint(citationTemplate)}`;
+}
+
 export interface ReconcileMemoryIdentity {
   id: string;
   category: string;
