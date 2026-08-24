@@ -180,13 +180,12 @@ function normalizeMetricAggregate(
     reject(`${where} must be a finite number or an object with a finite mean number`);
   }
 
-  const hasAllFields =
+  if (
     rawMedian !== undefined &&
     rawStdDev !== undefined &&
     rawMin !== undefined &&
-    rawMax !== undefined;
-
-  if (hasAllFields) {
+    rawMax !== undefined
+  ) {
     return {
       mean,
       median: rawMedian,
