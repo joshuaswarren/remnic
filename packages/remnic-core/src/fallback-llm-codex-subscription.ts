@@ -1,8 +1,9 @@
 /**
  * Codex-subscription helpers for FallbackLlmClient (issue #2833).
  *
- * Terminal error classification and the `api: "codex-cli"` provider attempt
- * live here so fallback-llm.ts stays generic chain orchestration.
+ * Terminal error classification, the `api: "codex-cli"` provider attempt,
+ * and Codex runner/lifecycle helpers live here so fallback-llm.ts stays
+ * generic chain orchestration.
  */
 
 import { raceAbort } from "./abort-error.js";
@@ -15,6 +16,7 @@ import {
   CodexSubscriptionTimeoutError,
   assertNoApiKeyConfig,
   ensureCodexSubscriptionRunnerRegistered,
+  getCodexSubscriptionShutdownSignal,
   isDefaultRegisteredCodexSubscriptionRunner,
 } from "./providers/codex-subscription.js";
 import type { ModelProviderConfig } from "./types.js";
@@ -145,4 +147,22 @@ export async function tryCodexSubscriptionProvider(
   }
   ensureCodexSubscriptionRunnerRegistered();
   return await callCodexCliFallback(effectiveConfig, model.modelId, messages, callOptions);
+}
+
+export function abortReason(signal: AbortSignal | undefined): Error {
+  const reason = signal?.reason;
+  return reason instanceof Error ? reason : new Error("fallback LLM request aborted");
+}
+
+export function withCodexRuntimeShutdown<T extends { signal?: AbortSignal }>(
+  options: T,
+  runner: CodexCliFallbackRunner | undefined,
+): T {
+  if (!runner) return options;
+  const shutdown = getCodexSubscriptionShutdownSignal(runner);
+  if (!shutdown) return options;
+  return {
+    ...options,
+    signal: options.signal ? AbortSignal.any([options.signal, shutdown]) : shutdown,
+  };
 }

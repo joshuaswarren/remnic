@@ -17,13 +17,14 @@ import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   codexSubscriptionBuiltinProviderConfig,
   getCodexSubscriptionRunnerForOwner,
-  getCodexSubscriptionShutdownSignal,
 } from "./providers/codex-subscription.js";
 import { loadModelsJsonProviders } from "./models-json.js";
 import {
+  abortReason,
   isTerminalCodexSubscriptionError,
   raceFallbackLlmDeadline,
   tryCodexSubscriptionProvider,
+  withCodexRuntimeShutdown,
 } from "./fallback-llm-codex-subscription.js";
 import type { CodexCliFallbackRunner } from "./cli-fallback.js";
 import { resolveHomeDir } from "./runtime/env.js";
@@ -1139,24 +1140,6 @@ export class FallbackLlmClient {
         : undefined,
     };
   }
-}
-
-function abortReason(signal: AbortSignal | undefined): Error {
-  const reason = signal?.reason;
-  return reason instanceof Error ? reason : new Error("fallback LLM request aborted");
-}
-
-function withCodexRuntimeShutdown(
-  options: FallbackLlmOptions,
-  runner: CodexCliFallbackRunner | undefined,
-): FallbackLlmOptions {
-  if (!runner) return options;
-  const shutdown = getCodexSubscriptionShutdownSignal(runner);
-  if (!shutdown) return options;
-  return {
-    ...options,
-    signal: options.signal ? AbortSignal.any([options.signal, shutdown]) : shutdown,
-  };
 }
 
 function normalizeRuntimePath(value: unknown): string | undefined {
