@@ -2813,6 +2813,11 @@ export function parseConfig(
       cfg.inlineSourceAttributionFormat.trim().length > 0
         ? cfg.inlineSourceAttributionFormat
         : "[Source: agent={agent}, session={sessionId}, ts={ts}]",
+    inlineSourceAttributionFormatHistory: Array.isArray(cfg.inlineSourceAttributionFormatHistory)
+      ? (cfg.inlineSourceAttributionFormatHistory as unknown[])
+          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          .map((value) => value.trim())
+      : [],
     consolidationRequireNonZeroExtraction: cfg.consolidationRequireNonZeroExtraction !== false,
     // Issue #678 PR 2/4: dreams.phases.rem.minIntervalMs WINS when set.
     consolidationMinIntervalMs: dreamsRem.minIntervalMs,

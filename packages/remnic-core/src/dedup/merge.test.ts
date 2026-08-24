@@ -3377,9 +3377,9 @@ test("applySemanticMergeAtPersist: a prior-template marker is preserved and stri
     topLevelConfig: {
       inlineSourceAttributionEnabled: true,
       inlineSourceAttributionFormat: CURRENT,
+      inlineSourceAttributionFormatHistory: [PRIOR],
     },
   });
-  Object.assign(h.deps.config, { inlineSourceAttributionFormatHistory: [PRIOR] });
   await h.setTargetContent(`${EXISTING} ${PRIOR_CIT}`);
   const outcome = await applySemanticMergeAtPersist(h.deps, {
     storage: h.storage,

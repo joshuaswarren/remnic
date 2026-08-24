@@ -175,6 +175,7 @@ test("parseConfig disables inline source attribution by default", () => {
     cfg.inlineSourceAttributionFormat,
     "[Source: agent={agent}, session={sessionId}, ts={ts}]",
   );
+  assert.deepEqual(cfg.inlineSourceAttributionFormatHistory, []);
 });
 
 test("parseConfig honors explicit inline source attribution overrides", () => {
@@ -198,6 +199,22 @@ test("parseConfig falls back to default format when override is empty", () => {
     cfg.inlineSourceAttributionFormat,
     "[Source: agent={agent}, session={sessionId}, ts={ts}]",
   );
+});
+
+test("parseConfig keeps inlineSourceAttributionFormatHistory when format is normalized", () => {
+  const prior = "[src:{agent}/{sessionId}@{date}]";
+  const current = "[via:{agent}]";
+  const cfg = parseConfig({
+    inlineSourceAttributionFormat: "   ",
+    inlineSourceAttributionFormatHistory: [prior, "", 12, "  ", current],
+  });
+  assert.equal(cfg.inlineSourceAttributionFormat, DEFAULT_CITATION_FORMAT);
+  assert.deepEqual(cfg.inlineSourceAttributionFormatHistory, [prior, current]);
+  assert.deepEqual(citationTemplatesForMerge(cfg), [
+    DEFAULT_CITATION_FORMAT,
+    prior,
+    current,
+  ]);
 });
 
 // ── Finding 1 regression: custom citation template dedup detection ────────────
