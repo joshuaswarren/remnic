@@ -3,34 +3,34 @@ import test from "node:test";
 
 import { resolveJournalSource } from "./journal-source.js";
 
-test("source file resolves to file mode", () => {
-  assert.deepEqual(resolveJournalSource({ source: "file", heading: "" }), {
+test("source memoryDir resolves to memoryDir mode", () => {
+  assert.deepEqual(resolveJournalSource({ source: "memoryDir" }), {
     ok: true,
-    mode: "file",
+    mode: "memoryDir",
   });
 });
 
-test("source vault with a heading resolves to vault mode", () => {
-  assert.deepEqual(resolveJournalSource({ source: "vault", heading: "Journal" }), {
+test("source vault resolves to vault mode", () => {
+  assert.deepEqual(resolveJournalSource({ source: "vault" }), {
     ok: true,
     mode: "vault",
-    heading: "Journal",
   });
 });
 
-test("source vault with an empty heading is missing_heading", () => {
-  assert.deepEqual(resolveJournalSource({ source: "vault", heading: "" }), {
-    ok: false,
-    error: "missing_heading",
-  });
-  assert.deepEqual(resolveJournalSource({ source: "vault", heading: "   " }), {
-    ok: false,
-    error: "missing_heading",
+test("legacy source file aliases memoryDir", () => {
+  assert.deepEqual(resolveJournalSource({ source: "file" }), {
+    ok: true,
+    mode: "memoryDir",
+    deprecatedAlias: "file",
   });
 });
 
 test("unknown source is unknown_source", () => {
-  assert.deepEqual(resolveJournalSource({ source: "memoryDir", heading: "Journal" }), {
+  assert.deepEqual(resolveJournalSource({ source: "" }), {
+    ok: false,
+    error: "unknown_source",
+  });
+  assert.deepEqual(resolveJournalSource({ source: "disk" }), {
     ok: false,
     error: "unknown_source",
   });

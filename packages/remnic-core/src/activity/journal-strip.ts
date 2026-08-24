@@ -4,13 +4,19 @@
  * Loop prevention for vault journals: before daily-note text is treated
  * as journal text, every managed marker region and every configured
  * owned heading section is removed, so published output can never
- * re-enter the journal. An unterminated start marker fails closed and
- * strips to the end of the section. Pure string-in/string-out. No
- * filesystem. Heading lines parse through the SAME exported ATX
- * parser the journal-section reader uses, so a heading the reader
- * recognizes is always a heading this stripper strips.
+ * re-enter the journal. Pure string-in/string-out. No filesystem.
+ *
+ * Fail-closed marker semantics — a partial Remnic region is NEVER kept:
+ *  - an unterminated start marker strips to the end of the section and
+ *    records a warning;
+ *  - an end marker with no matching start (a pair split across the
+ *    journal-section boundary) strips everything before it in the
+ *    section, so pre-section published output cannot leak in, and
+ *    records a warning.
+ * Heading lines parse through the SAME exported ATX parser the
+ * journal-section reader uses, so a heading the reader recognizes is
+ * always a heading this stripper strips.
  */
-
 import { parseAtxHeading } from "./journal-section.js";
 
 const MARKER_OPEN = "<!-- remnic:";
@@ -18,16 +24,23 @@ const MARKER_CLOSE = "-->";
 const START_SUFFIX = ":start";
 const END_SUFFIX = ":end";
 
+export interface StripResult {
+  text: string;
+  warnings: readonly string[];
+}
+
 type RegionMarker = { kind: "start" | "end"; name: string };
 
 export function stripRemnicOwnedRegions(
   sectionText: string,
   ownedHeadings: readonly string[],
-): string {
-  return stripOwnedHeadings(stripMarkerRegions(sectionText), ownedHeadings);
+): StripResult {
+  const warnings: string[] = [];
+  const marked = stripMarkerRegions(sectionText, warnings);
+  return { text: stripOwnedHeadings(marked, ownedHeadings), warnings };
 }
 
-function stripMarkerRegions(text: string): string {
+function stripMarkerRegions(text: string, warnings: string[]): string {
   const lines = text.split("\n");
   const keep = lines.map(() => true);
   let openName: string | null = null;
@@ -40,8 +53,20 @@ function stripMarkerRegions(text: string): string {
     }
     if (marker) {
       keep[i] = false;
-      if (marker.kind === "start") openName = marker.name;
+      if (marker.kind === "start") {
+        openName = marker.name;
+      } else {
+        for (let j = 0; j < i; j++) keep[j] = false;
+        // Stray end marker: the matching start lives outside this section
+        // (a pair split across the section boundary). Everything before it
+        // in the section is presumed published output — fail closed.
+        warnings.push(`unmatched remnic region end "${marker.name}"`);
+
+      }
     }
+  }
+  if (openName !== null) {
+    warnings.push(`unclosed remnic region "${openName}"`);
   }
   return emitKeptLines(lines, keep);
 }

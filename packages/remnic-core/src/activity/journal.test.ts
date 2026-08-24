@@ -32,44 +32,95 @@ test("activity.timeline.journal.enabled defaults off", () => {
   );
 });
 
-test("activity.timeline.journal source defaults to file with no heading", () => {
+test("activity.timeline.journal source defaults to memoryDir with extraction off", () => {
   const journal = parseActivityConfig(undefined).timeline.journal;
-  assert.equal(journal.source, "file");
-  assert.equal(journal.heading, undefined);
+  assert.deepEqual(journal, { enabled: false, source: "memoryDir", extractionMode: "off" });
 });
 
-test("activity.timeline.journal vault mode trims and stores the heading", () => {
-  const journal = parseActivityConfig({ timeline: { journal: { enabled: true, source: "vault", heading: " Journal " } } }).timeline.journal;
-  assert.deepEqual(journal, { enabled: true, source: "vault", heading: "Journal" });
+const VAULT_OK = {
+  enabled: true,
+  vaultPath: "/vault",
+  readback: { journalSection: "Journal" },
+};
+
+test("activity.timeline.journal vault mode parses with prerequisites satisfied", () => {
+  const journal = parseActivityConfig({
+    timeline: { journal: { enabled: true, source: "vault" }, vault: VAULT_OK },
+  }).timeline.journal;
+  assert.deepEqual(journal, { enabled: true, source: "vault", extractionMode: "off" });
 });
 
-test("activity.timeline.journal vault mode requires a non-empty heading", () => {
-  for (const heading of [undefined, "", "   "]) {
-    assert.throws(
-      () => parseActivityConfig({ timeline: { journal: { source: "vault", heading } } }),
-      RangeError,
-    );
+function captureError(fn: () => unknown): Error {
+  try {
+    fn();
+  } catch (err) {
+    return err as Error;
   }
+  throw new Error("expected parseActivityConfig to throw");
+}
+
+test("activity.timeline.journal vault mode names every missing prerequisite", () => {
+  const err = captureError(() => parseActivityConfig({ timeline: { journal: { source: "vault" } } }));
+  assert.ok(err instanceof RangeError);
+  assert.match(err.message, /vault\.readback\.journalSection/);
+});
+
+test("activity.timeline.journal vault mode with only the section set still names vault.enabled and dailyNotePath", () => {
+  const err = captureError(() =>
+    parseActivityConfig({
+      timeline: { journal: { source: "vault" }, vault: { readback: { journalSection: "Diary" } } },
+    }),
+  );
+  assert.ok(err instanceof RangeError);
+  assert.doesNotMatch(err.message, /journalSection/);
+  assert.match(err.message, /vault\.enabled/);
+});
+
+test("activity.timeline.journal aliases source file to memoryDir", () => {
+  const journal = parseActivityConfig({ timeline: { journal: { source: "file" } } }).timeline.journal;
+  assert.equal(journal.source, "memoryDir");
 });
 
 test("activity.timeline.journal rejects an unknown source", () => {
   assert.throws(
-    () => parseActivityConfig({ timeline: { journal: { source: "memoryDir" } } }),
-    /activity\.timeline\.journal\.source must be one of "file", "vault"/,
+    () => parseActivityConfig({ timeline: { journal: { source: "disk" } } }),
+    /activity\.timeline\.journal\.source must be one of "memoryDir", "vault"/,
   );
 });
 
-test("activity.timeline.journal rejects a non-string heading", () => {
+test("activity.timeline.journal.heading fills vault.readback.journalSection when the new key is absent", () => {
+  const vault = parseActivityConfig({
+    timeline: { journal: { heading: "  Diary  " }, vault: { readback: { journalSection: "" } } },
+  }).timeline.vault;
+  assert.equal(vault.readback.journalSection, "Diary");
+});
+
+test("activity.timeline.vault.readback.journalSection wins over journal.heading", () => {
+  const vault = parseActivityConfig({
+    timeline: {
+      journal: { heading: "Diary" },
+      vault: { readback: { journalSection: "Journal" } },
+    },
+  }).timeline.vault;
+  assert.equal(vault.readback.journalSection, "Journal");
+});
+
+
+test("activity.timeline.journal extractionMode allows off and review only", () => {
+  for (const extractionMode of ["off", "review"]) {
+    const journal = parseActivityConfig({
+      timeline: { journal: { extractionMode } },
+    }).timeline.journal;
+    assert.equal(journal.extractionMode, extractionMode);
+  }
   assert.throws(
-    () => parseActivityConfig({ timeline: { journal: { heading: 5 } } }),
-    /activity\.timeline\.journal\.heading must be a string/,
+    () => parseActivityConfig({ timeline: { journal: { extractionMode: "auto" } } }),
+    /activity\.timeline\.journal\.extractionMode must be one of "off", "review"/,
   );
-});
-
-test("activity.timeline.journal file mode ignores a provided heading", () => {
-  const journal = parseActivityConfig({ timeline: { journal: { source: "file", heading: "Ignored" } } }).timeline.journal;
-  assert.deepEqual(journal, { enabled: false, source: "file" });
-  assert.equal("heading" in journal, false);
+  assert.throws(
+    () => parseActivityConfig({ timeline: { journal: { extractionMode: "smart" } } }),
+    /activity\.timeline\.journal\.extractionMode must be one of "off", "review"/,
+  );
 });
 
 test("seed is a hard no-op without force", () => {

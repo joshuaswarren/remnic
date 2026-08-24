@@ -3,9 +3,8 @@
  *
  * Pure: no I/O, no clock — the day comes from the caller. The source is
  * validated through the journal-source parser, so `structuredAttributes.
- * journalSource` is always a canonical journal source value ("file" |
- * "vault"), never a re-declared copy of the allow-list. Exported helper;
- * caller wiring into journal memory generation is a later slice.
+ * journalSource` is always a canonical journal source value ("memoryDir"
+ * | "vault"), never a re-declared copy of the allow-list.
  */
 import { resolveJournalSource } from "./journal-source.js";
 
@@ -26,15 +25,10 @@ export function buildJournalMemoryProvenance(input: {
   if (typeof input.source !== "string") {
     throw new RangeError("journal provenance source must be a string");
   }
-  const resolved = resolveJournalSource({
-    source: input.source,
-    // Provenance never consumes the heading; vault mode just requires a
-    // non-empty one to resolve.
-    heading: "journal",
-  });
+  const resolved = resolveJournalSource({ source: input.source });
   if (!resolved.ok) {
     throw new RangeError(
-      `journal provenance source must be one of "file", "vault": ${JSON.stringify(input.source)}`,
+      `journal provenance source must be one of "memoryDir", "vault": ${JSON.stringify(input.source)}`,
     );
   }
 

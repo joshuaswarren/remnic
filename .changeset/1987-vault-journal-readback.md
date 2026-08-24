@@ -1,0 +1,7 @@
+---
+"@remnic/core": minor
+"@remnic/cli": minor
+"@remnic/plugin-openclaw": minor
+---
+
+Vault daily-note journal read-back (#1987). `activity.timeline.journal.source: "vault"` reads the journal for a day from the `activity.timeline.vault.readback.journalSection` heading of the vault daily note instead of `journal/<date>.md`; `timeline.journal.extractionMode: "review"` adds a review-only extraction pass, wired into the CLI as `remnic journal extract --date <day>` (requires `"review"`; reports pending_review/rejected_by_judge/skipped counts; unchanged days hash-skip; candidates are never auto-approved). Read-back is strictly read-only, strips every Remnic-owned region before treating text as journal content (loop prevention, fail-closed on split/unclosed marker regions), and records `journalSource` provenance on every candidate. `timeline.journal.enabled` gates every journal action before any read, and an omitted `--date` derives from `activity.timezone` rather than the host clock. Legacy `timeline.journal.source: "file"` is accepted as a deprecated alias of `"memoryDir"`, and legacy `timeline.journal.heading` fills `vault.readback.journalSection` when the new key is absent (the new key wins if both are set). Both aliases emit deprecation warnings. The plugin-openclaw entry covers the manifest-only `configSchema` updates (journal source/extractionMode enums, `vault.readback` block) mirrored into the shim and root manifests, which otherwise ride along unreleased until the next plugin bump.

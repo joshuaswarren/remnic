@@ -17,7 +17,7 @@ test("AdapterRegistry returns null when no adapter matches", () => {
 test("AdapterRegistry lists registered adapter IDs", () => {
   const registry = new AdapterRegistry();
   const ids = registry.list();
-  assert.deepEqual(ids, ["hermes", "replit", "codex", "claude-code"]);
+  assert.deepEqual(ids, ["hermes", "replit", "codex", "claude-code", "grok", "opencode"]);
 });
 
 test("AdapterRegistry resolves first matching adapter (Hermes before Claude Code)", () => {
