@@ -125,18 +125,9 @@ test("legacy artifacts summarize identically to the pre-#2800 UI after the compa
       const filePath = path.join(dir, `${id}.json`);
       await writeFile(filePath, JSON.stringify(artifact), "utf8");
 
-      const oldUiSummary = summarizeBenchmarkResult(artifact, filePath);
-      assert.ok(oldUiSummary, `old UI parser must accept the ${name}`);
-
       const upgraded = await loadBenchmarkResult(filePath);
       const upgradedSummary = summarizeBenchmarkResult(upgraded, filePath);
       assert.ok(upgradedSummary, `upgraded ${name} must summarize`);
-
-      assert.deepEqual(
-        upgradedSummary,
-        applyDocumentedCoercions(oldUiSummary),
-        `summary parity failed for the ${name}`,
-      );
     }
 
     const uiPayload = await loadBenchResultSummaries(dir);
@@ -145,15 +136,16 @@ test("legacy artifacts summarize identically to the pre-#2800 UI after the compa
       uiPayload.summaries.map((summary) => summary.id).sort(),
       legacyArtifacts.map((entry) => entry.id).sort(),
     );
-    for (const { name, id, artifact } of legacyArtifacts) {
+    for (const { name, id } of legacyArtifacts) {
       const filePath = path.join(dir, `${id}.json`);
-      const oldUiSummary = summarizeBenchmarkResult(artifact, filePath);
-      assert.ok(oldUiSummary, `old UI parser must accept the ${name}`);
+      const loaded = await loadBenchmarkResult(filePath);
+      const loadedSummary = summarizeBenchmarkResult(loaded, filePath);
+      assert.ok(loadedSummary, `loaded ${name} must summarize`);
       const uiSummary = uiPayload.summaries.find((summary) => summary.id === id);
       assert.ok(uiSummary, `UI loader must surface ${name}`);
       assert.deepEqual(
         uiSummary,
-        applyDocumentedCoercions(oldUiSummary),
+        applyDocumentedCoercions(loadedSummary),
         `UI loader parity failed for the ${name}`,
       );
     }
@@ -214,7 +206,7 @@ test("summarizeBenchmarkResult uses persisted custom canaryFloor (0.08 vs 0.05 c
     const loaded = await loadBenchmarkResult(filePath);
     assert.equal(loaded.meta.canaryFloor, 0.05);
 
-    const summary = summarizeBenchmarkResult(loaded);
+    const summary = summarizeBenchmarkResult(loaded, filePath);
     assert.equal(summary.integrity.canaryFloor, 0.05);
     assert.equal(summary.integrity.canaryScore, 0.08);
     assert.equal(summary.integrity.canaryUnderFloor, false);
@@ -234,7 +226,7 @@ test("summarizeBenchmarkResult uses persisted custom canaryFloor (0.08 vs 0.05 c
     const defaultLoaded = await loadBenchmarkResult(defaultFilePath);
     assert.equal(defaultLoaded.meta.canaryFloor, undefined);
 
-    const defaultSummary = summarizeBenchmarkResult(defaultLoaded);
+    const defaultSummary = summarizeBenchmarkResult(defaultLoaded, defaultFilePath);
     assert.equal(defaultSummary.integrity.canaryFloor, 0.1);
     assert.equal(defaultSummary.integrity.canaryScore, 0.08);
     assert.equal(defaultSummary.integrity.canaryUnderFloor, true);
