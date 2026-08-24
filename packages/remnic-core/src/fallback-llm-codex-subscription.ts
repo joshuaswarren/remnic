@@ -15,6 +15,7 @@ import {
   CodexSubscriptionTimeoutError,
   assertNoApiKeyConfig,
   ensureCodexSubscriptionRunnerRegistered,
+  isDefaultRegisteredCodexSubscriptionRunner,
 } from "./providers/codex-subscription.js";
 import type { ModelProviderConfig } from "./types.js";
 
@@ -133,9 +134,10 @@ export async function tryCodexSubscriptionProvider(
       : Math.max(1, options.timeoutMs - Math.min(100, Math.max(5, Math.floor(options.timeoutMs / 5)))),
     signal: options.signal,
   };
-  // A host/benchmark runner on the process seam still wins. Otherwise use
-  // the owning runtime's runner so shutdown cannot kill another instance.
-  if (isCodexCliFallbackRunnerRegistered()) {
+  // A host/benchmark runner on the process seam still wins. The core
+  // default runner does not: prefer the owning runtime so shutdown
+  // terminates the request that runtime started.
+  if (isCodexCliFallbackRunnerRegistered() && !(runner && isDefaultRegisteredCodexSubscriptionRunner())) {
     return await callCodexCliFallback(effectiveConfig, model.modelId, messages, callOptions);
   }
   if (runner) {

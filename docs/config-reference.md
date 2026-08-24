@@ -857,13 +857,14 @@ Behavior:
   path), so the login precheck and the exec child always see the same auth
   home. Detached Codex child process groups are tracked by the owning
   runtime's runner. The owning server or plugin runtime invokes
-  `terminateActiveCodexSubscriptionChildren` on its own runner at shutdown,
+  `beginCodexSubscriptionShutdown` on its own runner at shutdown,
   so stopping one Remnic instance cannot kill another instance's in-flight
-  subscription requests. The provider does not install process signal
+  subscription requests. A SIGKILL timer starts before orchestrator drain.
+  The provider does not install process signal
   listeners or call `process.exit`.
-- A host or benchmark run that registers its own `codex-cli` transport
-  always wins; Remnic registers its subprocess transport only when the seam
-  is free.
+  A host or benchmark run that registers its own `codex-cli` transport
+  always wins; the core default process runner does not override a
+  runtime-owned runner.
 
 ### Setup
 

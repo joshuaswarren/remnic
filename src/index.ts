@@ -16,7 +16,7 @@ import {
   sanitizeSessionKeyForFilename,
   defaultWorkspaceDir,
 } from "@remnic/core/orchestrator";
-import { getCodexSubscriptionRunnerForOwner, terminateActiveCodexSubscriptionChildren } from "@remnic/core";
+import { beginCodexSubscriptionShutdown, getCodexSubscriptionRunnerForOwner } from "@remnic/core";
 import { registerTools } from "./tools.js";
 import { registerLcmTools } from "@remnic/core/lcm/index";
 import { estimateTokens as estimateLcmTokens } from "@remnic/core/lcm/archive";
@@ -5556,13 +5556,14 @@ const pluginDefinition = {
           // entries leaked across gateway reloads. The global slot is cleared
           // (identity-guarded) so a subsequent start() constructs a fresh
           // orchestrator instead of reusing a destroyed one.
+          const finishCodex = beginCodexSubscriptionShutdown(getCodexSubscriptionRunnerForOwner(cfg));
           try {
-            terminateActiveCodexSubscriptionChildren("SIGTERM", getCodexSubscriptionRunnerForOwner(cfg));
             await orchestrator.destroy();
           } catch (err) {
             log.debug(`engram orchestrator destroy on stop failed: ${err}`);
+          } finally {
+            finishCodex();
           }
-          terminateActiveCodexSubscriptionChildren("SIGKILL", getCodexSubscriptionRunnerForOwner(cfg));
           if ((globalThis as any)[keys.ORCHESTRATOR] === orchestrator) {
             delete (globalThis as any)[keys.ORCHESTRATOR];
           }

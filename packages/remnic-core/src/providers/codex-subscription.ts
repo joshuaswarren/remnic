@@ -26,7 +26,7 @@ import type {
   CodexCliFallbackResult,
   CodexCliFallbackRunner,
 } from "../cli-fallback.js";
-import { isCodexCliFallbackRunnerRegistered, normalizeCodexCliTimeoutMs, setCodexCliFallbackRunnerForProcess } from "../cli-fallback.js";
+import { getCodexCliFallbackRunnerForProcess, isCodexCliFallbackRunnerRegistered, normalizeCodexCliTimeoutMs, setCodexCliFallbackRunnerForProcess } from "../cli-fallback.js";
 import { log } from "../logger.js";
 import { launchProcess } from "../runtime/child-process.js";
 import type { CodexCliReasoningEffort, ModelProviderConfig } from "../types.js";
@@ -212,12 +212,14 @@ interface LoginStatusCacheEntry {
 const loginStatusCache = new Map<string, LoginStatusCacheEntry>();
 const childrenByRunner = new WeakMap<CodexCliFallbackRunner, Set<number>>();
 const runnerByOwner = new WeakMap<object, CodexCliFallbackRunner>();
+const shutdownByRunner = new WeakMap<CodexCliFallbackRunner, AbortController>();
 let defaultRegisteredRunner: CodexCliFallbackRunner | undefined;
 let coreRunnerRegistered = false;
 
 export function createCodexSubscriptionRunner(deps: CodexSubscriptionRunnerDeps = {}): CodexCliFallbackRunner {
   const envSource = deps.env ?? process.env;
   const children = new Set<number>();
+  const shutdown = new AbortController();
   const runnerDeps: CodexSubscriptionRunnerDeps = {
     ...deps,
     runCodexExec: deps.runCodexExec ?? ((request) => runCodexExecSubprocess(request, children)),
@@ -226,9 +228,21 @@ export function createCodexSubscriptionRunner(deps: CodexSubscriptionRunnerDeps 
       ((executable, env, timeoutMs, signal) =>
         runLoginStatusSubprocess(executable, env, timeoutMs, signal, children)),
   };
-  const runner: CodexCliFallbackRunner = (request) =>
-    runCodexSubscriptionRequest(request, runnerDeps, envSource);
+  const runner: CodexCliFallbackRunner = (request) => {
+    const signal = request.options.signal
+      ? AbortSignal.any([request.options.signal, shutdown.signal])
+      : shutdown.signal;
+    if (signal.aborted) {
+      return Promise.reject(abortErrorOf(signal));
+    }
+    return runCodexSubscriptionRequest(
+      { ...request, options: { ...request.options, signal } },
+      runnerDeps,
+      envSource,
+    );
+  };
   childrenByRunner.set(runner, children);
+  shutdownByRunner.set(runner, shutdown);
   return runner;
 }
 
@@ -257,6 +271,12 @@ export function ensureCodexSubscriptionRunnerRegistered(deps: CodexSubscriptionR
   return true;
 }
 
+/** True when the process seam still holds the core default runner. */
+export function isDefaultRegisteredCodexSubscriptionRunner(): boolean {
+  return defaultRegisteredRunner !== undefined
+    && getCodexCliFallbackRunnerForProcess() === defaultRegisteredRunner;
+}
+
 /** Host shutdown hook: terminate this runtime's detached Codex children. Does not exit. */
 export function terminateActiveCodexSubscriptionChildren(
   signal: NodeJS.Signals = "SIGTERM",
@@ -264,11 +284,31 @@ export function terminateActiveCodexSubscriptionChildren(
 ): void {
   const target = runner ?? defaultRegisteredRunner;
   if (!target) return;
+  const shutdown = shutdownByRunner.get(target);
+  if (shutdown && !shutdown.signal.aborted) {
+    shutdown.abort(new DOMException("The operation was aborted.", "AbortError"));
+  }
   const pids = childrenByRunner.get(target);
   if (!pids) return;
   for (const pid of pids) {
     terminateCodexChildPid(pid, signal);
   }
+}
+
+/** SIGTERM now, SIGKILL after a bound, even if the caller later awaits drain. */
+export function beginCodexSubscriptionShutdown(
+  runner?: CodexCliFallbackRunner,
+  forceKillAfterMs = 1_000,
+): () => void {
+  terminateActiveCodexSubscriptionChildren("SIGTERM", runner);
+  const timer = setTimeout(() => {
+    terminateActiveCodexSubscriptionChildren("SIGKILL", runner);
+  }, forceKillAfterMs);
+  timer.unref();
+  return () => {
+    clearTimeout(timer);
+    terminateActiveCodexSubscriptionChildren("SIGKILL", runner);
+  };
 }
 async function runCodexSubscriptionRequest(
   request: CodexCliFallbackRequest,
@@ -749,8 +789,7 @@ function usageFrom(result: CodexSubscriptionExecResult): CodexSubscriptionUsage 
     },
   };
 }
-/** Parses `turn.completed` usage events from codex exec JSONL output.
- * Mirrors the bench parser (core cannot import the optional bench package). */
+
 export function parseCodexJsonlUsage(output: string): { inputTokens: number; outputTokens: number } | undefined {
   let usage: { inputTokens: number; outputTokens: number } | undefined;
   for (const line of output.split(/\r?\n/)) {
@@ -789,7 +828,7 @@ function abortErrorOf(signal: AbortSignal): Error {
       : signal.reason !== undefined
         ? new Error(String(signal.reason))
         : new DOMException("The operation was aborted.", "AbortError");
-  const match = /timed out after (\d+)ms/i.exec(reason.message);
+  const match = /fallback LLM timed out after (\d+)ms/i.exec(reason.message);
   if (match) {
     return new CodexSubscriptionTimeoutError(Number(match[1]));
   }
@@ -924,7 +963,7 @@ async function runSubprocess(executable: string, args: string[], options: Subpro
           : String(options.signal?.reason ?? "");
       terminate("SIGTERM");
       scheduleForcedKill();
-      if (TIMEOUT_PATTERN.test(reasonText)) {
+      if (/fallback LLM timed out after \d+ms/i.test(reasonText)) {
         settleTimeout();
         return;
       }
