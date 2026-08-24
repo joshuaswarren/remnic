@@ -24,11 +24,8 @@ test("root typecheck covers package tsconfigs", () => {
 
   assert.match(rootCheckTypes, /\bnode scripts\/pnpm\.mjs --filter @remnic\/core build\b/);
   assert.match(rootCheckTypes, /\btsc --noEmit\b/);
-  assert.match(rootCheckTypes, /\bnode scripts\/pnpm\.mjs --recursive\b/);
-  assert.match(rootCheckTypes, /--if-present/);
-  assert.match(rootCheckTypes, /--filter="\.\/packages\/\*"/);
-  assert.doesNotMatch(rootCheckTypes, /--filter '\.\/packages\/\*'/);
-  assert.match(rootCheckTypes, /\brun check-types\b/);
+  assert.match(rootCheckTypes, /\bnode scripts\/check-type-packages\.mjs --run\b/);
+  assert.doesNotMatch(rootCheckTypes, /\bnode scripts\/pnpm\.mjs --recursive\b/);
 
   const packagesDir = join(repoRoot, "packages");
   const packageNamesWithTsconfig = readdirSync(packagesDir, { withFileTypes: true })
