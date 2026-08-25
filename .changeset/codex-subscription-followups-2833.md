@@ -17,7 +17,8 @@ patterns in mixed output, a timed-out child that traps SIGTERM and exits 0
 still reports `TimeoutError`, and terminal typed provider errors
 (timeout/auth/config) survive `FallbackLlmClient` chain exhaustion instead
 of collapsing into a generic empty result. Detached Codex child process
-groups are tracked by the owning runtime runner. Shutdown prefers that
+groups are tracked by the owning runtime runner. The owning server or plugin
+runtime invokes the exported cleanup on shutdown. Shutdown prefers that
 owner over the core default process runner, recreates the owner runner
 after abort so a reused config can start again, starts the SIGKILL timer
 before HTTP close and orchestrator drain, and aborts the fallback chain
