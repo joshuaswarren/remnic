@@ -9,8 +9,8 @@ import {
   deriveObjectiveStateSnapshotsFromObservedMessages,
   recordObjectiveStateSnapshotsFromAgentMessages,
   recordObjectiveStateSnapshotsFromObservedMessages,
-} from "../src/objective-state-writers.js";
-import { getObjectiveStateStoreStatus } from "../src/objective-state.js";
+} from "@remnic/core/objective-state-writers";
+import { getObjectiveStateStoreStatus } from "@remnic/core/objective-state";
 import type { LcmMessagePartInput } from "@remnic/core";
 
 type ObservedMessagesInput = {

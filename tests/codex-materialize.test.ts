@@ -11,8 +11,8 @@ import {
   SENTINEL_FILE,
   TMP_DIR,
   MATERIALIZE_VERSION,
-} from "../src/connectors/codex-materialize.js";
-import type { MemoryFile } from "../src/types.js";
+} from "@remnic/core/connectors/codex-materialize";
+import type { MemoryFile } from "@remnic/core/types";
 
 // Synthetic memory factory — NEVER use real user data in tests.
 function makeMemory(overrides: {

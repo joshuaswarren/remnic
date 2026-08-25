@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { registerTools } from "../src/tools.js";
-import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "../src/write-envelope.js";
+import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "@remnic/core/write-envelope";
 
 // Sealed-write stub fidelity (issue #1989 PR2; AGENTS.md §21): production
 // callers now write via `writeSealedMemory`. Test doubles keep stubbing

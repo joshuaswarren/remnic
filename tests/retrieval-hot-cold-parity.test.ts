@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import { StorageManager } from "../src/storage.js";
-import type { QmdSearchResult } from "../src/types.js";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import { StorageManager } from "@remnic/core/storage";
+import type { QmdSearchResult } from "@remnic/core/types";
 
 test("cold fallback excludes artifact paths from generic relevant memory recall", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cold-artifact-parity-"));

@@ -9,8 +9,8 @@ import {
   resolveObjectiveStateStoreDir,
   searchObjectiveStateSnapshots,
   validateObjectiveStateSnapshot,
-} from "../src/objective-state.js";
-import { runObjectiveStateStatusCliCommand } from "../src/cli.js";
+} from "@remnic/core/objective-state";
+import { runObjectiveStateStatusCliCommand } from "@remnic/core/cli";
 
 test("objective-state config path resolves under memoryDir by default", () => {
   assert.equal(

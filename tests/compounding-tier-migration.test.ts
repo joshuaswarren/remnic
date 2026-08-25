@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { parseConfig } from "../src/config.js";
-import { CompoundingEngine } from "../src/compounding/engine.js";
+import { parseConfig } from "@remnic/core/config";
+import { CompoundingEngine } from "@remnic/core/compounding/engine";
 
 function tmpDir(prefix: string): string {
   return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);

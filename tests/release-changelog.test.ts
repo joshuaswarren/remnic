@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { promoteUnreleasedChangelog } from "../src/release-changelog.ts";
+import { promoteUnreleasedChangelog } from "@remnic/core/release-changelog";
 
 test("promoteUnreleasedChangelog moves unreleased entries into a dated release section", () => {
   const input = `# Changelog

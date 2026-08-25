@@ -1,16 +1,16 @@
 import test from "node:test";
-import type { QmdSearchResult } from "../src/types.js";
-import type { GraphIndex } from "../src/graph.js";
+import type { QmdSearchResult } from "@remnic/core/types";
+import type { GraphIndex } from "@remnic/core/graph";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
+import { parseConfig } from "@remnic/core/config";
 import {
   Orchestrator,
   graphPathRelativeToStorage,
   mergeGraphExpandedResults,
-} from "../src/orchestrator.js";
+} from "@remnic/core/orchestrator";
 
 test("mergeGraphExpandedResults deduplicates by path and keeps better score", () => {
   const primary = [

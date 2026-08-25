@@ -8,13 +8,13 @@ import {
   learnUtilityPromotionWeights,
   readUtilityLearningSnapshot,
   resolveUtilityLearningStatePath,
-} from "../src/utility-learner.js";
-import { recordUtilityTelemetryEvent } from "../src/utility-telemetry.js";
+} from "@remnic/core/utility-learner";
+import { recordUtilityTelemetryEvent } from "@remnic/core/utility-telemetry";
 import {
   registerCli,
   runUtilityLearningCliCommand,
   runUtilityLearningStatusCliCommand,
-} from "../src/cli.js";
+} from "@remnic/core/cli";
 
 async function recordEvent(
   memoryDir: string,

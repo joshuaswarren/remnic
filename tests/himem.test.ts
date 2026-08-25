@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import {
   classifyMemoryKind,
   type MemoryKind,
-} from "../src/himem.js";
+} from "@remnic/core/himem";
 
 // ── classifyMemoryKind ─────────────────────────────────────────────────────
 

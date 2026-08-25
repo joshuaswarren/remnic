@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
 
-import { exportCapsule } from "../src/transfer/capsule-export.js";
+import { exportCapsule } from "@remnic/core/transfer/capsule-export";
 import {
   CAPSULE_ID_PATTERN,
   ExportBundleV2Schema,
   parseExportBundle,
   parseExportManifest,
-} from "../src/transfer/types.js";
+} from "@remnic/core/transfer/types";
 
 interface FixtureFile {
   rel: string;

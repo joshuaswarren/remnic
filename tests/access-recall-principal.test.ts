@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { EngramAccessHttpServer } from "../src/access-http.js";
-import { EngramMcpServer } from "../src/access-mcp.js";
+import { EngramAccessHttpServer } from "@remnic/core/access-http";
+import { EngramMcpServer } from "@remnic/core/access-mcp";
 import type {
   EngramAccessRecallRequest,
   EngramAccessRecallResponse,

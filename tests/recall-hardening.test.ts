@@ -3,15 +3,15 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
-import { Orchestrator } from "../src/orchestrator.js";
-import { parseConfig } from "../src/config.js";
-import type { RecallSectionBuckets } from "../src/orchestration/recall-section-coordinator.js";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import { parseConfig } from "@remnic/core/config";
+import type { RecallSectionBuckets } from "@remnic/core/orchestration/recall-section-coordinator";
 import {
   buildQmdRecallCacheKey,
   clearQmdRecallCache,
   getCachedQmdRecall,
   setCachedQmdRecall,
-} from "../src/qmd-recall-cache.js";
+} from "@remnic/core/qmd-recall-cache";
 
 async function makeOrchestrator(
   prefix: string,

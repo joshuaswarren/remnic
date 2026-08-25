@@ -3,16 +3,16 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { appendFile, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { StorageManager } from "../src/storage.ts";
-import type { MemoryLifecycleEvent } from "../src/types.ts";
+import { StorageManager } from "@remnic/core/storage";
+import type { MemoryLifecycleEvent } from "@remnic/core/types";
 import {
   backupExistingLedger,
   boundLifecycleEventsToByteCap,
   rebuildMemoryLifecycleLedger,
-} from "../src/maintenance/rebuild-memory-lifecycle-ledger.ts";
+} from "@remnic/core/maintenance/rebuild-memory-lifecycle-ledger";
 import {
   memoryLifecycleLedgerLockPath,
-} from "../src/memory-lifecycle-ledger-utils.ts";
+} from "@remnic/core/memory-lifecycle-ledger-utils";
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const full = path.join(baseDir, relPath);

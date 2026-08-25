@@ -30,11 +30,11 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { Orchestrator } from "../src/orchestrator.js";
-import { parseConfig } from "../src/config.js";
-import { resolveNamespaceStorageRoot } from "../src/namespaces/storage.js";
-import type { BufferTurn, ExtractionResult, PluginConfig } from "../src/types.js";
-import { MaintenanceScheduler } from "../src/orchestration/maintenance.js";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import { parseConfig } from "@remnic/core/config";
+import { resolveNamespaceStorageRoot } from "@remnic/core/namespaces/storage";
+import type { BufferTurn, ExtractionResult, PluginConfig } from "@remnic/core/types";
+import { MaintenanceScheduler } from "@remnic/core/orchestration/maintenance";
 
 // ── shared helpers ──────────────────────────────────────────────────────────
 

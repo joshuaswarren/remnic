@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { EngramMcpServer } from "../src/access-mcp.js";
+import { EngramMcpServer } from "@remnic/core/access-mcp";
 import type { EngramAccessService } from "../src/access-service.js";
 
 function fakeService(capture: { calls: unknown[] }): EngramAccessService {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
+import { parseConfig } from "@remnic/core/config";
 import {
   hasInlineExplicitCaptureMarkup,
   parseInlineExplicitCaptureNotes,
@@ -15,11 +15,11 @@ import {
   validateExplicitCaptureInput,
   type ExplicitCaptureInput,
 } from "../src/explicit-capture.js";
-import { ContentHashIndex } from "../src/storage.js";
-import { Orchestrator } from "../src/orchestrator.js";
+import { ContentHashIndex } from "@remnic/core/storage";
+import { Orchestrator } from "@remnic/core/orchestrator";
 import { TurnIngestionCoordinator } from "../packages/remnic-core/src/orchestration/turn-ingestion.js";
 import { registerTools } from "../src/tools.js";
-import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "../src/write-envelope.js";
+import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "@remnic/core/write-envelope";
 
 // Sealed-write stub fidelity (issue #1989 PR2; AGENTS.md §21): production
 // callers now write via `writeSealedMemory`. Test doubles keep stubbing

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { EngramAccessHttpServer } from "../src/access-http.js";
+import { EngramAccessHttpServer } from "@remnic/core/access-http";
 import type { EngramAccessService } from "../src/access-service.js";
 
 function fakeService(capture: { calls: unknown[] }): EngramAccessService {

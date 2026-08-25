@@ -7,9 +7,9 @@ import {
   appendCausalTrajectoryGraphEdges,
   buildCausalTrajectoryGraphEdges,
   causalTrajectoryGraphNodeId,
-} from "../src/causal-trajectory-graph.js";
-import { readEdges } from "../src/graph.js";
-import { recordCausalTrajectory, type CausalTrajectoryRecord } from "../src/causal-trajectory.js";
+} from "@remnic/core/causal-trajectory-graph";
+import { readEdges } from "@remnic/core/graph";
+import { recordCausalTrajectory, type CausalTrajectoryRecord } from "@remnic/core/causal-trajectory";
 
 function buildRecord(overrides: Partial<CausalTrajectoryRecord> = {}): CausalTrajectoryRecord {
   return {

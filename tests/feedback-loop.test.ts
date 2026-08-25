@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { NegativeExampleStore } from "../src/negative.ts";
-import { LastRecallStore } from "../src/recall-state.ts";
-import { RelevanceStore } from "../src/relevance.ts";
+import { NegativeExampleStore } from "@remnic/core/negative";
+import { LastRecallStore } from "@remnic/core/recall-state";
+import { RelevanceStore } from "@remnic/core/relevance";
 
 async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
   const startedAt = Date.now();

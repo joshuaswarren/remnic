@@ -28,7 +28,7 @@ import {
   DEFAULT_REASONING_TRACE_BOOST,
 } from "../packages/remnic-core/src/reasoning-trace-recall.js";
 import { parseConfig } from "../packages/remnic-core/src/config.js";
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 
 describe("looksLikeProblemSolvingQuery", () => {
   it("accepts 'how do I' style starts", () => {

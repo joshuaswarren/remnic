@@ -8,8 +8,8 @@ import {
   resolveOpenClawWorkspaceStatePath,
   searchNativeKnowledge,
   type NativeKnowledgeChunk,
-} from "../src/native-knowledge.js";
-import type { NativeKnowledgeConfig } from "../src/types.js";
+} from "@remnic/core/native-knowledge";
+import type { NativeKnowledgeConfig } from "@remnic/core/types";
 
 function baseConfig(): NativeKnowledgeConfig {
   return {

@@ -9,8 +9,8 @@ import {
   materializeForNamespace,
   SENTINEL_FILE,
   MATERIALIZE_VERSION,
-} from "../src/connectors/codex-materialize.js";
-import type { MemoryFile } from "../src/types.js";
+} from "@remnic/core/connectors/codex-materialize";
+import type { MemoryFile } from "@remnic/core/types";
 
 function makeMemory(): MemoryFile {
   return {

@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 import {
   renderMemoryMd,
   validateMemoryMd,
-} from "../src/connectors/codex-materialize.js";
-import type { MemoryFile } from "../src/types.js";
+} from "@remnic/core/connectors/codex-materialize";
+import type { MemoryFile } from "@remnic/core/types";
 
 function makeMemory(overrides: {
   id?: string;

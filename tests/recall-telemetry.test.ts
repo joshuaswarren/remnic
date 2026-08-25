@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
-import { Orchestrator } from "../src/orchestrator.js";
-import { parseConfig } from "../src/config.js";
-import type { EngramTraceEvent, MemoryFile } from "../src/types.js";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import { parseConfig } from "@remnic/core/config";
+import type { EngramTraceEvent, MemoryFile } from "@remnic/core/types";
 
 async function makeOrchestrator(prefix: string): Promise<Orchestrator> {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), prefix));

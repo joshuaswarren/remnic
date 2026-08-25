@@ -1,8 +1,8 @@
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { FallbackLlmClient } from "../src/fallback-llm.ts";
-import { clearModelsJsonCache, __setModelsJsonForTest } from "../src/models-json.ts";
-import type { GatewayConfig, ModelProviderConfig } from "../src/types.ts";
+import { FallbackLlmClient } from "@remnic/core/fallback-llm";
+import { clearModelsJsonCache, __setModelsJsonForTest } from "@remnic/core/models-json";
+import type { GatewayConfig, ModelProviderConfig } from "@remnic/core/types";
 
 /**
  * Helper: create a gateway config with explicit providers and a model chain.

@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator, type QueryAwarePrefilter } from "../src/orchestrator.js";
-import type { QmdSearchResult } from "../src/types.js";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator, type QueryAwarePrefilter } from "@remnic/core/orchestrator";
+import type { QmdSearchResult } from "@remnic/core/types";
 import { registerTools } from "../src/tools.ts";
 
 const EMPTY_PREFILTER = {

@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import {
   buildCompressionGuidelinesMarkdown,
   computeCompressionGuidelineCandidate,
-} from "../src/compression-optimizer.ts";
-import type { MemoryActionEvent } from "../src/types.ts";
+} from "@remnic/core/compression-optimizer";
+import type { MemoryActionEvent } from "@remnic/core/types";
 
 test("computeCompressionGuidelineCandidate is deterministic for fixed telemetry", () => {
   const events: MemoryActionEvent[] = [

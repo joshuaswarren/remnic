@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { computeArtifactCandidateFetchLimit, computeArtifactRecallLimit } from "../src/orchestrator.ts";
+import { computeArtifactCandidateFetchLimit, computeArtifactRecallLimit } from "@remnic/core/orchestrator";
 
 test("artifact recall limit is capped in minimal mode", () => {
   assert.equal(computeArtifactRecallLimit("minimal", 1, 5), 1);

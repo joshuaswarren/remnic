@@ -1,4 +1,4 @@
-import { runBenchmarkStoredBaselineCiGateCliCommand } from "../src/cli.js";
+import { runBenchmarkStoredBaselineCiGateCliCommand } from "@remnic/core/cli";
 
 function readArg(flag: string): string | undefined {
   const idx = process.argv.indexOf(flag);

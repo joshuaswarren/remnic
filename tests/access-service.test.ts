@@ -6,21 +6,21 @@ import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { EngramAccessInputError, EngramAccessService } from "../src/access-service.js";
-import { runMemoryGovernance } from "../src/maintenance/memory-governance.ts";
-import { rebuildMemoryProjection } from "../src/maintenance/rebuild-memory-projection.ts";
-import { getMemoryProjectionPath } from "../src/memory-projection-store.js";
-import { openBetterSqlite3 } from "../src/runtime/better-sqlite.js";
-import { getObjectiveStateStoreStatus } from "../src/objective-state.js";
+import { runMemoryGovernance } from "@remnic/core/maintenance/memory-governance";
+import { rebuildMemoryProjection } from "@remnic/core/maintenance/rebuild-memory-projection";
+import { getMemoryProjectionPath } from "@remnic/core/memory-projection-store";
+import { openBetterSqlite3 } from "@remnic/core/runtime/better-sqlite";
+import { getObjectiveStateStoreStatus } from "@remnic/core/objective-state";
 import {
   keyring,
   runSecureStoreInit,
   runSecureStoreUnlock,
   SecureStoreLockedError,
   type ScryptParams,
-} from "../src/secure-store/index.js";
-import { StorageManager } from "../src/storage.js";
-import { recordTrustZoneRecord } from "../src/trust-zones.ts";
-import { exportCapsule } from "../src/transfer/capsule-export.js";
+} from "@remnic/core/secure-store/index";
+import { StorageManager } from "@remnic/core/storage";
+import { recordTrustZoneRecord } from "@remnic/core/trust-zones";
+import { exportCapsule } from "@remnic/core/transfer/capsule-export";
 
 const FAST_SCRYPT: ScryptParams = {
   N: 1 << 10,

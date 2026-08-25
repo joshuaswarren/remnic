@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseConfig } from "../src/config.js";
-import { initLogger, type LoggerBackend } from "../src/logger.js";
+import { parseConfig } from "@remnic/core/config";
+import { initLogger, type LoggerBackend } from "@remnic/core/logger";
 
 function withLoggerWarnings(): { warnings: string[] } {
   const warnings: string[] = [];

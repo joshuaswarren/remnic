@@ -7,7 +7,7 @@ import {
   EngramAccessService,
   createConfiguredSupportPassportGatewayRoute,
 } from "../src/access-service.js";
-import { parseConfig } from "../src/config.js";
+import { parseConfig } from "@remnic/core/config";
 
 test("the OpenClaw access service injects its gateway route without a direct OpenAI key", async () => {
   const config = parseConfig({

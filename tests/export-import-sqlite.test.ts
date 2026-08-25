@@ -4,11 +4,11 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import os from "node:os";
 import path from "node:path";
 import { writeFixtureMemoryDir, writeSensitiveTransferFixtureEntries } from "./transfer-fixtures.js";
-import { exportSqlite } from "../src/transfer/export-sqlite.js";
-import { importSqlite } from "../src/transfer/import-sqlite.js";
-import { openBetterSqlite3 } from "../src/runtime/better-sqlite.js";
-import { sha256String } from "../src/transfer/fs-utils.js";
-import { SQLITE_SCHEMA_VERSION, SQLITE_TABLES_SQL } from "../src/transfer/sqlite-schema.js";
+import { exportSqlite } from "@remnic/core/transfer/export-sqlite";
+import { importSqlite } from "@remnic/core/transfer/import-sqlite";
+import { openBetterSqlite3 } from "@remnic/core/runtime/better-sqlite";
+import { sha256String } from "@remnic/core/transfer/fs-utils";
+import { SQLITE_SCHEMA_VERSION, SQLITE_TABLES_SQL } from "@remnic/core/transfer/sqlite-schema";
 
 async function assertPathMissing(filePath: string): Promise<void> {
   await assert.rejects(access(filePath), { code: "ENOENT" });

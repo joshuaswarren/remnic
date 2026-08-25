@@ -1,5 +1,5 @@
 import test from "node:test";
-import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "../src/write-envelope.js";
+import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "@remnic/core/write-envelope";
 import assert from "node:assert/strict";
 import { registerTools } from "../src/tools.ts";
 

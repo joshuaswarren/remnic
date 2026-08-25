@@ -4,7 +4,7 @@ import {
   buildBehaviorSignalHash,
   buildBehaviorSignalsForMemory,
   dedupeBehaviorSignalsByMemoryAndHash,
-} from "../src/behavior-signals.ts";
+} from "@remnic/core/behavior-signals";
 
 test("corrections generate negative override signals", () => {
   const signals = buildBehaviorSignalsForMemory({

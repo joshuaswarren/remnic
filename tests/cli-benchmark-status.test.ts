@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { runBenchmarkStatusCliCommand } from "../src/cli.js";
+import { runBenchmarkStatusCliCommand } from "@remnic/core/cli";
 
 test("benchmark-status reports empty eval store safely", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-evals-empty-"));

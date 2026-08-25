@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
-import { WorkStorage } from "../src/work/storage.js";
+import { WorkStorage } from "@remnic/core/work/storage";
 
 test("work storage task CRUD persists owner and status metadata", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-work-storage-task-"));

@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { BoxFrontmatter } from "../src/boxes.js";
-import { parseBoxFrontmatter } from "../src/boxes.js";
+import type { BoxFrontmatter } from "@remnic/core/boxes";
+import { parseBoxFrontmatter } from "@remnic/core/boxes";
 
 describe("episodic box metadata", () => {
   it("BoxFrontmatter includes goal field", () => {

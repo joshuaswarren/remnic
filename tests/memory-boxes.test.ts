@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { BoxBuilder, topicOverlapScore, parseBoxFrontmatter, BOX_DIR } from "../src/boxes.js";
+import { BoxBuilder, topicOverlapScore, parseBoxFrontmatter, BOX_DIR } from "@remnic/core/boxes";
 
 async function makeTmp(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "engram-boxes-"));

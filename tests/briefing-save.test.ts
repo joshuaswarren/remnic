@@ -5,7 +5,7 @@ import path from "node:path";
 import {
   resolveBriefingSaveDir,
   briefingFilename,
-} from "../src/briefing.js";
+} from "@remnic/core/briefing";
 
 // ──────────────────────────────────────────────────────────────────────────
 // resolveBriefingSaveDir

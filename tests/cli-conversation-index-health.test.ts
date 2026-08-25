@@ -7,9 +7,9 @@ import {
   runConversationIndexHealthCliCommand,
   runConversationIndexInspectCliCommand,
   runConversationIndexRebuildCliCommand,
-} from "../src/cli.js";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
+} from "@remnic/core/cli";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
 
 function tmpDir(prefix: string): string {
   return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);

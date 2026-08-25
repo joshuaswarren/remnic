@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { RoutingRulesStore } from "../src/routing/store.ts";
-import type { RouteRule } from "../src/routing/engine.ts";
+import { RoutingRulesStore } from "@remnic/core/routing/store";
+import type { RouteRule } from "@remnic/core/routing/engine";
 
 function sampleRule(overrides: Partial<RouteRule> = {}): RouteRule {
   return {

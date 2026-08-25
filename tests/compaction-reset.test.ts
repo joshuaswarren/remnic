@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile, readdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { sanitizeSessionKeyForFilename } from "../src/orchestrator.js";
+import { sanitizeSessionKeyForFilename } from "@remnic/core/orchestrator";
 
 function tmpDir(prefix: string): string {
   return path.join(

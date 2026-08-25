@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import os from "node:os";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
-import { StorageManager } from "../src/storage.js";
-import { TierMigrationExecutor } from "../src/tier-migration.js";
-import type { MemoryFile } from "../src/types.js";
-import type { SearchBackend } from "../src/search/port.js";
+import { StorageManager } from "@remnic/core/storage";
+import { TierMigrationExecutor } from "@remnic/core/tier-migration";
+import type { MemoryFile } from "@remnic/core/types";
+import type { SearchBackend } from "@remnic/core/search/port";
 
 type QmdCallLog = {
   updates: string[]; updateDirs?: Array<{ collection: string; memoryDir: string }>;

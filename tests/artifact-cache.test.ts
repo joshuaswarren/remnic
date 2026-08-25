@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 
 test("artifact cache supports immediate recall for newly written artifacts", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "openclaw-engram-artifact-cache-"));

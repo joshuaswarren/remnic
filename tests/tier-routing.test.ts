@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { computeTierValueScore, decideTierTransition } from "../src/tier-routing.js";
-import type { MemoryFile } from "../src/types.js";
+import { computeTierValueScore, decideTierTransition } from "@remnic/core/tier-routing";
+import type { MemoryFile } from "@remnic/core/types";
 
 function memory(
   overrides?: Partial<MemoryFile["frontmatter"]>,

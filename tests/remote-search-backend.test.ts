@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { RemoteSearchBackend } from "../src/search/remote-backend.js";
+import { RemoteSearchBackend } from "@remnic/core/search/remote-backend";
 
 function abortError(message: string): Error {
   const err = new Error(message);

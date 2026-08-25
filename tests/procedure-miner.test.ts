@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 import { parseConfig } from "../packages/remnic-core/src/config.ts";
 import { runProcedureMining } from "../packages/remnic-core/src/procedural/procedure-miner.ts";
 

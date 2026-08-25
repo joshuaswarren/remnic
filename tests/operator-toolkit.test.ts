@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { chmod, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
+import { parseConfig } from "@remnic/core/config";
 import {
   resolveCuratedIncludeFilesStatePath,
   resolveNativeKnowledgeStatePath,
   resolveOpenClawWorkspaceStatePath,
-} from "../src/native-knowledge.js";
-import { StorageManager } from "../src/storage.js";
+} from "@remnic/core/native-knowledge";
+import { StorageManager } from "@remnic/core/storage";
 import {
   runBenchmarkRecall,
   runOperatorConfigReview,
@@ -18,7 +18,7 @@ import {
   runOperatorRepair,
   runOperatorSetup,
   type OperatorToolkitOrchestrator,
-} from "../src/operator-toolkit.js";
+} from "@remnic/core/operator-toolkit";
 
 function openclawConfigDocument(pluginConfig: Record<string, unknown>): string {
   return JSON.stringify({

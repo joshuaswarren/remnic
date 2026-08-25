@@ -16,8 +16,8 @@ import {
   parseOperatorAwareConsolidationResponse,
   chooseConsolidationOperator,
   type ConsolidationCluster,
-} from "../src/semantic-consolidation.ts";
-import type { MemoryFile } from "../src/types.ts";
+} from "@remnic/core/semantic-consolidation";
+import type { MemoryFile } from "@remnic/core/types";
 
 function makeMemory(id: string, content: string, created = "2026-04-19T00:00:00Z"): MemoryFile {
   return {
@@ -255,7 +255,7 @@ test("parseOperatorAwareConsolidationResponse handles mixed-case operator values
 // values.
 
 test("operatorAwareConsolidationEnabled coerces string 'false' to disabled", async () => {
-  const { parseConfig } = await import("../src/config.ts");
+  const { parseConfig } = await import("@remnic/core/config");
   const parsed = parseConfig({ operatorAwareConsolidationEnabled: "false" } as any);
   assert.equal(parsed.operatorAwareConsolidationEnabled, false);
 });
@@ -265,13 +265,13 @@ test("operatorAwareConsolidationEnabled defaults to false when unset", async () 
   // aware prompt is opt-in so installs using older models don't hit
   // the JSON-format prompt by default.  When disabled, `derived_via`
   // still populates via the cluster-shape heuristic.
-  const { parseConfig } = await import("../src/config.ts");
+  const { parseConfig } = await import("@remnic/core/config");
   const parsed = parseConfig({});
   assert.equal(parsed.operatorAwareConsolidationEnabled, false);
 });
 
 test("operatorAwareConsolidationEnabled honors boolean false", async () => {
-  const { parseConfig } = await import("../src/config.ts");
+  const { parseConfig } = await import("@remnic/core/config");
   const parsed = parseConfig({ operatorAwareConsolidationEnabled: false });
   assert.equal(parsed.operatorAwareConsolidationEnabled, false);
 });
@@ -297,7 +297,7 @@ test("parseOperatorAwareConsolidationResponse rejects LLM-emitted pattern-reinfo
 
 test("isSemanticConsolidationLlmOperator excludes pattern-reinforcement", async () => {
   const { isSemanticConsolidationLlmOperator } = await import(
-    "../src/consolidation-operator.ts"
+    "@remnic/core/consolidation-operator"
   );
   assert.equal(isSemanticConsolidationLlmOperator("split"), true);
   assert.equal(isSemanticConsolidationLlmOperator("merge"), true);

@@ -8,7 +8,7 @@ import {
   ExportManifestV2Schema,
   parseExportBundle,
   parseExportManifest,
-} from "../src/transfer/types.js";
+} from "@remnic/core/transfer/types";
 
 function makeV1Manifest() {
   return {

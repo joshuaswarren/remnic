@@ -6,10 +6,10 @@
 // Remnic entry when both config blocks exist.
 let accessCli;
 try {
-  accessCli = await import("../dist/access-cli.js");
+  accessCli = await import("@remnic/core/access-cli");
 } catch (error) {
   const message = error instanceof Error ? error.message : "unknown load error";
-  console.error(`access-cli failed to load dist/access-cli.js: ${message}`);
+  console.error(`access-cli failed to load @remnic/core/access-cli: ${message}`);
   process.exit(1);
 }
 

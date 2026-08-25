@@ -8,9 +8,9 @@ import {
   REMNIC_CHATGPT_MEMORY_INSPECTOR_TOOL,
   REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
   type RemnicChatGptMemoryInspectorResult,
-} from "../src/mcp-memory-inspector-app.js";
-import type { RecallXrayResult, RecallXraySnapshot } from "../src/recall-xray.js";
-import { EngramMcpServer } from "../src/access-mcp.js";
+} from "@remnic/core/mcp-memory-inspector-app";
+import type { RecallXrayResult, RecallXraySnapshot } from "@remnic/core/recall-xray";
+import { EngramMcpServer } from "@remnic/core/access-mcp";
 import type {
   EngramAccessRecallResponse,
   EngramAccessService,

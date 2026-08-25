@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { findUnresolvedEntityRefs } from "../src/reconstruct.js";
+import { findUnresolvedEntityRefs } from "@remnic/core/reconstruct";
 
 describe("findUnresolvedEntityRefs", () => {
   it("detects entity references not present in recall set", () => {

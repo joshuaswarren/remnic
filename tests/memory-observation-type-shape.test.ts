@@ -19,15 +19,15 @@ import path from "node:path";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 
 // Verify the public export chain.
-import type { MemoryObservation } from "../src/types.js";
+import type { MemoryObservation } from "@remnic/core/types";
 // Also verify it flows through the barrel export.
 import type { MemoryObservation as BarrelMemoryObservation } from "../src/index.js";
 
-import { summarizeObservationThroughput } from "../src/operator-toolkit.js";
+import { summarizeObservationThroughput } from "@remnic/core/operator-toolkit";
 import {
   judgeTelemetryPath,
-} from "../src/extraction-judge-telemetry.js";
-import { EXTRACTION_JUDGE_VERDICT_CATEGORY } from "../src/extraction-judge-telemetry.js";
+} from "@remnic/core/extraction-judge-telemetry";
+import { EXTRACTION_JUDGE_VERDICT_CATEGORY } from "@remnic/core/extraction-judge-telemetry";
 
 // ---------------------------------------------------------------------------
 // Type-shape tests (compile-time + runtime)

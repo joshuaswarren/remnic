@@ -3,14 +3,14 @@ import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { exportJsonBundle } from "../src/transfer/export-json.js";
-import { importJsonBundle } from "../src/transfer/import-json.js";
+import { exportJsonBundle } from "@remnic/core/transfer/export-json";
+import { importJsonBundle } from "@remnic/core/transfer/import-json";
 import {
   prepareSafeArchiveRoot,
   resolveSafeArchiveTarget,
   sha256String,
   writeSafeArchiveTarget,
-} from "../src/transfer/fs-utils.js";
+} from "@remnic/core/transfer/fs-utils";
 import { writeFixtureMemoryDir, writeSensitiveTransferFixtureEntries } from "./transfer-fixtures.js";
 
 async function assertPathMissing(filePath: string): Promise<void> {

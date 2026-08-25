@@ -13,7 +13,7 @@ import {
   CAUSAL_PHRASES,
   GraphIndex,
   type GraphConfig,
-} from "../src/graph.js";
+} from "@remnic/core/graph";
 
 let tmpDir: string;
 
@@ -508,7 +508,7 @@ describe("GraphIndex.spreadingActivation — confidence weighting (#681 PR 3/3)"
   it("clamps misconfigured floor (negative → 0, >1 → 1)", async () => {
     // Pure-function regression: clampConfidenceFloor must squash bad input.
     const { clampConfidenceFloor, clampPageRankIterations } = await import(
-      "../src/graph.js"
+      "@remnic/core/graph"
     );
     assert.equal(clampConfidenceFloor(-0.5), 0);
     assert.equal(clampConfidenceFloor(2), 1);
@@ -595,7 +595,7 @@ describe("GraphIndex.spreadingActivation — confidence weighting (#681 PR 3/3)"
 
 describe("Integration: multiGraphMemoryEnabled=false baseline", () => {
   it("graph files are NOT written when flag is false", async () => {
-    const { readEdges: re } = await import("../src/graph.js");
+    const { readEdges: re } = await import("@remnic/core/graph");
     const dir = await mkdtemp(path.join(tmpdir(), "engram-integration-off-"));
     try {
       const cfg: GraphConfig = {

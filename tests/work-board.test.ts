@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
-import { WorkStorage } from "../src/work/storage.js";
+import { WorkStorage } from "@remnic/core/work/storage";
 import {
   exportWorkBoardMarkdown,
   exportWorkBoardSnapshot,
   importWorkBoardSnapshot,
-} from "../src/work/board.js";
+} from "@remnic/core/work/board";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

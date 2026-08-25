@@ -9,7 +9,7 @@ import { stripAttributesSuffix } from "@remnic/core/storage";
 import { isSupportPassportPrivateMemory } from "@remnic/core/support-passport";
 import { displayErrorDetail } from "@remnic/core/runtime/better-sqlite";
 import { isSafeRouteNamespace } from "@remnic/core/routing/engine";
-import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
+import { indexMemoryAsync, indexesExistAsync } from "@remnic/core/temporal-index";
 /**
  * `memory_promote` executor — copy a memory into another namespace
  * (extracted from tools.ts; issue #1989 PR4 file-size discipline).

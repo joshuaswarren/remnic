@@ -21,8 +21,8 @@ import {
   readEdgeConfidence,
   readLastReinforcedAt,
   reinforceEdge,
-} from "../src/graph-edge-reinforcement.js";
-import type { GraphEdge } from "../src/graph.js";
+} from "@remnic/core/graph-edge-reinforcement";
+import type { GraphEdge } from "@remnic/core/graph";
 
 function baseEdge(overrides: Partial<GraphEdge> = {}): GraphEdge {
   return {

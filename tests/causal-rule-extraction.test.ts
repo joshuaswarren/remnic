@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { MemoryCategory } from "../src/types.js";
+import type { MemoryCategory } from "@remnic/core/types";
 
 describe("causal rule category", () => {
   it("includes 'rule' in MemoryCategory type", () => {

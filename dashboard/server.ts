@@ -1,4 +1,4 @@
-import { GraphDashboardServer } from "../src/dashboard-runtime.js";
+import { GraphDashboardServer } from "@remnic/core/dashboard-runtime";
 import { parseDashboardPort, readDashboardArg } from "./server-args.js";
 
 async function main(): Promise<void> {

@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { TranscriptManager } from "../src/transcript.js";
+import { parseConfig } from "@remnic/core/config";
+import { TranscriptManager } from "@remnic/core/transcript";
 
 test("recovery summary reports broken chain and incomplete turn counts", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-recovery-summary-"));

@@ -23,9 +23,9 @@ import {
   subscribeGraphEvents,
   destroyGraphEventBus,
   type GraphEvent,
-} from "../src/graph-events.js";
-import { appendEdge } from "../src/graph.js";
-import { EngramAccessHttpServer } from "../src/access-http.js";
+} from "@remnic/core/graph-events";
+import { appendEdge } from "@remnic/core/graph";
+import { EngramAccessHttpServer } from "@remnic/core/access-http";
 import type { EngramAccessService } from "../src/access-service.js";
 
 // ---------------------------------------------------------------------------

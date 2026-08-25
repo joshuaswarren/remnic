@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { parseConfig } from "../src/config.js";
+import { parseConfig } from "@remnic/core/config";
 
 test("evaluation harness config defaults off and derives store dir from memoryDir", () => {
   const memoryDir = "/tmp/engram-memory";

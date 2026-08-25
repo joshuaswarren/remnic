@@ -11,10 +11,10 @@ import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { EngramAccessService } from "../src/access-service.js";
-import { Orchestrator } from "../src/orchestrator.js";
+import { Orchestrator } from "@remnic/core/orchestrator";
 import { XrayCaptureQueue } from "../packages/remnic-core/src/orchestration/xray-capture-queue.js";
-import type { RecallXraySnapshot } from "../src/recall-xray.js";
-import type { MemoryFile } from "../src/types.js";
+import type { RecallXraySnapshot } from "@remnic/core/recall-xray";
+import type { MemoryFile } from "@remnic/core/types";
 
 function fakeSnapshot(
   overrides: Partial<RecallXraySnapshot> = {},

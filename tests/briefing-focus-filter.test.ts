@@ -4,8 +4,8 @@ import {
   parseBriefingFocus,
   focusMatchesMemory,
   focusMatchesEntity,
-} from "../src/briefing.js";
-import type { MemoryFile, EntityFile, BriefingFocus } from "../src/types.js";
+} from "@remnic/core/briefing";
+import type { MemoryFile, EntityFile, BriefingFocus } from "@remnic/core/types";
 
 // ──────────────────────────────────────────────────────────────────────────
 // parseBriefingFocus

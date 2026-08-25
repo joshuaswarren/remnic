@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import { StorageManager } from "../src/storage.js";
-import { buildBriefing, parseBriefingWindow } from "../src/briefing.js";
+import { StorageManager } from "@remnic/core/storage";
+import { buildBriefing, parseBriefingWindow } from "@remnic/core/briefing";
 
 const NOW = new Date("2026-04-11T12:00:00.000Z");
 

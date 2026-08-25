@@ -7,9 +7,9 @@ import {
   formatCausalRetrievalSection,
   retrieveCausalChains,
   type CausalRetrievalResult,
-} from "../src/causal-retrieval.js";
-import { recordCausalTrajectory } from "../src/causal-trajectory.js";
-import { writeChainIndex, resolveChainsDir, type CausalChainIndex, type CausalEdge } from "../src/causal-chain.js";
+} from "@remnic/core/causal-retrieval";
+import { recordCausalTrajectory } from "@remnic/core/causal-trajectory";
+import { writeChainIndex, resolveChainsDir, type CausalChainIndex, type CausalEdge } from "@remnic/core/causal-chain";
 
 // ─── formatCausalRetrievalSection ────────────────────────────────────────────
 

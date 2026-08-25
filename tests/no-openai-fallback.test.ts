@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseConfig } from "../src/config.ts";
-import { ExtractionEngine } from "../src/extraction.ts";
+import { parseConfig } from "@remnic/core/config";
+import { ExtractionEngine } from "@remnic/core/extraction";
 
 function buildEngine() {
   const config = {

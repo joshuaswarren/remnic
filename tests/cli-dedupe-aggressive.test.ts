@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { planAggressiveDuplicateDeletions } from "../src/cli.js";
+import { planAggressiveDuplicateDeletions } from "@remnic/core/cli";
 
 test("planAggressiveDuplicateDeletions dedupes case/punctuation/markdown variants", () => {
   const plan = planAggressiveDuplicateDeletions([

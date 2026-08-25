@@ -5,7 +5,7 @@ import {
   inferIntentFromText,
   isTaskInitiationIntent,
   planRecallMode,
-} from "../src/intent.ts";
+} from "@remnic/core/intent";
 
 test("planRecallMode keeps acknowledgements in no_recall", () => {
   assert.equal(planRecallMode("ok"), "no_recall");

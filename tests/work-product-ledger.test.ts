@@ -9,13 +9,13 @@ import {
   resolveWorkProductLedgerDir,
   searchWorkProductLedgerEntries,
   validateWorkProductLedgerEntry,
-} from "../src/work-product-ledger.js";
+} from "@remnic/core/work-product-ledger";
 import {
   registerCli,
   runWorkProductRecordCliCommand,
   runWorkProductRecallSearchCliCommand,
   runWorkProductStatusCliCommand,
-} from "../src/cli.js";
+} from "@remnic/core/cli";
 
 test("work-product ledger path resolves under memoryDir by default", () => {
   assert.equal(

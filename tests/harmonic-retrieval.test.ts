@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import { StorageManager } from "../src/storage.js";
-import { HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY, recordAbstractionNode } from "../src/abstraction-nodes.js";
-import { recordCueAnchor } from "../src/cue-anchors.js";
-import { runHarmonicSearchCliCommand } from "../src/cli.js";
-import { searchHarmonicRetrieval } from "../src/harmonic-retrieval.js";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import { StorageManager } from "@remnic/core/storage";
+import { HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY, recordAbstractionNode } from "@remnic/core/abstraction-nodes";
+import { recordCueAnchor } from "@remnic/core/cue-anchors";
+import { runHarmonicSearchCliCommand } from "@remnic/core/cli";
+import { searchHarmonicRetrieval } from "@remnic/core/harmonic-retrieval";
 
 async function seedHarmonicStore(memoryDir: string) {
   await recordAbstractionNode({

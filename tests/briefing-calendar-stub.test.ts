@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { FileCalendarSource } from "../src/briefing.js";
+import { FileCalendarSource } from "@remnic/core/briefing";
 
 async function makeTempFile(name: string, content: string): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-briefing-cal-"));

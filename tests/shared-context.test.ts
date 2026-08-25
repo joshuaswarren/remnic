@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import type { PluginConfig } from "../src/types.js";
+import type { PluginConfig } from "@remnic/core/types";
 import { parseConfig } from "@remnic/core";
-import { SharedContextManager } from "../src/shared-context/manager.js";
+import { SharedContextManager } from "@remnic/core/shared-context/manager";
 
 function tmpDir(prefix: string): string {
   return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);

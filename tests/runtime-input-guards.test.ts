@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { inferIntentFromText, planRecallMode } from "../src/intent.ts";
+import { inferIntentFromText, planRecallMode } from "@remnic/core/intent";
 
 test("runtime input guards: planRecallMode handles nullish/non-string values", () => {
   const weirdInputs: unknown[] = [undefined, null, 42, true, { x: 1 }, ["ok"]];

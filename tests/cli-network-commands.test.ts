@@ -9,7 +9,7 @@ import {
   runTailscaleSyncCliCommand,
   runWebDavServeCliCommand,
   runWebDavStopCliCommand,
-} from "../src/cli.js";
+} from "@remnic/core/cli";
 
 test("tailscale-status CLI wrapper returns helper status", async () => {
   const status = await runTailscaleStatusCliCommand({

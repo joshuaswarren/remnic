@@ -14,12 +14,12 @@ import {
   seedTrustZoneDemoDataset,
   summarizeTrustZonePromotionReadiness,
   validateTrustZoneRecord,
-} from "../src/trust-zones.js";
+} from "@remnic/core/trust-zones";
 import {
   runTrustZoneDemoSeedCliCommand,
   runTrustZonePromoteCliCommand,
   runTrustZoneStatusCliCommand,
-} from "../src/cli.js";
+} from "@remnic/core/cli";
 
 test("trust-zones config path resolves under memoryDir by default", () => {
   assert.equal(

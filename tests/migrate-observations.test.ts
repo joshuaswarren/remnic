@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { migrateObservations } from "../src/maintenance/migrate-observations.js";
-import { backupAndWriteRebuiltObservations } from "../src/maintenance/observation-ledger-utils.js";
+import { migrateObservations } from "@remnic/core/maintenance/migrate-observations";
+import { backupAndWriteRebuiltObservations } from "@remnic/core/maintenance/observation-ledger-utils";
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const full = path.join(baseDir, relPath);

@@ -11,12 +11,12 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm, stat } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
 import type { ExtractionEngine } from "../packages/remnic-core/src/extraction.js";
 import type { MemoryFile } from "../packages/remnic-core/src/types.js";
-import { recordAbstractionNode } from "../src/abstraction-nodes.js";
-import { recordCueAnchor } from "../src/cue-anchors.js";
+import { recordAbstractionNode } from "@remnic/core/abstraction-nodes";
+import { recordCueAnchor } from "@remnic/core/cue-anchors";
 import { LifecyclePolicyCoordinator } from "../packages/remnic-core/src/orchestration/lifecycle-policy-coordinator.js";
 
 type Consolidate = ExtractionEngine["consolidate"];

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, writeFile } from "node:fs/promises";
-import { runReplayCliCommand, type ReplayCliOrchestrator } from "../src/cli.js";
+import { runReplayCliCommand, type ReplayCliOrchestrator } from "@remnic/core/cli";
 
 function openclawJsonlSample(): string {
   return [

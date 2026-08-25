@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { runSessionCheckCliCommand, runSessionRepairCliCommand } from "../src/cli.js";
+import { runSessionCheckCliCommand, runSessionRepairCliCommand } from "@remnic/core/cli";
 
 async function makeMemoryDir(prefix: string): Promise<string> {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), prefix));

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blendGraphExpandedRecallScore, filterRecallCandidates } from "../src/orchestrator.ts";
+import { blendGraphExpandedRecallScore, filterRecallCandidates } from "@remnic/core/orchestrator";
 
 test("blendGraphExpandedRecallScore is monotonic for higher graph activation scores", () => {
   const low = blendGraphExpandedRecallScore({

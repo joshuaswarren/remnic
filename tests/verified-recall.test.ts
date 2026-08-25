@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir } from "node:fs/promises";
-import { BoxBuilder } from "../src/boxes.js";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import { StorageManager } from "../src/storage.js";
-import { runVerifiedRecallSearchCliCommand } from "../src/cli.js";
-import { searchVerifiedEpisodes } from "../src/verified-recall.js";
+import { BoxBuilder } from "@remnic/core/boxes";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import { StorageManager } from "@remnic/core/storage";
+import { runVerifiedRecallSearchCliCommand } from "@remnic/core/cli";
+import { searchVerifiedEpisodes } from "@remnic/core/verified-recall";
 
 async function seedVerifiedRecallStore(memoryDir: string) {
   const storage = new StorageManager(memoryDir);

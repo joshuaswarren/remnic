@@ -8,8 +8,8 @@ import {
   recordAbstractionNode,
   resolveAbstractionNodeStoreDir,
   validateAbstractionNode,
-} from "../src/abstraction-nodes.js";
-import { runAbstractionNodeStatusCliCommand } from "../src/cli.js";
+} from "@remnic/core/abstraction-nodes";
+import { runAbstractionNodeStatusCliCommand } from "@remnic/core/cli";
 
 test("abstraction-node config path resolves under memoryDir by default", () => {
   assert.equal(

@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 import {
   filterNormalMemorySearchResults,
   isNormalRetrievalVisibleMemory,
-} from "../src/cli.js";
-import type { MemoryFile, MemoryFrontmatter, QmdSearchResult } from "../src/types.js";
+} from "@remnic/core/cli";
+import type { MemoryFile, MemoryFrontmatter, QmdSearchResult } from "@remnic/core/types";
 
 function makeMemory(
   id: string,

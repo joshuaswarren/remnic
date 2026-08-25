@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import test from "node:test";
-import { readEnvVar, resolveHomeDir } from "../src/runtime/env.js";
+import { readEnvVar, resolveHomeDir } from "@remnic/core/runtime/env";
 
 test("readEnvVar returns string values from process env", () => {
   const previousHome = process.env.HOME;

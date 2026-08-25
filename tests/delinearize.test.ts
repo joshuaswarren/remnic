@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { resolveCoReferences, anchorTemporalExpressions } from "../src/delinearize.js";
-import type { EntityMention } from "../src/types.js";
+import { resolveCoReferences, anchorTemporalExpressions } from "@remnic/core/delinearize";
+import type { EntityMention } from "@remnic/core/types";
 
 describe("resolveCoReferences", () => {
   it("replaces pronouns with entity names when unambiguous", () => {

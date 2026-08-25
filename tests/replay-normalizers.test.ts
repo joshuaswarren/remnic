@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { openclawReplayNormalizer } from "../src/replay/normalizers/openclaw.ts";
-import { claudeReplayNormalizer } from "../src/replay/normalizers/claude.ts";
-import { chatgptReplayNormalizer } from "../src/replay/normalizers/chatgpt.ts";
+import { openclawReplayNormalizer } from "@remnic/core/replay/normalizers/openclaw";
+import { claudeReplayNormalizer } from "@remnic/core/replay/normalizers/claude";
+import { chatgptReplayNormalizer } from "@remnic/core/replay/normalizers/chatgpt";
 
 test("openclaw normalizer parses transcript records from export bundle", async () => {
   const bundle = {

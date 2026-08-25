@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseConfig } from "../src/config.js";
-import { RecallSectionCoordinator } from "../src/orchestration/recall-section-coordinator.js";
-import { Orchestrator } from "../src/orchestrator.js";
+import { parseConfig } from "@remnic/core/config";
+import { RecallSectionCoordinator } from "@remnic/core/orchestration/recall-section-coordinator";
+import { Orchestrator } from "@remnic/core/orchestrator";
 
 test("parseConfig sets recall pipeline defaults", () => {
   const cfg = parseConfig({ openaiApiKey: "sk-test" });

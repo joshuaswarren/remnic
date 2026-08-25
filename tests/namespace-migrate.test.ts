@@ -3,14 +3,14 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import type { PluginConfig } from "../src/types.js";
-import { parseConfig } from "../src/config.js";
+import type { PluginConfig } from "@remnic/core/types";
+import { parseConfig } from "@remnic/core/config";
 import {
   listNamespaces,
   runNamespaceMigration,
   verifyNamespaces,
-} from "../src/namespaces/migrate.js";
-import { NamespaceStorageRouter } from "../src/namespaces/storage.js";
+} from "@remnic/core/namespaces/migrate";
+import { NamespaceStorageRouter } from "@remnic/core/namespaces/storage";
 
 function tmpDir(prefix: string): string {
   return path.join(

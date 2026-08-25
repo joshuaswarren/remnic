@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 import {
   runConsolidationUndo,
   isInsideDirectory,
@@ -26,7 +26,7 @@ import {
   isActiveMemoryRelativePath,
   formatConsolidationUndoResult,
   type ConsolidationUndoResult,
-} from "../src/consolidation-undo.ts";
+} from "@remnic/core/consolidation-undo";
 import { symlink } from "node:fs/promises";
 import type { VersioningConfig } from "@remnic/core";
 import { withEntityCanonicalMutationLock } from "../packages/remnic-core/src/storage/entity-canonical-id-lock.js";

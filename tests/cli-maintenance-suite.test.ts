@@ -13,13 +13,13 @@ import {
   runMigrateObservationsCliCommand,
   runRebuildObservationsCliCommand,
   runVerifyMemoryProjectionCliCommand,
-} from "../src/cli.js";
-import { StorageManager } from "../src/storage.js";
-import { isEncryptedFile, SECURE_STORE_ENVELOPE_OVERHEAD_BYTES } from "../src/secure-store/index.js";
-import { getMemoryProjectionPath } from "../src/memory-projection-store.js";
-import { openBetterSqlite3 } from "../src/runtime/better-sqlite.js";
-import { NamespaceStorageRouter } from "../src/namespaces/storage.js";
-import type { PluginConfig } from "../src/types.js";
+} from "@remnic/core/cli";
+import { StorageManager } from "@remnic/core/storage";
+import { isEncryptedFile, SECURE_STORE_ENVELOPE_OVERHEAD_BYTES } from "@remnic/core/secure-store/index";
+import { getMemoryProjectionPath } from "@remnic/core/memory-projection-store";
+import { openBetterSqlite3 } from "@remnic/core/runtime/better-sqlite";
+import { NamespaceStorageRouter } from "@remnic/core/namespaces/storage";
+import type { PluginConfig } from "@remnic/core/types";
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const full = path.join(baseDir, relPath);

@@ -7,7 +7,7 @@ import {
   extractCodexThreadId,
   resolveCodexSessionIdentity,
 } from "../src/codex-compat.js";
-import { parseConfig } from "../src/config.js";
+import { parseConfig } from "@remnic/core/config";
 
 test("resolveCodexSessionIdentity keeps Codex compat opt-in by default", () => {
   const cfg = parseConfig({});

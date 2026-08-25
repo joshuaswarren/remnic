@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
-import { SessionObserverState } from "../src/session-observer-state.ts";
+import { SessionObserverState } from "@remnic/core/session-observer-state";
 
 test("session observer establishes baseline then triggers when threshold is crossed", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-session-observer-"));

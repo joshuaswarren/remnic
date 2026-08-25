@@ -1,18 +1,18 @@
 import test from "node:test";
-import { initLogger } from "../src/logger.ts";
+import { initLogger } from "@remnic/core/logger";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 import {
   backupExistingProjection,
   rebuildMemoryProjection,
   repairMemoryProjection,
   verifyMemoryProjection,
-} from "../src/maintenance/rebuild-memory-projection.ts";
-import { runMemoryGovernance } from "../src/maintenance/memory-governance.ts";
+} from "@remnic/core/maintenance/rebuild-memory-projection";
+import { runMemoryGovernance } from "@remnic/core/maintenance/memory-governance";
 import {
   getMemoryProjectionPath,
   initializeMemoryProjectionDb, markProjectedMemoryPathInvalid,
@@ -23,7 +23,7 @@ import {
   readProjectedMemoryState,
   readProjectedMemoryTimeline,
   readProjectedNativeKnowledgeChunks,
-} from "../src/memory-projection-store.ts";
+} from "@remnic/core/memory-projection-store";
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const full = path.join(baseDir, relPath);

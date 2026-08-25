@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseBriefingWindow } from "../src/briefing.js";
+import { parseBriefingWindow } from "@remnic/core/briefing";
 
 // Fixed reference instant so assertions are deterministic regardless of when
 // the suite runs. Chose a non-DST UTC midnight boundary.

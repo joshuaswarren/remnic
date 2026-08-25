@@ -9,7 +9,7 @@ import {
   resolveCuratedIncludeFilesStatePath,
   searchNativeKnowledge,
   syncCuratedIncludeFiles,
-} from "../src/native-knowledge.js";
+} from "@remnic/core/native-knowledge";
 
 test("collectNativeKnowledgeChunks reads configured workspace files and preserves heading ranges", async () => {
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-native-knowledge-"));

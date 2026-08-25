@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { MemoryFile, MemoryFrontmatter } from "../src/types.js";
+import type { MemoryFile, MemoryFrontmatter } from "@remnic/core/types";
 import {
   computeDecay,
   computeHeat,
   decideLifecycleTransition,
   resolveLifecycleState,
-} from "../src/lifecycle.js";
+} from "@remnic/core/lifecycle";
 
 function buildMemory(overrides: Partial<MemoryFrontmatter> = {}): Pick<MemoryFile, "frontmatter"> {
   const frontmatter: MemoryFrontmatter = {

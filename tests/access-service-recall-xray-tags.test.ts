@@ -23,10 +23,10 @@ import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 
 import { EngramAccessService } from "../src/access-service.js";
-import { Orchestrator } from "../src/orchestrator.js";
+import { Orchestrator } from "@remnic/core/orchestrator";
 import { XrayCaptureQueue } from "../packages/remnic-core/src/orchestration/xray-capture-queue.js";
-import type { RecallXraySnapshot, RecallXrayResult } from "../src/recall-xray.js";
-import { buildXraySnapshot } from "../src/recall-xray.js";
+import type { RecallXraySnapshot, RecallXrayResult } from "@remnic/core/recall-xray";
+import { buildXraySnapshot } from "@remnic/core/recall-xray";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -475,7 +475,7 @@ test("recallXray with real storage fixture: per-result tags populated from front
   );
 
   // Write two memory files directly using StorageManager.
-  const { StorageManager } = await import("../src/storage.js");
+  const { StorageManager } = await import("@remnic/core/storage");
   const storage = new StorageManager(memoryDir);
 
   const { id: idA } = await storage.writeMemory("fact", "Eve is a cryptographer.", {

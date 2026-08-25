@@ -18,7 +18,7 @@
  * the CLI at the bottom wires them to git + the repo manifest.
  */
 
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -727,7 +727,23 @@ function main() {
       process.exit(1);
     }
     const removed = manifestShrinkage(baseManifest, manifest);
-    const unexplained = unexplainedRemovals(removed, deletedOrRenamedPaths(changed, manifest));
+    // A catch-all whose directory has no remaining .ts files is not a live
+    // gate. Removing it after the last matching file was deleted is explained.
+    const unexplained = unexplainedRemovals(removed, deletedOrRenamedPaths(changed, manifest))
+      .filter((glob) => {
+        if (!glob.endsWith("/**")) return true;
+        const dir = join(repoRoot, glob.slice(0, -3));
+        if (!existsSync(dir) || !statSync(dir).isDirectory()) return false;
+        const walk = (d) => {
+          for (const entry of readdirSync(d, { withFileTypes: true })) {
+            const child = join(d, entry.name);
+            if (entry.isDirectory() && walk(child)) return true;
+            if (entry.name.endsWith(".ts")) return true;
+          }
+          return false;
+        };
+        return walk(dir);
+      });
     if (unexplained.length > 0) {
       console.error(
         `::error::lifecycle-matrix lifecycleManifest removed path(s) with no matching deletion/rename: ${unexplained.join(", ")}. ` +

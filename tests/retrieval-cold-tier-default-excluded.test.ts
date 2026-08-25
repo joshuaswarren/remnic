@@ -4,14 +4,14 @@
  * Default recall skips the cold collection, does not re-query hot QMD, and
  * uses the query-aware fallback. Opting in queries the cold collection.
  */
-import { Orchestrator, type QueryAwarePrefilter } from "../src/orchestrator.js";
-import type { QmdSearchResult } from "../src/types.js";
+import { Orchestrator, type QueryAwarePrefilter } from "@remnic/core/orchestrator";
+import type { QmdSearchResult } from "@remnic/core/types";
 import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
+import { parseConfig } from "@remnic/core/config";
 
 interface ColdAuditState {
   coldQmdCalls: number;

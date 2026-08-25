@@ -7,7 +7,7 @@ import {
   selectRouteRule,
   validateRouteTarget,
   type RouteRule,
-} from "../src/routing/engine.ts";
+} from "@remnic/core/routing/engine";
 
 function rule(overrides: Partial<RouteRule>): RouteRule {
   return {

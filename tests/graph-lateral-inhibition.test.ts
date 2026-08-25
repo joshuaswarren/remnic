@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { applyLateralInhibition } from "../src/graph.js";
+import { applyLateralInhibition } from "@remnic/core/graph";
 
 describe("applyLateralInhibition", () => {
   it("suppresses lower-activation nodes relative to top-M competitors", () => {

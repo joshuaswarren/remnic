@@ -6,10 +6,10 @@ import { mkdtemp } from "node:fs/promises";
 import {
   deriveCausalPromotionCandidates,
   synthesizeCausalPreferencesViaLlm,
-} from "../src/causal-consolidation.js";
-import { parseConfig } from "../src/config.js";
-import { recordCausalTrajectory, type CausalTrajectoryRecord } from "../src/causal-trajectory.js";
-import type { GatewayConfig } from "../src/types.js";
+} from "@remnic/core/causal-consolidation";
+import { parseConfig } from "@remnic/core/config";
+import { recordCausalTrajectory, type CausalTrajectoryRecord } from "@remnic/core/causal-trajectory";
+import type { GatewayConfig } from "@remnic/core/types";
 
 type ChatCompletionRequest = {
   messages: Array<{ role: string; content: string }>;

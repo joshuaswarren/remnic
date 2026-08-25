@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { registerCli } from "../src/cli.js";
-import { StorageManager } from "../src/storage.js";
+import { parseConfig } from "@remnic/core/config";
+import { registerCli } from "@remnic/core/cli";
+import { StorageManager } from "@remnic/core/storage";
 import { clearAuthTokenSecretCache } from "../packages/remnic-core/src/resolve-auth-token.js";
-import type { OperatorToolkitOrchestrator } from "../src/operator-toolkit.js";
+import type { OperatorToolkitOrchestrator } from "@remnic/core/operator-toolkit";
 
 class MockCommand {
   readonly children = new Map<string, MockCommand>();

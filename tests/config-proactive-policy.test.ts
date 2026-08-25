@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseConfig } from "../src/config.js";
+import { parseConfig } from "@remnic/core/config";
 
 test("parseConfig sets proactive/policy-learning defaults", () => {
   const cfg = parseConfig({ openaiApiKey: "sk-test" });

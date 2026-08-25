@@ -8,10 +8,10 @@ import {
   computeCausalImpactScore,
   extractCausalBehaviorSignals,
   type CausalBehaviorSignal,
-} from "../src/causal-behavior.js";
-import { parseConfig } from "../src/config.js";
-import { recordCausalTrajectory } from "../src/causal-trajectory.js";
-import { writeChainIndex, resolveChainsDir, type CausalChainIndex, type CausalEdge } from "../src/causal-chain.js";
+} from "@remnic/core/causal-behavior";
+import { parseConfig } from "@remnic/core/config";
+import { recordCausalTrajectory } from "@remnic/core/causal-trajectory";
+import { writeChainIndex, resolveChainsDir, type CausalChainIndex, type CausalEdge } from "@remnic/core/causal-chain";
 
 // ─── synthesizeCausalPreferences ─────────────────────────────────────────────
 

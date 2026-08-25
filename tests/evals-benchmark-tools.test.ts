@@ -7,7 +7,7 @@ import {
   runBenchmarkImportCliCommand,
   runBenchmarkStatusCliCommand,
   runBenchmarkValidateCliCommand,
-} from "../src/cli.js";
+} from "@remnic/core/cli";
 import { validateEvalBenchmarkManifest } from "../packages/remnic-core/src/evals.js";
 
 async function writeManifest(

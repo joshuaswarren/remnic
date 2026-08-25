@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { Ajv } from "ajv";
-import { EngramMcpServer } from "../src/access-mcp.js";
+import { EngramMcpServer } from "@remnic/core/access-mcp";
 import type { EngramAccessService } from "../src/access-service.js";
 
 function createFakeService(): EngramAccessService {

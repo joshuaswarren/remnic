@@ -21,7 +21,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 import { VALID_MEMORY_CATEGORIES } from "../packages/remnic-core/src/config.js";
 import {
   DEFAULT_TAXONOMY,
@@ -30,7 +30,7 @@ import {
 import { validateRouteTarget } from "../packages/remnic-core/src/routing/engine.js";
 import { ExtractedFactSchema } from "../packages/remnic-core/src/schemas.js";
 import { memoryStoreRequestSchema } from "../packages/remnic-core/src/access-schema.js";
-import type { MemoryCategory } from "../src/types.js";
+import type { MemoryCategory } from "@remnic/core/types";
 
 describe("reasoning_trace category", () => {
   it("is assignable as a MemoryCategory value", () => {

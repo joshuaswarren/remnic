@@ -5,17 +5,17 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { runSemanticRuleVerifyCliCommand } from "../src/cli.js";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
+import { runSemanticRuleVerifyCliCommand } from "@remnic/core/cli";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
 import {
   type SemanticRulePromotionReport,
   promoteSemanticRuleFromMemory,
   setSemanticRulePromotionTestHooks,
-} from "../src/semantic-rule-promotion.js";
-import { searchVerifiedSemanticRules } from "../src/semantic-rule-verifier.js";
-import { StorageManager } from "../src/storage.js";
-import { setInFlightRead } from "../src/in-flight-reads.js";
+} from "@remnic/core/semantic-rule-promotion";
+import { searchVerifiedSemanticRules } from "@remnic/core/semantic-rule-verifier";
+import { StorageManager } from "@remnic/core/storage";
+import { setInFlightRead } from "@remnic/core/in-flight-reads";
 
 async function createSemanticRuleHarness() {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-semantic-rule-verify-"));

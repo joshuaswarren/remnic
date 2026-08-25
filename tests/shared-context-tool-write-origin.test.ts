@@ -20,8 +20,8 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { registerTools } from "../src/tools.ts";
-import { parseConfig } from "../src/config.js";
-import { SharedContextManager } from "../src/shared-context/manager.js";
+import { parseConfig } from "@remnic/core/config";
+import { SharedContextManager } from "@remnic/core/shared-context/manager";
 import { UNATTRIBUTED_TOOL_WRITE_ORIGIN } from "../src/tool-write-origin.js";
 
 type RegisteredTool = {

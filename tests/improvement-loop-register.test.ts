@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import type { ContinuityImprovementLoop } from "../src/types.ts";
+import type { ContinuityImprovementLoop } from "@remnic/core/types";
 import { registerTools } from "../src/tools.ts";
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 
 type RegisteredTool = {
   name: string;

@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import os from "node:os";
 import { mkdir, writeFile } from "node:fs/promises";
-import type { PluginConfig } from "../src/types.js";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
+import type { PluginConfig } from "@remnic/core/types";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
 
 function tmpDir(prefix: string): string {
   const uniqueSuffix = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

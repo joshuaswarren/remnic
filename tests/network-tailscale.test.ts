@@ -7,7 +7,7 @@ import {
   TailscaleHelper,
   type TailscaleCommandResult,
   type TailscaleCommandRunner,
-} from "../src/network/tailscale.ts";
+} from "@remnic/core/network/tailscale";
 
 function createRunner(
   mapper: (

@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 import { parseConfig } from "../packages/remnic-core/src/config.ts";
 import { buildProcedureMarkdownBody } from "../packages/remnic-core/src/procedural/procedure-types.ts";
 import {

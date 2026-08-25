@@ -36,8 +36,8 @@ const fakeConfig: any = {
 // ── 1. Orama ──
 console.log("\n=== Orama Backend ===");
 try {
-  const { OramaBackend } = await import("../src/search/orama-backend.js");
-  const { EmbedHelper } = await import("../src/search/embed-helper.js");
+  const { OramaBackend } = await import("@remnic/core/search/orama-backend");
+  const { EmbedHelper } = await import("@remnic/core/search/embed-helper");
   const embedHelper = new EmbedHelper(fakeConfig);
   const orama = new OramaBackend({
     dbPath: path.join(tmpBase, "orama"),
@@ -71,8 +71,8 @@ try {
 // ── 2. LanceDB ──
 console.log("\n=== LanceDB Backend ===");
 try {
-  const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
-  const { EmbedHelper } = await import("../src/search/embed-helper.js");
+  const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
+  const { EmbedHelper } = await import("@remnic/core/search/embed-helper");
   const embedHelper = new EmbedHelper(fakeConfig);
   const lance = new LanceDbBackend({
     dbPath: path.join(tmpBase, "lancedb"),
@@ -106,7 +106,7 @@ try {
 // ── 3. Meilisearch ──
 console.log("\n=== Meilisearch Backend ===");
 try {
-  const { MeilisearchBackend } = await import("../src/search/meilisearch-backend.js");
+  const { MeilisearchBackend } = await import("@remnic/core/search/meilisearch-backend");
   const meili = new MeilisearchBackend({
     host: "http://localhost:7700",
     collection: "engram-smoke-test",
