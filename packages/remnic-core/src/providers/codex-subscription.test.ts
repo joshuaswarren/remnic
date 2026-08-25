@@ -1259,16 +1259,20 @@ test(
       // and settles 35ms after its own 475ms budget — past the caller's
       // 500ms deadline but inside the 25ms settle grace (T=500 -> 25 headroom).
       runCodexExec: (request) => {
+        const execTimeoutMs = request.timeoutMs;
+        if (execTimeoutMs === undefined) {
+          throw new Error("expected timeoutMs");
+        }
         const { promise, resolve } = Promise.withResolvers<CodexSubscriptionExecResult>();
         setTimeout(
           () =>
             resolve({
               status: 124,
               stdout: "",
-              stderr: `codex-subscription: exec timed out after ${request.timeoutMs}ms.\n`,
+              stderr: `codex-subscription: exec timed out after ${execTimeoutMs}ms.\n`,
               outputText: "",
             }),
-          request.timeoutMs + 35,
+          execTimeoutMs + 35,
         );
         return promise;
       },
