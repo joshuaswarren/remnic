@@ -121,26 +121,37 @@ test("tokens.ts defines remnic_hm_ prefix for hermes", () => {
  * Creates a temp HOME dir so we don't pollute real state.
  * Sets up the HOME env var override used by tokens.ts and connectors/index.ts.
  *
- * Also clears XDG_CONFIG_HOME for the duration of the test. getConnectorsDir()
- * prefers XDG_CONFIG_HOME over HOME/.config when computing the connectors dir,
- * so a CI runner that sets XDG_CONFIG_HOME (e.g. GitHub Actions Ubuntu images
- * default it to /home/runner/.config) would cause installConnector to read
- * from the real XDG path while tests write fixtures under tmpHome/.config.
- * The mismatch silently falls through to defaults (e.g. port 4318) and makes
- * per-test state-leak tests flaky or outright broken on CI.
- * Unsetting XDG_CONFIG_HOME forces getConnectorsDir() back onto HOME/.config,
- * which the test has redirected to tmpHome.
+ * Also clears HERMES_HOME and XDG_CONFIG_HOME for the duration of the test.
+ * Connector path resolution prefers HERMES_HOME over HOME/.hermes, while
+ * getConnectorsDir() prefers XDG_CONFIG_HOME over HOME/.config. Leaving either
+ * inherited override intact would let the test read from or write to the
+ * caller's real configuration instead of the temporary fixture. HERMES_HOME
+ * is cleared rather than redirected because an explicit Hermes home has
+ * different creation semantics from the implicit HOME/.hermes fallback.
  */
 function withTempHome(fn: (tmpHome: string) => void): void {
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-hermes-test-"));
+  const tmpHome = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "remnic-hermes-test-")),
+  );
   const originalHome = process.env.HOME;
+  const originalHermesHome = process.env.HERMES_HOME;
   const originalXdg = process.env.XDG_CONFIG_HOME;
   try {
     process.env.HOME = tmpHome;
+    delete process.env.HERMES_HOME;
     delete process.env.XDG_CONFIG_HOME;
     fn(tmpHome);
   } finally {
-    process.env.HOME = originalHome;
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalHermesHome === undefined) {
+      delete process.env.HERMES_HOME;
+    } else {
+      process.env.HERMES_HOME = originalHermesHome;
+    }
     if (originalXdg === undefined) {
       delete process.env.XDG_CONFIG_HOME;
     } else {
@@ -149,6 +160,53 @@ function withTempHome(fn: (tmpHome: string) => void): void {
     try { fs.rmSync(tmpHome, { recursive: true }); } catch { /* ignore */ }
   }
 }
+
+test("withTempHome isolates connector writes and restores the exact environment", async () => {
+  const mod = await import("../../packages/remnic-core/src/connectors/index.ts");
+  const inheritedHermesHome = fs.mkdtempSync(
+    path.join(os.tmpdir(), "remnic-hermes-inherited-home-"),
+  );
+  const originalHome = process.env.HOME;
+  const originalHermesHome = process.env.HERMES_HOME;
+  try {
+    delete process.env.HOME;
+    process.env.HERMES_HOME = inheritedHermesHome;
+    withTempHome((tmpHome) => {
+      assert.equal(process.env.HOME, tmpHome);
+      assert.equal(process.env.HERMES_HOME, undefined);
+
+      const hermesDir = path.join(tmpHome, ".hermes");
+      const configPath = path.join(hermesDir, "config.yaml");
+      fs.mkdirSync(hermesDir, { recursive: true });
+      fs.writeFileSync(configPath, "model:\n  provider: anthropic\n", { mode: 0o600 });
+
+      const result = mod.upsertHermesConfig({
+        profile: "default",
+        host: "127.0.0.1",
+        port: 4318,
+        token: "remnic_hm_SYNTHETICISOLATION",
+      });
+      assert.equal(result.updated, true);
+      assert.equal(result.configPath, configPath);
+      assert.match(fs.readFileSync(configPath, "utf8"), /remnic_hm_SYNTHETICISOLATION/);
+    });
+    assert.equal(Object.hasOwn(process.env, "HOME"), false);
+    assert.equal(process.env.HERMES_HOME, inheritedHermesHome);
+    assert.deepEqual(fs.readdirSync(inheritedHermesHome), []);
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalHermesHome === undefined) {
+      delete process.env.HERMES_HOME;
+    } else {
+      process.env.HERMES_HOME = originalHermesHome;
+    }
+    fs.rmSync(inheritedHermesHome, { recursive: true, force: true });
+  }
+});
 
 function withTokenStoreRenameFailure(tokensPath: string, fn: () => void): void {
   const originalRename = fs.renameSync.bind(fs);
