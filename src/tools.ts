@@ -15,7 +15,7 @@ import {
 } from "./explicit-capture.js";
 import { log } from "@remnic/core/logger";
 import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
-import { executeMemoryPromote } from "./memory-promote.js";
+import { executeMemoryPromote } from "@remnic/plugin-openclaw/plugin/memory-promote";
 
 import { registerSharedContextTools } from "./shared-context-tools.js";
 import { WorkStorage } from "@remnic/core/work/storage";
@@ -28,7 +28,7 @@ import {
   blocksSupportPassportMutation,
   deriveMemoryActionPolicyEligibility,
   readReferencedMemoryForPolicyEligibility,
-} from "./memory-action-target.js";
+} from "@remnic/plugin-openclaw/plugin/memory-action-target";
 
 export interface ToolApi {
   registerTool(
@@ -2196,7 +2196,7 @@ Best for:
             "Namespaces are disabled. Enable `namespacesEnabled: true` to use memory promotion.",
           );
         }
-        // Executor extracted to ./memory-promote.ts (issue #1989 PR4).
+        // Executor lives in the plugin package (issue #1989 PR4, #2914 phase 3).
         const message = await executeMemoryPromote(
           orchestrator,
           params as { memoryId: string; fromNamespace?: string; toNamespace?: string; note?: string },

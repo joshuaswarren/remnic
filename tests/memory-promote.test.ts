@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { executeMemoryPromote } from "../src/memory-promote.js";
+import { executeMemoryPromote } from "../packages/plugin-openclaw/src/plugin/memory-promote.js";
 
 function buildOrchestrator() {
   const storageCalls: Array<{ namespace: string; memoryId?: string }> = [];

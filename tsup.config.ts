@@ -14,6 +14,8 @@ export default defineConfig({
   dts: false,
   external: [
     "openclaw",
+    "@remnic/plugin-openclaw/plugin/memory-action-target",
+    "@remnic/plugin-openclaw/plugin/memory-promote",
     "@remnic/plugin-openclaw/support-passport-model-route",
     "@remnic/server",
     "@node-rs/argon2",
