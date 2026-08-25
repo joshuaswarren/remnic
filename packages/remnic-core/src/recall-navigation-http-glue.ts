@@ -126,14 +126,16 @@ export async function maybeRespondRecallNavigation(
   service: EngramAccessService,
   scopeFor: ScopeFor,
 ): Promise<boolean> {
-  const action =
-    method === "POST" && (pathname === "/engram/v1/memory/expand" || pathname === "/remnic/v1/memory/expand")
-      ? "expand" as const
-      : method === "POST" && (pathname === "/engram/v1/memory/traverse" || pathname === "/remnic/v1/memory/traverse")
-        ? "traverse" as const
-        : undefined;
-  if (action === undefined) return false;
-  enforceTokenOp(action === "expand" ? "memory_expand" : "memory_traverse");
-  await respondNavigation(req, res, respondJson, readJsonBody, service, scopeFor, action);
-  return true;
+  if (method === "POST" && (pathname === "/engram/v1/memory/expand" || pathname === "/remnic/v1/memory/expand")) {
+    enforceTokenOp("memory_expand");
+    await respondNavigation(req, res, respondJson, readJsonBody, service, scopeFor, "expand");
+    return true;
+  }
+  if (method === "POST" && (pathname === "/engram/v1/memory/traverse" || pathname === "/remnic/v1/memory/traverse")) {
+    enforceTokenOp("memory_traverse");
+    await respondNavigation(req, res, respondJson, readJsonBody, service, scopeFor, "traverse");
+    return true;
+  }
+  return false;
 }
+
