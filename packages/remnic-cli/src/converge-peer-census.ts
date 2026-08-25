@@ -72,7 +72,16 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
   const watermark = censusWatermark(peerData.files);
   let peerManifest: ReconcileManifest | null = null;
   let clientBuilt = clientBuiltPrior;
-  if (reusableEntry && reusableEntry.watermark === watermark && reusableEntry.fileCount === peerData.files.length) {
+  if (
+    reusableEntry &&
+    reusableEntry.watermark === watermark &&
+    reusableEntry.fileCount === peerData.files.length &&
+    // A peer upgraded to manifest streaming must not keep serving this
+    // client's older parser semantics on an unchanged watermark (#2965):
+    // client-built rows stay a warm base only; the stream runs once and
+    // the checkpoint becomes a streamed entry.
+    !(args.manifestStream && clientBuiltPrior)
+  ) {
     // Cache hit: the peer census is byte-identical to the one this manifest
     // was built from. Overlay fresh mtime/bytes (newest-wins conflict
     // resolution reads them) and skip the manifest fetch.
@@ -172,37 +181,47 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
   }
   const mapped = tombstonedFileDigests(evidence, peerManifests);
   for (const digest of peerData.tombstones) mapped.add(digest);
+  const priorByPath = new Map((priorPeerFiles ?? []).map((file) => [file.path, file.sha256.toLowerCase()]));
+  let reused = 0;
+  for (const file of peerManifests.files) {
+    if (priorByPath.get(file.path) === file.sha256.toLowerCase()) reused += 1;
+  }
+  // Progress fires whether or not checkpointing is available (#2963): a
+  // read-only audit mount must not silence per-namespace stderr output.
+  args.onProgress?.({
+    side: "peer",
+    namespace: ns,
+    index: args.index,
+    total: args.total,
+    reused,
+    computed: peerManifests.files.length - reused,
+  });
   if (args.cache) {
-    const priorByPath = new Map((priorPeerFiles ?? []).map((file) => [file.path, file.sha256.toLowerCase()]));
-    let reused = 0;
-    for (const file of peerManifests.files) {
-      if (priorByPath.get(file.path) === file.sha256.toLowerCase()) reused += 1;
+    // Bind the checkpoint to the census it will be validated against
+    // (#2963): a file changing between the snapshot and the manifest
+    // stream makes the manifest's own census differ from the snapshot
+    // watermark. Caching those rows under the snapshot watermark would
+    // serve the wrong identities on a later identical-watermark hit, so
+    // the mismatch is skipped — the run still uses the newer manifest.
+    if (censusWatermark(peerManifests.files) === watermark) {
+      // Checkpoint per completed namespace: a transient failure later in
+      // the run leaves every earlier namespace's manifest work durable.
+      await args.cache.writeEntry({
+        version: 1,
+        scope: args.cache.scope,
+        side: "peer",
+        namespace: ns,
+        watermark,
+        fileCount: peerManifests.files.length,
+        capturedAtMs: Date.now(),
+        savedAt: new Date().toISOString(),
+        ...(args.peerManifestRevision !== undefined
+          ? { peerManifestRevision: args.peerManifestRevision }
+          : {}),
+        ...(clientBuilt ? { clientBuilt: true } : {}),
+        files: peerManifests.files,
+      });
     }
-    args.onProgress?.({
-      side: "peer",
-      namespace: ns,
-      index: args.index,
-      total: args.total,
-      reused,
-      computed: peerManifests.files.length - reused,
-    });
-    // Checkpoint per completed namespace: a transient failure later in the
-    // run leaves every earlier namespace's manifest work durable.
-    await args.cache.writeEntry({
-      version: 1,
-      scope: args.cache.scope,
-      side: "peer",
-      namespace: ns,
-      watermark,
-      fileCount: peerManifests.files.length,
-      capturedAtMs: Date.now(),
-      savedAt: new Date().toISOString(),
-      ...(args.peerManifestRevision !== undefined
-        ? { peerManifestRevision: args.peerManifestRevision }
-        : {}),
-      ...(clientBuilt ? { clientBuilt: true } : {}),
-      files: peerManifests.files,
-    });
   }
   return { manifest: peerManifests, tombstones: mapped };
 }

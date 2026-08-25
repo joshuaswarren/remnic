@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -9,7 +9,7 @@ import {
   RECONCILE_MANIFEST_SCHEMA_VERSION,
   type ReconcileManifestFile,
 } from "@remnic/core/reconcile/manifest.js";
-import type { MemoryStatus } from "@remnic/core/types.js";
+import { type MemoryStatus } from "@remnic/core/types.js";
 
 /**
  * Resumable converge planning cache (issue #2803).
@@ -48,6 +48,23 @@ export const CONVERGE_PLAN_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const CONVERGE_PLAN_CACHE_MAX_SCOPE_DIRS = 8;
 
 const SHA256_HEX = /^[0-9a-f]{64}$/i;
+
+/**
+ * Fail-open guard (#2965): a cached row whose memory status is not a real
+ * MemoryStatus must reject the whole entry (recompute) instead of feeding
+ * an unknown string into duplicate collapsing. Satisfies the union so a
+ * misspelled literal fails to compile; a NEW status added upstream merely
+ * makes warm entries miss once and recompute — the safe direction.
+ */
+const MEMORY_STATUSES: readonly MemoryStatus[] = [
+  "active",
+  "pending_review",
+  "rejected",
+  "quarantined",
+  "superseded",
+  "archived",
+  "forgotten",
+];
 
 export type ConvergePlanCacheSide = "local" | "peer";
 
@@ -170,7 +187,7 @@ function normalizeEntryFile(raw: unknown): ReconcileManifestFile | null {
     if (typeof candidate.id !== "string" || candidate.id.length === 0) return null;
     if (typeof candidate.contentHash !== "string" || !SHA256_HEX.test(candidate.contentHash)) return null;
     if (typeof candidate.category !== "string") return null;
-    if (typeof candidate.status !== "string") return null;
+    if (!MEMORY_STATUSES.includes(candidate.status as MemoryStatus)) return null;
     // normalizerVersion/identityResolutionVersion are OPTIONAL — streamed
     // peer manifest rows legitimately omit them. Version drift is caught by
     // the scope key (it folds the current constants in), never here.
@@ -395,10 +412,18 @@ async function pruneSiblingScopes(root: string, activeScope: string): Promise<vo
   }
 }
 
+/** Lock paths this process currently holds (#2965): a nested open in the
+ * same process must fail closed before any lock-file liveness reasoning. */
+const heldLockPaths = new Set<string>();
+/** Nonces of locks this process acquired but could not delete (#2965): a
+ * later open in the same process reclaims exactly these. */
+const failedReleaseNonces = new Map<string, string>();
+
 export class ConvergePlanCache {
   readonly scope: string;
   private readonly scopeDir: string;
   private readonly lockPath: string;
+  private readonly nonce = randomUUID();
   private closed = false;
 
   private constructor(root: string, scope: string) {
@@ -407,54 +432,81 @@ export class ConvergePlanCache {
     this.lockPath = path.join(root, "lock.json");
   }
 
+  private lockPayload(): string {
+    return `${JSON.stringify({
+      pid: process.pid,
+      startTicks: PROCESS_START_TICKS,
+      savedAt: new Date().toISOString(),
+      nonce: this.nonce,
+    })}\n`;
+  }
+
   /**
    * Open (and lock) the cache for one planning run. The lock is
    * cross-process: a second live planner fails fast with
    * {@link ConvergePlanCacheBusyError} instead of racing checkpoint writes.
-   * A lock left by a dead process is stolen; a lock file is only ever
-   * replaced atomically, so a steal racing the true owner at worst causes
-   * redundant recompute — entries themselves are content-addressed and
-   * written via rename, so concurrent identical writes cannot interleave.
+   * A lock left by a dead process — or by this process's own failed
+   * release — is stolen; a lock file is only ever replaced atomically, so
+   * a steal racing the true owner at worst causes redundant recompute —
+   * entries themselves are content-addressed and written via rename, so
+   * concurrent identical writes cannot interleave.
    */
   static async open(memoryDir: string, scope: string): Promise<ConvergePlanCache> {
     const root = convergePlanCacheRoot(memoryDir);
     const scopeDir = path.join(root, scope);
     await ensureSafePlanCacheTree(memoryDir, scopeDir);
     const lockPath = path.join(root, "lock.json");
-    const payload = `${JSON.stringify({
-      pid: process.pid,
-      startTicks: PROCESS_START_TICKS,
-      savedAt: new Date().toISOString(),
-    })}\n`;
-    try {
-      await fs.writeFile(lockPath, payload, { flag: "wx" });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      let held: { pid?: unknown; startTicks?: unknown; savedAt?: unknown } = {};
-      try {
-        held = JSON.parse(await fs.readFile(lockPath, "utf8")) as {
-          pid?: unknown;
-          startTicks?: unknown;
-          savedAt?: unknown;
-        };
-      } catch {
-        held = {};
-      }
-      const owner = lockOwnerLive(held);
-      if (owner.live) throw new ConvergePlanCacheBusyError(owner.pid);
-      // Stale (dead owner, reused PID, or unreadable) — steal atomically.
-      // ponytail: two processes can both steal in a narrow race; worst case
-      // is duplicated work plus benign identical entry writes, not corruption.
-      const tmp = `${lockPath}.${process.pid}.tmp`;
-      await fs.writeFile(tmp, payload);
-      await fs.rename(tmp, lockPath);
-    }
+    if (heldLockPaths.has(lockPath)) throw new ConvergePlanCacheBusyError(process.pid);
+    heldLockPaths.add(lockPath);
     const cache = new ConvergePlanCache(root, scope);
     try {
-      await pruneSiblingScopes(root, scope);
-      await pruneScopeDir(cache.scopeDir);
-    } catch {
-      // Pruning must never fail the plan.
+      const payload = cache.lockPayload();
+      try {
+        await fs.writeFile(lockPath, payload, { flag: "wx" });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        let held: { pid?: unknown; startTicks?: unknown; savedAt?: unknown; nonce?: unknown } = {};
+        try {
+          held = JSON.parse(await fs.readFile(lockPath, "utf8")) as {
+            pid?: unknown;
+            startTicks?: unknown;
+            savedAt?: unknown;
+            nonce?: unknown;
+          };
+        } catch {
+          held = {};
+        }
+        // Same-owner reclaim (#2965): a lock this process acquired but
+        // could not delete, or one carrying our exact process identity
+        // while we hold no open cache, has no live foreign owner — steal
+        // it instead of busy-failing on our own leftover.
+        const sameOwner =
+          held.pid === process.pid &&
+          ((typeof held.nonce === "string" && failedReleaseNonces.get(lockPath) === held.nonce) ||
+            (PROCESS_START_TICKS !== null && held.startTicks === PROCESS_START_TICKS));
+        if (!sameOwner) {
+          const owner = lockOwnerLive(held);
+          if (owner.live) throw new ConvergePlanCacheBusyError(owner.pid);
+        }
+        // Stale (dead owner, reused PID, our own leftover, or unreadable)
+        // — steal atomically.
+        // ponytail: two processes can both steal in a narrow race; worst
+        // case is duplicated work plus benign identical entry writes, not
+        // corruption.
+        const tmp = `${lockPath}.${process.pid}.tmp`;
+        await fs.writeFile(tmp, payload);
+        await fs.rename(tmp, lockPath);
+      }
+      failedReleaseNonces.delete(lockPath);
+      try {
+        await pruneSiblingScopes(root, scope);
+        await pruneScopeDir(cache.scopeDir);
+      } catch {
+        // Pruning must never fail the plan.
+      }
+    } catch (error) {
+      heldLockPaths.delete(lockPath);
+      throw error;
     }
     return cache;
   }
@@ -493,6 +545,7 @@ export class ConvergePlanCache {
    */
   async writeEntry(entry: ConvergePlanCacheEntry): Promise<void> {
     if (this.closed) return;
+    await this.renewLease();
     const fileName = entryFileName(entry.side, entry.namespace, entry.watermark);
     const finalPath = path.join(this.scopeDir, fileName);
     const tmpPath = `${finalPath}.${process.pid}.${Date.now()}.tmp`;
@@ -518,10 +571,51 @@ export class ConvergePlanCache {
     }
   }
 
-  /** Release the cross-process lock. Safe to call more than once. */
+  /**
+   * Refresh savedAt while the cache stays open (#2965): on hosts without
+   * readable /proc start ticks the 24h lease is the only steal guard, and a
+   * plan legitimately longer than that must not have its lock stolen
+   * mid-run. Renewal rides the per-namespace checkpoint cadence; it skips
+   * a lock that was stolen from us (nonce mismatch).
+   */
+  private async renewLease(): Promise<void> {
+    if (this.closed) return;
+    try {
+      const held = JSON.parse(await fs.readFile(this.lockPath, "utf8")) as { nonce?: unknown };
+      if (typeof held.nonce !== "string" || held.nonce !== this.nonce) return;
+      const tmp = `${this.lockPath}.${process.pid}.renew.tmp`;
+      await fs.writeFile(tmp, this.lockPayload());
+      await fs.rename(tmp, this.lockPath);
+    } catch {
+      // Best-effort: a failed renewal never fails the plan.
+    }
+  }
+
+  /**
+   * Release the cross-process lock. Safe to call more than once. Only the
+   * lock instance this cache owns is unlinked (#2965): a lock stolen from
+   * us carries another owner's nonce and must survive this close. When our
+   * own unlink fails, the nonce is retained so a later open in this
+   * process reclaims the orphan instead of busy-failing on it.
+   */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    await unlinkQuiet(this.lockPath);
+    heldLockPaths.delete(this.lockPath);
+    let owned = false;
+    try {
+      const held = JSON.parse(await fs.readFile(this.lockPath, "utf8")) as { nonce?: unknown };
+      owned = typeof held.nonce === "string" && held.nonce === this.nonce;
+    } catch {
+      // Unreadable lock: leave it for the lease and reclaim paths.
+    }
+    if (!owned) return;
+    try {
+      await fs.unlink(this.lockPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        failedReleaseNonces.set(this.lockPath, this.nonce);
+      }
+    }
   }
 }
