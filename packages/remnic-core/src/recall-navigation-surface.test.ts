@@ -398,7 +398,7 @@ test("CLI navigate expand uses the shared service and accepts a handle", async (
     const storage = f.storages.default!;
     const id = await writeMemory(storage, "CLI handle target.");
     await f.history.record(SESSION, [id]);
-    const actions = new Map<string, (...args: unknown[]) => Promise<void>>();
+    const actions = new Map<string, (...args: unknown[]) => Promise<void> | void>();
     const cmd: CliCommand = {
       command(name: string) {
         const child: CliCommand = {

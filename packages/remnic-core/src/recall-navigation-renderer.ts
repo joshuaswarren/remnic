@@ -8,11 +8,13 @@
 
 import type { RecallNavigationResult } from "./recall-navigation.js";
 
-export function renderNavigationResult(
-  result:
-    | RecallNavigationResult
-    | { ok: false; action: RecallNavigationResult extends never ? never : string; error: string; message: string },
-): string {
+type NavigationRenderInput = RecallNavigationResult extends infer Result
+  ? Result extends { rendered: string }
+    ? Omit<Result, "rendered">
+    : never
+  : never;
+
+export function renderNavigationResult(result: NavigationRenderInput): string {
   if (!result.ok) {
     return ["# Memory navigation", "", `- error: ${result.error}`, `- ${result.message}`, ""].join("\n");
   }
