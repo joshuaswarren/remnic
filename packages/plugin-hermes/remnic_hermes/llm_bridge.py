@@ -20,9 +20,11 @@ background generation without ever seeing a provider credential:
   compare. Unauthenticated local callers are denied. The token is never
   logged.
 - Requests are body-bounded and deadline-bounded. One monotonic deadline
-  covers queue wait plus delegate execution. Request bodies are never
-  logged, and error responses are fixed strings (no exception text, no
-  echoes).
+  covers queue wait plus delegate execution. Handler threads are capped
+  at accept time, before authentication or the completion semaphore, so
+  an unauthenticated loopback flood cannot exhaust the process. Request
+  bodies are never logged, and error responses are fixed strings (no
+  exception text, no echoes).
 
 Background-only: this bridge is not on the recall path. Recall keeps going
 directly from the provider to the Remnic daemon; if the bridge is down,
@@ -61,6 +63,25 @@ _HEALTH_PATH = "/healthz"
 _DEFAULT_MAX_BODY_BYTES = 524_288
 _DEFAULT_TIMEOUT_SECONDS = 120.0
 _WORKERS = 2
+_MAX_HANDLERS = 16
+_OVER_CAPACITY_BODY = json.dumps(
+    {
+        "error": {
+            "message": "too many connections",
+            "type": "unavailable",
+            "param": None,
+            "code": "unavailable",
+        }
+    }
+).encode("utf-8")
+_OVER_CAPACITY_RESPONSE = (
+    b"HTTP/1.1 503 Service Unavailable\r\n"
+    b"Content-Type: application/json\r\n"
+    b"Content-Length: "
+    + str(len(_OVER_CAPACITY_BODY)).encode("ascii")
+    + b"\r\nConnection: close\r\n\r\n"
+    + _OVER_CAPACITY_BODY
+)
 _ALLOWED_POLICY_KEYS = {
     "enabled",
     "host",
@@ -316,7 +337,9 @@ class HermesLlmBridge:
         self._server: _BridgeServer | None = None
         self._thread: threading.Thread | None = None
         self._slots = threading.BoundedSemaphore(_WORKERS)
+        self._handler_slots = threading.BoundedSemaphore(_MAX_HANDLERS)
         self._inflight = 0
+        self._handlers = 0
         self._inflight_lock = threading.Lock()
         self._live_procs: set[Any] = set()
         self._use_timeout_kwarg = _accepts_kwarg(complete, "timeout")
@@ -391,6 +414,24 @@ class HermesLlmBridge:
     def active_work(self) -> int:
         with self._inflight_lock:
             return self._inflight
+
+    @property
+    def active_handlers(self) -> int:
+        with self._inflight_lock:
+            return self._handlers
+
+    def acquire_handler(self) -> bool:
+        """Reserve one handler slot without blocking. False means the cap is full."""
+        if not self._handler_slots.acquire(blocking=False):
+            return False
+        with self._inflight_lock:
+            self._handlers += 1
+        return True
+
+    def release_handler(self) -> None:
+        with self._inflight_lock:
+            self._handlers -= 1
+        self._handler_slots.release()
 
     def complete_with_deadline(self, messages: list[dict[str, str]]) -> BridgeCompletionResult:
         """Delegate to the host resolver under one absolute policy deadline.
@@ -508,6 +549,33 @@ class _BridgeServer(ThreadingHTTPServer):
             self.address_family = socket.AF_INET6
         self.bridge = bridge
         super().__init__(address, handler)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        """Cap handler threads at accept time, before auth or the worker semaphore."""
+        if not self.bridge.acquire_handler():
+            self._reject_over_capacity(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.bridge.release_handler()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.bridge.release_handler()
+
+    def _reject_over_capacity(self, request: Any) -> None:
+        try:
+            if isinstance(request, socket.socket):
+                request.settimeout(0.05)
+                request.sendall(_OVER_CAPACITY_RESPONSE)
+        except OSError:
+            pass
+        finally:
+            self.shutdown_request(request)
 
 
 class _BridgeHandler(BaseHTTPRequestHandler):
