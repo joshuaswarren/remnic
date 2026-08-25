@@ -13,6 +13,7 @@ import {
 } from "./access-schema.js";
 
 export { reapplyCategoryCoercion };
+export { applyBriefingLocationContext } from "./location/tagging.js";
 
 export function splitCanonicalWriteRequest<T extends { rawCategory?: string }>(
   request: T,
