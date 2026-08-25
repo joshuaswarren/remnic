@@ -20,7 +20,9 @@ import { ProfilingCollector } from "../profiling.js";
 import { trustResultFor, type TrustStageResultItem } from "../trust-score-stage.js";
 import type { RecallResultFormatter } from "./recall-result-formatter.js";
 import type { IdentityInjectionMode, PluginConfig, QmdSearchResult } from "../types.js";
-import { applyRecallStateViews } from "../recall-state-view-wire.js";
+import { stateViewPacketActive } from "../recall-state-view-anchors.js";
+import { resultStateViewKey, stateViewPacketKeys } from "../recall-state-view.js";
+ import { applyRecallStateViews } from "../recall-state-view-wire.js";
 
 export interface RecallEntryDeps {
   appendRecallSection(
@@ -300,6 +302,15 @@ export class RecallEntryCoordinator {
     );
     if (injectable.length === 0) return;
 
+    // #2928 — packet-atomic final budgeting: under packet semantics (state
+    // view active, no historical asOf pin) rows of one supersession packet
+    // share their canonical packet root key, so the section coordinator's
+    // character/token cap admits or drops the packet as a unit.
+    const packetKeys =
+      stateViewPacketActive(options.stateViewActive === true, options.asOfMs)
+        ? stateViewPacketKeys(injectable)
+        : [];
+
     const formatted = this.deps.recallResultFormatter.formatQmdResultEntries(
       options.title,
       injectable,
@@ -324,6 +335,9 @@ export class RecallEntryCoordinator {
           ...(memoryId ? { memoryId } : {}),
           ...(result.path ? { memoryPath: result.path } : {}),
           ...(result.namespace ? { memoryNamespace: result.namespace } : {}),
+          ...(packetKeys[index] && resultStateViewKey(result)
+            ? { packetKey: packetKeys[index] }
+            : {}),
         },
       );
     }
