@@ -126,6 +126,7 @@
     "packages/remnic-core/src/retrieval-agents.ts",
     "packages/remnic-core/src/retrieval-tiers.ts",
     "packages/remnic-core/src/lifecycle/**",
+    "packages/remnic-core/src/lifecycle/seed-graduation-config-types.ts",
     "packages/remnic-core/src/lifecycle/seed-graduation.ts",
     "packages/remnic-core/src/lifecycle/tombstones.ts",
     "packages/remnic-core/src/harmonic-retrieval.ts",
@@ -229,7 +230,8 @@
     "packages/remnic-core/src/orchestration/projection-rebuild-schedule.ts": "memory-projection",
     "packages/plugin-openclaw/src/delegate-runtime.ts": "openclaw-delegate-runtime",
     "packages/remnic-core/src/storage/tombstone-migration-sources.ts": "tombstone-blocked-capture",
-    "packages/remnic-core/src/lifecycle/seed-graduation.ts": "seed-graduation"
+    "packages/remnic-core/src/lifecycle/seed-graduation.ts": "seed-graduation",
+    "packages/remnic-core/src/lifecycle/seed-graduation-config-types.ts": "seed-graduation"
   },
   "grandfathered": [
     "packages/remnic-core/src/lifecycle.ts",
