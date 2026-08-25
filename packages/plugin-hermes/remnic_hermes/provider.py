@@ -1192,6 +1192,19 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
             "agentId": {"type": "string", "description": "Agent ID producing this output."},
             "title": {"type": "string", "description": "Short title for the output."},
             "content": {"type": "string", "description": "Markdown content to write."},
+            "authority": {
+                "type": "string",
+                "enum": ["informational", "advisory", "binding"],
+                "description": "Envelope authority class. `binding` additionally requires the operator config `sharedContextAllowBindingAuthority: true`.",
+            },
+            "expiresAt": {
+                "type": "string",
+                "description": "ISO-8601 instant strictly after the write time and at most 10 years out. Past, invalid, or over-bound values are rejected.",
+            },
+            "supersedes": {
+                "type": "string",
+                "description": "Id of the shared item this output supersedes (non-empty, single line).",
+            },
         },
         ["agentId", "title", "content"],
     )
@@ -1641,12 +1654,14 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         agentId: str,  # noqa: N803
         title: str,
         content: str,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         return await self._client_call(
             lambda client: client.shared_context_write_output(
                 agent_id=agentId,
                 title=title,
                 content=content,
+                **kwargs,
             )
         )
 

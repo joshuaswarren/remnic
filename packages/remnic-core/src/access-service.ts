@@ -35,6 +35,7 @@ import { ReplicaDivergenceMonitor } from "./replica-divergence.js";
 import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 import { buildAccessWriteRequestFingerprint, buildObserveRequestFingerprint } from "./write-envelope.js";
 import { UNATTRIBUTED_ACCESS_WRITE_ORIGIN } from "./shared-context/envelope-io.js";
+import { isSharedContextWriteInputError } from "./shared-context/write-output-controls.js";
 export type { EngramAccessHealthResponse, EngramAccessQmdCollectionState, EngramAccessQmdHealthResponse };
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import {
@@ -4603,6 +4604,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     agentId: string;
     title: string;
     content: string;
+    authority?: string; expiresAt?: string; supersedes?: string;
     /** Authenticated principal resolved by the surface, never client-supplied. */
     principal?: string;
   }): Promise<unknown> {
@@ -4615,19 +4617,16 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
         agentId: request.agentId,
         title: request.title,
         content: request.content,
-        // The origin is server-owned in BOTH cases (issue #1957 review
-        // round 4): the authenticated principal when one resolved, and a
-        // reserved unattributed token otherwise — a principal-less
-        // authenticated request must never stamp the client's `agentId`
-        // as audit metadata. The client label survives only as the
-        // producer, which feeds grouping and display, never authority.
+        authority: request.authority,
+        expiresAt: request.expiresAt,
+        supersedes: request.supersedes,
         ...(request.principal
           ? { authenticatedIdentity: request.principal }
           : { unattributedOrigin: UNATTRIBUTED_ACCESS_WRITE_ORIGIN }),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.startsWith("shared-context write origin mismatch")) {
+      if (isSharedContextWriteInputError(message)) {
         throw new EngramAccessInputError(message);
       }
       throw error;

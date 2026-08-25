@@ -1,3 +1,4 @@
+import { sharedContextMcpTools } from "./access-mcp-shared-context-tools.js";
 import { randomUUID } from "node:crypto";
 import {
   MCP_ADMIN_OPS_MIGRATED_OPERATIONS, MCP_ADMIN_OPS_TOOLS,
@@ -1301,80 +1302,9 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      // ── Shared Context / Compounding tools ────────────────────────────
-      {
-        name: "engram.shared_context_write_output",
-        description: "Write agent work product into shared-context directory for cross-agent coordination.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            agentId: { type: "string", description: "Agent ID producing this output." },
-            title: { type: "string", description: "Short title for the output." },
-            content: { type: "string", description: "Markdown content to write." },
-          },
-          required: ["agentId", "title", "content"],
-          additionalProperties: false,
-        },
-      },
-      {
-        name: "engram.shared_feedback_record",
-        description: "Append approval/rejection decision into shared-context feedback inbox for compounding learning.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            agent: { type: "string", description: "Agent name that produced the output." },
-            decision: { type: "string", enum: ["approved", "approved_with_feedback", "rejected"] },
-            reason: { type: "string" },
-            date: { type: "string", description: "ISO timestamp. Defaults to now." },
-            learning: { type: "string" },
-            outcome: { type: "string" },
-            severity: { type: "string", enum: ["low", "medium", "high"] },
-            confidence: { type: "number", description: "Confidence 0-1." },
-            workflow: { type: "string" },
-            tags: { type: "array", items: { type: "string" } },
-            evidenceWindowStart: { type: "string" },
-            evidenceWindowEnd: { type: "string" },
-            refs: { type: "array", items: { type: "string" } },
-          },
-          required: ["agent", "decision", "reason"],
-          additionalProperties: false,
-        },
-      },
-      {
-        name: "engram.shared_priorities_append",
-        description: "Append priorities text into shared-context inbox for curator merge.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            agentId: { type: "string" },
-            text: { type: "string", description: "Priority notes (markdown)." },
-          },
-          required: ["agentId", "text"],
-          additionalProperties: false,
-        },
-      },
-      {
-        name: "engram.shared_context_cross_signals_run",
-        description: "Generate cross-signal markdown + JSON artifacts from agent outputs and feedback.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            date: { type: "string", description: "YYYY-MM-DD. Defaults to today." },
-          },
-          additionalProperties: false,
-        },
-      },
-      {
-        name: "engram.shared_context_curate_daily",
-        description: "Generate daily roundtable summary (deterministic baseline aggregation).",
-        inputSchema: {
-          type: "object",
-          properties: {
-            date: { type: "string", description: "YYYY-MM-DD. Defaults to today." },
-          },
-          additionalProperties: false,
-        },
-      },
+      // ── Shared Context tools (extracted; access-mcp.ts is at its ratchet
+      // ceiling — issue #2920) ─────────────────────────────────────────
+      ...sharedContextMcpTools,
       {
         name: "engram.compounding_weekly_synthesize",
         description:
