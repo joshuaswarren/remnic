@@ -21,6 +21,7 @@ class FakeBackend implements SearchBackend {
   strictEmbeds = 0;
   strictCollectionEmbeds: string[] = [];
   disposed = 0;
+  disposeWait: Promise<void> | null = null;
   available = true;
   calls: Array<{
     method: string;
@@ -28,6 +29,7 @@ class FakeBackend implements SearchBackend {
     maxResults: number | undefined;
   }> = [];
   availabilitySignals: Array<AbortSignal | undefined> = [];
+  probeSignals: Array<AbortSignal | undefined> = [];
   probeCalls = 0;
   ensureSignals: Array<AbortSignal | undefined> = [];
   ensureCollections: Array<string | undefined> = [];
@@ -54,8 +56,9 @@ class FakeBackend implements SearchBackend {
       : this.results;
   }
 
-  async probe(): Promise<boolean> {
+  async probe(execution?: SearchExecutionOptions): Promise<boolean> {
     this.probeCalls += 1;
+    this.probeSignals.push(execution?.signal);
     return this.available;
   }
 
@@ -89,6 +92,7 @@ class FakeBackend implements SearchBackend {
 
   async dispose(): Promise<void> {
     this.disposed += 1;
+    await this.disposeWait;
   }
 
   async search(
@@ -470,8 +474,54 @@ test("ensureNamespaceCollection forwards abort signals to backend collection che
   });
 
   assert.equal(state, "present");
+  assert.deepEqual(backend.probeSignals, [controller.signal]);
   assert.deepEqual(backend.ensureSignals, [controller.signal]);
   assert.deepEqual(backend.ensureCollections, ["openclaw-engram--ns-6d61696e"]);
+});
+
+test("disableSearchBackends releases cached namespace backends without recreating search", async () => {
+  const backend = new FakeBackend(false);
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => backend,
+  );
+
+  assert.equal(await router.ensureNamespaceCollection("main"), "present");
+  await router.disableSearchBackends();
+
+  await router.disableSearchBackends();
+
+  assert.equal(backend.disposed, 1, "repeated runtime disable must not double-dispose the same backend");
+  assert.equal(await router.backendForNamespace("main"), null);
+  assert.equal(await router.ensureNamespaceCollection("main"), "missing");
+  assert.equal(backend.probeCalls, 1, "disabled records must not recreate a concrete backend");
+});
+
+test("clearCache releases evicted namespace backend handles before recreation", async () => {
+  const oldBackend = new FakeBackend(false);
+  const newBackend = new FakeBackend(false);
+  let releaseOldDispose: (() => void) | undefined;
+  oldBackend.disposeWait = new Promise<void>((resolve) => { releaseOldDispose = resolve; });
+  let createCalls = 0;
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      createCalls += 1;
+      return createCalls === 1 ? oldBackend : newBackend;
+    },
+  );
+
+  await router.ensureNamespaceCollection("main");
+  router.clearCache();
+  const recreation = router.ensureNamespaceCollection("main");
+  await Promise.resolve();
+  assert.equal(createCalls, 1, "recreation must wait for the evicted handle disposal barrier");
+  releaseOldDispose?.();
+  assert.equal(await recreation, "present");
+  assert.equal(oldBackend.disposed, 1);
+  assert.equal(createCalls, 2);
 });
 
 test("legacy default namespace root auto-creates its base collection (broad root, #1929)", async () => {
