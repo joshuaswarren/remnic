@@ -296,22 +296,15 @@ export function reconcileStateViewPairs<T extends StateViewResult>(results: read
 }
 
 /**
- * #2859 — packet-counting cap. A predecessor/successor chain admitted
- * together is ONE complete evidence packet: it consumes a single slot of
- * the user cap, and the slice never splits a packet at the boundary (no
- * underfill from post-cap orphan removal). Rows keep their incoming
- * (MMR) order; packets are ordered by first appearance. Call
- * reconcileStateViewPairs first so orphans never consume a slot.
+ * #2928 — per-row packet root keys for the final output budget. Runs the
+ * same namespace-qualified union-find as {@link capStateViewPackets}:
+ * every row of one evidence packet shares the root key, so a downstream
+ * budget that admits one row of the packet can admit them all or none.
+ * Blank-key rows get unique per-index roots (distinct singletons).
  */
-export function capStateViewPackets<T extends StateViewResult>(
+export function stateViewPacketKeys<T extends StateViewResult>(
   ordered: readonly T[],
-  limit: number,
-): T[] {
-  const safeLimit =
-    typeof limit === "number" && Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
-  if (safeLimit === 0) return [];
-  if (ordered.length === 0) return [];
-
+): string[] {
   const byPred = buildSuccessorMap(ordered, []);
   // Union-find over row keys; blank-key rows become per-index singletons.
   const parent = new Map<string, string>();
@@ -347,14 +340,35 @@ export function capStateViewPackets<T extends StateViewResult>(
     const succIdx = keyToIndex.get(succKey);
     if (predIdx !== undefined && succIdx !== undefined) union(keys[predIdx]!, keys[succIdx]!);
   }
+  return keys.map((key) => root(key));
+}
+
+/**
+ * #2859 — packet-counting cap. A predecessor/successor chain admitted
+ * together is ONE complete evidence packet: it consumes a single slot of
+ * the user cap, and the slice never splits a packet at the boundary (no
+ * underfill from post-cap orphan removal). Rows keep their incoming
+ * (MMR) order; packets are ordered by first appearance. Call
+ * reconcileStateViewPairs first so orphans never consume a slot.
+ */
+export function capStateViewPackets<T extends StateViewResult>(
+  ordered: readonly T[],
+  limit: number,
+): T[] {
+  const safeLimit =
+    typeof limit === "number" && Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+  if (safeLimit === 0) return [];
+  if (ordered.length === 0) return [];
+
+  const keys = stateViewPacketKeys(ordered);
   // Packets ordered by first appearance; admit whole packets until the cap.
   const selectedRoots = new Set<string>();
   for (let i = 0; i < ordered.length && selectedRoots.size < safeLimit; i += 1) {
-    selectedRoots.add(root(keys[i]!));
+    selectedRoots.add(keys[i]!);
   }
   const selected: T[] = [];
   for (let i = 0; i < ordered.length; i += 1) {
-    if (selectedRoots.has(root(keys[i]!))) selected.push(ordered[i]!);
+    if (selectedRoots.has(keys[i]!)) selected.push(ordered[i]!);
   }
   return selected;
 }

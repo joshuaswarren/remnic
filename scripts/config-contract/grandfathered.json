@@ -991,16 +991,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "inlineSourceAttributionEnabled",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "inlineSourceAttributionFormat",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "ircEnabled",
     "issue": "#1990"
   },
