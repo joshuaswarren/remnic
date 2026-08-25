@@ -27,6 +27,13 @@ export interface RecallSectionAppendOptions {
   memoryId?: string;
   memoryPath?: string;
   memoryNamespace?: string;
+  /**
+   * #2928 — state-view packet key (canonical `stateViewPacketKeys` root).
+   * Atomic chunks sharing a packetKey are ONE evidence packet: the final
+   * budget admits or drops them together, so a historical row can never
+   * render without its linked successor. Absent on non-state rows.
+   */
+  packetKey?: string;
 }
 
 export interface RecallSectionChunk {
@@ -35,6 +42,7 @@ export interface RecallSectionChunk {
   memoryId?: string;
   memoryPath?: string;
   memoryNamespace?: string;
+  packetKey?: string;
 }
 
 export type RecallSectionBuckets = Map<
@@ -160,6 +168,7 @@ export class RecallSectionCoordinator {
         ...(options.memoryNamespace
           ? { memoryNamespace: options.memoryNamespace }
           : {}),
+        ...(options.packetKey ? { packetKey: options.packetKey } : {}),
       });
     } else {
       existing.push(finalContent);
@@ -454,15 +463,55 @@ export class RecallSectionCoordinator {
         let includedPostAtomicContent = false;
         const postAtomicContents: string[] = [];
         let includedLeadingContent = false;
+        // #2928 — state-view packets: atomic chunks sharing a packetKey are
+        // ONE evidence packet (a historical row plus its linked successor).
+        // The packet renders as a block at the FIRST member's position,
+        // members in incoming order, and is admitted or dropped together —
+        // the final character/token budget can never emit one side alone.
+        // Chunks without a packetKey keep the pre-#2928 per-row behavior.
+        const packetFirstIndex = new Map<string, number>();
+        const packetMembers = new Map<number, number[]>();
         for (const [index, chunk] of section.chunks.entries()) {
+          if (!chunk.atomic || !chunk.packetKey) continue;
+          const first = packetFirstIndex.get(chunk.packetKey);
+          if (first === undefined) {
+            packetFirstIndex.set(chunk.packetKey, index);
+            packetMembers.set(index, [index]);
+          } else {
+            packetMembers.get(first)!.push(index);
+          }
+        }
+        const admitMemoryRefs = (memberIndexes: readonly number[]): void => {
+          for (const memberIndex of memberIndexes) {
+            const member = section.chunks[memberIndex]!;
+            if (member.memoryId && member.memoryPath) {
+              includedMemories.push(
+                member.memoryNamespace
+                  ? { id: member.memoryId, path: member.memoryPath, namespace: member.memoryNamespace }
+                  : { id: member.memoryId, path: member.memoryPath },
+              );
+            }
+          }
+        };
+        for (const [index, chunk] of section.chunks.entries()) {
+          const members = chunk.atomic ? packetMembers.get(index) : undefined;
+          if (chunk.atomic && chunk.packetKey && members === undefined) {
+            // Non-first packet member: decided with its block at the first
+            // member's position — never admitted alone (#2928).
+            continue;
+          }
+          const memberIndexes = members ?? [index];
+          const content = members
+            ? members.map((memberIndex) => section.chunks[memberIndex]!.content).join("\n\n")
+            : chunk.content;
           if (
             !chunk.atomic &&
             includedAtomicCount === 0 &&
             index < firstAtomicIndex
           ) {
             const candidate = rendered
-              ? `${rendered}\n\n${chunk.content}`
-              : chunk.content;
+              ? `${rendered}\n\n${content}`
+              : content;
             if (
               candidate.length <= allocatedSectionAvailable &&
               estimateTokenCount(candidate) <= allocatedTokenAvailable
@@ -476,8 +525,8 @@ export class RecallSectionCoordinator {
           }
 
           const candidate = rendered
-            ? `${rendered}\n\n${chunk.content}`
-            : chunk.content;
+            ? `${rendered}\n\n${content}`
+            : content;
           if (
             candidate.length > allocatedSectionAvailable ||
             estimateTokenCount(candidate) > allocatedTokenAvailable
@@ -486,32 +535,26 @@ export class RecallSectionCoordinator {
               chunk.atomic &&
               includedAtomicCount === 0 &&
               includedLeadingContent &&
-              chunk.content.length <= allocatedSectionAvailable &&
-              estimateTokenCount(chunk.content) <= allocatedTokenAvailable
+              content.length <= allocatedSectionAvailable &&
+              estimateTokenCount(content) <= allocatedTokenAvailable
             ) {
-              rendered = chunk.content;
+              rendered = content;
               includedLeadingContent = false;
-              includedAtomicCount = 1;
-              if (chunk.memoryId && chunk.memoryPath) {
-                includedMemories.push(
-                  chunk.memoryNamespace
-                    ? { id: chunk.memoryId, path: chunk.memoryPath, namespace: chunk.memoryNamespace }
-                    : { id: chunk.memoryId, path: chunk.memoryPath },
-                );
-              }
+              includedAtomicCount += memberIndexes.length;
+              admitMemoryRefs(memberIndexes);
               continue;
             }
             if (
               !chunk.atomic &&
               includedAtomicCount === 0 &&
               includedLeadingContent &&
-              chunk.content.length <= allocatedSectionAvailable &&
-              estimateTokenCount(chunk.content) <= allocatedTokenAvailable
+              content.length <= allocatedSectionAvailable &&
+              estimateTokenCount(content) <= allocatedTokenAvailable
             ) {
-              rendered = chunk.content;
+              rendered = content;
               includedLeadingContent = false;
               includedPostAtomicContent = true;
-              postAtomicContents.push(chunk.content);
+              postAtomicContents.push(content);
               continue;
             }
             truncated = true;
@@ -520,17 +563,11 @@ export class RecallSectionCoordinator {
 
           rendered = candidate;
           if (chunk.atomic) {
-            includedAtomicCount += 1;
-            if (chunk.memoryId && chunk.memoryPath) {
-              includedMemories.push(
-                chunk.memoryNamespace
-                  ? { id: chunk.memoryId, path: chunk.memoryPath, namespace: chunk.memoryNamespace }
-                  : { id: chunk.memoryId, path: chunk.memoryPath },
-              );
-            }
+            includedAtomicCount += memberIndexes.length;
+            admitMemoryRefs(memberIndexes);
           } else {
             includedPostAtomicContent = true;
-            postAtomicContents.push(chunk.content);
+            postAtomicContents.push(content);
           }
         }
         if (includedAtomicCount === 0) {

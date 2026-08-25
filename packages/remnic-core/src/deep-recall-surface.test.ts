@@ -900,3 +900,96 @@ test("deep recall seeds resolve collection-qualified paths when namespaces are d
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("HTTP deep recall rejects malformed, empty, and fractional maxSteps instead of defaulting (issue #2915)", async () => {
+  // `""` previously coerced to 0 (a documented DISABLE value) and `"abc"`
+  // fell back to the configured default: both silently reinterpreted what
+  // the caller explicitly sent (§39).
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-maxsteps-"));
+  try {
+    const config = parseConfig({
+      memoryDir,
+      deepRecall: { enabled: true, maxSteps: 0 },
+    });
+    const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
+    const host = service as unknown as { orchestrator: unknown };
+    let deepRecallCalls = 0;
+    host.orchestrator = {
+      config,
+      async getStorage() {
+        throw new Error("the service must not be reached with invalid maxSteps");
+      },
+      async searchAcrossNamespaces() {
+        deepRecallCalls += 1;
+        return [];
+      },
+      localLlm: null,
+      fastGatewayLlm: null,
+    };
+    const server = new EngramAccessHttpServer({
+      service,
+      port: 0,
+      trustPrincipalHeader: true,
+      adminConsoleEnabled: false,
+      authTokenEntriesGetter: () => [{ token: "operator-token", capabilities: { version: 1 } }],
+    });
+    const status = await server.start();
+    try {
+      for (const maxSteps of ["", "abc", "1.5", -1]) {
+        const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/recall/deep`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: "Bearer operator-token" },
+          body: JSON.stringify({ query: "payments routing", maxSteps }),
+        });
+        assert.equal(response.status, 400, `maxSteps ${JSON.stringify(maxSteps)} must be rejected`);
+        const body = await response.text();
+        assert.match(body, /maxSteps/, "the rejection names the rejected field");
+      }
+      assert.equal(deepRecallCalls, 0, "no search ran for rejected input");
+    } finally {
+      await server.stop();
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("service deepRecall propagates a pre-aborted transport signal before any seed search (issue #2915)", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-deep-recall-abort-"));
+  try {
+    const config = parseConfig({
+      memoryDir,
+      namespacesEnabled: false,
+      deepRecall: { enabled: true, maxSteps: 2 },
+    });
+    const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
+    const host = service as unknown as { orchestrator: unknown };
+    let seedSearches = 0;
+    host.orchestrator = {
+      config,
+      async getStorage() {
+        return { dir: memoryDir, async readMemoryByPath() {
+          return null;
+        }, async getMemoryById() {
+          return null;
+        } };
+      },
+      async searchAcrossNamespaces() {
+        seedSearches += 1;
+        return [];
+      },
+      localLlm: null,
+      fastGatewayLlm: null,
+    };
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      service.deepRecall({ query: "payments routing", abortSignal: controller.signal }),
+      (err: unknown) => err instanceof Error && err.name === "AbortError",
+      "cancellation reaches the engine through the service and surfaces as AbortError",
+    );
+    assert.equal(seedSearches, 0, "a cancelled invocation performs no seed search");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
