@@ -5,7 +5,8 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { DEFAULT_MEETINGS_CONFIG } from "../packages/remnic-core/src/meetings/config.ts";
-import { runContractCheck } from "../scripts/config-contract/contract-check.ts";
+import { findFirstDuplicateJsonMember, runContractCheck } from "../scripts/config-contract/contract-check.ts";
+import { extractRealConfigKeys } from "../scripts/config-contract/extract-parsed-keys.ts";
 
 /**
  * meetings.* config-contract focus (issue #2936).
@@ -58,6 +59,40 @@ function schemaPaths(schema: JsonSchemaNode): string[] {
   return out;
 }
 
+/** Observe raw duplicate members, then walk the post-parse schema (#2949). */
+function meetingsSchemaObservation(raw: string): {
+  paths: string[];
+  meetingsPaths: string[];
+  rawDuplicate: { key: string; path: string } | null;
+} {
+  const parsed = JSON.parse(raw) as { configSchema?: JsonSchemaNode };
+  const paths = schemaPaths(parsed.configSchema ?? {});
+  return {
+    paths,
+    meetingsPaths: paths.filter((keyPath) => keyPath === "meetings" || keyPath.startsWith("meetings.")),
+    rawDuplicate: findFirstDuplicateJsonMember(raw),
+  };
+}
+
+const RAW_DUPLICATE_MEETINGS_MANIFEST = `{
+  "configSchema": {
+    "properties": {
+      "meetings": {
+        "type": "object",
+        "properties": { "enabled": { "type": "boolean" } }
+      },
+      "meetings": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "mergeGapMinutes": { "type": "number" }
+        }
+      }
+    }
+  }
+}
+`;
+
 test("parsed-keys snapshot carries each meetings runtime key exactly once (#2936)", () => {
   const snapshot = JSON.parse(
     fs.readFileSync(path.join(REPO_ROOT, "scripts", "config-contract", "parsed-keys.snapshot.json"), "utf8"),
@@ -70,29 +105,28 @@ test("parsed-keys snapshot carries each meetings runtime key exactly once (#2936
     CANONICAL_MEETINGS_KEYS.filter((key) => key !== "meetings"),
     "parsed meetings keys must be exactly the runtime MeetingsConfig surface",
   );
+  const doubledSites = Object.entries(extractRealConfigKeys(REPO_ROOT).keyMultiplicity).filter(
+    ([key, count]) => key.startsWith("meetings.") && count > 1,
+  );
+  assert.deepEqual(doubledSites, [], "parser multiplicity must stay 1 for every meetings.* key");
 });
 
 test("every manifest maps each meetings runtime key to exactly one canonical schema path (#2936)", () => {
   for (const manifestRel of MANIFEST_PATHS) {
-    const manifest = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, manifestRel), "utf8")) as {
-      configSchema?: JsonSchemaNode;
-    };
-    const paths = schemaPaths(manifest.configSchema ?? {});
-
-    const meetingsPaths = paths.filter((keyPath) => keyPath === "meetings" || keyPath.startsWith("meetings."));
-    const duplicates = meetingsPaths.filter((keyPath, index) => meetingsPaths.indexOf(keyPath) !== index);
+    const observed = meetingsSchemaObservation(fs.readFileSync(path.join(REPO_ROOT, manifestRel), "utf8"));
+    assert.equal(observed.rawDuplicate, null, `${manifestRel}: duplicate JSON member before parse`);
+    const duplicates = observed.meetingsPaths.filter(
+      (keyPath, index) => observed.meetingsPaths.indexOf(keyPath) !== index,
+    );
     assert.deepEqual(duplicates, [], `${manifestRel}: doubled meetings schema keys`);
     assert.deepEqual(
-      [...meetingsPaths].sort(),
+      [...observed.meetingsPaths].sort(),
       CANONICAL_MEETINGS_KEYS,
       `${manifestRel}: meetings schema paths must be exactly the canonical runtime set`,
     );
 
-    // No second surface: nothing meeting-shaped may live outside the
-    // canonical `meetings` block — an alias block (or a stray leaf) feeding
-    // the same runtime keys is the doubling this test exists to catch.
-    const outsideCanonical = paths.filter(
-      (keyPath) => /meeting/i.test(keyPath) && !meetingsPaths.includes(keyPath),
+    const outsideCanonical = observed.paths.filter(
+      (keyPath) => /meeting/i.test(keyPath) && !observed.meetingsPaths.includes(keyPath),
     );
     assert.deepEqual(
       outsideCanonical,
@@ -120,6 +154,18 @@ test("contract check reports zero meetings violations and zero meetings grandfat
     [],
     "meetings keys grandfathered in scripts/config-contract/grandfathered.json — the contract may not carry meetings exceptions",
   );
+});
+
+test("duplicate-schema observation sees raw doubled meetings members (#2949)", () => {
+  const postParse = JSON.parse(RAW_DUPLICATE_MEETINGS_MANIFEST) as { configSchema?: JsonSchemaNode };
+  const postParsePaths = schemaPaths(postParse.configSchema ?? {}).filter(
+    (keyPath) => keyPath === "meetings" || keyPath.startsWith("meetings."),
+  );
+  const postParseDuplicates = postParsePaths.filter((keyPath, index) => postParsePaths.indexOf(keyPath) !== index);
+  assert.deepEqual(postParseDuplicates, [], "JSON.parse collapses duplicate members — this is the mask");
+  const observed = meetingsSchemaObservation(RAW_DUPLICATE_MEETINGS_MANIFEST);
+  assert.equal(observed.rawDuplicate?.key, "meetings");
+  assert.equal(observed.rawDuplicate?.path, "configSchema.properties.meetings");
 });
 
 test("raw duplicate meetings members fail closed before JSON.parse collapses them (#2940)", () => {

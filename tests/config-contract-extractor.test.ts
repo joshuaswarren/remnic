@@ -62,6 +62,29 @@ test("local helper parameters shadow aliases without losing literal reads", () =
   assert.ok(keys.includes("enabled"), JSON.stringify(keys));
 });
 
+test("extractor reports doubled parse*Config construction sites before Set-dedup (#2949)", () => {
+  const { keys, keyMultiplicity } = extractLocalFunctionFixture("parseFixtureDoubledParserConfig");
+  assert.ok(keys.includes("meetings.enabled"), JSON.stringify(keys));
+  assert.equal(
+    keys.filter((key) => key === "meetings.enabled").length,
+    1,
+    "keys[] stays unique after Set-dedup",
+  );
+  assert.equal(keyMultiplicity["meetings.enabled"], 2);
+  assert.equal(keyMultiplicity["meetings"], 2);
+});
+
+test("extractor reports doubled local literal reads before Set-dedup (#2949)", () => {
+  const { keys, keyMultiplicity } = extractLocalFunctionFixture();
+  assert.ok(keys.includes("literal"), JSON.stringify(keys));
+  assert.equal(
+    keys.filter((key) => key === "literal").length,
+    1,
+    "keys[] stays unique after Set-dedup",
+  );
+  assert.equal(keyMultiplicity["literal"], 3);
+});
+
 test("hand-rolled fixture: aliases, coercion helpers, nested blocks, and destructuring all resolve", () => {
   const { keys } = extractFixture();
   assert.ok(keys.includes("handRolled.enabled"), keys.join(","));
