@@ -8,7 +8,6 @@ import {
   type PluginConfig,
   type ResolveSecretRefFn,
   applyOfflineSyncFileContentChunk,
-  buildOfflineSyncSnapshotFromBase,
   compileOfflineSyncExcludeGlobs,
   envConvergePeerRequestTimeoutMs,
   isInternalRemnicStatePath,
@@ -21,7 +20,6 @@ import { resolveCorpusNamespaceRoots } from "@remnic/core/corpus-watermark.js";
 import { listNamespaces } from "@remnic/core/namespaces/migrate.js";
 import {
   type ConvergeCursorState,
-  convergeIdentityCachePath,
   defaultConvergeCursorPath,
   deriveConvergeCursorBase,
   normalizeConvergePeerUrl,
@@ -30,7 +28,6 @@ import {
 } from "@remnic/core/reconcile/cursor.js";
 import {
   type ReconcileManifest,
-  buildReconcileManifest,
   collapseActiveFactDuplicates,
 } from "@remnic/core/reconcile/manifest.js";
 import {
@@ -40,9 +37,8 @@ import {
   type ReconcileSemanticAgreement,
   planReconciliation,
 } from "@remnic/core/reconcile/plan.js";
-import { parseFrontmatter } from "@remnic/core/storage.js";
+import { planLocalNamespaceCensus } from "./converge-local-census.js";
 import { planPeerNamespaceCensus } from "./converge-peer-census.js";
-import { readLocalTombstoneEvidence, tombstonedFileDigests } from "./converge-tombstones.js";
 import {
   ConvergePlanCache,
   ConvergePlanCacheBusyError,
@@ -51,7 +47,6 @@ import {
 } from "./converge-plan-cache.js";
 
 import type { ConvergeConflictPolicy } from "@remnic/core/types.js";
-import { loadConvergeIdentityCache, saveConvergeIdentityCache } from "./converge-identity-cache.js";
 import { formatConvergeApplyReport, formatConvergeReport } from "./converge-report.js";
 import {
   DEFAULT_PEER_REQUEST_TIMEOUT_MS,
@@ -232,102 +227,6 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   }
   const memoryDir = options.cursorDir ?? config?.memoryDir;
   const userExcludeRegexps = compileOfflineSyncExcludeGlobs(config?.offlineSyncExcludes ?? []);
-
-
-  if (!options.localFilesByNamespace && config) {
-    const roots = await resolveCorpusNamespaceRoots({ config });
-    const discovered = await listNamespaces({ config });
-    for (const entry of discovered) {
-      namespacesToPlan.add(entry.namespace);
-    }
-    for (const rootInfo of roots) {
-      const ns = rootInfo.namespace;
-      namespacesToPlan.add(ns);
-      const identityCachePath = memoryDir
-        ? convergeIdentityCachePath(memoryDir, options.peerUrl ?? "local", ns)
-        : undefined;
-      const identityCache = await loadConvergeIdentityCache(identityCachePath, config.inlineSourceAttributionFormat);
-      // The exclusion callback runs before every snapshot record; without the
-      // persisted classification it reads and parses every candidate file,
-      // defeating the warm-cache skip entirely.
-      const classificationUpdates = new Map<string, { statIdentity: string; excluded: boolean }>();
-      const io = await createOfflineStorageIo(rootInfo.rootDir, undefined, {
-        persisted: identityCache,
-        updates: classificationUpdates,
-      });
-      const snapshotStarted = Date.now();
-      const snapshot = await buildOfflineSyncSnapshotFromBase({
-        root: rootInfo.rootDir,
-        sourceId: "local",
-        includeContent: false,
-        // Peer manifest-stream is include_transcripts=false; apply-file-content
-        // also rejects transcripts. Listing them locally made them look like
-        // pushes and then counted as failed.
-        includeTranscripts: false,
-        userExcludeRegexps,
-        readFile: io.readFile,
-        readFileDigest: io.readFileDigest,
-        excludeFile: io.excludeFile,
-      });
-      const snapshotMs = Date.now() - snapshotStarted;
-
-
-      const files: ReconcileFileState[] = snapshot.files
-        .filter((record) => !isInternalRemnicStatePath(record.path))
-        .map((record) => ({
-          path: record.path,
-          sha256: record.sha256,
-          mtimeMs: record.mtimeMs,
-          bytes: record.bytes,
-        }));
-      localMap.set(ns, files);
-      const evidence = await readLocalTombstoneEvidence(rootInfo.rootDir);
-      let manifestReadFailed = false;
-      const manifestStarted = Date.now();
-      const manifest = await buildReconcileManifest({
-        files,
-        parseMemory: parseFrontmatter,
-        citationTemplate: config.inlineSourceAttributionFormat,
-        ...(identityCache.size > 0 ? { cachedFiles: [...identityCache.values()] } : {}),
-        readFile: async (file) => {
-          const readFile = io.readFile;
-          if (!readFile) {
-            manifestReadFailed = true;
-            throw new Error("offline storage io cannot read manifest files");
-          }
-          try {
-            return await readFile({
-              root: rootInfo.rootDir,
-              path: file.path,
-              filePath: path.join(rootInfo.rootDir, file.path),
-            });
-          } catch (error) {
-            manifestReadFailed = true;
-            throw error;
-          }
-        },
-      });
-      const identityHits = files.reduce(
-        (count, file) => count + (identityCache.get(file.path)?.sha256 === file.sha256 ? 1 : 0),
-        0
-      );
-      console.error(
-        `converge plan: namespace=${ns} identityCache=${identityCache.size} identityHits=${identityHits} identityMisses=${files.length - identityHits} snapshotFiles=${files.length} snapshotMs=${snapshotMs} manifestMs=${Date.now() - manifestStarted}`
-      );
-      if (manifestReadFailed) {
-        throw new Error(`failed to build local reconciliation manifest for namespace ${ns}`);
-      }
-      localManifests.set(ns, manifest);
-      localTombstones.set(ns, tombstonedFileDigests(evidence, manifest));
-      await saveConvergeIdentityCache(
-        identityCachePath,
-        manifest,
-        config.inlineSourceAttributionFormat,
-        identityCache,
-        classificationUpdates
-      );
-    }
-  }
   const peerUrl = options.peerUrl;
 
   // Resumable planning cache (#2803): active only when this run does live
@@ -344,7 +243,32 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
         )
       : null;
   try {
-    // Local census already ran above with warm digest + offlineSyncExcludes.
+    if (!options.localFilesByNamespace && config) {
+      const roots = await resolveCorpusNamespaceRoots({ config });
+      const discovered = await listNamespaces({ config });
+      for (const entry of discovered) {
+        namespacesToPlan.add(entry.namespace);
+      }
+      for (const [rootIndex, rootInfo] of roots.entries()) {
+        namespacesToPlan.add(rootInfo.namespace);
+        const census = await planLocalNamespaceCensus({
+          rootDir: rootInfo.rootDir,
+          namespace: rootInfo.namespace,
+          index: rootIndex + 1,
+          total: roots.length,
+          citationTemplate: config.inlineSourceAttributionFormat,
+          cache,
+          signal: options.signal,
+          onProgress: options.onProgress,
+          memoryDir,
+          peerUrl: options.peerUrl,
+          userExcludeRegexps,
+        });
+        localMap.set(rootInfo.namespace, census.files);
+        localManifests.set(rootInfo.namespace, census.manifest);
+        localTombstones.set(rootInfo.namespace, census.tombstones);
+      }
+    }
 
     if (memoryDir && peerUrl) {
       for (const namespace of await discoverCursorNamespaces(memoryDir, peerUrl)) {
