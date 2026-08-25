@@ -177,7 +177,7 @@ export interface CodexSubscriptionRunnerDeps {
   /** Runs `codex exec`. Default: isolated subprocess via launchProcess. */
   runCodexExec?: (request: CodexSubscriptionExecRequest) => Promise<CodexSubscriptionExecResult>;
   /** Runs `codex login status`. Default: isolated subprocess. Receives the
-   * login-status timeout budget (capped by the request deadline) and the
+   * shared login-status ceiling (not any one caller's deadline) and the
    * shared-check abort signal (fires when the last waiter leaves). */
   runLoginStatus?: (
     executable: string,
@@ -210,6 +210,8 @@ interface LoginStatusCacheEntry {
 }
 
 const loginStatusCache = new Map<string, LoginStatusCacheEntry>();
+let nextLoginCacheScope = 0;
+const loginCacheScopeByRunner = new WeakMap<CodexCliFallbackRunner, number>();
 const childrenByRunner = new WeakMap<CodexCliFallbackRunner, Set<number>>();
 const runnerByOwner = new WeakMap<object, CodexCliFallbackRunner>();
 const shutdownByRunner = new WeakMap<CodexCliFallbackRunner, AbortController>();
@@ -239,6 +241,7 @@ export function createCodexSubscriptionRunner(deps: CodexSubscriptionRunnerDeps 
       { ...request, options: { ...request.options, signal } },
       runnerDeps,
       envSource,
+      runner,
     );
   };
   childrenByRunner.set(runner, children);
@@ -320,7 +323,8 @@ export function beginCodexSubscriptionShutdown(
 async function runCodexSubscriptionRequest(
   request: CodexCliFallbackRequest,
   deps: CodexSubscriptionRunnerDeps,
-  envSource: NodeJS.ProcessEnv
+  envSource: NodeJS.ProcessEnv,
+  runner: CodexCliFallbackRunner,
 ): Promise<CodexCliFallbackResult> {
   const { config } = request;
   assertNoApiKeyConfig(config);
@@ -339,7 +343,7 @@ async function runCodexSubscriptionRequest(
     throw abortErrorOf(request.options.signal);
   }
   await assertSubscriptionLogin(executable, env, deps, {
-    loginStatusTimeoutMs: Math.min(LOGIN_STATUS_TIMEOUT_MS, timeoutMs),
+    runner,
     callerTimeoutMs: timeoutMs,
     deadlineStartedAt,
     signal: request.options.signal,
@@ -373,7 +377,7 @@ async function runCodexSubscriptionRequest(
     });
 
     if (result.status !== 0) {
-      const failure = execFailureError(result, remainingTimeoutMs, executable, env);
+      const failure = execFailureError(result, remainingTimeoutMs, executable, env, runner);
       if (failure instanceof CodexSubscriptionTimeoutError) {
         throw failure;
       }
@@ -460,8 +464,7 @@ function isAllowedEnvKey(key: string): boolean {
 }
 
 interface LoginCheckContext {
-  /** Budget for the login-status subprocess itself. */
-  loginStatusTimeoutMs: number;
+  runner: CodexCliFallbackRunner;
   /** The caller's overall effective deadline (login + exec). */
   callerTimeoutMs: number;
   deadlineStartedAt: number;
@@ -483,7 +486,7 @@ async function assertSubscriptionLogin(
   ctx: LoginCheckContext
 ): Promise<void> {
   const now = deps.now ?? Date.now;
-  const cacheKey = `${executable}\0${resolveCodexAuthHome(env) ?? ""}`;
+  const cacheKey = loginCacheKey(ctx.runner, executable, env);
   const cached = loginStatusCache.get(cacheKey);
   if (cached && now() - cached.at < LOGIN_STATUS_CACHE_TTL_MS) {
     if (!cached.settled || (await authStoreFingerprint(env)) === cached.fingerprint) {
@@ -504,7 +507,7 @@ async function assertSubscriptionLogin(
     controller: new AbortController(),
     promise: Promise.resolve(undefined),
   };
-  entry.promise = runLoginStatusCheck(executable, env, deps, ctx, entry);
+  entry.promise = runLoginStatusCheck(executable, env, deps, entry);
   entry.promise.then(
     () => {
       entry.settled = true;
@@ -524,16 +527,15 @@ async function runLoginStatusCheck(
   executable: string,
   env: NodeJS.ProcessEnv,
   deps: CodexSubscriptionRunnerDeps,
-  ctx: LoginCheckContext,
   entry: LoginStatusCacheEntry
 ): Promise<void> {
   const runLoginStatus = deps.runLoginStatus!;
-  const result = await runLoginStatus(executable, env, ctx.loginStatusTimeoutMs, entry.controller.signal);
+  const result = await runLoginStatus(executable, env, LOGIN_STATUS_TIMEOUT_MS, entry.controller.signal);
   const output = `${result.stdout}\n${result.stderr}`.trim();
   if (TIMEOUT_PATTERN.test(output)) {
     // A login-status subprocess timeout is a deadline expiry, not an auth
     // failure — never report it as "unauthenticated".
-    throw new CodexSubscriptionTimeoutError(ctx.loginStatusTimeoutMs);
+    throw new CodexSubscriptionTimeoutError(LOGIN_STATUS_TIMEOUT_MS);
   }
   if (result.status === 0 && LOGIN_OK_PATTERN.test(output)) {
     entry.fingerprint = await authStoreFingerprint(env);
@@ -631,6 +633,19 @@ function resolveCodexAuthHome(env: NodeJS.ProcessEnv): string | undefined {
   if (env.CODEX_HOME) return env.CODEX_HOME;
   const profile = env.HOME ?? env.USERPROFILE;
   return profile ? path.join(profile, ".codex") : undefined;
+}
+
+function loginCacheScope(runner: CodexCliFallbackRunner): number {
+  let id = loginCacheScopeByRunner.get(runner);
+  if (id === undefined) {
+    id = ++nextLoginCacheScope;
+    loginCacheScopeByRunner.set(runner, id);
+  }
+  return id;
+}
+
+function loginCacheKey(runner: CodexCliFallbackRunner, executable: string, env: NodeJS.ProcessEnv): string {
+  return `${loginCacheScope(runner)}\0${executable}\0${resolveCodexAuthHome(env) ?? ""}`;
 }
 
 /**
@@ -744,7 +759,8 @@ function execFailureError(
   result: CodexSubscriptionExecResult,
   timeoutMs: number,
   executable: string,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  runner: CodexCliFallbackRunner,
 ): Error {
   const combined = `${result.stderr}\n${result.stdout}`;
   // The authoritative timeout marker wins over auth-pattern text: a timed-out
@@ -755,7 +771,7 @@ function execFailureError(
   }
   if (AUTH_FAILURE_PATTERN.test(combined)) {
     // Re-check login on the next request; the cached status is now stale.
-    loginStatusCache.delete(`${executable}\0${env.CODEX_HOME ?? env.HOME ?? ""}`);
+    loginStatusCache.delete(loginCacheKey(runner, executable, env));
     return new CodexSubscriptionAuthError(
       "expired_or_revoked",
       "codex-subscription: the Codex CLI rejected the request as unauthenticated " +

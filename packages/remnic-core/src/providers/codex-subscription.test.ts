@@ -452,10 +452,10 @@ test("request deadline starts before login and login consumes the same budget", 
       options: { timeoutMs },
     });
 
-  // Login shares the 5s budget (capped at the 10s login-status ceiling) and
-  // exec only gets what login left: 5s - 2s.
+  // The shared login subprocess uses the 10s ceiling; this caller still
+  // spends its 5s budget and exec only gets what login left: 5s - 2s.
   await call(5_000);
-  assert.deepEqual(loginTimeouts, [5_000]);
+  assert.deepEqual(loginTimeouts, [10_000]);
   assert.equal(execCalls.length, 1);
   assert.equal(execCalls[0]?.timeoutMs, 3_000);
 
@@ -729,6 +729,99 @@ test("shared login check: each caller times out on its own budget, without cance
   // A's success is cached: a third request runs no new login check.
   await call(5_000);
   assert.equal(loginCalls, 1);
+});
+
+test("shared login check does not inherit the first waiter's shorter deadline", async () => {
+  __codexSubscriptionTestHooks.resetLoginStatusCache();
+  const loginTimeouts: number[] = [];
+  const loginPending = Promise.withResolvers<{ status: number | null; stdout: string; stderr: string }>();
+  const runner = createCodexSubscriptionRunner({
+    env: { HOME: "/home/alice", PATH: "/usr/bin:/bin" },
+    now: () => 0,
+    runLoginStatus: (_executable, _env, timeoutMs) => {
+      loginTimeouts.push(timeoutMs);
+      return loginPending.promise;
+    },
+    runCodexExec: async () => ({ status: 0, stdout: "", stderr: "", outputText: "ok" }),
+  });
+  const call = (timeoutMs: number) =>
+    runner({
+      config: { executable: "codex-fake" },
+      modelId: "gpt-5.6-luna",
+      messages: [{ role: "user", content: "hi" }],
+      options: { timeoutMs },
+    });
+
+  const short = call(120);
+  await flushLoop();
+  assert.deepEqual(loginTimeouts, [10_000], "shared check uses the login-status ceiling, not the first waiter's 120ms");
+
+  const long = call(10_000);
+  await flushLoop();
+  assert.equal(loginTimeouts.length, 1, "the longer waiter must reuse the in-flight check");
+
+  const startedAt = Date.now();
+  await assert.rejects(short, (error: unknown) => {
+    assert.ok(error instanceof CodexSubscriptionTimeoutError);
+    assert.equal(error.name, "TimeoutError");
+    return true;
+  });
+  assert.ok(Date.now() - startedAt < 5_000, "short waiter must not wait for the 10s ceiling");
+
+  loginPending.resolve({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" });
+  assert.equal((await long).content, "ok");
+});
+
+test("in-flight login checks are scoped to the owning runner", async () => {
+  __codexSubscriptionTestHooks.resetLoginStatusCache();
+  let loginCallsA = 0;
+  let loginCallsB = 0;
+  const pendingA = Promise.withResolvers<{ status: number | null; stdout: string; stderr: string }>();
+  const pendingB = Promise.withResolvers<{ status: number | null; stdout: string; stderr: string }>();
+  const env = { HOME: "/home/alice", PATH: "/usr/bin:/bin" };
+  const makeRunner = (
+    bump: () => void,
+    pending: Promise<{ status: number | null; stdout: string; stderr: string }>,
+  ) =>
+    createCodexSubscriptionRunner({
+      env,
+      now: () => 0,
+      runLoginStatus: () => {
+        bump();
+        return pending;
+      },
+      runCodexExec: async () => ({ status: 0, stdout: "", stderr: "", outputText: "ok" }),
+    });
+  const runnerA = makeRunner(() => {
+    loginCallsA++;
+  }, pendingA.promise);
+  const runnerB = makeRunner(() => {
+    loginCallsB++;
+  }, pendingB.promise);
+  const call = (target: typeof runnerA, signal?: AbortSignal) =>
+    target({
+      config: { executable: "codex-fake" },
+      modelId: "gpt-5.6-luna",
+      messages: [{ role: "user", content: "hi" }],
+      options: { timeoutMs: 60_000, ...(signal ? { signal } : {}) },
+    });
+
+  const abortA = new AbortController();
+  const first = call(runnerA, abortA.signal);
+  await flushLoop();
+  assert.equal(loginCallsA, 1);
+
+  const second = call(runnerB);
+  await flushLoop();
+  assert.equal(loginCallsB, 1, "unrelated runner must not share the in-flight login");
+  assert.equal(loginCallsA, 1);
+
+  abortA.abort(new Error("A cancelled"));
+  await assert.rejects(first, (error: unknown) => error instanceof Error && error.message === "A cancelled");
+
+  pendingB.resolve({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" });
+  assert.equal((await second).content, "ok");
+  assert.equal(loginCallsB, 1);
 });
 
 test("caller abort reaches the cold login check: no spawn when pre-aborted, wait aborts in flight", async () => {
