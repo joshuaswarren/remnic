@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction.js";
+import { classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog } from "./extraction.js";
 
 test("classifyExtractionThrownError: 401/403 → auth_config", () => {
   assert.equal(classifyExtractionThrownError({ status: 401 }), "auth_config");
@@ -36,4 +36,22 @@ test("classifyFallbackParseFailure: maps the gateway parse-failure reasons", () 
   assert.equal(classifyFallbackParseFailure("no_models"), "auth_config");
   assert.equal(classifyFallbackParseFailure("http_error"), "provider_retryable");
   assert.equal(classifyFallbackParseFailure("empty"), "parse_empty");
+  assert.equal(classifyFallbackParseFailure("schema_rejection"), "parse_empty");
+  assert.equal(classifyFallbackParseFailure("timeout"), "provider_retryable");
+});
+
+test("formatExtractionParseFailureLog keeps the greppable prefix and distinct fields", () => {
+  const line = formatExtractionParseFailureLog({
+    failureReason: "http_error",
+    attemptedModel: "openai/test-model",
+    httpStatus: 502,
+    errorClass: "http_5xx",
+    traceId: "trace-1",
+  });
+  assert.match(line, /^extraction fallback returned no parsed output /);
+  assert.match(line, /failureReason=http_error/);
+  assert.match(line, /modelUsed=openai\/test-model/);
+  assert.match(line, /errorClass=http_5xx/);
+  assert.match(line, /httpStatus=502/);
+  assert.match(line, /traceId=trace-1/);
 });

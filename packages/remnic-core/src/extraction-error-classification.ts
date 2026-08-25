@@ -39,14 +39,49 @@ export function classifyExtractionThrownError(err: unknown): ExtractionFailureCl
  * genuine empty-parse.
  */
 export function classifyFallbackParseFailure(
-  reason: "no_models" | "empty" | "http_error",
+  reason: "no_models" | "empty" | "http_error" | "schema_rejection" | "timeout",
 ): ExtractionFailureClass {
   switch (reason) {
     case "no_models":
       return "auth_config";
     case "http_error":
+    case "timeout":
       return "provider_retryable";
     case "empty":
+    case "schema_rejection":
       return "parse_empty";
   }
+}
+
+/**
+ * Operator-visible extraction parse-failure line. Keeps the historical
+ * greppable prefix and appends the fields that used to live only at debug.
+ */
+export function formatExtractionParseFailureLog(input: {
+  failureReason: string;
+  attemptedModel?: string;
+  httpStatus?: number;
+  errorClass?: string;
+  traceId: string;
+}): string {
+  const modelUsed =
+    typeof input.attemptedModel === "string" && input.attemptedModel.length > 0
+      ? input.attemptedModel
+      : "unknown";
+  const errorClass =
+    typeof input.errorClass === "string" && input.errorClass.length > 0
+      ? input.errorClass
+      : "none";
+  const httpStatus =
+    typeof input.httpStatus === "number" && Number.isFinite(input.httpStatus)
+      ? String(input.httpStatus)
+      : "none";
+  return [
+    "extraction fallback returned no parsed output",
+    `failureReason=${input.failureReason}`,
+    `modelUsed=${modelUsed}`,
+    `errorClass=${errorClass}`,
+    `httpStatus=${httpStatus}`,
+    `traceId=${input.traceId}`,
+  ].join(" ");
 }

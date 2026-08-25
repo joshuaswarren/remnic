@@ -1,5 +1,4 @@
 import { log } from "./logger.js";
-import path from "node:path";
 import type { AgentPersonaModelConfig, GatewayConfig, ModelProviderConfig, PluginConfig } from "./types.js";
 import { extractJsonCandidates } from "./json-extract.js";
 import {
@@ -10,27 +9,38 @@ import {
 import {
   resolveProviderApiKey,
   getGatewayRuntimeAuthForModel,
-  type GetRuntimeAuthForModelFn,
-  type ResolveApiKeyFn,
 } from "./resolve-provider-secret.js";
 import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   codexSubscriptionBuiltinProviderConfig,
-  getCodexSubscriptionRunnerForOwner,
 } from "./providers/codex-subscription.js";
 import { loadModelsJsonProviders } from "./models-json.js";
 import {
   abortReason,
+  classifyThrownProviderError,
+  defaultOpenClawWorkspaceDir,
   extractResponsesOutputText,
+  fallbackLlmRuntimeContextFromConfig,
   isTerminalCodexSubscriptionError,
+  isTimeoutError,
   isUnsupportedJsonSchemaError,
+  normalizeRuntimePath,
   raceFallbackLlmDeadline,
+  readGatewayWorkspaceDir,
   tryCodexSubscriptionProvider,
   withCodexRuntimeShutdown,
+  type FallbackLlmRuntimeContext,
+  type StructuredParseFailure,
+  type StructuredParseResult,
 } from "./fallback-llm-codex-subscription.js";
-import type { CodexCliFallbackRunner } from "./cli-fallback.js";
-import { resolveHomeDir } from "./runtime/env.js";
-import { expandTildePath } from "./utils/path.js";
+
+export {
+  fallbackLlmRuntimeContextFromConfig,
+  type FallbackLlmRuntimeContext,
+  type StructuredParseFailure,
+  type StructuredParseFailureReason,
+  type StructuredParseResult,
+} from "./fallback-llm-codex-subscription.js";
 
 export interface FallbackLlmOptions {
   temperature?: number;
@@ -96,36 +106,9 @@ export interface FallbackLlmResponse {
   };
 }
 
-export interface FallbackLlmRuntimeContext {
-  agentDir?: string;
-  getRuntimeAuthForModel?: GetRuntimeAuthForModelFn | null;
-  resolveApiKeyForProvider?: ResolveApiKeyFn | null;
-  workspaceDir?: string;
-  /** Per-runtime Codex child owner. Shutdown must terminate only this runner. */
-  codexSubscriptionRunner?: CodexCliFallbackRunner;
-}
-
-export function fallbackLlmRuntimeContextFromConfig(
-  config: Pick<
-    GatewayBackedRuntimeConfig,
-    "providerApiKeyResolver" | "runtimeAuthForModelResolver" | "workspaceDir"
-  >,
-  overrides: FallbackLlmRuntimeContext = {},
-): FallbackLlmRuntimeContext {
-  return {
-    workspaceDir: config.workspaceDir,
-    resolveApiKeyForProvider: config.providerApiKeyResolver,
-    getRuntimeAuthForModel: config.runtimeAuthForModelResolver,
-    codexSubscriptionRunner: getCodexSubscriptionRunnerForOwner(config),
-    ...overrides,
-  };
-}
-
-type GatewayBackedRuntimeConfig = {
-  providerApiKeyResolver?: ResolveApiKeyFn | null;
-  runtimeAuthForModelResolver?: GetRuntimeAuthForModelFn | null;
-  workspaceDir?: string;
-};
+type ChatCompletionOutcome =
+  | { ok: true; response: FallbackLlmResponse }
+  | { ok: false; failure: Omit<StructuredParseFailure, "result"> };
 
 interface ModelRef {
   providerId: string;
@@ -145,16 +128,7 @@ const LEGACY_PROVIDER_IDS = new Set(["openai-codex", "claude-cli"]);
 const MANAGED_SECRETREF_MARKER = ["secretref", "managed"].join("-");
 const PROVIDER_API_KEY_FIELD = ["api", "Key"].join("") as keyof ModelProviderConfig;
 
-/**
- * Built-in provider fallbacks for providers that are commonly configured via
- * OAuth or gateway-managed auth rather than an explicit apiKey in
- * openclaw.json. These entries let resolveProviderConfig() succeed so the
- * chain proceeds to tryModel() → resolveRuntimeAuth(), which is where the
- * gateway's native OAuth token exchange happens.
- *
- * Without these, OAuth-only providers like `openai` are rejected with
- * "provider not found" before runtime auth is ever attempted.
- */
+/** Built-in OAuth/managed-auth providers so resolveProviderConfig reaches runtime auth. */
 const BUILT_IN_PROVIDER_FALLBACKS: Record<string, ModelProviderConfig> = {
   anthropic: {
     baseUrl: "https://api.anthropic.com/v1",
@@ -218,6 +192,18 @@ export class FallbackLlmClient {
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
     options: FallbackLlmOptions = {},
   ): Promise<FallbackLlmResponse | null> {
+    const outcome = await this.completeChat(messages, options);
+    return outcome.ok ? outcome.response : null;
+  }
+
+  /**
+   * Same transport walk as chatCompletion, but tagged so structured parse can
+   * tell timeout / empty / HTTP error apart instead of collapsing them to null.
+   */
+  private async completeChat(
+    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+    options: FallbackLlmOptions = {},
+  ): Promise<ChatCompletionOutcome> {
     const models = this.getModelChain(
       options.agentId,
       options.model,
@@ -226,9 +212,31 @@ export class FallbackLlmClient {
     );
     if (models.length === 0) {
       log.warn("task LLM: no models configured in gateway");
-      return null;
+      return { ok: false, failure: { failureReason: "no_models", errorClass: "no_models" } };
     }
     options = withCodexRuntimeShutdown(options, this.runtimeContext.codexSubscriptionRunner);
+
+    let lastFailure: Omit<StructuredParseFailure, "result"> = {
+      failureReason: "http_error",
+      errorClass: "network",
+    };
+
+    const recordFailure = (
+      failure: Omit<StructuredParseFailure, "result">,
+      attemptedModel?: string,
+    ): void => {
+      lastFailure = attemptedModel ? { ...failure, attemptedModel } : failure;
+    };
+
+    const throwIfCallerAborted = (signal: AbortSignal | undefined): void => {
+      if (!signal?.aborted) return;
+      const reason = abortReason(signal);
+      if (isTimeoutError(reason) && !options.signal?.aborted) {
+        recordFailure({ failureReason: "timeout", errorClass: "timeout" });
+        return;
+      }
+      throw reason;
+    };
 
     const runChain = async (
       initialOptions: FallbackLlmOptions,
@@ -240,14 +248,15 @@ export class FallbackLlmClient {
       // Try each model in the chain
       for (let i = 0; i < models.length; i++) {
         if (runOptions.signal?.aborted) {
-          throw abortReason(runOptions.signal);
+          throwIfCallerAborted(runOptions.signal);
+          if (lastFailure.failureReason === "timeout") return null;
         }
         const model = models[i];
         const isFallback = i > 0;
 
         try {
           const result = await this.tryModel(model, messages, runOptions);
-          if (result) {
+          if (result?.content) {
             const response = {
               content: result.content,
               modelUsed: model.modelString,
@@ -263,12 +272,14 @@ export class FallbackLlmClient {
             }
             return response;
           }
+          recordFailure({ failureReason: "empty", errorClass: "empty" }, model.modelString);
         } catch (err) {
           if (isTerminalCodexSubscriptionError(err) && runOptions.signal?.aborted) {
             throw err;
           }
           if (runOptions.signal?.aborted) {
-            throw abortReason(runOptions.signal);
+            throwIfCallerAborted(runOptions.signal);
+            if (lastFailure.failureReason === "timeout") return null;
           }
           lastError = err;
           if (
@@ -286,7 +297,7 @@ export class FallbackLlmClient {
             };
             try {
               const result = await this.tryModel(model, messages, runOptions);
-              if (result) {
+              if (result?.content) {
                 const response = {
                   content: result.content,
                   modelUsed: model.modelString,
@@ -299,12 +310,18 @@ export class FallbackLlmClient {
                 log.debug(`task LLM: ${model.modelString} unstructured retry output rejected by acceptResponse, trying next model...`);
                 continue;
               }
+              recordFailure({ failureReason: "empty", errorClass: "empty" }, model.modelString);
             } catch (retryError) {
               if (isTerminalCodexSubscriptionError(retryError) && runOptions.signal?.aborted) {
                 throw retryError;
               }
-              if (runOptions.signal?.aborted) throw abortReason(runOptions.signal);
+              if (runOptions.signal?.aborted) {
+                throwIfCallerAborted(runOptions.signal);
+                if (lastFailure.failureReason === "timeout") return null;
+              }
               lastError = retryError;
+              const retryClassified = classifyThrownProviderError(retryError);
+              recordFailure(retryClassified, model.modelString);
               const retryErrorMsg = runOptions.redactProviderErrors
                 ? "provider error details redacted"
                 : retryError instanceof Error
@@ -319,6 +336,8 @@ export class FallbackLlmClient {
             }
             continue;
           }
+          const classified = classifyThrownProviderError(err);
+          recordFailure(classified, model.modelString);
           const errorMsg = runOptions.redactProviderErrors
             ? "provider error details redacted"
             : err instanceof Error
@@ -345,10 +364,15 @@ export class FallbackLlmClient {
       return lastRejectedResponse;
     };
 
+    const toOutcome = (response: FallbackLlmResponse | null): ChatCompletionOutcome => {
+      if (response) return { ok: true, response };
+      return { ok: false, failure: lastFailure };
+    };
+
     if (typeof options.timeoutMs === "number") {
       if (options.timeoutMs <= 0) {
         log.warn("task LLM: timed out before request started");
-        return null;
+        return { ok: false, failure: { failureReason: "timeout", errorClass: "timeout" } };
       }
       const controller = new AbortController();
       const onCallerAbort = (): void => {
@@ -374,16 +398,20 @@ export class FallbackLlmClient {
         );
         const outcome = await raceFallbackLlmDeadline(guarded, options.timeoutMs, () => {
           log.warn(`task LLM: timed out after ${options.timeoutMs}ms`);
+          recordFailure({ failureReason: "timeout", errorClass: "timeout" });
           controller.abort(timeoutError);
           if (options.failureDiag) options.failureDiag.lastError = timeoutError;
         });
-        return outcome.timedOut ? null : outcome.value;
+        if (outcome.timedOut) {
+          return { ok: false, failure: { failureReason: "timeout", errorClass: "timeout" } };
+        }
+        return toOutcome(outcome.value);
       } finally {
         options.signal?.removeEventListener("abort", onCallerAbort);
       }
     }
 
-    return await runChain(options);
+    return toOutcome(await runChain(options));
   }
 
   /**
@@ -407,13 +435,10 @@ export class FallbackLlmClient {
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
     schema: { parse: (data: unknown) => T },
     options: FallbackLlmOptions = {},
-  ): Promise<
-    | { result: T; modelUsed: string }
-    | { result: null; failureReason: "no_models" | "empty" | "http_error" }
-  > {
-    let response: FallbackLlmResponse | null;
+  ): Promise<StructuredParseResult<T>> {
+    let outcome: ChatCompletionOutcome;
     try {
-      response = await this.chatCompletion(messages, options);
+      outcome = await this.completeChat(messages, options);
     } catch (err) {
       // Caller aborts must propagate (e.g. recall planner cancellation) — do
       // not swallow them as a provider failure, or abort-driven callers lose
@@ -421,38 +446,65 @@ export class FallbackLlmClient {
       // Terminal codex-subscription failures propagate for the same reason:
       // their TimeoutError/auth guidance is the documented contract.
       if (options.signal?.aborted || isTerminalCodexSubscriptionError(err)) throw err;
+      if (isTimeoutError(err)) {
+        return { result: null, failureReason: "timeout", errorClass: "timeout" };
+      }
       log.warn("task LLM: chatCompletion threw during structured parse:", err);
-      return { result: null, failureReason: "http_error" };
+      return { result: null, ...classifyThrownProviderError(err) };
     }
-    if (!response?.content) {
-      // chatCompletion returns null both when no models are configured
-      // (auth/config) and when every configured model errored (transient).
-      // Disambiguate via the resolved model chain so the retry layer can pick
-      // the right failure class.
-      const hasModels =
-        this.getModelChain(
-          options.agentId,
-          options.model,
-          options.modelChain,
-          options.includeDefaultModelFallback,
-        ).length > 0;
-      return { result: null, failureReason: hasModels ? "http_error" : "no_models" };
+    if (!outcome.ok) {
+      return { result: null, ...outcome.failure };
+    }
+    const response = outcome.response;
+    if (!response.content) {
+      return {
+        result: null,
+        failureReason: "empty",
+        attemptedModel: response.modelUsed,
+        errorClass: "empty",
+      };
     }
 
     try {
       const candidates = extractJsonCandidates(response.content);
+      let sawJson = false;
+      let sawSchemaReject = false;
       for (const c of candidates) {
+        let parsed: unknown;
         try {
-          const parsed = JSON.parse(c);
+          parsed = JSON.parse(c);
+          sawJson = true;
+        } catch {
+          continue;
+        }
+        try {
           return { result: schema.parse(parsed), modelUsed: response.modelUsed };
         } catch {
-          // keep trying other candidates
+          sawSchemaReject = true;
         }
       }
-      return { result: null, failureReason: "empty" };
+      if (sawSchemaReject) {
+        return {
+          result: null,
+          failureReason: "schema_rejection",
+          attemptedModel: response.modelUsed,
+          errorClass: "schema_rejection",
+        };
+      }
+      return {
+        result: null,
+        failureReason: "empty",
+        attemptedModel: response.modelUsed,
+        errorClass: "empty",
+      };
     } catch (err) {
       log.warn("task LLM: failed to parse structured output:", err);
-      return { result: null, failureReason: "empty" };
+      return {
+        result: null,
+        failureReason: "empty",
+        attemptedModel: response.modelUsed,
+        errorClass: "empty",
+      };
     }
   }
 
@@ -1143,26 +1195,5 @@ export class FallbackLlmClient {
         : undefined,
     };
   }
-}
-
-
-function normalizeRuntimePath(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? expandTildePath(trimmed) : undefined;
-}
-
-function readGatewayWorkspaceDir(gatewayConfig: GatewayConfig | undefined): string | undefined {
-  if (!gatewayConfig || typeof gatewayConfig !== "object") return undefined;
-  const raw = gatewayConfig as Record<string, unknown>;
-  return (
-    normalizeRuntimePath(raw.workspaceDir) ??
-    normalizeRuntimePath(raw.workspacePath) ??
-    normalizeRuntimePath(raw.workspace)
-  );
-}
-
-function defaultOpenClawWorkspaceDir(): string {
-  return path.join(resolveHomeDir(), ".openclaw", "workspace");
 }
 
