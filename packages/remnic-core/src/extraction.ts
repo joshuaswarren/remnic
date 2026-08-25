@@ -38,6 +38,7 @@ import {
 } from "./extraction-source-grounding.js";
 import { applyGroundingWithConnector, headerConnector, renderExtractionConversation, resolveSourceConnector, type ExtractionGroundingContext } from "./source-agent-qualifier.js";
 import { isMemoryCategory } from "./write-envelope.js";
+export { classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog } from "./extraction-error-classification.js";
 import { classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog } from "./extraction-error-classification.js";
 import { AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT, clampAmbientCaptureConfidence } from "./ambient-provenance.js";
 import {
@@ -53,22 +54,8 @@ import {
   spanModePromptSection,
 } from "./extraction-prompt.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import {
-  containsExtractionPlaceholder,
-  extractionAttributes,
-  extractionCueAnchors,
-  extractionText,
-  isPlainRecord,
-} from "./extraction-normalization.js";
-export { classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog } from "./extraction-error-classification.js";
-import {
-  applyExtractionSpanMaterialization,
-  bindLocalExtractionPrompt,
-  buildSpanMaterializeTurns,
-  stripUntrustedFactSpans,
-  truncateLocalExtractionConversation,
-  type SpanMaterializeTurn,
-} from "./extraction-span-materialize.js";
+import { containsExtractionPlaceholder, extractionAttributes, extractionCueAnchors, extractionText, isPlainRecord } from "./extraction-normalization.js";
+import { applyExtractionSpanMaterialization, bindLocalExtractionPrompt, buildSpanMaterializeTurns, stripUntrustedFactSpans, truncateLocalExtractionConversation, type SpanMaterializeTurn } from "./extraction-span-materialize.js";
 import { resolveLocalLlmCapabilities, resolveMemoryLifecycleCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 type ExtractionQuestion = ExtractionResult["questions"][number];
 type ExtractedFactResult = ExtractionResult["facts"][number];

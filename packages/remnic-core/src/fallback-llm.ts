@@ -1,5 +1,4 @@
 import { log } from "./logger.js";
-import path from "node:path";
 import type { AgentPersonaModelConfig, GatewayConfig, ModelProviderConfig, PluginConfig } from "./types.js";
 import { extractJsonCandidates } from "./json-extract.js";
 import {
@@ -10,27 +9,38 @@ import {
 import {
   resolveProviderApiKey,
   getGatewayRuntimeAuthForModel,
-  type GetRuntimeAuthForModelFn,
-  type ResolveApiKeyFn,
 } from "./resolve-provider-secret.js";
 import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   codexSubscriptionBuiltinProviderConfig,
-  getCodexSubscriptionRunnerForOwner,
 } from "./providers/codex-subscription.js";
 import { loadModelsJsonProviders } from "./models-json.js";
 import {
   abortReason,
+  classifyThrownProviderError,
+  defaultOpenClawWorkspaceDir,
   extractResponsesOutputText,
+  fallbackLlmRuntimeContextFromConfig,
   isTerminalCodexSubscriptionError,
+  isTimeoutError,
   isUnsupportedJsonSchemaError,
+  normalizeRuntimePath,
   raceFallbackLlmDeadline,
+  readGatewayWorkspaceDir,
   tryCodexSubscriptionProvider,
   withCodexRuntimeShutdown,
+  type FallbackLlmRuntimeContext,
+  type StructuredParseFailure,
+  type StructuredParseResult,
 } from "./fallback-llm-codex-subscription.js";
-import type { CodexCliFallbackRunner } from "./cli-fallback.js";
-import { resolveHomeDir } from "./runtime/env.js";
-import { expandTildePath } from "./utils/path.js";
+
+export {
+  fallbackLlmRuntimeContextFromConfig,
+  type FallbackLlmRuntimeContext,
+  type StructuredParseFailure,
+  type StructuredParseFailureReason,
+  type StructuredParseResult,
+} from "./fallback-llm-codex-subscription.js";
 
 export interface FallbackLlmOptions {
   temperature?: number;
@@ -96,69 +106,9 @@ export interface FallbackLlmResponse {
   };
 }
 
-/**
- * Structured-parse failure reasons. `"no_models" | "empty" | "http_error"` are
- * the historical public set; `"schema_rejection"` and `"timeout"` are additive
- * so callers that switch on the old three keep compiling. Success remains
- * `{ result; modelUsed }` — failure objects must not carry `modelUsed`, which
- * several callers use as the success discriminant.
- */
-export type StructuredParseFailureReason =
-  | "no_models"
-  | "empty"
-  | "http_error"
-  | "schema_rejection"
-  | "timeout";
-
-export interface StructuredParseFailure {
-  result: null;
-  failureReason: StructuredParseFailureReason;
-  /** Model string of the last attempt, when one was selected. Not `modelUsed`. */
-  attemptedModel?: string;
-  /** HTTP status when known. Never a response body. */
-  httpStatus?: number;
-  /** Coarse class: http_4xx / http_5xx / timeout / network / empty / schema_rejection / no_models. */
-  errorClass?: string;
-}
-
-export type StructuredParseResult<T> =
-  | { result: T; modelUsed: string }
-  | StructuredParseFailure;
-
 type ChatCompletionOutcome =
   | { ok: true; response: FallbackLlmResponse }
   | { ok: false; failure: Omit<StructuredParseFailure, "result"> };
-
-export interface FallbackLlmRuntimeContext {
-  agentDir?: string;
-  getRuntimeAuthForModel?: GetRuntimeAuthForModelFn | null;
-  resolveApiKeyForProvider?: ResolveApiKeyFn | null;
-  workspaceDir?: string;
-  /** Per-runtime Codex child owner. Shutdown must terminate only this runner. */
-  codexSubscriptionRunner?: CodexCliFallbackRunner;
-}
-
-export function fallbackLlmRuntimeContextFromConfig(
-  config: Pick<
-    GatewayBackedRuntimeConfig,
-    "providerApiKeyResolver" | "runtimeAuthForModelResolver" | "workspaceDir"
-  >,
-  overrides: FallbackLlmRuntimeContext = {},
-): FallbackLlmRuntimeContext {
-  return {
-    workspaceDir: config.workspaceDir,
-    resolveApiKeyForProvider: config.providerApiKeyResolver,
-    getRuntimeAuthForModel: config.runtimeAuthForModelResolver,
-    codexSubscriptionRunner: getCodexSubscriptionRunnerForOwner(config),
-    ...overrides,
-  };
-}
-
-type GatewayBackedRuntimeConfig = {
-  providerApiKeyResolver?: ResolveApiKeyFn | null;
-  runtimeAuthForModelResolver?: GetRuntimeAuthForModelFn | null;
-  workspaceDir?: string;
-};
 
 interface ModelRef {
   providerId: string;
@@ -178,16 +128,7 @@ const LEGACY_PROVIDER_IDS = new Set(["openai-codex", "claude-cli"]);
 const MANAGED_SECRETREF_MARKER = ["secretref", "managed"].join("-");
 const PROVIDER_API_KEY_FIELD = ["api", "Key"].join("") as keyof ModelProviderConfig;
 
-/**
- * Built-in provider fallbacks for providers that are commonly configured via
- * OAuth or gateway-managed auth rather than an explicit apiKey in
- * openclaw.json. These entries let resolveProviderConfig() succeed so the
- * chain proceeds to tryModel() → resolveRuntimeAuth(), which is where the
- * gateway's native OAuth token exchange happens.
- *
- * Without these, OAuth-only providers like `openai` are rejected with
- * "provider not found" before runtime auth is ever attempted.
- */
+/** Built-in OAuth/managed-auth providers so resolveProviderConfig reaches runtime auth. */
 const BUILT_IN_PROVIDER_FALLBACKS: Record<string, ModelProviderConfig> = {
   anthropic: {
     baseUrl: "https://api.anthropic.com/v1",
@@ -1251,82 +1192,3 @@ export class FallbackLlmClient {
     };
   }
 }
-
-const HTTP_STATUS_IN_MESSAGE = /\b([1-5]\d{2})\b/;
-
-function isTimeoutError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /timed out after \d+ms/i.test(msg) || /timed out before request started/i.test(msg);
-}
-
-function isEmptyProviderResponse(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /^Empty response from /i.test(msg);
-}
-
-function finiteHttpStatus(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) return undefined;
-  if (value < 100 || value > 599) return undefined;
-  return value;
-}
-
-function httpStatusFromProviderError(err: unknown): number | undefined {
-  if (err && typeof err === "object") {
-    if ("status" in err) {
-      const status = finiteHttpStatus(err.status);
-      if (status !== undefined) return status;
-    }
-    if ("statusCode" in err) {
-      const status = finiteHttpStatus(err.statusCode);
-      if (status !== undefined) return status;
-    }
-  }
-  const msg = err instanceof Error ? err.message : String(err);
-  const match = HTTP_STATUS_IN_MESSAGE.exec(msg);
-  if (!match) return undefined;
-  return finiteHttpStatus(Number(match[1]));
-}
-
-function errorClassForHttpStatus(status: number): string {
-  if (status >= 500) return "http_5xx";
-  if (status >= 400) return "http_4xx";
-  return `http_${status}`;
-}
-
-function classifyThrownProviderError(err: unknown): Omit<StructuredParseFailure, "result"> {
-  if (isTimeoutError(err)) {
-    return { failureReason: "timeout", errorClass: "timeout" };
-  }
-  if (isEmptyProviderResponse(err)) {
-    return { failureReason: "empty", errorClass: "empty" };
-  }
-  const httpStatus = httpStatusFromProviderError(err);
-  if (httpStatus !== undefined) {
-    return {
-      failureReason: "http_error",
-      httpStatus,
-      errorClass: errorClassForHttpStatus(httpStatus),
-    };
-  }
-  return { failureReason: "http_error", errorClass: "network" };
-}
-function normalizeRuntimePath(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? expandTildePath(trimmed) : undefined;
-}
-
-function readGatewayWorkspaceDir(gatewayConfig: GatewayConfig | undefined): string | undefined {
-  if (!gatewayConfig || typeof gatewayConfig !== "object") return undefined;
-  const raw = gatewayConfig as Record<string, unknown>;
-  return (
-    normalizeRuntimePath(raw.workspaceDir) ??
-    normalizeRuntimePath(raw.workspacePath) ??
-    normalizeRuntimePath(raw.workspace)
-  );
-}
-
-function defaultOpenClawWorkspaceDir(): string {
-  return path.join(resolveHomeDir(), ".openclaw", "workspace");
-}
-
