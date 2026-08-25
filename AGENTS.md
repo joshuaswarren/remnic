@@ -2202,6 +2202,22 @@ rather than re-implementing it per call site.
 
 ---
 
+
+## Implementer agent PR-report receipt contract (issue #3012 process hit, this batch)
+
+Every implementer agent's task report MUST include a JSON block with these exact fields; the parent treats missing fields as a flag to re-verify independently rather than trust the agent:
+
+- `branch`: the pushed branch name
+- `pushedSha`: the exact commit SHA on the remote
+- `fail_before`: the failing command + output snippet (or path to a fail-before fixture test)
+- `pass_after`: the passing command + output snippet (test name + counts)
+- `tsc`: `npx tsc --noEmit -p <pkg>` exit code (must be 0 for touched packages)
+- `ratchets`: `node scripts/check-ratchets.mjs` summary line
+- `files`: array of changed files relative to repo root
+- `remaining_layers` or `remaining`: deferred work that future PRs/batches will land
+
+Implementer reports that omit any of these fields have to be re-verified before merge. A thin report that just says "done" with no receipts is treated as untrustworthy.
+
 ## Architecture and operational notes (restored from former CLAUDE.md)
 
 These sections were unique to the former CLAUDE.md and are preserved here as the canonical AGENTS.md is the single source (CLAUDE.md is now a symlink).
