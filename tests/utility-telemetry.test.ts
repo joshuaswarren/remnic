@@ -9,12 +9,12 @@ import {
   recordUtilityTelemetryEvent,
   resolveUtilityTelemetryDir,
   validateUtilityTelemetryEvent,
-} from "../src/utility-telemetry.js";
+} from "@remnic/core/utility-telemetry";
 import {
   registerCli,
   runUtilityTelemetryRecordCliCommand,
   runUtilityTelemetryStatusCliCommand,
-} from "../src/cli.js";
+} from "@remnic/core/cli";
 
 test("utility telemetry path resolves under memoryDir by default", () => {
   assert.equal(

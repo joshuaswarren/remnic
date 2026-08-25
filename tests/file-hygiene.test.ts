@@ -4,9 +4,9 @@ import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
-import { StorageManager } from "../src/storage.js";
-import { lintWorkspaceFiles } from "../src/hygiene.js";
-import type { FileHygieneConfig } from "../src/types.js";
+import { StorageManager } from "@remnic/core/storage";
+import { lintWorkspaceFiles } from "@remnic/core/hygiene";
+import type { FileHygieneConfig } from "@remnic/core/types";
 
 function tmpDir(prefix: string): string {
   return path.join(

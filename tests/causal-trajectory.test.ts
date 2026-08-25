@@ -10,8 +10,8 @@ import {
   recordCausalTrajectory,
   resolveCausalTrajectoryStoreDir,
   validateCausalTrajectoryRecord,
-} from "../src/causal-trajectory.js";
-import { runCausalTrajectoryStatusCliCommand } from "../src/cli.js";
+} from "@remnic/core/causal-trajectory";
+import { runCausalTrajectoryStatusCliCommand } from "@remnic/core/cli";
 
 test("causal-trajectory config path resolves under memoryDir by default", () => {
   assert.equal(

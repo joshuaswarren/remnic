@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import { selectRouteRule } from "../src/routing/engine.js";
-import { RoutingRulesStore } from "../src/routing/store.js";
-import { readEdges } from "../src/graph.js";
-import { queryByTagsAsync } from "../src/temporal-index.js";
-import type { ExtractionResult } from "../src/types.js";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import { selectRouteRule } from "@remnic/core/routing/engine";
+import { RoutingRulesStore } from "@remnic/core/routing/store";
+import { readEdges } from "@remnic/core/graph";
+import { queryByTagsAsync } from "@remnic/core/temporal-index";
+import type { ExtractionResult } from "@remnic/core/types";
 
 function namespaceIdentityToken(namespace: string): string {
   const bytes = new TextEncoder().encode(namespace.trim());

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
-import { resolveAccessPrincipalOverride, runAccessMcpServeCliCommand } from "../src/cli.js";
+import { resolveAccessPrincipalOverride, runAccessMcpServeCliCommand } from "@remnic/core/cli";
 import type { EngramAccessService } from "../src/access-service.js";
 
 test("resolveAccessPrincipalOverride prefers explicit CLI principals and falls back to config", () => {

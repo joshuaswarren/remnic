@@ -4,9 +4,9 @@ import {
   buildReplayNormalizerRegistry,
   runReplay,
   runReplayWithNormalizer,
-} from "../src/replay/runner.ts";
-import type { ReplayNormalizer } from "../src/replay/types.ts";
-import { parseIsoTimestamp, validateReplayTurn } from "../src/replay/types.ts";
+} from "@remnic/core/replay/runner";
+import type { ReplayNormalizer } from "@remnic/core/replay/types";
+import { parseIsoTimestamp, validateReplayTurn } from "@remnic/core/replay/types";
 
 test("validateReplayTurn accepts canonical replay turns", () => {
   const issues = validateReplayTurn({

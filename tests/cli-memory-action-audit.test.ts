@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runMemoryActionAuditCliCommand } from "../src/cli.js";
-import type { MemoryActionEvent } from "../src/types.js";
+import { runMemoryActionAuditCliCommand } from "@remnic/core/cli";
+import type { MemoryActionEvent } from "@remnic/core/types";
 
 function buildEvent(overrides: Partial<MemoryActionEvent>): MemoryActionEvent {
   return {

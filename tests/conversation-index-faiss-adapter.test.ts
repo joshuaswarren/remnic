@@ -10,14 +10,14 @@ import {
   FaissConversationIndexAdapter,
   resolveDefaultFaissScriptPath,
   type FaissAdapterConfig,
-} from "../src/conversation-index/faiss-adapter.js";
-import { createConversationIndexBackend } from "../src/conversation-index/backend.js";
+} from "@remnic/core/conversation-index/faiss-adapter";
+import { createConversationIndexBackend } from "@remnic/core/conversation-index/backend";
 import {
   rebuildConversationChunksFailOpen,
   upsertConversationChunksFailOpen,
-} from "../src/conversation-index/indexer.js";
-import { searchConversationIndexFaissFailOpen } from "../src/conversation-index/search.js";
-import type { ConversationChunk } from "../src/conversation-index/chunker.js";
+} from "@remnic/core/conversation-index/indexer";
+import { searchConversationIndexFaissFailOpen } from "@remnic/core/conversation-index/search";
+import type { ConversationChunk } from "@remnic/core/conversation-index/chunker";
 
 type SpawnFn = NonNullable<FaissAdapterConfig["spawnFn"]>;
 

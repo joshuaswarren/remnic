@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { expandQuery } from "../src/retrieval.ts";
-import { parseRerankResponse } from "../src/rerank.ts";
+import { expandQuery } from "@remnic/core/retrieval";
+import { parseRerankResponse } from "@remnic/core/rerank";
 
 test("expandQuery returns original query first", () => {
   const q = "mission control cron issues and timeouts";

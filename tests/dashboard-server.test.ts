@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { GraphDashboardServer } from "../src/dashboard-runtime.js";
+import { GraphDashboardServer } from "@remnic/core/dashboard-runtime";
 
 async function waitForCondition(
   predicate: () => Promise<boolean>,

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 
 test("StorageManager round-trips escaped backslashes and quotes for importance reasons and link reasons", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "openclaw-engram-escape-roundtrip-"));

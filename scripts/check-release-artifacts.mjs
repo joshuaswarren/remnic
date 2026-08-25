@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, readFile, readdir } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,12 +16,12 @@ function normalizeJson(raw) {
 
 const requiredFiles = [
   "dist/index.js",
-  "dist/access-cli.js",
-  "dist/cli.js",
-  "dist/connectors/index.js",
-  "dist/connectors/codex-materialize.js",
-  "dist/connectors/codex-materialize-runner.js",
-  "dist/migrate/from-engram.js",
+  "packages/remnic-core/dist/access-cli.js",
+  "packages/remnic-core/dist/cli.js",
+  "packages/remnic-core/dist/connectors/index.js",
+  "packages/remnic-core/dist/connectors/codex-materialize.js",
+  "packages/remnic-core/dist/connectors/codex-materialize-runner.js",
+  "packages/remnic-core/dist/migrate/from-engram.js",
   "dist/admin-console/public/index.html",
   "dist/admin-console/public/app.js",
   "dist/admin-console/public/relay/index.html",
@@ -52,15 +52,6 @@ for (const target of Object.values(rootPackageJson.exports ?? {})) {
   exportedDistFiles.add(importTarget.slice(2));
 }
 requiredFiles.push(...[...exportedDistFiles].sort());
-
-const transferShims = (await readdir(path.join(repoRoot, "src", "transfer"), { withFileTypes: true }))
-  .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
-  .map((entry) => entry.name.replace(/\.ts$/, ""))
-  .sort();
-
-for (const name of transferShims) {
-  requiredFiles.push(`dist/transfer/${name}.js`);
-}
 
 await Promise.all(requiredFiles.map(assertFile));
 

@@ -784,7 +784,7 @@ test("host embedding bridge re-registers after cleanup independently of REGISTER
 
     const { default: plugin } = await import("../src/index.js");
     const { getHostEmbeddingProvider } = await import(
-      "../src/host-embedding-provider.js"
+      "@remnic/core/host-embedding-provider"
     );
 
     first = buildApi("host-embedding-first");
@@ -881,7 +881,7 @@ test("host embedding bridge re-registers when host embedding config changes", as
     };
 
     const { default: plugin } = await import("../src/index.js");
-    const hostEmbeddingProviders = await import("../src/host-embedding-provider.js");
+    const hostEmbeddingProviders = await import("@remnic/core/host-embedding-provider");
     clearHostEmbeddingProvidersForTest =
       hostEmbeddingProviders.clearHostEmbeddingProvidersForTest;
     const { getHostEmbeddingProvider } = hostEmbeddingProviders;
@@ -988,7 +988,7 @@ test("host embedding bridge uses adapter default instead of fallback model", asy
     };
 
     const { default: plugin } = await import("../src/index.js");
-    const hostEmbeddingProviders = await import("../src/host-embedding-provider.js");
+    const hostEmbeddingProviders = await import("@remnic/core/host-embedding-provider");
     clearHostEmbeddingProvidersForTest =
       hostEmbeddingProviders.clearHostEmbeddingProvidersForTest;
     const { getHostEmbeddingProvider } = hostEmbeddingProviders;
@@ -1065,7 +1065,7 @@ test("host embedding bridge passes workspaceDir to OpenClaw adapters", async () 
     };
 
     const { default: plugin } = await import("../src/index.js");
-    const hostEmbeddingProviders = await import("../src/host-embedding-provider.js");
+    const hostEmbeddingProviders = await import("@remnic/core/host-embedding-provider");
     clearHostEmbeddingProvidersForTest =
       hostEmbeddingProviders.clearHostEmbeddingProvidersForTest;
     const { getHostEmbeddingProvider } = hostEmbeddingProviders;
@@ -1145,7 +1145,7 @@ test("host embedding bridge retries provider creation after transient null resul
     };
 
     const { default: plugin } = await import("../src/index.js");
-    const hostEmbeddingProviders = await import("../src/host-embedding-provider.js");
+    const hostEmbeddingProviders = await import("@remnic/core/host-embedding-provider");
     clearHostEmbeddingProvidersForTest =
       hostEmbeddingProviders.clearHostEmbeddingProvidersForTest;
     const { getHostEmbeddingProvider } = hostEmbeddingProviders;
@@ -1221,7 +1221,7 @@ test("passive slot registrations unregister the active host embedding bridge", a
     };
 
     const { default: plugin } = await import("../src/index.js");
-    const hostEmbeddingProviders = await import("../src/host-embedding-provider.js");
+    const hostEmbeddingProviders = await import("@remnic/core/host-embedding-provider");
     clearHostEmbeddingProvidersForTest =
       hostEmbeddingProviders.clearHostEmbeddingProvidersForTest;
     const { getHostEmbeddingProvider } = hostEmbeddingProviders;
@@ -1320,7 +1320,7 @@ test("host embedding bridge re-registers when OpenClaw host config changes", asy
     };
 
     const { default: plugin } = await import("../src/index.js");
-    const hostEmbeddingProviders = await import("../src/host-embedding-provider.js");
+    const hostEmbeddingProviders = await import("@remnic/core/host-embedding-provider");
     clearHostEmbeddingProvidersForTest =
       hostEmbeddingProviders.clearHostEmbeddingProvidersForTest;
     const { getHostEmbeddingProvider } = hostEmbeddingProviders;

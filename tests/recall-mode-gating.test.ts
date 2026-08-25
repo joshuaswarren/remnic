@@ -5,11 +5,11 @@ import {
   resolveEffectiveIdentityInjectionMode,
   resolveEffectiveRecallMode,
   resolveRecallModeDecisionAsync,
-} from "../src/orchestrator.js";
-import { parseConfig } from "../src/config.js";
-import { resolveCapabilities } from "../src/capabilities.js";
-import type { FallbackLlmClient } from "../src/fallback-llm.js";
-import type { RecallPlanMode } from "../src/types.js";
+} from "@remnic/core/orchestrator";
+import { parseConfig } from "@remnic/core/config";
+import { resolveCapabilities } from "@remnic/core/capabilities";
+import type { FallbackLlmClient } from "@remnic/core/fallback-llm";
+import type { RecallPlanMode } from "@remnic/core/types";
 
 function stubPlannerLlm(mode: RecallPlanMode, reason = "stub"): FallbackLlmClient {
   return {

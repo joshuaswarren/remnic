@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 import { computeSupersessionKey } from "../packages/remnic-core/src/temporal-supersession.ts";
 import { computeLegacyContentHash, normalizeLegacyContent } from "../packages/remnic-core/src/content-hash.ts";
 

@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 
-import { parseConfig } from "../src/config.js";
-import { initLogger, type LoggerBackend } from "../src/logger.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import type { ExtractionResult } from "../src/types.js";
+import { parseConfig } from "@remnic/core/config";
+import { initLogger, type LoggerBackend } from "@remnic/core/logger";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import type { ExtractionResult } from "@remnic/core/types";
 
 // ---------------------------------------------------------------------------
 // Integration test for PR #439 post-merge Finding 1:

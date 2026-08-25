@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
-import { Orchestrator } from "../src/orchestrator.js";
-import { parseConfig } from "../src/config.js";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import { parseConfig } from "@remnic/core/config";
 import { indexMemoryAsync as indexMemory } from "../packages/remnic-core/src/temporal-index.js";
 
 // #1495 P1: the namespaced LCM `session_id` is framed with a reserved sentinel

@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { LocalLlmClient } from "../src/local-llm.js";
-import { initLogger } from "../src/logger.js";
-import type { PluginConfig } from "../src/types.js";
+import { LocalLlmClient } from "@remnic/core/local-llm";
+import { initLogger } from "@remnic/core/logger";
+import type { PluginConfig } from "@remnic/core/types";
 
 function buildConfig(overrides: Partial<PluginConfig> = {}): PluginConfig {
   return {

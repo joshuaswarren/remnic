@@ -8,8 +8,8 @@ import {
   runPolicyDiffCliCommand,
   runPolicyRollbackCliCommand,
   runPolicyStatusCliCommand,
-} from "../src/cli.js";
-import type { BehaviorSignalEvent } from "../src/types.js";
+} from "@remnic/core/cli";
+import type { BehaviorSignalEvent } from "@remnic/core/types";
 
 async function writeRuntimeSnapshots(memoryDir: string): Promise<void> {
   const stateDir = path.join(memoryDir, "state");

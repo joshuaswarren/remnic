@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { planExactDuplicateDeletions } from "../src/cli.js";
+import { planExactDuplicateDeletions } from "@remnic/core/cli";
 
 test("planExactDuplicateDeletions deletes exact duplicate bodies", () => {
   const plan = planExactDuplicateDeletions([

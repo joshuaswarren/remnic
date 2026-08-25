@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { appendFile, mkdtemp, rm } from "node:fs/promises";
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 
 test("StorageManager appends and reads memory action events from state store", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "openclaw-engram-policy-actions-"));

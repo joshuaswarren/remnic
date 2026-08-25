@@ -8,7 +8,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs
 
 describe("search backend factory", () => {
   it("routes 'noop' to NoopSearchBackend", async () => {
-    const { createSearchBackend } = await import("../src/search/factory.js");
+    const { createSearchBackend } = await import("@remnic/core/search/factory");
     const config = fakeConfig({ searchBackend: "noop" });
     const backend = createSearchBackend(config);
     assert.equal(backend.debugStatus(), "backend=noop");
@@ -16,35 +16,35 @@ describe("search backend factory", () => {
   });
 
   it("routes 'remote' to RemoteSearchBackend", async () => {
-    const { createSearchBackend } = await import("../src/search/factory.js");
+    const { createSearchBackend } = await import("@remnic/core/search/factory");
     const config = fakeConfig({ searchBackend: "remote", remoteSearchBaseUrl: "http://localhost:9999" });
     const backend = createSearchBackend(config);
     assert.ok(backend.debugStatus().startsWith("backend=remote"));
   });
 
   it("routes 'orama' to OramaBackend", async () => {
-    const { createSearchBackend } = await import("../src/search/factory.js");
+    const { createSearchBackend } = await import("@remnic/core/search/factory");
     const config = fakeConfig({ searchBackend: "orama" });
     const backend = createSearchBackend(config);
     assert.ok(backend.debugStatus().startsWith("backend=orama"));
   });
 
   it("routes 'meilisearch' to MeilisearchBackend", async () => {
-    const { createSearchBackend } = await import("../src/search/factory.js");
+    const { createSearchBackend } = await import("@remnic/core/search/factory");
     const config = fakeConfig({ searchBackend: "meilisearch" });
     const backend = createSearchBackend(config);
     assert.ok(backend.debugStatus().startsWith("backend=meilisearch"));
   });
 
   it("routes 'lancedb' to LanceDbBackend", async () => {
-    const { createSearchBackend } = await import("../src/search/factory.js");
+    const { createSearchBackend } = await import("@remnic/core/search/factory");
     const config = fakeConfig({ searchBackend: "lancedb" });
     const backend = createSearchBackend(config);
     assert.ok(backend.debugStatus().startsWith("backend=lancedb"));
   });
 
   it("defaults to QMD when searchBackend is unset", async () => {
-    const { createSearchBackend } = await import("../src/search/factory.js");
+    const { createSearchBackend } = await import("@remnic/core/search/factory");
     const config = fakeConfig({ qmdEnabled: true });
     const backend = createSearchBackend(config);
     // QmdClient debug status contains "cli=" — that's its signature
@@ -52,17 +52,17 @@ describe("search backend factory", () => {
   });
 
   it("falls back to noop when qmd is default but disabled", async () => {
-    const { createSearchBackend } = await import("../src/search/factory.js");
+    const { createSearchBackend } = await import("@remnic/core/search/factory");
     const config = fakeConfig({ qmdEnabled: false });
     const backend = createSearchBackend(config);
     assert.equal(backend.debugStatus(), "backend=noop");
   });
 
   it("QMD capability gating tolerates banner-prefixed semantic versions", async () => {
-    const { QmdClient } = await import("../src/qmd.js");
+    const { QmdClient } = await import("@remnic/core/qmd");
     const client = new QmdClient("test-collection", 10);
     (client as any).cliVersion = "warning: experimental build\nqmd 1.1.5";
-    (client as any).qmdCapabilities = (await import("../src/qmd.js")).resolveQmdCapabilities((client as any).cliVersion);
+    (client as any).qmdCapabilities = (await import("@remnic/core/qmd")).resolveQmdCapabilities((client as any).cliVersion);
     assert.deepEqual(
       client.resolveSupportedSearchOptions({
         intent: "goal:review",
@@ -76,7 +76,7 @@ describe("search backend factory", () => {
   });
 
   it("QMD probe prefers qmd-labelled version lines over banner versions", async () => {
-    const { QmdClient } = await import("../src/qmd.js");
+    const { QmdClient } = await import("@remnic/core/qmd");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-qmd-version-"));
     const fakeQmdPath = path.join(tempDir, "qmd");
     await writeFile(
@@ -103,7 +103,7 @@ describe("search backend factory", () => {
   });
 
   it("QMD 2.x supported options include structured searches but keep MCP-unsupported chunking out of args", async () => {
-    const { QmdClient, resolveQmdCapabilities } = await import("../src/qmd.js");
+    const { QmdClient, resolveQmdCapabilities } = await import("@remnic/core/qmd");
     const client = new QmdClient("test-collection", 10);
     (client as any).cliVersion = "qmd 2.5.3";
     (client as any).qmdCapabilities = resolveQmdCapabilities("qmd 2.5.3");
@@ -138,13 +138,13 @@ describe("search backend factory", () => {
 
 describe("document scanner", () => {
   it("returns empty array for non-existent directory", async () => {
-    const { scanMemoryDir } = await import("../src/search/document-scanner.js");
+    const { scanMemoryDir } = await import("@remnic/core/search/document-scanner");
     const docs = await scanMemoryDir("/tmp/nonexistent-engram-test-dir-" + Date.now());
     assert.deepEqual(docs, []);
   });
 
   it("keeps scanning when optional category directories are missing", async () => {
-    const { scanMemoryDir } = await import("../src/search/document-scanner.js");
+    const { scanMemoryDir } = await import("@remnic/core/search/document-scanner");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-scan-missing-categories-"));
     try {
       const factsDir = path.join(tempDir, "facts");
@@ -164,7 +164,7 @@ describe("document scanner", () => {
   });
 
   it("rejects category scan errors instead of treating them as empty input", async () => {
-    const { scanMemoryDir } = await import("../src/search/document-scanner.js");
+    const { scanMemoryDir } = await import("@remnic/core/search/document-scanner");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-scan-failure-"));
     try {
       await writeFile(path.join(tempDir, "facts"), "not a directory", "utf8");
@@ -181,7 +181,7 @@ describe("document scanner", () => {
   });
 
   it("excludes symlinked markdown files from memory scans", async () => {
-    const { scanMemoryDir } = await import("../src/search/document-scanner.js");
+    const { scanMemoryDir } = await import("@remnic/core/search/document-scanner");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-scan-symlink-"));
     const externalDir = await mkdtemp(path.join(os.tmpdir(), "engram-scan-external-"));
     try {
@@ -205,7 +205,7 @@ describe("document scanner", () => {
 
 describe("lancedb backend refresh", () => {
   it("refreshes with table overwrite without dropping the existing table", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-refresh-"));
     try {
       const factsDir = path.join(tempDir, "facts");
@@ -258,7 +258,7 @@ describe("lancedb backend refresh", () => {
   });
 
   it("zero-fills malformed current-provider vectors during refresh", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-refresh-malformed-"));
     try {
       const factsDir = path.join(tempDir, "facts");
@@ -316,7 +316,7 @@ describe("lancedb backend refresh", () => {
   });
 
   it("does not drop the existing table when overwrite fails", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-overwrite-failure-"));
     try {
       const factsDir = path.join(tempDir, "facts");
@@ -361,7 +361,7 @@ describe("lancedb backend refresh", () => {
 
 describe("non-QMD backend cancellation", () => {
   it("OramaBackend honors already-aborted search and update signals before I/O", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-abort-"));
     try {
       const embedHelper = countingEmbedHelper();
@@ -391,7 +391,7 @@ describe("non-QMD backend cancellation", () => {
   });
 
   it("LanceDbBackend honors already-aborted search and update signals before I/O", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-abort-"));
     try {
       const embedHelper = countingEmbedHelper();
@@ -421,7 +421,7 @@ describe("non-QMD backend cancellation", () => {
   });
 
   it("MeilisearchBackend honors already-aborted search and update signals before SDK calls", async () => {
-    const { MeilisearchBackend } = await import("../src/search/meilisearch-backend.js");
+    const { MeilisearchBackend } = await import("@remnic/core/search/meilisearch-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-meili-abort-"));
     try {
       const backend = new MeilisearchBackend({
@@ -454,7 +454,7 @@ describe("non-QMD backend cancellation", () => {
   });
 
   it("MeilisearchBackend ensures the requested collection before auto-indexing it", async () => {
-    const { MeilisearchBackend } = await import("../src/search/meilisearch-backend.js");
+    const { MeilisearchBackend } = await import("@remnic/core/search/meilisearch-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-meili-target-collection-"));
     try {
       await mkdir(path.join(tempDir, "facts"), { recursive: true });
@@ -521,7 +521,7 @@ describe("non-QMD backend cancellation", () => {
   });
 
   it("MeilisearchBackend still auto-indexes when collection status check is unavailable", async () => {
-    const { MeilisearchBackend } = await import("../src/search/meilisearch-backend.js");
+    const { MeilisearchBackend } = await import("@remnic/core/search/meilisearch-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-meili-transient-collection-check-"));
     try {
       await mkdir(path.join(tempDir, "facts"), { recursive: true });
@@ -572,7 +572,7 @@ describe("non-QMD backend cancellation", () => {
   });
 
   it("MeilisearchBackend preserves legacy ensureCollection execution-argument calls", async () => {
-    const { MeilisearchBackend } = await import("../src/search/meilisearch-backend.js");
+    const { MeilisearchBackend } = await import("@remnic/core/search/meilisearch-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-meili-ensure-legacy-"));
     try {
       const getIndexCalls: unknown[] = [];
@@ -603,24 +603,24 @@ describe("non-QMD backend cancellation", () => {
 
 describe("embed helper", () => {
   it("returns not available when embedding is disabled", async () => {
-    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const { EmbedHelper } = await import("@remnic/core/search/embed-helper");
     const helper = new EmbedHelper(fakeConfig({ embeddingFallbackEnabled: false }) as any);
     assert.equal(helper.isAvailable(), false);
   });
 
   it("returns null vectors when not available", async () => {
-    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const { EmbedHelper } = await import("@remnic/core/search/embed-helper");
     const helper = new EmbedHelper(fakeConfig({ embeddingFallbackEnabled: false }) as any);
     const result = await helper.embed("test");
     assert.equal(result, null);
   });
 
   it("falls back when a scoped host provider cannot embed", async () => {
-    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const { EmbedHelper } = await import("@remnic/core/search/embed-helper");
     const {
       clearHostEmbeddingProvidersForTest,
       registerHostEmbeddingProvider,
-    } = await import("../src/host-embedding-provider.js");
+    } = await import("@remnic/core/host-embedding-provider");
     const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-host-"));
     const originalFetch = globalThis.fetch;
     const unregister = registerHostEmbeddingProvider(memoryDir, {
@@ -660,7 +660,7 @@ describe("embed helper", () => {
       clearHostEmbeddingProvidersForTest,
       getHostEmbeddingProvider,
       registerHostEmbeddingProvider,
-    } = await import("../src/host-embedding-provider.js");
+    } = await import("@remnic/core/host-embedding-provider");
     const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-host-replace-"));
     const closes: string[] = [];
     const unregisterFirst = registerHostEmbeddingProvider(memoryDir, {
@@ -697,11 +697,11 @@ describe("embed helper", () => {
   });
 
   it("passes query input type for search embeddings and document input type for batches", async () => {
-    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const { EmbedHelper } = await import("@remnic/core/search/embed-helper");
     const {
       clearHostEmbeddingProvidersForTest,
       registerHostEmbeddingProvider,
-    } = await import("../src/host-embedding-provider.js");
+    } = await import("@remnic/core/host-embedding-provider");
     const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-input-type-"));
     const calls: string[] = [];
     const unregister = registerHostEmbeddingProvider(memoryDir, {
@@ -734,11 +734,11 @@ describe("embed helper", () => {
   });
 
   it("picks up host embedding providers registered after construction", async () => {
-    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const { EmbedHelper } = await import("@remnic/core/search/embed-helper");
     const {
       clearHostEmbeddingProvidersForTest,
       registerHostEmbeddingProvider,
-    } = await import("../src/host-embedding-provider.js");
+    } = await import("@remnic/core/host-embedding-provider");
     const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-late-host-"));
     const originalFetch = globalThis.fetch;
     let fallbackCalls = 0;
@@ -783,7 +783,7 @@ describe("embed helper", () => {
   });
 
   it("rejects malformed HTTP embedding vectors instead of coercing components", async () => {
-    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const { EmbedHelper } = await import("@remnic/core/search/embed-helper");
     const originalFetch = globalThis.fetch;
     try {
       globalThis.fetch = (async () =>
@@ -805,11 +805,11 @@ describe("embed helper", () => {
   });
 
   it("uses the root host embedding scope for namespace-scoped memory dirs", async () => {
-    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const { EmbedHelper } = await import("@remnic/core/search/embed-helper");
     const {
       clearHostEmbeddingProvidersForTest,
       registerHostEmbeddingProvider,
-    } = await import("../src/host-embedding-provider.js");
+    } = await import("@remnic/core/host-embedding-provider");
     const rootMemoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-root-host-"));
     const namespaceMemoryDir = path.join(rootMemoryDir, "namespaces", "shared");
     let hostCalls = 0;
@@ -838,11 +838,11 @@ describe("embed helper", () => {
   });
 
   it("falls back a whole host batch instead of mixing vector spaces", async () => {
-    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const { EmbedHelper } = await import("@remnic/core/search/embed-helper");
     const {
       clearHostEmbeddingProvidersForTest,
       registerHostEmbeddingProvider,
-    } = await import("../src/host-embedding-provider.js");
+    } = await import("@remnic/core/host-embedding-provider");
     const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-batch-fallback-"));
     const originalFetch = globalThis.fetch;
     const hostCalls: string[] = [];
@@ -895,11 +895,11 @@ describe("embed helper", () => {
   });
 
   it("falls back the whole host batch when host vectors have the wrong dimension", async () => {
-    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const { EmbedHelper } = await import("@remnic/core/search/embed-helper");
     const {
       clearHostEmbeddingProvidersForTest,
       registerHostEmbeddingProvider,
-    } = await import("../src/host-embedding-provider.js");
+    } = await import("@remnic/core/host-embedding-provider");
     const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-host-dimension-"));
     const originalFetch = globalThis.fetch;
     const hostInputs: string[] = [];
@@ -948,11 +948,11 @@ describe("embed helper", () => {
   });
 
   it("falls back the whole host call when a later batch fails", async () => {
-    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const { EmbedHelper } = await import("@remnic/core/search/embed-helper");
     const {
       clearHostEmbeddingProvidersForTest,
       registerHostEmbeddingProvider,
-    } = await import("../src/host-embedding-provider.js");
+    } = await import("@remnic/core/host-embedding-provider");
     const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-cross-batch-"));
     const originalFetch = globalThis.fetch;
     const hostInputs: string[] = [];
@@ -1001,7 +1001,7 @@ describe("embed helper", () => {
 
 describe("embedded backend provider identity", () => {
   it("LanceDbBackend resets stale vectors when the embedding provider changes", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-id-"));
     try {
       const factsDir = path.join(tempDir, "facts");
@@ -1049,7 +1049,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("LanceDbBackend recreates legacy tables before writing vectorProvider rows", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-migrate-"));
     try {
       const factsDir = path.join(tempDir, "facts");
@@ -1114,7 +1114,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("LanceDbBackend skips overwrite when the vectorProvider probe fails transiently", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-probe-fail-"));
     try {
       const factsDir = path.join(tempDir, "facts");
@@ -1172,7 +1172,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("LanceDbBackend skips overwrite when existing vector preservation fails", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-preserve-fail-"));
     try {
       const factsDir = path.join(tempDir, "facts");
@@ -1219,7 +1219,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("LanceDbBackend falls back to FTS when stored vectors use another provider", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-search-"));
     try {
       const searchCalls: string[] = [];
@@ -1273,7 +1273,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("LanceDbBackend clears vector provider compatibility when active provider identity is unavailable", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-cache-clear-"));
     try {
       const table = {};
@@ -1298,7 +1298,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("LanceDbBackend searches stored fallback vectors before FTS", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-fallback-search-"));
     try {
       const searchCalls: Array<{ mode: string; value: unknown }> = [];
@@ -1366,7 +1366,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("LanceDbBackend falls back to FTS when query vector dimensions do not match schema", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-dim-search-"));
     try {
       const searchCalls: string[] = [];
@@ -1419,7 +1419,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("LanceDbBackend falls back to FTS when stored same-provider vectors have stale dimensions", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-stale-dim-search-"));
     try {
       const searchCalls: string[] = [];
@@ -1482,7 +1482,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("LanceDbBackend skips writes for mismatched embedding dimensions", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-dim-embed-"));
     try {
       const updateCalls: Array<Record<string, unknown>> = [];
@@ -1531,7 +1531,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("LanceDbBackend re-embeds same-provider rows with stale vector dimensions", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-stale-dim-"));
     try {
       const updateCalls: Array<Record<string, unknown>> = [];
@@ -1581,7 +1581,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("LanceDbBackend re-embeds current-provider rows when embedding falls back", async () => {
-    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const { LanceDbBackend } = await import("@remnic/core/search/lancedb-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-fallback-cache-"));
     try {
       const rows = [
@@ -1653,7 +1653,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend migrates legacy documents missing vectorProvider", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const { create, insert, search } = await import("@orama/orama");
     const { persist, restore } = await import("@orama/plugin-data-persistence");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-provider-migrate-"));
@@ -1713,7 +1713,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend migrates legacy files loaded by global search", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const { create, insert, search } = await import("@orama/orama");
     const { persist, restore } = await import("@orama/plugin-data-persistence");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-global-provider-migrate-"));
@@ -1766,7 +1766,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend aborts legacy vectorProvider migration without persisting partial copies", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-provider-migrate-fail-"));
     try {
       const migratedDb = {};
@@ -1839,7 +1839,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend preserves internal vectors during legacy vectorProvider migration", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const { create, insert, search } = await import("@orama/orama");
     const { persist, restore } = await import("@orama/plugin-data-persistence");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-provider-migrate-vector-"));
@@ -1893,7 +1893,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend clears provider tags for persisted rows with missing vectors", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const { create, getByID, insert, search } = await import("@orama/orama");
     const { persist } = await import("@orama/plugin-data-persistence");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-compatible-cache-"));
@@ -1964,7 +1964,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend re-embeds same-provider rows with placeholder zero vectors", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const { create, getByID, insert } = await import("@orama/orama");
     const { persist, restore } = await import("@orama/plugin-data-persistence");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-zero-vector-"));
@@ -2032,7 +2032,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend re-embeds current-provider rows when embedding falls back", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-fallback-converge-"));
     try {
       const db = {};
@@ -2117,7 +2117,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend clears vector provider compatibility when active provider identity is unavailable", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-provider-cache-clear-"));
     try {
       const db = {};
@@ -2142,7 +2142,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend recreates empty legacy DBs before embedding new documents", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const { create, search } = await import("@orama/orama");
     const { persist, restore } = await import("@orama/plugin-data-persistence");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-empty-legacy-"));
@@ -2219,7 +2219,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend keeps no-provider collections vector-ready for later embeddings", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-late-embed-"));
     try {
       const dbPath = path.join(tempDir, "db");
@@ -2274,7 +2274,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend zero-fills vector fields when migrating legacy text-only documents", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-text-legacy-"));
     try {
       const insertCalls: Array<Record<string, unknown>> = [];
@@ -2329,7 +2329,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend re-embeds malformed current-provider vectors", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-reembed-"));
     try {
       const backend = new OramaBackend({
@@ -2386,7 +2386,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend preserves valid vectors when provider identity is unavailable", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-no-provider-preserve-"));
     try {
       await mkdir(path.join(tempDir, "facts"), { recursive: true });
@@ -2441,7 +2441,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend falls back to fulltext for incompatible stored vector dimensions", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const { create, insert } = await import("@orama/orama");
     const { persist } = await import("@orama/plugin-data-persistence");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-dim-fallback-"));
@@ -2497,7 +2497,7 @@ describe("embedded backend provider identity", () => {
   });
 
   it("OramaBackend searches stored fallback vectors before fulltext", async () => {
-    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { OramaBackend } = await import("@remnic/core/search/orama-backend");
     const { create, insert } = await import("@orama/orama");
     const { persist } = await import("@orama/plugin-data-persistence");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-provider-fallback-search-"));

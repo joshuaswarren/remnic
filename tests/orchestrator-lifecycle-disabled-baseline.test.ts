@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
 
 test("lifecycle disabled path preserves byte-for-byte retrieval ordering baseline", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-lifecycle-disabled-memory-"));

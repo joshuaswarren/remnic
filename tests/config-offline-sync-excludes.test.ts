@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseConfig } from "../src/config.js";
+import { parseConfig } from "@remnic/core/config";
 
 test("parseConfig accepts and trims offlineSyncExcludes strings", () => {
   const cfg = parseConfig({

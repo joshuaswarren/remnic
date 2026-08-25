@@ -6,8 +6,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 
 import { setCodexCliFallbackRunnerForProcess } from "@remnic/core";
 
-import { Orchestrator } from "../src/orchestrator.js";
-import { parseConfig } from "../src/config.js";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import { parseConfig } from "@remnic/core/config";
 
 type CapturedGatewayCall = {
   modelId: string;

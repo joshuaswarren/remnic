@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { parseConfig } from "../src/config.js";
-import { TranscriptManager } from "../src/transcript.js";
+import { parseConfig } from "@remnic/core/config";
+import { TranscriptManager } from "@remnic/core/transcript";
 
 async function assertPathMissing(filePath: string): Promise<void> {
   await assert.rejects(access(filePath), { code: "ENOENT" });

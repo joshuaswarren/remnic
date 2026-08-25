@@ -3,11 +3,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const ROOT_CLI_SHIMS = [
-  ["src/access-cli.ts", "@remnic/core/access-cli"],
-  ["src/cli.ts", "@remnic/core/cli"],
-] as const;
-
 const ROOT_CONNECTOR_SHIMS = [
   ["src/connectors/index.ts", "@remnic/core/connectors"],
   [
@@ -20,54 +15,16 @@ const ROOT_CONNECTOR_SHIMS = [
   ],
 ] as const;
 
-const ROOT_ROUTING_SHIMS = [
-  ["src/routing/engine.ts", "@remnic/core/routing/engine"],
-  ["src/routing/store.ts", "@remnic/core/routing/store"],
-] as const;
-
-const ROOT_RUNTIME_SHIMS = [
-  ["src/runtime/better-sqlite.ts", "@remnic/core/runtime/better-sqlite"],
-  ["src/runtime/child-process.ts", "@remnic/core/runtime/child-process"],
-  ["src/runtime/env.ts", "@remnic/core/runtime/env"],
-] as const;
-
 const ROOT_CORE_SOURCE_SHIMS = [
-  ["src/memory-projection-format.ts", "@remnic/core/memory-projection-format"],
-  ["src/model-registry.ts", "@remnic/core/model-registry"],
-  ["src/models-json.ts", "@remnic/core/models-json"],
-  ["src/orchestrator.ts", "@remnic/core/orchestrator"],
-  ["src/session-integrity.ts", "@remnic/core/session-integrity"],
-] as const;
-
-const ROOT_PACKAGE_ENTRIES = [
-  ...ROOT_CLI_SHIMS,
-  ...ROOT_CONNECTOR_SHIMS,
-  ...ROOT_ROUTING_SHIMS,
-  ...ROOT_RUNTIME_SHIMS,
-  ...ROOT_CORE_SOURCE_SHIMS,
+  "@remnic/core/memory-projection-format",
+  "@remnic/core/model-registry",
+  "@remnic/core/models-json",
+  "@remnic/core/orchestrator",
+  "@remnic/core/session-integrity",
 ] as const;
 
 describe("root CLI package boundaries", () => {
-  for (const [filePath, publicSpecifier] of [
-    ...ROOT_PACKAGE_ENTRIES,
-    ...ROOT_CORE_SOURCE_SHIMS,
-  ] as const) {
-    it(`${filePath} uses the public @remnic/core package export`, () => {
-      const source = readFileSync(resolve(filePath), "utf8");
-
-      assert.ok(
-        source.includes(`from "${publicSpecifier}"`),
-        `${filePath} should import ${publicSpecifier}`,
-      );
-      assert.doesNotMatch(
-        source,
-        /packages\/remnic-core\/src/,
-        `${filePath} must not import core private source paths`,
-      );
-    });
-  }
-
-  it("root build prepares core public subpath artifacts before bundling shims", () => {
+  it("root build prepares core public subpath artifacts before bundling remaining root entries", () => {
     const manifest = JSON.parse(readFileSync(resolve("package.json"), "utf8")) as {
       scripts?: { build?: string };
     };
@@ -85,37 +42,22 @@ describe("root CLI package boundaries", () => {
     );
   });
 
-  it("root package exposes each CLI shim through package exports and build entries", () => {
+  it("collapsed CLI subpaths alias the core package export contract", () => {
     const manifest = JSON.parse(readFileSync(resolve("package.json"), "utf8")) as {
       exports?: Record<string, { import?: string }>;
     };
-    const tsupConfig = readFileSync(resolve("tsup.config.ts"), "utf8");
 
-    for (const [filePath] of ROOT_PACKAGE_ENTRIES) {
-      const subpath = `./${filePath
-        .replace(/^src\//, "")
-        .replace(/\/index\.ts$/, "")
-        .replace(/\.ts$/, "")}`;
-      const distPath = `./dist/${filePath
-        .replace(/^src\//, "")
-        .replace(/\.ts$/, ".js")}`;
-
-      assert.equal(
-        manifest.exports?.[subpath]?.import,
-        distPath,
-        `${subpath} must resolve to ${distPath} through package exports`,
-      );
-      if (filePath.startsWith("src/routing/") || filePath.startsWith("src/runtime/")) {
-        assert.equal(
-          manifest.exports?.[`${subpath}.js`]?.import,
-          distPath,
-          `${subpath}.js must resolve to ${distPath} through package exports`,
-        );
-      }
-      assert.ok(
-        tsupConfig.includes(`"${filePath}"`) ||
-          tsupConfig.includes(`'${filePath}'`),
-        `${filePath} must be a root tsup entry so ${distPath} exists after build`,
+    for (const specifier of [
+      "./access-cli",
+      "./cli",
+      "./connectors",
+      "./connectors/codex-materialize",
+      "./connectors/codex-materialize-runner",
+    ]) {
+      assert.match(
+        manifest.exports?.[specifier]?.import ?? "",
+        /^\.\/packages\/remnic-core\//,
+        `${specifier} must alias the workspace core build`,
       );
     }
   });
@@ -185,7 +127,7 @@ describe("root CLI package boundaries", () => {
       exports?: Record<string, { import?: string; types?: string }>;
     };
 
-    for (const [, publicSpecifier] of ROOT_CORE_SOURCE_SHIMS) {
+    for (const publicSpecifier of ROOT_CORE_SOURCE_SHIMS) {
       const subpath = publicSpecifier.replace(/^@remnic\/core/, ".");
       const distPath = `./dist/${subpath.replace(/^\.\//, "")}.js`;
       const typesPath = distPath.replace(/\.js$/, ".d.ts");

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
-import { archiveObservations } from "../src/maintenance/archive-observations.js";
+import { archiveObservations } from "@remnic/core/maintenance/archive-observations";
 
 async function createFile(baseDir: string, relativePath: string, content: string): Promise<void> {
   const fullPath = path.join(baseDir, relativePath);

@@ -9,8 +9,8 @@ import {
   runMemoryGovernanceReportCliCommand,
   runMemoryGovernanceRestoreCliCommand,
   runMemoryReviewDispositionCliCommand,
-} from "../src/cli.ts";
-import { StorageManager } from "../src/storage.ts";
+} from "@remnic/core/cli";
+import { StorageManager } from "@remnic/core/storage";
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const full = path.join(baseDir, relPath);

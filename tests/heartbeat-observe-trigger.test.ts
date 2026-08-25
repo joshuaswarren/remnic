@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { Orchestrator } from "../src/orchestrator.ts";
+import { Orchestrator } from "@remnic/core/orchestrator";
 import { TurnIngestionCoordinator } from "../packages/remnic-core/src/orchestration/turn-ingestion.js";
 import { ExtractionRunCoordinator } from "../packages/remnic-core/src/orchestration/extraction-run.ts";
-import type { BufferTurn } from "../src/types.js";
+import type { BufferTurn } from "@remnic/core/types";
 
 test("observeSessionHeartbeat queues buffered extraction when observer threshold triggers", async () => {
   const turns: BufferTurn[] = [

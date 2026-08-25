@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ExportManifestV1Schema } from "../src/transfer/types.js";
+import { ExportManifestV1Schema } from "@remnic/core/transfer/types";
 
 test("ExportManifestV1Schema validates required fields", () => {
   const m = ExportManifestV1Schema.parse({

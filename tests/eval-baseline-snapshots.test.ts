@@ -7,7 +7,7 @@ import {
   createEvalBaselineSnapshot,
   getEvalHarnessStatus,
   validateEvalBaselineSnapshot,
-} from "../src/evals.js";
+} from "@remnic/core/evals";
 
 async function seedEvalStore(memoryDir: string): Promise<string> {
   const evalRoot = path.join(memoryDir, "state", "evals");

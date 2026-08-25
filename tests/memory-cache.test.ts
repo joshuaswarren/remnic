@@ -18,12 +18,12 @@ import {
   updateCacheOnDelete,
   clearMemoryCache,
   getMemoryCacheStats,
-} from "../src/memory-cache.ts";
+} from "@remnic/core/memory-cache";
 import {
   getCachedQmdRecall,
   setCachedQmdRecall,
-} from "../src/qmd-recall-cache.ts";
-import type { EntityFile, MemoryFile } from "../src/types.ts";
+} from "@remnic/core/qmd-recall-cache";
+import type { EntityFile, MemoryFile } from "@remnic/core/types";
 
 function makeMemory(id: string, filePath: string): MemoryFile {
   return {

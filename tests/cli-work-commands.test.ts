@@ -6,7 +6,7 @@ import { mkdtemp } from "node:fs/promises";
 import {
   runWorkProjectCliCommand,
   runWorkTaskCliCommand,
-} from "../src/cli.js";
+} from "@remnic/core/cli";
 
 test("work task CLI wrapper supports create/list/transition/update/delete", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-work-task-"));

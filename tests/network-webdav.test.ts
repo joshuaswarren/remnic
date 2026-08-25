@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { request } from "node:http";
-import { WebDavServer, hostToUrlAuthority, openWebDavFileForRead } from "../src/network/webdav.ts";
+import { WebDavServer, hostToUrlAuthority, openWebDavFileForRead } from "@remnic/core/network/webdav";
 
 type HttpResult = {
   status: number;

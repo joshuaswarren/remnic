@@ -6,8 +6,8 @@ import {
   buildMemoryPathById,
   resolvePersistedMemoryRelativePath,
   resolveRecentThreadMemoryPaths,
-} from "../src/orchestrator.js";
-import type { MemoryFile } from "../src/types.js";
+} from "@remnic/core/orchestrator";
+import type { MemoryFile } from "@remnic/core/types";
 
 function makeMemory(path: string, id: string): MemoryFile {
   return {

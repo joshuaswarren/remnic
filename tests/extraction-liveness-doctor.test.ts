@@ -10,15 +10,15 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { StorageManager } from "../src/storage.js";
+import { parseConfig } from "@remnic/core/config";
+import { StorageManager } from "@remnic/core/storage";
 import {
   runOperatorDoctor,
   summarizeExtractionLiveness,
   type ExtractionBufferSource,
   type OperatorToolkitOrchestrator,
-} from "../src/operator-toolkit.js";
-import type { PluginConfig } from "../src/types.js";
+} from "@remnic/core/operator-toolkit";
+import type { PluginConfig } from "@remnic/core/types";
 
 const createdFixtureRoots: string[] = [];
 afterEach(async () => {

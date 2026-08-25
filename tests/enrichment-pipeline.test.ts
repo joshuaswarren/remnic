@@ -19,14 +19,14 @@ import {
   appendAuditEntry,
   readAuditLog,
   defaultEnrichmentPipelineConfig,
-} from "../src/enrichment.js";
+} from "@remnic/core/enrichment/index";
 import type {
   EnrichmentCandidate,
   EnrichmentPipelineConfig,
   EnrichmentProvider,
   EntityEnrichmentInput,
-} from "../src/enrichment.js";
-import type { ImportanceLevel } from "../src/types.js";
+} from "@remnic/core/enrichment/index";
+import type { ImportanceLevel } from "@remnic/core/types";
 
 // ---------------------------------------------------------------------------
 // Helpers

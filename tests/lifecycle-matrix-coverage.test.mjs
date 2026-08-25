@@ -486,7 +486,7 @@ test("retrieval/intent/config paths are tracked (grandfathered), not silently ig
   }
 });
 
-test("root src/ lifecycle shims are tracked (grandfathered), not silently ignored", () => {
+test("collapsed root lifecycle shims are not pre-covered after deletion", () => {
   const manifest = loadReal();
   for (const p of [
     "src/lifecycle.ts",
@@ -495,10 +495,7 @@ test("root src/ lifecycle shims are tracked (grandfathered), not silently ignore
     "src/session-observer-bands.ts",
     "src/session-observer-state.ts",
   ]) {
-    assert.equal(classifyGlob(p, manifest), "grandfathered", `${p} root shim must be tracked so a touch warns`);
-    const { warnings, violations } = evaluateCoverage([p], manifest);
-    assert.equal(violations.length, 0, `${p} must not be a hard violation yet`);
-    assert.equal(warnings.length, 1, `${p} shipped root shim must warn, not be silently ignored`);
+    assert.equal(classifyGlob(p, manifest), "unmapped", `${p} was deleted with the root-shim collapse`);
   }
 });
 
@@ -628,9 +625,6 @@ test("retrieval + namespace resolver paths are tracked (grandfathered), not sile
   const manifest = loadReal();
   for (const p of [
     "packages/remnic-core/src/retrieval-agents.ts",
-    "src/retrieval-agents.ts",
-    "src/retrieval.ts",
-    "src/orchestration/recall-section-coordinator.ts",
     "packages/remnic-core/src/retrieval-tiers.ts",
     "packages/remnic-core/src/namespaces/storage.ts",
     "packages/remnic-core/src/namespaces/search.ts",
@@ -638,9 +632,6 @@ test("retrieval + namespace resolver paths are tracked (grandfathered), not sile
     "packages/remnic-core/src/namespaces/principal.ts",
     "packages/remnic-core/src/namespaces/scope-profiles.ts",
     "packages/remnic-core/src/namespaces/identity.ts",
-    "src/namespaces/storage.ts",
-    "src/namespaces/search.ts",
-    "src/namespaces/principal.ts",
   ]) {
     assert.equal(classifyGlob(p, manifest), "grandfathered", `${p} must be tracked so a touch warns`);
     const { covered, warnings, violations } = evaluateCoverage([p], manifest);
@@ -761,7 +752,7 @@ test("a rename within lifecycle evaluates the destination, not the moved source"
 
 test("a NEW namespace file fails the gate via the namespaces/** catch-all", () => {
   const manifest = loadReal();
-  for (const dir of ["packages/remnic-core/src/namespaces", "src/namespaces"]) {
+  for (const dir of ["packages/remnic-core/src/namespaces"]) {
     const fresh = evaluateCoverage([`${dir}/brand-new-resolver.ts`], manifest);
     assert.equal(fresh.violations.length, 1, `a new file under ${dir} must fail as unmapped`);
     assert.equal(fresh.warnings.length, 0);
@@ -786,9 +777,7 @@ test("retrieval freshness entrypoints are tracked (grandfathered), not silently 
   const manifest = loadReal();
   for (const p of [
     "packages/remnic-core/src/harmonic-retrieval.ts",
-    "src/harmonic-retrieval.ts",
     "packages/remnic-core/src/causal-retrieval.ts",
-    "src/causal-retrieval.ts",
     "packages/remnic-core/src/temporal-supersession.ts",
   ]) {
     assert.equal(classifyGlob(p, manifest), "grandfathered", `${p} must be tracked so a touch warns`);
@@ -803,11 +792,8 @@ test("recall lifecycle modules are tracked (grandfathered), not silently ignored
   const manifest = loadReal();
   for (const p of [
     "packages/remnic-core/src/recall-state.ts",
-    "src/recall-state.ts",
     "packages/remnic-core/src/recall-query-policy.ts",
-    "src/recall-query-policy.ts",
     "packages/remnic-core/src/verified-recall.ts",
-    "src/verified-recall.ts",
   ]) {
     assert.equal(classifyGlob(p, manifest), "grandfathered", `${p} must be tracked so a touch warns`);
     const { warnings, violations } = evaluateCoverage([p], manifest);

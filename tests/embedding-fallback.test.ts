@@ -7,12 +7,12 @@ import {
   EmbeddingFallback,
   EmbeddingProviderUnavailableError,
   EmbeddingTimeoutError,
-} from "../src/embedding-fallback.js";
+} from "@remnic/core/embedding-fallback";
 import {
   clearHostEmbeddingProvidersForTest,
   registerHostEmbeddingProvider,
-} from "../src/host-embedding-provider.js";
-import type { PluginConfig } from "../src/types.js";
+} from "@remnic/core/host-embedding-provider";
+import type { PluginConfig } from "@remnic/core/types";
 
 function stubConfig(overrides: Partial<PluginConfig> = {}): PluginConfig {
   return {
@@ -514,7 +514,7 @@ test("EmbeddingFallback classifies host provider unavailable without mislabeling
 });
 
 test("normalizeHostEmbeddingVector rejects malformed components", async () => {
-  const { normalizeHostEmbeddingVector } = await import("../src/host-embedding-provider.js");
+  const { normalizeHostEmbeddingVector } = await import("@remnic/core/host-embedding-provider");
   assert.equal(normalizeHostEmbeddingVector([1, "bad", 3]), null);
   assert.equal(normalizeHostEmbeddingVector([1, null, 3]), null);
   assert.equal(normalizeHostEmbeddingVector([1, false, 3]), null);

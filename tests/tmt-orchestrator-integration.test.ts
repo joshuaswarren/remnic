@@ -25,7 +25,7 @@ import {
   type TmtConfig,
   type MemoryEntry,
   type SummarizeFn,
-} from "../src/tmt.js";
+} from "@remnic/core/tmt";
 
 async function makeTmp(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "engram-tmt-integration-"));
@@ -97,7 +97,7 @@ test("TMT integration: enabled → all node levels written for a single day batc
     // Day node
     assert.ok(existsSync(dayNodePath(dir, date)), "day node should be written");
     // Week node
-    const { isoWeekKey } = await import("../src/tmt.js");
+    const { isoWeekKey } = await import("@remnic/core/tmt");
     const week = isoWeekKey(new Date(date));
     assert.ok(existsSync(weekNodePath(dir, week)), "week node should be written");
     // Persona node
@@ -116,7 +116,7 @@ test("TMT integration: active memory shrink rebuilds stale hour day and week nod
     const shrunkEntries = makeEntries(3, date, 10);
     await builder.maybeRebuildNodes(shrunkEntries, mockSummarize);
 
-    const { isoWeekKey } = await import("../src/tmt.js");
+    const { isoWeekKey } = await import("@remnic/core/tmt");
     const week = isoWeekKey(new Date(date));
     const hourNode = await (await import("node:fs/promises")).readFile(hourNodePath(dir, date, "10"), "utf8");
     const dayNode = await (await import("node:fs/promises")).readFile(dayNodePath(dir, date), "utf8");
@@ -209,7 +209,7 @@ test("TMT integration: getMostRelevantNode on malformed day file → returns nul
 test("TMT integration: memories across two weeks produce two week nodes", async () => {
   const dir = await makeTmp();
   try {
-    const { isoWeekKey } = await import("../src/tmt.js");
+    const { isoWeekKey } = await import("@remnic/core/tmt");
     const builder = new TmtBuilder(dir, enabledCfg);
     // Use dates that are guaranteed to be in different calendar weeks regardless of timezone.
     // 2026-01-05 (Monday, week 02) and 2026-01-12 (Monday, week 03) are 7 days apart.
@@ -256,7 +256,7 @@ test("TMT integration: serialiseTmtNode content survives a write/read round-trip
   const dir = await makeTmp();
   try {
     const nodePath = path.join(dir, "round-trip.md");
-    const { TmtNodeFrontmatter } = await import("../src/tmt.js" as any);
+    const { TmtNodeFrontmatter } = await import("@remnic/core/tmt" as any);
     const fm = {
       level: "day" as const,
       periodStart: "2026-02-22T00:00:00.000Z",
