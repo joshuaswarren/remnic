@@ -53,6 +53,25 @@ function navigationResultSchema(): Record<string, unknown> {
   );
 }
 
+/** MemoryStoreBrowseResult-shaped schema — shared by memory_ls/tree/find. */
+function browseResultSchema(): Record<string, unknown> {
+  return objectSchema(
+    {
+      ok: T_BOOLEAN,
+      verb: T_STRING,
+      namespace: T_STRING,
+      path: T_STRING,
+      total: T_NUMBER,
+      entries: T_ARRAY,
+      truncated: T_BOOLEAN,
+      rendered: T_STRING,
+      error: T_NULLABLE_STRING,
+      message: T_NULLABLE_STRING,
+    },
+    ["ok", "verb", "rendered"],
+  );
+}
+
 /**
  * Per-suffix outputSchema registry. Tools not present here fall back to
  * `{ type: "object", additionalProperties: true }` in the constructor pass.
@@ -116,6 +135,12 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   // rendered are the fields every variant returns.
   memory_expand: navigationResultSchema(),
   memory_traverse: navigationResultSchema(),
+  // MemoryStoreBrowseResult union (memory-browse.ts): success carries
+  // entries/total/truncated; typed refusals carry error/message. ok/verb/
+  // rendered are the fields every variant returns.
+  memory_ls: browseResultSchema(),
+  memory_tree: browseResultSchema(),
+  memory_find: browseResultSchema(),
   standup: objectSchema({
     date: T_STRING,
     yesterday: T_STRING,
