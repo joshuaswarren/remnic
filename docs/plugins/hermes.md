@@ -303,7 +303,9 @@ a raw API key or OAuth token.
   file once keeps working across Hermes restarts.
 - **Bounded and quiet.** Bodies above `max_body_bytes` get `413`;
   queue wait and delegate work share one `timeout_seconds` deadline.
-  A depleted queue budget starts no delegate. Request bodies are never
+  A depleted queue budget starts no delegate. Handler threads are
+  capped at accept time, before authentication, so an unauthenticated
+  loopback flood cannot exhaust the process. Request bodies are never
   logged, and error responses are fixed strings — no exception text, no
   echoes.
 
@@ -314,7 +316,7 @@ Point the Remnic daemon at the generated client JSON by setting
 `remnic.llm_bridge.client_config_path`. `parseConfig` reads `endpoint`
 and `token` into `backgroundGeneration` only. Extraction, day summary,
 dependency revalidation, and embeddings keep using `openaiBaseUrl` and
-are unchanged. Hourly summarizer is the background-generation consumer.
+are unchanged. Hourly summarizer is the background-generation consumer, including structured extended hourly summaries.
 
 ```json
 {

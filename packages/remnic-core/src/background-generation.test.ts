@@ -130,3 +130,80 @@ test("HourlySummarizer uses backgroundGeneration and not openaiBaseUrl", async (
     rmSync(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("HourlySummarizer routes extended summaries through backgroundGeneration", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-bg-extended-"));
+  const previousFetch = globalThis.fetch;
+  const previousXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = memoryDir;
+  const calls: string[] = [];
+  try {
+    const config = parseConfig({
+      memoryDir,
+      openaiApiKey: "keep-me",
+      openaiBaseUrl: "http://127.0.0.1:9999/v1",
+      hourlySummariesExtendedEnabled: true,
+      backgroundGeneration: {
+        endpoint: "http://127.0.0.1:8765/v1/chat/completions",
+        token: "bridge-token-fixture",
+        timeoutSeconds: 12,
+      },
+    });
+    let sentBody: string | undefined;
+    globalThis.fetch = (async (url, init) => {
+      calls.push(String(url));
+      if (String(url) !== "http://127.0.0.1:8765/v1/chat/completions") {
+        return new Response("not the bridge", { status: 404 });
+      }
+      sentBody = String(init?.body);
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  '{"topics":["bridge-topic"],"decisions":["ship it"],"actionItems":["land the PR"],"rejected":[]}',
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    const summarizer = new HourlySummarizer(config);
+    const summary = await summarizer.generateSummary(
+      "session-bridge",
+      new Date("2026-08-23T10:00:00.000Z"),
+      [
+        {
+          timestamp: "2026-08-23T10:01:00.000Z",
+          role: "user",
+          content: "ship the bridge",
+          sessionKey: "session-bridge",
+          turnId: "t1",
+        },
+      ],
+    );
+
+    assert.deepEqual(summary?.bullets, ["bridge-topic"]);
+    const extended = (summary as { _extended?: { topics: string[]; decisions: string[]; actionItems: string[]; rejected: string[] } })._extended;
+    assert.deepEqual(extended?.topics, ["bridge-topic"]);
+    assert.deepEqual(extended?.decisions, ["ship it"]);
+    assert.deepEqual(extended?.actionItems, ["land the PR"]);
+    assert.deepEqual(extended?.rejected, []);
+    assert.deepEqual(calls, ["http://127.0.0.1:8765/v1/chat/completions"]);
+    assert.equal(config.openaiBaseUrl, "http://127.0.0.1:9999/v1");
+    const sent = JSON.parse(String(sentBody)) as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const system = sent.messages.find((message) => message.role === "system")?.content ?? "";
+    assert.match(system, /"topics"/);
+    assert.match(system, /"decisions"/);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previousXdg;
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
