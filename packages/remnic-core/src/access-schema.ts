@@ -307,6 +307,16 @@ export function isMemoryCategoryAlias(value: string): value is MemoryCategoryAli
   return Object.prototype.hasOwnProperty.call(MEMORY_CATEGORY_ALIAS_TO_CANONICAL, value);
 }
 
+/**
+ * Canonical category for an accepted alias spelling; undefined for anything
+ * else (canonical spellings and near-misses map to nothing). Service-boundary
+ * consumers that receive `category` without a prior wire parse use this to
+ * match the transport contract (#2962).
+ */
+export function canonicalCategoryForAlias(value: string): "fact" | undefined {
+  return isMemoryCategoryAlias(value) ? MEMORY_CATEGORY_ALIAS_TO_CANONICAL[value] : undefined;
+}
+
 /** Coercion diagnostic for a write whose input category was a compat alias. */
 export interface CategoryAliasCoercion {
   from: MemoryCategoryAlias;
