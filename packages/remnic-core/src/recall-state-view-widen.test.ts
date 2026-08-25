@@ -96,11 +96,20 @@ test("#1952 precedence is OR: per-call false never disables a global true", () =
   assert.equal(labeled[1]?.stateLabel, "historical");
 });
 
-test("#1952 override true on a non-change query stays identity (change gate applies)", () => {
-  const input = [CURRENT, HISTORICAL];
-  assert.equal(widenRecallStateViews(input, NON_CHANGE, { recallStateViews: false }, [], true), input);
-  assert.equal(applyRecallStateViews(input, NON_CHANGE, { recallStateViews: false }, true), input);
-  assert.equal(input[0]?.stateLabel, undefined);
+test("#2893 threaded stateViewActive is trusted: no intent re-check at the seam", () => {
+  // The threaded flag means change intent was already classified on the
+  // ORIGINAL prompt at recall entry (resolveRecallStateViewActive); the
+  // query reaching this seam is the cron-normalized retrievalQuery and
+  // can lack the intent signal. Non-change ORIGINAL prompts never thread
+  // a true flag — pinned in recall-state-view-cron-intent.test.ts.
+  const labeled = widenRecallStateViews([CURRENT], NON_CHANGE, { recallStateViews: false }, [HISTORICAL], true);
+  assert.deepEqual(
+    labeled.map((row) => [row.id, row.stateLabel]),
+    [
+      ["new-job", "current"],
+      ["old-job", "historical"],
+    ],
+  );
 });
 
 test("asOf mode keeps a pin-filtered predecessor and never widens the pool (#1952)", () => {
