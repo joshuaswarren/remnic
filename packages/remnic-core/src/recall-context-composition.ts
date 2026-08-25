@@ -35,6 +35,33 @@ const TRIM_MARKER = "\n\n...(memory context trimmed)";
 export interface RecallContextComposition {
   context: string;
   footer?: string;
+  /**
+   * Machine-readable degradation marker (#2972). Absent on a healthy
+   * recall so the healthy wire shape stays byte-stable. Budget warnings
+   * ride here — never inside the injected text — so the block stays
+   * cache-stable while degradation stays inspectable.
+   */
+  degradation?: RecallContextDegradation;
+}
+
+export type RecallDegradationState = "complete" | "degraded" | "missing";
+
+export type RecallDegradationReason =
+  | "budget-clipped"
+  | "budget-compacted"
+  | "backend-unavailable";
+
+export interface RecallContextDegradation {
+  state: RecallDegradationState;
+  reason: RecallDegradationReason;
+  /** Operator-facing detail (e.g. a SearchDegradation code). */
+  detail?: string;
+  /** Budget accounting, present on budget-driven degradation. */
+  budget?: {
+    contextBudget: number;
+    fullChars: number;
+    deliveredChars: number;
+  };
 }
 
 export interface CuriosityQuestion {
@@ -53,6 +80,14 @@ export interface RenderedMemoryContextPrompt {
 
 export interface RenderMemoryContextPromptInput extends RecallContextComposition {
   maxChars: number;
+  /**
+   * Pre-rendered shallow form of every entry (#2972). When the full
+   * context exceeds budget, a fitting compact form is delivered instead
+   * of clipping the tail — breadth-complete-but-shallow over
+   * deep-but-amputated. Ignored unless strictly shorter than the full
+   * context and within budget.
+   */
+  compactContext?: string;
 }
 
 function trimText(value: string | undefined): string {
@@ -96,14 +131,77 @@ export function boundRecallContextComposition({
   context: rawContext,
   footer: rawFooter,
   maxChars,
+  compactContext: rawCompactContext,
 }: RenderMemoryContextPromptInput): RecallContextComposition {
   if (!Number.isFinite(maxChars) || maxChars <= 0) return { context: "" };
 
   const limit = Math.floor(maxChars);
   const footer = trimText(rawFooter);
-  const context = truncateToBudget(trimText(rawContext), contextBudgetForFooter(limit, footer));
+  const contextBudget = contextBudgetForFooter(limit, footer);
+  const fullContext = trimText(rawContext);
+  let context = fullContext;
+  let degradation: RecallContextDegradation | undefined;
+  if (fullContext.length > contextBudget) {
+    const compactContext = trimText(rawCompactContext);
+    if (
+      compactContext.length > 0 &&
+      compactContext.length <= contextBudget &&
+      compactContext.length < fullContext.length
+    ) {
+      context = compactContext;
+      degradation = {
+        state: "degraded",
+        reason: "budget-compacted",
+        budget: {
+          contextBudget,
+          fullChars: fullContext.length,
+          deliveredChars: compactContext.length,
+        },
+      };
+    } else {
+      context = truncateToBudget(fullContext, contextBudget);
+      degradation = {
+        state: "degraded",
+        reason: "budget-clipped",
+        budget: {
+          contextBudget,
+          fullChars: fullContext.length,
+          deliveredChars: context.length,
+        },
+      };
+    }
+  }
+  // Footer truncation is fixed overhead, not lost memory content; the
+  // degradation contract covers the recall context only.
   const boundedFooter = footer.length > limit ? truncateToBudget(footer, limit) : footer;
-  return { context, ...(boundedFooter ? { footer: boundedFooter } : {}) };
+  return {
+    context,
+    ...(boundedFooter ? { footer: boundedFooter } : {}),
+    ...(degradation ? { degradation } : {}),
+  };
+}
+
+export const MEMORY_CONTEXT_UNAVAILABLE_NOTE =
+  "Memory context unavailable for this turn: recall failed. " +
+  "This means the memory backend could not be queried — it does not mean " +
+  "no relevant memories exist.";
+
+/**
+ * Missing state (#2972): a failed recall path composes this INSTEAD of an
+ * empty or silently truncated context, so "backend failed" is never
+ * indistinguishable from "no relevant memories" (the injection-side twin
+ * of Review-Prevention rule 22). Replace the bounded composition with
+ * this result on failure; do not run it back through bounding.
+ */
+export function composeMissingMemoryContext(input: { detail?: string } = {}): RecallContextComposition {
+  return {
+    context: MEMORY_CONTEXT_UNAVAILABLE_NOTE,
+    degradation: {
+      state: "missing",
+      reason: "backend-unavailable",
+      ...(input.detail ? { detail: input.detail } : {}),
+    },
+  };
 }
 export function composeRecallContext(composition: RecallContextComposition): string {
   const context = trimText(composition.context);
@@ -117,11 +215,13 @@ export function renderMemoryContextPrompt({
   context: rawContext,
   footer: rawFooter,
   maxChars,
+  compactContext: rawCompactContext,
 }: RenderMemoryContextPromptInput): RenderedMemoryContextPrompt | null {
   const bounded = boundRecallContextComposition({
     context: rawContext,
     footer: rawFooter,
     maxChars,
+    compactContext: rawCompactContext,
   });
   const body = composeRecallContext(bounded);
   if (body.length === 0) return null;
