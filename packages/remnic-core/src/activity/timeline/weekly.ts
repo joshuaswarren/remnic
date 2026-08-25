@@ -8,6 +8,7 @@
  */
 import { parseFlexibleIsoTimestamp } from "../../utils/iso-timestamp.js";
 import { activityDayWindow, assertValidTimezone } from "../digest.js";
+import type { WeeklyPreviousPeriod } from "./week-previous.js";
 import type { TimelineCard, TimelineCardKind, TimelineCategory } from "./types.js";
 
 export const WEEKLY_ACTIVITY_FORMAT_VERSION = 1;
@@ -51,7 +52,7 @@ export interface WeeklyActivitySummary extends WeeklyKindTotals {
   weekEndUtc: string;
   categories: WeeklyCategoryTotal[];
   days: WeeklyDayTotal[];
-  previousPeriod: WeeklyPreviousPeriodUnavailable;
+  previousPeriod: WeeklyPreviousPeriod;
 }
 
 interface Acc extends WeeklyKindTotals {
