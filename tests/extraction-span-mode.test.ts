@@ -122,6 +122,54 @@ test("spanMode off with stray span: stripped, extraction otherwise unchanged", a
   assert.equal(result.facts[0]?.span, undefined);
 });
 
+function factSchemaProperties(schema: Record<string, unknown> | undefined) {
+  const properties = schema?.properties as
+    | Record<string, { items?: { properties?: Record<string, unknown> } }>
+    | undefined;
+  return properties?.facts?.items?.properties ?? {};
+}
+
+async function captureGatewayProviderSchema(spanMode: "off" | "shadow" | "on") {
+  const engine = new ExtractionEngine(
+    parseConfig({
+      modelSource: "gateway",
+      memoryDir: ".tmp/memory",
+      workspaceDir: ".tmp/workspace",
+      proactiveExtractionEnabled: false,
+      extraction: { spanMode },
+    }),
+  );
+  let schema: Record<string, unknown> | undefined;
+  assert.equal(
+    Reflect.set(engine, "fallbackLlm", {
+      async parseWithSchemaDetailed(
+        _messages: unknown,
+        _schema: unknown,
+        options?: { jsonSchema?: { schema?: Record<string, unknown> } },
+      ) {
+        schema = options?.jsonSchema?.schema;
+        return {
+          modelUsed: "fixture-gateway",
+          result: { facts: [], profileUpdates: [], entities: [], questions: [] },
+        };
+      },
+    }),
+    true,
+  );
+  await engine.extract(turns());
+  return schema;
+}
+
+test("gateway provider schema omits span in off mode and includes it in on/shadow (issue #2952)", async () => {
+  const off = factSchemaProperties(await captureGatewayProviderSchema("off"));
+  const on = factSchemaProperties(await captureGatewayProviderSchema("on"));
+  const shadow = factSchemaProperties(await captureGatewayProviderSchema("shadow"));
+  assert.equal("span" in off, false);
+  assert.equal("span" in on, true);
+  assert.equal("span" in shadow, true);
+  assert.deepEqual(Object.keys(on).sort(), Object.keys(shadow).sort());
+});
+
 test("on/shadow advertise span in the response shape; off does not", () => {
   assert.equal(extractionResponseShape("off"), extractionResponseShape());
   assert.doesNotMatch(extractionResponseShape("off"), /"span":/);
