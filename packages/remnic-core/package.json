@@ -2680,6 +2680,16 @@
       "remnic-source": "./src/shared-context/manager.ts",
       "import": "./dist/shared-context/manager.js"
     },
+    "./shared-context/write-output-controls": {
+      "types": "./dist/shared-context/write-output-controls.d.ts",
+      "remnic-source": "./src/shared-context/write-output-controls.ts",
+      "import": "./dist/shared-context/write-output-controls.js"
+    },
+    "./shared-context/write-output-controls.js": {
+      "types": "./dist/shared-context/write-output-controls.d.ts",
+      "remnic-source": "./src/shared-context/write-output-controls.ts",
+      "import": "./dist/shared-context/write-output-controls.js"
+    },
     "./signal": {
       "types": "./dist/signal.d.ts",
       "remnic-source": "./src/signal.ts",

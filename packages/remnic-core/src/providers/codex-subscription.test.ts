@@ -14,6 +14,7 @@ import {
   CodexSubscriptionConfigError,
   CodexSubscriptionTimeoutError,
   type CodexSubscriptionExecRequest,
+  type CodexSubscriptionExecResult,
   __codexSubscriptionTestHooks,
   createCodexSubscriptionRunner,
   ensureCodexSubscriptionRunnerRegistered,
@@ -781,6 +782,63 @@ test("caller abort reaches the cold login check: no spawn when pre-aborted, wait
   await assert.rejects(fresh, (error: unknown) => error === freshReason);
 });
 
+test("last waiter out aborts the shared login subprocess; earlier leavers do not", async () => {
+  __codexSubscriptionTestHooks.resetLoginStatusCache();
+  let loginCalls = 0;
+  const loginSignals: AbortSignal[] = [];
+  let resolveSecondLogin:
+    | ((value: { status: number | null; stdout: string; stderr: string }) => void)
+    | undefined;
+  const runner = createCodexSubscriptionRunner({
+    env: { HOME: "/home/alice", PATH: "/usr/bin:/bin" },
+    now: () => 0,
+    runLoginStatus: (_executable, _env, _timeoutMs, signal) => {
+      loginCalls++;
+      loginSignals.push(signal!);
+      const pending = Promise.withResolvers<{ status: number | null; stdout: string; stderr: string }>();
+      if (loginCalls === 2) resolveSecondLogin = pending.resolve;
+      signal?.addEventListener("abort", () =>
+        pending.resolve({ status: 1, stdout: "", stderr: "terminated" })
+      );
+      return pending.promise;
+    },
+    runCodexExec: async () => ({ status: 0, stdout: "", stderr: "", outputText: "ok" }),
+  });
+  const call = (signal?: AbortSignal) =>
+    runner({
+      config: { executable: "codex-fake" },
+      modelId: "gpt-5.6-luna",
+      messages: [{ role: "user", content: "hi" }],
+      options: { timeoutMs: 60_000, ...(signal ? { signal } : {}) },
+    });
+
+  const a = new AbortController();
+  const b = new AbortController();
+  const aReason = new Error("A left first");
+  const bReason = new Error("B left last");
+  const first = call(a.signal);
+  await flushLoop();
+  assert.equal(loginCalls, 1);
+  const second = call(b.signal);
+  await flushLoop();
+  assert.equal(loginCalls, 1, "second caller shares the in-flight check");
+
+  a.abort(aReason);
+  await assert.rejects(first, (error: unknown) => error === aReason);
+  assert.equal(loginSignals[0].aborted, false, "one waiter leaving must not cancel the shared check");
+
+  b.abort(bReason);
+  await assert.rejects(second, (error: unknown) => error === bReason);
+  await flushLoop();
+  assert.ok(loginSignals[0].aborted, "the last waiter leaving aborts the login subprocess");
+
+  // The aborted entry is dropped: the next caller starts a fresh check.
+  const fresh = call();
+  await flushLoop();
+  assert.equal(loginCalls, 2);
+  resolveSecondLogin?.({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" });
+  assert.equal((await fresh).content, "ok");
+});
 test("codex-subscription apiKey and SecretRef are rejected before secret resolution", { concurrency: false }, async () => {
   clearModelsJsonCache();
   clearSecretCache();
@@ -1184,6 +1242,75 @@ test(
   }
 );
 
+test(
+  "typed provider timeout still wins when the provider settles just past the outer deadline",
+  { concurrency: false },
+  async () => {
+    clearModelsJsonCache();
+    clearSecretCache();
+    __codexSubscriptionTestHooks.resetLoginStatusCache();
+    __codexSubscriptionTestHooks.resetCoreRunnerRegistered();
+    const runner = createCodexSubscriptionRunner({
+      env: { HOME: "/home/alice", PATH: "/usr/bin:/bin" },
+      now: () => 0,
+      runLoginStatus: async () => ({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" }),
+      // Real timer by design: the deadline race is wall-clock behavior. The
+      // exec "child" ignores the abort signal (like one already mid-close)
+      // and settles 35ms after its own 475ms budget — past the caller's
+      // 500ms deadline but inside the 25ms settle grace (T=500 -> 25 headroom).
+      runCodexExec: (request) => {
+        const execTimeoutMs = request.timeoutMs;
+        if (execTimeoutMs === undefined) {
+          throw new Error("expected timeoutMs");
+        }
+        const { promise, resolve } = Promise.withResolvers<CodexSubscriptionExecResult>();
+        setTimeout(
+          () =>
+            resolve({
+              status: 124,
+              stdout: "",
+              stderr: `codex-subscription: exec timed out after ${execTimeoutMs}ms.\n`,
+              outputText: "",
+            }),
+          execTimeoutMs + 35,
+        );
+        return promise;
+      },
+    });
+    const restore = setCodexCliFallbackRunnerForProcess(runner);
+    try {
+      const llm = new FallbackLlmClient({
+        agents: { defaults: { model: { primary: `${CODEX_SUBSCRIPTION_PROVIDER_ID}/gpt-5.6-luna` } } },
+        models: {
+          providers: {
+            [CODEX_SUBSCRIPTION_PROVIDER_ID]: {
+              baseUrl: "codex-cli://subscription",
+              api: "codex-cli",
+              models: [],
+            },
+          },
+        },
+      });
+      const startedAt = Date.now();
+      await assert.rejects(
+        llm.chatCompletion([{ role: "user", content: "hi" }], { timeoutMs: 500 }),
+        (error: unknown) => {
+          assert.ok(error instanceof CodexSubscriptionTimeoutError, `expected timeout, got: ${error}`);
+          assert.equal(error.name, "TimeoutError");
+          return true;
+        }
+      );
+      assert.ok(
+        Date.now() - startedAt < 1_400,
+        "typed timeout must surface within the settle grace, not wait for the provider forever"
+      );
+    } finally {
+      restore();
+      clearModelsJsonCache();
+      clearSecretCache();
+    }
+  }
+);
 test("concurrent callers share one in-flight login when auth.json already exists", async () => {
   __codexSubscriptionTestHooks.resetLoginStatusCache();
   const home = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-home-"));

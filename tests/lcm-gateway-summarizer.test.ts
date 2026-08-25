@@ -141,9 +141,9 @@ test("LCM summarization uses gateway internal LLM when modelSource is gateway", 
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.modelId, "main-model");
-  // The codex fallback reserves a bounded login-check slice of the fast
-  // timeout (min(100, max(5, timeout/5)) = 100 here) before the model call.
-  assert.equal(calls[0]?.timeoutMs, 1134);
+  // Unified Codex headroom: min(25, max(1, floor(timeout/10))) = 25.
+  // Provider call budget is localLlmFastTimeoutMs - headroom = 1234 - 25.
+  assert.equal(calls[0]?.timeoutMs, 1209);
   assert.match(calls[0]?.agentPrompt ?? "", /gateway too/);
 });
 

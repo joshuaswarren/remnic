@@ -11,8 +11,7 @@
  * directly) may call it.
  *
  * This script is the ENFORCED belt (the repo's lint gate is tsc + biome +
- * check scripts; eslint.config.js carries the same rule for editors that
- * wire a TS-aware ESLint). It fails when a production source outside the
+ * check scripts). It fails when a production source outside the
  * allowlist invokes `.writeMemory(`.
  */
 import { readdirSync, readFileSync, lstatSync } from "node:fs";

@@ -6500,9 +6500,12 @@
                   "preferences": {
                     "type": "array",
                     "default": [],
+                    "maxItems": 16,
                     "description": "Up to 16 prompt preferences, 200 characters each.",
                     "items": {
-                      "type": "string"
+                      "type": "string",
+                      "maxLength": 200,
+                      "pattern": "\\S"
                     }
                   }
                 }
