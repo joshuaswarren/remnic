@@ -132,11 +132,26 @@ export async function saveConvergeIdentityCache(
           }
         : {}),
   }));
+  const inManifest = new Set(files.map((entry) => entry.path));
   for (const entry of files) {
     const classification = classifications?.get(entry.path);
     if (classification === undefined) continue;
     entry.statIdentity = classification.statIdentity;
     entry.excluded = classification.excluded;
+  }
+  // Files the snapshot iterator excluded are classified but never reach the
+  // manifest. Persist their classifications as standalone entries — the walk
+  // saw them this cycle, so this resurrects nothing deleted and changes no
+  // identity decision; it only lets the next cycle's exclusion callback skip
+  // the read+parse. Their sha never matches a live file, so a later re-include
+  // is a cache miss and cold re-parse.
+  for (const [pathName, classification] of classifications ?? []) {
+    if (inManifest.has(pathName)) continue;
+    files.push({
+      ...(loaded?.get(pathName) ?? { path: pathName, sha256: "" }),
+      statIdentity: classification.statIdentity,
+      excluded: classification.excluded,
+    });
   }
   if (
     loaded !== undefined &&
@@ -187,8 +202,11 @@ export async function saveConvergeIdentityCache(
                       : {}),
                     ...(typeof entry.identityResolutionVersion === "number"
                       ? { identityResolutionVersion: entry.identityResolutionVersion }
-                      : {}),
+                    : {}),
                   }),
+              ...(entry.statIdentity !== undefined && entry.excluded !== undefined
+                ? { statIdentity: entry.statIdentity, excluded: entry.excluded }
+                : {}),
             });
           }
         }

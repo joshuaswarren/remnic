@@ -6,6 +6,11 @@ import test from "node:test";
 
 import type { ReconcileManifest } from "@remnic/core/reconcile/manifest.js";
 import { loadConvergeIdentityCache, saveConvergeIdentityCache, type ConvergeIdentityCacheEntry } from "./converge-identity-cache.js";
+import {
+  SUPPORT_PASSPORT_CARD_TAG,
+  createPersistedSupportPassportPrivateFileExclusion,
+} from "@remnic/core/support-passport.js";
+import type { MemoryFile } from "@remnic/core/types.js";
 
 const TEMPLATE = "Source: {{source}}";
 const HASH_A = "a".repeat(64);
@@ -216,6 +221,97 @@ test("a completed save does not resurrect a path the manifest dropped", async ()
     const after = await loadConvergeIdentityCache(cachePath, TEMPLATE);
     assert.equal(after.has("facts/no-identity.md"), false, "a deleted path must stay out of the cache");
     assert.ok(after.has("facts/a.md"));
+  });
+});
+
+test("a concurrent writer's merge preserves the other writer's classification", async () => {
+  await withCacheFile(async (cachePath) => {
+    const classifications = new Map([["facts/a.md", { statIdentity: "1:2:3:4:5", excluded: false }]]);
+    await saveConvergeIdentityCache(cachePath, manifest(), TEMPLATE, undefined, classifications);
+
+    // A second plan loaded a disjoint snapshot and publishes its own whole
+    // set; the under-lock merge must keep the first writer's entry whole,
+    // classification included, or that path re-classifies next cycle.
+    const disjoint = {
+      ...manifest(),
+      files: [{ path: "facts/b.md", sha256: "cc", mtimeMs: 1, bytes: 2 }],
+    } as ReconcileManifest;
+    await saveConvergeIdentityCache(cachePath, disjoint, TEMPLATE);
+    const after = await loadConvergeIdentityCache(cachePath, TEMPLATE);
+    assert.equal(after.get("facts/a.md")?.statIdentity, "1:2:3:4:5");
+    assert.equal(after.get("facts/a.md")?.excluded, false);
+    assert.ok(after.has("facts/b.md"));
+  });
+});
+
+test("classifications for files the iterator excluded persist and skip next-cycle reads", async () => {
+  await withCacheFile(async (cachePath) => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "converge-excluded-classification-"));
+    try {
+      const target = path.join(dir, "facts", "passport-card.md");
+      await fs.promises.mkdir(path.dirname(target), { recursive: true });
+      await fs.promises.writeFile(
+        target,
+        [
+          "---",
+          "id: card-1",
+          "category: fact",
+          "created: 2026-01-01T00:00:00.000Z",
+          "updated: 2026-01-01T00:00:00.000Z",
+          "status: active",
+          `tags:\n  - ${SUPPORT_PASSPORT_CARD_TAG}`,
+          "---",
+          "body",
+        ].join("\n")
+      );
+      await fs.promises.utimes(target, new Date(1_700_000_000_000), new Date(1_700_000_000_000));
+      let reads = 0;
+      const storage = {
+        readMemoryByPath: async (filePath: string): Promise<MemoryFile | null> => {
+          reads += 1;
+          return {
+            path: filePath,
+            frontmatter: {
+              id: "card-1",
+              category: "fact",
+              created: "2026-01-01T00:00:00.000Z",
+              updated: "2026-01-01T00:00:00.000Z",
+              source: "user",
+              confidence: 0.9,
+              confidenceTier: "explicit",
+              tags: [SUPPORT_PASSPORT_CARD_TAG],
+            },
+            content: "",
+          };
+        },
+      };
+      const classify = (persisted: ReadonlyMap<string, { statIdentity?: string; excluded?: boolean }>) => {
+        const updates = new Map<string, { statIdentity: string; excluded: boolean }>();
+        return {
+          updates,
+          exclude: createPersistedSupportPassportPrivateFileExclusion(storage, persisted, updates),
+        };
+      };
+      const record = { root: dir, path: "facts/passport-card.md", filePath: target };
+
+      // Cycle 1: cold — one read. The iterator excludes the file, so the
+      // manifest the same cycle saves never contains it.
+      const cold = classify(new Map());
+      assert.equal(await cold.exclude(record), true);
+      assert.equal(reads, 1);
+      await saveConvergeIdentityCache(cachePath, manifest(), TEMPLATE, undefined, cold.updates);
+      const persisted = await loadConvergeIdentityCache(cachePath, TEMPLATE);
+      const entry = persisted.get("facts/passport-card.md");
+      assert.equal(entry?.excluded, true, "an excluded file's classification must persist without a manifest entry");
+      assert.equal(typeof entry?.statIdentity, "string");
+
+      // Cycle 2: the persisted stat identity matches — no re-classify read.
+      const warm = classify(persisted);
+      assert.equal(await warm.exclude(record), true);
+      assert.equal(reads, 1, "the next cycle must not re-read an excluded file");
+    } finally {
+      await fs.promises.rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

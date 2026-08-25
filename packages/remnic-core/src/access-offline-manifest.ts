@@ -57,11 +57,17 @@ export interface ServerIdentityCacheEntry {
 export function planServerIdentityCacheWrite(input: {
   persisted: ReadonlyMap<string, ServerIdentityCacheEntry>;
   yieldedPaths: ReadonlySet<string>;
+  /** Paths the walk saw but never yielded (removed by the exclusion
+   * callback). Not deleted — pruning them would drop their persisted
+   * classification and force a re-classify on every later cycle. */
+  retainedPaths?: ReadonlySet<string>;
   streamCompleted: boolean;
   cacheDirty: boolean;
 }): { shouldWrite: boolean; entries: ServerIdentityCacheEntry[] } {
   const entries = input.streamCompleted
-    ? [...input.persisted.values()].filter((entry) => input.yieldedPaths.has(entry.path))
+    ? [...input.persisted.values()].filter(
+        (entry) => input.yieldedPaths.has(entry.path) || input.retainedPaths?.has(entry.path)
+      )
     : [...input.persisted.values()];
   return { shouldWrite: input.cacheDirty || entries.length !== input.persisted.size, entries };
 }
@@ -147,7 +153,7 @@ async function withServerIdentityCacheWriteLock(cachePath: string, write: () => 
 
 /** Union of the entries being written and the current on-disk set; on conflict
  * the write wins (it reflects the newer run). Callers hold the write lock. */
-async function mergeServerIdentityCacheEntries(
+export async function mergeServerIdentityCacheEntries(
   fs: typeof import("node:fs/promises"),
   cachePath: string,
   entries: readonly ServerIdentityCacheEntry[],
@@ -178,6 +184,9 @@ async function mergeServerIdentityCacheEntries(
                   ? { identityResolutionVersion: entry.identityResolutionVersion }
                   : {}),
               }),
+          ...(entry.statIdentity !== undefined && entry.excluded !== undefined
+            ? { statIdentity: entry.statIdentity, excluded: entry.excluded }
+            : {}),
         });
       }
     }
@@ -185,6 +194,34 @@ async function mergeServerIdentityCacheEntries(
     // missing or unreadable current cache: the write set stands alone
   }
   return [...merged.values()];
+}
+
+/** Record classifications for files the walk excluded (the exclusion callback
+ * returned true, so they were never yielded): they were seen this walk, so
+ * their entries must persist and must not be pruned as deleted. Mirrors the
+ * per-yield classification application for never-yielded paths. */
+export function retainExcludedClassifications(input: {
+  persisted: Map<string, ServerIdentityCacheEntry>;
+  classifications: ReadonlyMap<string, { statIdentity: string; excluded: boolean }>;
+  yieldedPaths: ReadonlySet<string>;
+}): { retained: Set<string>; changed: boolean } {
+  const retained = new Set<string>();
+  let changed = false;
+  for (const [pathName, classification] of input.classifications) {
+    if (input.yieldedPaths.has(pathName)) continue;
+    retained.add(pathName);
+    const entry = input.persisted.get(pathName) ?? { path: pathName, sha256: "" };
+    if (entry.statIdentity === classification.statIdentity && entry.excluded === classification.excluded) {
+      continue;
+    }
+    input.persisted.set(pathName, {
+      ...entry,
+      statIdentity: classification.statIdentity,
+      excluded: classification.excluded,
+    });
+    changed = true;
+  }
+  return { retained, changed };
 }
 
 export async function createOfflineSyncManifestStream(
@@ -227,10 +264,12 @@ export async function createOfflineSyncManifestStream(
       // near-cold rebuild on the next request.
       const persistedEntries = new Map(identityCache);
       const yieldedPaths = new Set<string>();
+      const retainedPaths = new Set<string>();
       const flush = async (): Promise<void> => {
         const { shouldWrite, entries } = planServerIdentityCacheWrite({
           persisted: persistedEntries,
           yieldedPaths,
+          retainedPaths,
           streamCompleted,
           cacheDirty,
         });
@@ -334,6 +373,17 @@ export async function createOfflineSyncManifestStream(
         }
         streamCompleted = true;
       } finally {
+        // Files the exclusion callback removed from the snapshot were seen
+        // this walk but never yielded: persist their classifications so the
+        // next cycle skips the read+parse, and keep them out of the
+        // deleted-path prune.
+        const retained = retainExcludedClassifications({
+          persisted: persistedEntries,
+          classifications: classificationUpdates,
+          yieldedPaths,
+        });
+        for (const pathName of retained.retained) retainedPaths.add(pathName);
+        if (retained.changed) cacheDirty = true;
         await flush();
       }
     })(),
