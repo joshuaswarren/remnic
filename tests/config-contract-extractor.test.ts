@@ -130,6 +130,7 @@ test("unparseable fixture: dynamic constructs are reported loudly, never silentl
   const fromFixture = unparseable.filter((u) => u.file.includes("fixtures/unparseable.ts"));
   assert.ok(fromFixture.length >= 2, JSON.stringify(unparseable));
   assert.ok(fromFixture.some((u) => u.reason.includes("Object.keys")));
+  assert.ok(fromFixture.some((u) => u.reason.includes("Object.getOwnPropertyNames")));
   assert.ok(fromFixture.some((u) => u.reason.includes("computed element access")));
   for (const entry of fromFixture) {
     assert.ok(entry.line > 0, "every unparseable construct carries a line number");
@@ -248,5 +249,15 @@ test("local literal-key helper calls surface every parsed contradiction cap", ()
     ),
     false,
     "local literal-key helper access must be statically resolved",
+  );
+});
+
+test("#2964: Object.entries over localLlmHeaders is a static opaque-block passthrough", () => {
+  const { keys, unparseable } = extractReal();
+  assert.ok(keys.includes("localLlmHeaders"), "localLlmHeaders must still extract as a block key");
+  assert.equal(
+    unparseable.filter((entry) => entry.file.endsWith("local-llm-config.ts")).length,
+    0,
+    "copyStringRecord's Object.entries over localLlmHeaders must not be an unparseable construct",
   );
 });

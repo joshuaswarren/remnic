@@ -12,6 +12,9 @@ export function parseFixtureUnparseableConfig(value: unknown): Rec {
   for (const key of Object.keys(raw)) {
     out[key] = raw[key];
   }
+  for (const key of Object.getOwnPropertyNames(raw)) {
+    out[key] = raw[key];
+  }
   for (const key of DYNAMIC_KEYS) {
     out[key] = raw[key as string];
   }

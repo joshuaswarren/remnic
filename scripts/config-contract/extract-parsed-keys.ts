@@ -82,6 +82,27 @@ const ARRAY_CALLBACK_METHODS = new Set(["map", "flatMap", "forEach", "filter"]);
  * `arr.filter(...).map(fn)` (issue #1990 review).
  */
 const ARRAY_CHAIN_METHODS = new Set(["map", "flatMap", "filter", "slice", "concat"]);
+/**
+ * Object.* methods that enumerate the parser input's key set. #2964 added
+ * getOwnPropertyNames after local-llm-config.ts used it to copy header
+ * values past the keys/entries/values rule, leaving the construct unflagged.
+ */
+const DYNAMIC_KEY_ITERATION_METHODS: Record<string, true> = {
+  keys: true,
+  entries: true,
+  values: true,
+  getOwnPropertyNames: true,
+};
+/**
+ * Schema-opaque free-form blocks (additionalProperties) where dynamic key
+ * iteration is a whole-block passthrough: the block key itself is the
+ * contract, so the iteration is statically known-safe rather than an
+ * unparseable dynamic key set (#2964). Keys are full dotted paths from
+ * the parser input.
+ */
+const OPAQUE_BLOCK_PASSTHROUGH: Record<string, true> = {
+  localLlmHeaders: true, // #2964 - additionalProperties: {type: string} in every manifest
+};
 
 interface AliasInfo {
   /** Path prefix segments from the parser input to this alias ("" = root). */
@@ -702,17 +723,26 @@ function extractParserKeys(
       // other arguments (handled by the property-access branch).
     }
 
-    // Dynamic iteration over the raw input: Object.keys(raw) / for..in raw
+    // Dynamic iteration over the raw input: Object.keys/entries/values/
+    // getOwnPropertyNames(raw) — dynamic key set.
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
       ts.isIdentifier(node.expression.expression) &&
       node.expression.expression.text === "Object" &&
-      ["keys", "entries", "values"].includes(node.expression.name.text) &&
+      DYNAMIC_KEY_ITERATION_METHODS[node.expression.name.text] === true &&
       node.arguments.length === 1
     ) {
       const resolved = resolveAliasChain(node.arguments[0]);
       if (resolved) {
+        const iteratedPath = [...prefix, ...resolved.info.prefix, ...resolved.segments].join(".");
+        if (OPAQUE_BLOCK_PASSTHROUGH[iteratedPath] === true) {
+          // Explicit opaque-block allowance (#2964): free-form user keys are
+          // the documented contract for this block, so iteration over it is a
+          // whole-block passthrough. Record the block key, not an unparseable.
+          out.keys.add(iteratedPath);
+          return;
+        }
         pushUnparseable(
           out,
           repoRoot,
