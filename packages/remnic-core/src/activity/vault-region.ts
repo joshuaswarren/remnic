@@ -8,6 +8,10 @@
  * or as name `A` with a `B:start` suffix) and a publisher that resolved
  * that ambiguity differently from the note's own markers would pair a
  * start with a later end and delete the user bytes in between.
+ *
+ * Whitespace-padded names are rejected, not trimmed (issue #2917): the
+ * old silent trim validated one name and wrote another, so markers and
+ * heading matches were computed against bytes the caller never saw.
  */
 
 export type ValidateRegionNameResult =
@@ -21,9 +25,9 @@ export function validateRegionName(name: string): ValidateRegionNameResult {
   if (name.includes("\n") || name.includes("\r") || name.includes("-->") || name.includes(":")) {
     return { ok: false, error: "invalid_name" };
   }
-  const trimmed = name.trim();
-  if (trimmed.length === 0) {
+  if (name.trim() !== name || name.trim().length === 0) {
     return { ok: false, error: "invalid_name" };
   }
-  return { ok: true, name: trimmed };
+  return { ok: true, name };
 }
+
