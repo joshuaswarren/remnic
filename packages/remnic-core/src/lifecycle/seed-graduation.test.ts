@@ -28,6 +28,10 @@ const SEED_TEXT = "The launch moved to September twelfth after the vendor call."
 // Restates the seed in similar wording (the wearable support-corpus pair).
 const RESTATE_TEXT = "Launch moved to September twelfth after the vendor call.";
 const UNRELATED_TEXT = "Quarterly budget planning covered the new office lease.";
+// Restates the seed's core content with flipped negation polarity.
+const CONTRADICT_TEXT = "The launch was not moved to September twelfth after the vendor call.";
+const NEGATED_UNRELATED_TEXT =
+  "The office lease was not approved during quarterly budget planning.";
 
 function fakeMemory(overrides: {
   id: string;
@@ -330,6 +334,144 @@ test("disabled config holds with the disabled reason (zero-value semantics)", ()
 });
 
 // ---------------------------------------------------------------------------
+// Gate — contradiction during the corroboration window (issue #2974)
+// ---------------------------------------------------------------------------
+
+function seedMemory(overrides: Partial<Parameters<typeof fakeMemory>[0]> & { id: string }): MemoryFile {
+  return fakeMemory({
+    content: SEED_TEXT,
+    created: "2026-08-01T10:00:00.000Z",
+    status: "pending_review",
+    source: "wearable:bee",
+    ...overrides,
+  });
+}
+
+test("an independent negated restatement holds the seed even with enough corroborations", () => {
+  const seed = seedMemory({ id: "seed-1" });
+  const corroborator = fakeMemory({
+    id: "ev-1",
+    content: RESTATE_TEXT,
+    created: "2026-08-02T10:00:00.000Z",
+    source: "wearable:limitless",
+  });
+  const contradictor = fakeMemory({
+    id: "ev-2",
+    content: CONTRADICT_TEXT,
+    created: "2026-08-03T10:00:00.000Z",
+    source: "extraction",
+  });
+  const decision = evaluateSeedGraduation(seed, [corroborator, contradictor], {
+    config: ENABLED,
+  });
+  assert.equal(decision.decision, "hold", "contradiction vetoes graduation");
+  assert.deepEqual(decision.contradicting, [{ memoryId: "ev-2", source: "extraction" }]);
+  assert.ok(decision.reasons.includes("contradiction-observed:1"));
+});
+
+test("a negated seed restated positively is held (polarity symmetry)", () => {
+  const seed = seedMemory({ id: "seed-1", content: CONTRADICT_TEXT });
+  const positive = fakeMemory({
+    id: "ev-1",
+    content: RESTATE_TEXT,
+    created: "2026-08-02T10:00:00.000Z",
+    source: "wearable:limitless",
+  });
+  const decision = evaluateSeedGraduation(seed, [positive], { config: ENABLED });
+  assert.equal(decision.decision, "hold");
+  assert.equal(decision.contradicting.length, 1);
+});
+
+test("a same-session negation is a draft correction, not a contradiction", () => {
+  const seed = seedMemory({
+    id: "seed-1",
+    structuredAttributes: { sessionKey: "session-a" },
+  });
+  const retraction = fakeMemory({
+    id: "ev-2",
+    content: CONTRADICT_TEXT,
+    created: "2026-08-03T10:00:00.000Z",
+    source: "extraction",
+    structuredAttributes: { sessionKey: "session-a" },
+  });
+  const corroborator = fakeMemory({
+    id: "ev-1",
+    content: RESTATE_TEXT,
+    created: "2026-08-02T10:00:00.000Z",
+    source: "wearable:limitless",
+  });
+  const decision = evaluateSeedGraduation(seed, [retraction, corroborator], {
+    config: ENABLED,
+  });
+  assert.equal(decision.decision, "promote");
+  assert.equal(decision.contradicting.length, 0);
+});
+
+test("a polarity flip without core-content restatement neither contradicts nor corroborates", () => {
+  const seed = seedMemory({ id: "seed-1" });
+  const negatedUnrelated = fakeMemory({
+    id: "ev-2",
+    content: NEGATED_UNRELATED_TEXT,
+    created: "2026-08-03T10:00:00.000Z",
+    source: "extraction",
+  });
+  const corroborator = fakeMemory({
+    id: "ev-1",
+    content: RESTATE_TEXT,
+    created: "2026-08-02T10:00:00.000Z",
+    source: "wearable:limitless",
+  });
+  const decision = evaluateSeedGraduation(seed, [negatedUnrelated, corroborator], {
+    config: ENABLED,
+  });
+  assert.equal(decision.decision, "promote");
+  assert.equal(decision.contradicting.length, 0);
+});
+
+test("recall echo does not suppress a contradiction: denying a recalled seed is a correction", () => {
+  const seed = seedMemory({
+    id: "seed-1",
+    structuredAttributes: { sessionKey: "session-a" },
+  });
+  const contradictor = fakeMemory({
+    id: "ev-2",
+    content: CONTRADICT_TEXT,
+    created: "2026-08-03T10:00:00.000Z",
+    source: "extraction",
+    structuredAttributes: { sessionKey: "session-b" },
+  });
+  const decision = evaluateSeedGraduation(seed, [contradictor], {
+    config: ENABLED,
+    recalledBySession: (sessionKey) =>
+      sessionKey === "session-b" ? [["seed-1"]] : [],
+  });
+  assert.equal(decision.decision, "hold");
+  assert.equal(decision.contradicting.length, 1);
+});
+
+test("a superseded contradictor no longer holds the seed (review resolution unblocks)", () => {
+  const seed = seedMemory({ id: "seed-1" });
+  const resolved = fakeMemory({
+    id: "ev-2",
+    content: CONTRADICT_TEXT,
+    created: "2026-08-03T10:00:00.000Z",
+    source: "extraction",
+    status: "superseded",
+  });
+  const corroborator = fakeMemory({
+    id: "ev-1",
+    content: RESTATE_TEXT,
+    created: "2026-08-02T10:00:00.000Z",
+    source: "wearable:limitless",
+  });
+  const decision = evaluateSeedGraduation(seed, [resolved, corroborator], {
+    config: ENABLED,
+  });
+  assert.equal(decision.decision, "promote");
+  assert.equal(decision.contradicting.length, 0);
+});
+
+// ---------------------------------------------------------------------------
 // Pass — against a real StorageManager (acceptance cases)
 // ---------------------------------------------------------------------------
 
@@ -401,6 +543,40 @@ test("pass: independent corroboration promotes the seed in place with audit attr
   }
 });
 
+test("pass: contradiction during the window holds the seed in place", async () => {
+  const { storage, dir } = makeStorage();
+  try {
+    await storage.writeMemory("fact", SEED_TEXT, {
+      source: "wearable:bee",
+      status: "pending_review",
+    });
+    await storage.writeMemory("fact", RESTATE_TEXT, {
+      source: "wearable:limitless",
+    });
+    await storage.writeMemory("fact", CONTRADICT_TEXT, {
+      source: "extraction",
+    });
+    const memories = await storage.readAllMemories();
+    const summary = await runSeedGraduationPass({
+      memories,
+      storage,
+      config: ENABLED,
+    });
+    assert.equal(summary.evaluated, 1);
+    assert.equal(summary.promoted, 0, "contradicted seed must not graduate");
+    assert.equal(summary.held, 1);
+    assert.equal(summary.contradictionHeld, 1);
+    const seed = (await storage.readAllMemories()).find(
+      (memory) => memory.frontmatter.source === "wearable:bee",
+    );
+    assert.ok(seed);
+    assert.equal(seed.frontmatter.status, "pending_review", "held for review resolution");
+    assert.equal(seed.frontmatter.structuredAttributes?.graduatedBy, undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("pass: a non-corroborated seed stays in its prior state", async () => {
   const { storage, dir } = makeStorage();
   try {
@@ -450,6 +626,7 @@ test("pass: disabled config touches nothing", async () => {
       evaluated: 0,
       promoted: 0,
       held: 0,
+      contradictionHeld: 0,
       echoSuppressed: 0,
       disabled: true,
     });
@@ -577,6 +754,38 @@ test("lifecycle pass: recall-handle history suppresses echo corroboration", asyn
       (memory) => memory.frontmatter.source === "wearable:bee",
     );
     assert.equal(seed?.frontmatter.status, "pending_review", "quoted-back echo must not graduate");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("lifecycle pass: contradiction during the window holds the seed through the policy seam", async () => {
+  const { storage, dir } = makeStorage();
+  try {
+    await storage.writeMemory("fact", SEED_TEXT, {
+      source: "wearable:bee",
+      status: "pending_review",
+    });
+    await storage.writeMemory("fact", RESTATE_TEXT, {
+      source: "wearable:limitless",
+    });
+    await storage.writeMemory("fact", CONTRADICT_TEXT, {
+      source: "extraction",
+    });
+    const config = parseConfig({
+      memoryDir: dir,
+      seedGraduation: { enabled: true, minCorroborations: 1 },
+    });
+    const memories = await storage.readAllMemories();
+    await new LifecyclePolicyCoordinator(coordinatorDeps(storage, config)).runLifecyclePolicyPass(
+      memories,
+      storage,
+    );
+    const seed = (await storage.readAllMemories()).find(
+      (memory) => memory.frontmatter.source === "wearable:bee",
+    );
+    assert.equal(seed?.frontmatter.status, "pending_review", "contradiction holds the seed");
+    assert.equal(seed?.frontmatter.structuredAttributes?.graduatedBy, undefined);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

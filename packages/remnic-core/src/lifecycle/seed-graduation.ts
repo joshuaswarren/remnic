@@ -1,5 +1,5 @@
 /**
- * Corroboration-graduated seed memories (issue #2974) — foundation layer.
+ * Corroboration-graduated seed memories (issue #2974).
  *
  * A `pending_review` memory is a SEED: it must not enter active recall on its
  * own say-so. This module decides, deterministically, when later evidence has
@@ -12,20 +12,21 @@
  *    anchors are absent, and never a lineage descendant of the seed,
  *  - echo is suppressed: when the caller can show the evidence's session
  *    RECALLED the seed (the store's own content quoted back), that evidence
- *    never counts — otherwise recall would manufacture its own confirmation.
+ *    never counts — otherwise recall would manufacture its own confirmation,
+ *  - a CONTRADICTION observed during the corroboration window — a later
+ *    independent memory restating the seed's core content with flipped
+ *    negation polarity (the dedup detector's vocabulary) — holds the seed:
+ *    it never auto-graduates while the contradiction stands. Demoting or
+ *    superseding stays a reviewer verb, exactly like preference drift.
  *
  * Promotion itself reuses the existing in-place `pending_review -> active`
  * machinery (`StorageManager.promoteWearableMemory`, the same status flip the
  * wearable cross-device corroboration path uses) — no parallel write path.
  * Every graduation stamps the corroborating evidence ids on the promoted row
  * (audit surface; the lifecycle ledger already records the status transition).
- *
- * Foundation scope: the gate, the pass, and the config parser. Wiring the key
- * into `parseConfig` (config.ts sits at its size ratchet), the conservative
- * preset pin, scheduling inside the lifecycle sweep, contradiction holds, and
- * the docs/manifest surface are follow-up layers on this issue.
  */
 
+import { NEGATION_WORDS } from "../dedup/index.js";
 import { normalizeRecallTokens } from "../recall-tokenization.js";
 import { stripAttributesSuffix } from "../storage.js";
 import { STRUCTURED_ATTRIBUTE_LIMITS } from "../write-envelope.js";
@@ -161,13 +162,44 @@ function isIndependentProvenance(seed: MemoryFile, evidence: MemoryFile): boolea
 
 /** Reads the token coverage of `seed`'s tokens inside `evidence`'s body. */
 function coverageOf(seedTokens: ReadonlySet<string>, evidence: MemoryFile): number {
+  return tokenCoverageOf(
+    seedTokens,
+    new Set(normalizeRecallTokens(stripAttributesSuffix(evidence.content))),
+  );
+}
+
+function tokenCoverageOf(
+  seedTokens: ReadonlySet<string>,
+  evidenceTokens: ReadonlySet<string>,
+): number {
   if (seedTokens.size === 0) return 0;
-  const evidenceTokens = new Set(normalizeRecallTokens(stripAttributesSuffix(evidence.content)));
   let matches = 0;
   for (const token of seedTokens) {
     if (evidenceTokens.has(token)) matches += 1;
   }
   return matches / seedTokens.size;
+}
+
+// Contradiction detection shares the dedup detector's negation vocabulary
+// (NEGATION_WORDS) — one vocabulary source, never a per-consumer copy.
+
+/** Word shapes that keep contractions ("don't") as single negation words. */
+const NEGATION_WORD_SPLIT = /[^\p{L}\p{M}\p{N}']+/u;
+
+function hasNegationWord(text: string): boolean {
+  for (const word of text.toLowerCase().split(NEGATION_WORD_SPLIT)) {
+    if (NEGATION_WORDS.has(word)) return true;
+  }
+  return false;
+}
+
+/** Drops negation words so polarity-flipped texts compare on core content. */
+function stripNegationWords(text: string): string {
+  return text
+    .toLowerCase()
+    .split(NEGATION_WORD_SPLIT)
+    .filter((word) => !NEGATION_WORDS.has(word))
+    .join(" ");
 }
 
 /**
@@ -187,6 +219,12 @@ export interface SeedGraduationEvaluation {
   decision: "promote" | "hold";
   corroborationCount: number;
   corroborating: SeedGraduationEvidenceRef[];
+  /**
+   * Later independent evidence that restated the seed's core content with
+   * flipped negation polarity. Non-empty vetoes promotion: the seed is held
+   * for review resolution instead (issue #2974).
+   */
+  contradicting: SeedGraduationEvidenceRef[];
   /** Evidence that restated the seed but was excluded as echo/derivation. */
   echoSuppressedCount: number;
   reasons: string[];
@@ -208,23 +246,29 @@ export function evaluateSeedGraduation(
       decision: "hold",
       corroborationCount: 0,
       corroborating: [],
+      contradicting: [],
       echoSuppressedCount: 0,
       reasons: ["seed-graduation-disabled"],
     };
   }
-  const seedTokens = new Set(normalizeRecallTokens(stripAttributesSuffix(seed.content)));
+  const seedText = stripAttributesSuffix(seed.content);
+  const seedTokens = new Set(normalizeRecallTokens(seedText));
   if (seedTokens.size < MIN_SEED_TOKENS) {
     return {
       decision: "hold",
       corroborationCount: 0,
       corroborating: [],
+      contradicting: [],
       echoSuppressedCount: 0,
       reasons: ["seed-too-short-for-deterministic-corroboration"],
     };
   }
+  const seedNegated = hasNegationWord(seedText);
+  const seedCoreTokens = new Set(normalizeRecallTokens(stripNegationWords(seedText)));
 
   const seedCreated = createdMs(seed);
   const corroborating: SeedGraduationEvidenceRef[] = [];
+  const contradicting: SeedGraduationEvidenceRef[] = [];
   const reasons: string[] = [];
   let echoSuppressedCount = 0;
 
@@ -236,6 +280,24 @@ export function evaluateSeedGraduation(
     if (!Number.isFinite(seedCreated) || !Number.isFinite(candidateCreated)) continue;
     if (candidateCreated <= seedCreated) continue;
     if (!isEvidenceStatus(candidate.frontmatter.status)) continue;
+    const candidateText = stripAttributesSuffix(candidate.content);
+    if (hasNegationWord(candidateText) !== seedNegated) {
+      // Polarity-flipped restatement of the seed's core content is a
+      // contradiction, never a corroboration. The same independence rules
+      // apply, but recall echo does NOT suppress a contradiction: an
+      // independent consumer denying a recalled seed is a correction, not
+      // manufactured confirmation.
+      if (seedCoreTokens.size >= MIN_SEED_TOKENS && isIndependentProvenance(seed, candidate)) {
+        const coreTokens = new Set(normalizeRecallTokens(stripNegationWords(candidateText)));
+        if (tokenCoverageOf(seedCoreTokens, coreTokens) >= SEED_CORROBORATION_COVERAGE) {
+          contradicting.push({
+            memoryId: candidate.frontmatter.id,
+            source: candidate.frontmatter.source,
+          });
+        }
+      }
+      continue;
+    }
     if (coverageOf(seedTokens, candidate) < SEED_CORROBORATION_COVERAGE) continue;
 
     if (!isIndependentProvenance(seed, candidate)) {
@@ -258,11 +320,27 @@ export function evaluateSeedGraduation(
   }
 
   if (echoSuppressedCount > 0) reasons.push(`echo-suppressed:${echoSuppressedCount}`);
+  if (contradicting.length > 0) {
+    // A contradiction observed during the corroboration window vetoes
+    // graduation no matter how many corroborations also landed: promoting a
+    // disputed fact is never automatic. Demotion/supersession stays with the
+    // reviewer via the existing contradiction-resolution verbs.
+    reasons.push(`contradiction-observed:${contradicting.length}`);
+    return {
+      decision: "hold",
+      corroborationCount: corroborating.length,
+      corroborating,
+      contradicting,
+      echoSuppressedCount,
+      reasons,
+    };
+  }
   if (corroborating.length >= config.minCorroborations) {
     return {
       decision: "promote",
       corroborationCount: corroborating.length,
       corroborating,
+      contradicting,
       echoSuppressedCount,
       reasons,
     };
@@ -272,6 +350,7 @@ export function evaluateSeedGraduation(
     decision: "hold",
     corroborationCount: corroborating.length,
     corroborating,
+    contradicting,
     echoSuppressedCount,
     reasons,
   };
@@ -306,6 +385,8 @@ export interface SeedGraduationPassSummary {
   evaluated: number;
   promoted: number;
   held: number;
+  /** Held specifically because a contradiction was observed in the window. */
+  contradictionHeld: number;
   echoSuppressed: number;
   disabled: boolean;
 }
@@ -333,13 +414,14 @@ export async function runSeedGraduationPass(
 ): Promise<SeedGraduationPassSummary> {
   const config = input.config ?? SEED_GRADUATION_DEFAULTS;
   if (!config.enabled) {
-    return { evaluated: 0, promoted: 0, held: 0, echoSuppressed: 0, disabled: true };
+    return { evaluated: 0, promoted: 0, held: 0, contradictionHeld: 0, echoSuppressed: 0, disabled: true };
   }
   const corpus = excludeSupportPassportPrivateMemories(input.memories);
   const evidencePool = corpus.filter((memory) => isEvidenceStatus(memory.frontmatter.status));
 
   let promoted = 0;
   let held = 0;
+  let contradictionHeld = 0;
   let echoSuppressed = 0;
   let evaluated = 0;
 
@@ -358,6 +440,7 @@ export async function runSeedGraduationPass(
 
     if (evaluation.decision === "hold") {
       held += 1;
+      if (evaluation.contradicting.length > 0) contradictionHeld += 1;
       continue;
     }
     // A concurrent review resolution wins: promoteWearableMemory returns
@@ -370,5 +453,5 @@ export async function runSeedGraduationPass(
     else held += 1;
   }
 
-  return { evaluated, promoted, held, echoSuppressed, disabled: false };
+  return { evaluated, promoted, held, contradictionHeld, echoSuppressed, disabled: false };
 }
