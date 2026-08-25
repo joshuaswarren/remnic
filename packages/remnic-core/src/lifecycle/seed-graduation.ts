@@ -51,6 +51,11 @@ export const SEED_GRADUATION_DEFAULTS: SeedGraduationConfig = {
   minCorroborations: 2,
 };
 
+/** Mixed into `PluginConfig` so the nested block lives beside its parser. */
+export interface SeedGraduationSettings {
+  seedGraduation: SeedGraduationConfig;
+}
+
 const SEED_GRADUATION_MAX_CORROBORATIONS = 50;
 
 const BOOLEAN_LIKE: Record<string, boolean> = {

@@ -4447,6 +4447,16 @@
           }
         }
       },
+      "seedGraduation": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Graduate pending_review seeds (#2974). Off by default.",
+        "properties": {
+          "enabled": { "type": "boolean", "default": false },
+          "minCorroborations": { "type": "integer", "minimum": 1, "maximum": 50, "default": 2 }
+        }
+      },
       "extractionLiveness": {
         "type": "object",
         "additionalProperties": false,

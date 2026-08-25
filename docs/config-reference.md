@@ -1746,6 +1746,16 @@ At `session_end` the completed session's buffered turns are distilled — determ
 |---------|---------|-------------|
 | `sessionExperience.enabled` | `false` | Master gate for session-end episode extraction. Default off; the `conservative` preset pins it `false`. With the gate off a session end performs zero storage calls for this feature — nothing is read, composed, or written. |
 
+## Seed graduation (issue #2974)
+
+A `pending_review` memory is a seed. It does not enter active recall on its own. When `seedGraduation.enabled` is true, the lifecycle policy pass graduates a seed to `active` after `minCorroborations` later memories from independent provenance restate it (token-coverage, no LLM). Same-session restatements, lineage descendants, and sessions whose recall-handle history contains the seed do not count. Promotion reuses `promoteWearableMemory` and stamps `graduatedBy`, `corroborationCount`, and `corroboratingMemoryIds`. Default off; the `conservative` preset pins it off. With the gate off the lifecycle pass makes zero extra storage calls for this feature.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `seedGraduation.enabled` | `false` | Master gate. Default off; the `conservative` preset pins it `false`. |
+| `seedGraduation.minCorroborations` | `2` | Independent later memories required before a seed graduates. Integer in `[1, 50]`. Invalid values throw at `parseConfig`. |
+
+
 ## Preference drift detection (issue #2371)
 
 Covers the failure mode the agent-memory survey calls *stale preference reuse*: a `category: preference` memory keeps being injected at full prominence long after the last conversation that supported it. The contradiction scan and temporal supersession both need a new statement to arrive; this job looks instead at the *absence* of corroboration.
