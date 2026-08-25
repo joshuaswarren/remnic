@@ -11,7 +11,7 @@ What Remnic is built on. Versions below are the ranges declared in the workspace
 | Monorepo | Turborepo 2.9.x | Task graph + caching via `turbo.json` |
 | Language | TypeScript 5.9 | Strict mode; `tsc --noEmit` for type checks |
 | Build | [tsup](https://tsup.egoist.dev/) 8.x | Bundles packages to `dist/` |
-| Lint / format | [Biome](https://biomejs.dev/) 1.9.4 | `biome.json`; an `eslint.config.js` is also present in the repo |
+| Lint / format | [Biome](https://biomejs.dev/) 1.9.4 | `biome.json` |
 
 ## Core dependencies
 

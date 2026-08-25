@@ -1034,7 +1034,7 @@
     "relay:judge": "node scripts/relay/judge-package.mjs verify",
     "relay:demo": "node scripts/relay/judge-package.mjs serve",
     "relay:judge:clean-room": "node scripts/verify-relay-judge-package.mjs",
-    "lint": "biome check --diagnostic-level=error --files-ignore-unknown=true biome.json eslint.config.js package.json",
+    "lint": "biome check --diagnostic-level=error --files-ignore-unknown=true biome.json package.json",
     "preflight": "bash scripts/pr-preflight.sh full",
     "preflight:quick": "bash scripts/pr-preflight.sh quick",
     "review:cursor": "bash scripts/cursor-prepush-review.sh",
