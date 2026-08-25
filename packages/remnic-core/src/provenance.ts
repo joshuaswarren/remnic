@@ -652,11 +652,11 @@ function casefold(s: string): string {
  * this as a verified match and record a source without offsets (cursor
  * thread Ocver — "Normalized match drops verified provenance").
  */
-type LocateQuoteResult =
+export type LocateQuoteResult =
   | { matched: false }
   | { matched: true; offsets?: { charStart: number; charEnd: number } };
 
-function locateQuoteOffsets(quote: string, text: string): LocateQuoteResult {
+export function locateQuoteOffsets(quote: string, text: string): LocateQuoteResult {
   // 1. Exact substring match (handles unicode, curly quotes, emoji verbatim).
   const exactIdx = text.indexOf(quote);
   if (exactIdx >= 0) {
@@ -769,7 +769,7 @@ function locateQuoteOffsets(quote: string, text: string): LocateQuoteResult {
  * original meaning (chatgpt-codex-connector thread 4xA — limiting role-prefix
  * stripping to actual prompt labels).
  */
-function stripLeadingRolePrefix(quote: string): string {
+export function stripLeadingRolePrefix(quote: string): string {
   return quote.replace(/^\s*\[(?:context\s+)?(?:user|assistant)\]\s+/i, "");
 }
 
