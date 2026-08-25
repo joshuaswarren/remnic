@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- `remnic converge plan`/`watch` now reuses `StorageManager`'s persisted digest cache instead of re-hashing every file each cycle, and applies `offlineSyncExcludes` plus `includeTranscripts: false` so node-local state and transcripts are not planned as failed pushes. Plan-phase stderr reports identity-cache hit/miss counts and snapshot/manifest wall time.
+- QMD startup collection checks now have a batch-wide deadline. If any namespace check never settles despite its per-check abort signal, Remnic continues with fail-open `unknown` states so the daemon can become available; normal background QMD retry can reconcile search afterward.
 - H5 injection-suite `openai-compat` executor attaches a host-matched `Authorization: Bearer` token only (`NVIDIA_API_KEY` on `integrate.api.nvidia.com`, `OPENAI_API_KEY` on `api.openai.com`, `REMNIC_OPENAI_COMPAT_API_KEY` on every other host including other `*.openai.com` / `*.nvidia.com` subdomains), requires `https` except loopback HTTP (`127.0.0.1` / `localhost`), and fails closed rather than reusing an ambient key on the wrong host (`#1962`).
 
 ## [v9.69.35] — 2026-08-24
