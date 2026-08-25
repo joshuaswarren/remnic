@@ -210,8 +210,7 @@ interface LoginStatusCacheEntry {
 }
 
 const loginStatusCache = new Map<string, LoginStatusCacheEntry>();
-let nextLoginCacheScope = 0;
-const loginCacheScopeByRunner = new WeakMap<CodexCliFallbackRunner, number>();
+const inFlightLoginByRunner = new WeakMap<CodexCliFallbackRunner, Map<string, LoginStatusCacheEntry>>();
 const childrenByRunner = new WeakMap<CodexCliFallbackRunner, Set<number>>();
 const runnerByOwner = new WeakMap<object, CodexCliFallbackRunner>();
 const shutdownByRunner = new WeakMap<CodexCliFallbackRunner, AbortController>();
@@ -377,7 +376,7 @@ async function runCodexSubscriptionRequest(
     });
 
     if (result.status !== 0) {
-      const failure = execFailureError(result, remainingTimeoutMs, executable, env, runner);
+      const failure = execFailureError(result, remainingTimeoutMs, executable, env);
       if (failure instanceof CodexSubscriptionTimeoutError) {
         throw failure;
       }
@@ -486,16 +485,32 @@ async function assertSubscriptionLogin(
   ctx: LoginCheckContext
 ): Promise<void> {
   const now = deps.now ?? Date.now;
-  const cacheKey = loginCacheKey(ctx.runner, executable, env);
+  const cacheKey = loginCacheKey(executable, env);
+  const inflight = inFlightLoginsFor(ctx.runner).get(cacheKey);
+  if (inflight && now() - inflight.at < LOGIN_STATUS_CACHE_TTL_MS) {
+    await waitForLoginEntry(inflight, cacheKey, ctx, now);
+    return;
+  }
   const cached = loginStatusCache.get(cacheKey);
   if (cached && now() - cached.at < LOGIN_STATUS_CACHE_TTL_MS) {
     if (!cached.settled || (await authStoreFingerprint(env)) === cached.fingerprint) {
       await waitForLoginEntry(cached, cacheKey, ctx, now);
       return;
     }
-
+    if (loginStatusCache.get(cacheKey) === cached) {
+      loginStatusCache.delete(cacheKey);
+    }
   }
-  loginStatusCache.delete(cacheKey);
+  const raced = inFlightLoginsFor(ctx.runner).get(cacheKey);
+  if (raced && now() - raced.at < LOGIN_STATUS_CACHE_TTL_MS) {
+    await waitForLoginEntry(raced, cacheKey, ctx, now);
+    return;
+  }
+  const published = loginStatusCache.get(cacheKey);
+  if (published && now() - published.at < LOGIN_STATUS_CACHE_TTL_MS) {
+    await waitForLoginEntry(published, cacheKey, ctx, now);
+    return;
+  }
   if (ctx.signal?.aborted) {
     throw abortErrorOf(ctx.signal);
   }
@@ -511,15 +526,15 @@ async function assertSubscriptionLogin(
   entry.promise.then(
     () => {
       entry.settled = true;
+      loginStatusCache.set(cacheKey, entry);
+      dropInFlightLogin(ctx.runner, cacheKey, entry);
     },
     () => {
       entry.settled = true;
-      if (loginStatusCache.get(cacheKey) === entry) {
-        loginStatusCache.delete(cacheKey);
-      }
+      dropInFlightLogin(ctx.runner, cacheKey, entry);
     }
   );
-  loginStatusCache.set(cacheKey, entry);
+  inFlightLoginsFor(ctx.runner).set(cacheKey, entry);
   await waitForLoginEntry(entry, cacheKey, ctx, now);
 }
 
@@ -604,6 +619,7 @@ async function waitForLoginEntry(
     entry.waiters--;
     if (entry.waiters <= 0 && !entry.settled) {
       entry.controller.abort();
+      dropInFlightLogin(ctx.runner, cacheKey, entry);
       if (loginStatusCache.get(cacheKey) === entry) {
         loginStatusCache.delete(cacheKey);
       }
@@ -635,17 +651,26 @@ function resolveCodexAuthHome(env: NodeJS.ProcessEnv): string | undefined {
   return profile ? path.join(profile, ".codex") : undefined;
 }
 
-function loginCacheScope(runner: CodexCliFallbackRunner): number {
-  let id = loginCacheScopeByRunner.get(runner);
-  if (id === undefined) {
-    id = ++nextLoginCacheScope;
-    loginCacheScopeByRunner.set(runner, id);
-  }
-  return id;
+function loginCacheKey(executable: string, env: NodeJS.ProcessEnv): string {
+  return `${executable}\0${resolveCodexAuthHome(env) ?? ""}`;
 }
 
-function loginCacheKey(runner: CodexCliFallbackRunner, executable: string, env: NodeJS.ProcessEnv): string {
-  return `${loginCacheScope(runner)}\0${executable}\0${resolveCodexAuthHome(env) ?? ""}`;
+function inFlightLoginsFor(runner: CodexCliFallbackRunner): Map<string, LoginStatusCacheEntry> {
+  let map = inFlightLoginByRunner.get(runner);
+  if (!map) {
+    map = new Map();
+    inFlightLoginByRunner.set(runner, map);
+  }
+  return map;
+}
+
+function dropInFlightLogin(
+  runner: CodexCliFallbackRunner,
+  cacheKey: string,
+  entry: LoginStatusCacheEntry,
+): void {
+  const map = inFlightLoginByRunner.get(runner);
+  if (map?.get(cacheKey) === entry) map.delete(cacheKey);
 }
 
 /**
@@ -759,8 +784,7 @@ function execFailureError(
   result: CodexSubscriptionExecResult,
   timeoutMs: number,
   executable: string,
-  env: NodeJS.ProcessEnv,
-  runner: CodexCliFallbackRunner,
+  env: NodeJS.ProcessEnv
 ): Error {
   const combined = `${result.stderr}\n${result.stdout}`;
   // The authoritative timeout marker wins over auth-pattern text: a timed-out
@@ -771,7 +795,7 @@ function execFailureError(
   }
   if (AUTH_FAILURE_PATTERN.test(combined)) {
     // Re-check login on the next request; the cached status is now stale.
-    loginStatusCache.delete(loginCacheKey(runner, executable, env));
+    loginStatusCache.delete(loginCacheKey(executable, env));
     return new CodexSubscriptionAuthError(
       "expired_or_revoked",
       "codex-subscription: the Codex CLI rejected the request as unauthenticated " +

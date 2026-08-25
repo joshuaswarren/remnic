@@ -822,6 +822,19 @@ test("in-flight login checks are scoped to the owning runner", async () => {
   pendingB.resolve({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" });
   assert.equal((await second).content, "ok");
   assert.equal(loginCallsB, 1);
+
+  let loginCallsC = 0;
+  const runnerC = createCodexSubscriptionRunner({
+    env,
+    now: () => 0,
+    runLoginStatus: () => {
+      loginCallsC++;
+      return Promise.resolve({ status: 0, stdout: "Logged in using ChatGPT\n", stderr: "" });
+    },
+    runCodexExec: async () => ({ status: 0, stdout: "", stderr: "", outputText: "ok" }),
+  });
+  assert.equal((await call(runnerC)).content, "ok");
+  assert.equal(loginCallsC, 0, "settled login success remains reusable across runners");
 });
 
 test("caller abort reaches the cold login check: no spawn when pre-aborted, wait aborts in flight", async () => {
