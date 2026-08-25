@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applySpanMode } from "./extraction-span-wire.js";
+import { applySpanMode, extractionProviderJsonSchema } from "./extraction-span-wire.js";
 
 const TEXT = "Alice moved to Seattle";
 
@@ -17,4 +17,20 @@ test("applySpanMode: enabled slices half-open [start, end)", () => {
     start: 6,
     end: 11,
   });
+});
+
+function factProperties(spanMode: "off" | "shadow" | "on") {
+  const schema = extractionProviderJsonSchema(spanMode);
+  const properties = schema.properties as
+    | Record<string, { items?: { properties?: Record<string, unknown> } }>
+    | undefined;
+  return properties?.facts?.items?.properties ?? {};
+}
+
+test("provider schema omits span in off mode and keeps it in on/shadow (issue #2952)", () => {
+  assert.equal("span" in factProperties("off"), false);
+  assert.equal("span" in factProperties("on"), true);
+  assert.equal("span" in factProperties("shadow"), true);
+  assert.deepEqual(extractionProviderJsonSchema("on"), extractionProviderJsonSchema("shadow"));
+  assert.notEqual(extractionProviderJsonSchema("off"), extractionProviderJsonSchema("on"));
 });
