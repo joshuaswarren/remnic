@@ -3,9 +3,14 @@ import test from "node:test";
 
 import { validateRegionName } from "./vault-region.js";
 
-test("validateRegionName trims a valid name", () => {
+test("validateRegionName accepts a valid name unchanged", () => {
   assert.deepEqual(validateRegionName("timeline"), { ok: true, name: "timeline" });
-  assert.deepEqual(validateRegionName("  weekly  "), { ok: true, name: "weekly" });
+});
+
+test("validateRegionName rejects whitespace-padded names instead of trimming them (#2917)", () => {
+  assert.deepEqual(validateRegionName("  weekly"), { ok: false, error: "invalid_name" });
+  assert.deepEqual(validateRegionName("weekly  "), { ok: false, error: "invalid_name" });
+  assert.deepEqual(validateRegionName("  weekly  "), { ok: false, error: "invalid_name" });
 });
 
 test("validateRegionName rejects empty and whitespace-only names", () => {

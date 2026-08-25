@@ -10,6 +10,7 @@ import {
   LEGACY_ARTIFACT_SHAPE_VERSION,
   recognizeLegacyBenchmarkArtifact,
 } from "./legacy-artifact.js";
+import { PROVIDER_CONFIG_VALIDATED_FIELDS } from "./provider-config.js";
 import type { BenchmarkResult } from "./types.js";
 
 async function withResultFile(
@@ -294,7 +295,7 @@ test("recognizeLegacyBenchmarkArtifact rejects malformed and ambiguous shapes wi
         ...minimalLegacyArtifact(),
         config: { systemProvider: { model: "gpt-5.4" } },
       },
-      /config\.systemProvider must be a provider config/,
+      /config\.systemProvider\.provider must be one of/,
     ],
     [
       {
@@ -757,4 +758,159 @@ test("loadBenchmarkResult rejects a legacy artifact with an invalid runtimeProfi
   );
 });
 
+/**
+ * Complete valid provider config exercising every optional field. Kept in
+ * lockstep with PROVIDER_CONFIG_VALIDATED_FIELDS by the coverage test at
+ * the end of this block (issue #2895).
+ */
+const completeValidProvider = {
+  provider: "openai",
+  model: "gpt-5.4",
+  rubricVersion: "assistant-v1",
+  baseUrl: "https://example.test/v1",
+  apiKey: "test-key",
+  retryOptions: {
+    maxAttempts: 3,
+    baseBackoffMs: 100,
+    timeoutMs: 120_000,
+    retryOnTimeout: false,
+    max429WaitMs: 5_000,
+  },
+  providerRequestTimeoutMs: 1_000,
+  disableThinking: false,
+  reasoningEffort: "low",
+  responderContextBudgetChars: 4_000,
+  responderPromptBudgetChars: 2_000,
+  temperature: 0,
+  seed: 1,
+};
+
+test("recognizeLegacyBenchmarkArtifact rejects malformed provider fields with the field path", () => {
+  const rejections: Array<[overrides: Record<string, unknown>, pattern: RegExp]> = [
+    [{ provider: "groq" }, /config\.systemProvider\.provider must be one of "openai", "anthropic"/],
+    [{ provider: 7 }, /config\.systemProvider\.provider must be one of/],
+    [{ model: 42 }, /config\.systemProvider\.model must be a string/],
+    [{ rubricVersion: 42 }, /config\.systemProvider\.rubricVersion must be a string when present/],
+    [{ baseUrl: null }, /config\.systemProvider\.baseUrl must be a string when present/],
+    [{ apiKey: 99 }, /config\.systemProvider\.apiKey must be a string when present/],
+    [{ retryOptions: "3" }, /config\.systemProvider\.retryOptions must be an object when present/],
+    [{ retryOptions: { maxAttempts: 0 } }, /config\.systemProvider\.retryOptions\.maxAttempts must be a positive integer when present/],
+    [{ retryOptions: { maxAttempts: 2.5 } }, /config\.systemProvider\.retryOptions\.maxAttempts must be a positive integer when present/],
+    [{ retryOptions: { baseBackoffMs: -1 } }, /config\.systemProvider\.retryOptions\.baseBackoffMs must be a finite non-negative number when present/],
+    [{ retryOptions: { timeoutMs: "soon" } }, /config\.systemProvider\.retryOptions\.timeoutMs must be a finite non-negative number when present/],
+    [{ retryOptions: { retryOnTimeout: "yes" } }, /config\.systemProvider\.retryOptions\.retryOnTimeout must be a boolean when present/],
+    [{ retryOptions: { max429WaitMs: Number.POSITIVE_INFINITY } }, /config\.systemProvider\.retryOptions\.max429WaitMs must be a finite non-negative number when present/],
+    [{ providerRequestTimeoutMs: 0 }, /config\.systemProvider\.providerRequestTimeoutMs must be a positive integer when present/],
+    [{ providerRequestTimeoutMs: 12.5 }, /config\.systemProvider\.providerRequestTimeoutMs must be a positive integer when present/],
+    [{ disableThinking: "false" }, /config\.systemProvider\.disableThinking must be a boolean when present/],
+    [{ reasoningEffort: "ultra" }, /config\.systemProvider\.reasoningEffort must be one of "low"/],
+    [{ responderContextBudgetChars: -5 }, /config\.systemProvider\.responderContextBudgetChars must be a positive integer when present/],
+    [{ responderPromptBudgetChars: 1.5 }, /config\.systemProvider\.responderPromptBudgetChars must be a positive integer when present/],
+    [{ temperature: "0.2" }, /config\.systemProvider\.temperature must be a finite non-negative number when present/],
+    [{ temperature: -0.1 }, /config\.systemProvider\.temperature must be a finite non-negative number when present/],
+    [{ seed: 1.5 }, /config\.systemProvider\.seed must be a non-negative integer when present/],
+    [{ seed: -1 }, /config\.systemProvider\.seed must be a non-negative integer when present/],
+  ];
+
+  for (const [overrides, pattern] of rejections) {
+    const recognition = recognizeLegacyBenchmarkArtifact({
+      ...minimalLegacyArtifact(),
+      config: {
+        systemProvider: { ...completeValidProvider, ...overrides },
+      },
+    });
+    assert.equal(recognition.ok, false, `expected rejection for ${JSON.stringify(overrides)}`);
+    if (recognition.ok) continue;
+    assert.match(recognition.reason, pattern, `field path for ${JSON.stringify(overrides)}`);
+  }
+
+  // The whole value must be an object, not just carry two valid strings.
+  const stringProvider = recognizeLegacyBenchmarkArtifact({
+    ...minimalLegacyArtifact(),
+    config: { systemProvider: "openai" },
+  });
+  assert.equal(stringProvider.ok, false);
+  if (stringProvider.ok) return;
+  assert.match(
+    stringProvider.reason,
+    /config\.systemProvider must be a provider config \(\{ provider, model \}\) or null when present/,
+  );
+});
+
+test("recognizeLegacyBenchmarkArtifact validates the internal provider config too", () => {
+  const recognition = recognizeLegacyBenchmarkArtifact({
+    ...minimalLegacyArtifact(),
+    config: {
+      systemProvider: null,
+      judgeProvider: null,
+      internalProvider: { provider: "openai", model: "gpt-5.4", temperature: -1 },
+    },
+  });
+  assert.equal(recognition.ok, false);
+  if (recognition.ok) return;
+  assert.match(
+    recognition.reason,
+    /config\.internalProvider\.temperature must be a finite non-negative number when present/,
+  );
+});
+
+test("recognizeLegacyBenchmarkArtifact preserves complete valid provider configs and absent optionals", () => {
+  const recognition = recognizeLegacyBenchmarkArtifact({
+    ...preProvenanceLegacyArtifact(),
+    config: {
+      systemProvider: completeValidProvider,
+      judgeProvider: { provider: "local-llm", model: "llama-3", baseUrl: "http://127.0.0.1:8080/v1" },
+      internalProvider: { provider: "openai", model: "gpt-5.4", temperature: 0.5, seed: 42 },
+      adapterMode: "standalone",
+      remnicConfig: {},
+    },
+  });
+
+  assert.equal(recognition.ok, true);
+  if (!recognition.ok) return;
+  assert.deepEqual(recognition.result.config.systemProvider, completeValidProvider);
+  assert.deepEqual(recognition.result.config.judgeProvider, {
+    provider: "local-llm",
+    model: "llama-3",
+    baseUrl: "http://127.0.0.1:8080/v1",
+  });
+  assert.deepEqual(recognition.result.config.internalProvider, {
+    provider: "openai",
+    model: "gpt-5.4",
+    temperature: 0.5,
+    seed: 42,
+  });
+
+  // Truly absent optionals stay absent: the two-field legacy shape from the
+  // pre-provenance fixture upgrades without invented defaults.
+  const twoField = recognizeLegacyBenchmarkArtifact(preProvenanceLegacyArtifact());
+  assert.equal(twoField.ok, true);
+  if (!twoField.ok) return;
+  assert.deepEqual(twoField.result.config.systemProvider, { provider: "openai", model: "gpt-5.4" });
+  assert.equal(twoField.result.config.judgeProvider, null);
+});
+
+test("provider-config validator covers every ProviderConfig field", () => {
+  assert.deepEqual(
+    [...PROVIDER_CONFIG_VALIDATED_FIELDS].sort(),
+    Object.keys(completeValidProvider).sort(),
+  );
+});
+
+test("loadBenchmarkResult rejects a legacy artifact with a malformed provider field", async () => {
+  await withResultFile(
+    {
+      ...minimalLegacyArtifact(),
+      config: {
+        systemProvider: { provider: "openai", model: "gpt-5.4", rubricVersion: 42 },
+      },
+    },
+    async (filePath) => {
+      await assert.rejects(
+        () => loadBenchmarkResult(filePath),
+        /Invalid benchmark result file: .+ \(config\.systemProvider\.rubricVersion must be a string when present\)/,
+      );
+    },
+  );
+});
 
