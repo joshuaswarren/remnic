@@ -34,6 +34,7 @@ import {
 import { expandTildePath } from "./utils/path.js";
 import { resolvePrincipal } from "./namespaces/principal.js";
 import { getRecallTimingStatus, isRecallTimingsOperator } from "./recall-timings.js";
+import { parseDeepRecallMaxSteps } from "./deep-recall-config.js";
 import { validateBriefingFormat } from "./briefing.js";
 import {
   buildChatGptMemoryInspectorActionRequest,
@@ -195,7 +196,19 @@ defineOperation({ name: "meetings_list", description: "List stored meeting recor
 defineOperation({ name: "meetings_get", description: "Get a stored meeting record by id.", schema: strictSchema({ id: S.str, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.meetingsGet(reqStr(input.id, "id"), { authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }) }) });
 defineOperation({ name: "meetings_build", description: "Detect + fuse + store a day's meetings.", schema: strictSchema({ date: S.str, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.meetingsBuild(reqStr(input.date, "date"), { authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }) }) });
 // === DEEP RECALL (issue #2332) — budgeted REFINE/EXPAND/STOP retrieval ===
-defineOperation({ name: "deep_recall", description: "Budgeted multi-hop deep recall over the anchor graph.", schema: strictSchema({ query: S.str, maxSteps: S.flexNum, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => { const q = defStr(input.query, ""); if (q.trim().length === 0) throw new EngramAccessInputError("deep_recall: query is required"); return { result: await ctx.service.deepRecall({ query: q, maxSteps: typeof input.maxSteps === "number" ? input.maxSteps : typeof input.maxSteps === "string" && Number.isFinite(Number(input.maxSteps)) ? Number(input.maxSteps) : undefined, authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey) }) }; } });
+defineOperation({ name: "deep_recall", description: "Budgeted multi-hop deep recall over the anchor graph.", schema: strictSchema({ query: S.str, maxSteps: S.flexNum, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => {
+  const q = defStr(input.query, "");
+  if (q.trim().length === 0) throw new EngramAccessInputError("deep_recall: query is required");
+  // Strict boundary parse (issue #2915): `"abc"` must NOT silently become the
+  // configured default and `""` must NOT become 0 — both are rejected.
+  let maxSteps: number | undefined;
+  try {
+    maxSteps = parseDeepRecallMaxSteps(input.maxSteps);
+  } catch (err) {
+    throw new EngramAccessInputError(`deep_recall: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return { result: await ctx.service.deepRecall({ query: q, maxSteps, authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey), ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) }) };
+} });
 
 // === ACTION CONFIDENCE + INSPECTOR + CAPSULE ===
 defineOperation({ name: "action_confidence", description: "Action confidence.", schema: strictSchema({ intendedAction: S.str, confidence: S.num, risk: S.str, contextReadiness: S.str, currentContextScopes: S.strArr, userRules: z.array(z.unknown()).optional(), retrievedMemories: z.array(z.unknown()).optional() }), handler: async (input, ctx) => { const req: Record<string, unknown> = {}; if (input.intendedAction !== undefined) req.intendedAction = optStr(input.intendedAction); if (input.confidence !== undefined) req.confidence = optNum(input.confidence); if (input.risk !== undefined) req.risk = optStr(input.risk) as "low" | "medium" | "high" | "irreversible" | "restricted" | undefined; if (input.contextReadiness !== undefined) req.contextReadiness = optStr(input.contextReadiness) as "none" | "partial" | "sufficient" | undefined; if (input.currentContextScopes !== undefined) req.currentContextScopes = optStrArr(input.currentContextScopes); if (input.userRules !== undefined) req.userRules = input.userRules; if (input.retrievedMemories !== undefined) req.retrievedMemories = input.retrievedMemories; return { result: await ctx.service.actionConfidence(req) }; } });
