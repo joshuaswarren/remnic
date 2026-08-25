@@ -16,6 +16,7 @@ import {
   formatCitation,
   hasCitation,
   hasCitationForTemplate,
+  lastRecognizedCitationMarker,
   parseAllCitations,
   parseCitation,
   stripCitation,
@@ -576,6 +577,32 @@ test("citationTemplatesToRecognize drops undetectable shapes and keeps prior his
     DEFAULT_CITATION_FORMAT,
     prior,
   ]);
+});
+
+test("stripCitationForTemplate: literal template strips the exact marker (#2951)", () => {
+  const template = "[cited-fixed]";
+  const body = "Fact body. [cited-fixed]";
+  assert.equal(citationTemplateIsDetectable(template), true);
+  assert.equal(hasCitationForTemplate(body, template), true);
+  assert.equal(stripCitationForTemplate(body, template), "Fact body.");
+});
+
+test("citationTemplatesToRecognize: overlapping custom marker wins over inner default (#2951)", () => {
+  const custom = "[Source: agent={agent}, session={sessionId}, ts={ts}; via={agent}]";
+  const ctx = {
+    agent: "planner",
+    session: "agent:planner:main",
+    ts: "2026-04-10T14:25:07Z",
+  };
+  const marker = formatCitation(ctx, custom);
+  const body = `The cadence is weekly. ${marker}`;
+  const recognized = citationTemplatesToRecognize(custom);
+  assert.ok(
+    recognized.indexOf(custom) < recognized.indexOf(DEFAULT_CITATION_FORMAT),
+    "current overlapping template must be recognized before the inner default",
+  );
+  assert.equal(lastRecognizedCitationMarker(body, recognized), marker);
+  assert.equal(stripRecognizedCitations(body, recognized), "The cadence is weekly.");
 });
 
 test("formatCitation: substituted values containing placeholder syntax are not re-interpreted", () => {
