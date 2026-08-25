@@ -150,7 +150,8 @@
     "packages/remnic-core/src/maintenance/rebuild-memory-projection.ts",
     "packages/remnic-core/src/orchestration/projection-rebuild-schedule.ts",
     "packages/plugin-openclaw/src/delegate-runtime.ts",
-    "packages/remnic-core/src/orchestration/recall-recognition-search.ts"
+    "packages/remnic-core/src/orchestration/recall-recognition-search.ts",
+    "packages/remnic-core/src/orchestration/recall-recognition-index.ts"
   ],
   "coverage": {
     "packages/plugin-openclaw/src/delegate-runtime.ts": "openclaw-delegate-runtime",
@@ -193,6 +194,7 @@
     "packages/remnic-core/src/orchestration/recall-internal-deps.ts": "recall-budget",
     "packages/remnic-core/src/orchestration/recall-profile-storage.ts": "recall-profile-storage",
     "packages/remnic-core/src/orchestration/recall-recognition-search.ts": "recall-recognition-tier",
+    "packages/remnic-core/src/orchestration/recall-recognition-index.ts": "recall-recognition-index",
     "packages/remnic-core/src/orchestration/recall-search-prefilter.ts": "recall-search-prefilter",
     "packages/remnic-core/src/orchestration/recall-section-coordinator.ts": "recall-budget",
     "packages/remnic-core/src/orchestration/semantic-merge-commit-effects.ts": "semantic-merge-lifecycle",

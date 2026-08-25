@@ -7,6 +7,7 @@
  *   - content-hash dedup index add/has/remove/save
  *   - temporal-bounds backfill on dedup hits (bitemporal, #1578)
  *   - temporal tag index updates and persisted-memory indexing
+ *   - recognition-index write-path maintenance when recallRecognitionTier is on
  *   - graph edge construction for newly persisted memories
  *   - semantic dedup candidate lookup
  *
@@ -22,7 +23,9 @@ import { GraphIndex, type GraphEdge } from "../graph.js";
 import { ContentHashIndex, StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
+import { loadRecognitionIndex } from "../recall-recognition-tier.js";
 import { stripCitationForTemplate } from "../source-attribution.js";
+import { maintainRecognitionIndexAfterWrite, type RecognitionIndexChange } from "./recall-recognition-index.js";
 import { clearIndexesAsync, indexesExistAsync } from "../temporal-index.js";
 import { indexMemoriesBatchAsync } from "../temporal-index-batch.js";
 import { normalizeSupersessionKey } from "../temporal-supersession.js";
@@ -447,6 +450,9 @@ export class PersistenceIndexCoordinator {
     storage: StorageManager,
     persistedIds: string[],
   ): Promise<void> {
+    // Recognition-index write-path (issue #2975): independent of temporal
+    // capability gates. Off-path is zero index I/O and cannot block persist.
+    await this.maintainRecognitionIndex(storage, persistedIds);
     const caps = resolveCapabilities(this.deps.config); // #1566 Cluster C
     // Build temporal/tag indexes whenever either consumer is enabled:
     // - queryAwareIndexingEnabled: uses indexes for query-aware prefiltering in recall
@@ -625,4 +631,48 @@ export class PersistenceIndexCoordinator {
     );
     return enriched;
   }
+  /**
+   * Upsert persisted memories into the namespace recognition index.
+   * `recallRecognitionTier !== true` returns before any index I/O.
+   * A missing index is bootstrapped from the active corpus so the first
+   * post-enable write cannot publish a partial index that recall would
+   * treat as the full working set.
+   */
+  private async maintainRecognitionIndex(
+    storage: StorageManager,
+    persistedIds: string[],
+  ): Promise<void> {
+    try {
+      if (this.deps.config.recallRecognitionTier !== true) return;
+      const indexMissing = (await loadRecognitionIndex(storage.dir)) === null;
+      if (!indexMissing && persistedIds.length === 0) return;
+      const changes: RecognitionIndexChange[] = [];
+      const pushUpsert = (memory: MemoryFile): void => {
+        if (!isActiveMemoryStatus(memory.frontmatter.status)) return;
+        const memoryId = memory.frontmatter.id;
+        if (typeof memoryId !== "string" || memoryId.trim().length === 0) return;
+        changes.push({ action: "upsert", id: memoryId, content: memory.content ?? "" });
+      };
+      if (indexMissing) {
+        const corpus = await storage.readAllMemories().catch(() => []);
+        for (const memory of corpus) pushUpsert(memory);
+      }
+      for (const id of persistedIds) {
+        let memory = await storage.getMemoryById(id);
+        if (!memory) {
+          const cold = await storage.getMemoryByIdIncludingArchived(id).catch(() => null);
+          if (cold && isActiveMemoryStatus(cold.frontmatter.status)) memory = cold;
+        }
+        if (memory) pushUpsert(memory);
+      }
+      await maintainRecognitionIndexAfterWrite({
+        memoryDir: storage.dir,
+        enabled: true,
+        changes,
+      });
+    } catch (err) {
+      log.debug(`recognition-index update error (non-fatal): ${err}`);
+    }
+  }
+
 }
