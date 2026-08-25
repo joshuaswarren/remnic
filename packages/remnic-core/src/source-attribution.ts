@@ -499,10 +499,10 @@ export function citationTemplateIsDetectable(template: string): boolean {
 }
 
 /**
- * Templates the merge path may lift, preserve, or strip: the default
- * format, the current format when it is detectable, then any prior
- * configured formats the caller still holds. Undetectable shapes are
- * dropped so we never hash or attach a marker we cannot re-match.
+ * Templates the merge path may lift, preserve, or strip. Longest
+ * templates first so an overlapping custom marker beats an inner default
+ * match; the current template wins equal-length ties. Undetectable
+ * shapes are dropped so we never hash or attach a marker we cannot re-match.
  */
 export function citationTemplatesToRecognize(
   primary: string | undefined,
@@ -514,9 +514,15 @@ export function citationTemplatesToRecognize(
     if (!citationTemplateIsDetectable(template)) return;
     if (!out.includes(template)) out.push(template);
   };
-  add(DEFAULT_CITATION_FORMAT);
   add(primary);
   for (const template of extra) add(template);
+  add(DEFAULT_CITATION_FORMAT);
+  out.sort((a, b) => {
+    if (b.length !== a.length) return b.length - a.length;
+    if (a === primary && b !== primary) return -1;
+    if (b === primary && a !== primary) return 1;
+    return 0;
+  });
   return out;
 }
 
@@ -708,6 +714,9 @@ export function stripCitation(text: string): string {
  *    written under the default format can carry the default marker plus a
  *    custom marker appended after a config change; returning after the
  *    default pass alone left the custom marker inside hash inputs (#2330).
+ *  - Fully-literal templates (no placeholders) are stripped by exact match
+ *    of the template text, the same inclusion check `hasCitationForTemplate`
+ *    uses.
  *  - All-placeholder templates (no literal prefix/suffix/separator) cannot
  *    produce a reliable matcher. `hasCitationForTemplate` already returns
  *    `false` for such templates, so this function never attempts to strip an
@@ -730,6 +739,13 @@ export function stripCitationForTemplate(
   const afterDefault = hasCitation(text) ? stripCitation(text) : text;
 
   if (!hasCitationForTemplate(afterDefault, template)) return afterDefault;
+
+  PLACEHOLDER_REGEX.lastIndex = 0;
+  if (!PLACEHOLDER_REGEX.test(template)) {
+    PLACEHOLDER_REGEX.lastIndex = 0;
+    return stripExactLiteralCitation(afterDefault, template);
+  }
+  PLACEHOLDER_REGEX.lastIndex = 0;
 
   // Build the template matcher. hasCitationForTemplate already returned true,
   // which means templateMatcher produced a non-null result. The null branch
@@ -766,6 +782,26 @@ export function stripCitationForTemplate(
     result += after;
   }
 
+  return result.trimEnd();
+}
+
+function stripExactLiteralCitation(text: string, marker: string): string {
+  if (marker.length === 0) return text;
+  let result = "";
+  let lastIndex = 0;
+  let idx = text.indexOf(marker);
+  if (idx === -1) return text;
+  while (idx !== -1) {
+    const before = text.slice(lastIndex, idx).replace(/[ \t]+$/, "");
+    result += before;
+    lastIndex = idx + marker.length;
+    idx = text.indexOf(marker, lastIndex);
+  }
+  const after = text.slice(lastIndex).replace(/^[ \t]+/, "");
+  if (after.length > 0) {
+    if (result.length > 0) result += " ";
+    result += after;
+  }
   return result.trimEnd();
 }
 
