@@ -308,6 +308,65 @@ test("delegate preserves the daemon's curiosity footer when applying a tighter b
   }
 });
 
+test("delegate forwards daemon degradation on the OpenClaw recall response (#2972)", async () => {
+  const degradation = {
+    state: "degraded",
+    reason: "budget-compacted",
+    budget: { contextBudget: 80, fullChars: 400, deliveredChars: 80 },
+  };
+  const stub = await startDaemonStub(() => ({
+    context: "compact remembered decision",
+    contextComposition: {
+      context: "compact remembered decision",
+      degradation,
+    },
+  }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const result = (await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "what did we decide about the rollout?" },
+      { sessionKey: "degraded-session" },
+    )) as Record<string, unknown>;
+
+    assert.ok(result && typeof result === "object");
+    assert.deepEqual(result.degradation, degradation);
+    assert.match(String(result.prependSystemContext), /compact remembered decision/);
+    assert.equal(
+      String(result.prependSystemContext).includes("budget-compacted"),
+      false,
+      "degradation stays out of the injected text",
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate omits degradation on a healthy OpenClaw recall response (#2972)", async () => {
+  const stub = await startDaemonStub(() => ({
+    context: "remembered daemon context",
+    contextComposition: { context: "remembered daemon context" },
+  }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const result = (await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "what did we decide about the rollout?" },
+      { sessionKey: "healthy-session" },
+    )) as Record<string, unknown>;
+
+    assert.ok(result && typeof result === "object");
+    assert.equal("degradation" in result, false);
+    assert.match(String(result.prependSystemContext), /remembered daemon context/);
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate recall degrades to no injection when the daemon fails", async () => {
   const stub = await startDaemonStub(() => {
     throw new Error("unreachable"); // respond() throwing crashes the handler; use 500 instead
