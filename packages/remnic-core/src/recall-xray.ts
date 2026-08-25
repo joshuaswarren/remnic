@@ -24,6 +24,7 @@ import { estimateTokenCount } from "./token-estimate.js";
 import type { RecallDisclosure, RecallTierExplain } from "./types.js";
 import type { StateLabel } from "./recall-state-view.js";
 import { isRecallDisclosure } from "./types.js";
+import type { RecallContextDegradation } from "./recall-context-composition.js";
 
 /**
  * Estimate token cost of a payload for X-ray disclosure accounting.
@@ -282,6 +283,12 @@ export interface RecallXraySnapshot {
    * absent) means no peer profile was injected.
    */
   peerProfileInjection?: RecallXrayPeerProfileInjection | null;
+  /**
+   * Injected-context degradation (#2972). Absent on a healthy recall so
+   * the snapshot stays byte-stable. Budget warnings ride here, never
+   * in the injected text.
+   */
+  degradation?: RecallContextDegradation;
 }
 
 // ─── Builder ──────────────────────────────────────────────────────────────
@@ -300,6 +307,8 @@ export interface BuildXraySnapshotInput {
   traceId?: string;
   /** Peer-profile injection metadata (issue #679 completion). */
   peerProfileInjection?: RecallXrayPeerProfileInjection | null;
+  /** Injected-context degradation (#2972). Omit on a healthy recall. */
+  degradation?: RecallContextDegradation;
   /** Optional injected timestamp for deterministic tests. */
   now?: () => number;
   /** Optional injected id generator for deterministic tests. */
@@ -374,6 +383,12 @@ export function buildXraySnapshot(
   };
   if (peerProfileInjection !== undefined) {
     out.peerProfileInjection = peerProfileInjection;
+  }
+  if (input.degradation && typeof input.degradation === "object") {
+    out.degradation = { ...input.degradation };
+    if (input.degradation.budget) {
+      out.degradation.budget = { ...input.degradation.budget };
+    }
   }
   return out;
 }

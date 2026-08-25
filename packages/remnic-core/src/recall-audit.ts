@@ -2,6 +2,8 @@ import type { Dirent } from "node:fs";
 import { appendFile, mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 
+import type { RecallContextDegradation } from "./recall-context-composition.js";
+
 export interface RecallAuditEntry {
   ts: string;
   sessionKey: string;
@@ -16,6 +18,8 @@ export interface RecallAuditEntry {
   plannerMode?: string;
   requestedMode?: string;
   fallbackUsed?: boolean;
+  /** Injected-context degradation (#2972). Absent on a healthy recall. */
+  degradation?: RecallContextDegradation;
 }
 
 function formatIsoDate(ts: string): string {

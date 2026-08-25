@@ -22,7 +22,12 @@ import type { RecallResultFormatter } from "./recall-result-formatter.js";
 import type { IdentityInjectionMode, PluginConfig, QmdSearchResult } from "../types.js";
 import { stateViewPacketActive } from "../recall-state-view-anchors.js";
 import { resultStateViewKey, stateViewPacketKeys } from "../recall-state-view.js";
- import { applyRecallStateViews } from "../recall-state-view-wire.js";
+import { applyRecallStateViews } from "../recall-state-view-wire.js";
+import { composeRecallContext } from "../recall-context-composition.js";
+import {
+  notifyContextComposition,
+  recallFailureComposition,
+} from "../recall-composition-decision.js";
 
 export interface RecallEntryDeps {
   appendRecallSection(
@@ -197,7 +202,16 @@ export class RecallEntryCoordinator {
       // endTrace() is safe here: if no trace is active (disabled or already
       // closed by recallInternal's try/finally), it returns null immediately.
       this.deps.profiler.endTrace();
-      return ""; // Return empty context on timeout/error
+      // Caller-cancelled recalls stay quiet: the failure was the caller's
+      // abort, not a recall degradation (issue #2972 contract).
+      const missing = options.abortSignal?.aborted
+        ? null
+        : recallFailureComposition(err);
+      if (!missing) return "";
+      notifyContextComposition(options.onContextComposition, missing, (observerErr) => {
+        log.warn("recall: context composition observer failed open", observerErr);
+      });
+      return composeRecallContext(missing);
     } finally {
       options.abortSignal?.removeEventListener("abort", onAbort);
     }
