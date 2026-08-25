@@ -34,6 +34,8 @@ When the extractor proposes `category: "procedure"`, the **extraction judge** re
 
 On prompts that look like **starting hands-on work** (deploy, ship, open a PR, run tests, etc.), the orchestrator may inject a **`## Relevant procedures`** block built from **active** procedure files only. **`pending_review`** miner suggestions are not injected by default.
 
+Promoted session-end experience memories (issue #2979) are `category: procedure` and compete for the same `recallMaxProcedures` slots. They stay out of injection while `pending_review`. When `sessionExperience.enabled` is on, a matching `experience_situation` can win a slot and renders as an `Experience.` preview. The gate-off path does not inspect experience attributes.
+
 Relevant config keys include:
 
 - `procedural.recallMaxProcedures` — cap on injected procedure previews. **Default `2`** (lowered from the earlier `3` in issue #567 PR 3/5 to keep procedural injection from crowding out other recall sections once the feature is enabled by default).
