@@ -16,7 +16,7 @@ import {
   sanitizeSessionKeyForFilename,
   defaultWorkspaceDir,
 } from "@remnic/core/orchestrator";
-import { beginCodexSubscriptionShutdown, getCodexSubscriptionRunnerForOwner } from "@remnic/core";
+import { beginCodexSubscriptionShutdown, getCodexSubscriptionRunnerForOwner, terminateActiveCodexSubscriptionChildren } from "@remnic/core";
 import { registerTools } from "./tools.js";
 import { registerLcmTools } from "@remnic/core/lcm/index";
 import { estimateTokens as estimateLcmTokens } from "@remnic/core/lcm/archive";
@@ -5569,6 +5569,7 @@ const pluginDefinition = {
           } finally {
             finishCodex();
           }
+          terminateActiveCodexSubscriptionChildren("SIGKILL", getCodexSubscriptionRunnerForOwner(cfg));
           if ((globalThis as any)[keys.ORCHESTRATOR] === orchestrator) {
             delete (globalThis as any)[keys.ORCHESTRATOR];
           }
