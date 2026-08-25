@@ -370,3 +370,55 @@ test("renderBenchmarkResultExport renders HTML and CSV without undefined numeric
     assert.ok(!csvOutput.includes("undefined"));
   });
 });
+
+test("loadBenchmarkResult rejects a modern artifact with a malformed provider optional field", async () => {
+  const result: Record<string, unknown> = { ...validResult() };
+  result.config = {
+    ...validResult().config,
+    systemProvider: { provider: "openai", model: "gpt-5.4", rubricVersion: 42 },
+  };
+  await withResultFile(result, async (filePath) => {
+    // Canonical validation rejects the malformed optional field (issue
+    // #2895); the modern artifact must not launder through the legacy
+    // path either.
+    await assert.rejects(
+      () => loadBenchmarkResult(filePath),
+      /Invalid benchmark result file: .+ \(modern provenance\/integrity markers present/,
+    );
+  });
+});
+
+test("loadBenchmarkResult accepts a modern artifact with a complete valid provider config", async () => {
+  const result: Record<string, unknown> = { ...validResult() };
+  const provider = {
+    provider: "openai",
+    model: "gpt-5.4",
+    rubricVersion: "assistant-v1",
+    baseUrl: "https://example.test/v1",
+    apiKey: "test-key",
+    retryOptions: {
+      maxAttempts: 3,
+      baseBackoffMs: 100,
+      timeoutMs: 120_000,
+      retryOnTimeout: false,
+      max429WaitMs: 5_000,
+    },
+    providerRequestTimeoutMs: 1_000,
+    disableThinking: false,
+    reasoningEffort: "low",
+    responderContextBudgetChars: 4_000,
+    responderPromptBudgetChars: 2_000,
+    temperature: 0,
+    seed: 1,
+  };
+  result.config = {
+    ...validResult().config,
+    systemProvider: provider,
+    judgeProvider: { provider: "local-llm", model: "llama-3", baseUrl: "http://127.0.0.1:8080/v1" },
+  };
+  await withResultFile(result, async (filePath) => {
+    const loaded = await loadBenchmarkResult(filePath);
+    assert.deepEqual(loaded.config.systemProvider, provider);
+    assert.equal(loaded.config.judgeProvider?.model, "llama-3");
+  });
+});
