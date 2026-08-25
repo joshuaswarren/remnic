@@ -2,7 +2,7 @@ import { coerceNumber } from "./connectors/coerce.js";
 import { parseBackgroundGeneration } from "./background-generation-config.js";
 import type { BackgroundGenerationConfig } from "./background-generation-config.js";
 import { readEnvVar } from "./runtime/env.js";
-
+import { parseTaskLlmConfig } from "./task-llm-config.js";
 export interface LocalLlmConfig {
   // Local LLM Provider (v2.1)
   localLlmEnabled: boolean;
@@ -17,14 +17,17 @@ export interface LocalLlmConfig {
   /** If false, do not send Authorization header even when localLlmApiKey is set. */
   localLlmAuthHeader: boolean;
   localLlmFallback: boolean;
+  taskLlmFallback?: boolean;
   /** Optional home directory override for local LLM helpers (LM Studio settings, CLI PATH). */
   localLlmHomeDir?: string;
   /** Optional absolute path to LMS CLI binary (preferred over auto-detection). */
   localLmsCliPath?: string;
   /** Optional bin directory prepended to PATH for LMS CLI execution. */
   localLmsBinDir?: string;
-  /** Hard timeout for local LLM and gateway fallback requests (ms). */
+  /** Hard timeout for local LLM requests (ms). Legacy alias for the task-chain timeout when `taskLlmTimeoutMs` is absent. */
   localLlmTimeoutMs: number;
+  /** Timeout for the gateway/task LLM chain (ms). */
+  taskLlmTimeoutMs?: number;
   /** Max context window for local LLM (override auto-detection). Set lower if your LLM server defaults to smaller contexts. */
   localLlmMaxContext?: number;
 }
@@ -33,11 +36,6 @@ export type LocalLlmParseResult = LocalLlmConfig & {
   backgroundGeneration?: BackgroundGenerationConfig;
 };
 
-function parseLocalLlmTimeoutMs(value: unknown): number {
-  const coerced = coerceNumber(value);
-  if (coerced === undefined) return 180_000;
-  return Math.min(86_400_000, Math.max(1, Math.floor(coerced)));
-}
 
 function parseLocalLlmMaxContext(value: unknown): number | undefined {
   if (value === undefined || value === null) return undefined;
@@ -70,6 +68,7 @@ export function parseLocalLlmConfig(
   localLlmApiKeyEnv: string | undefined,
   resolveEnvVars: (value: string) => string,
 ): LocalLlmParseResult {
+  const taskLlm = parseTaskLlmConfig(cfg);
   return {
     backgroundGeneration: parseBackgroundGeneration(cfg, resolveEnvVars),
     localLlmEnabled: cfg.localLlmEnabled === true || cfg.localLlmEnabled === "true",
@@ -90,7 +89,8 @@ export function parseLocalLlmConfig(
     localLlmApiKeyEnv,
     localLlmHeaders: copyStringRecord(cfg.localLlmHeaders),
     localLlmAuthHeader: cfg.localLlmAuthHeader !== false,
-    localLlmFallback: cfg.localLlmFallback !== false,
+    localLlmFallback: taskLlm.fallback,
+    taskLlmFallback: taskLlm.fallback,
     localLlmHomeDir:
       typeof cfg.localLlmHomeDir === "string" && cfg.localLlmHomeDir.length > 0
         ? cfg.localLlmHomeDir
@@ -103,7 +103,8 @@ export function parseLocalLlmConfig(
       typeof cfg.localLmsBinDir === "string" && cfg.localLmsBinDir.length > 0
         ? cfg.localLmsBinDir
         : undefined,
-    localLlmTimeoutMs: parseLocalLlmTimeoutMs(cfg.localLlmTimeoutMs),
+    localLlmTimeoutMs: taskLlm.localTimeoutMs,
+    taskLlmTimeoutMs: taskLlm.timeoutMs,
     localLlmMaxContext: parseLocalLlmMaxContext(cfg.localLlmMaxContext),
   };
 }

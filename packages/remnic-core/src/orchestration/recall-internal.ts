@@ -98,11 +98,8 @@ import {
   type RecallInvocationOptions,
 } from "../orchestrator.js";
 import { isGenericRecallExcludedPath } from "./generic-recall-paths.js";
-import {
-  filterRecentScanMemories,
-  resolveRecallStateViewFlags,
-} from "../recall-state-view-anchors.js";
-import { indexStateViewAnnotatedResults } from "../recall-state-view-admission.js";
+import { filterRecentScanMemories } from "../recall-state-view-anchors.js";
+import { indexStateViewAnnotatedResults, resolveRecallStateViewActive } from "../recall-state-view-admission.js";
 import type { RecallSectionBuckets } from "./recall-section-coordinator.js";
 import {
   reconcileRecallResultPartition,
@@ -248,12 +245,9 @@ export class RecallInternalCoordinator {
     });
     // #1952 state views: config flag OR per-call override, gated on change intent; computed once for all branches.
     const retrievalQuery = queryPolicy.retrievalQuery || prompt;
-    const { stateViewActive, stateViewPacketActive } = resolveRecallStateViewFlags(
-      options.stateView,
-      this.deps.config.recallStateViews,
-      retrievalQuery,
-      asOfMs,
-    );
+    const stateViewActive = resolveRecallStateViewActive(options, this.deps.config, prompt);
+    const stateViewPacketActive =
+      stateViewActive === true && !(typeof asOfMs === "number" && Number.isFinite(asOfMs));
     const retrievalQueryHash = createHash("sha256")
       .update(retrievalQuery)
       .digest("hex");
