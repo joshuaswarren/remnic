@@ -698,6 +698,8 @@ import "./relay/mission-access.js";
 // Location sync surfaces (issue #2047).
 import "./location/access-operations.js";
 import "./standup/access-operations.js";
+// Recall navigation (issue #1956).
+import "./recall-navigation-operations.js";
 
 export const REGISTERED_OPERATIONS = [
   memoryGetOperation.spec.name,

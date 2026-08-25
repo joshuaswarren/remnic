@@ -664,7 +664,11 @@ function extractParserKeys(
         const recursionKey = `${helperName}@${argIndex}@${argPrefix.join(".")}@${literalArgs}`;
         if (recursion.seen.has(recursionKey)) continue;
         recursion.seen.add(recursionKey);
-        const helper = findFunctionForCall(recursion.program, helperName, argIndex);
+        // Prefer the calling file when resolving the helper: a same-named
+        // module-local helper in another module (parseBoundedInt exists in
+        // both meetings/config.ts and recall-navigation-config.ts) must not
+        // win and mint phantom doubled key paths (issue #1956 CI).
+        const helper = findFunctionForCall(recursion.program, helperName, argIndex, sourceFile);
         if (helper) {
           const bindings = new Map<string, string>(literalBindings);
           for (let i = 0; i < node.arguments.length; i++) {

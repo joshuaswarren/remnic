@@ -28,6 +28,31 @@ function objectSchema(
   };
 }
 
+/** RecallNavigationResult-shaped schema — shared by memory_expand/memory_traverse. */
+function navigationResultSchema(): Record<string, unknown> {
+  return objectSchema(
+    {
+      ok: T_BOOLEAN,
+      action: T_STRING,
+      memoryId: T_STRING,
+      namespace: T_STRING,
+      items: T_ARRAY,
+      truncated: T_BOOLEAN,
+      budget: objectSchema({ chars: T_NUMBER, used: T_NUMBER }),
+      disclosureSpend: objectSchema({
+        chunk: objectSchema({ count: T_NUMBER, estimatedTokens: T_NUMBER }),
+        section: objectSchema({ count: T_NUMBER, estimatedTokens: T_NUMBER }),
+        raw: objectSchema({ count: T_NUMBER, estimatedTokens: T_NUMBER }),
+        unspecified: objectSchema({ count: T_NUMBER, estimatedTokens: T_NUMBER }),
+      }),
+      error: T_NULLABLE_STRING,
+      message: T_NULLABLE_STRING,
+      rendered: T_STRING,
+    },
+    ["ok", "action", "rendered"]
+  );
+}
+
 /**
  * Per-suffix outputSchema registry. Tools not present here fall back to
  * `{ type: "object", additionalProperties: true }` in the constructor pass.
@@ -86,6 +111,11 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     { ok: T_BOOLEAN, error: T_NULLABLE_STRING, entries: T_ARRAY, trace: T_ARRAY, rendered: T_STRING },
     ["entries", "trace"]
   ),
+  // RecallNavigationResult union (recall-navigation.ts): success carries
+  // items/budget/disclosureSpend; error carries error/message. ok/action/
+  // rendered are the fields every variant returns.
+  memory_expand: navigationResultSchema(),
+  memory_traverse: navigationResultSchema(),
   standup: objectSchema({
     date: T_STRING,
     yesterday: T_STRING,
