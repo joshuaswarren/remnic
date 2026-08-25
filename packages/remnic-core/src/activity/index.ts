@@ -29,6 +29,8 @@ export * from "./privacy-delete-plan.js";
 export * from "./privacy-status.js";
 export * from "./privacy-gate-resolve.js";
 export * from "./privacy-window.js";
+export * from "./privacy-redact.js";
+export * from "./privacy-keys.js";
 export * from "./vault-path.js";
 export * from "./vault-publisher.js";
 export * from "./vault-region-pair.js";
