@@ -21,6 +21,9 @@ Use `openclaw engram config-review` for opinionated tuning recommendations and `
 | `workspaceDir` | `~/.openclaw/workspace` | Workspace root (IDENTITY.md location) |
 | `captureMode` | `implicit` | Memory write policy: `implicit`, `explicit`, or `hybrid` |
 | `debug` | `false` | Enable debug logging |
+| `inlineSourceAttributionEnabled` | `false` | Append inline source markers on persisted facts. |
+| `inlineSourceAttributionFormat` | `[Source: agent={agent}, session={sessionId}, ts={ts}]` | Template for those markers. |
+| `inlineSourceAttributionFormatHistory` | `[]` | Prior templates still stripped during merge after a format change. |
 
 OpenClaw installs default new Remnic entries to `modelSource: "gateway"` so LLM calls use the gateway agent model chain instead of requiring a Remnic-specific OpenAI API key.
 
@@ -1977,6 +1980,9 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `recallPlannerMaxQmdResultsFull` | `8` | `8` |
 | `intentRoutingEnabled` | `false` | `false` |
 | `intentRoutingBoost` | `0.12` | `0.12` |
+| `inlineSourceAttributionEnabled` | `false` | `false` |
+| `inlineSourceAttributionFormat` | `[Source: agent={agent}, session={sessionId}, ts={ts}]` | `[Source: agent={agent}, session={sessionId}, ts={ts}]` |
+| `inlineSourceAttributionFormatHistory` | `[]` | `[]` |
 | `verbatimArtifactsEnabled` | `false` | `true` |
 | `verbatimArtifactsMinConfidence` | `0.8` | `0.8` |
 | `verbatimArtifactsMaxRecall` | `5` | `5` |

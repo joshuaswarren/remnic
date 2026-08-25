@@ -346,3 +346,124 @@ test("deep recall retires an expanded node from the frontier", async () => {
   );
   assert.equal(result.trace.length, 2, "the loop stops rather than looping on the same node");
 });
+
+test("deep recall ranks by distinct shared anchors, not working-set memory count (issue #2915)", async () => {
+  // "node-candidate-c" shares ONE anchor with a node holding TWO working-set
+  // memories; "node-candidate-d" shares TWO distinct anchors with one
+  // working-set memory. Counting per memory (the old bug) scored both 2 and
+  // the nodeId tiebreak expanded C first; distinct anchors must rank D first.
+  const node = (nodeId: string, ...sourceMemoryIds: string[]): DeepRecallGraphSnapshot["nodes"][number] => ({
+    schemaVersion: 1,
+    nodeId,
+    recordedAt: "2026-08-01T00:00:00.000Z",
+    sessionKey: "test-session",
+    kind: "topic",
+    abstractionLevel: "meso",
+    title: `Synthetic ${nodeId}`,
+    summary: `Synthetic ${nodeId} summary`,
+    sourceMemoryIds,
+  });
+  const anchor = (anchorId: string, anchorValue: string, ...nodeRefs: string[]): DeepRecallGraphSnapshot["anchors"][number] => ({
+    schemaVersion: 1,
+    anchorId,
+    anchorType: "entity",
+    anchorValue,
+    normalizedCue: anchorValue,
+    recordedAt: "2026-08-01T00:00:00.000Z",
+    sessionKey: "test-session",
+    nodeRefs,
+  });
+  const graph: DeepRecallGraphSnapshot = {
+    nodes: [
+      node("node-holder", "mem-w1", "mem-w2"),
+      node("node-holder2", "mem-w3"),
+      node("node-candidate-c", "mem-c1"),
+      node("node-candidate-d", "mem-d1"),
+    ],
+    anchors: [
+      anchor("anchor-one", "shared+one", "node-holder", "node-candidate-c"),
+      anchor("anchor-two", "shared+two", "node-holder2", "node-candidate-d"),
+      anchor("anchor-three", "shared+three", "node-holder2", "node-candidate-d"),
+    ],
+  };
+  const result = await runBudgetedDeepRecall(
+    {
+      config: makeConfig({ maxSteps: 3 }),
+      searchSeed: async () => [
+        { memoryId: "mem-w1", score: 0.9 },
+        { memoryId: "mem-w2", score: 0.8 },
+        { memoryId: "mem-w3", score: 0.7 },
+      ],
+      loadGraph: async () => graph,
+      loadMemory: async (memoryId) => ({ memoryId, content: `Content of ${memoryId}.`, active: true }),
+      callPolicy: async (statePrompt) => {
+        const first = /FRONTIER \(anchor-linked candidates not yet retrieved\):\n- ([^:]+):/.exec(statePrompt)?.[1];
+        return first
+          ? JSON.stringify({ action: "EXPAND", expandNodeIds: [first], reason: "follow the top candidate" })
+          : JSON.stringify({ action: "STOP", reason: "frontier empty" });
+      },
+    },
+    "shared anchors",
+  );
+  assert.equal(result.trace[0]?.action, "EXPAND");
+  assert.equal(
+    result.trace[0]?.detail,
+    "node-candidate-d",
+    "two distinct shared anchors outrank one anchor reached through two memories",
+  );
+  assert.ok(result.entries.some((entry) => entry.memoryId === "mem-d1"), "the top-ranked candidate was expanded");
+});
+
+test("deep recall aborts before any dependency call when the signal is already aborted (issue #2915)", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  let seedCalls = 0;
+  await assert.rejects(
+    runBudgetedDeepRecall(
+      {
+        config: makeConfig(),
+        searchSeed: async () => {
+          seedCalls += 1;
+          return [];
+        },
+        loadGraph: async () => {
+          throw new Error("must not load the graph after abort");
+        },
+        loadMemory: async () => null,
+        callPolicy: async () => {
+          throw new Error("must not call the policy after abort");
+        },
+        signal: controller.signal,
+      },
+      "anything",
+    ),
+    (err: unknown) => err instanceof Error && err.name === "AbortError",
+    "cancellation must surface as a standard AbortError",
+  );
+  assert.equal(seedCalls, 0, "no seed search runs after cancellation");
+});
+
+test("deep recall propagates cancellation from a stalled policy call instead of waiting for the deadline (issue #2915)", async () => {
+  const controller = new AbortController();
+  // The policy leg aborts the transport mid-call and then never settles:
+  // without signal racing the invocation would hang until totalTimeoutMs.
+  const resultPromise = runBudgetedDeepRecall(
+    {
+      config: makeConfig({ totalTimeoutMs: 10_000 }),
+      searchSeed: async () => [{ memoryId: "mem-1", score: 0.9 }],
+      loadGraph: async () => ({ nodes: [], anchors: [] }),
+      loadMemory: async (memoryId) => ({ memoryId, content: "one", active: true }),
+      callPolicy: () => {
+        controller.abort();
+        return new Promise<string | null>(() => {});
+      },
+      signal: controller.signal,
+    },
+    "stalled policy",
+  );
+  await assert.rejects(
+    resultPromise,
+    (err: unknown) => err instanceof Error && err.name === "AbortError",
+    "a cancelled call must stop at cancellation time, not at totalTimeoutMs",
+  );
+});

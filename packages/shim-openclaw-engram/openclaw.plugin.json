@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.69.39",
+  "version": "9.69.40",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -3103,6 +3103,11 @@
         "type": "string",
         "default": "[Source: agent={agent}, session={sessionId}, ts={ts}]",
         "description": "Template used when inline source attribution is enabled."
+      },
+      "inlineSourceAttributionFormatHistory": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Prior inline citation templates still recognized during merge after a format change."
       },
       "intentRoutingBoost": {
         "type": "number",
