@@ -122,20 +122,22 @@ export async function planLocalNamespaceCensus(args: LocalCensusArgs): Promise<L
     identityCache,
     classificationUpdates
   );
+  const priorByPath = new Map((priorFiles ?? []).map((file) => [file.path, file.sha256.toLowerCase()]));
+  let reused = 0;
+  for (const file of files) {
+    if (priorByPath.get(file.path) === file.sha256.toLowerCase()) reused += 1;
+  }
+  // Progress fires whether or not checkpointing is available (#2963): a
+  // read-only audit mount must not silence per-namespace stderr output.
+  args.onProgress?.({
+    side: "local",
+    namespace: ns,
+    index: args.index,
+    total: args.total,
+    reused,
+    computed: files.length - reused,
+  });
   if (args.cache) {
-    const priorByPath = new Map((priorFiles ?? []).map((file) => [file.path, file.sha256.toLowerCase()]));
-    let reused = 0;
-    for (const file of files) {
-      if (priorByPath.get(file.path) === file.sha256.toLowerCase()) reused += 1;
-    }
-    args.onProgress?.({
-      side: "local",
-      namespace: ns,
-      index: args.index,
-      total: args.total,
-      reused,
-      computed: files.length - reused,
-    });
     // Checkpoint the namespace only after it fully completed, so an
     // aborted or crashed run leaves a valid (if partial) plan cache.
     await args.cache.writeEntry({
