@@ -1215,7 +1215,7 @@ See [shared-context.md](shared-context.md).
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `sharedContextAllowBindingAuthority` | `false` | Allow shared-context items to carry binding authority. In-process writers must still request it explicitly; the MCP and OpenClaw tool surfaces cannot request it yet, so tool writes stay `informational` |
-| `sharedContextEnabled` | `false` | Enable shared cross-agent context |
+| `sharedContextEnabled` | `false` | Enable shared cross-agent context. Accepts boolean and CLI string forms (`true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off`); a deployment already carrying the string `"true"` (previously ignored by the strict parser) now activates on upgrade. An unrecognized value warns and stays off — malformed input never silently enables |
 | `sharedContextDir` | `(unset)` | Directory for shared context files |
 | `sharedContextMaxInjectChars` | `4000` | Max chars injected from shared context |
 | `sharedCrossSignalSemanticEnabled` | `false` | Enable optional semantic overlap enhancement during daily curation |
@@ -2267,7 +2267,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `routingRulesEnabled` | `false` | `false` |
 | `routingRulesStateFile` | `state/routing-rules.json` | `state/routing-rules.json` |
 | `sharedContextAllowBindingAuthority` | `false` | `false` unless in-process writers need to publish binding-authority shared items (tool surfaces cannot request it yet) |
-| `sharedContextEnabled` | `false` | `false` unless you are actively using cross-agent memory sharing |
+| `sharedContextEnabled` | `false` | `false` unless you are actively using cross-agent memory sharing; a config already carrying the string `"true"` now activates it (string boolean forms are coerced, malformed values warn and stay off) |
 | `sharedContextDir` | (unset) | (unset) |
 | `sharedContextMaxInjectChars` | `4000` | `4000` |
 | `crossSignalsSemanticEnabled` | `false` | `false` |
