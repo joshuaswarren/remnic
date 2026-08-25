@@ -20,7 +20,7 @@ test("peer transport canonicalizes request URLs without credentials or request-o
     undefined,
     async (input, init) => {
       requestedUrl = String(input);
-      requestSignal = init?.signal;
+      requestSignal = init?.signal ?? undefined;
       return Response.json({ files: [], tombstones: [] });
     },
     50,
@@ -203,7 +203,7 @@ test("peer manifest stream fetch carries the abort signal (#2954)", async () => 
   const controller = new AbortController();
   let requestSignal: AbortSignal | undefined;
   const fetchImpl: typeof fetch = async (_input, init) => {
-    requestSignal = init?.signal;
+    requestSignal = init?.signal ?? undefined;
     controller.abort();
     throw init?.signal?.reason ?? new Error("aborted");
   };
