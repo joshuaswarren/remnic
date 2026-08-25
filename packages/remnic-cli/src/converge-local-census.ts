@@ -28,6 +28,7 @@ export interface LocalCensusArgs {
   onProgress?: (event: ConvergePlanProgressEvent) => void;
   memoryDir?: string;
   peerUrl?: string;
+  userExcludeRegexps?: readonly RegExp[];
 }
 
 export interface LocalCensusResult {
@@ -75,6 +76,7 @@ export async function planLocalNamespaceCensus(args: LocalCensusArgs): Promise<L
     readFile: io.readFile,
     readFileDigest: io.readFileDigest,
     excludeFile: io.excludeFile,
+    userExcludeRegexps: args.userExcludeRegexps,
     signal: args.signal,
   });
   const files: ReconcileFileState[] = snapshot.files

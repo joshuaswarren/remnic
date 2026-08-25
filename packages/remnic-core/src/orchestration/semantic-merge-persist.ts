@@ -28,6 +28,7 @@ import { sanitizeMemoryContent } from "../sanitize.js";
 import { ContentHashIndex } from "../storage/content-hash-index.js";
 import type { VersioningConfig } from "../page-versioning.js";
 import {
+  committedMergedBody,
   committedMergedFactHash,
   discardMergedTargetSnapshot,
   finalizeMergedVersionPrune,
@@ -57,13 +58,10 @@ import { REFUSED_MERGE_CATEGORIES } from "../dedup/merge-on-write.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { inferIntentFromText } from "../intent.js";
 import {
-  hasCitationForTemplate,
-  lastCitationMarkerForTemplate,
-  stripCitationForTemplate,
+  type CitationContext,
 } from "../source-attribution.js";
 import {
   resolveConversationContextCapabilities,
-  resolvePipelineProcessingCapabilities,
   resolvePresentationCapabilities,
   resolveRecallAuxiliaryCapabilities,
   type GraphConstructionCapabilitySet,
@@ -225,6 +223,14 @@ export interface ApplySemanticMergeOptions {
    * Absent (or citation-free) commits the judge's merged body unchanged.
    */
   incomingCitedContent?: string;
+  /**
+   * #2916: the citation context of THIS write (agent/session) — the same
+   * base a fresh attributed write stamps. When no incoming citation marker
+   * is liftable, the committed merged body still receives the configured
+   * inline-attribution transform exactly as a fresh attributed write would,
+   * stamped with this context and the merge's commit timestamp.
+   */
+  incomingCitationContext?: Omit<CitationContext, "ts">;
   /**
    * Finding C: async probe run after a merge verdict but before any
    * mutation. True when the would-be target already has promoted
@@ -470,33 +476,6 @@ export function createPathMergeParity(input: {
   };
 }
 
-/**
- * Round N+7 (C): the committed merged body carries the incoming extraction's
- * citation marker (lifted from the caller's cited body for this write)
- * appended after the judge's merged text, so incoming claims stay attributed
- * even when the merged text embeds the target's older citation — quoted
- * excerpts travel without frontmatter, so `sources` alone is not enough.
- * Idempotent; a no-op when attribution is off or no marker exists.
- */
-function committedMergedBody(
-  deps: ExtractionPersistDeps,
-  mergedContent: string,
-  incomingCitedContent: string | undefined,
-): string {
-  if (
-    resolvePipelineProcessingCapabilities(deps.config).inlineSourceAttribution !== true ||
-    incomingCitedContent === undefined
-  ) {
-    return mergedContent;
-  }
-  const marker = lastCitationMarkerForTemplate(
-    incomingCitedContent,
-    deps.config.inlineSourceAttributionFormat,
-  );
-  if (!marker || mergedContent.endsWith(marker)) return mergedContent;
-  return `${mergedContent} ${marker}`;
-}
-
 function versioningConfigFrom(deps: ExtractionPersistDeps): VersioningConfig {
   return {
     enabled: resolveRecallAuxiliaryCapabilities(deps.config).versioning,
@@ -611,10 +590,19 @@ export async function applySemanticMergeAtPersist(
   if (target.content !== decision.targetContent) {
     return { action: "created", reason: "target_changed" };
   }
-  // Round N+7 (C): every mutation below commits THIS body — the judge's
-  // merged text plus the incoming citation marker — and the outcome reports
-  // it, so caller comparisons describe what storage actually holds.
-  const committedContent = committedMergedBody(deps, decision.mergedContent, options.incomingCitedContent);
+  // Round N+7 (C) + #2916: every mutation below commits THIS body — the
+  // judge's merged text in its cited form (the incoming marker when one is
+  // liftable, else the configured transform as a fresh attributed write
+  // applies it) — and the outcome reports it, so caller comparisons
+  // describe what storage actually holds.
+  const nowIso = (options.now ? options.now() : new Date()).toISOString();
+  const committedContent = committedMergedBody(
+    deps,
+    decision.mergedContent,
+    options.incomingCitedContent,
+    options.incomingCitationContext,
+    nowIso,
+  );
 
   // Create-path parity gate (final round) — ONE place enumerates every
   // trust/scope/verdict field the normal write stamps and bypasses the
@@ -714,7 +702,6 @@ export async function applySemanticMergeAtPersist(
   // snapshot just read: a writer landing between the read and the write must
   // win rather than be overwritten from a stale body. The active-target check
   // above makes a tombstone block structurally impossible here.
-  const nowIso = (options.now ? options.now() : new Date()).toISOString();
   let casRevision: string | undefined; // #2813 (P1): OUR content CAS's receipt — feeds the patch stamp below and the catch's rollback comparison
   let mergePatch: MergeFrontmatterUpdate | undefined;
   try {

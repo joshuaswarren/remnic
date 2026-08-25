@@ -33,7 +33,10 @@ export interface DeepRecallSeedRouter {
     query: string;
     namespaces: string[];
     maxResults?: number;
-    execution?: { onDegradation?: (degradation: SearchDegradation) => void };
+    execution?: {
+      signal?: AbortSignal;
+      onDegradation?: (degradation: SearchDegradation) => void;
+    };
   }): Promise<ReadonlyArray<{ path?: string; docid?: string; score?: number }>>;
 }
 
@@ -97,6 +100,8 @@ export function createDeepRecallSeedSearch(deps: {
   storage: DeepRecallSeedStorage;
   router: DeepRecallSeedRouter;
   resolver: DeepRecallSeedResultResolver;
+  /** Transport cancellation (issue #2915); forwarded to the search router. */
+  signal?: AbortSignal;
 }): (query: string, limit: number) => Promise<DeepRecallSeedHit[]> {
   return async (query, limit) => {
     if (limit <= 0) return [];
@@ -106,6 +111,7 @@ export function createDeepRecallSeedSearch(deps: {
       namespaces: [deps.namespace],
       maxResults: limit,
       execution: {
+        ...(deps.signal ? { signal: deps.signal } : {}),
         onDegradation: (degradation) => {
           if (degradation.code === "backend_unavailable") unavailable.push(degradation);
         },
