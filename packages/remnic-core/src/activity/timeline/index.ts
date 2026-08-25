@@ -18,6 +18,7 @@ export * from "./recap-export-range.js";
 export * from "./recap-markdown.js";
 export * from "./week-export.js";
 export * from "./week-snapshot.js";
+export * from "./week-dashboard.js";
 export * from "./week-previous.js";
 export * from "./week-recurring.js";
 export * from "./week-config-hash.js";
