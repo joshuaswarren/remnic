@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import test from "node:test";
 
 import { parseConfig } from "../config.js";
@@ -564,4 +564,210 @@ test("QMD stops after an underfilled archive-only page", async () => {
 
   assert.deepEqual(out, []);
   assert.equal(searchCalls, 1, "an underfilled raw page must not trigger widening");
+});
+
+// ─── #2976: memory age from content dates; bulk-touch mtime distrust ─────────
+
+const AGE_DAY_MS = 86_400_000;
+
+function scoredResult(namespace: string, p: string, score: number): QmdSearchResult {
+  return { docid: `${namespace}:${p}`, namespace, path: p, score, snippet: p };
+}
+
+function ageMemory(absPath: string, frontmatter: Record<string, unknown>): MemoryFile {
+  return {
+    path: absPath,
+    content: absPath,
+    frontmatter: { status: "active", memoryKind: "fact", ...frontmatter } as unknown as MemoryFile["frontmatter"],
+  };
+}
+
+function boostCoordinator(
+  memoryDir: string,
+  recencyWeight: number,
+): RecallSearchPipelineCoordinator {
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+  });
+  const deps = {
+    config,
+    effectiveRecencyWeight: () => recencyWeight,
+    filterSearchResultsForRecall: async (
+      results: QmdSearchResult[],
+      preloaded?: Map<string, MemoryFile>,
+    ) => ({ results, memoryByPath: preloaded ?? new Map() }),
+  } as unknown as RecallSearchPipelineDeps;
+  return new RecallSearchPipelineCoordinator(deps);
+}
+
+async function writeDatedFile(filePath: string, mtimeMs: number): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, "fixture\n");
+  await utimes(filePath, mtimeMs / 1000, mtimeMs / 1000);
+}
+
+function isoAgo(now: number, days: number): string {
+  return new Date(now - days * AGE_DAY_MS).toISOString();
+}
+
+test("#2976 content dates age a memory even when its mtime is fresh (updated backs a missing created)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-age-content-"));
+  try {
+    const now = Date.now();
+    const fileA = path.join(memoryDir, "facts", "a.md");
+    const fileB = path.join(memoryDir, "facts", "b.md");
+    // Both files carry today's mtime — the bulk import / cp -r shape. A has
+    // no created, only a 40-day-old updated; B carries a 40-day-old created.
+    await writeDatedFile(fileA, now);
+    await writeDatedFile(fileB, now);
+    const memoryByPath = new Map<string, MemoryFile>([
+      ["default\0facts/a.md", ageMemory(fileA, { updated: isoAgo(now, 40) })],
+      ["default\0facts/b.md", ageMemory(fileB, { created: isoAgo(now, 40), updated: isoAgo(now, 40) })],
+    ]);
+
+    const boosted = await boostCoordinator(memoryDir, 0.5).boostSearchResults(
+      [scoredResult("default", "facts/a.md", 1), scoredResult("default", "facts/b.md", 1)],
+      ["default"],
+      undefined,
+      memoryByPath,
+    );
+
+    const [a, b] = boosted;
+    const expected = 1 * 0.5 + Math.pow(0.5, 40 / 7) * 0.5;
+    assert.ok(a && Number.isFinite(a.score), "a memory without created must not score NaN");
+    assert.ok(b && Number.isFinite(b.score));
+    assert.ok(Math.abs(a.score - expected) < 1e-9, `ages by the 40-day-old content date (${a?.score}), not the fresh mtime (1.0)`);
+    assert.equal(a.score, b.score, "updated and created of the same age produce the same score");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#2976 a bulk-touch mtime cluster never inflates freshness (ranking unchanged vs pre-touch base order)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-age-bulk-"));
+  try {
+    const now = Date.now();
+    const files = ["facts/x.md", "facts/y.md", "facts/z.md"];
+    const baseScores = [0.9, 0.8, 0.7];
+    const mtimes = [now - 10 * AGE_DAY_MS, now - 30 * AGE_DAY_MS, now - 90 * AGE_DAY_MS];
+    // Undated memories: only mtime can say how old they are.
+    const buildMap = () =>
+      new Map<string, MemoryFile>(
+        files.map((rel) => ["default\0" + rel, ageMemory(path.join(memoryDir, rel), {})]),
+      );
+    for (let i = 0; i < files.length; i += 1) {
+      await writeDatedFile(path.join(memoryDir, files[i]!), mtimes[i]!);
+    }
+    const results = () => files.map((rel, i) => scoredResult("default", rel, baseScores[i]!));
+
+    // Pre-touch: mtimes are scattered, so each trusted mtime ages its memory.
+    const preTouch = await boostCoordinator(memoryDir, 0.5).boostSearchResults(
+      results(),
+      ["default"],
+      undefined,
+      buildMap(),
+    );
+    for (const r of preTouch) {
+      assert.ok(Number.isFinite(r.score), "an undated memory with a trusted mtime must not score NaN");
+    }
+    assert.deepEqual(
+      preTouch.map((r) => r.path),
+      ["facts/x.md", "facts/y.md", "facts/z.md"],
+      "pre-touch, the scattered trusted mtimes preserve the base ranking",
+    );
+
+    // Bulk touch: every mtime reset to one calendar day (cp -r / restore).
+    const bulkDay = now - 1 * AGE_DAY_MS;
+    for (const rel of files) {
+      await writeDatedFile(path.join(memoryDir, rel), bulkDay);
+    }
+    const postTouch = await boostCoordinator(memoryDir, 0.5).boostSearchResults(
+      results(),
+      ["default"],
+      undefined,
+      buildMap(),
+    );
+    assert.deepEqual(
+      postTouch.map((r) => r.score),
+      baseScores,
+      "a same-day mtime cluster is distrusted: no recency boost, scores stay at base",
+    );
+    assert.deepEqual(
+      postTouch.map((r) => r.path),
+      ["facts/x.md", "facts/y.md", "facts/z.md"],
+      "ranking is unchanged versus the pre-touch base order",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#2976 an undated memory falls back to a trusted scattered mtime; a dated sibling keeps its content age", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-age-fallback-"));
+  try {
+    const now = Date.now();
+    const fileA = path.join(memoryDir, "facts", "undated.md");
+    const fileB = path.join(memoryDir, "facts", "dated.md");
+    // A: no dates, mtime 2 days ago. B: created 2 days ago, mtime 5 days ago
+    // (different days, one file each — no cluster, mtime stays trusted).
+    await writeDatedFile(fileA, now - 2 * AGE_DAY_MS);
+    await writeDatedFile(fileB, now - 5 * AGE_DAY_MS);
+    const memoryByPath = new Map<string, MemoryFile>([
+      ["default\0facts/undated.md", ageMemory(fileA, {})],
+      ["default\0facts/dated.md", ageMemory(fileB, { created: isoAgo(now, 2), updated: isoAgo(now, 2) })],
+    ]);
+
+    const boosted = await boostCoordinator(memoryDir, 0.5).boostSearchResults(
+      [scoredResult("default", "facts/undated.md", 1), scoredResult("default", "facts/dated.md", 1)],
+      ["default"],
+      undefined,
+      memoryByPath,
+    );
+
+    const [undated, dated] = boosted;
+    // 1e-6 (not 1e-9): the pipeline stamps its own Date.now() after this
+    // test's fixture writes, so a few ms of clock drift shifts the 2-day
+    // blend in the 8th decimal.
+    const expected = 1 * 0.5 + Math.pow(0.5, 2 / 7) * 0.5;
+    assert.ok(undated && Number.isFinite(undated.score), "the undated memory must not score NaN");
+    assert.ok(
+      undated && Math.abs(undated.score - expected) < 1e-6,
+      `an undated memory ages by its trusted mtime (2 days): got ${undated?.score}, want ~${expected}`,
+    );
+    assert.ok(
+      undated && dated && Math.abs(undated.score - dated.score) < 1e-6,
+      "mtime fallback and a same-aged content date score identically",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#2976 guard: a memory whose content date is older than its fresh mtime ages by the content date", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-age-guard-"));
+  try {
+    const now = Date.now();
+    const filePath = path.join(memoryDir, "facts", "old.md");
+    await writeDatedFile(filePath, now); // fresh mtime, 90-day-old content
+    const memoryByPath = new Map<string, MemoryFile>([
+      ["default\0facts/old.md", ageMemory(filePath, { created: isoAgo(now, 90), updated: isoAgo(now, 90) })],
+    ]);
+
+    const boosted = await boostCoordinator(memoryDir, 0.5).boostSearchResults(
+      [scoredResult("default", "facts/old.md", 1)],
+      ["default"],
+      undefined,
+      memoryByPath,
+    );
+
+    const expected = 1 * 0.5 + Math.pow(0.5, 90 / 7) * 0.5;
+    assert.ok(
+      boosted[0] && Math.abs(boosted[0].score - expected) < 1e-9,
+      "ages by the 90-day-old created date, not the fresh mtime",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
