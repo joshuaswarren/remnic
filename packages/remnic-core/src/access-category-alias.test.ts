@@ -503,6 +503,63 @@ test("#2889 suggestion_submit reports the coercion and queues the canonical cate
     assert.equal("categoryCoercion" in canonical, false, "a no-alias submit reports no coercion");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2962 — direct service calls canonicalize accepted aliases at the split
+// boundary instead of echoing them in an "unsupported category" 400
+// ---------------------------------------------------------------------------
+
+test("#2962 a direct service call canonicalizes an accepted alias instead of echoing it in a 400", async () => {
+  // In-process consumers call the exported service API without a wire parse,
+  // so an accepted alias arrives on `category` itself (PR #2866 review). The
+  // split boundary must canonicalize it — same contract the wire schema
+  // enforces for HTTP/MCP/CLI — and mint the retained spelling so the
+  // response still reports the coercion note.
+  await withPersistService(async ({ service, writes }) => {
+    const aliased = await service.memoryStore({
+      content: "direct in-process aliased write",
+      category: "project",
+      confidence: 0.9,
+      tags: [],
+    });
+    assert.equal(aliased.status, "stored");
+    assert.deepEqual(
+      aliased.categoryCoercion,
+      { from: "project", to: "fact" },
+      "the retained raw spelling is still reported",
+    );
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0]?.category, "fact", "the persisted memory stays canonical");
+
+    const suggested = await service.suggestionSubmit({
+      content: "direct in-process aliased suggestion",
+      category: "project_update",
+      confidence: 0.9,
+      tags: [],
+    });
+    assert.equal(suggested.status, "queued_for_review");
+    assert.deepEqual(suggested.categoryCoercion, { from: "project_update", to: "fact" });
+    assert.equal(writes.length, 2);
+
+    // A genuine near-miss changes nothing: it still rejects at the write
+    // candidate with the attempted category echoed in the 400 detail.
+    await assert.rejects(
+      service.memoryStore({
+        content: "a genuine near-miss must still reject",
+        category: "projection",
+        confidence: 0.9,
+        tags: [],
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof EngramAccessInputError);
+        assert.match(error.message, /unsupported category: projection/);
+        return true;
+      },
+    );
+    assert.equal(writes.length, 2, "the near-miss persists nothing");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Quarantine — the parked payload keeps the raw spelling for replay
 // ---------------------------------------------------------------------------
