@@ -1053,9 +1053,9 @@ test("entity retrieval refreshes a reader-process entity cache after a relations
   const writerStorage = new StorageManager(namespaceDir, config.entitySchemas);
   await writerStorage.ensureDirectories();
   const canonical = await writerStorage.writeEntity("Casey Example", "person", []);
-  const configModuleUrl = new URL("@remnic/core/config", import.meta.url).href;
-  const retrievalModuleUrl = new URL("@remnic/core/entity-retrieval", import.meta.url).href;
-  const storageModuleUrl = new URL("@remnic/core/storage", import.meta.url).href;
+  const configModuleUrl = import.meta.resolve("@remnic/core/config");
+  const retrievalModuleUrl = import.meta.resolve("@remnic/core/entity-retrieval");
+  const storageModuleUrl = import.meta.resolve("@remnic/core/storage");
   const childSource = `
     import path from "node:path";
     import { createInterface } from "node:readline";
