@@ -46,6 +46,7 @@ import {
   parseStandingBlockFreshDays,
   parseStandingBlockMaxChars,
 } from "./standing-memory-block.js";
+import { parseRecognitionIndexMaxEntries, parseRecallRecognitionTier } from "./recall-recognition-tier.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
 import { parseExtractionFields } from "./extraction-span-config.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
@@ -1967,6 +1968,10 @@ export function parseConfig(
     recallStandingBlock: parseRecallStandingBlock(cfg.recallStandingBlock),
     standingBlockFreshDays: parseStandingBlockFreshDays(cfg.standingBlockFreshDays),
     standingBlockMaxChars: parseStandingBlockMaxChars(cfg.standingBlockMaxChars),
+    // Full-index recognition tier (issue #2975). Default false; nothing on the
+    // recall path reads these keys until the wiring slice lands.
+    recallRecognitionTier: parseRecallRecognitionTier(cfg.recallRecognitionTier),
+    recognitionIndexMaxEntries: parseRecognitionIndexMaxEntries(cfg.recognitionIndexMaxEntries),
     // Disclosure auto-escalation (issue #677 PR 4/4).  Default `manual`
     // so pre-#677 callers see unchanged behavior.  Reject anything
     // outside the allow-list rather than silently defaulting (CLAUDE.md
