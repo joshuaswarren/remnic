@@ -2545,7 +2545,7 @@ export class ExtractionPersistCoordinator {
       const semanticMerge = await applySemanticMergeAtPersist(this.deps, {
         storage: targetStorage, content: fact.content, category: writeCategory, sources: fact.sources, sourceConnector: extractionSourceConnector,
         incomingMetadata: { tags: [...fact.tags, ...injectionScreenTags], entityRef: fact.entityRef, structuredAttributes: fact.structuredAttributes, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, biTemporal: biTemporal !== undefined, importanceScore: importance.score, confidence: fact.confidence, provenanceStrength: fact.provenance, toolScoped: factToolScoped, subject: factSubject, origin, faithfulness: faithfulnessFm, memoryKind }, skip: contradictionDetected || faithfulnessEnforceStatus === "pending_review" || batchBackendUnavailable || novelty.decision === "add",
-        incomingLinks: links.length > 0 ? links : undefined, incomingCitedContent: citedFactContent,
+        incomingLinks: links.length > 0 ? links : undefined, incomingCitedContent: citedFactContent, incomingCitationContext: citationContextBase,
         targetHasPromotedCopies: (targetId) => promotedCopyProbe.check(targetStorage, targetId),
       });
       if (semanticMerge.action === "created" && semanticMerge.reason === "backend_unavailable") batchBackendUnavailable = true; // arms the batch short circuit for the remaining facts

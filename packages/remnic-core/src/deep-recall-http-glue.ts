@@ -12,18 +12,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { deepRecallRequestSchema } from "./access-schema.js";
 import { EngramAccessInputError } from "./access-errors.js";
 import type { EngramAccessService } from "./access-service.js";
+import { parseDeepRecallMaxSteps } from "./deep-recall-config.js";
 
 type RespondJson = (res: ServerResponse, status: number, payload: unknown) => void;
 type ReadJsonBody = (req: IncomingMessage) => Promise<unknown>;
-
-function coerceMaxSteps(raw: unknown): number | undefined {
-  if (raw === undefined || raw === null) return undefined;
-  const value = typeof raw === "string" ? Number(raw) : raw;
-  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
-    throw new EngramAccessInputError("maxSteps must be a non-negative integer");
-  }
-  return value;
-}
 
 export async function respondDeepRecall(
   req: IncomingMessage,
@@ -52,6 +44,8 @@ export async function respondDeepRecall(
     bodyNamespace?: string,
     bodySessionKey?: string,
   ) => { namespace?: string; sessionKey?: string; authenticatedPrincipal?: string },
+  /** Transport cancellation (issue #2915): aborts seed search, graph reads, policy calls. */
+  abortSignal?: AbortSignal,
 ): Promise<void> {
   const parsed = deepRecallRequestSchema.safeParse(await readJsonBody(req));
   if (!parsed.success) {
@@ -62,7 +56,12 @@ export async function respondDeepRecall(
     );
     return;
   }
-  const maxSteps = coerceMaxSteps(parsed.data.maxSteps);
+  let maxSteps: number | undefined;
+  try {
+    maxSteps = parseDeepRecallMaxSteps(parsed.data.maxSteps);
+  } catch (err) {
+    throw new EngramAccessInputError(err instanceof Error ? err.message : String(err));
+  }
   const scope = scopeFor(parsed.data.namespace, parsed.data.sessionKey);
   const result = await service.deepRecall({
     query: parsed.data.query,
@@ -70,6 +69,7 @@ export async function respondDeepRecall(
     namespace: scope.namespace,
     sessionKey: scope.sessionKey,
     authenticatedPrincipal: scope.authenticatedPrincipal,
+    ...(abortSignal ? { abortSignal } : {}),
   });
   respondJson(res, 200, result);
 }
