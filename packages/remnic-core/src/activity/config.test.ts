@@ -366,3 +366,64 @@ test("an enabled vault rejects relative or whitespace-only vaultPath at config l
   const inert = parseActivityConfig({ timeline: { vault: { enabled: false, vaultPath: "." } } });
   assert.equal(inert.timeline.vault.vaultPath, ".");
 });
+
+test("insertUnderHeading must be a trimmed single-line heading (#2917)", () => {
+  for (const insertUnderHeading of ["   ", "  Journal  ", "Journal\nExtra"]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { vault: { insertUnderHeading } } }),
+      /insertUnderHeading must be a non-empty trimmed single-line heading/,
+      `value ${JSON.stringify(insertUnderHeading)} must be rejected`,
+    );
+  }
+  const ok = parseActivityConfig({ timeline: { vault: { insertUnderHeading: "Journal" } } });
+  assert.equal(ok.timeline.vault.insertUnderHeading, "Journal");
+});
+
+test("readback.journalSection must be a trimmed single-line heading (#2917)", () => {
+  for (const journalSection of ["  Journal  ", "Journal\r\nExtra"]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { vault: { readback: { journalSection } } } }),
+      /journalSection must be a non-empty trimmed single-line heading/,
+    );
+  }
+  const ok = parseActivityConfig({ timeline: { vault: { readback: { journalSection: "Journal" } } } });
+  assert.equal(ok.timeline.vault.readback.journalSection, "Journal");
+});
+
+test("heading-strategy section names that cannot round-trip are rejected at config load (#2917)", () => {
+  // `## Timeline #` parses back as `Timeline`. Accepted at load, every
+  // publish would throw before producing a status.
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: {
+          vault: { sectionStrategy: "heading", publish: { timeline: { section: "Timeline #" } } },
+        },
+      }),
+    /publish\.timeline\.section must survive a heading render-and-parse round trip/,
+  );
+  const ok = parseActivityConfig({
+    timeline: {
+      vault: { sectionStrategy: "heading", publish: { timeline: { section: "Timeline" } } },
+    },
+  });
+  assert.equal(ok.timeline.vault.publish.timeline.section, "Timeline");
+});
+
+test("marker-strategy still accepts a section name that would fail heading round-trip (#2917)", () => {
+  const ok = parseActivityConfig({
+    timeline: {
+      vault: { sectionStrategy: "markers", publish: { timeline: { section: "Timeline #" } } },
+    },
+  });
+  assert.equal(ok.timeline.vault.publish.timeline.section, "Timeline #");
+});
+
+test("insertUnderHeading that cannot round-trip is rejected at config load (#2917)", () => {
+  assert.throws(
+    () => parseActivityConfig({ timeline: { vault: { insertUnderHeading: "Timeline #" } } }),
+    /insertUnderHeading must survive a heading render-and-parse round trip/,
+  );
+  const ok = parseActivityConfig({ timeline: { vault: { insertUnderHeading: "Journal" } } });
+  assert.equal(ok.timeline.vault.insertUnderHeading, "Journal");
+});

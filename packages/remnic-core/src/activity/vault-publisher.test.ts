@@ -879,3 +879,175 @@ test("a concurrent editor save between read and rename aborts the publish and ke
     setVaultPublisherTestHooks(null);
   }
 });
+
+// ── Input-boundary regressions (issue #2917) ────────────────────────────
+// Every rejection below must fire before any file byte is read or written.
+
+test("a whitespace-padded section name is rejected, not silently trimmed (#2917)", () => {
+  const { vault, notePath } = makeVault();
+  const before = readFileSync(notePath, "utf8");
+  assert.throws(
+    () =>
+      publishVaultNote({
+        vaultPath: vault,
+        notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+        date: DATE,
+        sections: [{ name: " timeline ", content: "fresh recap" }],
+      }),
+    /is not a valid region name/,
+  );
+  assert.equal(readFileSync(notePath, "utf8"), before, "the note is untouched");
+});
+
+test("a heading-strategy section name that cannot round-trip through the heading parser is rejected (#2917)", () => {
+  const { vault, notePath } = makeVault();
+  const before = readFileSync(notePath, "utf8");
+  // `## Timeline #` parses back as `Timeline` (closing hash sequence), so
+  // the region could never be matched on any publish.
+  assert.throws(
+    () =>
+      publishVaultNote({
+        vaultPath: vault,
+        notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+        date: DATE,
+        strategy: "heading",
+        sections: [{ name: "Timeline #", content: "fresh recap" }],
+      }),
+    /not matchable by the heading parser/,
+  );
+  assert.equal(readFileSync(notePath, "utf8"), before, "the note is untouched");
+});
+
+test("a newline-bearing frontmatter value is rejected before any file mutation (#2917)", () => {
+  const { vault, notePath } = makeVault();
+  const before = readFileSync(notePath, "utf8");
+  const mtime = statSync(notePath).mtimeMs;
+  assert.throws(
+    () =>
+      publishVaultNote({
+        vaultPath: vault,
+        notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+        date: DATE,
+        sections: [
+          {
+            name: "timeline",
+            content: "fresh recap",
+            properties: { focus: "220\ninjected: yes" },
+          },
+        ],
+        propertiesMode: "frontmatter",
+      }),
+    /control characters or line breaks/,
+  );
+  assert.equal(readFileSync(notePath, "utf8"), before, "the note is untouched");
+  assert.equal(statSync(notePath).mtimeMs, mtime, "no write attempt was made");
+});
+
+test("an oversize or injection-shaped frontmatter value is rejected before any file mutation (#2917)", () => {
+  const { vault, notePath } = makeVault();
+  const before = readFileSync(notePath, "utf8");
+  for (const value of ["x".repeat(201), "[flow]", "a #comment", " leading-space"] as const) {
+    assert.throws(
+      () =>
+        publishVaultNote({
+          vaultPath: vault,
+          notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+          date: DATE,
+          sections: [{ name: "timeline", content: "fresh recap", properties: { focus: value } }],
+          propertiesMode: "frontmatter",
+        }),
+      RangeError,
+      `value ${JSON.stringify(value)} must be rejected at the boundary`,
+    );
+  }
+  assert.equal(readFileSync(notePath, "utf8"), before, "the note is untouched");
+});
+
+test("a valid list property publishes as a flow list in frontmatter (#2917)", () => {
+  const { vault, notePath } = makeVault();
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "Daily Notes/{yyyy}/{MM}/{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "fresh recap", properties: { cards: ["a", "b"] } }],
+    propertiesMode: "frontmatter",
+  });
+  const after = readFileSync(notePath, "utf8");
+  assert.match(after, /^remnic_cards: \[a, b\]$/m);
+});
+
+test("frontmatter property totals are bounded across sections (#2917)", () => {
+  const { vault, notePath } = makeVault();
+  const before = readFileSync(notePath, "utf8");
+  // Each value is under the per-scalar cap; the SUM crosses the total.
+  const big = "v".repeat(200);
+  const properties = Object.fromEntries(
+    Array.from({ length: 12 }, (_, i) => [`k${i}`, big]),
+  );
+  assert.throws(
+    () =>
+      publishVaultNote({
+        vaultPath: vault,
+        notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+        date: DATE,
+        sections: [
+          { name: "timeline", content: "fresh recap", properties },
+        ],
+        propertiesMode: "frontmatter",
+      }),
+    /character total/,
+  );
+  assert.equal(readFileSync(notePath, "utf8"), before, "the note is untouched");
+});
+
+test("a prefix that makes the final key start with a YAML indicator is rejected before any file mutation (#2917)", () => {
+  const { vault, notePath } = makeVault();
+  const before = readFileSync(notePath, "utf8");
+  const mtime = statSync(notePath).mtimeMs;
+  assert.throws(
+    () =>
+      publishVaultNote({
+        vaultPath: vault,
+        notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+        date: DATE,
+        sections: [{ name: "timeline", content: "fresh recap", properties: { focus: "220" } }],
+        propertiesMode: "frontmatter",
+        propertiesPrefix: "[",
+      }),
+    /not a plain mapping key/,
+  );
+  assert.equal(readFileSync(notePath, "utf8"), before, "the note is untouched");
+  assert.equal(statSync(notePath).mtimeMs, mtime, "no write attempt was made");
+});
+
+test("a list item carrying a flow delimiter is rejected before any file mutation (#2917)", () => {
+  const { vault, notePath } = makeVault();
+  const before = readFileSync(notePath, "utf8");
+  const mtime = statSync(notePath).mtimeMs;
+  assert.throws(
+    () =>
+      publishVaultNote({
+        vaultPath: vault,
+        notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+        date: DATE,
+        sections: [{ name: "timeline", content: "fresh recap", properties: { cards: ["a{"] } }],
+        propertiesMode: "frontmatter",
+      }),
+    /flow delimiter/,
+  );
+  assert.equal(readFileSync(notePath, "utf8"), before, "the note is untouched");
+  assert.equal(statSync(notePath).mtimeMs, mtime, "no write attempt was made");
+});
+
+test("a valid prefix still publishes a plain final key (#2917)", () => {
+  const { vault, notePath } = makeVault();
+  publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "Daily Notes/{yyyy}/{MM}/{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "fresh recap", properties: { focus: "220" } }],
+    propertiesMode: "frontmatter",
+    propertiesPrefix: "x_",
+  });
+  assert.match(readFileSync(notePath, "utf8"), /^x_focus: 220$/m);
+});

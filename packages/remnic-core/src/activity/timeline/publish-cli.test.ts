@@ -167,3 +167,33 @@ test("range and search reject publish-only flags instead of ignoring them", asyn
   assert.equal(searchCode, 1);
   assert.match(searchSink.err, /unknown flag --dry-run \(valid: --from, --limit, --query, --to\)/);
 });
+
+test("an explicitly empty --date is invalid, not treated as absent (#2917)", async () => {
+  const { config, notePath, note } = makeFixture();
+  const sink = capture();
+
+  const code = await runTimelineCliCommand(
+    { cards: null, qa: { enabled: false, maxRangeDays: 31 }, timelineEnabled: true, config },
+    ["publish", "--date", ""],
+    sink.io,
+  );
+
+  assert.equal(code, 1);
+  assert.match(sink.err, /Invalid --date ""/);
+  assert.equal(readFileSync(notePath, "utf8"), note, "no note is published on an empty --date");
+});
+
+test("publish rejects extra positional arguments instead of discarding them (#2917)", async () => {
+  const { config, notePath, note } = makeFixture();
+  const sink = capture();
+
+  const code = await runTimelineCliCommand(
+    { cards: null, qa: { enabled: false, maxRangeDays: 31 }, timelineEnabled: true, config },
+    ["publish", "extra-arg", "--date", DATE],
+    sink.io,
+  );
+
+  assert.equal(code, 1);
+  assert.match(sink.err, /takes no positional arguments/);
+  assert.equal(readFileSync(notePath, "utf8"), note, "no note is published on excess syntax");
+});

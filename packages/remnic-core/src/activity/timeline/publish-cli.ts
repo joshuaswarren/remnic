@@ -51,6 +51,13 @@ export function runTimelinePublishCli(
     return 1;
   }
 
+  // An explicitly empty --date is invalid, not absent (issue #2917): ""
+  // can never be a day, and silently falling back to today would publish
+  // the wrong note. Only a missing --date means "today".
+  if (options.date !== undefined && (typeof options.date !== "string" || options.date.length === 0)) {
+    io.stderr.write(`Invalid --date ${JSON.stringify(options.date ?? "")}; expected YYYY-MM-DD.\n`);
+    return 1;
+  }
   // Timeline artifacts are grouped on the configured activity timezone's
   // calendar day, so "today" must be derived there — the host-local day
   // drifts by one near either timezone's midnight.

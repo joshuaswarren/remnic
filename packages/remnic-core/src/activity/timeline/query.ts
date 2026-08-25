@@ -311,7 +311,14 @@ export async function runTimelineCliCommand(
         io.stderr.write("timeline publish requires the Remnic config — run `remnic doctor`\n");
         return 1;
       }
-      const publishFlags = parseFlags(rest, PUBLISH_FLAGS).flags;
+      const { flags: publishFlags, positional } = parseFlags(rest, PUBLISH_FLAGS);
+      // `publish` takes flags only (issue #2917): a stray positional used
+      // to be silently discarded while today's note published.
+      if (positional.length > 0) {
+        throw new TypeError(
+          `timeline publish takes no positional arguments (got ${JSON.stringify(positional.join(" "))})`,
+        );
+      }
       return runTimelinePublishCli(
         deps.config,
         {
