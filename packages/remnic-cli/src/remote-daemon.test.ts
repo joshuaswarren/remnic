@@ -79,7 +79,7 @@ function mockFetch(
 ): { calls: FetchCall[]; restore: () => void } {
   const original = globalThis.fetch;
   const calls: FetchCall[] = [];
-  globalThis.fetch = ((input: FetchInput, init?: FetchInit) => {
+  globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const url = new URL(String(input));
     calls.push({ url: url.toString(), init });
     return Promise.resolve(handler(url, init));

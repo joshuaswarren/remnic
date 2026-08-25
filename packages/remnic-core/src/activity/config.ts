@@ -2,10 +2,11 @@ import path from "node:path";
 
 import { coerceBooleanLike, coerceNumber } from "../connectors/coerce.js";
 import { assertValidTimezone } from "./digest.js";
-import { applyLegacyJournalHeading } from "./journal-heading.js";
+import { applyLegacyJournalHeading, normalizeJournalHeading } from "./journal-heading.js";
 import { checkVaultJournalPrerequisites } from "./journal-vault-prereq.js";
 import { resolveJournalSource } from "./journal-source.js";
 import { validateVaultNoteTemplate } from "./vault-path.js";
+import { headingSurvivesRoundTrip } from "./vault-publish.js";
 import { validateRegionName } from "./vault-region.js";
 import { TIMELINE_ANALYSIS_DEFAULT_TIMEOUT_MS } from "./timeline/analysis.js";
 import { ANALYSIS_METADATA_MAX_FIELD_LENGTH, isAnalysisIdentifier } from "./timeline/analysis-metadata.js";
@@ -376,6 +377,23 @@ export function parseTimelineVaultConfig(raw: unknown): ActivityTimelineVaultCon
   const noteTemplate = optionalNonEmptyString(vault.noteTemplate, "activity.timeline.vault.noteTemplate") ?? "";
   const insertUnderHeading =
     optionalNonEmptyString(vault.insertUnderHeading, "activity.timeline.vault.insertUnderHeading") ?? "";
+  // The configured insertion heading is matched against parsed note
+  // headings, so a blank, padded, or multi-line value can never match
+  // (issue #2917). Reuse the journal work's canonical heading validator —
+  // no second parser — and require the trimmed form like publish sections.
+  if (insertUnderHeading.length > 0) {
+    const heading = normalizeJournalHeading(insertUnderHeading);
+    if (!heading.ok || heading.heading !== insertUnderHeading) {
+      throw new RangeError(
+        "activity.timeline.vault.insertUnderHeading must be a non-empty trimmed single-line heading",
+      );
+    }
+    if (!headingSurvivesRoundTrip(insertUnderHeading)) {
+      throw new RangeError(
+        "activity.timeline.vault.insertUnderHeading must survive a heading render-and-parse round trip",
+      );
+    }
+  }
 
   if (typeof vault.sectionStrategy !== "undefined" && typeof vault.sectionStrategy !== "string") {
     throw new TypeError("activity.timeline.vault.sectionStrategy must be a string");
@@ -423,6 +441,15 @@ export function parseTimelineVaultConfig(raw: unknown): ActivityTimelineVaultCon
   }
 
   const publish = parseVaultPublishBlock(vault.publish, weeklyNotePath);
+  if (sectionStrategy === "heading") {
+    for (const kind of ["timeline", "standup", "weekly", "locations"] as const) {
+      if (!headingSurvivesRoundTrip(publish[kind].section)) {
+        throw new RangeError(
+          `activity.timeline.vault.publish.${kind}.section must survive a heading render-and-parse round trip`,
+        );
+      }
+    }
+  }
   const wikilinksRaw = vault.wikilinks;
   const wikilinks =
     wikilinksRaw === undefined
@@ -439,6 +466,18 @@ export function parseTimelineVaultConfig(raw: unknown): ActivityTimelineVaultCon
     (readbackRaw as Record<string, unknown> | undefined)?.journalSection,
     "activity.timeline.vault.readback.journalSection",
   );
+  // Readback matches the section by parsed heading text, so a padded or
+  // multi-line journalSection can never match and would silently read back
+  // an empty journal (issue #2917). Same canonical validator as the legacy
+  // journal.heading alias.
+  if (readbackJournalSection !== undefined && readbackJournalSection.length > 0) {
+    const heading = normalizeJournalHeading(readbackJournalSection);
+    if (!heading.ok || heading.heading !== readbackJournalSection) {
+      throw new RangeError(
+        "activity.timeline.vault.readback.journalSection must be a non-empty trimmed single-line heading",
+      );
+    }
+  }
   const readback = {
     journalSection: readbackJournalSection ?? "",
   };
