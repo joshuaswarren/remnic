@@ -700,6 +700,8 @@ import "./location/access-operations.js";
 import "./standup/access-operations.js";
 // Recall navigation (issue #1956).
 import "./recall-navigation-operations.js";
+// Memory-store browse verbs (issue #2978).
+import "./memory-browse-operations.js";
 
 export const REGISTERED_OPERATIONS = [
   memoryGetOperation.spec.name,

@@ -175,7 +175,7 @@ import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWin
 import { type DeepRecallResult, runBudgetedDeepRecall } from "./deep-recall.js";
 import { resolveEffectiveDeepRecallConfig } from "./deep-recall-config.js";
 import { type RecallNavigationRequest, type RecallNavigationResult, runRecallNavigation } from "./recall-navigation.js";
-import { RECALL_NAVIGATION_CONFIG_DEFAULTS } from "./recall-navigation-config.js";
+import { RECALL_NAVIGATION_CONFIG_DEFAULTS } from "./recall-navigation-config.js"; import { type MemoryStoreBrowseRequest, type MemoryStoreBrowseResult, runMemoryBrowse } from "./memory-browse.js";
 import { callDeepRecallPolicyLlm } from "./deep-recall-policy-llm.js";
 import { createDeepRecallSeedSearch } from "./deep-recall-seeds.js";
 import { renderDeepRecallResult } from "./deep-recall-renderer.js";
@@ -2832,6 +2832,11 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   async recallNavigate(request: RecallNavigationRequest): Promise<RecallNavigationResult> {
     const principal = request.authenticatedPrincipal?.trim() || resolvePrincipal(request.sessionKey, this.orchestrator.config);
     return runRecallNavigation({ config: this.orchestrator.config.recallNavigation ?? RECALL_NAVIGATION_CONFIG_DEFAULTS, recallBudgetChars: this.orchestrator.config.recallBudgetChars, recentServedIds: (sessionKey, depth) => this.orchestrator.handleHistory.recent(sessionKey, depth), resolveReadableNamespace: (ns, p) => this.resolveReadableNamespace(ns, p || undefined), getStorage: (namespace) => this.orchestrator.getStorage(namespace) }, { ...request, authenticatedPrincipal: (principal ?? "").length > 0 ? principal : undefined });
+  }
+
+  /** Memory-store browse verbs (issue #2978): ls/tree/find over ONE resolved namespace. */
+  async memoryStoreBrowse(request: MemoryStoreBrowseRequest): Promise<MemoryStoreBrowseResult> {
+    return runMemoryBrowse({ resolveReadableNamespace: (ns, p) => this.resolveReadableNamespace(ns, p), getStorage: (ns) => this.orchestrator.getStorage(ns) }, request);
   }
 
   async recallXray(request: {
