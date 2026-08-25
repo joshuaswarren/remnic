@@ -311,11 +311,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "codex",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "codex.codexHome",
     "issue": "#1990"
   },
@@ -1717,11 +1712,6 @@
   {
     "kind": "unparseable-construct",
     "key": "packages/remnic-core/src/config.ts#b100f6136e84",
-    "issue": "#1990"
-  },
-  {
-    "kind": "unparseable-construct",
-    "key": "packages/remnic-core/src/config.ts#d53d65700eaa",
     "issue": "#1990"
   },
   {

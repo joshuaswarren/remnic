@@ -5,13 +5,12 @@ import { isDeepStrictEqual } from "node:util";
 import { log } from "../logger.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { markProjectedMemoryPathInvalid } from "../memory-projection-store.js";
-import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
-import { isErrnoCode } from "../utils/errno.js";
 import { pathMayCarryEntityRefs, requestEntityCanonicalIdReconcile } from "./entity-canonical-id-references.js";
 import { withRawEntityPageMutation } from "./entity-canonical-id-lock.js";
 import { readMaybeEncryptedFileFromChunks, writeMaybeEncryptedFileFromChunks } from "../secure-store/secure-fs.js";
 import * as archiveMutation from "../archive-mutation-version.js";
-import { invalidationCommitFingerprint } from "./deletion-revision-store.js";
+import { invalidationCommitFingerprint, isSemanticFrontmatterChange } from "./deletion-revision-store.js";
+import type { CasRevisionTransaction } from "./cas-revision-store.js";
 import {
   buildExplicitCaptureDedupKey,
   buildCapturePathLockIdentity,
@@ -212,6 +211,16 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   protected abstract deleteManagedStorageFile(filePath: string, deletionMtimeMs?: number | null): Promise<boolean>;
   protected abstract writeManagedStorageFile(filePath: string, write: () => Promise<void>): Promise<void>;
 
+  /** #2813 (P1 C, #2807): reserve the target's next durable CAS revision
+   * token as a two-phase receipt transaction — a PENDING write-ahead
+   * marker under the mutation's path lock, published COMMITTED only after
+   * the durable file write lands. Receipt identity lives in the per-target
+   * sidecar, never in public `frontmatter.updated`. The default host keeps
+   * no receipt identity; StorageManager records it. */
+  protected async beginDurableMemoryRevision(_pathname: string, _expectedContent?: string | Buffer | null): Promise<CasRevisionTransaction | undefined> {
+    return undefined;
+  }
+
   private async writeStorageSecureFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
     const options = this.tombstoneBlockedCaptureIndexOptions();
     await writeMaybeEncryptedFileFromChunks(
@@ -244,7 +253,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
 
   async withMemorySnapshotsIfUnchanged<T>(
     expected: readonly MemoryFile[],
-    task: (memories: MemoryFile[]) => Promise<T>,
+    task: (memories: MemoryFile[]) => Promise<T>
   ): Promise<T | null> {
     if (expected.length === 0) return await task([]);
     const pathnames = [...new Set(expected.map((memory) => memory.path))];
@@ -282,8 +291,9 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     identity: string | readonly string[],
     updateIndex: (rebuildMarker?: string, current?: MemoryFile | null) => Promise<void>,
     beforeIndexUpdate?: () => Promise<void>,
-    coordinate = false
-  ): Promise<void> {
+    coordinate = false,
+    shouldMintRevision?: (current: MemoryFile | null) => boolean
+  ): Promise<string | undefined> {
     const host: TombstoneBlockedMutationHost = {
       readCurrent: () => this.readMemoryByPath(pathname),
       isBlocked: (memory) => this.isTombstoneBlockedMemory(memory),
@@ -296,8 +306,10 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       writeStorageSecureFile: (target, content) => this.writeStorageSecureFile(target, content),
       withCaptureWriteLock: (task, lockIdentity) => this.withTombstoneBlockedCaptureWriteLock(task, lockIdentity),
       logWarning: (message) => log.warn(message),
+      beginDurableMemoryRevision: (targetPath, expectedContent) =>
+        this.beginDurableMemoryRevision(targetPath, expectedContent),
     };
-    await runTombstoneBlockedMutation(host, {
+    return await runTombstoneBlockedMutation(host, {
       blocked,
       pathname,
       fileContent,
@@ -305,6 +317,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       updateIndex,
       beforeIndexUpdate,
       coordinate,
+      shouldMintRevision,
     });
   }
 
@@ -400,8 +413,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     frontmatter: MemoryFrontmatter,
     content: string,
     beforeIndexUpdate?: () => Promise<void>
-  ): Promise<void> {
-    await this.writeTombstoneBlockedMutation(
+  ): Promise<string | undefined> {
+    return await this.writeTombstoneBlockedMutation(
       tombstoneBlocked(before.frontmatter) || tombstoneBlocked(frontmatter),
       before.path,
       fileContent,
@@ -418,7 +431,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
           rebuildMarker
         ),
       beforeIndexUpdate,
-      true
+      true,
+      () => true
     );
   }
 
@@ -427,8 +441,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     fileContent: string,
     frontmatter: MemoryFrontmatter,
     beforeIndexUpdate?: () => Promise<void>
-  ): Promise<void> {
-    await this.writeTombstoneBlockedMutation(
+  ): Promise<string | undefined> {
+    return await this.writeTombstoneBlockedMutation(
       tombstoneBlocked(before.frontmatter) || tombstoneBlocked(frontmatter),
       before.path,
       fileContent,
@@ -440,9 +454,11 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       (rebuildMarker, current) =>
         this.getTombstoneBlockedCaptureIndex().syncUpdatedFrontmatter(current ?? before, frontmatter, rebuildMarker),
       beforeIndexUpdate,
-      true
+      true,
+      (current) => isSemanticFrontmatterChange((current ?? before).frontmatter, frontmatter)
     );
   }
+
 
   private isTombstoneBlockedMemory(memory: MemoryFile | null): memory is MemoryFile {
     return memory !== null && memory.frontmatter.status === "pending_review" && Boolean(memory.frontmatter.blockedBy);
@@ -490,7 +506,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   private async invalidateAfterOfflineSyncMutation(
     filePath: string,
     ownedMarker?: string,
-    archiveChanged = true
+    archiveChanged = true,
+    blockedKeySetMayHaveChanged = true
   ): Promise<void> {
     this.invalidateAllMemoriesCache();
     this.invalidateKnowledgeIndexCache();
@@ -498,7 +515,22 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     if (filePath.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
     }
-    await this.rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath, ownedMarker);
+    if (blockedKeySetMayHaveChanged) {
+      await this.rebuildTombstoneBlockedCaptureAfterInvalidationForPath(filePath, ownedMarker);
+    } else if (ownedMarker !== undefined) {
+      // The index only holds tombstone-blocked explicit-capture keys, so a
+      // write where neither side is blocked cannot have changed it. Rebuilding
+      // here re-reads the whole corpus per replicated file — measured 15-31s
+      // per write against a ~190k-file corpus, which turns a boot-scale
+      // `converge apply` into a multi-week run. Clear the committed marker and
+      // keep the index as-is.
+      try {
+        await this.getTombstoneBlockedCaptureIndex().clearCommittedWriteMarker(ownedMarker);
+      } catch (err) {
+        this.getTombstoneBlockedCaptureIndex().markUntrusted();
+        log.warn(`storage.offlineSyncFile committed write succeeded; marker cleanup failed: ${err}`);
+      }
+    }
     if (filePath.includes(`${path.sep}artifacts${path.sep}`)) {
       this.bumpArtifactWriteVersion();
     }
@@ -675,7 +707,12 @@ export abstract class TombstoneBlockedCaptureIndexHost {
               log.warn(`storage.offlineSyncFile committed write marker failed: ${err}`);
             }
           }
-          await this.invalidateAfterOfflineSyncMutation(target, marker, changed !== false);
+          await this.invalidateAfterOfflineSyncMutation(
+            target,
+            marker,
+            changed !== false,
+            this.isTombstoneBlockedMemory(current) || this.isTombstoneBlockedMemory(after)
+          );
         } catch (err) {
           if (marker && !durable) {
             try {
@@ -704,10 +741,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     const options = this.tombstoneBlockedCaptureIndexOptions();
     const after = options.parseMemory?.(target, content) ?? null;
     await withRawEntityPageMutation(path.dirname(options.stateDir), target, async () => {
-      await this.runTombstoneBlockedOfflineSyncMutation(
-        target,
-        after,
-        () => this.writeManagedStorageFile(target, () => this.writeStorageSecureFile(target, content))
+      await this.runTombstoneBlockedOfflineSyncMutation(target, after, () =>
+        this.writeManagedStorageFile(target, () => this.writeStorageSecureFile(target, content))
       );
     });
   }

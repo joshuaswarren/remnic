@@ -14,10 +14,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch } from "@remnic/core";
+import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, getCodexSubscriptionRunnerForOwner, beginCodexSubscriptionShutdown, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler, type CodexCliFallbackRunner } from "@remnic/core";
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
-import { envOverrides, readCompatEnv } from "./server-env.js";
+import { envOverrides } from "./server-env.js";
 import {
   STARTUP_DEGRADED_AFTER_ATTEMPTS,
   abortableDelay,
@@ -25,8 +25,7 @@ import {
   runStartupSearchWarmup,
   type StartupReadinessState,
 } from "./startup-readiness.js";
-import { createSupportPassportServerRuntime } from "./support-passport-runtime.js";
-import { parseAdminConsoleConfig, type AdminConsoleServerFields, type ParsedAdminConsoleConfig } from "./admin-console-config.js";
+import { parseAdminConsoleConfig, parseOptionalBoolean, parseOptionalString, type AdminConsoleServerFields, type ParsedAdminConsoleConfig } from "./admin-console-config.js";
 export { envOverrides };
 export {
   completeStartupReadiness,
@@ -44,6 +43,7 @@ export interface ServerConfig {
     port?: unknown;
     authToken?: string;
     principal?: string;
+    trustPrincipalHeader?: boolean;
     maxBodyBytes?: number;
     /** Max write requests per rolling window before 429 write_rate_limited (issue #1937). */
     writeRateLimitMaxRequests?: number;
@@ -60,7 +60,6 @@ export interface ServerConfig {
     oauth?: unknown;
   } & AdminConsoleServerFields;
 }
-
 function parseServerPort(value: unknown, source: string): number {
   const port = typeof value === "string" ? Number(value.trim()) : value;
   if (
@@ -74,13 +73,6 @@ function parseServerPort(value: unknown, source: string): number {
   return port;
 }
 
-function parseOptionalString(value: unknown, source: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "string") {
-    throw new Error(`Invalid ${source}: expected a string`);
-  }
-  return value;
-}
 
 function parseOptionalNonEmptyString(value: unknown, source: string): string | undefined {
   const parsed = parseOptionalString(value, source);
@@ -104,16 +96,6 @@ function parseOptionalPositiveInteger(value: unknown, source: string): number | 
   return parsed;
 }
 
-function parseOptionalBoolean(value: unknown, source: string): boolean | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (["true", "1", "yes", "on"].includes(normalized)) return true;
-    if (["false", "0", "no", "off"].includes(normalized)) return false;
-  }
-  throw new Error(`Invalid ${source}: expected a boolean`);
-}
 
 function parseOptionalNonNegativeInteger(value: unknown, source: string): number | undefined {
   if (value === undefined) return undefined;
@@ -133,6 +115,7 @@ export interface ParsedServerConfig extends ParsedAdminConsoleConfig {
   port: number;
   authToken?: string;
   principal?: string;
+  trustPrincipalHeader?: boolean;
   maxBodyBytes?: number;
   writeRateLimitMaxRequests?: number;
   writeRateLimitWindowMs?: number;
@@ -151,6 +134,7 @@ export function parseServerConfig(
       : parseServerPort(raw.port, options?.portSource ?? "server.port"),
     authToken: parseOptionalString(raw.authToken, "server.authToken"),
     principal: parseOptionalString(raw.principal, "server.principal"),
+    trustPrincipalHeader: parseOptionalBoolean(raw.trustPrincipalHeader, "server.trustPrincipalHeader") ?? false,
     maxBodyBytes: parseOptionalPositiveInteger(raw.maxBodyBytes, "server.maxBodyBytes"),
     writeRateLimitMaxRequests: parseOptionalPositiveInteger(
       raw.writeRateLimitMaxRequests,
@@ -170,41 +154,6 @@ export function parseServerConfig(
   };
 }
 
-interface ResolvedConfigPath {
-  path: string;
-  explicit: boolean;
-  source: string;
-}
-
-function resolveUserPath(value: string): string {
-  return path.resolve(expandTildePath(value));
-}
-
-function resolveConfigPath(cliPath?: string): ResolvedConfigPath {
-  if (cliPath) {
-    return { path: resolveUserPath(cliPath), explicit: true, source: "--config" };
-  }
-
-  const envPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH");
-  if (envPath) {
-    return { path: resolveUserPath(envPath), explicit: true, source: "REMNIC_CONFIG_PATH/ENGRAM_CONFIG_PATH" };
-  }
-
-  const homeDir = process.env.HOME ?? "~";
-  const candidates = [
-    path.join(process.cwd(), "remnic.config.json"),
-    path.join(process.cwd(), "engram.config.json"),
-    path.join(homeDir, ".config", "remnic", "config.json"),
-    path.join(homeDir, ".config", "engram", "config.json"),
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
-      return { path: candidate, explicit: false, source: "auto-discovery" };
-    }
-  }
-
-  return { path: path.join(homeDir, ".config", "remnic", "config.json"), explicit: false, source: "auto-discovery" };
-}
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -237,7 +186,7 @@ export function loadConfigFile(configPath: string): ServerConfig {
   };
 }
 
-function loadResolvedConfig(resolved: ResolvedConfigPath): ServerConfig {
+function loadResolvedConfig(resolved: DiscoveredConfigPath): ServerConfig {
   if (!fs.existsSync(resolved.path)) {
     if (resolved.explicit) {
       throw new Error(`Config file from ${resolved.source} not found: ${resolved.path}`);
@@ -260,10 +209,12 @@ type ServerRuntimeOptions = {
   host?: string;
   port?: number;
   authToken?: string;
+  /** Test/programmatic-only: bind an OS-assigned ephemeral port (port 0). */
+  allowEphemeralPort?: boolean;
 };
 
 type EffectiveServerRuntimeConfig = {
-  resolvedConfigPath: ResolvedConfigPath;
+  resolvedConfigPath: DiscoveredConfigPath;
   fileConfig: ServerConfig;
   envRemnic: Record<string, unknown> | undefined;
   serverConfig: Partial<ServerConfig["server"]>;
@@ -273,14 +224,17 @@ type EffectiveServerRuntimeConfig = {
 function resolveEffectiveServerRuntimeConfig(
   options?: ServerRuntimeOptions,
 ): EffectiveServerRuntimeConfig {
-  const resolvedConfigPath = resolveConfigPath(options?.configPath);
+  const resolvedConfigPath = discoverConfigPath(options?.configPath);
   const fileConfig = loadResolvedConfig(resolvedConfigPath);
   const { remnic: envRemnic, ...envServer } = envOverrides();
   const cliServerConfig: Partial<ServerConfig["server"]> = {};
   if (options?.host !== undefined) cliServerConfig.host = options.host;
-  if (options?.port !== undefined) cliServerConfig.port = parseServerPort(options.port, "options.port");
   if (options?.authToken !== undefined) cliServerConfig.authToken = options.authToken;
-
+  if (options?.port !== undefined) cliServerConfig.port = options.port;
+  // User-facing config (server.port, REMNIC_PORT, --port) stays 1-65535 so
+  // runServerHealthcheck's configured-port probe never targets port 0.
+  // allowEphemeralPort bypasses the parser AFTER validation instead.
+  const ephemeralRequested = options?.allowEphemeralPort === true && options.port === undefined;
   const serverConfig = {
     ...fileConfig.server,
     ...envServer,
@@ -292,12 +246,14 @@ function resolveEffectiveServerRuntimeConfig(
       ? "REMNIC_PORT/ENGRAM_PORT"
       : "server.port";
 
+  const parsedServerConfig = parseServerConfig(serverConfig, { portSource });
+  if (ephemeralRequested) parsedServerConfig.port = 0;
   return {
     resolvedConfigPath,
     fileConfig,
     envRemnic,
     serverConfig,
-    parsedServerConfig: parseServerConfig(serverConfig, { portSource }),
+    parsedServerConfig,
   };
 }
 
@@ -742,18 +698,48 @@ export function createAdminControls(
 async function cleanupFailedStartup(
   orchestrator: Orchestrator,
   httpServer: EngramAccessHttpServer,
+  codexRunner: CodexCliFallbackRunner,
 ): Promise<void> {
+  const finishCodex = beginCodexSubscriptionShutdown(codexRunner);
   try {
-    await httpServer.stop();
-  } catch (err) {
-    log.warn(`HTTP startup failure cleanup could not stop server: ${err}`);
-  }
+    try {
+      await httpServer.stop();
+    } catch (err) {
+      log.warn(`HTTP startup failure cleanup could not stop server: ${err}`);
+    }
 
-  try {
-    await orchestrator.destroy();
-  } catch (err) {
-    log.warn(`HTTP startup failure cleanup could not destroy orchestrator: ${err}`);
+    try {
+      await orchestrator.destroy();
+    } catch (err) {
+      log.warn(`HTTP startup failure cleanup could not destroy orchestrator: ${err}`);
+    }
+  } finally {
+    finishCodex();
   }
+}
+
+export interface SupportPassportServerRuntime {
+  service: EngramAccessService;
+  externalRequestHandler: SupportPassportExternalRequestHandler;
+  close(): void;
+}
+
+export function createSupportPassportServerRuntime(
+  orchestrator: Orchestrator,
+  config: PluginConfig,
+  fallbackHandler?: SupportPassportExternalRequestHandler,
+  accessOptions?: { reviewDeckEnabled?: boolean },
+): SupportPassportServerRuntime {
+  const bridge = config.supportPassport.enabled ? new SupportPassportModelBridge() : null;
+  const serviceOptions = {
+    supportPassportGatewayRoute: bridge?.route,
+    reviewDeckEnabled: accessOptions?.reviewDeckEnabled === true,
+  };
+  return {
+    service: new EngramAccessService(orchestrator, serviceOptions),
+    externalRequestHandler: composeSupportPassportExternalRequestHandlers(bridge?.requestHandler, fallbackHandler),
+    close: () => bridge?.close(),
+  };
 }
 
 // ── Server startup ──────────────────────────────────────────────────────────
@@ -803,6 +789,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   const remnicConfig = mergeRemnicConfigForServer(fileConfig.remnic, envRemnic);
 
   const config = parseConfig(remnicConfig);
+  const codexRunner = getCodexSubscriptionRunnerForOwner(config);
   // Re-init now that config is known. The call at the top of startServer runs
   // BEFORE the config file is read, so it could only ever default `debug` to
   // false — `debug: true` was accepted, documented, and silently inert on the
@@ -846,6 +833,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     tokenPathPolicy: (connector, pathname) => connector !== "chatgpt" || pathname === "/mcp",
     readiness: () => readiness,
     principal: parsedServerConfig.principal,
+    trustPrincipalHeader: parsedServerConfig.trustPrincipalHeader,
     maxBodyBytes: parsedServerConfig.maxBodyBytes,
     writeRateLimitMaxRequests: parsedServerConfig.writeRateLimitMaxRequests,
     writeRateLimitWindowMs: parsedServerConfig.writeRateLimitWindowMs,
@@ -876,7 +864,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   try {
     ({ host, port } = await httpServer.start());
   } catch (err) {
-    await cleanupFailedStartup(orchestrator, httpServer);
+    await cleanupFailedStartup(orchestrator, httpServer, codexRunner);
     throw err;
   }
 
@@ -936,6 +924,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   const stop = async (): Promise<void> => {
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
+      const finishCodex = beginCodexSubscriptionShutdown(codexRunner);
       startupSyncAbort.abort();
       readinessAbort.abort();
       supportPassportRuntime.close();
@@ -946,7 +935,11 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
         try {
           await readinessTask;
         } finally {
-          await orchestrator.destroy();
+          try {
+            await orchestrator.destroy();
+          } finally {
+            finishCodex();
+          }
         }
       }
     })();

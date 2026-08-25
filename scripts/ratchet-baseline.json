@@ -8,7 +8,7 @@
       "packages/remnic-core/src/cli.ts": 9428,
       "packages/remnic-core/src/access-service.ts": 5910,
       "packages/remnic-core/src/storage.ts": 7315,
-      "packages/remnic-core/src/config.ts": 4561
+      "packages/remnic-core/src/config.ts": 4564
     },
     "oversizedFileCount": 12,
     "fileSizeGrandfather": {
@@ -27,7 +27,7 @@
       "packages/coding-graph/src/graph-store.ts": 3867,
       "packages/remnic-cli/src/bench-args.ts": 1345,
       "packages/remnic-cli/src/index.ts": 13629,
-      "packages/remnic-core/src/access-http.ts": 4019,
+      "packages/remnic-core/src/access-http.ts": 4020,
       "packages/remnic-core/src/access-mcp.ts": 2753,
       "packages/remnic-core/src/access-recall-surface.ts": 1412,
       "packages/remnic-core/src/access-service.ts": 5910,
@@ -36,7 +36,7 @@
       "packages/remnic-core/src/cli.ts": 9428,
       "packages/remnic-core/src/coding/codegraph-runtime.ts": 1311,
       "packages/remnic-core/src/compounding/engine.ts": 1722,
-      "packages/remnic-core/src/config.ts": 4561,
+      "packages/remnic-core/src/config.ts": 4564,
       "packages/remnic-core/src/connectors/index.ts": 4061,
       "packages/remnic-core/src/connectors/live/gmail.ts": 1303,
       "packages/remnic-core/src/evals.ts": 1321,
@@ -44,7 +44,7 @@
       "packages/remnic-core/src/explicit-cue-recall.ts": 5764,
       "packages/remnic-core/src/extraction-faithfulness.ts": 1271,
       "packages/remnic-core/src/extraction.ts": 2827,
-      "packages/remnic-core/src/index.ts": 1467,
+      "packages/remnic-core/src/index.ts": 1468,
       "packages/remnic-core/src/local-llm.ts": 1481,
       "packages/remnic-core/src/maintenance/rebuild-memory-projection.ts": 1356,
       "packages/remnic-core/src/memory-projection-store.ts": 1288,
@@ -55,7 +55,7 @@
       "packages/remnic-core/src/orchestration/extraction-persist.ts": 3031,
       "packages/remnic-core/src/orchestration/recall-internal.ts": 5344,
       "packages/remnic-core/src/orchestration/recall-search-pipeline.ts": 1719,
-      "packages/remnic-core/src/orchestrator.ts": 3979,
+      "packages/remnic-core/src/orchestrator.ts": 3977,
       "packages/remnic-core/src/peers/storage.ts": 1435,
       "packages/remnic-core/src/qmd.ts": 2995,
       "packages/remnic-core/src/relay/mission.ts": 1725,
@@ -65,7 +65,6 @@
       "packages/remnic-core/src/temporal-index.ts": 1599,
       "packages/remnic-core/src/transcript.ts": 1253,
       "packages/remnic-core/src/types.ts": 3891,
-      "packages/remnic-server/src/index.ts": 1207,
       "src/index.ts": 6166,
       "src/openclaw-flush-plan-lifecycle.ts": 1573,
       "src/tools.ts": 3280

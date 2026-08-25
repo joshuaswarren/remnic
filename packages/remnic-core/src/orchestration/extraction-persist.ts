@@ -74,7 +74,7 @@ import {
 } from "../behavior-signals.js";
 import { buildProcedurePersistBody } from "../procedural/procedure-types.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
-import { evaluateSubjectGuard, isSharedPromotionTarget, resolveWriteSubject } from "../memory-subject.js";
+import { resolveWriteSubject } from "../memory-subject.js";
 import { LocalLlmClient } from "../local-llm.js";
 import type { ExtractionEngine } from "../extraction.js";
 import {
@@ -102,9 +102,13 @@ import type {
   MemoryCategory,
 } from "../types.js";
 import {
+  createBatchPromotedCopyProbe,
   flushDeferredFactHashOnFailure,
+  makeSubjectGuardAllows,
   profileAutoPromotionAllows,
   readActiveMemoriesBothTiers,
+  promotionWithholdsToolScope,
+  promoteAndReconcileMergedTarget,
   shouldPromoteToShared,
 } from "./extraction-persist-promotion.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
@@ -116,7 +120,10 @@ import {
   resolvePersistedMemoryRelativePath,
 } from "../orchestrator.js";
 import type { HarmonicConstructionInput } from "../harmonic-construction.js";
-import { persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
+import { enqueueMergedTargetForHarmonicConstruction, persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
+import { applySemanticMergeAtPersist, runMergedTargetPostEffects, writeMergedVerbatimArtifact } from "./semantic-merge-persist.js";
+import { buildMergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
+import { persistMergedTargetThreadEpisode } from "./semantic-merge-commit-effects.js";
 import { ExtractionAnchorSnapshot } from "./extraction-anchor-snapshot.js";
 
 export class ExtractionPersistCoordinator {
@@ -173,6 +180,7 @@ export class ExtractionPersistCoordinator {
     >();
     const harmonicSourceInsertedAtBase = Date.now();
     let harmonicSourceOrder = 0;
+    const promotedCopyProbe = createBatchPromotedCopyProbe(this.deps.config, this.deps.getStorageRouter, scopeProfileWritePlan); // #2330 finding F: one promoted-copy scan per namespace per batch
 
   // Canonicalize stored content for dedup comparison: strip citations
   // (using the same template), sanitize, then normalize whitespace.
@@ -269,7 +277,7 @@ export class ExtractionPersistCoordinator {
         memoryPathById.set(id, relPath);
       }
     };
-    let dedupedCount = 0;
+    let dedupedCount = 0, semanticMergedCount = 0;
     // Counter for facts skipped by the importance write-gate (issue #372).
     let importanceGatedCount = 0;
     // UUI2: short-circuit semantic dedup after first backend-unavailable signal
@@ -343,17 +351,7 @@ export class ExtractionPersistCoordinator {
     const sourceConnector = sourceContext?.sourceConnector; const origin = classifyExtractionOrigin(sourceContext);
     // Subject guard (issue #2372): the ONE gate shared by every extraction-side
     // promotion path so behavior matches the spaces surface (§27).
-    const subjectGuardAllows = (subject: MemorySubject | undefined, target: string, label: string): boolean => {
-      const decision = evaluateSubjectGuard({
-        subject,
-        sharedTarget: isSharedPromotionTarget(target),
-        mode: this.deps.config.subjectGuard,
-      });
-      if (decision.action !== "allow") {
-        log.warn(`subject-guard(${decision.action}) ${label}: ${decision.reason}`);
-      }
-      return decision.action !== "reject";
-    };
+    const subjectGuardAllows = makeSubjectGuardAllows(this.deps.config);
     const promoteMemoryToProfileTargets = async (options: {
       sourceStorage: StorageManager;
       category: string;
@@ -374,6 +372,8 @@ export class ExtractionPersistCoordinator {
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
       source: string;
+      /** Origin override: the COMMITTED target's retained origin (merged-target promotion). */
+      origin?: string;
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
       toolScoped?: true;
@@ -382,12 +382,12 @@ export class ExtractionPersistCoordinator {
         HarmonicConstructionInput["persistedFacts"][number],
         "memoryId"
       >;
-    }): Promise<void> => {
+    }): Promise<string[]> => {
       if (
         !scopeProfileWritePlan ||
         !profileAutoPromotionAllows(scopeProfileWritePlan, options.category, options.confidence)
       )
-        return;
+        return [];
       const autoTargets = new Set(scopeProfileWritePlan.profile.autoPromote.targets);
       const targets = scopeProfileWritePlan.promotionTargets.filter(
         (target) =>
@@ -396,13 +396,14 @@ export class ExtractionPersistCoordinator {
           target.authorized &&
           target.namespace,
       );
-      if (targets.length === 0) return;
+      if (targets.length === 0) return [];
       const rawContent =
         citationEnabled && hasCitationForTemplate(options.content, citationTemplate)
           ? stripCitationForTemplate(options.content, citationTemplate)
           : options.content;
       const citedContent = applyInlineCitation(rawContent);
       const sanitizedBase = sanitizeMemoryContent(rawContent);
+      const writtenCopyIds: string[] = [];
       for (const target of targets) {
         if (!target.namespace) continue;
         try {
@@ -417,7 +418,7 @@ export class ExtractionPersistCoordinator {
             {
               content: citedContent,
               category: options.category as MemoryCategory,
-              origin, confidence: options.confidence,
+              origin: options.origin ?? origin, confidence: options.confidence,
               tags: withReservedMarkerTag(options.tags, `${target.target}-promotion`),
               entityRef: options.entityRef,
               structuredAttributes: options.structuredAttributes,
@@ -531,9 +532,9 @@ export class ExtractionPersistCoordinator {
               );
             }
           }
-          // #1645 TV6: a tombstone-blocked promotion is pending_review (no
-          // active copy) — skip catalog/index/behavior like postWriteGuard.
+          // #1645 TV6: tombstone-blocked = pending_review; skip catalog/index/behavior.
           if (!targetPromotion.tombstoneBlocked) {
+            writtenCopyIds.push(promotedId);
             trackPersistedId(targetStorage, promotedId, {
               includeReturnedIds: false,
               category: options.category as MemoryCategory,
@@ -558,6 +559,7 @@ export class ExtractionPersistCoordinator {
           );
         }
       }
+      return writtenCopyIds;
     };
     const promoteMemoryToShared = async (options: {
       sourceStorage: StorageManager;
@@ -580,7 +582,10 @@ export class ExtractionPersistCoordinator {
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
       source: string;
+      origin?: string;
       sourceConnector?: string;
+      /** Committed-record tool-scope marker — see {@link promotionWithholdsToolScope}. */
+      toolScoped?: true;
       procedureSteps?: ReadonlyArray<{ toolCall?: { kind?: string } }>;
       /** Claim-level provenance spans (issue #1575 PR 2). */
       sources?: ProvenanceSource[];
@@ -590,13 +595,16 @@ export class ExtractionPersistCoordinator {
         HarmonicConstructionInput["persistedFacts"][number],
         "memoryId"
       >;
-    }): Promise<void> => {
-      const toolScoped = withholdToolScopedFromSharedNamespace(options);
-      await promoteMemoryToProfileTargets({
-        ...options,
-        ...(toolScoped ? { toolScoped: true as const } : {}),
-      });
-      if (lifecycleCaps.extractionScopeClassification && toolScoped) return;
+    }): Promise<string | undefined> => {
+      const toolScoped = promotionWithholdsToolScope(options);
+      // P1-A (#2330 N+8): every exit returns the LAST copy id written, profile copies included.
+      let promotedCopyId = (
+        await promoteMemoryToProfileTargets({
+          ...options,
+          ...(toolScoped ? { toolScoped: true as const } : {}),
+        })
+      ).at(-1);
+      if (lifecycleCaps.extractionScopeClassification && toolScoped) return promotedCopyId;
       if (
         !shouldPromoteToShared(
           this.deps.config,
@@ -608,20 +616,17 @@ export class ExtractionPersistCoordinator {
           options.confidence,
         )
       )
-        return;
-      if (!subjectGuardAllows(options.subject, "serverShared", "shared promotion")) return;
+        return promotedCopyId;
+      if (!subjectGuardAllows(options.subject, "serverShared", "shared promotion"))
+        return promotedCopyId;
       try {
         const sharedStorage = await this.deps.getStorageRouter().storageFor(
           this.deps.config.sharedNamespace,
         );
-        // Dedup gate: canonicalize content before hashing. Strip any
-        // pre-existing citation FIRST (applyInlineCitation appends a
-        // timestamped marker, so hashing cited content defeats dedup and
-        // call sites may pass already-cited content), then sanitize the base
-        // and build the attribute-enriched body with normalizeAttributePairs
-        // — the same canonicalization writeMemory applies — so the hash
-        // lookup uses the exact body writeMemory stores (#369/#401, #402
-        // round-6 fixes; PRRT_kwDORJXyws56VHZc / VHth).
+        // Dedup gate: strip any pre-existing citation, sanitize, and build
+        // the attribute-enriched body with normalizeAttributePairs — the
+        // same canonicalization writeMemory applies — so the hash lookup
+        // uses the exact body writeMemory stores (#369/#401, #402 round-6).
         const rawContent =
           citationEnabled &&
           hasCitationForTemplate(options.content, citationTemplate)
@@ -629,15 +634,13 @@ export class ExtractionPersistCoordinator {
             : options.content;
         const citedContent = applyInlineCitation(rawContent);
         const sanitizedBase = sanitizeMemoryContent(rawContent);
-        // Compose BEFORE the dedup gate (#2014 round 2): salvage mode may drop
-        // or clamp attributes, and the dedup hash, contentHashSource, and
-        // supersession keys below must all describe the SURVIVING fields that
-        // writeSealedMemory actually persists — never the raw extractor map.
+        // Compose BEFORE the dedup gate (#2014 round 2): the dedup hash, contentHashSource, and
+        // supersession keys must describe the SURVIVING fields writeSealedMemory persists.
         const sharedPromotionEnvelope = composeSalvagedExtractionEnvelope(
           {
             content: citedContent,
             category: options.category as MemoryCategory,
-            origin, confidence: options.confidence,
+            origin: options.origin ?? origin, confidence: options.confidence,
             tags: withReservedMarkerTag(options.tags, "shared-promotion"),
             entityRef: options.entityRef,
             structuredAttributes: options.structuredAttributes,
@@ -658,12 +661,8 @@ export class ExtractionPersistCoordinator {
           options.category === "fact" &&
           (await sharedStorage.hasFactContentHash(dedupContent))
         ) {
-          // Connector identity gate: only backfill temporal bounds onto a
-          // same-connector fact.  Different connectors with identical content
-          // must not cross-patch each other's temporal fields (codex finding:
-          // temporal backfill occurred before connector mismatch check).
-          // Fail-open: on scan error backfill proceeds (preserving prior
-          // best-effort behaviour).
+          // Connector identity gate: backfill bounds only onto a same-connector fact (no cross-patch).
+          // Fail-open: on scan error backfill proceeds (prior best-effort behaviour).
           let sharedSameConnector = true;
           if (options.invalidAt || options.validAt) {
             try {
@@ -816,7 +815,7 @@ export class ExtractionPersistCoordinator {
                 if (hashDedupSupersession.supersededIds.length > 0) {
                 }
                 // Active matching fact exists — normal short-circuit is safe.
-                return;
+                return promotedCopyId;
               }
               // No active same-entity shared fact found with this content hash.
               // This can happen when the previously-written shared fact has since
@@ -843,7 +842,7 @@ export class ExtractionPersistCoordinator {
                 // A matching active shared fact was confirmed — skip the write to
                 // avoid duplicating content that is already present.  The existing
                 // fact remains active and the supersession failure is logged above.
-                return;
+                return promotedCopyId;
               }
               // Lookup did not complete or no candidate was found — we cannot
               // confirm a duplicate.  Fall through to the write + post-write
@@ -877,7 +876,7 @@ export class ExtractionPersistCoordinator {
               skipSharedPromotion = false;
             }
             if (skipSharedPromotion) {
-              return;
+              return promotedCopyId;
             }
             // No same-connector active shared fact — fall through to write.
           }
@@ -962,10 +961,13 @@ export class ExtractionPersistCoordinator {
             }),
           );
         }
+        promotedCopyId = promotedId; // feeds the merged-target reconciliation (round N+7 B)
+        return promotedId;
       } catch (err) {
         log.warn(
           `persistExtraction: shared promotion failed open for ${options.sourceMemoryId}: ${err}`,
         );
+        return promotedCopyId; // P1-A: profile copies written pre-failure still reconcile
       }
     };
     // #1707 thread 1 — backfill temporal bounds onto promotion copies when the
@@ -2306,11 +2308,7 @@ export class ExtractionPersistCoordinator {
               );
             }
           } finally {
-            // The parent memory is durable once writeMemory returns `parentId`.
-            // Touch immediately around the chunk-write loop so a later chunk
-            // failure still surfaces the partially durable parent/chunk files to
-            // catalog-driven `writtenSince` maintenance. The final touch below
-            // still refreshes `lastWriteAt` after later durable writes on success.
+            // #1522: the catalog write touch lives in the storage chokepoint.
           }
 
           if (routedRuleId) {
@@ -2503,11 +2501,7 @@ export class ExtractionPersistCoordinator {
               }
             }
           } finally {
-            // Catalog touch (issue #1499): refresh AFTER later chunked
-            // source-namespace durable mutations — temporal supersession, shared
-            // promotion, optional artifact writes, and graph-edge writes — so
-            // `lastWriteAt` cannot precede later file changes on successful
-            // completion. Use the KNOWN routed name, not a dir-decoded guess.
+            // #1522: the catalog write touch lives in the storage chokepoint.
           }
           trackBehaviorSignals(
             targetStorage,
@@ -2545,35 +2539,49 @@ export class ExtractionPersistCoordinator {
             ? classifyMemoryKind(fact.content, fact.tags ?? [], writeCategory)
             : undefined;
 
-      // Normal write (no chunking)
-      // Compute the cited content once so that writeMemory and writeArtifact
-      // (when verbatim artifacts are enabled) share the same citation timestamp.
-      // Calling applyInlineCitation twice on the same raw content would produce
-      // two different timestamps, creating duplicate citations with divergent
-      // provenance metadata on the memory and artifact copies of the same fact.
-      // Pass the RAW (pre-citation) fact as `contentHashSource` so the
-      // fact-content hash index records the hash of the canonical fact text
-      // rather than the citation-annotated variant. When inline attribution is
-      // enabled, `applyInlineCitation` appends a timestamp-bearing marker, so
-      // hashing the persisted body would produce a different hash on every
-      // write and defeat cross-session dedup (see `findDuplicateExplicitCapture`
-      // in explicit-capture.ts which calls `hasFactContentHash(candidate.content)`
-      // on raw content).
-      const rawPersistBody =
-        writeCategory === "procedure"
-          ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
-          : fact.content;
+      // Normal write (no chunking). Cite once so memory and artifact copies share one timestamp; hash the RAW pre-citation text. Merge-on-write (#2330): a judge-approved in-band match updates in place; uncarryable metadata, promoted copies, backend outage, and a novelty-add decision bypass to this write.
+      const rawPersistBody = writeCategory === "procedure" ? buildProcedurePersistBody(fact.content, fact.procedureSteps) : fact.content;
       const citedFactContent = applyInlineCitation(rawPersistBody);
+      const semanticMerge = await applySemanticMergeAtPersist(this.deps, {
+        storage: targetStorage, content: fact.content, category: writeCategory, sources: fact.sources, sourceConnector: extractionSourceConnector,
+        incomingMetadata: { tags: [...fact.tags, ...injectionScreenTags], entityRef: fact.entityRef, structuredAttributes: fact.structuredAttributes, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, biTemporal: biTemporal !== undefined, importanceScore: importance.score, confidence: fact.confidence, provenanceStrength: fact.provenance, toolScoped: factToolScoped, subject: factSubject, origin, faithfulness: faithfulnessFm, memoryKind }, skip: contradictionDetected || faithfulnessEnforceStatus === "pending_review" || batchBackendUnavailable || novelty.decision === "add",
+        incomingLinks: links.length > 0 ? links : undefined, incomingCitedContent: citedFactContent,
+        targetHasPromotedCopies: (targetId) => promotedCopyProbe.check(targetStorage, targetId),
+      });
+      if (semanticMerge.action === "created" && semanticMerge.reason === "backend_unavailable") batchBackendUnavailable = true; // arms the batch short circuit for the remaining facts
+      if (semanticMerge.action === "merged") {
+        semanticMergedCount++;
+        await anchorSnapshots.replace(targetStorage, semanticMerge.targetId, writeCategory, memoryPathById);
+        // D + final round (A/B) + N+7 (A/B) + N+18 (B): with no promoted copies the create path's promotion must still run — fail-open, the merge stands — and its payload derives SOLELY from the re-read committed record (no field reads the incoming extraction; the null cases — replaced mid-flight, retired, degraded merge, or the isolated fail-open reread failure — are documented on buildMergedTargetPromotionPayload). After the current copy lands, any concurrently promoted PRE-merge copy is superseded. Promotion eligibility gates on the committed record's tier — the downgraded min(incoming, target) confidence where a lower incoming fact merged in.
+        const mergedPromotion = await buildMergedTargetPromotionPayload(targetStorage, semanticMerge);
+        // Round N+10 (A) + #2807 (finding 1): promotion AND reconciliation — including the no-promotion path, where a below-threshold downgrade or a degraded merge writes no replacement copy but a concurrently published PRE-merge copy must still retire. An UNREADABLE payload (readFailed) skips the destructive pass. See promoteAndReconcileMergedTarget.
+        await promoteAndReconcileMergedTarget({ promote: (payload) => promoteMemoryToShared({ sourceStorage: targetStorage, ...payload }), config: this.deps.config, getStorageRouter: this.deps.getStorageRouter, scopeProfileWritePlan, sourceStorage: targetStorage, sourceMemoryId: semanticMerge.targetId, mergedPromotion: mergedPromotion.payload, mergedPromotionReadFailed: mergedPromotion.readFailed, normalize: normalizeStoredHashSource, onReconciled: () => promotedCopyProbe.invalidate() });
+        // Round N+7 (D): the merged body joins the INTERNAL temporal/tag index refresh (id-keyed, incremental); the PUBLIC persistedIds return stays new-fragment only. Round N+11 (B): the target is also persisted into the thread's DURABLE episode set via the same appendEpisodeIds path the create path uses — the batch-local adjacency list is not durable, so without this the target leaves the thread at the next extraction.
+        trackPersistedId(targetStorage, semanticMerge.targetId, { includeReturnedIds: false });
+        await persistMergedTargetThreadEpisode(this.deps.getThreading(), threadIdForExtraction, semanticMerge.targetId);
+        // Finding B (round N+3): enqueue the surviving target so the end-of-batch harmonic pass covers the committed merged claims.
+        if (harmonicConstructionEnabled) {
+          await enqueueMergedTargetForHarmonicConstruction(harmonicFactsByStorage, targetStorage, harmonicFact, semanticMerge.targetId, semanticMerge.mergedContent, new Date(harmonicSourceInsertedAtBase + harmonicSourceOrder++).toISOString());
+        }
+        // Round N+5 (A+B): create-path parity — the create path's graph-edge build and
+        // behavior-signal ledger entry must also observe a committed merge.
+        trackBehaviorSignals(targetStorage, await runMergedTargetPostEffects(this.deps, targetStorage, semanticMerge, {
+          category: writeCategory, incomingContent: fact.content, incomingConfidence: fact.confidence,
+          namespace: this.deps.storageDirNamespace(targetStorage.dir), graphCaps,
+          graphContext: await ensureGraphContext(targetStorage),
+          threadIdForEdge: threadIdForExtraction ?? undefined, threadEpisodeIdsForGraph,
+        }));
+        // Round N+17 (B): artifact write LAST; the helper isolates its own failure.
+        await writeMergedVerbatimArtifact(this.deps, targetStorage, semanticMerge.targetId, { category: writeCategory, citedContent: citedFactContent, confidence: fact.confidence, tags: fact.tags, intent: inferredIntent ?? undefined, sourceConnector: extractionSourceConnector, origin, toolScoped: factToolScoped });
+        continue;
+      }
       const factWriteEnvelope = composeSalvagedExtractionEnvelope(
         {
           content: citedFactContent,
           category: writeCategory,
           origin, confidence: fact.confidence,
           tags: [...fact.tags, ...injectionScreenTags],
-          entityRef:
-            typeof (fact as any).entityRef === "string"
-              ? (fact as any).entityRef
-              : undefined,
+          entityRef: typeof fact.entityRef === "string" ? fact.entityRef : undefined,
           structuredAttributes: fact.structuredAttributes,
           validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
           ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
@@ -2691,7 +2699,7 @@ export class ExtractionPersistCoordinator {
         }
         // Faithfulness gate (#1576, chatgpt P2): skip promotion for a
         // pending_review fact so no active shared/profile copy bypasses the gate.
-        if (!postWriteGuard) await promoteMemoryToShared({
+        if (!postWriteGuard) { await promoteMemoryToShared({
           sourceStorage: targetStorage,
           category: writeCategory,
           content: fact.content,
@@ -2723,7 +2731,7 @@ export class ExtractionPersistCoordinator {
           ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
           ...(fact.provenance ? { provenance: fact.provenance } : {}),
           harmonicFact,
-        });
+        }); promotedCopyProbe.invalidate(); }
         // v8.2: graph edge building (fail-open). #1576: skip pending_review facts.
         if (graphCaps.multiGraphMemory && !postWriteGuard) {
           try {
@@ -2812,13 +2820,6 @@ export class ExtractionPersistCoordinator {
         // .md never outlives a missing shared fact-hash index entry.
         await flushDeferredFactHashOnFailure(() => this.deps.saveContentHashIndexes(), factDedupEnabled);
         throw err;
-      } finally {
-        // Catalog touch (issue #1499): record AFTER every synchronous
-        // source-namespace mutation in the non-chunked path: writeMemory,
-        // temporal supersession, graph edges, and optional verbatim artifacts.
-        // The `finally` preserves the write touch when post-write indexing or
-        // promotion fails after the canonical memory is already durable. Use the
-        // KNOWN routed name, not a dir-decoded guess (NCQI0).
       }
     }
 
@@ -2985,7 +2986,7 @@ export class ExtractionPersistCoordinator {
         );
     }
 
-    const dedupSuffix = dedupedCount > 0 ? ` (${dedupedCount} deduped)` : "";
+    const dedupSuffix = `${dedupedCount > 0 ? ` (${dedupedCount} deduped)` : ""}${semanticMergedCount > 0 ? ` (${semanticMergedCount} merged)` : ""}`;
     const gatedSuffix =
       importanceGatedCount > 0 ? ` (${importanceGatedCount} gated)` : "";
     const judgeSuffix =
@@ -2993,7 +2994,7 @@ export class ExtractionPersistCoordinator {
     const redactionSuffix =
       redactionGatedCount > 0 ? ` (${redactionGatedCount} redacted)` : "";
     log.info(
-      `persisted: ${facts.length - dedupedCount - importanceGatedCount - judgeGatedCount - redactionGatedCount} facts${dedupSuffix}${gatedSuffix}${judgeSuffix}${redactionSuffix}, ${entities.length} entities, ${questions.length} questions, ${profileUpdates.length} profile updates`,
+      `persisted: ${facts.length - dedupedCount - importanceGatedCount - judgeGatedCount - redactionGatedCount - semanticMergedCount} facts${dedupSuffix}${gatedSuffix}${judgeSuffix}${redactionSuffix}, ${entities.length} entities, ${questions.length} questions, ${profileUpdates.length} profile updates`,
     );
     if (harmonicConstructionEnabled && harmonicFactsByStorage.size > 0) {
       await persistConstructedHarmonicRecords({

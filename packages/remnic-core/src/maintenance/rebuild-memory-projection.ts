@@ -76,6 +76,7 @@ import type {
   SkippedDuplicateMemory,
   SkippedDuplicateTimelineEvent,
 } from "./projection-support.js";
+import { isErrnoCode } from "../utils/errno.js";
 
 
 export interface RebuildMemoryProjectionResult {
@@ -150,10 +151,6 @@ export interface RepairMemoryProjectionResult {
   rebuild?: RebuildMemoryProjectionResult;
 }
 
-function isNodeError(err: unknown): err is NodeJS.ErrnoException {
-  return typeof err === "object" && err !== null && "code" in err;
-}
-
 export async function backupExistingProjection(
   memoryDir: string,
   outputPath: string,
@@ -162,7 +159,7 @@ export async function backupExistingProjection(
   try {
     await stat(outputPath);
   } catch (err) {
-    if (isNodeError(err) && err.code === "ENOENT") {
+    if (isErrnoCode(err, "ENOENT")) {
       return undefined;
     }
     throw err;

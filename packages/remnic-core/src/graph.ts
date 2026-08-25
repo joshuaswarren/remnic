@@ -12,7 +12,7 @@
 
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import * as path from "node:path";
-
+import { GraphEdgeAppendError } from "./graph-append-error.js";
 import { readEdgeConfidence } from "./graph-edge-reinforcement.js";
 import { emitGraphEvent } from "./graph-events.js";
 import type { GraphConstructionCapabilitySet } from "./capabilities.js";
@@ -24,6 +24,13 @@ import {
   type ActivationPredecessor,
 } from "./graph-path-reconstruction.js";
 export { reconstructActivationPath, type ActivationPredecessor };
+import {
+  assertGraphLockHeld,
+  GraphLockLostError,
+  withGraphWriteLock,
+  yieldForLockHeartbeat,
+} from "./graph-write-lock.js";
+import { isErrnoCode } from "./utils/errno.js";
 
 export type GraphType = "entity" | "time" | "causal";
 
@@ -110,44 +117,19 @@ export async function ensureGraphsDir(memoryDir: string): Promise<void> {
   await mkdir(graphsDir(memoryDir), { recursive: true });
 }
 
-// ---------------------------------------------------------------------------
-// Per-graph-file write lock (gotcha #40 promise-chain pattern).
-//
-// Both the append path (`appendEdge`) and the rewrite path used by the
-// decay maintenance job must serialize on the same lock keyed by the
-// JSONL file path. Without this, an extraction can append a new edge
-// between the decay job's read-snapshot and rewrite, silently dropping
-// the appended edge during active traffic (issue #729 / Codex P1).
-// ---------------------------------------------------------------------------
-const graphWriteLocks = new Map<string, Promise<void>>();
-
-/**
- * Run `fn` while holding the write lock for the given graph JSONL file.
- *
- * The lock is keyed by absolute file path so concurrent writes to
- * different graph types proceed independently. The chain recovers from
- * rejection (gotcha #40) so a single I/O failure does not poison all
- * future writers, but the original error is still surfaced to the
- * caller of `withGraphWriteLock`.
- */
-export function withGraphWriteLock<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
-  const prev = graphWriteLocks.get(filePath) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
-  graphWriteLocks.set(
-    filePath,
-    next.then(
-      () => undefined,
-      () => undefined
-    )
-  );
-  return next;
-}
+// Per-graph-file write lock lives in the graph-write-lock.ts sibling (the
+// in-process chain plus the cross-process advisory lock, issue #2330 round
+// N+18 A). Re-exported here because `@remnic/core/graph` is a public
+// subpath export whose consumers import `withGraphWriteLock` from it.
+export { withGraphWriteLock, GraphLockLostError };
 
 export async function appendEdge(memoryDir: string, edge: GraphEdge): Promise<void> {
   await ensureGraphsDir(memoryDir);
   const filePath = graphFilePath(memoryDir, edge.type);
   const line = `${JSON.stringify(edge)}\n`;
-  await withGraphWriteLock(filePath, async () => {
+  await withGraphWriteLock(filePath, async (lock) => {
+    // Round N+19 A: never append into a file a peer that broke this lock may rename over.
+    await assertGraphLockHeld(filePath, lock);
     await appendFile(filePath, line, "utf8");
   });
   // Emit edge-added event for SSE subscribers (issue #691 PR 5/5).
@@ -163,10 +145,6 @@ export async function appendEdge(memoryDir: string, edge: GraphEdge): Promise<vo
   });
 }
 
-function isNodeError(err: unknown): err is NodeJS.ErrnoException {
-  return typeof err === "object" && err !== null && "code" in err;
-}
-
 function parseEdgesJsonl(raw: string, expectedType: GraphType): GraphEdge[] {
   const edges: GraphEdge[] = [];
   for (const line of raw.split("\n")) {
@@ -180,6 +158,23 @@ function parseEdgesJsonl(raw: string, expectedType: GraphType): GraphEdge[] {
     } catch {
       // skip corrupt lines — fail-open for partial JSONL recovery
     }
+  }
+  return edges;
+}
+
+/** Parse batch size at which locked-section parsing yields to the event loop
+ * so the graph lock's heartbeat timer can fire (round N+19 A). */
+const EDGE_PARSE_YIELD_BATCH = 5_000;
+
+/** Chunked {@link parseEdgesJsonl} yielding between batches; used by
+ * {@link readEdgesStrict} (the locked-section reader) — the hot recall path
+ * (`readEdges`) keeps the synchronous parse. */
+async function parseEdgesJsonlYielding(raw: string, expectedType: GraphType): Promise<GraphEdge[]> {
+  const lines = raw.split("\n");
+  const edges: GraphEdge[] = [];
+  for (let i = 0; i < lines.length; i += EDGE_PARSE_YIELD_BATCH) {
+    if (i > 0) await yieldForLockHeartbeat();
+    edges.push(...parseEdgesJsonl(lines.slice(i, i + EDGE_PARSE_YIELD_BATCH).join("\n"), expectedType));
   }
   return edges;
 }
@@ -214,9 +209,9 @@ export async function readEdgesStrict(memoryDir: string, type: GraphType): Promi
   const filePath = graphFilePath(memoryDir, type);
   try {
     const raw = await readFile(filePath, "utf8");
-    return parseEdgesJsonl(raw, type);
+    return await parseEdgesJsonlYielding(raw, type);
   } catch (err) {
-    if (isNodeError(err) && err.code === "ENOENT") {
+    if (isErrnoCode(err, "ENOENT")) {
       return [];
     }
     throw err;
@@ -567,6 +562,12 @@ export class GraphIndex {
   /**
    * Called after a memory is written to disk.
    *
+   * Throws when an edge append fails (after logging): the merged-target rewrite
+   * path depends on the rejection to restore the edges `removeNodeEdgesForRewrite`
+   * dropped — swallowing here left that restore dead and the prior edge set
+   * permanently lost (#2330). Fail-open is the CALLER's decision; the create
+   * paths already catch (see persistence-index.buildGraphEdge).
+   *
    * @param memoryPath - relative path from memoryDir (e.g. "facts/2026-02-22/abc.md")
    * @param entityRef  - entityRef frontmatter field (if any)
    * @param content    - full memory text (for causal detection)
@@ -595,16 +596,15 @@ export class GraphIndex {
       causalGraph: boolean;
       multiGraphMemory: boolean;
     };
-  }): Promise<void> {
+  }): Promise<GraphEdge[]> {
     const g = opts.graphCapsOverride;
     const multiGraphOn = g ? g.multiGraphMemory : this.cfg.multiGraphMemoryEnabled;
-    if (!multiGraphOn) return;
+    if (!multiGraphOn) return [];
     const entityOn = g ? g.entityGraph : this.cfg.entityGraphEnabled;
     const timeOn = g ? g.timeGraph : this.cfg.timeGraphEnabled;
     const causalOn = g ? g.causalGraph : this.cfg.causalGraphEnabled;
     const ts = new Date().toISOString();
-    // Collect the edges appended this call so a coherent single-writer push can
-    // extend the warm edge cache in place instead of nulling it (issue #1904).
+    // Appended this call: warm-cache in-place push (#1904) + surgical rollback rows (N+14).
     const appended: GraphEdge[] = [];
 
     try {
@@ -659,9 +659,12 @@ export class GraphIndex {
         }
       }
     } catch (err) {
-      // Fail-open: graph write errors must never surface to caller
+      // Log, then rethrow (#2330): the rewrite path's restore step only runs
+      // when this rejection reaches its caller (fail-open callers catch). The
+      // error carries the rows already appended (N+16 A) — surgical rollback.
       const { log } = await import("./logger.js");
       log.warn(`[graph] onMemoryWritten error: ${err}`);
+      throw new GraphEdgeAppendError(err, appended);
     } finally {
       // Edge-cache coherence (issue #1904). Legacy behavior nulled the cache on
       // every write, paying a 2-4 s full re-read + parse on the next traversal.
@@ -700,6 +703,7 @@ export class GraphIndex {
         }
       }
     }
+    return appended;
   }
 
   /**

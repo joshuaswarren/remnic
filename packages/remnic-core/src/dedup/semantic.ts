@@ -13,6 +13,8 @@
  * Related issue: joshuaswarren/remnic#373
  */
 
+import { connectorMatchesScope, normalizeConnectorScope } from "./connector-scope.js";
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /** A single nearest-neighbor hit from the embedding backend. */
@@ -152,13 +154,10 @@ export async function decideSemanticDedup(
     return { action: "keep", reason: "no_candidates" };
   }
 
-  // Resolve the candidate's provenance connector. An empty/whitespace
-  // value is treated as absent (operator / unattributed).
-  const candidateConnector =
-    typeof options.sourceConnector === "string" &&
-    options.sourceConnector.trim().length > 0
-      ? options.sourceConnector.trim()
-      : undefined;
+  // Resolve the candidate's provenance connector through the shared scope
+  // contract (`connector-scope.ts`): an empty/whitespace value is treated as
+  // absent (operator / unattributed).
+  const candidateConnector = normalizeConnectorScope(options.sourceConnector);
 
   // Defensive: callers ought to return sorted, but don't trust it.
   let top: SemanticDedupHit | undefined;
@@ -182,8 +181,7 @@ export async function decideSemanticDedup(
     }
     if (
       candidateConnector !== undefined &&
-      typeof hit.sourceConnector === "string" &&
-      hit.sourceConnector.trim() === candidateConnector &&
+      connectorMatchesScope(hit.sourceConnector, candidateConnector) &&
       (!sameConnectorTop || hit.score > sameConnectorTop.score)
     ) {
       sameConnectorTop = hit;

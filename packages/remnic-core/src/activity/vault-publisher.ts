@@ -19,7 +19,12 @@ import { chmodSync, chownSync, lstatSync, mkdirSync, readFileSync, realpathSync,
 import path from "node:path";
 
 import { expandTildePath } from "../utils/path.js";
-import { applyManagedRegion, fileLines } from "./vault-publish.js";
+import { applyManagedRegion, fileLines, headingSurvivesRoundTrip } from "./vault-publish.js";
+import {
+  renderVaultPropertyValue,
+  validateVaultProperties,
+  type VaultPropertyValue,
+} from "./vault-frontmatter.js";
 import { insertMarkersUnderHeading } from "./vault-insert.js";
 import { validateRegionName } from "./vault-region.js";
 import { assertBeginEndPair } from "./vault-region-pair.js";
@@ -37,8 +42,8 @@ export interface VaultSectionPublish {
   name: string;
   /** Rendered artifact body the region owns. */
   content: string;
-  /** Unprefixed stats, e.g. `{ focus_minutes: "220" }`; keys get the configured prefix. */
-  properties?: Readonly<Record<string, string>>;
+  /** Unprefixed stats, e.g. `{ focus_minutes: "220" }`; keys get the configured prefix. Values are plain single-line scalars or lists of them (vault-frontmatter.ts). */
+  properties?: Readonly<Record<string, VaultPropertyValue>>;
   /** When present, a provenance footer line is appended inside the region. */
   provenance?: VaultSectionProvenance;
 }
@@ -97,6 +102,48 @@ export function publishVaultNote(input: PublishVaultNoteInput): VaultPublishStat
     }
   }
 
+
+  // Issue #2917: input boundaries are total and run BEFORE any note byte
+  // is read or written, so a rejection can never leave a half-merged
+  // note behind.
+
+  // The heading strategy matches a section by scanning note headings with
+  // the shared ATX parser (`applyHeadingRegion`/`insertMarkersUnderHeading`).
+  // A name whose rendered heading parses back to something else — a
+  // trailing `#` run is stripped as a closing sequence (`## Timeline #`
+  // reads as `Timeline`) — can never be matched, so every publish would
+  // no-op or mis-scope. Reject it here rather than at match time.
+  const headingsToProbe =
+    strategy === "heading" ? input.sections.map((section) => section.name) : [];
+  if (typeof input.insertUnderHeading === "string" && input.insertUnderHeading.length > 0) {
+    headingsToProbe.push(input.insertUnderHeading);
+  }
+  for (const headingName of headingsToProbe) {
+    if (!headingSurvivesRoundTrip(headingName)) {
+      throw new RangeError(
+        `Section name ${JSON.stringify(headingName)} is not matchable by the heading parser; it must survive a render-and-parse round trip.`,
+      );
+    }
+  }
+
+  // Property values land in note frontmatter or inline fields; validate
+  // their shape and bounds (vault-frontmatter.ts) against the final
+  // prefixed keys, in every mode, before any file access.
+  const propertyEntries: Array<{ key: string; value: VaultPropertyValue }> = [];
+  for (const section of input.sections) {
+    if (!section.properties) continue;
+    for (const key of Object.keys(section.properties)) {
+      const value = section.properties[key];
+      if (value === undefined) continue;
+      propertyEntries.push({ key: `${prefix}${key}`, value });
+    }
+  }
+  if (propertyEntries.length > 0) {
+    const checked = validateVaultProperties(propertyEntries);
+    if (!checked.ok) {
+      throw new RangeError(`Vault publish properties rejected: ${checked.reason}.`);
+    }
+  }
   const relative = resolveVaultNotePath(input.notePathTemplate, input.date);
   const result = publishRelative(input, relative, { strategy, propertiesMode, prefix });
   return summarizeVaultPublish(result);
@@ -262,13 +309,13 @@ function refuse(relative: string, outcome: "skipped" | "error", reason: string):
 
 function decorate(
   section: VaultSectionPublish,
-  prefixed: Record<string, string> | undefined,
+  prefixed: Record<string, VaultPropertyValue> | undefined,
   mode: string,
 ): string {
   const parts: string[] = [section.content];
   if (prefixed !== undefined && mode === "dataview-inline") {
     for (const [key, value] of Object.entries(prefixed)) {
-      parts.push(`${key}:: ${value}`);
+      parts.push(`${key}:: ${renderVaultPropertyValue(value)}`);
     }
   }
   if (section.provenance !== undefined) {
@@ -388,8 +435,8 @@ function looksLikeRemnicMarkerLine(trimmed: string): boolean {
 function frontmatterUpdates(
   sections: readonly VaultSectionPublish[],
   prefix: string,
-): Record<string, string> {
-  const updates: Record<string, string> = {};
+): Record<string, VaultPropertyValue> {
+  const updates: Record<string, VaultPropertyValue> = {};
   for (const section of sections) {
     if (!section.properties) continue;
     for (const [key, value] of Object.entries(section.properties)) {
@@ -406,14 +453,16 @@ function frontmatterUpdates(
  */
 export function mergeFrontmatterKeys(
   noteText: string,
-  updates: Readonly<Record<string, string>>,
+  updates: Readonly<Record<string, VaultPropertyValue>>,
 ): { ok: true; text: string } | { ok: false; reason: string } {
   const entries = Object.entries(updates);
   if (entries.length === 0) return { ok: true, text: noteText };
-  for (const [key] of entries) {
-    if (key.includes("\n") || key.includes("\r") || key.trim() !== key || key.length === 0) {
-      return { ok: false, reason: "invalid_property_key" };
-    }
+  // The writer re-validates the same boundary the publisher entry checked
+  // (issue #2917): this function is exported, so a direct caller must not
+  // be able to smuggle a newline-bearing or unbounded value into a note.
+  const checked = validateVaultProperties(entries.map(([key, value]) => ({ key, value })));
+  if (!checked.ok) {
+    return { ok: false, reason: "invalid_property" };
   }
 
   const eol = noteText.includes("\r\n") ? "\r\n" : "\n";
@@ -422,7 +471,12 @@ export function mergeFrontmatterKeys(
   const firstLine = firstLineEnd === -1 ? noteText : noteText.slice(0, firstLineEnd);
 
   if (!openRe.test(firstLine)) {
-    const block = ["---", ...entries.map(([key, value]) => `${key}: ${value}`), "---", ""].join(eol);
+    const block = [
+      "---",
+      ...entries.map(([key, value]) => `${key}: ${renderVaultPropertyValue(value)}`),
+      "---",
+      "",
+    ].join(eol);
     return { ok: true, text: block + eol + noteText };
   }
 
@@ -451,13 +505,13 @@ export function mergeFrontmatterKeys(
     if (rawKey !== rawKey.trimStart()) continue;
     const key = rawKey.trimEnd();
     if (!pending.has(key)) continue;
-    lines[i] = `${rawKey}: ${pending.get(key)}`;
+    lines[i] = `${rawKey}: ${renderVaultPropertyValue(pending.get(key)!)}`;
     pending.delete(key);
   }
   const insertAt = closeIdx;
   const added: string[] = [];
   for (const [key, value] of pending.entries()) {
-    added.push(`${key}: ${value}`);
+    added.push(`${key}: ${renderVaultPropertyValue(value)}`);
   }
   lines.splice(insertAt, 0, ...added);
   return { ok: true, text: lines.join(eol) };

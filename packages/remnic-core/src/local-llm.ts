@@ -19,6 +19,8 @@ import {
   normalizeBackendTripReason,
   waitForRetryBackoff,
   SingleFlightProbe,
+  type LocalLlmChatCompletionOptions,
+  type LocalLlmChatCompletionResult,
 } from "./local-llm-helpers.js";
 
 /** Trim trailing slash characters without backtracking regex. */
@@ -226,29 +228,14 @@ export interface LocalModelInfo {
 
 export type LocalLlmRequestPriority = "recall-critical" | "background";
 
-interface LocalLlmChatCompletionOptions {
-  temperature?: number;
-  maxTokens?: number;
-  responseFormat?: { type: string };
-  timeoutMs?: number;
-  operation?: string;
-  forceDisableThinking?: boolean;
-  disableThinking?: boolean;
-  priority?: LocalLlmRequestPriority;
-  signal?: AbortSignal;
-  redactProviderErrors?: boolean;
-}
+// LocalLlmChatCompletionOptions and LocalLlmChatCompletionResult live in
+// local-llm-helpers.ts so this file stays under its size ceiling (#1995).
 interface LocalLlmQueuedRequest {
   messages: Array<{ role: string; content: string }>;
   options: LocalLlmChatCompletionOptions;
   priority: LocalLlmRequestPriority;
   enqueuedAtMs: number;
   resolve: (value: LocalLlmChatCompletionResult | null) => void;
-}
-
-interface LocalLlmChatCompletionResult {
-  content: string;
-  usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
 }
 
 const LOCAL_LLM_GLOBAL_BACKEND_STATE = "__openclawEngramLocalLlmBackendState";
@@ -958,7 +945,7 @@ export class LocalLlmClient {
 
       const promptChars = messages.reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
       const requestBody: Record<string, unknown> = {
-        model: this.config.localLlmModel,
+        model: options.model ?? this.config.localLlmModel,
         messages,
         temperature: options.temperature ?? 0.7,
         // Use max_tokens consistent with cloud models
@@ -1163,6 +1150,10 @@ export class LocalLlmClient {
         } else {
           this.consecutive400s = 0;
         }
+        if (options.failureDiag)
+          options.failureDiag.lastError = Object.assign(new Error("local LLM http failure"), {
+            status: response.status,
+          });
         return null;
       }
       this.consecutive400s = 0;

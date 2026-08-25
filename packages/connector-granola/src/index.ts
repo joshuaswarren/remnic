@@ -13,8 +13,7 @@
  */
 
 import {
-  registerWearableConnector,
-  getWearableConnector,
+  selfRegisterWearableConnector,
   type WearableConnectorFactoryOptions,
   type WearableConnectorRegistration,
   type WearableConversation,
@@ -122,13 +121,9 @@ export const wearableConnectorRegistration: WearableConnectorRegistration = {
 };
 
 /**
- * Idempotently register the connector with the core registry. Importing this
- * module registers it as a side effect; calling again is safe.
+ * Idempotently register the connector with the core registry. Importing
+ * this module registers it as a side effect; calling this again is safe
+ * (returns false when already registered).
  */
-export function ensureGranolaConnectorRegistered(): boolean {
-  if (getWearableConnector(GRANOLA_SOURCE_ID)) return false;
-  registerWearableConnector(wearableConnectorRegistration);
-  return true;
-}
-
-ensureGranolaConnectorRegistered();
+export const ensureGranolaConnectorRegistered =
+  selfRegisterWearableConnector(wearableConnectorRegistration);

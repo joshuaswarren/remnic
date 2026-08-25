@@ -3,6 +3,7 @@ import path from "node:path";
 import { resolveAbstractionNodeStoreDir, validateAbstractionNode, type AbstractionNode } from "./abstraction-nodes.js";
 import { listJsonFilesStrict, readJsonFile, withJsonStoreMutationLock, writeJsonFileAtomic } from "./json-store.js";
 import { compareDeterministicStrings, mergeSortedUniqueStrings } from "./deterministic-order.js";
+import { isNotFoundError } from "./utils/errno.js";
 import {
   assertIsoRecordedAt,
   assertSafePathSegment,
@@ -168,12 +169,6 @@ export async function recordCueAnchor(options: {
 
 function mergeSortedValues(existing: string[] | undefined, incoming: string[] | undefined): string[] {
   return mergeSortedUniqueStrings(existing, incoming);
-}
-
-function isNotFoundError(error: unknown): boolean {
-  return (
-    typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT"
-  );
 }
 
 function boundNodeRefs(nodeRefs: string[], liveNodes?: Map<string, AbstractionNode>): string[] {

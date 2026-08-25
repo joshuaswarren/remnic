@@ -35,11 +35,7 @@ import type { TrustZoneSearchResult } from "../trust-zones.js";
 import type { CodingContext, EngramTraceEvent, IdentityInjectionMode, MemoryFile, MemoryIntent, PluginConfig, QmdSearchResult, RecallPlanMode, RecallSectionConfig } from "../types.js";
 import type { VerifiedEpisodeResult } from "../verified-recall.js";
 import type { WorkProductLedgerSearchResult } from "../work-product-ledger.js";
-import type { GraphRecallRankedResult, GraphRecallShadowComparison } from "./graph-recall-coordinator.js";
-import type {
-  GraphRecallExpansionOptions,
-  GraphRecallExpansionResult,
-} from "./graph-recall-seam.js";
+import type { GraphRecallExpansionOptions, GraphRecallExpansionResult, GraphRecallRankedResult, GraphRecallShadowComparison } from "./graph-recall-coordinator.js";
 import type { RecallRerankCoordinator, RecallResultPartitionSink } from "./recall-rerank-coordinator.js";
 import type { ArtifactRecallOptions } from "./recall-search-prefilter.js";
 import type { RecallSectionAppendOptions, RecallSectionBuckets } from "./recall-section-coordinator.js";
@@ -73,6 +69,8 @@ export interface RecallInternalDeps {
     /** Issue #680 — historical recall point in ms-since-epoch. */
     asOfMs?: number;
     requestingConnector?: string;
+    /** #1952 state-view admission — resolved by the caller from config/override + change intent. */
+    stateViewActive?: boolean;
     /**
      * Optional out-parameter that receives the pre-MMR / pre-truncation
      * pool size captured inside the pipeline (issue #570 PR 1).  The
@@ -137,6 +135,8 @@ export interface RecallInternalDeps {
        * string at the input boundary (CLI / HTTP / MCP).
        */
       asOfMs?: number;
+      /** #1952 state-view admission — see RecallSearchPipelineCoordinator. */
+      stateViewActive?: boolean;
       requestingConnector?: string;
     },
   ): Promise<QmdSearchResult[]>;
@@ -237,6 +237,8 @@ export interface RecallInternalDeps {
       dropUnresolved?: boolean;
       recallNamespaces?: readonly string[];
       requestingConnector?: string;
+      /** #1952 state-view admission — see RecallSearchPipelineCoordinator. */
+      stateViewActive?: boolean;
     },
   ): Promise<{ results: QmdSearchResult[]; memoryByPath: Map<string, MemoryFile> }>;
   formatCausalTrajectoryResults(
@@ -325,6 +327,14 @@ export interface RecallInternalDeps {
      * formatQmdResults for the epistemic hedge.
      */
     trustByPath?: Map<string, TrustStageResultItem> | null;
+    /**
+     * #1952 — per-request effective state-view flag from recallInternal.
+     * The publish seam must not reread live config (per-call override
+     * semantics, issue #1952).
+     */
+    stateViewActive?: boolean;
+    /** #1952 — historical recall pin (epoch ms); asOf-mode annotation. */
+    asOfMs?: number;
   }): void;
   readonly qmd: SearchBackend;
   queueEvalShadowRecall(

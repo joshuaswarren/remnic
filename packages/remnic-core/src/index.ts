@@ -18,6 +18,8 @@ export { resolvePluginEntry, type PluginEntryResolverOptions } from "./plugin-en
 
 export { parseConfig, isOpenaiApiKeyDisabled, resolveEnvVars } from "./config.js";
 export { resolveRemnicConfigRecord } from "./config-record.js";
+export { readCompatEnv } from "./runtime/env.js";
+export { configPathCandidates, discoverConfigPath, type DiscoveredConfigPath } from "./config-discovery.js";
 export * from "./external-wiki.js";
 export * from "./external-wiki-cli.js";
 export {
@@ -46,6 +48,7 @@ export * from "./memory-projection-format.js";
 export { searchWithGenericExclusion } from "./access-memory-search-fanout.js";
 export * from "./model-registry.js";
 export * from "./contradiction/index.js";
+export * from "./recall-state-view.js";
 
 export {
   buildEvidencePack,
@@ -147,7 +150,7 @@ export {
   type CodexCliFallbackResult,
   type CodexCliFallbackRunner,
 } from "./cli-fallback.js";
-
+export { CODEX_SUBSCRIPTION_PROVIDER_ID, beginCodexSubscriptionShutdown, codexSubscriptionBuiltinProviderConfig, createCodexSubscriptionRunner, ensureCodexSubscriptionRunnerRegistered, getCodexSubscriptionRunnerForOwner, terminateActiveCodexSubscriptionChildren, CodexSubscriptionAuthError, CodexSubscriptionConfigError, CodexSubscriptionTimeoutError } from "./providers/codex-subscription.js";
 // ---------------------------------------------------------------------------
 // Smart buffer (issue #563)
 // ---------------------------------------------------------------------------
@@ -560,20 +563,7 @@ export {
   type StructuralSpawnFn,
 } from "./coding/structural-subprocess-provider.js";
 
-export {
-  validateRequest,
-  formatZodError,
-  recallRequestSchema,
-  observeRequestSchema,
-  memoryStoreRequestSchema,
-  suggestionSubmitRequestSchema,
-  type SchemaValidationError,
-  type SchemaName,
-  type RecallRequest,
-  type ObserveRequest,
-  type MemoryStoreRequest,
-  type SuggestionSubmitRequest,
-} from "./access-schema.js";
+export * from "./access-schema.js";
 
 // ---------------------------------------------------------------------------
 // Day summary / LCM
@@ -1217,7 +1207,10 @@ export {
   validateImportRateLimit,
   importedMemoryToTurn,
   defaultWriteMemoriesToOrchestrator,
+  defineFileImporterAdapter,
   runImporter,
+  type FileImporterDefinition,
+  type FileImporterParseArgs,
   type ImportedMemory,
   type ImporterAdapter,
   type ImporterParseOptions,

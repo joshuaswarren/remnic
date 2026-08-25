@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- QMD startup collection checks now have a batch-wide deadline. If any namespace check never settles despite its per-check abort signal, Remnic continues with fail-open `unknown` states so the daemon can become available; normal background QMD retry can reconcile search afterward.
+- H5 injection-suite `openai-compat` executor attaches a host-matched `Authorization: Bearer` token only (`NVIDIA_API_KEY` on `integrate.api.nvidia.com`, `OPENAI_API_KEY` on `api.openai.com`, `REMNIC_OPENAI_COMPAT_API_KEY` on every other host including other `*.openai.com` / `*.nvidia.com` subdomains), requires `https` except loopback HTTP (`127.0.0.1` / `localhost`), and fails closed rather than reusing an ambient key on the wrong host (`#1962`).
+
+## [v9.69.35] — 2026-08-24
+
+### Added
+
+- `remnic-hermes` now provides an opt-in, policy-bound IPv4-loopback LLM bridge and supervisor for deferred Remnic generation through Hermes-managed providers. The bridge owns no provider credential, authenticates its supervised local caller with a launch-scoped token, gives the daemon no provider environment variables, ignores client model selection, and fails closed if either supervised child exits unexpectedly; recall-critical rerank/planner paths remain independent (#2834).
+- Hermes `remnic.llm_bridge` can start an in-process loopback `/v1/chat/completions` listener backed by host `PluginLlm`. Bind is loopback-only, request `model`/`provider` fields are discarded, and the generated client file stores a random bearer at `0600`. Remnic consumes it only through `backgroundGeneration` (hourly summarizer); extraction and recall stay on `openaiBaseUrl` / `localLlm*` (#2857).
+
+
+## [v9.69.31] — 2026-08-23
+
+### Added
+
+- `remnic converge` accepts the peer credential via `--token-file <path>` (0600 file) or `REMNIC_CONVERGE_PEER_TOKEN`; `--token` still works but warns that argv credentials are visible to any process listing for the lifetime of the run (#2823).
+
+## [v9.69.29] — 2026-08-23
+
+### Changed
+
+- `buildReconcileManifest` processes uncached files in bounded 50-file batches (order-preserving) instead of strictly sequentially. At boot scale the sequential form's per-file promise/async-hook overhead dominates — measured on the first full two-host converge: ~66% of apply CPU in async_hooks._propagate + GC, with the manifest read loop (`readParsedMemoriesFromPaths`/`readMaybeEncryptedFile`) the inclusive driver. Synthetic receipt with the full parse path exercised (scripts/measure-manifest-batch.ts, 2,000 files: read → sha verify → parse → identity): 19.4k files/s sequential → 70.2k files/s batched (3.6x). The real-corpus wall time is dominated by per-file encrypted reads the synthetic cannot reproduce; the live first-apply CPU profile (66% promise/GC overhead) is the field receipt for why batching cuts it.
+
+## [v9.69.23] — 2026-08-23
+
+### Added
+
+- `POST /engram/v1/briefing` exposes the daily briefing over the access HTTP boundary: the same registered `briefing` operation the MCP tool dispatches (schema validation, namespace gating, principal propagation), so thin HTTP clients — a Linux desktop panel client, health dashboards — can render a briefing without shelling out to the CLI. Pure read: no write-quota accounting. The response carries both renderings (`markdown` and `json` sections) in one payload regardless of the requested `format`.
+
+## [v9.69.20] — 2026-08-22
+
+### Fixed
+
+- Plain-file offline-sync content chunks now carry the full-file sha256 (`x-remnic-file-sha256`), matching the secure-store branch: peer transports reject chunk responses without it ("response changed during transfer"), so converge plans against real deployments died fetching plain-file tombstone evidence.
+- `remnic converge --timeout <seconds>` converts seconds to milliseconds in the correct order (#2802 round-1 regression: `--timeout 3600` produced a 3.6-second timeout because the raw seconds value was normalized as milliseconds and then divided by 1000).
+- `planReconciliation` spread-pushed each namespace's entries (`entries.push(...nsEntries)`); a boot-scale namespace (~100k entries) exceeds the call-stack argument limit and the plan dies with `RangeError: Maximum call stack size exceeded`. Entries are pushed per element now.
+
 ## [v9.69.18] — 2026-08-22
 
 ### Fixed

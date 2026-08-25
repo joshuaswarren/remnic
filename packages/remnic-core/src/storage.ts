@@ -46,7 +46,8 @@ import {
 } from "./storage/memory-lifecycle-ledger-access.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
-import { DeletionRevisionStore, invalidationCommitFingerprint } from "./storage/deletion-revision-store.js";
+import { DeletionRevisionStore, invalidationCommitFingerprint, withCasCommitReceipt } from "./storage/deletion-revision-store.js";
+import { CasRevisionHost } from "./storage/cas-revision-host.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import * as entityMigration from "./storage/entity-canonical-id-migration.js";
 import * as entityRefs from "./storage/entity-canonical-id-references.js";
@@ -115,8 +116,6 @@ import {
   type ConsolidationOperator,
 } from "./consolidation-operator.js";
 import {
-  matchEntitySchemaSection,
-  normalizeEntityStructuredSection,
   sortStructuredSectionsBySchema,
 } from "./entity-schema.js";
 import {
@@ -177,7 +176,6 @@ import type {
   ExtractionFailureClass,
   CompressionGuidelineOptimizerState,
   PluginConfig,
-  ScoredEntity,
   TopicScore,
   FileHygieneConfig,
   ProvenanceSource,
@@ -1757,6 +1755,7 @@ export type SealedWriteExtras = Omit<
 export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private knowledgeIndexCache: { result: string; builtAt: number } | null = null;
   private readonly deletionRevisionStore: DeletionRevisionStore;
+  private readonly casRevisions: CasRevisionHost;
   private artifactIndexCache: { memories: MemoryFile[]; loadedAtMs: number; writeVersion: number } | null = null;
   private projectionLedgerLagManager = new ProjectionLedgerLagManager();
   private static readonly loadedMemorySnapshots = new WeakMap<MemoryFile, string>();
@@ -2230,6 +2229,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       deletionRevisionLockPath: path.join(baseDir, ".offline-sync", "deletion-revisions.v1.json.lock"),
       assertManagedStoragePath: (filePath, method) => this.assertManagedStoragePath(filePath, method),
     });
+    this.casRevisions = new CasRevisionHost(baseDir);
     this.hotMemoriesCacheEnabled =
       hotMemoriesCacheEnabledOverride ??
       StorageManager.hotMemoriesCacheDefaultByDir.get(baseDir) ??
@@ -2714,6 +2714,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   ): Promise<boolean> {
     return this.deletionRevisionStore.hasCommittedInvalidation(memory);
   }
+  readCasRevision = (filePath: string) => this.casRevisions.readCasRevision(filePath);
+  readCasRevisionStatus = (filePath: string) => this.casRevisions.readCasRevisionStatus(filePath);
+  readDurableFileDigest = (filePath: string) => this.casRevisions.readDurableFileDigest(filePath);
+  protected beginDurableMemoryRevision = (pathname: string, expectedContent?: string | Buffer | null) => this.casRevisions.beginRevision(pathname, expectedContent);
   private async recordCommittedInvalidation(memory: MemoryFile): Promise<void> {
     return this.deletionRevisionStore.recordCommittedInvalidation(memory);
   }
@@ -4038,50 +4042,54 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.corpusRegisteredHashes(memory);
   }
 
-  private async addActiveFactContentHash(memory: MemoryFile): Promise<void> {
+  /** Publish `hashes` for an ACTIVE fact through the SAME locked reconcile the write path uses. */
+  private async publishActiveFactHashes(memory: MemoryFile, hashes: readonly string[]): Promise<void> {
     if (memory.frontmatter.category !== "fact") return;
     if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") return;
-    const hashes = this.factContentHashesForRemoval(memory);
-    if (hashes.length === 0) return;
 
     await this.ensureFactHashIndexAuthoritative();
     const factHashIndex = await this.getFactHashIndex();
     for (const hash of hashes) {
       factHashIndex.addFactByHash(hash);
     }
-    // PR #2016 thread SDzOP: flush through the SAME cross-process locked
-    // reconcile the write/batch/rebuild paths use, never the unlocked whole-file
-    // save() — an unlocked overwrite drops a concurrent extraction's appended
-    // hash and can be clobbered by a peer's locked publish. saveMergingWithDisk
-    // republishes only OUR delta ((on-disk \ removed) ∪ added) under the lock.
     await factHashIndex.saveMergingWithDisk();
-    // A locked reconcile that times out defers to an unref'd background retry
-    // and returns WITHOUT publishing (dirty retained). The reactivation path is
-    // a lifecycle boundary just like writeMemory (PR #2016 thread
-    // PRRT_kwDORJXyws6SEHvh): a short-lived caller must not observe the deferral
-    // as durable. Drain the deferred retry inline so the reintroduced hash lands
-    // on disk (or exhausts its bounded attempts, falling back to the
-    // corpus-rebuild safety net) before returning. No-op — no duplicated retry
-    // work — when the save already published (not dirty).
     await factHashIndex.flushReconcileRetry();
   }
 
   /**
+   * Register an EXPLICITLY computed content hash for an active fact (issue
+   * #2330 round N+16 C): the degraded merge repair indexes the COMMITTED
+   * body while the persisted `frontmatter.contentHash` is the stale
+   * PRE-merge identity. Round N+20 (B): body-coupled (`expectedContent`) —
+   * repair), so no obsolete hash lands on a newer record. No-op otherwise.
+   */
+  async registerFactContentHash(memoryId: string, contentHash: string, expectedContent: string): Promise<void> {
+    if (!contentHash) return;
+    const memory = await this.getMemoryByIdIncludingArchived(memoryId);
+    if (!memory || memory.content !== expectedContent) return;
+    await this.publishActiveFactHashes(memory, [contentHash]);
+  }
+
+  private async addActiveFactContentHash(memory: MemoryFile): Promise<void> {
+    const hashes = this.factContentHashesForRemoval(memory);
+    if (hashes.length === 0) return;
+    await this.publishActiveFactHashes(memory, hashes);
+  }
+
+  /**
    * Re-register a fact's contentHash in the dedup index after a tombstone
-   * block is lifted on approval (issue #1579 thread ObnTy). `writeMemory`
-   * skips hash-index registration for tombstone-blocked facts (rule 44); when
-   * the review queue later promotes such a fact back to `status: active`, the
-   * hash must enter the index or the next extraction of the same content
-   * creates a second active fact. Reads the memory by id so the caller (the
-   * review CLI) does not need to re-parse the file. No-op for non-facts or
-   * facts that are not active.
+   * block is lifted on approval (issue #1579 thread ObnTy): `writeMemory`
+   * skips registration for tombstone-blocked facts (rule 44), so a promoted
+   * fact must re-enter the index or the next extraction of the same content
+   * creates a second active fact. No-op for non-facts or inactive facts.
    */
   async restoreFactHashAfterApproval(memoryId: string): Promise<void> {
-    const all = await this.readAllMemories();
-    const memory = all.find((m) => m.frontmatter.id === memoryId);
+    // Cold-aware (issue #2330 round N+13 C): hot-only scans missed cold/ targets.
+    const memory = await this.getMemoryByIdIncludingArchived(memoryId);
     if (!memory) return;
     await this.addActiveFactContentHash(memory);
   }
+
 
   private async syncFactHashIndexAfterRewrite(before: MemoryFile, after: MemoryFile): Promise<void> {
     if (before.frontmatter.category !== "fact" && after.frontmatter.category !== "fact") return;
@@ -4090,11 +4098,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const afterHashes = this.factContentHashesForRemoval(after);
     const beforeStatus = inferMemoryStatus(before.frontmatter, before.path);
     const afterStatus = inferMemoryStatus(after.frontmatter, after.path);
-    const hashesChanged =
-      beforeHashes.length !== afterHashes.length ||
-      beforeHashes.some((hash, index) => hash !== afterHashes[index]);
-    if (!hashesChanged && beforeStatus === afterStatus) return;
-
+    const hashesChanged = beforeHashes.length !== afterHashes.length || beforeHashes.some((h, i) => h !== afterHashes[i]);
     if (beforeStatus === "active" && beforeHashes.length > 0 && (hashesChanged || afterStatus !== "active")) {
       await this.removeFactContentHashesForMemories([before]);
     }
@@ -4767,7 +4771,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     checkCorpusReadAbort(options);
     return memories;
   }
-
   private async readWindowUpdatedMs(filePath: string): Promise<number | null> {
     try {
       const raw = await readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
@@ -4802,6 +4805,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     );
     return results.filter((filePath): filePath is string => filePath !== null);
   }
+
 
   private orderWindowPaths(filePaths: string[]): string[] {
     const correctionPaths: string[] = [];
@@ -5288,14 +5292,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     });
   }
 
+  /** Commit the new body and return the CAS commit receipt — the sidecar
+   * revision token, never `frontmatter.updated` (#2813 P1, #2807). */
   private async updateMemoryFromCurrent(
     memory: MemoryFile,
     newContent: string,
     options?: { supersedes?: string; lineage?: string[]; actor?: string; sourceConnector?: string },
-  ): Promise<boolean> {
-    const mergedLineage = [...(memory.frontmatter.lineage ?? []), ...(options?.lineage ?? [])].filter(
-      (v, i, a) => a.indexOf(v) === i
-    );
+  ): Promise<string> {
+    const mergedLineage = [...(memory.frontmatter.lineage ?? []), ...(options?.lineage ?? [])].filter((v, i, a) => a.indexOf(v) === i);
     const refIdsAtWrite = this.currentHistoricalIds();
     const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
       {
@@ -5314,35 +5318,31 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       log.warn(`updated memory content sanitized for ${memory.frontmatter.id}; violations=${sanitized.violations.join(", ")}`);
     }
     const fileContent = `${serializeFrontmatter(this.withOkfType(updated))}\n\n${sanitized.text}\n`;
-    await this.writeTombstoneBlockedUpdate(memory, fileContent, updated, sanitized.text, async () => {
+    const receipt = await this.writeTombstoneBlockedUpdate(memory, fileContent, updated, sanitized.text, async () => {
       this.invalidateAllMemoriesCache();
       if (this.isColdOrArchiveTierPath(memory.path)) this.invalidateColdMemoriesCache();
     });
-    if (typeof memory.frontmatter.entityRef === "string") {
-      await this.entityRefRepair.repair(
-        memory.path,
-        updated,
-        memory.frontmatter.entityRef,
-        refIdsAtWrite,
-        sanitized.text,
-        { onFailRestore: memory }
-      );
-    }
-    await this.patchHotMemoriesCache({ addedPath: memory.path });
-    await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
-      memoryId: memory.frontmatter.id,
-      eventType: "updated",
-      timestamp: updated.updated,
-      actor: options?.actor ?? "storage.updateMemory",
-      before: this.summarizeLifecycleState(memory.frontmatter, memory.path),
-      after: this.summarizeLifecycleState(updated, memory.path),
-      relatedMemoryIds: [
-        ...(updated.supersedes ? [updated.supersedes] : []),
-        ...(updated.lineage ?? []).filter(Boolean),
-      ],
+    if (receipt === undefined) throw new Error(`CAS revision receipt unavailable for ${memory.frontmatter.id}`);
+    return await withCasCommitReceipt(receipt, async () => {
+      if (typeof memory.frontmatter.entityRef === "string") {
+        await this.entityRefRepair.repair(memory.path, updated, memory.frontmatter.entityRef, refIdsAtWrite, sanitized.text, { onFailRestore: memory });
+      }
+      await this.patchHotMemoriesCache({ addedPath: memory.path });
+      await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
+        memoryId: memory.frontmatter.id,
+        eventType: "updated",
+        timestamp: updated.updated,
+        actor: options?.actor ?? "storage.updateMemory",
+        before: this.summarizeLifecycleState(memory.frontmatter, memory.path),
+        after: this.summarizeLifecycleState(updated, memory.path),
+        relatedMemoryIds: [
+          ...(updated.supersedes ? [updated.supersedes] : []),
+          ...(updated.lineage ?? []).filter(Boolean),
+        ],
+      });
+      log.debug(`updated memory ${memory.frontmatter.id}`);
+      return receipt;
     });
-    log.debug(`updated memory ${memory.frontmatter.id}`);
-    return true;
   }
 
   async updateMemory(
@@ -5352,14 +5352,17 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   ): Promise<boolean> {
     const memory = (await this.readAllMemories()).find((candidate) => candidate.frontmatter.id === id);
     if (!memory) return false;
-    return await this.updateMemoryFromCurrent(memory, newContent, options);
+    await this.updateMemoryFromCurrent(memory, newContent, options);
+    return true;
   }
 
+  /** CAS content update: false when the record moved past `expected`; on
+   * success the commit receipt — the only identity that can attribute a standing body later (#2813 P1, #2807). */
   async updateMemoryIfUnchanged(
     expected: MemoryFile,
     newContent: string,
     options?: { supersedes?: string; lineage?: string[]; actor?: string; sourceConnector?: string }
-  ): Promise<boolean> {
+  ): Promise<string | false> {
     const sanitized = sanitizeMemoryContent(newContent);
     const oldIdentity = buildExplicitCaptureDedupKey(
       expected.content,
@@ -5381,11 +5384,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       [buildCapturePathLockIdentity(expected.path), oldIdentity, newIdentity]
     );
   }
-
-
   /**
-   * Update frontmatter fields without changing memory content.
-   * Returns false when the memory is not found.
+   * Update frontmatter fields without changing memory content. Returns false when the memory is not found.
    */
   async writeMemoryFrontmatter(
     memory: MemoryFile,
@@ -5395,6 +5395,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const beforeStatus = memory.frontmatter.status ?? "active";
     // Canonicalize the EFFECTIVE merged entityRef (issue #2213) — an
     // unrelated patch must not rewrite an inherited legacy ref back out.
+    // #2807: `patch.updated` is business time, persisted VERBATIM.
     const resolveIds = this.currentHistoricalIds();
     const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
       { ...memory.frontmatter, ...patch },
@@ -5471,7 +5472,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       return await this.writeMemoryFrontmatter(current, patch, lifecycle);
     });
   }
-
 
   /**
    * Update frontmatter by memory ID.

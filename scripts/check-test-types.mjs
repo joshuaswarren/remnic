@@ -2,7 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -38,15 +38,18 @@ export const normalizeDiagnostics = (value, root = repoRoot) =>
     .join("\n")
     .trim();
 
-const ignoredToolingWarningPattern =
-  /^\[WARN\] The "pnpm" field in package\.json is no longer read by pnpm\./;
+const ignoredToolingWarningPatterns = [
+  /^\[WARN\] The "pnpm" field in package\.json is no longer read by pnpm\./,
+  // pnpm optional-dependency platform notice; exact prefix from CI logs.
+  /^packages\/\S+\s+\|\s+WARN\s+Unsupported platform: wanted:/,
+];
 
 export function nonDiagnosticFailureLines(value, root = repoRoot) {
   const lines = [];
   let sawDiagnostic = false;
   for (const rawLine of normalizeOutputLines(value, root)) {
     const line = rawLine.trim();
-    if (line.length === 0 || ignoredToolingWarningPattern.test(line)) continue;
+    if (line.length === 0 || ignoredToolingWarningPatterns.some((pattern) => pattern.test(line))) continue;
     if (diagnosticHeaderPattern.test(line)) {
       sawDiagnostic = true;
       continue;
@@ -173,9 +176,21 @@ export function isDirectRunPath(argvPath, moduleUrl = import.meta.url) {
 }
 
 function main() {
+  // Route pnpm through the repo wrapper: fleet hosts have no global `pnpm`
+  // and a bare spawn dies with ENOENT at the last step of `check-types`
+  // (issue #2781). The wrapper forwards stdio, so piped output still works.
   const result = spawnSync(
-    "pnpm",
-    ["exec", "tsc", "--noEmit", "--project", "tsconfig.tests.json", "--pretty", "false"],
+    process.execPath,
+    [
+      join(scriptDir, "pnpm.mjs"),
+      "exec",
+      "tsc",
+      "--noEmit",
+      "--project",
+      "tsconfig.tests.json",
+      "--pretty",
+      "false",
+    ],
     {
       cwd: repoRoot,
       encoding: "utf8",

@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { loadBenchmarkResult } from "./results-store.js";
+import { loadBenchmarkResult, renderBenchmarkResultExport } from "./results-store.js";
 import type { BenchmarkResult } from "./types.js";
 
-test("loadBenchmarkResult rejects files missing required BenchmarkResult meta fields", async () => {
+test("loadBenchmarkResult upgrades legacy files missing newer required meta fields", async () => {
   await withResultFile(
     {
       ...validResult(),
@@ -19,15 +19,61 @@ test("loadBenchmarkResult rejects files missing required BenchmarkResult meta fi
       },
     },
     async (filePath) => {
+      // Issue #2850: pre-validator artifacts upgrade with documented
+      // defaults instead of being skipped.
+      const loaded = await loadBenchmarkResult(filePath);
+      assert.equal(loaded.meta.benchmarkTier, "custom");
+      assert.equal(loaded.meta.version, "unknown");
+      assert.equal(loaded.meta.remnicVersion, "unknown");
+      assert.equal(loaded.meta.gitSha, "unknown");
+      assert.deepEqual(loaded.meta.seeds, []);
+    },
+  );
+});
+
+test("loadBenchmarkResult still rejects files missing the legacy identity floor", async () => {
+  await withResultFile(
+    {
+      ...validResult(),
+      meta: { benchmark: "sample", timestamp: "2026-05-21T00:00:00.000Z" },
+    },
+    async (filePath) => {
       await assert.rejects(
         () => loadBenchmarkResult(filePath),
-        /Invalid benchmark result file/,
+        /Invalid benchmark result file: .+ \(meta\.id must be a non-empty string\)/,
       );
     },
   );
 });
 
-test("loadBenchmarkResult rejects files missing required cost fields", async () => {
+test("loadBenchmarkResult upgrades legacy files missing cost fields to zero-cost", async () => {
+  const result: Record<string, unknown> = { ...validResult() };
+  // A true legacy shape carries no provenance markers. A modern artifact
+  // that merely lost cost fields keeps its provenance and must reject
+  // instead of upgrading, so strip the modern meta here.
+  result.meta = {
+    id: "run-valid",
+    benchmark: "sample",
+    timestamp: "2026-05-21T00:00:00.000Z",
+    mode: "quick",
+  };
+  result.cost = {
+    inputTokens: 0,
+    outputTokens: 0,
+    estimatedCostUsd: 0,
+    totalLatencyMs: 0,
+    meanQueryLatencyMs: 0,
+  };
+
+  await withResultFile(result, async (filePath) => {
+    // Absent cost accounting upgrades to zero, never to a guess.
+    const loaded = await loadBenchmarkResult(filePath);
+    assert.equal(loaded.cost.totalTokens, 0);
+    assert.equal(loaded.cost.inputTokens, 0);
+  });
+});
+
+test("loadBenchmarkResult rejects a modern artifact that lost cost fields", async () => {
   const result: Record<string, unknown> = { ...validResult() };
   result.cost = {
     inputTokens: 0,
@@ -38,9 +84,11 @@ test("loadBenchmarkResult rejects files missing required cost fields", async () 
   };
 
   await withResultFile(result, async (filePath) => {
+    // Provenance markers claim the modern contract; a missing required
+    // cost field is corruption, not a legacy upgrade (issue #2885).
     await assert.rejects(
       () => loadBenchmarkResult(filePath),
-      /Invalid benchmark result file/,
+      /modern provenance\/integrity markers present; not a legacy artifact/,
     );
   });
 });
@@ -280,7 +328,7 @@ function validResult(): BenchmarkResult {
           tokens: { input: 0, output: 0 },
         },
       ],
-      aggregates: {},
+      aggregates: { exact_match: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 } },
     },
     environment: {
       os: "darwin",
@@ -289,3 +337,88 @@ function validResult(): BenchmarkResult {
     },
   };
 }
+test("renderBenchmarkResultExport renders HTML and CSV without undefined numerics for upgraded mean-only legacy aggregate", async () => {
+  const legacyArtifact = {
+    meta: {
+      id: "legacy-export-run",
+      benchmark: "sample",
+      timestamp: "2026-05-21T00:00:00.000Z",
+      mode: "quick",
+    },
+    results: {
+      tasks: [{ taskId: "task-1" }],
+      aggregates: { accuracy: { mean: 0.85 } },
+    },
+  };
+
+  await withResultFile(legacyArtifact, async (filePath) => {
+    const loaded = await loadBenchmarkResult(filePath);
+    assert.deepEqual(loaded.results.aggregates.accuracy, {
+      mean: 0.85,
+      median: 0.85,
+      stdDev: 0,
+      min: 0.85,
+      max: 0.85,
+    });
+
+    const htmlOutput = renderBenchmarkResultExport(loaded, "html");
+    assert.ok(typeof htmlOutput === "string" && htmlOutput.includes("0.85"));
+    assert.ok(!htmlOutput.includes("undefined"));
+
+    const csvOutput = renderBenchmarkResultExport(loaded, "csv");
+    assert.ok(typeof csvOutput === "string" && csvOutput.includes("accuracy,0.85,0.85,0,0.85,0.85"));
+    assert.ok(!csvOutput.includes("undefined"));
+  });
+});
+
+test("loadBenchmarkResult rejects a modern artifact with a malformed provider optional field", async () => {
+  const result: Record<string, unknown> = { ...validResult() };
+  result.config = {
+    ...validResult().config,
+    systemProvider: { provider: "openai", model: "gpt-5.4", rubricVersion: 42 },
+  };
+  await withResultFile(result, async (filePath) => {
+    // Canonical validation rejects the malformed optional field (issue
+    // #2895); the modern artifact must not launder through the legacy
+    // path either.
+    await assert.rejects(
+      () => loadBenchmarkResult(filePath),
+      /Invalid benchmark result file: .+ \(modern provenance\/integrity markers present/,
+    );
+  });
+});
+
+test("loadBenchmarkResult accepts a modern artifact with a complete valid provider config", async () => {
+  const result: Record<string, unknown> = { ...validResult() };
+  const provider = {
+    provider: "openai",
+    model: "gpt-5.4",
+    rubricVersion: "assistant-v1",
+    baseUrl: "https://example.test/v1",
+    apiKey: "test-key",
+    retryOptions: {
+      maxAttempts: 3,
+      baseBackoffMs: 100,
+      timeoutMs: 120_000,
+      retryOnTimeout: false,
+      max429WaitMs: 5_000,
+    },
+    providerRequestTimeoutMs: 1_000,
+    disableThinking: false,
+    reasoningEffort: "low",
+    responderContextBudgetChars: 4_000,
+    responderPromptBudgetChars: 2_000,
+    temperature: 0,
+    seed: 1,
+  };
+  result.config = {
+    ...validResult().config,
+    systemProvider: provider,
+    judgeProvider: { provider: "local-llm", model: "llama-3", baseUrl: "http://127.0.0.1:8080/v1" },
+  };
+  await withResultFile(result, async (filePath) => {
+    const loaded = await loadBenchmarkResult(filePath);
+    assert.deepEqual(loaded.config.systemProvider, provider);
+    assert.equal(loaded.config.judgeProvider?.model, "llama-3");
+  });
+});

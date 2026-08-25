@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { BenchmarkMode, BenchmarkResult } from "./types.js";
+import type { BenchmarkMode, BenchmarkResult, MetricAggregate } from "./types.js";
 import {
   assertIntegrityMetaPresent,
   integrityMetaIsComplete,
@@ -16,6 +16,8 @@ import {
   renderMemoryReportCard,
   type ReportCardProvenanceContext,
 } from "./report-card.js";
+import { recognizeLegacyBenchmarkArtifact } from "./legacy-artifact.js";
+import { validateProviderConfigShape } from "./provider-config.js";
 
 export interface StoredBenchmarkResultSummary {
   id: string;
@@ -68,6 +70,8 @@ export interface PublishedBenchmarkFeedEntry {
     judgePromptHash: string;
     datasetHash: string;
     canaryScore?: number;
+    /** Effective canary floor persisted with the result (see meta.canaryFloor). */
+    canaryFloor?: number;
   };
 }
 
@@ -173,11 +177,9 @@ function isProviderConfigLike(value: unknown): boolean {
   if (value === null) {
     return true;
   }
-  return (
-    isObjectRecord(value) &&
-    typeof value.provider === "string" &&
-    typeof value.model === "string"
-  );
+  // Complete canonical shape (issue #2895): the loader shares the provider
+  // validator with the legacy adapter instead of a two-string clone.
+  return validateProviderConfigShape(value) === null;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -279,6 +281,17 @@ function isTaskAttributionWitnessLike(
   }
   return true;
 }
+function isMetricAggregate(value: unknown): value is MetricAggregate {
+  return (
+    isObjectRecord(value) &&
+    isFiniteNumber(value.mean) &&
+    isFiniteNumber(value.median) &&
+    isFiniteNumber(value.stdDev) &&
+    isFiniteNumber(value.min) &&
+    isFiniteNumber(value.max)
+  );
+}
+
 
 function isBenchmarkResult(value: unknown): value is BenchmarkResult {
   if (!isObjectRecord(value)) {
@@ -303,7 +316,18 @@ function isBenchmarkResult(value: unknown): value is BenchmarkResult {
     isBenchmarkMode(meta.mode) &&
     isFiniteNumber(meta.runCount) &&
     Array.isArray(meta.seeds) &&
-    meta.seeds.every(isFiniteNumber);
+    meta.seeds.every(isFiniteNumber) &&
+    (meta.canaryFloor === undefined || (isFiniteNumber(meta.canaryFloor) && meta.canaryFloor >= 0)) &&
+    (meta.canaryScore === undefined || isFiniteNumber(meta.canaryScore)) &&
+    (meta.failureReason === undefined || typeof meta.failureReason === "string") &&
+    (meta.runId === undefined || typeof meta.runId === "string") &&
+    (meta.gitDirty === undefined || typeof meta.gitDirty === "boolean") &&
+    (meta.gitDirtyEntryCount === undefined || isFiniteNumber(meta.gitDirtyEntryCount)) &&
+    (meta.splitType === undefined || meta.splitType === "public" || meta.splitType === "holdout") &&
+    (meta.qrelsSealedHash === undefined || typeof meta.qrelsSealedHash === "string") &&
+    (meta.judgePromptHash === undefined || typeof meta.judgePromptHash === "string") &&
+    (meta.datasetHash === undefined || typeof meta.datasetHash === "string") &&
+    (meta.status === undefined || meta.status === "complete" || meta.status === "partial");
   if (!hasValidMeta) {
     return false;
   }
@@ -339,9 +363,21 @@ function isBenchmarkResult(value: unknown): value is BenchmarkResult {
     !isObjectRecord(results) ||
     !Array.isArray(results.tasks) ||
     !results.tasks.every(isTaskResultLike) ||
-    !isObjectRecord(results.aggregates)
+    !isObjectRecord(results.aggregates) ||
+    !Object.values(results.aggregates).every(isMetricAggregate)
   ) {
     return false;
+  }
+
+  if (results.categoryAggregates !== undefined) {
+    if (!isObjectRecord(results.categoryAggregates)) {
+      return false;
+    }
+    for (const catAgg of Object.values(results.categoryAggregates)) {
+      if (!isObjectRecord(catAgg) || !Object.values(catAgg).every(isMetricAggregate)) {
+        return false;
+      }
+    }
   }
 
   const environment = value.environment;
@@ -465,10 +501,21 @@ function toBaselineSummary(
 export async function loadBenchmarkResult(filePath: string): Promise<BenchmarkResult> {
   const content = await readFile(filePath, "utf8");
   const parsed: unknown = JSON.parse(content);
-  if (!isBenchmarkResult(parsed)) {
-    throw new Error(`Invalid benchmark result file: ${filePath}`);
+  if (isBenchmarkResult(parsed)) {
+    return parsed;
   }
-  return parsed;
+
+  // Canonical-first, then legacy upgrade (issue #2850): artifacts from
+  // before the canonical schema get one chance to upgrade with
+  // documented defaults. Present-but-invalid values never coerce; the
+  // re-validation below is the belt that keeps the return type honest.
+  const legacy = recognizeLegacyBenchmarkArtifact(parsed);
+  if (legacy.ok && isBenchmarkResult(legacy.result)) {
+    return legacy.result;
+  }
+  throw new Error(
+    `Invalid benchmark result file: ${filePath}${legacy.ok ? " (legacy artifact failed canonical re-validation)" : ` (${legacy.reason})`}`,
+  );
 }
 
 export async function listBenchmarkResults(
@@ -803,6 +850,9 @@ function toPublishedBenchmarkFeedEntry(
       datasetHash: result.meta.datasetHash,
       ...(result.meta.canaryScore !== undefined
         ? { canaryScore: result.meta.canaryScore }
+        : {}),
+      ...(result.meta.canaryFloor !== undefined
+        ? { canaryFloor: result.meta.canaryFloor }
         : {}),
     },
   };

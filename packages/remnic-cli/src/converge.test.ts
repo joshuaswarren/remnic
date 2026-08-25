@@ -608,6 +608,126 @@ test("remnic converge apply: uses chunked offline-sync HTTP contracts for pull a
   assert.equal(new Headers(pushRequest.init?.headers).get("x-remnic-file-bytes"), String(localContent.length));
 });
 
+test("remnic converge apply: an aborted signal stops transfer batches instead of continuing to mutate", async () => {
+  const originalConcurrency = process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY;
+  process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = "1";
+  try {
+    const controller = new AbortController();
+    const pushes: string[] = [];
+    const requestSignals: Array<unknown> = [];
+    const mkFile = (name: string) => {
+      const content = Buffer.from(`local body ${name}`);
+      return { content, sha256: createHash("sha256").update(content).digest("hex") };
+    };
+    const files = [mkFile("one"), mkFile("two"), mkFile("three")];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes("/offline-sync/apply-file-content")) {
+        pushes.push(url);
+        requestSignals.push(init?.signal);
+        // The operator hits Ctrl+C while the FIRST transfer is in flight.
+        controller.abort();
+        return Response.json({ done: true, applied: true, skipped: false });
+      }
+      return new Response(null, { status: 404 });
+    };
+    await assert.rejects(
+      executeConvergeApply({
+        peerUrl: "https://peer.example.test",
+        fetchImpl,
+        signal: controller.signal,
+        localFilesByNamespace: new Map([
+          [
+            "default",
+            files.map((file, index) => ({
+              path: `facts/local-${index}.md`,
+              sha256: file.sha256,
+              bytes: file.content.length,
+              mtimeMs: 1000,
+            })),
+          ],
+        ]),
+        peerFilesByNamespace: new Map([["default", []]]),
+        localFileBuffers: new Map([
+          ["default", new Map(files.map((file, index) => [`facts/local-${index}.md`, file.content]))],
+        ]),
+      }),
+      (error: unknown) => error instanceof Error && /abort/i.test(error.message)
+    );
+    // Only the in-flight transfer reached the wire; the remaining entries
+    // and the convergence finalization never mutated the peer.
+    assert.equal(pushes.length, 1);
+    assert.ok(requestSignals[0], "apply-file-content request must carry the abort signal");
+  } finally {
+    if (originalConcurrency === undefined) delete process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY;
+    else process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = originalConcurrency;
+  }
+});
+
+test("remnic converge apply: abort drains the rest of the started transfer batch", async () => {
+  const originalConcurrency = process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY;
+  process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = "2";
+  try {
+    const controller = new AbortController();
+    let slowFinished = false;
+    let applyCalls = 0;
+    const mkFile = (name: string) => {
+      const content = Buffer.from(`local body ${name}`);
+      return { content, sha256: createHash("sha256").update(content).digest("hex") };
+    };
+    const files = [mkFile("one"), mkFile("two")];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (!url.includes("/offline-sync/apply-file-content")) {
+        return new Response(null, { status: 404 });
+      }
+      applyCalls += 1;
+      if (applyCalls === 1) {
+        controller.abort();
+        return Response.json({ done: true, applied: true, skipped: false });
+      }
+      const signal = init?.signal;
+      if (signal && !signal.aborted) {
+        let onAbort: () => void = () => {};
+        const promise = new Promise<void>((resolvePromise) => {
+          onAbort = resolvePromise;
+        });
+        signal.addEventListener("abort", () => onAbort(), { once: true });
+        await promise;
+      }
+      slowFinished = true;
+      throw signal?.reason ?? new Error("This operation was aborted");
+    };
+    await assert.rejects(
+      executeConvergeApply({
+        peerUrl: "https://peer.example.test",
+        fetchImpl,
+        signal: controller.signal,
+        localFilesByNamespace: new Map([
+          [
+            "default",
+            files.map((file, index) => ({
+              path: `facts/local-${index}.md`,
+              sha256: file.sha256,
+              bytes: file.content.length,
+              mtimeMs: 1000,
+            })),
+          ],
+        ]),
+        peerFilesByNamespace: new Map([["default", []]]),
+        localFileBuffers: new Map([
+          ["default", new Map(files.map((file, index) => [`facts/local-${index}.md`, file.content]))],
+        ]),
+      }),
+      (error: unknown) => error instanceof Error && /abort/i.test(error.message)
+    );
+    assert.ok(applyCalls >= 2, `expected both batch entries to start, got ${applyCalls}`);
+    assert.equal(slowFinished, true);
+  } finally {
+    if (originalConcurrency === undefined) delete process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY;
+    else process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = originalConcurrency;
+  }
+});
 test("remnic converge apply: a newer local deletion uses the guarded remote delete contract", async () => {
   const filePath = "facts/deleted-locally.md";
   const peerContent = Buffer.from("peer v2");
@@ -1871,4 +1991,65 @@ test("reconcile plan: POSIX-origin paths with colons are accepted off-Windows an
   const plan = await computeConvergePlan(input);
   assert.equal(plan.converged, false);
   assert.equal(plan.byNamespace[0]?.pull, 1);
+});
+
+test("converge --timeout seconds convert to milliseconds before normalization (#2802 follow-up)", async () => {
+  const { convergeTimeoutFlagToMs } = await import("./converge.js");
+  // The round-1 form produced 3600 (ms) for `--timeout 3600` — 3.6 seconds.
+  assert.equal(convergeTimeoutFlagToMs(3600), 3_600_000);
+  assert.equal(convergeTimeoutFlagToMs(30), 30_000);
+  assert.equal(convergeTimeoutFlagToMs(0.5), 500);
+  // The one-hour ceiling still clamps.
+  assert.equal(convergeTimeoutFlagToMs(7_200), 3_600_000);
+  assert.throws(() => convergeTimeoutFlagToMs(Number.NaN), /--timeout/);
+});
+
+test("converge --timeout rounds fractional seconds before integer normalization (#2804 round 1)", async () => {
+  const { convergeTimeoutFlagToMs } = await import("./converge.js");
+  assert.equal(convergeTimeoutFlagToMs(1.001), 1001);
+  // Sub-millisecond values normalize-reject (positive integer required).
+  assert.throws(() => convergeTimeoutFlagToMs(0.0001), /--timeout/);
+});
+
+test("converge --token-file with a missing file exits 2 before any plan work (#2823)", async () => {
+  process.exitCode = undefined;
+  await cmdConverge("plan", ["--peer", "http://127.0.0.1:1", "--token-file", "/nonexistent/peer.token"], true);
+  assert.equal(process.exitCode, 2);
+  process.exitCode = undefined;
+});
+
+test("converge --token-file rejects permissive modes and missing values (#2823 round 1)", async () => {
+  const { mkdtemp, writeFile, chmod, rm } = await import("node:fs/promises");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "token-mode-"));
+  try {
+    const permissive = path.join(dir, "open.token");
+    await writeFile(permissive, "x".repeat(64) + "\n");
+    await chmod(permissive, 0o644);
+    process.exitCode = undefined;
+    await cmdConverge("plan", ["--peer", "http://127.0.0.1:1", "--token-file", permissive], true);
+    // Windows synthesizes POSIX mode bits (readable files present as 0666),
+    // so the permissive rejection is only observable on POSIX.
+    if (process.platform !== "win32") assert.equal(process.exitCode, 2);
+    process.exitCode = undefined;
+    await cmdConverge("plan", ["--peer", "http://127.0.0.1:1", "--token-file"], true);
+    assert.equal(process.exitCode, 2);
+    process.exitCode = undefined;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("converge rejects invalid REMNIC_CONVERGE_TRANSFER_CONCURRENCY (#2832)", async () => {
+  const prev = process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY;
+  try {
+    for (const bad of ["0", "-1", "2.5", "abc", "Infinity"]) {
+      process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = bad;
+      await assert.rejects(() => executeConvergeApply({}), /TRANSFER_CONCURRENCY must be a positive integer/);
+    }
+  } finally {
+    if (prev === undefined) delete process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY;
+    else process.env.REMNIC_CONVERGE_TRANSFER_CONCURRENCY = prev;
+  }
 });

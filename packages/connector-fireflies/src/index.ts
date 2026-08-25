@@ -13,8 +13,7 @@
  */
 
 import {
-  registerWearableConnector,
-  getWearableConnector,
+  selfRegisterWearableConnector,
   type WearableConnectorFactoryOptions,
   type WearableConnectorRegistration,
   type WearableFetchOptions,
@@ -130,10 +129,5 @@ export const wearableConnectorRegistration: WearableConnectorRegistration = {
  * this module registers it as a side effect; calling this again is safe
  * (returns false when already registered).
  */
-export function ensureFirefliesConnectorRegistered(): boolean {
-  if (getWearableConnector(FIREFLIES_SOURCE_ID)) return false;
-  registerWearableConnector(wearableConnectorRegistration);
-  return true;
-}
-
-ensureFirefliesConnectorRegistered();
+export const ensureFirefliesConnectorRegistered =
+  selfRegisterWearableConnector(wearableConnectorRegistration);
