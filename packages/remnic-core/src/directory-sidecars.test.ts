@@ -8,6 +8,8 @@ import { test } from "node:test";
 import {
   DIRECTORY_SIDECAR_BASENAME,
   DIRECTORY_SIDECAR_MARKER,
+  NEIGHBORHOOD_ABSTRACT_LABEL,
+  applyDirectorySidecarDrillDown,
   findDirectorySidecarsForQuery,
   loadDirectorySidecar,
   parseDirectorySidecarsEnabled,
@@ -381,6 +383,117 @@ test("write-path refresh stays inside the changed namespace and skips unrelated 
     );
     assert.equal(scoped?.fresh, true);
     assert.match(scoped?.overview ?? "", /telescope mirror/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function hit(rel: string, snippet: string, score = 1) {
+  return { path: rel, snippet, score };
+}
+
+test("drill-down is a no-op when disabled even if sidecars exist", async () => {
+  const root = store();
+  try {
+    await writeMemory(root, "facts/2026-01-02/fact-1.md", "Telescope calibration log for the north dome.");
+    await runDirectorySidecarMaintenance(root, true);
+    const incoming = [hit("facts/2026-01-02/fact-1.md", "Telescope calibration log")];
+    const out = await applyDirectorySidecarDrillDown("/does-not-exist", "telescope", incoming, {
+      enabled: false,
+    });
+    assert.deepEqual(out, incoming);
+    assert.equal(out[0].snippet, "Telescope calibration log");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("drill-down attaches the neighborhood abstract to hits under a fresh sidecar", async () => {
+  const root = store();
+  try {
+    await writeMemory(root, "facts/2026-01-02/fact-1.md", "Telescope calibration log for the north dome.");
+    await writeMemory(root, "facts/2026-01-02/fact-2.md", "Mirror alignment drift measured at 3 arcmin.");
+    await writeMemory(root, "entities/crew-1.md", "Catering roster for the base kitchen.");
+    await runDirectorySidecarMaintenance(root, true);
+
+    const incoming = [
+      hit("facts/2026-01-02/fact-1.md", "Telescope calibration log"),
+      hit("entities/crew-1.md", "Catering roster"),
+    ];
+    const out = await applyDirectorySidecarDrillDown(root, "telescope calibration", incoming, {
+      enabled: true,
+    });
+    assert.match(out[0].snippet, new RegExp(`^${NEIGHBORHOOD_ABSTRACT_LABEL} `));
+    assert.match(out[0].snippet, /Telescope/i);
+    assert.match(out[0].snippet, /Telescope calibration log$/m);
+    assert.equal(out[1].snippet, "Catering roster", "unrelated hit keeps its snippet");
+    assert.equal(out[0].path, incoming[0].path);
+    assert.equal(out[1].path, incoming[1].path);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("drill-down skips stale sidecars and does not write", async () => {
+  const root = store();
+  try {
+    const dayDir = path.join(root, "facts", "2026-01-02");
+    await writeMemory(root, "facts/2026-01-02/fact-1.md", "Boiler pressure nominal.");
+    await runDirectorySidecarMaintenance(root, true);
+    await writeMemory(root, "facts/2026-01-02/fact-2.md", "Coolant pump replaced with spare unit.");
+    const stale = await loadDirectorySidecar(dayDir, { refresh: false });
+    assert.equal(stale?.fresh, false);
+
+    const mtimeBefore = (await stat(path.join(dayDir, DIRECTORY_SIDECAR_BASENAME))).mtimeMs;
+    const out = await applyDirectorySidecarDrillDown(
+      root,
+      "boiler",
+      [hit("facts/2026-01-02/fact-1.md", "Boiler pressure nominal.")],
+      { enabled: true },
+    );
+    assert.equal(out[0].snippet, "Boiler pressure nominal.");
+    const mtimeAfter = (await stat(path.join(dayDir, DIRECTORY_SIDECAR_BASENAME))).mtimeMs;
+    assert.equal(mtimeAfter, mtimeBefore, "retrieval must not refresh a stale sidecar");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("drill-down namespace scoping never attaches a foreign abstract", async () => {
+  const root = store();
+  try {
+    await writeMemory(root, "namespaces/alpha/facts/2026-05-01/a-1.md", "Alpha wing telescope mirror audit.");
+    await writeMemory(root, "namespaces/beta/facts/2026-05-01/b-1.md", "Beta wing telescope mirror audit.");
+    await runDirectorySidecarMaintenance(root, true);
+
+    const betaHits = [hit("namespaces/beta/facts/2026-05-01/b-1.md", "Beta wing telescope mirror audit.")];
+    const out = await applyDirectorySidecarDrillDown(root, "telescope mirror", betaHits, {
+      enabled: true,
+      namespace: "beta",
+    });
+    assert.match(out[0].snippet, new RegExp(`^${NEIGHBORHOOD_ABSTRACT_LABEL} `));
+    assert.match(out[0].snippet, /Beta wing/i);
+    assert.doesNotMatch(out[0].snippet, /Alpha wing/i);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("drill-down prefers the most specific matching directory", async () => {
+  const root = store();
+  try {
+    await writeMemory(root, "facts/2026-01-02/fact-1.md", "Telescope calibration log for the north dome.");
+    await writeMemory(root, "facts/2026-01-03/fact-2.md", "Guide star acquisition failed twice.");
+    await runDirectorySidecarMaintenance(root, true);
+
+    const out = await applyDirectorySidecarDrillDown(
+      root,
+      "telescope calibration",
+      [hit("facts/2026-01-02/fact-1.md", "Telescope calibration log")],
+      { enabled: true },
+    );
+    assert.match(out[0].snippet, /2026-01-02/);
+    assert.doesNotMatch(out[0].snippet, /Guide star/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -27,12 +27,16 @@
  * sidecar path WITHOUT the marker are user content: never overwritten, never
  * removed.
  *
- * Layer 2 (this slice): {@link refreshDirectorySidecarsAfterWrite} refreshes
- * only the changed directory and its category ancestors, so a memory write
- * populates sidecars without walking the rest of the store. `enabled: false`
- * is a proven no-op (no reads, no writes). Config parsing lives here;
- * `parseConfig` wiring, retrieval drill-down, xray, and LLM summarization
- * remain later layers on #2977 (`config.ts` is at its file-size ratchet).
+ * Layer 2: {@link refreshDirectorySidecarsAfterWrite} refreshes only the
+ * changed directory and its category ancestors. `enabled: false` is a
+ * proven no-op (no reads, no writes).
+ *
+ * Layer 3 (this slice): {@link applyDirectorySidecarDrillDown} scores
+ * fresh sidecars and attaches the winning directory's abstract to hits.
+ * `enabled` stays a function argument — not a parseConfig key (`config.ts`
+ * and `types.ts` are at their file-size ratchets). Retrieval never writes.
+ * xray trajectory, storage write-hook, parseConfig wiring, and LLM
+ * summarization remain later layers on #2977.
  */
 
 import { createHash } from "node:crypto";
@@ -47,6 +51,8 @@ import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
 
 export const DIRECTORY_SIDECAR_BASENAME = "overview.md";
 export const DIRECTORY_SIDECAR_MARKER = "<!-- remnic-directory-sidecar -->";
+/** Prefix prepended to a hit snippet when a fresh directory abstract attaches. */
+export const NEIGHBORHOOD_ABSTRACT_LABEL = "Neighborhood:";
 
 const ABSTRACT_MAX_CHARS = 256;
 const OVERVIEW_MAX_CHARS = 4000;
@@ -85,6 +91,13 @@ export interface DirectorySidecar {
 
 export interface DirectorySidecarMatch extends DirectorySidecar {
   readonly score: number;
+}
+
+/** Minimal hit shape drill-down mutates. Extra fields pass through. */
+export interface DirectorySidecarHit {
+  path: string;
+  snippet: string;
+  score: number;
 }
 
 export interface DirectorySidecarReport {
@@ -435,7 +448,7 @@ export async function loadDirectorySidecar(
 export async function findDirectorySidecarsForQuery(
   memoryDir: string,
   query: string,
-  options: { namespace?: string; limit?: number } = {},
+  options: { namespace?: string; limit?: number; refresh?: boolean } = {},
 ): Promise<DirectorySidecarMatch[]> {
   const scope = options.namespace ? path.join(memoryDir, "namespaces", options.namespace) : memoryDir;
   if (!isRealDirectory(scope)) return [];
@@ -447,7 +460,7 @@ export async function findDirectorySidecarsForQuery(
   const matches: DirectorySidecarMatch[] = [];
   for (const root of scopeRoots(scope)) {
     for (const dir of collectSidecarDirs(root)) {
-      const sidecar = await loadDirectorySidecar(dir);
+      const sidecar = await loadDirectorySidecar(dir, { refresh: options.refresh });
       if (!sidecar) continue;
       const abstractLower = sidecar.abstract.toLowerCase();
       const overviewLower = sidecar.overview.toLowerCase();
@@ -465,4 +478,53 @@ export async function findDirectorySidecarsForQuery(
   return matches
     .filter((candidate) => !matches.some((other) => other.dir.startsWith(`${candidate.dir}${path.sep}`)))
     .slice(0, limit);
+}
+
+function attachNeighborhoodAbstract(snippet: string, abstract: string): string {
+  const line = `${NEIGHBORHOOD_ABSTRACT_LABEL} ${abstract}`;
+  if (snippet === line || snippet.startsWith(`${line}\n`)) return snippet;
+  return snippet.length === 0 ? line : `${line}\n${snippet}`;
+}
+
+function mostSpecificSidecarForHit(
+  memoryDir: string,
+  hitPath: string,
+  matches: readonly DirectorySidecarMatch[],
+): DirectorySidecarMatch | null {
+  if (path.basename(hitPath) === DIRECTORY_SIDECAR_BASENAME) return null;
+  const abs = path.isAbsolute(hitPath) ? path.resolve(hitPath) : path.resolve(memoryDir, hitPath);
+  let best: DirectorySidecarMatch | null = null;
+  for (const match of matches) {
+    const rel = path.relative(match.dir, abs);
+    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) continue;
+    if (best === null || match.dir.length > best.dir.length) best = match;
+  }
+  return best;
+}
+
+/**
+ * Retrieval drill-down (layer 3 of #2977): score fresh directory sidecars
+ * and attach the winning neighborhood abstract to hits under that directory.
+ * `enabled: false` (the default) returns hits unchanged with no I/O.
+ * Never writes. Does not reorder. parseConfig is not consulted.
+ */
+export async function applyDirectorySidecarDrillDown<T extends DirectorySidecarHit>(
+  memoryDir: string,
+  query: string,
+  hits: readonly T[],
+  options: { enabled?: boolean; namespace?: string } = {},
+): Promise<T[]> {
+  if (options.enabled !== true) return [...hits];
+  const matches = await findDirectorySidecarsForQuery(memoryDir, query, {
+    namespace: options.namespace,
+    refresh: false,
+  });
+  const fresh = matches.filter((match) => match.fresh && match.abstract.length > 0);
+  if (fresh.length === 0) return [...hits];
+  return hits.map((hit) => {
+    const match = mostSpecificSidecarForHit(memoryDir, hit.path, fresh);
+    if (!match) return hit;
+    const snippet = attachNeighborhoodAbstract(hit.snippet, match.abstract);
+    return snippet === hit.snippet ? hit : { ...hit, snippet };
+  });
 }
