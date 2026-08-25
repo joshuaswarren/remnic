@@ -160,6 +160,26 @@ const CHECKS = [
     hint: "A touched lifecycle path has no registered LifecycleSubject. Add or extend one — a required gate that passes without exercising the code it covers is worse than no gate.",
     optional: true,
   },
+  {
+    name: "lifecycle glob-bypass",
+    argv: ["node", "scripts/process-gates/lifecycle-glob-bypass.mjs"],
+    hint: "A coverage entry with ** silently bypasses grandfathered paths. Use exact-path entries.",
+  },
+  {
+    name: "types import cycle",
+    argv: ["node", "scripts/process-gates/types-import-cycle.mjs"],
+    hint: "types.ts transitively reaches a runtime module. Move the interface into a leaf sibling and re-export.",
+  },
+  {
+    name: "manifest headroom",
+    argv: ["node", "scripts/process-gates/manifest-headroom.mjs"],
+    hint: "openclaw.plugin.json minified is over the 250,000 fail-at. Shrink before the next config addition lands.",
+  },
+  {
+    name: "branch shape",
+    argv: ["node", "scripts/process-gates/branch-shape.mjs"],
+    hint: "Branch name does not match an expected pattern (b<n>/<issue>, b<n>/process-..., fix/<issue>-...).",
+  },
 ];
 
 function runCheck(check) {
