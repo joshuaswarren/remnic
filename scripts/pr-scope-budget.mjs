@@ -127,6 +127,12 @@ const DESCRIPTIVE_ARTICLES = new Set(["the", "a", "an"]);
 /** Past-participle spellings of the closing keywords ("closed", not "closes"). */
 const PAST_PARTICIPLE_KEYWORDS = new Set(["fixed", "closed", "resolved"]);
 
+/** The repository this gate runs on. A qualifier naming THIS repository
+ * (`joshuaswarren/remnic#1234`) is the same claim as bare `#1234` — GitHub
+ * renders both spellings for one issue, and counting both inflated the
+ * multi-issue signal on single-issue PRs (issue #2948). */
+const CURRENT_REPO = "joshuaswarren/remnic";
+
 /**
  * Issues CLAIMED by PR-body closing keywords, deduped (issues #2067, #2919).
  * The grammar is GitHub's closing-keyword form: keyword + optional
@@ -134,9 +140,11 @@ const PAST_PARTICIPLE_KEYWORDS = new Set(["fixed", "closed", "resolved"]);
  * continue as local `#<n>` only — `Fixes #1, #2 and #3`. A qualified
  * reference needs its own keyword (`resolves octo-org/octo-repo#100`);
  * `Fixes #1 and octo-org/octo-repo#2` does not claim the second.
- * Local `#100` and `owner/repo#100` are distinct claims. Bare #<n>
- * citations — ordinary prose, quoted source comments, anything without a
- * keyword — never count, and neither do citations from touched-file
+ * Local `#100` and `owner/repo#100` are distinct claims — except that a
+ * qualifier naming the current repository canonicalizes to the bare
+ * number, so both spellings of one issue count once (issue #2948). Bare
+ * #<n> citations — ordinary prose, quoted source comments, anything
+ * without a keyword — never count, and neither do citations from
  * contents, commit messages, or review text: the parser consumes PR text
  * only (the workflow passes the body, #2919). Non-rendered content is
  * dropped first — HTML comments (template/generated <!-- ... --> blocks) and
@@ -187,7 +195,11 @@ export function extractIssueRefs(text) {
 }
 
 function claimedIssue(repo, number) {
-  return repo ? `${repo}#${number}` : Number(number);
+  // A qualifier naming the current repository is the bare local identity
+  // (issue #2948); GitHub resolves owner/repo case-insensitively, so the
+  // compare lowercases. Any other qualifier stays a distinct cross-repo claim.
+  if (!repo || repo.toLowerCase() === CURRENT_REPO) return Number(number);
+  return `${repo}#${number}`;
 }
 
 function formatClaimedIssueList(issues) {
