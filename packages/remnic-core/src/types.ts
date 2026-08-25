@@ -22,6 +22,7 @@ import type {
 } from "./preferences/drift-types.js";
 import type { DeepRecallSettings } from "./deep-recall-config.js";
 import type { RecallNavigationSettings } from "./recall-navigation-config.js";
+import type { RecognitionTierSettings } from "./recall-recognition-tier.js";
 import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
 import type { SkillProjectionConfig } from "./procedural/skill-projection.js";
 import type { SessionExperienceConfig } from "./experience/session-experience-config.js";
@@ -696,6 +697,7 @@ export interface PluginConfig
     ActiveContextConfigFields,
     DeepRecallSettings,
     RecallNavigationSettings,
+    RecognitionTierSettings,
     LocalLlmConfig {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;

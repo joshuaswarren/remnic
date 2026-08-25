@@ -4982,6 +4982,17 @@
         "default": 2048,
         "description": "Hard character budget for the standing memory block. Pinned lines that cannot fit refuse the build rather than truncate."
       },
+      "recallRecognitionTier": {
+        "type": "boolean",
+        "default": false,
+        "description": "Full-index recognition tier (issue #2975): small namespaces recall by recognizing against the whole compact index instead of vector search; absent or oversized indexes fall back to vector search deterministically. Default false keeps recall byte-identical; recall-path wiring lands in a later slice."
+      },
+      "recognitionIndexMaxEntries": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 500,
+        "description": "Inclusive entry threshold for the full-index recognition tier; larger indexes route to vector search."
+      },
       "recallConfidenceGateEnabled": {
         "type": "boolean",
         "default": false,
@@ -8785,6 +8796,17 @@
       "advanced": true,
       "placeholder": "2048",
       "help": "Hard character budget for the standing memory block."
+    },
+    "recallRecognitionTier": {
+      "label": "Full-Index Recognition Tier",
+      "advanced": true,
+      "help": "Small namespaces recognize against the whole compact index instead of vector search (issue #2975)."
+    },
+    "recognitionIndexMaxEntries": {
+      "label": "Recognition Index Threshold",
+      "advanced": true,
+      "placeholder": "500",
+      "help": "Max index entries for the full-index recognition tier to engage."
     },
     "recallPipeline": {
       "label": "Recall Pipeline",
