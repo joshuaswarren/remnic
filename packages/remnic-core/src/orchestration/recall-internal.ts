@@ -5043,6 +5043,7 @@ export class RecallInternalCoordinator {
         // Build a path → QmdSearchResult index so we can pull per-result
         // explain data (e.g. reinforcementBoost) from the result that
         // boostSearchResults annotated before surfacing to xray.
+        // #1952: label the captured branch through the same inject-seam annotator.
         const xrayResultByPath = indexStateViewAnnotatedResults(
           xrayRecalledResults, retrievalQuery, this.deps.config, stateViewActive, asOfMs,
         );
