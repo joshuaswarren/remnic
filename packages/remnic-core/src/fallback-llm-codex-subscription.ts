@@ -171,7 +171,7 @@ export async function tryCodexSubscriptionProvider(
 
 export function abortReason(signal: AbortSignal | undefined): Error {
   const reason = signal?.reason;
-  return reason instanceof Error ? reason : new Error("fallback LLM request aborted");
+  return reason instanceof Error ? reason : new Error("task LLM request aborted");
 }
 
 export function withCodexRuntimeShutdown<T extends { signal?: AbortSignal }>(

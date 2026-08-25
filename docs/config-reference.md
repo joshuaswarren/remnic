@@ -958,8 +958,10 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `localLlmApiKeyEnv` | `(unset)` | Optional environment-variable name for a local API key; if it is unset, local auth remains unset so read-only CLI commands can load config |
 | `localLlmHeaders` | `(unset)` | Extra HTTP headers |
 | `localLlmAuthHeader` | `true` | Send `Authorization: Bearer` header when key set |
-| `localLlmFallback` | `true` | Fall back to gateway model chain on failure |
-| `localLlmTimeoutMs` | `180000` | Timeout for a single attempt at a primary local extraction/consolidation call. 5xx retries and their backoff can push one logical completion past this value. Also sizes the HTTP connection's header/body inactivity budget, so values above 300s take effect instead of being capped by undici's default (issue #2148). Exception: when the host process installs its own global dispatcher (a `ProxyAgent`, `MockAgent`, or other custom transport), Remnic leaves it in place rather than displacing it, and that dispatcher's own budget — undici's 300s default unless it was built with a wider one — governs instead. Raising this value past 300s on such a setup requires widening the host dispatcher too. |
+| `taskLlmTimeoutMs` | `180000` | Timeout for the gateway/task LLM chain. In `modelSource: "gateway"` this is the primary extraction timeout. See [Task LLM naming](task-llm-naming.md). |
+| `taskLlmFallback` | `true` | When the local LLM path fails or is unavailable, use the gateway/task LLM chain. |
+| `localLlmFallback` | `true` | Legacy alias for `taskLlmFallback`. Read only when `taskLlmFallback` is absent. |
+| `localLlmTimeoutMs` | `180000` | Timeout for a single attempt at a primary local extraction/consolidation call. 5xx retries and their backoff can push one logical completion past this value. Also sizes the HTTP connection's header/body inactivity budget, so values above 300s take effect instead of being capped by undici's default (issue #2148). Exception: when the host process installs its own global dispatcher (a `ProxyAgent`, `MockAgent`, or other custom transport), Remnic leaves it in place rather than displacing it, and that dispatcher's own budget — undici's 300s default unless it was built with a wider one — governs instead. Raising this value past 300s on such a setup requires widening the host dispatcher too. Legacy alias for `taskLlmTimeoutMs` on the gateway/task chain when that key is absent. |
 | `localLlmRetry5xxCount` | `1` | Retry count for transient 5xx responses from the local endpoint |
 | `localLlmRetryBackoffMs` | `400` | Base backoff in milliseconds for local endpoint retries |
 | `localLlm400TripThreshold` | `5` | Consecutive 4xx responses before the local endpoint is temporarily tripped |
@@ -2119,10 +2121,12 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `localLlmApiKey` | (unset) | (unset) |
 | `localLlmHeaders` | (unset) | (unset) |
 | `localLlmAuthHeader` | `true` | `true` |
+| `taskLlmFallback` | `true` | `true` |
 | `localLlmFallback` | `true` | `true` |
 | `localLlmHomeDir` | (unset) | (unset) |
 | `localLmsCliPath` | (unset) | (unset) |
 | `localLmsBinDir` | (unset) | (unset) |
+| `taskLlmTimeoutMs` | `180000` | `180000` |
 | `localLlmTimeoutMs` | `180000` | `180000` |
 | `slowLogEnabled` | `false` | `false` |
 | `slowLogThresholdMs` | `30000` | `30000` |
