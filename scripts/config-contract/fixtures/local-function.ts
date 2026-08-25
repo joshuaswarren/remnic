@@ -40,3 +40,17 @@ export function parseFixtureShadowedAlias(value: unknown): Rec {
   const read = (key: string): unknown => raw[key];
   return { enabled: read("enabled") };
 }
+
+export function parseFixtureBlockConfig(value: unknown): Rec {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? (value as Rec) : {};
+  return { enabled: raw.enabled === true };
+}
+
+/** Two parse*Config construction sites for the same `meetings.*` prefix (#2949). */
+export function parseFixtureDoubledParserConfig(value: unknown): Rec {
+  const cfg = value && typeof value === "object" && !Array.isArray(value) ? (value as Rec) : {};
+  return {
+    meetings: parseFixtureBlockConfig(cfg.meetings),
+    also: parseFixtureBlockConfig(cfg.meetings),
+  };
+}
