@@ -40,8 +40,9 @@ import { INTEGRITY_META_FIELDS } from "./integrity/types.js";
 
 /**
  * Recognized legacy shape version. Shape 1 is the pre-#2800 bench-ui
- * envelope: `meta.id`, `meta.benchmark`, and `meta.timestamp` present;
- * every other canonical field optional.
+ * envelope: `meta.id`, `meta.benchmark`, and `meta.timestamp` present,
+ * plus at least one recognized task or aggregate. Every other
+ * canonical field is optional.
  */
 export const LEGACY_ARTIFACT_SHAPE_VERSION = 1 as const;
 
@@ -582,13 +583,17 @@ export function recognizeLegacyBenchmarkArtifact(value: unknown): LegacyArtifact
       shapeVersion: LEGACY_ARTIFACT_SHAPE_VERSION,
       result: (() => {
         const results = upgradeResults(value);
-        return {
+        const upgraded = {
           meta: upgradeMeta(value, results.tasks.length),
           config: upgradeConfig(value),
           cost: upgradeCost(value),
           results,
           environment: upgradeEnvironment(value),
         };
+        if (!("results" in value)) {
+          reject("results must contain at least one recognized task or aggregate");
+        }
+        return upgraded;
       })(),
     };
   } catch (error) {

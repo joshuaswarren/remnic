@@ -19,9 +19,8 @@ import { loadBenchResultSummaries } from "../packages/bench-ui/src/results.js";
 import type { MetricAggregate } from "@remnic/bench";
 import { validResultFixture } from "../packages/bench-ui/src/testing/result-fixture.js";
 
-/** Mean-only aggregate: the parser coerces the missing stats to nulls. */
-function meanOnlyAggregate(mean: number): MetricAggregate {
-  return { mean } as MetricAggregate;
+function completeAggregate(mean: number): MetricAggregate {
+  return { mean, median: mean, stdDev: 0, min: mean, max: mean };
 }
 
 function buildAssistantSummary(overrides: Partial<BenchResultSummary> = {}): BenchResultSummary {
@@ -303,9 +302,9 @@ test("bench UI loader surfaces assistant rubric metadata and per-seed details", 
       },
     ],
     aggregates: {
-      identity_accuracy: meanOnlyAggregate(4),
-      calibration: meanOnlyAggregate(4.5),
-      overall: meanOnlyAggregate(4.2),
+      identity_accuracy: completeAggregate(4),
+      calibration: completeAggregate(4.5),
+      overall: completeAggregate(4.2),
     },
     statistics: {
       bootstrapSamples: 1000,

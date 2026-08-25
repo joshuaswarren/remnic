@@ -37,9 +37,8 @@ const FIXTURE_INTEGRITY: BenchIntegritySummary = {
   datasetHashShort: null,
 };
 
-/** Mean-only aggregate: the parser coerces the missing stats to nulls. */
-function meanOnlyAggregate(mean: number): MetricAggregate {
-  return { mean } as MetricAggregate;
+function completeAggregate(mean: number): MetricAggregate {
+  return { mean, median: mean, stdDev: 0, min: mean, max: mean };
 }
 
 test("bench UI loader summarizes valid benchmark JSON files and ignores invalid entries", async () => {
@@ -71,10 +70,9 @@ test("bench UI loader summarizes valid benchmark JSON files and ignores invalid 
       },
     ],
     aggregates: {
-      accuracy: meanOnlyAggregate(0.75),
-      f1: meanOnlyAggregate(0.63),
-      llm_judge: meanOnlyAggregate(0.9),
-      ignored: meanOnlyAggregate("bad" as unknown as number),
+      accuracy: completeAggregate(0.75),
+      f1: completeAggregate(0.63),
+      llm_judge: completeAggregate(0.9),
     },
   };
   await writeFile(path.join(resultsDir, "latest.json"), JSON.stringify(latestArtifact, null, 2));

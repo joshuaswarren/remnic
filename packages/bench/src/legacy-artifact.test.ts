@@ -259,25 +259,14 @@ test("recognizeLegacyBenchmarkArtifact preserves present values in the pre-prove
   assert.deepEqual(environment, { os: "unknown", nodeVersion: "unknown" });
 });
 
-test("recognizeLegacyBenchmarkArtifact upgrades the meta-floor-only shape", () => {
+test("recognizeLegacyBenchmarkArtifact rejects the meta-floor-only shape as incomplete", () => {
   const recognition = recognizeLegacyBenchmarkArtifact({
     meta: { id: "floor-run", benchmark: "sample", timestamp: "2026-01-01T00:00:00.000Z" },
   });
 
-  assert.equal(recognition.ok, true);
-  if (!recognition.ok) return;
-  const result = recognition.result;
-  assert.equal(result.meta.mode, "quick");
-  assert.equal(result.meta.runCount, 0);
-  assert.deepEqual(result.results, { tasks: [], aggregates: {} });
-  assert.deepEqual(result.cost, {
-    totalTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    estimatedCostUsd: 0,
-    totalLatencyMs: 0,
-    meanQueryLatencyMs: 0,
-  });
+  assert.equal(recognition.ok, false);
+  if (recognition.ok) return;
+  assert.match(recognition.reason, /at least one recognized task or aggregate/);
 });
 
 test("recognizeLegacyBenchmarkArtifact rejects malformed and ambiguous shapes with a reason", () => {
@@ -512,6 +501,9 @@ test("recognizeLegacyBenchmarkArtifact preserves meta.canaryFloor when present",
       timestamp: "2026-03-01T00:00:00.000Z",
       canaryScore: 0.08,
       canaryFloor: 0.05,
+    },
+    results: {
+      tasks: [{ taskId: "task-1" }],
     },
   });
 
