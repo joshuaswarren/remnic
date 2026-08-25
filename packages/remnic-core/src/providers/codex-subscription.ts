@@ -177,7 +177,7 @@ export interface CodexSubscriptionRunnerDeps {
   /** Runs `codex exec`. Default: isolated subprocess via launchProcess. */
   runCodexExec?: (request: CodexSubscriptionExecRequest) => Promise<CodexSubscriptionExecResult>;
   /** Runs `codex login status`. Default: isolated subprocess. Receives the
-   * login-status timeout budget (capped by the request deadline) and the
+   * shared login-status ceiling (not any one caller's deadline) and the
    * shared-check abort signal (fires when the last waiter leaves). */
   runLoginStatus?: (
     executable: string,
@@ -210,6 +210,7 @@ interface LoginStatusCacheEntry {
 }
 
 const loginStatusCache = new Map<string, LoginStatusCacheEntry>();
+const inFlightLoginByRunner = new WeakMap<CodexCliFallbackRunner, Map<string, LoginStatusCacheEntry>>();
 const childrenByRunner = new WeakMap<CodexCliFallbackRunner, Set<number>>();
 const runnerByOwner = new WeakMap<object, CodexCliFallbackRunner>();
 const shutdownByRunner = new WeakMap<CodexCliFallbackRunner, AbortController>();
@@ -239,6 +240,7 @@ export function createCodexSubscriptionRunner(deps: CodexSubscriptionRunnerDeps 
       { ...request, options: { ...request.options, signal } },
       runnerDeps,
       envSource,
+      runner,
     );
   };
   childrenByRunner.set(runner, children);
@@ -320,7 +322,8 @@ export function beginCodexSubscriptionShutdown(
 async function runCodexSubscriptionRequest(
   request: CodexCliFallbackRequest,
   deps: CodexSubscriptionRunnerDeps,
-  envSource: NodeJS.ProcessEnv
+  envSource: NodeJS.ProcessEnv,
+  runner: CodexCliFallbackRunner,
 ): Promise<CodexCliFallbackResult> {
   const { config } = request;
   assertNoApiKeyConfig(config);
@@ -339,7 +342,7 @@ async function runCodexSubscriptionRequest(
     throw abortErrorOf(request.options.signal);
   }
   await assertSubscriptionLogin(executable, env, deps, {
-    loginStatusTimeoutMs: Math.min(LOGIN_STATUS_TIMEOUT_MS, timeoutMs),
+    runner,
     callerTimeoutMs: timeoutMs,
     deadlineStartedAt,
     signal: request.options.signal,
@@ -460,8 +463,7 @@ function isAllowedEnvKey(key: string): boolean {
 }
 
 interface LoginCheckContext {
-  /** Budget for the login-status subprocess itself. */
-  loginStatusTimeoutMs: number;
+  runner: CodexCliFallbackRunner;
   /** The caller's overall effective deadline (login + exec). */
   callerTimeoutMs: number;
   deadlineStartedAt: number;
@@ -483,16 +485,32 @@ async function assertSubscriptionLogin(
   ctx: LoginCheckContext
 ): Promise<void> {
   const now = deps.now ?? Date.now;
-  const cacheKey = `${executable}\0${resolveCodexAuthHome(env) ?? ""}`;
+  const cacheKey = loginCacheKey(executable, env);
+  const inflight = inFlightLoginsFor(ctx.runner).get(cacheKey);
+  if (inflight && now() - inflight.at < LOGIN_STATUS_CACHE_TTL_MS) {
+    await waitForLoginEntry(inflight, cacheKey, ctx, now);
+    return;
+  }
   const cached = loginStatusCache.get(cacheKey);
   if (cached && now() - cached.at < LOGIN_STATUS_CACHE_TTL_MS) {
     if (!cached.settled || (await authStoreFingerprint(env)) === cached.fingerprint) {
       await waitForLoginEntry(cached, cacheKey, ctx, now);
       return;
     }
-
+    if (loginStatusCache.get(cacheKey) === cached) {
+      loginStatusCache.delete(cacheKey);
+    }
   }
-  loginStatusCache.delete(cacheKey);
+  const raced = inFlightLoginsFor(ctx.runner).get(cacheKey);
+  if (raced && now() - raced.at < LOGIN_STATUS_CACHE_TTL_MS) {
+    await waitForLoginEntry(raced, cacheKey, ctx, now);
+    return;
+  }
+  const published = loginStatusCache.get(cacheKey);
+  if (published && now() - published.at < LOGIN_STATUS_CACHE_TTL_MS) {
+    await waitForLoginEntry(published, cacheKey, ctx, now);
+    return;
+  }
   if (ctx.signal?.aborted) {
     throw abortErrorOf(ctx.signal);
   }
@@ -504,19 +522,19 @@ async function assertSubscriptionLogin(
     controller: new AbortController(),
     promise: Promise.resolve(undefined),
   };
-  entry.promise = runLoginStatusCheck(executable, env, deps, ctx, entry);
+  entry.promise = runLoginStatusCheck(executable, env, deps, entry);
   entry.promise.then(
     () => {
       entry.settled = true;
+      loginStatusCache.set(cacheKey, entry);
+      dropInFlightLogin(ctx.runner, cacheKey, entry);
     },
     () => {
       entry.settled = true;
-      if (loginStatusCache.get(cacheKey) === entry) {
-        loginStatusCache.delete(cacheKey);
-      }
+      dropInFlightLogin(ctx.runner, cacheKey, entry);
     }
   );
-  loginStatusCache.set(cacheKey, entry);
+  inFlightLoginsFor(ctx.runner).set(cacheKey, entry);
   await waitForLoginEntry(entry, cacheKey, ctx, now);
 }
 
@@ -524,16 +542,15 @@ async function runLoginStatusCheck(
   executable: string,
   env: NodeJS.ProcessEnv,
   deps: CodexSubscriptionRunnerDeps,
-  ctx: LoginCheckContext,
   entry: LoginStatusCacheEntry
 ): Promise<void> {
   const runLoginStatus = deps.runLoginStatus!;
-  const result = await runLoginStatus(executable, env, ctx.loginStatusTimeoutMs, entry.controller.signal);
+  const result = await runLoginStatus(executable, env, LOGIN_STATUS_TIMEOUT_MS, entry.controller.signal);
   const output = `${result.stdout}\n${result.stderr}`.trim();
   if (TIMEOUT_PATTERN.test(output)) {
     // A login-status subprocess timeout is a deadline expiry, not an auth
     // failure — never report it as "unauthenticated".
-    throw new CodexSubscriptionTimeoutError(ctx.loginStatusTimeoutMs);
+    throw new CodexSubscriptionTimeoutError(LOGIN_STATUS_TIMEOUT_MS);
   }
   if (result.status === 0 && LOGIN_OK_PATTERN.test(output)) {
     entry.fingerprint = await authStoreFingerprint(env);
@@ -602,6 +619,7 @@ async function waitForLoginEntry(
     entry.waiters--;
     if (entry.waiters <= 0 && !entry.settled) {
       entry.controller.abort();
+      dropInFlightLogin(ctx.runner, cacheKey, entry);
       if (loginStatusCache.get(cacheKey) === entry) {
         loginStatusCache.delete(cacheKey);
       }
@@ -631,6 +649,28 @@ function resolveCodexAuthHome(env: NodeJS.ProcessEnv): string | undefined {
   if (env.CODEX_HOME) return env.CODEX_HOME;
   const profile = env.HOME ?? env.USERPROFILE;
   return profile ? path.join(profile, ".codex") : undefined;
+}
+
+function loginCacheKey(executable: string, env: NodeJS.ProcessEnv): string {
+  return `${executable}\0${resolveCodexAuthHome(env) ?? ""}`;
+}
+
+function inFlightLoginsFor(runner: CodexCliFallbackRunner): Map<string, LoginStatusCacheEntry> {
+  let map = inFlightLoginByRunner.get(runner);
+  if (!map) {
+    map = new Map();
+    inFlightLoginByRunner.set(runner, map);
+  }
+  return map;
+}
+
+function dropInFlightLogin(
+  runner: CodexCliFallbackRunner,
+  cacheKey: string,
+  entry: LoginStatusCacheEntry,
+): void {
+  const map = inFlightLoginByRunner.get(runner);
+  if (map?.get(cacheKey) === entry) map.delete(cacheKey);
 }
 
 /**
@@ -755,7 +795,7 @@ function execFailureError(
   }
   if (AUTH_FAILURE_PATTERN.test(combined)) {
     // Re-check login on the next request; the cached status is now stale.
-    loginStatusCache.delete(`${executable}\0${env.CODEX_HOME ?? env.HOME ?? ""}`);
+    loginStatusCache.delete(loginCacheKey(executable, env));
     return new CodexSubscriptionAuthError(
       "expired_or_revoked",
       "codex-subscription: the Codex CLI rejected the request as unauthenticated " +
