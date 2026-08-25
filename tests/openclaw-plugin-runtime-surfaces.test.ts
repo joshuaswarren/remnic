@@ -82,6 +82,7 @@ const OPENCLAW_PACKAGE_EXPECTATIONS = [
 ];
 const TOOL_SOURCE_PATHS = [
   "src/tools.ts",
+  "src/shared-context-tools.ts",
   "packages/plugin-openclaw/src/openclaw-tools/memory-search-tool.ts",
   "packages/plugin-openclaw/src/openclaw-tools/memory-get-tool.ts",
   "packages/remnic-core/src/lcm/tools.ts",

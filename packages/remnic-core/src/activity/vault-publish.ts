@@ -261,6 +261,12 @@ export function parseAtxHeading(line: string): { level: number; text: string } |
   return { level, text: line.slice(start, end) };
 }
 
+/** True when `## ${name}` parses back to the same heading text. */
+export function headingSurvivesRoundTrip(name: string): boolean {
+  const parsed = parseAtxHeading(`## ${name}`);
+  return parsed !== null && parsed.text === name;
+}
+
 export function publishVaultRegion(input: {
   vaultPath: string;
   relativeFile: string;
