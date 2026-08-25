@@ -15,6 +15,7 @@
  * write for the run has succeeded.
  */
 
+import { fillWearableConversationLocations } from "../location/tagging.js";
 import { cleanConversation } from "./cleanup.js";
 import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import {
@@ -50,6 +51,7 @@ import {
   saveSyncState,
   updateSourceSyncState,
 } from "./sync-state.js";
+import type { LocationConfig } from "../location/types.js";
 import type {
   WearableConversation,
   WearableSourceConnector,
@@ -122,6 +124,11 @@ export interface WearableSyncDeps {
   listSupportMemories?(): Promise<Array<{ id: string; content: string }>>;
   /** Clock injection for tests. */
   now?: () => Date;
+  /**
+   * Location config for the missing-only conversation location fill
+   * (issue #2925). Absent, or location tagging disabled, changes nothing.
+   */
+  locationConfig?: LocationConfig;
 }
 
 /** Format a Date as YYYY-MM-DD in the given IANA timezone. */
@@ -381,6 +388,18 @@ export async function syncWearableSource(
     summary.segmentsDropped += cleaned.segmentsDropped;
     summary.redactions += cleaned.redactions;
     summary.correctionsApplied += cleaned.correctionsApplied;
+
+    // Missing-only location fill (issue #2925): run before the body is
+    // composed so a qualifying dominant-overlap place reaches the day
+    // transcript and memory headers exactly like a provider-supplied
+    // location would. Source-provided values are never overwritten, and
+    // the helper no-ops unless both location gates are on.
+    if (deps.locationConfig) {
+      await fillWearableConversationLocations(cleaned.conversations, {
+        memoryDir: deps.memoryDir,
+        config: deps.locationConfig,
+      });
+    }
 
     if (fetched.conversations.length === 0) {
       // No provider data at all. A transient provider hiccup can

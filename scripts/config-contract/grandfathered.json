@@ -116,11 +116,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "briefing",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "briefing.calendarSource",
     "issue": "#1990"
   },
@@ -132,11 +127,6 @@
   {
     "kind": "undocumented-key",
     "key": "briefing.defaultWindow",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "briefing.enabled",
     "issue": "#1990"
   },
   {

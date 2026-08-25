@@ -50,6 +50,13 @@ pull → off-the-record elision → cleanup → redaction → corrections
 4. **Corrections** — your personal fix-ups for words ASR keeps getting
    wrong (product names, people, jargon). Rules come from config and
    from `remnic wearables corrections add`.
+
+   Location fill (opt-in, issue #2925): after cleanup, a conversation whose
+   provider supplied no `location` may get the matched dominant-overlap place
+   label from the [location subsystem](config-reference.md#location) — only
+   when `location.enabled` and `location.tagging.enabled` are both on. A
+   source-provided value is never overwritten; conflicting or
+   below-threshold matches leave the field empty.
 5. **Speaker labeling** — provider diarization labels resolve through a
    persistent registry: provider-identified wearers render as
    "Your Name (you)"; opaque labels ("0", "SPEAKER_01", "Speaker 2")

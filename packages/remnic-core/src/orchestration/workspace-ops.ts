@@ -28,6 +28,8 @@ import { LocalLlmClient } from "../local-llm.js";
 import { log } from "../logger.js";
 import type { NamespaceMaintenanceFanoutRunnerContext } from "../maintenance/namespace-maintenance-fanout.js";
 import type { NamespaceMaintenanceSummary } from "../maintenance/namespace-planner.js";
+import { localDayKey } from "../location/intervals.js";
+import { renderDayLocationContext } from "../location/tagging.js";
 import { type PatternReinforcementResult, runPatternReinforcement } from "../maintenance/pattern-reinforcement.js";
 import { evaluateMemoryActionPolicy } from "../memory-action-policy.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
@@ -454,6 +456,17 @@ export class WorkspaceOpsCoordinator {
       }
     }
 
+    if (options.includeLocation === true && this.deps.config.location) {
+      const section = await renderDayLocationContext(
+        storage.dir,
+        localDayKey(now.toISOString(), this.deps.config.location.timezone),
+        this.deps.config.location,
+      );
+      if (section) {
+        formatted += `\n\n${section}`;
+      }
+    }
+
     log.info(
       `gatherTodayFacts: collected ${facts.length} facts, ${hourlySummaries.length} hourly summaries for ${targetLocalDate} (${timeZone}, ${formatted.length} chars)`,
     );
@@ -636,6 +649,7 @@ export class WorkspaceOpsCoordinator {
       service = new WearablesService({
         config: this.deps.config.wearables,
         getStorage: async () => await this.deps.getStorageForNamespace(namespace),
+        locationConfig: this.deps.config.location,
         extract: (turns) => this.deps.extraction.extract(turns),
         // Smart memoryMode runs candidates through the SAME extraction
         // judge (cache + defer counters included) the live extraction

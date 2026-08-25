@@ -29,7 +29,7 @@ import {
   type MemoryScopePlan,
   NamespaceNotWritableError,
 } from "./access-service.js";
-import { reapplyCategoryCoercion, splitCanonicalWriteRequest } from "./access-observe-write-category.js";
+import { applyBriefingLocationContext, reapplyCategoryCoercion, splitCanonicalWriteRequest } from "./access-observe-write-category.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
 import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
@@ -454,7 +454,7 @@ export class AccessObserveWriteSurface {
       ? new FileCalendarSource(config.briefing.calendarSource)
       : undefined;
 
-    const result = await buildBriefing({
+    const result = await applyBriefingLocationContext(await buildBriefing({
       storage,
       namespace,
       window,
@@ -470,7 +470,7 @@ export class AccessObserveWriteSurface {
       // other LLM feature uses. A configured key keeps its precedence so
       // existing deployments are unchanged.
       followupGenerator: config.openaiApiKey ? undefined : this.deps.orchestrator.briefingChainFollowupGenerator,
-    });
+    }), request.includeLocation, storage.dir, window.from.toISOString(), config.location);
 
     return {
       format,

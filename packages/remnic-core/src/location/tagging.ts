@@ -275,3 +275,61 @@ export async function renderDayLocationContext(
   });
   return `## Location context\n\n${lines.join("\n")}`;
 }
+
+/**
+ * Location context for a briefing (issue #2925): the place names of the
+ * local day containing the briefing window's start, bucketed in the
+ * location config's own timezone (the store's bucketing zone). Opt-in and
+ * labels-only — the caller decides whether to include it.
+ */
+export async function briefingLocationSection(
+  memoryDir: string,
+  windowStartUtc: string,
+  config: LocationConfig,
+): Promise<string | null> {
+  return renderDayLocationContext(
+    memoryDir,
+    localDayKey(windowStartUtc, config.timezone),
+    config,
+  );
+}
+
+export async function applyBriefingLocationContext<
+  T extends { markdown: string; json: Record<string, unknown> },
+>(
+  result: T,
+  includeLocation: boolean | undefined,
+  memoryDir: string,
+  windowStartUtc: string,
+  location: LocationConfig,
+): Promise<T> {
+  if (includeLocation !== true || !locationTaggingEnabled(location)) return result;
+  const section = await briefingLocationSection(memoryDir, windowStartUtc, location);
+  if (!section) return result;
+  return {
+    ...result,
+    markdown: `${result.markdown}\n\n${section}\n`,
+    json: { ...result.json, locationContext: section },
+  };
+}
+
+/**
+ * Opt-in matched-place-name context (issue #2925), shared by the access
+ * request surfaces (day summary and briefing). Absent or false keeps the
+ * output byte-identical.
+ */
+export interface LocationContextRequestOptions {
+  /** Opt-in matched-place-name context appended to the summary or briefing output. */
+  includeLocation?: boolean;
+}
+
+/**
+ * Auto-gather options for the day summary (issue #2925): the caller's
+ * timezone plus the strictly-opt-in location flag. Only the literal
+ * `true` opts in, matching the transport schemas' boolean contract.
+ */
+export function daySummaryAutoOptions(
+  request: LocationContextRequestOptions & { timeZone?: string },
+): { timeZone?: string; includeLocation: boolean } {
+  return { timeZone: request.timeZone, includeLocation: request.includeLocation === true };
+}
