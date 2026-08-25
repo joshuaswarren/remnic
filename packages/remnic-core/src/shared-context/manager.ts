@@ -15,6 +15,10 @@ import {
   resolveWriteOrigin,
 } from "./envelope-io.js";
 import type { SharedAuthority, SharedEnvelope } from "./governance.js";
+import { detectContradictionPair } from "./contradictions.js";
+import { lintCuratedClaims } from "./curation-lint.js";
+import { stampProvenance } from "./provenance.js";
+import { filterLiveEnvelopes, markSupersededCirculation } from "./staleness.js";
 
 export const SharedFeedbackEntrySchema = z.object({
   agent: z.string().min(1),
@@ -341,6 +345,15 @@ interface SharedCrossSignalReport {
   feedbackEntries: SharedFeedbackEntry[];
   sources: SharedCrossSignalSource[];
   overlaps: SharedCrossSignalOverlap[];
+  /** Control 2 (issue #1957): expiry drops and supersession circulation. */
+  staleness: {
+    expiredDropped: number;
+    supersededStillCirculating: string[];
+  };
+  /** Control 3 (issue #1957): refs two agents ruled on differently. */
+  disputed: Array<{ ref: string; agents: string[]; decisions: string[] }>;
+  /** Control 4 (issue #1957): who synthesized this report and when. */
+  provenance: { actor: string; at: string };
   semantic: {
     enabled: boolean;
     applied: boolean;
@@ -416,6 +429,23 @@ function formatFeedbackLine(entry: SharedFeedbackEntry): string {
 
 function formatOverlapLine(entry: SharedCrossSignalOverlap): string {
   return `- \`${entry.token}\` (${entry.agentCount} agents: ${markdownLineList(entry.agents)}) [sources: ${markdownLineList(entry.sourcePaths)}]`;
+}
+
+function formatStalenessLines(report: SharedCrossSignalReport): string[] {
+  const circulating = report.staleness.supersededStillCirculating;
+  return [
+    `- Expired items dropped: ${report.staleness.expiredDropped}`,
+    circulating.length === 0
+      ? "- Superseded items still circulating: 0"
+      : `- Superseded items still circulating: ${circulating.length} (${markdownLineList(circulating)})`,
+  ];
+}
+
+function formatDisputedLines(report: SharedCrossSignalReport): string[] {
+  if (report.disputed.length === 0) return ["- No contradictory agent judgments recorded."];
+  return report.disputed.map((entry) =>
+    `- \`${entry.ref}\` disputed by ${markdownLineList(entry.agents)} (decisions: ${markdownLineList(entry.decisions)})`
+  );
 }
 
 async function writeFileAtomic(filePath: string, content: string): Promise<void> {
@@ -730,6 +760,20 @@ export class SharedContextManager {
         || a.title.localeCompare(b.title),
     );
 
+    // Control 2 (issue #1957): expired items never enter the working set;
+    // items another live item supersedes are marked while they circulate.
+    const liveOutputs = filterLiveEnvelopes(
+      outputs.map((output) => ({ output, expiresAt: output.envelope.expiresAt })),
+      Date.now(),
+    ).map((entry) => entry.output);
+    const expiredDropped = outputs.length - liveOutputs.length;
+    const supersededStillCirculating = markSupersededCirculation(
+      liveOutputs.map((output) => ({ id: output.path, supersedes: output.envelope.supersedes })),
+    )
+      .filter((item) => item.circulating === true)
+      .map((item) => item.id)
+      .sort();
+
     // Collect feedback entries for the day.
     const feedback: SharedFeedbackEntry[] = [];
     try {
@@ -749,7 +793,7 @@ export class SharedContextManager {
       // ignore
     }
 
-    const sources: SharedCrossSignalSource[] = outputs.map((output) => {
+    const sources: SharedCrossSignalSource[] = liveOutputs.map((output) => {
       const body = stripYamlFrontmatter(output.raw);
       return {
         agent: output.agent,
@@ -828,15 +872,44 @@ export class SharedContextManager {
       feedbackByDecision[entry.decision] += 1;
     }
 
-    const report: SharedCrossSignalReport = {
+    // Control 3 (issue #1957): feedback refs are claim keys; two agents
+    // ruling differently on the same ref surface as disputed, never silently
+    // averaged. Pairwise scan is bounded by one day's feedback entries.
+    const claimItems = feedback.map((entry, index) => ({
+      id: `${entry.agent}#${index}`,
+      claims: Object.fromEntries((entry.refs ?? []).map((ref) => [ref, entry.decision])),
+    }));
+    const disputedByRef = new Map<string, { agents: Set<string>; decisions: Set<string> }>();
+    for (let i = 0; i < claimItems.length; i++) {
+      for (let j = i + 1; j < claimItems.length; j++) {
+        const pair = detectContradictionPair(claimItems[i]!, claimItems[j]!);
+        if (pair.kind !== "conflict") continue;
+        for (const ref of pair.keys) {
+          const slot = disputedByRef.get(ref) ?? { agents: new Set<string>(), decisions: new Set<string>() };
+          slot.agents.add(feedback[i]!.agent);
+          slot.agents.add(feedback[j]!.agent);
+          slot.decisions.add(feedback[i]!.decision);
+          slot.decisions.add(feedback[j]!.decision);
+          disputedByRef.set(ref, slot);
+        }
+      }
+    }
+    const disputed = [...disputedByRef.entries()]
+      .map(([ref, slot]) => ({ ref, agents: [...slot.agents].sort(), decisions: [...slot.decisions].sort() }))
+      .sort((a, b) => a.ref.localeCompare(b.ref));
+
+    const generatedAt = new Date().toISOString();
+    const baseReport = {
       date,
-      generatedAt: new Date().toISOString(),
+      generatedAt,
       sourceCount: sources.length,
       feedbackCount: feedback.length,
       feedbackByDecision,
       feedbackEntries: [...feedback].sort(compareFeedbackPriority),
       sources,
       overlaps: mergedOverlaps,
+      staleness: { expiredDropped, supersededStillCirculating },
+      disputed,
       semantic: {
         enabled: semanticEnabled,
         applied: semanticApplied,
@@ -846,6 +919,8 @@ export class SharedContextManager {
         addedOverlapCount: semanticAddedOverlapCount,
       },
     };
+    // Control 4 (issue #1957): stamp who synthesized the report and when.
+    const report = stampProvenance(baseReport, { actor: "shared-context:curation", at: generatedAt });
 
     const crossSignalsPath = path.join(this.crossSignalsDir, `${date}.json`);
     await writeFileAtomic(crossSignalsPath, `${JSON.stringify(report, null, 2)}\n`);
@@ -878,6 +953,12 @@ export class SharedContextManager {
       `- Decision totals: approved=${feedbackByDecision.approved}, approved_with_feedback=${feedbackByDecision.approved_with_feedback}, rejected=${feedbackByDecision.rejected}`,
       `- Semantic enhancer: ${semanticEnabled ? (semanticTimedOut ? "enabled (timed out, fail-open)" : semanticApplied ? "enabled (applied)" : "enabled (no additional overlaps)") : "disabled"}`,
       `- JSON report: ${crossSignalsPath}`,
+      "",
+      "## Staleness",
+      ...formatStalenessLines(report),
+      "",
+      "## Disputed",
+      ...formatDisputedLines(report),
       "",
       "## Recurring Themes",
       ...recurringThemeLines,
@@ -916,6 +997,19 @@ export class SharedContextManager {
     const date = opts.date;
     const maxChars = Math.max(2_000, opts.maxChars ?? 20_000);
     const crossSignals = await this.synthesizeCrossSignalsUnlocked({ date });
+    // Control 4 (issue #1957): every synthesized claim must cite at least one
+    // item this run actually had. Overlaps are built from sources, so this is
+    // a tripwire — it fires only if a synthesized section stops citing.
+    const lintFindings = lintCuratedClaims({
+      claims: crossSignals.report.overlaps.map((overlap) => ({
+        claimId: `overlap:${overlap.token}`,
+        citedItemIds: overlap.sourcePaths,
+      })),
+      availableItemIds: crossSignals.report.sources.map((source) => source.path),
+    });
+    if (lintFindings.length > 0) {
+      throw new Error(`shared-context curation self-check failed: ${JSON.stringify(lintFindings)}`);
+    }
     const feedbackLines = crossSignals.report.feedbackEntries.length === 0
       ? ["- (none)"]
       : crossSignals.report.feedbackEntries.map((entry) => formatFeedbackLine(entry));
@@ -944,7 +1038,14 @@ export class SharedContextManager {
       `- Cross-signals markdown: ${crossSignals.crossSignalsMarkdownPath}`,
       ...overlapBullets,
       "",
+      "## Staleness",
+      ...formatStalenessLines(crossSignals.report),
+      "",
+      "## Disputed",
+      ...formatDisputedLines(crossSignals.report),
+      "",
     ];
+
 
     const out = md.join("\n");
     const trimmed = out.length > maxChars ? out.slice(0, maxChars) + "\n\n...(trimmed)\n" : out;

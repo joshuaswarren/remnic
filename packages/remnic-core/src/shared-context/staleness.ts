@@ -27,7 +27,7 @@ export function filterLiveEnvelopes<T extends { expiresAt?: string }>(
  */
 export function markSupersededCirculation<T extends SharedStalenessItem>(
   items: readonly T[],
-): T[] {
+): (T & { circulating?: boolean })[] {
   const supersededIds = new Set<string>();
   for (const item of items) {
     if (item.supersedes) supersededIds.add(item.supersedes);

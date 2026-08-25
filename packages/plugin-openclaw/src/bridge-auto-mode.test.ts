@@ -966,6 +966,9 @@ test("equivalent IPv6 loopback and wildcard spellings are recognized", () => {
     "0000:0000:0000:0000:0000:0000:0000:0001",
     "::ffff:127.0.0.1",
     "::FFFF:127.0.0.1",
+    // Loopback classification is core's shared helper (issue #3012), so RFC
+    // 6761 loopback subdomains resolve here exactly as everywhere else.
+    "daemon.localhost",
   ]) {
     assert.equal(isLoopbackDaemonHost(spelling), true, `${spelling} is loopback`);
   }
