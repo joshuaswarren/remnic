@@ -110,6 +110,7 @@ import {
 import type { RecallInternalDeps } from "./recall-internal-deps.js";
 import { appendEpisodicContextSection } from "./episodic-context-section.js";
 import { resolveCompositeProfileStorage } from "./recall-profile-storage.js";
+import { fetchQmdMemoryResultsWithRecognitionSwap } from "./recall-recognition-search.js";
 
 export class RecallInternalCoordinator {
   private readonly securityCapabilities: SecurityCapabilitySet;
@@ -2141,7 +2142,8 @@ export class RecallInternalCoordinator {
 
         try {
           const filteredResults =
-            await this.deps.fetchQmdMemoryResultsWithArtifactTopUp(
+            await fetchQmdMemoryResultsWithRecognitionSwap(
+              this.deps,
               retrievalQuery,
               qmdFetchLimit,
               qmdHybridFetchLimit,
