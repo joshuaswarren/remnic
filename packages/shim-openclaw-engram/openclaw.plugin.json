@@ -134,47 +134,47 @@
         "minimum": 1,
         "maximum": 1000,
         "default": 200,
-        "description": "Max messages accepted in one active-context snapshot (issue #2347)."
+        "description": "Max messages accepted in one active-context snapshot."
       },
       "activeContextMaxSnapshotChars": {
         "type": "integer",
         "minimum": 1,
         "maximum": 1000000,
         "default": 200000,
-        "description": "Max total content chars accepted in one active-context snapshot (issue #2347)."
+        "description": "Max total content chars accepted in one active-context snapshot."
       },
       "activeContextMinRetainedMessages": {
         "type": "integer",
         "minimum": 1,
         "maximum": 50,
         "default": 3,
-        "description": "Floor on messages retained after an active-context plan applies (issue #2347)."
+        "description": "Floor on messages retained after an active-context plan applies."
       },
       "activeContextPlanTtlMinutes": {
         "type": "integer",
         "minimum": 1,
         "maximum": 1440,
         "default": 15,
-        "description": "TTL in minutes for active-context plans and retained snapshots (issue #2347)."
+        "description": "TTL in minutes for active-context plans and retained snapshots."
       },
       "activeContextRetentionMaxBytes": {
         "type": "integer",
         "minimum": 1,
         "maximum": 10000000,
         "default": 1000000,
-        "description": "Max bytes for the adapter-local retained source snapshot (issue #2347)."
+        "description": "Max bytes for the adapter-local retained source snapshot."
       },
       "activeContextSummaryMaxTokens": {
         "type": "integer",
         "minimum": 1,
         "maximum": 4096,
         "default": 512,
-        "description": "Max output tokens for one SUMMARY replacement (issue #2347)."
+        "description": "Max output tokens for one SUMMARY replacement."
       },
       "activeContextTransformLlmEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Permit method=llm active-context SUMMARY plans; auto degrades to deterministic when off (issue #2347)."
+        "description": "Permit method=llm active-context SUMMARY plans; auto degrades to deterministic when off."
       },
       "activeRecallAgents": {
         "type": "array",
@@ -186,7 +186,7 @@
       "activeRecallAllowChainedActiveMemory": {
         "type": "boolean",
         "default": false,
-        "description": "Compat-only (issue #1550): allow the Remnic active-recall block to chain into the bundled active-memory surface. Redundant in modern OpenClaw memory-slot mode; only set true when intentionally layering Remnic + bundled active-memory for the same agent."
+        "description": "Compat-only: allow the Remnic active-recall block to chain into the bundled active-memory surface. Redundant in modern OpenClaw memory-slot mode; only set true when intentionally layering Remnic + bundled active-memory for the same agent."
       },
       "activeRecallAllowedChatTypes": {
         "type": "array",
@@ -389,7 +389,7 @@
             "description": "Rolling window for the write rate limit, in milliseconds. Positive integer."
           },
           "authToken": {
-            "description": "Bearer token for the local Remnic HTTP API. Either a literal string (supports ${ENV_VAR} expansion) or an OpenClaw SecretRef object (e.g. {\"source\":\"exec\",\"provider\":\"kc_openclaw_remnic_token\",\"id\":\"value\"}) resolved at startup via the OpenClaw gateway secret resolver (issue #757). If omitted, OPENCLAW_REMNIC_ACCESS_TOKEN / OPENCLAW_ENGRAM_ACCESS_TOKEN is used.",
+            "description": "Bearer token for the local Remnic HTTP API. Literal string (${ENV_VAR} ok) or OpenClaw SecretRef resolved at startup. If omitted, uses OPENCLAW_REMNIC_ACCESS_TOKEN / OPENCLAW_ENGRAM_ACCESS_TOKEN.",
             "anyOf": [
               {
                 "type": "string"
@@ -658,7 +658,7 @@
             "default": true
           }
         },
-        "description": "Daily Context Briefing (#370). Knobs: enabled, defaultWindow ('yesterday', '3d', '1w', '24h', ...), defaultFormat (markdown|json), maxFollowups (0-10), calendarSource (path to ICS/JSON file, null = off), saveByDefault, saveDir (null = $REMNIC_HOME/briefings/), llmFollowups (disable to skip Responses API calls)."
+        "description": "Daily Context Briefing. Knobs: enabled, defaultWindow, defaultFormat (markdown|json), maxFollowups (0-10), calendarSource (ICS/JSON path, null = off), saveByDefault, saveDir (null = $REMNIC_HOME/briefings/), llmFollowups."
       },
       "bufferMaxMinutes": {
         "type": "number",
@@ -675,7 +675,7 @@
         "default": 3000,
         "minimum": 0,
         "maximum": 2147483647,
-        "description": "Debounce window (ms) for persisting the smart buffer to state/buffer.json. Steady-state buffering coalesces the whole-state write onto a trailing-edge timer instead of rewriting every turn; extraction trigger/clear and shutdown force an immediate flush. 0 restores save-every-turn. Capped at 2147483647 (Node's 32-bit setTimeout limit)."
+        "description": "Debounce (ms) for persisting the smart buffer to state/buffer.json. Steady-state writes coalesce on a trailing-edge timer; extraction trigger/clear and shutdown flush immediately. 0 saves every turn. Capped at 2147483647."
       },
       "bufferSurpriseK": {
         "type": "number",
@@ -687,7 +687,7 @@
         "type": "number",
         "default": 2000,
         "minimum": 1,
-        "description": "Hard timeout (ms) for the surprise probe. If the probe does not resolve within this window the buffer treats it as failed and falls through to the existing triggers — a slow or hung embedder cannot stall the turn-append path."
+        "description": "Hard timeout (ms) for the surprise probe. If the probe does not resolve within this window the buffer treats it as failed and falls through to the existing triggers - a slow or hung embedder cannot stall the turn-append path."
       },
       "bufferSurpriseRecentMemoryCount": {
         "type": "number",
@@ -705,7 +705,7 @@
       "bufferSurpriseTriggerEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Issue #563 (D-MEM). When true, the smart buffer flushes immediately on turns whose embedding-based surprise score exceeds bufferSurpriseThreshold, in addition to the existing turn-count / signal / time triggers. Additive only — never suppresses existing flushes. Off by default."
+        "description": "(D-MEM). When true, the smart buffer flushes immediately on turns whose embedding-based surprise score exceeds bufferSurpriseThreshold, in addition to the existing turn-count / signal / time triggers. Additive only - never suppresses existing flushes. Off by default."
       },
       "calibrationEnabled": {
         "type": "boolean",
@@ -759,7 +759,7 @@
       "chat": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Conversational memory inspection and correction (issue #1583). A bounded tool-loop agent over read-only + confirmation-gated mutating tools. Off by default — spawns LLM calls so explicit opt-in (rule 48).",
+        "description": "Conversational memory inspection and correction. A bounded tool-loop agent over read-only + confirmation-gated mutating tools. Off by default - spawns LLM calls so explicit opt-in.",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -776,7 +776,7 @@
             "minimum": 1,
             "maximum": 64,
             "default": 8,
-            "description": "Max tool calls per user turn before partial-reply fallback (rule 34 — never a silent stall)."
+            "description": "Max tool calls per user turn before partial-reply fallback."
           },
           "sessionTtlHours": {
             "type": "integer",
@@ -1000,7 +1000,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Action-site failure gate (issue #2382): advisory delivery of failure memories at the moment an action is proposed. Advisory only — it never blocks or delays an action.",
+        "description": "Action-site failure gate: advisory delivery of failure memories at the moment an action is proposed. Advisory only - it never blocks or delays an action.",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -1027,7 +1027,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Durable coding-knowledge surface — Track A of issue #1548. Master gate + per-feature switches for decision records, architecture card, session delta, and structural-context provider. Off by default so pre-feature byte-identical behaviour is preserved when disabled.",
+        "description": "Durable coding-knowledge surface - Track A of Master gate + per-feature switches for decision records, architecture card, session delta, and structural-context provider. Off by default so pre-feature byte-identical behaviour is preserved when disabled.",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -1052,7 +1052,7 @@
           "architectureCardLlmSummary": {
             "type": "boolean",
             "default": false,
-            "description": "Opt-in LLM summary pass on the architecture card. Costs tokens; default off (rule 48). Effective only under the master and card gates."
+            "description": "Opt-in LLM summary pass on the architecture card. Costs tokens; default off. Effective only under the master and card gates."
           },
           "structuralProvider": {
             "type": "string",
@@ -1067,22 +1067,22 @@
           "structuralProviderCommand": {
             "type": "string",
             "default": "",
-            "description": "Absolute path to the subprocess binary when structuralProvider = \"subprocess\". Empty string = no command configured. The consumer validates existence at boot (rule 24)."
+            "description": "Absolute path to the subprocess binary when structuralProvider = \"subprocess\". Empty string = no command configured. The consumer validates existence at boot."
           },
           "codegraphTools": {
             "type": "boolean",
             "default": false,
-            "description": "Gate for the 14 codegraph parity tools (issue #1554). Off by default — tools/list, HTTP routes, and CLI help are byte-identical to pre-feature until this is true. Also requires @remnic/coding-graph to be installed."
+            "description": "Gate for the 14 codegraph parity tools. Off by default - tools/list, HTTP routes, and CLI help are byte-identical to pre-feature until this is true. Also requires @remnic/coding-graph to be installed."
           },
           "codegraphDbDir": {
             "type": "string",
             "default": "",
-            "description": "Root directory for per-project graph SQLite DBs. Empty string = derive from memoryDir (<memoryDir>/codegraph/<principal>/<projectId>.sqlite). Absolute path required when set explicitly (rule 11)."
+            "description": "Root directory for per-project graph SQLite DBs. Empty string = derive from memoryDir (<memoryDir>/codegraph/<principal>/<projectId>.sqlite). Absolute path required when set explicitly."
           },
           "lsp": {
             "type": "object",
             "additionalProperties": false,
-            "description": "Phase B type resolution via LSP (issue #1917). When enabled, codegraph_index invokes the LSP resolution pass after the heuristic reindex to upgrade unresolved call-site edges with real language-server definitions. Requires installed language servers on the host. Off by default (rule 48 - explicit opt-in for subprocess spawning).",
+            "description": "Phase B type resolution via LSP. When enabled, codegraph_index runs LSP after the heuristic reindex to upgrade unresolved call-site edges. Requires installed language servers. Off by default.",
             "properties": {
               "enabled": {
                 "type": "boolean",
@@ -1091,7 +1091,7 @@
               },
               "servers": {
                 "type": "object",
-                "description": "Per-language server launch-spec overrides. Keys are language ids (typescript, python, go, rust, ...); values replace the built-in default command for that language.",
+                "description": "Per-language server launch-spec overrides. Keys are language ids (typescript, python, go, rust,..); values replace the built-in default command for that language.",
                 "additionalProperties": {
                   "type": "object",
                   "additionalProperties": false,
@@ -1131,7 +1131,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Coding-agent project/branch scoping (issue #569).",
+        "description": "Coding-agent project/branch scoping.",
         "properties": {
           "projectScope": {
             "type": "boolean",
@@ -1141,7 +1141,7 @@
           "branchScope": {
             "type": "boolean",
             "default": false,
-            "description": "When true, memory also overlays the current branch (project:<id>/branch:<name>). Opt-in — most development wants cross-branch recall. Wired in PR 3 of #569."
+            "description": "When true, memory also overlays the current branch (project:<id>/branch:<name>). Opt-in - most development wants cross-branch recall. Wired in of #569."
           },
           "globalFallback": {
             "type": "boolean",
@@ -1153,7 +1153,7 @@
       "collectJudgeTrainingPairs": {
         "type": "boolean",
         "default": false,
-        "description": "Opt-in collector for (candidate_text, verdict_kind, reason) tuples used to prep a future GRPO training pipeline. Rows land under ~/.remnic/judge-training/<date>.jsonl (NOT in the shared memory directory). Off by default (issue #562)."
+        "description": "Opt-in collector for (candidate_text, verdict_kind, reason) tuples used to prep a future GRPO training pipeline. Rows land under ~/.remnic/judge-training/<date>.jsonl (NOT in the shared memory directory). Off by default."
       },
       "commandsListEnabled": {
         "type": "boolean",
@@ -1234,18 +1234,18 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Live-connector configuration (issue #683). Each child object maps to one concrete LiveConnector. Defaults are off; operators must opt in.",
+        "description": "Live-connector configuration. Each child object maps to one concrete LiveConnector. Defaults are off; operators must opt in.",
         "properties": {
           "googleDrive": {
             "type": "object",
             "additionalProperties": false,
             "default": {},
-            "description": "Google Drive live connector (issue #683 PR 2/N). Imports text content from a user's Drive into Remnic on a poll schedule.",
+            "description": "Google Drive live connector (N). Imports text content from a user's Drive into Remnic on a poll schedule.",
             "properties": {
               "enabled": {
                 "type": "boolean",
                 "default": false,
-                "description": "Master gate. Default off — set to true to enable Drive imports. The connector additionally requires clientId, clientSecret, and refreshToken to be populated before it will run."
+                "description": "Master gate. Default off - set to true to enable Drive imports. The connector additionally requires clientId, clientSecret, and refreshToken to be populated before it will run."
               },
               "clientId": {
                 "type": "string",
@@ -1283,12 +1283,12 @@
             "type": "object",
             "additionalProperties": false,
             "default": {},
-            "description": "Notion live connector (issue #683 PR 3/N). Imports text content from Notion database pages into Remnic on a poll schedule.",
+            "description": "Notion live connector (N). Imports text content from Notion database pages into Remnic on a poll schedule.",
             "properties": {
               "enabled": {
                 "type": "boolean",
                 "default": false,
-                "description": "Master gate. Default off — set to true to enable Notion imports. The connector additionally requires a token and at least one databaseId to be populated before it will run."
+                "description": "Master gate. Default off - set to true to enable Notion imports. The connector additionally requires a token and at least one databaseId to be populated before it will run."
               },
               "token": {
                 "type": "string",
@@ -1316,12 +1316,12 @@
             "type": "object",
             "additionalProperties": false,
             "default": {},
-            "description": "Gmail live connector (issue #683 PR 4/6). Imports new inbox messages from Gmail into Remnic on a poll schedule.",
+            "description": "Gmail live connector. Imports new inbox messages from Gmail into Remnic on a poll schedule.",
             "properties": {
               "enabled": {
                 "type": "boolean",
                 "default": false,
-                "description": "Master gate. Default off — set to true to enable Gmail imports. The connector additionally requires clientId, clientSecret, and refreshToken to be populated before it will run."
+                "description": "Master gate. Default off - set to true to enable Gmail imports. The connector additionally requires clientId, clientSecret, and refreshToken to be populated before it will run."
               },
               "clientId": {
                 "type": "string",
@@ -1361,12 +1361,12 @@
             "type": "object",
             "additionalProperties": false,
             "default": {},
-            "description": "GitHub live connector (issue #683 PR 5/6). Imports issue comments, PR review comments, and optionally discussion posts authored by the configured user from watched repos into Remnic on a poll schedule.",
+            "description": "GitHub live connector. Imports issue comments, PR review comments, and optionally discussion posts authored by the configured user from watched repos into Remnic on a poll schedule.",
             "properties": {
               "enabled": {
                 "type": "boolean",
                 "default": false,
-                "description": "Master gate. Default off — set to true to enable GitHub imports. The connector additionally requires token, userLogin, and at least one repo to be populated before it will run."
+                "description": "Master gate. Default off - set to true to enable GitHub imports. The connector additionally requires token, userLogin, and at least one repo to be populated before it will run."
               },
               "token": {
                 "type": "string",
@@ -1448,7 +1448,7 @@
       },
       "contradictionScan": {
         "type": "object",
-        "description": "Configuration for the nightly contradiction-scan cron (issue #520)",
+        "description": "Configuration for the nightly contradiction-scan cron",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -1497,7 +1497,7 @@
           "searchCandidates": 5,
           "maxCandidates": 8
         },
-        "description": "Anchor-first contradiction candidate localization before QMD search (issue #2327).",
+        "description": "Anchor-first contradiction candidate localization before QMD search.",
         "properties": {
           "anchorEnabled": {
             "type": "boolean",
@@ -1704,20 +1704,20 @@
       "correctionApplyRequiresConfirm": {
         "type": "boolean",
         "default": true,
-        "description": "When true (default), memory_correct_apply requires confirm: true before mutating memory (#1580). Off allows one-shot apply without an explicit confirmation."
+        "description": "When true (default), memory_correct_apply requires confirm: true before mutating memory. Off allows one-shot apply without an explicit confirmation."
       },
       "correctionCaptureAutoApplyMaxAffected": {
         "type": "integer",
         "minimum": 1,
         "default": 2,
-        "description": "Maximum number of memories a passively-detected correction may affect in \"auto\" mode (#1581). Plans touching more memories than this are queued even when mode is \"auto\" — a blast-radius cap. Default 2."
+        "description": "Maximum number of memories a passively-detected correction may affect in \"auto\" mode. Plans touching more memories than this are queued even when mode is \"auto\" - a blast-radius cap. Default 2."
       },
       "correctionCaptureConfidenceFloor": {
         "type": "number",
         "minimum": 0,
         "maximum": 1,
         "default": 0.85,
-        "description": "Minimum planner confidence required to auto-apply a passively-detected correction in \"auto\" mode (#1581). Plans below this floor are queued even when mode is \"auto\". Default 0.85."
+        "description": "Minimum planner confidence required to auto-apply a passively-detected correction in \"auto\" mode. Plans below this floor are queued even when mode is \"auto\". Default 0.85."
       },
       "correctionCaptureMode": {
         "type": "string",
@@ -1731,7 +1731,7 @@
       },
       "correction": {
         "type": "object",
-        "description": "Memory-correction contract (issue #1580) — nested form; nested keys win over the flat legacy correction* keys.",
+        "description": "Memory-correction contract - nested form; nested keys win over the flat legacy correction* keys.",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -1794,19 +1794,19 @@
       "correctionEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Master gate for the Correction Contract (#1580) — the unified plan/apply pipeline for memory corrections (supersede/edit/retract/rescope/never-store). When false, the correction surfaces (CLI/HTTP/MCP) are disabled."
+        "description": "Master gate for the Correction Contract - the unified plan/apply pipeline for memory corrections (supersede/edit/retract/rescope/never-store). When false, the correction surfaces (CLI/HTTP/MCP) are disabled."
       },
       "correctionMaxAffected": {
         "type": "integer",
         "minimum": 1,
         "default": 10,
-        "description": "Maximum number of memories a single correction plan may affect (#1580). A plan exceeding this is refused rather than silently truncated. Invalid values (0/negative/non-numeric) are rejected."
+        "description": "Maximum number of memories a single correction plan may affect. A plan exceeding this is refused rather than silently truncated. Invalid values (0/negative/non-numeric) are rejected."
       },
       "correctionPlanTtlHours": {
         "type": "number",
         "minimum": 1,
         "default": 24,
-        "description": "Hours a pending correction plan remains valid before it expires and must be re-planned (#1580). Invalid values (0/negative/non-numeric) are rejected."
+        "description": "Hours a pending correction plan remains valid before it expires and must be re-planned. Invalid values (0/negative/non-numeric) are rejected."
       },
       "creationMemoryEnabled": {
         "type": "boolean",
@@ -1951,7 +1951,7 @@
           "narrativeModel": {
             "type": "string",
             "default": "",
-            "description": "Model used to write dream-journal narratives. Under modelSource=plugin this must be an OpenAI model id used with the direct OpenAI key. Under modelSource=gateway it accepts a provider-qualified id (e.g. zai/glm-4.7-flash) routed through gateway providers — no direct OpenAI key required; leave empty to fall back to taskModelChain / the gateway default chain."
+            "description": "Model for dream-journal narratives. plugin: OpenAI model id with the direct key. gateway: provider-qualified id (e.g. zai/glm-4.7-flash). Empty falls back to taskModelChain / the gateway default chain."
           },
           "narrativePromptStyle": {
             "type": "string",
@@ -1972,7 +1972,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Consolidation pipeline phases config (issue #678 PR 2). Groups existing lifecycle/REM/deep-sleep gates under a unified namespace. Values here WIN over equivalent legacy top-level keys when set. See docs/dreams.md. (Note: distinct from the `dreaming` diary-surface config.)",
+        "description": "Consolidation pipeline phases config. Groups existing lifecycle/REM/deep-sleep gates under a unified namespace. Values here WIN over equivalent legacy top-level keys when set. (Note: distinct from the `dreaming` diary-surface config.)",
         "properties": {
           "phases": {
             "type": "object",
@@ -2079,7 +2079,7 @@
                     "type": "integer",
                     "minimum": 0,
                     "default": 86400000,
-                    "description": "Minimum interval between deep-sleep passes (ms). Default 86400000 (24h). Informational in PR 2; PR 4 wires this into the cron scheduler."
+                    "description": "Minimum interval between deep-sleep passes (ms). Default 86400000 (24h). Informational in; wires this into the cron scheduler."
                   },
                   "versioningEnabled": {
                     "type": "boolean",
@@ -2128,7 +2128,7 @@
       "enrichmentEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Enable the external enrichment pipeline (#365). When true, entities can be enriched via registered providers."
+        "description": "Enable the external enrichment pipeline. When true, entities can be enriched via registered providers."
       },
       "enrichmentMaxCandidatesPerEntity": {
         "type": "integer",
@@ -2267,7 +2267,7 @@
       "episodicContextEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Inject episode-grouped raw source turns for the top recalled facts (issue #2331). Reads the structured `sources` provenance of recalled facts, resolves it to LCM archive turn ranges, and appends a compact `Source Episodes` section within the existing recall budget. Facts without structured provenance are skipped."
+        "description": "Inject episode-grouped source turns for the top recalled facts. Reads structured `sources` provenance, resolves LCM archive turn ranges, and appends a compact `Source Episodes` section within the recall budget. Facts without structured provenance are skipped."
       },
       "evalHarnessEnabled": {
         "type": "boolean",
@@ -2357,7 +2357,7 @@
           "enforce"
         ],
         "default": "off",
-        "description": "Extraction faithfulness gate (issue #1576). Entailment-verification of extracted facts against their verified source spans (#1575). 'off' (default) = byte-identical pre-feature pipeline; 'shadow' = record verdicts in frontmatter + telemetry only; 'enforce' = route unsupported/contradicted to pending_review."
+        "description": "Extraction faithfulness gate. Entailment-verification of extracted facts against verified source spans. 'off' (default) = pre-feature path; 'shadow' = record verdicts only; 'enforce' = route unsupported/contradicted to pending_review."
       },
       "extractionFaithfulnessModel": {
         "type": "string",
@@ -2372,22 +2372,22 @@
       "extractionFaithfulnessLocalParseFallback": {
         "type": "boolean",
         "default": false,
-        "description": "Resilient-fallback toggle for the local model-lab faithfulness endpoint (issue #1700). Default false surfaces malformed_output when the local endpoint returns 200 with non-verdict JSON (alerts the operator to a misconfigured endpoint). Set true to instead fall back to the configured chain on local parse failure."
+        "description": "Fallback for the local model-lab faithfulness endpoint. Default false surfaces malformed_output when the local endpoint returns 200 with non-verdict JSON. Set true to fall back to the configured chain on local parse failure."
       },
       "extractionFaithfulnessBaseUrl": {
         "type": "string",
         "default": "",
-        "description": "Base URL of a local openai-compatible endpoint serving a fine-tuned faithfulness gate (model-lab, issue #1585). When set AND extractionFaithfulnessModel is set, the gate routes there first and falls back to the configured chain on any failure. Empty = existing routing (byte-identical pre-feature path)."
+        "description": "Base URL of a local openai-compatible faithfulness endpoint. When set with extractionFaithfulnessModel, the gate routes there first and falls back to the configured chain on failure. Empty = existing routing."
       },
       "correctionIntentModel": {
         "type": "string",
         "default": "",
-        "description": "Model name of a local fine-tuned correction-intent classifier (model-lab, issue #1581 / #1585). When set AND correctionIntentBaseUrl is set, passive-correction detection can route to it. Empty = rule-based detectPassiveCorrections is the sole detector."
+        "description": "Model name of a local fine-tuned correction-intent classifier (model-lab, / #1585). When set AND correctionIntentBaseUrl is set, passive-correction detection can route to it. Empty = rule-based detectPassiveCorrections is the sole detector."
       },
       "correctionIntentBaseUrl": {
         "type": "string",
         "default": "",
-        "description": "Base URL of a local openai-compatible endpoint serving a fine-tuned correction-intent classifier (model-lab, issue #1585). Empty = rule-based detector only."
+        "description": "Base URL of a local openai-compatible endpoint serving a fine-tuned correction-intent classifier (model-lab, ). Empty = rule-based detector only."
       },
       "extractionJudgeBatchSize": {
         "type": "number",
@@ -2404,7 +2404,7 @@
         "type": "number",
         "default": 2,
         "minimum": 1,
-        "description": "Maximum number of times the same candidate text may be deferred by the extraction judge before the verdict is forcibly converted to 'reject'. Prevents pathological LLM responses from looping forever on ambiguous facts (issue #562)."
+        "description": "Maximum number of times the same candidate text may be deferred by the extraction judge before the verdict is forcibly converted to 'reject'. Prevents pathological LLM responses from looping forever on ambiguous facts."
       },
       "extractionJudgeModel": {
         "type": "string",
@@ -2419,7 +2419,7 @@
       "extractionJudgeTelemetryEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Emit structured telemetry rows to state/observation-ledger/extraction-judge-verdicts.jsonl on every judge verdict. Off by default; enable to collect defer-rate and latency metrics for operator dashboards (issue #562)."
+        "description": "Emit structured telemetry rows to state/observation-ledger/extraction-judge-verdicts.jsonl on every judge verdict. Off by default; enable to collect defer-rate and latency metrics for operator dashboards."
       },
       "extractionMaxEntitiesPerRun": {
         "type": "number",
@@ -2466,7 +2466,7 @@
           "critical"
         ],
         "default": "low",
-        "description": "Minimum locally-scored importance level required to persist an extracted fact. Facts below this level are dropped before write and counted toward the importance_gated metric. Default \"low\" drops only trivial turn-level chatter (greetings, single-word replies); raise to \"normal\" or higher for a stricter gate."
+        "description": "Minimum locally-scored importance required to persist an extracted fact. Facts below this are dropped and counted toward importance_gated. Default \"low\" drops only trivial chatter; raise to \"normal\" or higher for a stricter gate."
       },
       "extractionMinUserTurns": {
         "type": "number",
@@ -2476,7 +2476,7 @@
       "extractionScopeClassificationEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "When enabled, the extraction prompt instructs the LLM to classify each fact as 'project' (codebase-specific) or 'global' (cross-project knowledge). Global-scoped facts are promoted to the shared namespace so they are visible across all projects. Disable to restore pre-scope-classification behavior where all facts go to the session namespace."
+        "description": "When enabled, the extractor classifies each fact as 'project' or 'global'. Global facts go to the shared namespace. Disable to keep all facts in the session namespace."
       },
       "extractionTelemetryPrefilterEnabled": {
         "type": "boolean",
@@ -2690,7 +2690,7 @@
       "graphEdgeCacheIncrementalEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Push single-writer graph-edge appends into the warm edge cache in place (size-revalidated for cross-process coherence) instead of nulling and re-reading the edge file on every write (issue #1904). Set false to restore the pre-#1904 null-on-every-write behavior."
+        "description": "Push single-writer graph-edge appends into the warm edge cache in place (size-revalidated for cross-process coherence) instead of nulling and re-reading the edge file on every write. Set false to restore the pre-#1904 null-on-every-write behavior."
       },
       "graphEdgeDecayCadenceMs": {
         "type": "number",
@@ -2701,7 +2701,7 @@
       "graphEdgeDecayEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Enable the periodic graph-edge confidence decay maintenance job (issue #681 PR 2/3). Opt-in."
+        "description": "Enable the periodic graph-edge confidence decay maintenance job. Opt-in."
       },
       "graphEdgeDecayFloor": {
         "type": "number",
@@ -2951,13 +2951,13 @@
         "default": 0.2,
         "minimum": 0,
         "maximum": 1,
-        "description": "Issue #681 PR 3/3: minimum edge confidence required for traversal during spreading activation. Edges below this floor are pruned and contribute neither activation nor downstream neighbors. Legacy edges without a confidence field are treated as 1.0. Range 0-1. Default 0.2."
+        "description": "minimum edge confidence required for traversal during spreading activation. Edges below this floor are pruned and contribute neither activation nor downstream neighbors. Legacy edges without a confidence field are treated as 1.0. Range 0-1. Default 0.2."
       },
       "graphTraversalPageRankIterations": {
         "type": "number",
         "default": 8,
         "minimum": 0,
-        "description": "Issue #681 PR 3/3: number of PageRank-style refinement iterations applied on top of the BFS spreading-activation scores. Each iteration redistributes a node's confidence-weighted activation along its outgoing edges. Set to 0 to disable refinement and use raw BFS scores. Default 8."
+        "description": "number of PageRank-style refinement iterations applied on top of the BFS spreading-activation scores. Each iteration redistributes a node's confidence-weighted activation along its outgoing edges. Set to 0 to disable refinement and use raw BFS scores. Default 8."
       },
       "graphWriteSessionAdjacencyEnabled": {
         "type": "boolean",
@@ -3236,7 +3236,7 @@
       "lifecyclePolicyEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Enable the lifecycle policy engine (hot↔cold tier migration, value scoring, decay). Default true since #686 PR 3/6 — flipping enables the year-2 retention story by default. Set to false to opt out."
+        "description": "Enable the lifecycle policy engine (hot↔cold tier migration, value scoring, decay). Default true since #686 - flipping enables the year-2 retention story by default. Set to false to opt out."
       },
       "lifecyclePromoteHeatThreshold": {
         "type": "number",
@@ -3519,13 +3519,13 @@
         "type": "integer",
         "default": 67108864,
         "minimum": 0,
-        "description": "Auto-compact state/memory-lifecycle-ledger.jsonl when it exceeds this many bytes, triggered off the debounced maintenance path (issue #1910). Set 0 to disable. Default 64MB."
+        "description": "Auto-compact state/memory-lifecycle-ledger.jsonl when it exceeds this many bytes, triggered off the debounced maintenance path. Set 0 to disable. Default 64MB."
       },
       "memoryLifecycleLedgerCompactMinIntervalMs": {
         "type": "integer",
         "default": 21600000,
         "minimum": 60000,
-        "description": "Minimum interval between auto-compactions of the lifecycle ledger (issue #1910). Default 6 hours."
+        "description": "Minimum interval between auto-compactions of the lifecycle ledger. Default 6 hours."
       },
       "memoryLinkingEnabled": {
         "type": "boolean",
@@ -3539,7 +3539,7 @@
           "minLength": 1
         },
         "default": [],
-        "description": "Extra offline-sync push-side exclude globs (relative to memoryDir; * within a segment, leading **/ across segments). Additive to the built-in node-local state excludes (state/*.sqlite, state/*.sqlite-*, state/index_tags.json, state/entity-mention-index.json, state/memory-governance/runs/**). Issue #1786."
+        "description": "Extra offline-sync push-side exclude globs (relative to memoryDir). Additive to built-in node-local state excludes (state/*.sqlite, state/*.sqlite-*, state/index_tags.json, state/entity-mention-index.json, state/memory-governance/runs/**)."
       },
       "memoryOsPreset": {
         "type": "string",
@@ -3560,12 +3560,12 @@
       "originAuthorityEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Fence recall-rendered content from untrusted origins as data-only (issue #1955). Origin metadata is always recorded; this flag gates only the recall-time fence."
+        "description": "Fence recall-rendered content from untrusted origins as data-only. Origin metadata is always recorded; this flag gates only the recall-time fence."
       },
       "injectionScreenEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Screen candidate facts with deterministic injection rules and queue findings for review (issue #1955)."
+        "description": "Screen candidate facts with deterministic injection rules and queue findings for review."
       },
       "untrustedOrigins": {
         "type": "array",
@@ -3578,7 +3578,7 @@
           "import:*",
           "unknown"
         ],
-        "description": "Origin classes that receive the recall authority fence (issue #1955)."
+        "description": "Origin classes that receive the recall authority fence."
       },
       "memoryReconstructionEnabled": {
         "type": "boolean",
@@ -3671,24 +3671,24 @@
         "type": "number",
         "default": 16777216,
         "minimum": 0,
-        "description": "Size (bytes) at which a namespace-catalog touch auto-compacts <memoryDir>/state/namespaces.jsonl (issue #1903). The append-only log is folded (last-record-wins; every namespace row preserved) and atomically rewritten once it exceeds this size. Default 16777216 (16 MB); 0 disables auto-compaction."
+        "description": "Size (bytes) at which a namespace-catalog touch auto-compacts <memoryDir>/state/namespaces.jsonl. The append-only log is folded (last-record-wins; every namespace row preserved) and atomically rewritten once it exceeds this size. Default 16777216 (16 MB); 0 disables auto-compaction."
       },
       "namespacesCatalogReadTouchCoalesceMs": {
         "type": "number",
         "default": 60000,
         "minimum": 0,
-        "description": "Coalescing window (ms) for repeated pure-timestamp read touches on an already-known namespace (issue #1903). Buffered per (namespace, kind) and flushed once per window; observable touches (first sight, provenance/field change) always flush immediately. Default 60000; 0 disables read coalescing."
+        "description": "Coalescing window (ms) for repeated pure-timestamp read touches on an already-known namespace. Buffered per (namespace, kind) and flushed once per window; observable touches (first sight, provenance/field change) always flush immediately. Default 60000; 0 disables read coalescing."
       },
       "namespacesCatalogTouchStateWrites": {
         "type": "boolean",
         "default": false,
-        "description": "Whether pure state-file writes (state/buffer.json, ledgers, indexes) touch the namespace catalog (issue #1903). State files are not namespace memory data, so by default their writes do not record a catalog touch. Set true to restore the pre-#1903 behavior. Default false."
+        "description": "Whether pure state-file writes (state/buffer.json, ledgers, indexes) touch the namespace catalog. State files are not namespace memory data, so by default their writes do not record a catalog touch. Set true to restore the pre-#1903 behavior. Default false."
       },
       "namespacesCatalogWriteTouchCoalesceMs": {
         "type": "number",
         "default": 1000,
         "minimum": 0,
-        "description": "Coalescing window (ms) for repeated pure-timestamp write touches on an already-known namespace (issue #1903). Mirrors namespacesCatalogReadTouchCoalesceMs for markWrite/lastWriteAt. Default 1000; 0 disables write coalescing."
+        "description": "Coalescing window (ms) for repeated pure-timestamp write touches on an already-known namespace. Mirrors namespacesCatalogReadTouchCoalesceMs for markWrite/lastWriteAt. Default 1000; 0 disables write coalescing."
       },
       "namespacesEnabled": {
         "type": "boolean",
@@ -3944,19 +3944,19 @@
         "default": 0.55,
         "minimum": 0,
         "maximum": 1,
-        "description": "Issue #1953 — novelty score at or above this value is ADD (skip semantic/LLM dedup). Keep well above noveltyNoopThreshold so UNCERTAIN stays wide."
+        "description": "novelty score at or above this value is ADD (skip semantic/LLM dedup). Keep well above noveltyNoopThreshold so UNCERTAIN stays wide."
       },
       "noveltyGateEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Issue #1953 — enable the write-path embedding-density novelty gate. Off by default. When off the persist path is unchanged."
+        "description": "enable the write-path embedding-density novelty gate. Off by default. When off the persist path is unchanged."
       },
       "noveltyNoopThreshold": {
         "type": "number",
         "default": 0.15,
         "minimum": 0,
         "maximum": 1,
-        "description": "Issue #1953 — novelty score at or below this value is NOOP (drop before semantic dedup; does not touch contentHashIndex)."
+        "description": "novelty score at or below this value is NOOP (drop before semantic dedup; does not touch contentHashIndex)."
       },
       "objectiveStateMemoryEnabled": {
         "type": "boolean",
@@ -4046,7 +4046,7 @@
       "oramaCjkSegmentation": {
         "type": "boolean",
         "default": true,
-        "description": "Segment space-free scripts (CJK/Thai) into character n-grams in the Orama lexical index (issue #2187). Default true; false restores the stock English-only tokenizer."
+        "description": "Segment space-free scripts (CJK/Thai) into character n-grams in the Orama lexical index. Default true; false restores the stock English-only tokenizer."
       },
       "oramaEnabled": {
         "type": "boolean",
@@ -4093,7 +4093,7 @@
       "patternReinforcementEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Run the pattern-reinforcement maintenance job (issue #687 PR 2/4): cluster duplicate non-procedural memories by normalized content, promote the most-recent member to canonical, and supersede the older duplicates. Off by default until bench validation lands."
+        "description": "Run the pattern-reinforcement maintenance job: cluster duplicate non-procedural memories by normalized content, promote the most-recent member to canonical, and supersede the older duplicates. Off by default until bench validation lands."
       },
       "patternReinforcementMinCount": {
         "type": "integer",
@@ -4105,7 +4105,7 @@
       "peerProfileReasonerEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Enable the async peer profile reasoner (issue #679). Runs after semantic consolidation in the REM phase and updates per-peer profile.md files with provenance-tagged field updates derived from the peer's interaction log. Default off (opt-in)."
+        "description": "Enable the async peer profile reasoner. Runs after semantic consolidation in the REM phase and updates per-peer profile.md files with provenance-tagged field updates derived from the peer's interaction log. Default off (opt-in)."
       },
       "peerProfileReasonerMaxFieldsPerRun": {
         "type": "number",
@@ -4122,12 +4122,12 @@
       "peerProfileReasonerModel": {
         "type": "string",
         "default": "auto",
-        "description": "Model identifier used by the peer profile reasoner. 'auto' inherits the gateway's primary chain (recommended). Logged for telemetry only — actual dispatch routes through the same FallbackLlmClient used by semantic consolidation."
+        "description": "Model identifier used by the peer profile reasoner. 'auto' inherits the gateway's primary chain (recommended). Logged for telemetry only - actual dispatch routes through the same FallbackLlmClient used by semantic consolidation."
       },
       "peerProfileRecallEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "When true, add the active peer's profile fields to the recall context as a '## Peer Profile' section (issue #679 PR 3/5). Requires the session's peer ID to be registered before recall. Default off (opt-in)."
+        "description": "When true, add the active peer's profile fields to the recall context as a '## Peer Profile' section. Requires the session's peer ID to be registered before recall. Default off (opt-in)."
       },
       "peerProfileRecallMaxFields": {
         "type": "number",
@@ -4185,7 +4185,7 @@
       "proactiveExtractionSkipWhenLocalLlmBusy": {
         "type": "boolean",
         "default": true,
-        "description": "Skip the optional proactive extraction second pass when the local LLM background lane is already busy, instead of queueing behind an in-flight extraction and losing its shorter deadline (issue #2011). Set false to always attempt the second pass."
+        "description": "Skip the optional proactive extraction second pass when the local LLM background lane is already busy, instead of queueing behind an in-flight extraction and losing its shorter deadline. Set false to always attempt the second pass."
       },
       "proactiveExtractionTimeoutMs": {
         "type": "number",
@@ -4200,7 +4200,7 @@
           "enabled": {
             "type": "boolean",
             "default": true,
-            "description": "Master gate for procedural memory: extraction, recall boost, and mining (issue #519). Default-on since issue #567 PR 4/5; set to `false` to opt out."
+            "description": "Master gate for procedural memory: extraction, recall boost, and mining. Default-on since ; set to `false` to opt out."
           },
           "minOccurrences": {
             "type": "integer",
@@ -4255,7 +4255,7 @@
               "enabled": {
                 "type": "boolean",
                 "default": false,
-                "description": "Project active procedure memories into host-native `skills/<slug>/SKILL.md` bundles during Codex materialization (issue #2369). Off by default; the CLI export/import commands work regardless of this gate."
+                "description": "Project active procedure memories into host-native `skills/<slug>/SKILL.md` bundles during Codex materialization. Off by default; the CLI export/import commands work regardless of this gate."
               },
               "maxSkills": {
                 "type": "integer",
@@ -4274,7 +4274,7 @@
               "enabled": {
                 "type": "boolean",
                 "default": false,
-                "description": "Master gate for the procedure library-health maintenance job (issue #2370): merge near-duplicate active procedures, flag stale-tool procedures, retire failure-dominant or idle ones. Shadow-first: runs without apply write nothing."
+                "description": "Master gate for the procedure library-health maintenance job: merge near-duplicate active procedures, flag stale-tool procedures, retire failure-dominant or idle ones. Shadow-first: runs without apply write nothing."
               },
               "retireIdleDays": {
                 "type": "integer",
@@ -4299,7 +4299,7 @@
               "mergeEnabled": {
                 "type": "boolean",
                 "default": true,
-                "description": "Whether duplicate-cluster merging runs within the maintenance gate (issue #2370)."
+                "description": "Whether duplicate-cluster merging runs within the maintenance gate."
               }
             }
           }
@@ -4309,7 +4309,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Preference drift detection (issue #2371): classify aging `preference` memories as corroborated / stale / drifted, review-gate drifted ones, and optionally damp stale ones at recall.",
+        "description": "Preference drift detection: classify aging `preference` memories as corroborated / stale / drifted, review-gate drifted ones, and optionally damp stale ones at recall.",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -4361,7 +4361,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Budgeted deep-recall surface (issue #2332): REFINE/EXPAND/STOP retrieval over the cue-anchor graph, exposed only on the deep surfaces (MCP deep_recall tool, POST /engram|remnic/v1/recall/deep, remnic engram deep-recall CLI). Never runs on the recall hot path.",
+        "description": "Budgeted deep-recall surface: REFINE/EXPAND/STOP retrieval over the cue-anchor graph, exposed only on the deep surfaces (MCP deep_recall tool, POST /engram|remnic/v1/recall/deep, remnic engram deep-recall CLI). Never runs on the recall hot path.",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -4408,7 +4408,7 @@
           "enabled": {
             "type": "boolean",
             "default": true,
-            "description": "Master gate for extraction-pipeline liveness reporting (issue #2151). When false, /health, doctor, and stats never report the pipeline degraded. Default on."
+            "description": "Master gate for extraction-pipeline liveness reporting. When false, /health, doctor, and stats never report the pipeline degraded. Default on."
           },
           "staleWindowMs": {
             "type": "integer",
@@ -4422,7 +4422,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Replica divergence detection (issue #2149). Poll each configured peer's authenticated /health corpus watermark and flag per-namespace drift (file-count delta, watermark age delta, digest mismatch). Detection only; reconciliation is issue #2150. Disabled by default.",
+        "description": "Replica divergence detection. Poll each configured peer's authenticated /health corpus watermark and flag per-namespace drift (file-count delta, watermark age delta, digest mismatch). Detection only; reconciliation is Disabled by default.",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -4447,7 +4447,7 @@
                   "description": "Base URL of the peer's agent-access HTTP server (http or https). Supports ${ENV_VAR} expansion."
                 },
                 "token": {
-                  "description": "Bearer token for the peer's authenticated /health. A literal string (supports ${ENV_VAR} expansion) or an OpenClaw SecretRef object resolved at poll time like agentAccessHttp.authToken (issue #757). Never logged.",
+                  "description": "Bearer token for the peer's authenticated /health. A literal string (supports ${ENV_VAR} expansion) or an OpenClaw SecretRef object resolved at poll time like agentAccessHttp.authToken. Never logged.",
                   "anyOf": [
                     {
                       "type": "string",
@@ -4544,18 +4544,18 @@
             "type": "integer",
             "minimum": 0,
             "default": 3,
-            "description": "Minimum accessCount before an agent-subject memory qualifies as reuse-signaled for promotion-candidates (issue #2372)."
+            "description": "Minimum accessCount before an agent-subject memory qualifies as reuse-signaled for promotion-candidates."
           }
         }
       },
       "provenance": {
         "type": "object",
-        "description": "Claim-level provenance spans (issue #1575). When enabled, extracted facts carry verbatim source-utterance excerpts plus a coarse strength tag (verified/unverified/none) consumed by the faithfulness gate, correction UX, tombstone matching, and TrustScore.",
+        "description": "Claim-level provenance spans. When enabled, extracted facts carry verbatim source-utterance excerpts plus a coarse strength tag (verified/unverified/none) consumed by the faithfulness gate, correction UX, tombstone matching, and TrustScore.",
         "additionalProperties": false,
         "properties": {
           "enabled": {
             "type": "boolean",
-            "description": "Emit provenance spans on new extractions. Off = pre-feature extraction prompt/output, byte-identical (rule 39). Default: true (applied in code; no schema default so the REMNIC_/ENGRAM_ env override fires when the key is omitted)."
+            "description": "Emit provenance spans on new extractions. Off = pre-feature extraction prompt/output, byte-identical. Default: true (applied in code; no schema default so the REMNIC_/ENGRAM_ env override fires when the key is omitted)."
           },
           "maxQuoteChars": {
             "type": "integer",
@@ -4566,7 +4566,7 @@
           "requireSpans": {
             "type": "boolean",
             "default": false,
-            "description": "When true, facts whose quote cannot be located are routed to pending_review instead of active. Stays false until #1576 lands and the bench shows the gate is safe (rule 48)."
+            "description": "When true, facts whose quote cannot be located are routed to pending_review instead of active. Stays false until #1576 lands and the bench shows the gate is safe."
           }
         }
       },
@@ -4643,7 +4643,7 @@
         "minimum": 1000,
         "maximum": 120000,
         "default": 8000,
-        "description": "Per-call timeout (ms) for QMD daemon searches. Default 8000; raise (e.g. 20000) to give CPU-only HyDE queries more headroom before the daemon call times out (issue #1335)."
+        "description": "Per-call timeout (ms) for QMD daemon searches. Default 8000; raise (e.g. 20000) to give CPU-only HyDE queries more headroom before the daemon call times out."
       },
       "qmdDaemonUrl": {
         "type": "string",
@@ -4765,7 +4765,7 @@
           "lex"
         ],
         "default": "hybrid",
-        "description": "Daemon search plan. 'hybrid' (default) runs lex+vec+hyde for best recall; 'lex-vec' drops the expensive HyDE generate leg; 'lex' is BM25-only (fastest). Lower tiers trade recall for latency on CPU-only models. Default preserves existing behavior (issue #1335)."
+        "description": "Daemon search plan. 'hybrid' (default) runs lex+vec+hyde for best recall; 'lex-vec' drops the expensive HyDE generate leg; 'lex' is BM25-only (fastest). Lower tiers trade recall for latency on CPU-only models. Default preserves existing behavior."
       },
       "qmdSubprocessStrategy": {
         "type": "string",
@@ -4774,7 +4774,7 @@
           "search"
         ],
         "default": "query",
-        "description": "Command for the QMD CLI subprocess fallback, used only when the daemon is unavailable. 'query' (default) keeps LLM query expansion + rerank; 'search' is BM25-only and faster on very large collections but loses expansion/rerank. Default preserves existing behavior (issue #1335)."
+        "description": "Command for the QMD CLI subprocess fallback, used only when the daemon is unavailable. 'query' (default) keeps LLM query expansion + rerank; 'search' is BM25-only and faster on very large collections but loses expansion/rerank. Default preserves existing behavior."
       },
       "qmdSupportedVersion": {
         "type": "string",
@@ -4870,7 +4870,7 @@
       "recallAuditAnomalyDetectionEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "When true, access surfaces (MCP, HTTP) run the anomaly detector over a tail of the audit trail after each recall and surface flags via logs/metrics. Ships disabled — enable explicitly."
+        "description": "When true, access surfaces (MCP, HTTP) run the anomaly detector over a tail of the audit trail after each recall and surface flags via logs/metrics. Ships disabled - enable explicitly."
       },
       "recallAuditAnomalyHighCardinalityLimit": {
         "type": "number",
@@ -4916,7 +4916,7 @@
       "recallStateViews": {
         "type": "boolean",
         "default": false,
-        "description": "State-aware recall views (issue #1952): on change-intent queries, superseded memories surface as labeled history (current/historical/transition) when their successor is also recalled. Default false keeps recall output byte-identical."
+        "description": "State-aware recall views: on change-intent queries, superseded memories surface as labeled history (current/historical/transition) when their successor is also recalled. Default false keeps recall output byte-identical."
       },
       "recallConfidenceGateEnabled": {
         "type": "boolean",
@@ -4936,7 +4936,7 @@
       "recallCrossNamespaceBudgetEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Cross-namespace query-budget limiter (issue #565). When true, a principal that issues a burst of recalls against namespaces other than their own is throttled once its per-window count crosses the hard limit. Ships disabled."
+        "description": "Cross-namespace query-budget limiter. When true, a principal that issues a burst of recalls against namespaces other than their own is throttled once its per-window count crosses the hard limit. Ships disabled."
       },
       "recallCrossNamespaceBudgetHardLimit": {
         "type": "number",
@@ -4980,7 +4980,7 @@
       "recallDirectAnswerEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "When true, recall runs the direct-answer tier in observation mode: annotates LastRecallSnapshot.tierExplain with which tier would have served the query (issue #518). Does not short-circuit the QMD path in the current release."
+        "description": "When true, recall runs the direct-answer tier in observation mode: annotates LastRecallSnapshot.tierExplain with which tier would have served the query. Does not short-circuit the QMD path in the current release."
       },
       "recallDirectAnswerImportanceFloor": {
         "type": "number",
@@ -5003,7 +5003,7 @@
           "auto"
         ],
         "default": "manual",
-        "description": "Disclosure auto-escalation policy (issue #677 PR 4/4). When 'auto', recalls without an explicit caller-supplied disclosure escalate from chunk to section if the top-K confidence falls below recallDisclosureEscalationThreshold. 'raw' is never auto-selected. Default 'manual' preserves pre-#677 behavior."
+        "description": "Disclosure auto-escalation policy. When 'auto', recalls without an explicit caller-supplied disclosure escalate from chunk to section if the top-K confidence falls below recallDisclosureEscalationThreshold. 'raw' is never auto-selected. Default 'manual' preserves pre-#677 behavior."
       },
       "recallDisclosureEscalationThreshold": {
         "type": "number",
@@ -5022,12 +5022,12 @@
         "minimum": 0,
         "maximum": 0.999999999,
         "default": 0.85,
-        "description": "PPR damping factor used by the graph retrieval tier (issue #559)."
+        "description": "PPR damping factor used by the graph retrieval tier."
       },
       "recallGraphEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "When true, recall builds a retrieval graph from memory frontmatter and runs Personalized PageRank, merging the result with QMD via MMR (issue #559 PR 4). Default false — ships off pending the retrieval-graph bench in PR 5."
+        "description": "When true, recall builds a retrieval graph from memory frontmatter and runs Personalized PageRank, merging the result with QMD via MMR. Default false - ships off pending the retrieval-graph bench in"
       },
       "recallGraphIterations": {
         "type": "integer",
@@ -5048,36 +5048,36 @@
         "minimum": 1,
         "maximum": 50,
         "default": 5,
-        "description": "Issue #1582 — number of recent per-session recall snapshots searched when resolving a `[m:xxxx]` handle to a memory id. Older-than-N snapshots are not searched; a miss is tagged rather than widening the window."
+        "description": "number of recent per-session recall snapshots searched when resolving a `[m:xxxx]` handle to a memory id. Older-than-N snapshots are not searched; a miss is tagged rather than widening the window."
       },
       "recallImpressionsRotateBytes": {
         "type": "integer",
         "default": 33554432,
         "minimum": 0,
-        "description": "Rotate state/recall_impressions.jsonl to .1..N when it exceeds this many bytes (issue #1910). Set 0 to disable. Default 32MB."
+        "description": "Rotate state/recall_impressions.jsonl to.1.N when it exceeds this many bytes. Set 0 to disable. Default 32MB."
       },
       "recallImpressionsRotateKeep": {
         "type": "integer",
         "default": 5,
         "minimum": 1,
         "maximum": 1000,
-        "description": "Number of rotated recall-impression archives to keep (.1 .. .N) (issue #1910). Default 5. Max 1000: each retained slot costs one rename under the held impressions lock per rotation, so a larger value is rejected at config-parse time before it can stall recall recording."
+        "description": "Number of rotated recall-impression archives to keep (.1..N). Default 5. Max 1000: each retained slot costs one rename under the held impressions lock per rotation, so a larger value is rejected at config-parse time before it can stall recall recording."
       },
       "recallMaxConcurrentPerPrincipal": {
         "type": "integer",
         "minimum": 0,
         "default": 4,
-        "description": "Maximum concurrent recalls executed per principal (issue #1906). Recalls beyond this cap queue FIFO; an aborted waiter leaves the queue immediately. 0 = unlimited (no cap). Replaces the former width-1 budget-lock serialization; budget accounting stays correct because peek/record are synchronous. Set 1 to restore exact serialization."
+        "description": "Max concurrent recalls per principal. Extra recalls queue FIFO; an aborted waiter leaves immediately. 0 = unlimited. Budget peek/record stay synchronous. Set 1 to restore exact serialization."
       },
       "recallMemoryHandles": {
         "type": "boolean",
         "default": false,
-        "description": "Issue #1582 — append stable short handles (`[m:4f2a]`) to injected memory lines at recall render time. Default false: off = byte-identical injection. Token cost ~9 chars/memory; flip the default only with benchmark evidence that answer quality is unaffected."
+        "description": "append stable short handles (`[m:4f2a]`) to injected memory lines at recall render time. Default false: off = byte-identical injection. Token cost ~9 chars/memory; flip the default only with benchmark evidence that answer quality is unaffected."
       },
       "recallMemoryWorthFilterEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "When true, recall multiplies candidate scores by the Memory Worth factor (mw_success / mw_fail counters, see issue #560). Memories with a history of failed sessions sink; neutral/uninstrumented memories are untouched. PR 5 bench: +0.60 precision@5 vs baseline on all 50 seeded cases. Operators can opt out with false."
+        "description": "When true, recall multiplies candidate scores by the Memory Worth factor (mw_success / mw_fail). Failed-session memories sink; neutral memories are untouched. Operators can opt out with false."
       },
       "recallTrustStageCorpusFallbackEnabled": {
         "type": "boolean",
@@ -5213,7 +5213,7 @@
       "recallPlannerLlmEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Opt in to LLM-based recall planning (issue #1367). When false, recall mode is decided by the regex heuristic. When true, the configured recallPlannerModel classifies recall intent via the gateway/fallback LLM chain (provider-agnostic) and falls back to the heuristic on timeout/error. Requires recallPlannerEnabled."
+        "description": "Opt in to LLM-based recall planning. When false, mode uses the regex heuristic. When true, recallPlannerModel classifies intent via the gateway/fallback LLM chain and falls back to the heuristic on timeout/error. Requires recallPlannerEnabled."
       },
       "recallPlannerMaxMemoryHints": {
         "type": "number",
@@ -5238,12 +5238,12 @@
       "recallPlannerModel": {
         "type": "string",
         "default": "gpt-5.5",
-        "description": "Model for LLM-based recall planning (recallPlannerLlmEnabled). A 'provider/model' string resolved through the gateway providers/chain — any configured provider works (OpenAI, Anthropic, Ollama, Codex, gateway personas). Tried first, with taskModelChain / gateway defaults as fallback."
+        "description": "Model for LLM-based recall planning (recallPlannerLlmEnabled). A 'provider/model' string resolved through the gateway providers/chain - any configured provider works (OpenAI, Anthropic, Ollama, Codex, gateway personas). Tried first, with taskModelChain / gateway defaults as fallback."
       },
       "recallPlannerShadowMode": {
         "type": "boolean",
         "default": false,
-        "description": "Run recall planner in shadow mode — evaluate but do not apply results."
+        "description": "Run recall planner in shadow mode - evaluate but do not apply results."
       },
       "recallPlannerTelemetryEnabled": {
         "type": "boolean",
@@ -5263,12 +5263,12 @@
       "recallReasoningTraceBoostEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Boost stored reasoning_trace memories in recall results when the incoming query reads like a problem-solving ask (e.g. 'how do I...', 'step by step', 'walk me through...'). Default false - opt in after benchmarking (issue #564)."
+        "description": "Boost stored reasoning_trace memories in recall results when the incoming query reads like a problem-solving ask (e.g. 'how do I..', 'step by step', 'walk me through..'). Default false - opt in after benchmarking."
       },
       "recallSingleFlightEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "When true (default), identical concurrent recalls for the same principal share a single in-flight execution (single-flight coalescing, issue #1906); each caller still receives its own cloned response and records its own budget event. Set false to restore per-request execution."
+        "description": "When true (default), identical concurrent recalls for the same principal share a single in-flight execution (single-flight coalescing, ); each caller still receives its own cloned response and records its own budget event. Set false to restore per-request execution."
       },
       "recallTranscriptRetentionDays": {
         "type": "integer",
@@ -5295,7 +5295,7 @@
       "reinforcementRecallBoostEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "When true, memories with reinforcement_count frontmatter receive an additive recall score boost (issue #687 PR 3/4). Default: false (opt-in)."
+        "description": "When true, memories with reinforcement_count frontmatter receive an additive recall score boost. Default: false (opt-in)."
       },
       "reinforcementRecallBoostMax": {
         "type": "number",
@@ -5361,7 +5361,7 @@
       "respectBundledActiveMemoryToggle": {
         "type": "boolean",
         "default": true,
-        "description": "Compat-only (issue #1550): honor the bundled active-memory session toggle file when resolving Remnic recall toggles. Modern OpenClaw memory-slot mode + registerMemoryPromptSection is the primary prompt-injection path; this knob only matters when explicitly chaining Remnic active recall into the bundled `active-memory` plugin."
+        "description": "Compat-only: honor the bundled active-memory session toggle when resolving Remnic recall toggles. Modern memory-slot mode + registerMemoryPromptSection is the primary path; this only matters when chaining Remnic active recall into the bundled active-memory plugin."
       },
       "responseGuidanceRecallEnabled": {
         "type": "boolean",
@@ -5414,7 +5414,7 @@
       "scopedCacheInvalidationEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Evict only the cache layers a given memory write can affect so a plain fact create no longer nukes the QMD result caches or the version-keyed entity cache (issue #1904). Set false to restore the pre-#1904 full-clear-on-every-write behavior."
+        "description": "Evict only the cache layers a given memory write can affect so a plain fact create no longer nukes the QMD result caches or the version-keyed entity cache. Set false to restore the pre-#1904 full-clear-on-every-write behavior."
       },
       "scopeProfiles": {
         "type": "object",
@@ -5521,7 +5521,7 @@
       "secureStoreEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Enable at-rest AES-256-GCM encryption for memory files (issue #690). When true, the daemon reads and writes memory files through the secure-fs layer. The store must be unlocked via `remnic secure-store unlock` after each daemon start. Default false."
+        "description": "Enable at-rest AES-256-GCM encryption for memory files. When true, the daemon reads and writes memory files through the secure-fs layer. The store must be unlocked via `remnic secure-store unlock` after each daemon start. Default false."
       },
       "secureStoreEncryptOnWrite": {
         "type": "boolean",
@@ -5626,7 +5626,7 @@
       "semanticDedupEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Issue #373 — enable write-time semantic similarity guard that skips near-duplicate facts by comparing embeddings to existing memories. Fails open when the embedding backend is unavailable."
+        "description": "enable write-time semantic similarity guard that skips near-duplicate facts by comparing embeddings to existing memories. Fails open when the embedding backend is unavailable."
       },
       "semanticDedupThreshold": {
         "type": "number",
@@ -5639,12 +5639,12 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Judge-mediated merge-on-write (issue #2330). When enabled, a new fact whose nearest neighbor scores inside [minSimilarity, semanticDedupThreshold) is offered to an LLM merge judge; on a merge verdict the existing memory is updated in place instead of a new fragment being written. Every failure mode falls back to creating the new fact.",
+        "description": "Judge-mediated merge-on-write. When enabled, a new fact whose nearest neighbor scores in [minSimilarity, semanticDedupThreshold) is offered to an LLM merge judge; a merge verdict updates the existing memory. Every failure creates the new fact.",
         "properties": {
           "enabled": {
             "type": "boolean",
             "default": false,
-            "description": "Master gate. Default off — with it off no lookup and no judge call happen."
+            "description": "Master gate. Default off - with it off no lookup and no judge call happen."
           },
           "minSimilarity": {
             "type": "number",
@@ -5822,7 +5822,7 @@
           "enabled": {
             "type": "boolean",
             "default": false,
-            "description": "Stamp a `subject` (user|agent) on extracted memories: category defaults (preference/relationship/moment/commitment → user; procedure/principle/skill → agent) with an optional extractor override for fact/decision-like facts (issue #2372). Default off — writes stay byte-identical until enabled."
+            "description": "Stamp a `subject` (user|agent) on extracted memories: category defaults (preference/relationship/moment/commitment → user; procedure/principle/skill → agent) with an optional extractor override for fact/decision-like facts. Default off - writes stay byte-identical until enabled."
           }
         }
       },
@@ -5956,7 +5956,7 @@
       },
       "taskModelChain": {
         "type": "object",
-        "description": "Optional task-specific gateway model chain for Remnic's background LLM work (extraction, fact/profile/identity consolidation, summarization, causal consolidation). When set, this chain is resolved through gateway providers instead of gatewayAgentId or agents.defaults.model. Only applies when modelSource is 'gateway'.",
+        "description": "Optional gateway model chain for Remnic background LLM work (extraction, consolidation, summarization). When set, resolved through gateway providers instead of gatewayAgentId or agents.defaults.model. Only applies when modelSource is 'gateway'.",
         "required": [
           "primary"
         ],
@@ -6048,7 +6048,7 @@
       "temporalExpiredInInjection": {
         "type": "boolean",
         "default": false,
-        "description": "Escape hatch for the bi-temporal injection filter (issue #1578). When true, facts whose [valid_at, invalid_at) interval ended before now are kept in injection candidates even with temporalBiTemporal on — some deployments prefer the older (always-inject) behavior."
+        "description": "Escape hatch for the bi-temporal injection filter. When true, facts whose [valid_at, invalid_at) interval ended before now are kept in injection candidates even with temporalBiTemporal on - some deployments prefer the older (always-inject) behavior."
       },
       "temporalIndexMaxEntries": {
         "type": "number",
@@ -6068,7 +6068,7 @@
       "temporalSupersessionEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Mark older facts superseded when a new fact writes a conflicting value for the same entityRef + structuredAttribute key (issue #375)"
+        "description": "Mark older facts superseded when a new fact writes a conflicting value for the same entityRef + structuredAttribute key"
       },
       "temporalSupersessionIncludeInRecall": {
         "type": "boolean",
@@ -6103,12 +6103,12 @@
       "tombstonesEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Master gate for the tombstone non-resurrection invariant (#1579). When true, a fact that matches an active tombstone at the storage chokepoint is persisted as pending_review + blockedBy instead of becoming active — visible, never a silent drop. Off restores pre-feature behavior for rollback safety."
+        "description": "Master gate for the tombstone non-resurrection invariant. When true, a fact that matches an active tombstone at the storage chokepoint is persisted as pending_review + blockedBy instead of becoming active - visible, never a silent drop. Off restores pre-feature behavior for rollback safety."
       },
       "tombstonesSemanticMatch": {
         "type": "boolean",
         "default": false,
-        "description": "Tier-4 semantic tombstone matching (#1579). Off by default; when true the tombstone lookup also checks embedding cosine similarity against tombstoned normalized text. Ships dark until MemCorrect (#1584) shows an acceptable false-block rate."
+        "description": "Tier-4 semantic tombstone matching. Off by default; when true the tombstone lookup also checks embedding cosine similarity against tombstoned normalized text. Ships dark until MemCorrect shows an acceptable false-block rate."
       },
       "tombstonesSemanticThreshold": {
         "type": "number",
@@ -6183,31 +6183,31 @@
       "trustScoreEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Master gate for the unified TrustScore recall stage (#1577). When off the stage is absent and ranking is byte-identical to the pre-feature pipeline. Flip via #1574 ablation evidence only."
+        "description": "Master gate for the unified TrustScore recall stage. When off the stage is absent and ranking is byte-identical to the pre-feature pipeline. Flip via #1574 ablation evidence only."
       },
       "trustScoreEpistemicRendering": {
         "type": "boolean",
         "default": false,
-        "description": "Append deterministic trust hedges to injected memory lines so the downstream model knows each memory's epistemic status (#1577). Separate gate from scoring."
+        "description": "Append deterministic trust hedges to injected memory lines so the downstream model knows each memory's epistemic status. Separate gate from scoring."
       },
       "trustScoreMaxMultiplier": {
         "type": "number",
         "default": 1.25,
-        "description": "Upper bound of the trust multiplier mapping [0,1] → [minMultiplier, maxMultiplier] (#1577)."
+        "description": "Upper bound of the trust multiplier mapping [0,1] → [minMultiplier, maxMultiplier]."
       },
       "trustScoreMinMultiplier": {
         "type": "number",
         "default": 0.5,
-        "description": "Lower bound of the trust multiplier mapping [0,1] → [minMultiplier, maxMultiplier] (#1577)."
+        "description": "Lower bound of the trust multiplier mapping [0,1] → [minMultiplier, maxMultiplier]."
       },
       "trustScoreQuarantine": {
         "type": "boolean",
         "default": true,
-        "description": "Exclude hard-negative (quarantine-band) memories from injection while keeping them visible in X-ray with the reason (#1577). Only effective under trustScoreEnabled."
+        "description": "Exclude hard-negative (quarantine-band) memories from injection while keeping them visible in X-ray with the reason. Only effective under trustScoreEnabled."
       },
       "trustScoreWeights": {
         "type": "object",
-        "description": "Per-component trust weights (#1577). Keys: memoryWorth, provenance, faithfulness, corroboration, contradiction, domainCalibration, feedback, recency. Values are numbers in [0,1]; sum-normalized at parse. Invalid entries are dropped (rule 51).",
+        "description": "Per-component trust weights. Keys: memoryWorth, provenance, faithfulness, corroboration, contradiction, domainCalibration, feedback, recency. Values are numbers in [0,1]; sum-normalized at parse. Invalid entries are dropped.",
         "default": {},
         "properties": {
           "memoryWorth": {
@@ -6428,7 +6428,7 @@
             "type": "object",
             "additionalProperties": false,
             "default": {},
-            "description": "Timeline-card derivation over the activity store (issue #2049): deterministic grouping, categories, idle/pause semantics.",
+            "description": "Timeline-card derivation over the activity store: deterministic grouping, categories, idle/pause semantics.",
             "properties": {
               "enabled": {
                 "type": "boolean",
@@ -6482,7 +6482,7 @@
                 "type": "object",
                 "additionalProperties": false,
                 "default": {},
-                "description": "User-owned daily journal files under journal/ (issue #1984).",
+                "description": "User-owned daily journal files under journal/.",
                 "properties": {
                   "enabled": {
                     "type": "boolean",
@@ -6497,7 +6497,7 @@
                       "file"
                     ],
                     "default": "memoryDir",
-                    "description": "Where a day's journal body is read from (issue #1987). 'memoryDir' uses journal/<date>.md under the memory dir; 'vault' reads the vault.readback.journalSection heading in the vault daily note. 'vault' requires vault.enabled plus a resolvable dailyNotePath and a non-empty readback.journalSection — config load fails naming every missing prerequisite. Legacy 'file' is accepted as an alias of 'memoryDir' and emits a deprecation warning."
+                    "description": "Where a day's journal body is read. 'memoryDir' uses journal/<date>.md under the memory dir. 'vault' reads vault.readback.journalSection in the vault daily note and requires vault.enabled, a resolvable dailyNotePath, and a non-empty journalSection. Legacy 'file' aliases 'memoryDir' and warns."
                   },
                   "heading": {
                     "type": "string",
@@ -6510,7 +6510,7 @@
                       "review"
                     ],
                     "default": "off",
-                    "description": "Review-only journal extraction (issue #1987). 'review' runs a pass over changed journal text producing pending_review candidates only (never auto-approve; no auto mode by design)."
+                    "description": "Review-only journal extraction. 'review' runs a pass over changed journal text producing pending_review candidates only (never auto-approve; no auto mode by design)."
                   }
                 }
               },
@@ -6518,7 +6518,7 @@
                 "type": "object",
                 "additionalProperties": false,
                 "default": {},
-                "description": "Timeline range/search tools (issue #1983).",
+                "description": "Timeline range/search tools.",
                 "properties": {
                   "enabled": {
                     "type": "boolean",
@@ -6530,7 +6530,7 @@
                     "minimum": 1,
                     "maximum": 366,
                     "default": 31,
-                    "description": "Maximum timeline_range span in days. Integer 1..366."
+                    "description": "Maximum timeline_range span in days. Integer 1.366."
                   }
                 }
               },
@@ -6538,7 +6538,7 @@
                 "type": "object",
                 "additionalProperties": false,
                 "default": {},
-                "description": "Markdown-vault publisher (issue #1985): write timeline artifacts into daily/weekly vault notes through strictly-bounded managed regions. Default off; enabled=false performs no vault reads or writes.",
+                "description": "Markdown-vault publisher: write timeline artifacts into daily/weekly vault notes through strictly-bounded managed regions. Default off; enabled=false performs no vault reads or writes.",
                 "properties": {
                   "enabled": {
                     "type": "boolean",
@@ -6750,7 +6750,7 @@
                     "type": "object",
                     "additionalProperties": false,
                     "default": {},
-                    "description": "Vault daily-note read-back settings (issue #1987).",
+                    "description": "Vault daily-note read-back settings.",
                     "properties": {
                       "journalSection": {
                         "type": "string",
@@ -6769,7 +6769,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Wearable transcript ingestion (Limitless / Bee / Omi). Connector packages install a la carte: @remnic/connector-limitless, @remnic/connector-bee, @remnic/connector-omi. See docs/wearables.md.",
+        "description": "Wearable transcript ingestion (Limitless / Bee / Omi). Connector packages install a la carte: @remnic/connector-limitless, @remnic/connector-bee, @remnic/connector-omi.",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -6957,7 +6957,7 @@
                   "minimum": 0,
                   "maximum": 1,
                   "default": 0.8,
-                  "description": "Trust prior for this source's transcription quality (0..1). Multiplies extraction confidence in smart mode — lower it for a device that mis-transcribes often."
+                  "description": "Trust prior for this source's transcription quality (0.1). Multiplies extraction confidence in smart mode - lower it for a device that mis-transcribes often."
                 },
                 "autoApproveTrust": {
                   "type": "number",
@@ -7021,7 +7021,7 @@
                     "stripFillers": {
                       "type": "boolean",
                       "default": true,
-                      "description": "Strip standalone filler tokens (um, uh, ...)."
+                      "description": "Strip standalone filler tokens (um, uh,..)."
                     },
                     "collapseRepeats": {
                       "type": "boolean",
@@ -7036,7 +7036,7 @@
                     "preserveUtteranceBoundaries": {
                       "type": "boolean",
                       "default": false,
-                      "description": "Keep utterance-level boundaries (one segment per utterance) instead of merging consecutive same-speaker segments. Defaults off; Bee enables this by default. (issue #1811)"
+                      "description": "Keep utterance-level boundaries (one segment per utterance) instead of merging consecutive same-speaker segments. Defaults off; Bee enables this by default."
                     }
                   }
                 }
@@ -7047,7 +7047,7 @@
             "type": "object",
             "additionalProperties": false,
             "default": {},
-            "description": "Cross-source fusion of multi-source wearable transcripts into one reconciled artifact per real-world conversation (issue #1810). Deterministic and disabled by default.",
+            "description": "Cross-source fusion of multi-source wearable transcripts into one reconciled artifact per real-world conversation. Deterministic and disabled by default.",
             "properties": {
               "enabled": {
                 "type": "boolean",
@@ -7074,7 +7074,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Retrospective meeting intelligence (issue #1900): detect + fuse meetings from ingested audio + screen activity. Disabled by default. See docs/config-reference.md.",
+        "description": "Retrospective meeting intelligence: detect + fuse meetings from ingested audio + screen activity. Disabled by default.",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -7108,7 +7108,7 @@
             "minimum": 0,
             "maximum": 1440,
             "default": 2,
-            "description": "Merge adjacent same-app candidates within this gap (minutes) — rejoin-after-drop."
+            "description": "Merge adjacent same-app candidates within this gap (minutes) - rejoin-after-drop."
           },
           "contextDwellSeconds": {
             "type": "integer",
@@ -7139,7 +7139,7 @@
             "minimum": 0,
             "maximum": 1,
             "default": 0.85,
-            "description": "Provenance trust prior for meeting-derived facts (0..1)."
+            "description": "Provenance trust prior for meeting-derived facts (0.1)."
           },
           "autoApproveTrust": {
             "type": "number",
@@ -7161,7 +7161,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Opt-in location context foundation (issue #2044): day-bucketed place observations from registered providers. Providers are registered by host adapters; no provider client ships in core.",
+        "description": "Opt-in location context foundation: day-bucketed place observations from registered providers. Providers are registered by host adapters; no provider client ships in core.",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -7202,7 +7202,7 @@
             "type": "object",
             "additionalProperties": false,
             "default": {},
-            "description": "Provider-owned location tagging gates (issue #2046).",
+            "description": "Provider-owned location tagging gates.",
             "properties": {
               "enabled": {
                 "type": "boolean",
@@ -7245,7 +7245,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "OKF v0.1 conformance (issue #1946).",
+        "description": "OKF v0.1 conformance.",
         "properties": {
           "conformanceEnabled": {
             "type": "boolean",
@@ -7444,7 +7444,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Span-mode extraction (issue #2333 Phase B, bench-gated). Default off; shadow requests spans alongside content and persists the generated content unchanged.",
+        "description": "Span-mode extraction (Phase B, bench-gated). Default off; shadow requests spans alongside content and persists the generated content unchanged.",
         "properties": {
           "spanMode": {
             "type": "string",
@@ -7454,7 +7454,7 @@
               "on"
             ],
             "default": "off",
-            "description": "\"off\" (default) generates content as before. \"shadow\" requests spans AND content, materializes for comparison telemetry only, and persists the generated content (zero behavior change). \"on\" persists materialized frame+span content, falling back per fact to generated content when a span fails validation. Unrecognized values are rejected at config parse."
+            "description": "\"off\" (default) generates content as before. \"shadow\" requests spans and content for telemetry only and persists generated content. \"on\" persists materialized frame+span content, falling back per fact when a span fails validation. Unrecognized values are rejected."
           }
         }
       }
@@ -7873,7 +7873,7 @@
     },
     "contradictionScan": {
       "label": "Contradiction Scan",
-      "help": "Nightly cron that pairs similar memories and flags contradictions for review (issue #520)"
+      "help": "Nightly cron that pairs similar memories and flags contradictions for review"
     },
     "contradictionLocalization": {
       "label": "Contradiction Localization",
@@ -7882,7 +7882,7 @@
     },
     "dependencyPropagation": {
       "label": "Dependency Propagation",
-      "help": "Revalidate active dependent memories after supersession. Disabled by default (issue #2326)."
+      "help": "Revalidate active dependent memories after supersession. Disabled by default."
     },
     "converge.conflictPolicy": {
       "label": "Converge Conflict Policy",
@@ -7891,7 +7891,7 @@
     },
     "temporalSupersessionEnabled": {
       "label": "Temporal Supersession",
-      "help": "Mark older facts superseded when a newer fact writes a conflicting value for the same entityRef + structured attribute (issue #375)"
+      "help": "Mark older facts superseded when a newer fact writes a conflicting value for the same entityRef + structured attribute"
     },
     "temporalSupersessionIncludeInRecall": {
       "label": "Include Superseded Facts In Recall",
@@ -7901,20 +7901,20 @@
     "temporalBiTemporal": {
       "label": "Bi-temporal Validity",
       "advanced": true,
-      "help": "Master gate (issue #1578): resolve per-fact event-time at write time and exclude validity-expired facts from injection by default. Off = byte-identical to pre-#1578."
+      "help": "Master gate: resolve per-fact event-time at write time and exclude validity-expired facts from injection by default. Off = byte-identical to pre-#1578."
     },
     "temporalExpiredInInjection": {
       "label": "Keep Expired-Validity Facts In Injection",
       "advanced": true,
-      "help": "Escape hatch (issue #1578): keep facts whose event-time interval ended in injection candidates even with bi-temporal on."
+      "help": "Escape hatch: keep facts whose event-time interval ended in injection candidates even with bi-temporal on."
     },
     "recallDirectAnswerEnabled": {
       "label": "Direct-Answer Retrieval Tier",
-      "help": "Opt in to the direct-answer retrieval tier for validated high-trust queries before QMD (issue #518)."
+      "help": "Opt in to the direct-answer retrieval tier for validated high-trust queries before QMD."
     },
     "recallDisclosureEscalation": {
       "label": "Disclosure Auto-Escalation",
-      "help": "Auto-promote default chunk recalls to section when top-K confidence is low (issue #677 PR 4/4). Set to 'auto' to enable; 'manual' (default) preserves pre-#677 behavior."
+      "help": "Auto-promote default chunk recalls to section when top-K confidence is low. Set to 'auto' to enable; 'manual' (default) preserves pre-#677 behavior."
     },
     "recallDisclosureEscalationThreshold": {
       "label": "Disclosure Escalation Threshold",
@@ -7924,7 +7924,7 @@
     },
     "recallGraphEnabled": {
       "label": "Graph Retrieval (PPR)",
-      "help": "Run Personalized PageRank on the retrieval graph and merge with QMD via MMR (issue #559)."
+      "help": "Run Personalized PageRank on the retrieval graph and merge with QMD via MMR."
     },
     "graphPathScoring": {
       "label": "Graph Path Scoring",
@@ -8284,17 +8284,17 @@
     "originAuthorityEnabled": {
       "label": "Origin Authority",
       "advanced": true,
-      "help": "Fence recall-rendered content from untrusted origins as data-only (issue #1955). Origin metadata is always recorded; this flag gates only the recall-time fence."
+      "help": "Fence recall-rendered content from untrusted origins as data-only. Origin metadata is always recorded; this flag gates only the recall-time fence."
     },
     "injectionScreenEnabled": {
       "label": "Injection Screen",
       "advanced": true,
-      "help": "Screen candidate facts with deterministic rules and queue findings for review (issue #1955)."
+      "help": "Screen candidate facts with deterministic rules and queue findings for review."
     },
     "untrustedOrigins": {
       "label": "Untrusted Origins",
       "advanced": true,
-      "help": "Origin classes that receive the recall authority fence (issue #1955)."
+      "help": "Origin classes that receive the recall authority fence."
     },
     "memoryRedTeamBenchEnabled": {
       "label": "Memory Red-Team Benchmarks",
@@ -8373,7 +8373,7 @@
     "peerProfileReasonerEnabled": {
       "label": "Peer Profile Reasoner",
       "advanced": true,
-      "help": "Enable the async peer profile reasoner (issue #679). Runs in the REM phase after semantic consolidation and updates per-peer profile.md files with provenance-tagged field updates derived from each peer's interaction log. Default off (opt-in)."
+      "help": "Enable the async peer profile reasoner. Runs in the REM phase after semantic consolidation and updates per-peer profile.md files with provenance-tagged field updates derived from each peer's interaction log. Default off (opt-in)."
     },
     "peerProfileReasonerModel": {
       "label": "Peer Profile Reasoner Model",
@@ -8468,7 +8468,7 @@
     },
     "semanticDedupEnabled": {
       "label": "Semantic Dedup (write-time)",
-      "help": "Skip near-duplicate facts at write time by comparing embeddings to existing memories (issue #373)."
+      "help": "Skip near-duplicate facts at write time by comparing embeddings to existing memories."
     },
     "semanticDedupThreshold": {
       "label": "Semantic Dedup Threshold",
@@ -8573,7 +8573,7 @@
     "proactiveExtractionSkipWhenLocalLlmBusy": {
       "label": "Skip Proactive When Local LLM Busy",
       "advanced": true,
-      "help": "Skip the optional proactive extraction pass when the local LLM background lane is saturated, rather than queueing behind an in-flight extraction (issue #2011, default on)"
+      "help": "Skip the optional proactive extraction pass when the local LLM background lane is saturated, rather than queueing behind an in-flight extraction (, default on)"
     },
     "proactiveExtractionMaxTokens": {
       "label": "Proactive Extraction Max Tokens",
@@ -8730,7 +8730,7 @@
     "recallReasoningTraceBoostEnabled": {
       "label": "Boost Reasoning Traces on Problem-Solving Queries",
       "advanced": true,
-      "help": "Promote stored reasoning_trace memories to the top of recall results when the incoming query reads like a problem-solving ask. Default off; enable after benchmarking (issue #564)."
+      "help": "Promote stored reasoning_trace memories to the top of recall results when the incoming query reads like a problem-solving ask. Default off; enable after benchmarking."
     }
   },
   "commandAliases": [
