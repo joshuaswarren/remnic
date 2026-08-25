@@ -6,15 +6,28 @@
  * valid file body. Does not invent people, mood, or productivity claims.
  */
 import { activityDayWindow } from "../digest.js";
-import type { TimelineCard } from "./types.js";
+import type { TimelineCardKind } from "./types.js";
 
+/**
+ * Minimal card shape the renderer reads. `TimelineCard` is assignable, and
+ * so is the privacy-projected export card whose `title` is stripped
+ * (issue #2051): a title-less card renders its stable id instead.
+ */
+export interface JournalRenderCard {
+  id: string;
+  kind: TimelineCardKind;
+  title?: string;
+  categoryId: string;
+  startUtc: string;
+  endUtc: string;
+}
 export interface DeterministicJournalOptions {
   date: string;
   timezone: string;
 }
 
 interface ClippedCard {
-  card: TimelineCard;
+  card: JournalRenderCard;
   startMs: number;
   endMs: number;
   durationMs: number;
@@ -25,7 +38,7 @@ function formatMinutes(ms: number): string {
 }
 
 function clipToWindow(
-  cards: readonly TimelineCard[],
+  cards: readonly JournalRenderCard[],
   winStart: number,
   winEnd: number,
 ): ClippedCard[] {
@@ -42,7 +55,7 @@ function clipToWindow(
   clipped.sort((left, right) => {
     const byStart = left.startMs - right.startMs;
     if (byStart !== 0) return byStart;
-    const byTitle = left.card.title.localeCompare(right.card.title);
+    const byTitle = (left.card.title ?? "").localeCompare(right.card.title ?? "");
     if (byTitle !== 0) return byTitle;
     return left.card.id.localeCompare(right.card.id);
   });
@@ -91,7 +104,7 @@ function countGaps(
 
 /** Render a byte-stable Markdown journal for one local day. */
 export function renderDeterministicJournal(
-  cards: readonly TimelineCard[],
+  cards: readonly JournalRenderCard[],
   options: DeterministicJournalOptions,
 ): string {
   const window = activityDayWindow(options.date, options.timezone);
@@ -108,7 +121,7 @@ export function renderDeterministicJournal(
   const cardLines =
     clipped.length === 0
       ? ["_No cards._"]
-      : clipped.map((row) => `- ${formatMinutes(row.durationMs)} ${row.card.title}`);
+      : clipped.map((row) => `- ${formatMinutes(row.durationMs)} ${row.card.title ?? row.card.id}`);
   return [
     `# Journal — ${options.date} (${options.timezone})`,
     "",
