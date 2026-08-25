@@ -3106,7 +3106,9 @@
       },
       "inlineSourceAttributionFormatHistory": {
         "type": "array",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "description": "Prior inline citation templates still recognized during merge after a format change."
       },
       "intentRoutingBoost": {
@@ -4409,26 +4411,26 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Session-scoped recall navigation (issue #1956): expand a served memory at deeper disclosure and traverse its typed links, without a fresh search (MCP memory_expand/memory_traverse tools, POST /engram|remnic/v1/memory/{expand,traverse}, remnic navigate CLI).",
+        "description": "Expand or traverse a served memory without a new search.",
         "properties": {
           "enabled": {
             "type": "boolean",
             "default": true,
-            "description": "Master switch. Default on (read-only surface). When false the navigation tools are absent from MCP tool listing and every surface returns a typed disabled refusal."
+            "description": "Master switch. Default on."
           },
           "windowSnapshots": {
             "type": "integer",
             "minimum": 1,
             "maximum": 50,
             "default": 3,
-            "description": "How many of the session's most recent recall snapshots an expandable or traversable id may come from."
+            "description": "Recent recall snapshots that authorize an id."
           },
           "maxNeighbors": {
             "type": "integer",
             "minimum": 1,
             "maximum": 50,
             "default": 10,
-            "description": "Ceiling for a traverse or entity-neighbor result count."
+            "description": "Traverse neighbor ceiling."
           }
         }
       },

@@ -174,6 +174,7 @@ import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWin
 import { type DeepRecallResult, runBudgetedDeepRecall } from "./deep-recall.js";
 import { resolveEffectiveDeepRecallConfig } from "./deep-recall-config.js";
 import { type RecallNavigationRequest, type RecallNavigationResult, runRecallNavigation } from "./recall-navigation.js";
+import { RECALL_NAVIGATION_CONFIG_DEFAULTS } from "./recall-navigation-config.js";
 import { callDeepRecallPolicyLlm } from "./deep-recall-policy-llm.js";
 import { createDeepRecallSeedSearch } from "./deep-recall-seeds.js";
 import { renderDeepRecallResult } from "./deep-recall-renderer.js";
@@ -1368,7 +1369,9 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     this.replicaDivergenceMonitor = new ReplicaDivergenceMonitor({ resolveSecretRef: options.resolveSecretRef });
     this.injectedSupportPassportGatewayRoute = options.supportPassportGatewayRoute ?? null;
     this.reviewDeckEnabled = options.reviewDeckEnabled === true;
-    this.recallNavigationEnabled = orchestrator.config.recallNavigation.enabled;
+    // Configs built without parseConfig (test stubs, older host shapes) may
+    // omit the block; the parsed default (enabled: true) is the contract.
+    this.recallNavigationEnabled = (orchestrator.config.recallNavigation ?? RECALL_NAVIGATION_CONFIG_DEFAULTS).enabled;
     const accessCaps = resolveAccessSetupCapabilities(orchestrator.config); // #1566 Cluster B
     this.budget = new CrossNamespaceBudget({
       enabled: accessCaps.recallCrossNamespaceBudget,
@@ -2829,7 +2832,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
 
   async recallNavigate(request: RecallNavigationRequest): Promise<RecallNavigationResult> {
     const principal = request.authenticatedPrincipal?.trim() || resolvePrincipal(request.sessionKey, this.orchestrator.config);
-    return runRecallNavigation({ config: this.orchestrator.config.recallNavigation, recallBudgetChars: this.orchestrator.config.recallBudgetChars, recentServedIds: (sessionKey, depth) => this.orchestrator.handleHistory.recent(sessionKey, depth), resolveReadableNamespace: (ns, p) => this.resolveReadableNamespace(ns, p || undefined), getStorage: (namespace) => this.orchestrator.getStorage(namespace) }, { ...request, authenticatedPrincipal: (principal ?? "").length > 0 ? principal : undefined });
+    return runRecallNavigation({ config: this.orchestrator.config.recallNavigation ?? RECALL_NAVIGATION_CONFIG_DEFAULTS, recallBudgetChars: this.orchestrator.config.recallBudgetChars, recentServedIds: (sessionKey, depth) => this.orchestrator.handleHistory.recent(sessionKey, depth), resolveReadableNamespace: (ns, p) => this.resolveReadableNamespace(ns, p || undefined), getStorage: (namespace) => this.orchestrator.getStorage(namespace) }, { ...request, authenticatedPrincipal: (principal ?? "").length > 0 ? principal : undefined });
   }
 
   async recallXray(request: {
