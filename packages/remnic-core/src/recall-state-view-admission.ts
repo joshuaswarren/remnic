@@ -12,7 +12,17 @@ import { applyRecallStateViews } from "./recall-state-view-wire.js";
 import { shouldFilterSupersededFromRecall } from "./temporal-supersession.js";
 import type { MemoryFile } from "./types.js";
 
-/** Config flag OR per-call override, gated on change intent; computed once for all branches. */
+/**
+ * Config flag OR per-call override, gated on change intent; computed once
+ * for all branches.
+ *
+ * #2893: `query` MUST be the ORIGINAL prompt, not the cron-normalized
+ * retrievalQuery — buildRecallQueryPolicy truncates standard prompts at
+ * maxChars and strips stop-words ("when", "before", "after") from
+ * instruction-heavy ones, either of which can erase the change-intent
+ * signal before retrieval. Only the resulting boolean flows downstream;
+ * retrieval itself keeps using the normalized query.
+ */
 export function resolveRecallStateViewActive(
   options: { stateView?: boolean },
   config: { recallStateViews?: boolean },

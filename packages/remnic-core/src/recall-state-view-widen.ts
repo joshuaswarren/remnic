@@ -43,7 +43,13 @@ export function widenRecallStateViews<T extends StateViewResult>(
       ? config.recallStateViews
       : undefined;
   const enabled = stateViewActive === true || parseRecallStateViews(raw);
-  if (!enabled || !isChangeOrientedQuery(query)) return results;
+  if (!enabled) return results;
+  // #2893 — a threaded stateViewActive was gated on change intent
+  // classified from the ORIGINAL prompt at recall entry; `query` here is
+  // the cron-normalized retrievalQuery and may have lost the intent
+  // signal (truncation / stop-word compaction), so do not re-check it.
+  // Only the legacy config-only path re-checks intent against this query.
+  if (stateViewActive !== true && !isChangeOrientedQuery(query)) return results;
   const asOfActive = typeof asOfMs === "number" && Number.isFinite(asOfMs);
 
   // #2859: matches are namespace-qualified, and a successor's `supersedes`
@@ -79,6 +85,7 @@ export function widenRecallStateViews<T extends StateViewResult>(
 
   return annotateStateView(extra.length > 0 ? results.concat(extra) : results, query, [], {
     enabled: true,
+    ...(stateViewActive === true ? { changeIntent: true } : {}),
     ...(asOfActive ? { asOfMs } : {}),
   });
 }
