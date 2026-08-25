@@ -1543,6 +1543,7 @@ export interface PluginConfig
   workProjectIndexEnabled: boolean;
   workIndexAutoRebuildEnabled: boolean;
   workIndexAutoRebuildDebounceMs: number;
+
   // Observability
   /** If true, log slow operations (local LLM + related I/O) with durations and metadata (no content). */
   slowLogEnabled: boolean;
