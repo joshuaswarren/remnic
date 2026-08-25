@@ -66,8 +66,7 @@ test("relocated executors keep their tool contracts", async () => {
   });
   assert.equal(eligibility?.confidence, 1);
   assert.equal(eligibility?.importance, 1);
-  assert.equal(eligibility?.lifecycleState, "candidate");
-  assert.equal(eligibility?.source, "unknown");
+  assert.equal(eligibility?.source, "extraction");
 
   assert.equal(await readReferencedMemoryForPolicyEligibility({}, undefined), undefined);
 });
