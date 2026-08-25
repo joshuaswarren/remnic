@@ -37,6 +37,12 @@
       "@remnic/core/connectors/codex-materialize-runner": [
         "./packages/remnic-core/src/connectors/codex-materialize-runner.ts"
       ],
+      "@remnic/plugin-openclaw/plugin/memory-action-target": [
+        "./packages/plugin-openclaw/src/plugin/memory-action-target.ts"
+      ],
+      "@remnic/plugin-openclaw/plugin/memory-promote": [
+        "./packages/plugin-openclaw/src/plugin/memory-promote.ts"
+      ],
       "@remnic/plugin-openclaw/support-passport-model-route": [
         "./packages/plugin-openclaw/src/support-passport-model-route.ts"
       ],

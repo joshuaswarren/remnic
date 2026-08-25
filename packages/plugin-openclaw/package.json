@@ -13,6 +13,16 @@
       "remnic-source": "./src/managed-upgrade.ts",
       "import": "./dist/managed-upgrade.js"
     },
+    "./plugin/memory-action-target": {
+      "types": "./dist/plugin/memory-action-target.d.ts",
+      "remnic-source": "./src/plugin/memory-action-target.ts",
+      "import": "./dist/plugin/memory-action-target.js"
+    },
+    "./plugin/memory-promote": {
+      "types": "./dist/plugin/memory-promote.d.ts",
+      "remnic-source": "./src/plugin/memory-promote.ts",
+      "import": "./dist/plugin/memory-promote.js"
+    },
     "./support-passport-model-route": {
       "types": "./dist/support-passport-model-route.d.ts",
       "remnic-source": "./src/support-passport-model-route.ts",
