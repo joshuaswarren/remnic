@@ -45,9 +45,14 @@ import { buildQmdRecallCacheKey, getCachedQmdRecall, setCachedQmdRecall } from "
 import { MEMORY_ID_PATTERN } from "../recall-handles.js";
 import { shouldRecordRecallAuthorityHistory } from "../recall-navigation-config.js";
 import {
-  boundRecallContextComposition, composeRecallContext, contextBudgetForFooter,
+  contextBudgetForFooter,
   formatCuriosityFooter, renderAuthorityBoundContent, selectCuriosityQuestion,
 } from "../recall-context-composition.js";
+import {
+  compactRecallContextFromBuckets,
+  decideRecallContextComposition,
+  notifyContextComposition,
+} from "../recall-composition-decision.js";
 import {
   createBoundedCoreSectionRunner,
   createRecallSectionMetricRecorder,
@@ -4951,23 +4956,16 @@ export class RecallInternalCoordinator {
       recalledMemoryNamespaces,
     );
     const recalledContext = assembledRecall.sections.join("\n\n---\n\n");
-    const composition = boundRecallContextComposition({
-      context: recalledContext, footer: curiosityFooter, maxChars: recallBudgetChars,
-    });
-    const context = composeRecallContext(composition);
-    try {
-      const observerResult = options.onContextComposition?.(composition);
-      if (observerResult && typeof observerResult.then === "function") {
-        void Promise.resolve(observerResult).catch((err) => log.warn(
-          "recall: context composition observer rejected", err,
-        ));
-      }
-    } catch (err) {
+    const { composition, context, truncated: compositionTruncated } =
+      decideRecallContextComposition({
+        context: recalledContext,
+        compactContext: compactRecallContextFromBuckets(sectionBuckets),
+        footer: curiosityFooter,
+        maxChars: recallBudgetChars,
+      });
+    notifyContextComposition(options.onContextComposition, composition, (err) => {
       log.warn("recall: context composition observer failed open", err);
-    }
-    const compositionTruncated = context.length < composeRecallContext({
-      context: recalledContext, footer: curiosityFooter,
-    }).length;
+    });
     const includedSections = [...assembledRecall.includedIds];
     const omittedSections = [...assembledRecall.omittedIds];
     if (composition.footer && !includedSections.includes("questions")) includedSections.push("questions");
@@ -5202,6 +5200,9 @@ export class RecallInternalCoordinator {
             chars: this.deps.getRecallBudgetChars(options.budgetCharsOverride),
             used: context.length,
           },
+          ...(composition.degradation
+            ? { degradation: composition.degradation }
+            : {}),
           sessionKey,
           namespace: selfNamespace,
           traceId,

@@ -108,6 +108,11 @@ export function renderXrayText(snapshot: RecallXraySnapshot | null): string {
   lines.push(
     `budget: ${snapshot.budget.used} / ${snapshot.budget.chars} chars`,
   );
+  if (snapshot.degradation) {
+    lines.push(
+      `degradation: ${snapshot.degradation.state}/${snapshot.degradation.reason}`,
+    );
+  }
 
   lines.push("");
   lines.push("--- filters ---");
@@ -247,6 +252,11 @@ export function renderXrayMarkdown(
   lines.push(
     `| Budget | ${snapshot.budget.used} / ${snapshot.budget.chars} chars |`,
   );
+  if (snapshot.degradation) {
+    lines.push(
+      `| Degradation | ${snapshot.degradation.state}/${snapshot.degradation.reason} |`,
+    );
+  }
 
   lines.push("");
   lines.push("## Filters");

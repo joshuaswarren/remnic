@@ -469,6 +469,7 @@ export {
 export type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 export type { SecretRef, AgentAccessAuthToken } from "./types.js";
 export * from "./recall-context-composition.js";
+export * from "./recall-composition-decision.js";
 // Recall X-ray CLI helpers (issue #570).  Exported so the standalone
 // `@remnic/cli` binary can wire the `remnic xray` command without
 // reimporting core-internal modules by relative path (CLAUDE.md rule 26).

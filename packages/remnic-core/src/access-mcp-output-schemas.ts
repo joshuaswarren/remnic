@@ -83,7 +83,20 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     query: T_STRING,
     namespace: T_STRING,
     context: T_STRING,
-    contextComposition: objectSchema({ context: T_STRING, footer: T_STRING }),
+    contextComposition: objectSchema({
+      context: T_STRING,
+      footer: T_STRING,
+      degradation: objectSchema({
+        state: T_STRING,
+        reason: T_STRING,
+        detail: T_STRING,
+        budget: objectSchema({
+          contextBudget: T_NUMBER,
+          fullChars: T_NUMBER,
+          deliveredChars: T_NUMBER,
+        }),
+      }),
+    }),
     count: T_NUMBER,
     memoryIds: T_ARRAY,
     results: T_ARRAY,

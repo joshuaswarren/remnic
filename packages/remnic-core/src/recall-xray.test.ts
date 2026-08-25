@@ -650,3 +650,31 @@ test("RecallXrayBuilder clones the trust projection so the snapshot surfaces it 
     "quarantine reason preserved so exclusion never looks like 'no result' (rule 34)",
   );
 });
+
+test("#2972 healthy xray snapshot omits the degradation marker", () => {
+  const snapshot = buildXraySnapshot({
+    query: "q",
+    now: fixedNow,
+    snapshotIdGenerator: idGen(),
+  });
+  assert.equal("degradation" in snapshot, false);
+  assert.ok(!JSON.stringify(snapshot).includes("degradation"));
+});
+
+test("#2972 xray snapshot copies degradation and isolates caller mutation", () => {
+  const degradation = {
+    state: "degraded" as const,
+    reason: "budget-clipped" as const,
+    budget: { contextBudget: 20, fullChars: 100, deliveredChars: 20 },
+  };
+  const snapshot = buildXraySnapshot({
+    query: "q",
+    degradation,
+    now: fixedNow,
+    snapshotIdGenerator: idGen(),
+  });
+  assert.deepEqual(snapshot.degradation, degradation);
+  degradation.budget.deliveredChars = 0;
+  assert.equal(snapshot.degradation?.budget?.deliveredChars, 20);
+});
+
