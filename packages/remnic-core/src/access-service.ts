@@ -36,6 +36,7 @@ import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 import { buildAccessWriteRequestFingerprint, buildObserveRequestFingerprint } from "./write-envelope.js";
 import { UNATTRIBUTED_ACCESS_WRITE_ORIGIN } from "./shared-context/envelope-io.js";
 import { isSharedContextWriteInputError } from "./shared-context/write-output-controls.js";
+import { daySummaryAutoOptions, type LocationContextRequestOptions } from "./location/tagging.js";
 export type { EngramAccessHealthResponse, EngramAccessQmdCollectionState, EngramAccessQmdHealthResponse };
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import {
@@ -481,22 +482,18 @@ export interface EngramAccessRecallExplainResponse {
   graph?: GraphRecallSnapshot | null;
 }
 
-export interface EngramAccessDaySummaryRequest {
+export interface EngramAccessDaySummaryRequest extends LocationContextRequestOptions {
   memories?: string;
   sessionKey?: string;
   namespace?: string;
-  /** Opt-in matched-place-name context for the auto-gathered summary (issue #2925). */
-  includeLocation?: boolean;
   timeZone?: string;
 }
 
 /** Inputs accepted by the `remnic_briefing` MCP tool. */
-export interface EngramAccessBriefingRequest {
+export interface EngramAccessBriefingRequest extends LocationContextRequestOptions {
   since?: string;
   focus?: string;
   namespace?: string;
-  /** Opt-in matched-place-name section appended to markdown and json (issue #2925). */
-  includeLocation?: boolean;
   format?: "markdown" | "json";
   maxFollowups?: number;
   /** Caller principal for namespace access checks. Transport-bound — never from untrusted payloads. */
@@ -2480,10 +2477,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
 
     if (memories.length === 0) {
       // Auto-gather today's facts from the resolved namespace
-      return this.orchestrator.generateDaySummaryAuto(namespace, {
-        timeZone: request.timeZone,
-        includeLocation: request.includeLocation === true,
-      });
+      return this.orchestrator.generateDaySummaryAuto(namespace, daySummaryAutoOptions(request));
     }
     return this.orchestrator.generateDaySummary(memories);
   }

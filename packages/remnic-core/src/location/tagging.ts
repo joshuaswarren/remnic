@@ -312,3 +312,24 @@ export async function applyBriefingLocationContext<
     json: { ...result.json, locationContext: section },
   };
 }
+
+/**
+ * Opt-in matched-place-name context (issue #2925), shared by the access
+ * request surfaces (day summary and briefing). Absent or false keeps the
+ * output byte-identical.
+ */
+export interface LocationContextRequestOptions {
+  /** Opt-in matched-place-name context appended to the summary or briefing output. */
+  includeLocation?: boolean;
+}
+
+/**
+ * Auto-gather options for the day summary (issue #2925): the caller's
+ * timezone plus the strictly-opt-in location flag. Only the literal
+ * `true` opts in, matching the transport schemas' boolean contract.
+ */
+export function daySummaryAutoOptions(
+  request: LocationContextRequestOptions & { timeZone?: string },
+): { timeZone?: string; includeLocation: boolean } {
+  return { timeZone: request.timeZone, includeLocation: request.includeLocation === true };
+}
