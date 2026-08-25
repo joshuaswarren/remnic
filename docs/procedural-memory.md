@@ -60,6 +60,8 @@ Operators who need to override any of these should do so explicitly; all fields 
 
 A dedicated miner clusters **causal trajectory** records (bounded lookback by `recordedAt` / `lookbackDays`) and can write **`status: pending_review`** procedure candidates. Promotion to **`active`** respects optional auto-promote rules and avoids clobbering user-edited bodies.
 
+When `sessionExperience.enabled` is on, promoted session-end experience memories (issue #2979) join that same input set: `experience_situation` is the cluster goal, `experience_approach` / `experience_reflection` fill the trajectory summaries, and `pending_review` episodes stay out. Gate off leaves miner input byte-identical to the trajectory-only set.
+
 Automation is **not** part of `runMemoryGovernance`. Use the MCP tool **`remnic.procedure_mining_run`** (legacy alias **`engram.procedure_mining_run`**), with optional cron registration mirroring other nightly jobs, so procedural mining stays isolated from shadow/apply governance.
 
 ## Stats surface (issue #567 PR 5/5)

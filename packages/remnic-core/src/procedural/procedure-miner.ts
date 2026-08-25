@@ -4,14 +4,11 @@
 
 import type { PluginConfig } from "../types.js";
 import type { StorageManager } from "../storage.js";
-import type { CausalTrajectoryRecord } from "../causal-trajectory.js";
 import { createHash } from "node:crypto";
 import { mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import {
-  readCausalTrajectoryRecords,
-  filterTrajectoriesByLookbackDays,
-} from "../causal-trajectory.js";
+import { readCausalTrajectoryRecords, type CausalTrajectoryRecord } from "../causal-trajectory.js";
+import { collectProcedureMiningRecords } from "../experience/session-experience-mining.js";
 import { buildProcedurePersistBody, normalizeProcedureSteps, type ProcedureStep } from "./procedure-types.js";
 import { clusterByKey } from "./reinforcement-core.js";
 import { log } from "../logger.js";
@@ -207,7 +204,12 @@ export async function runProcedureMining(options: {
     memoryDir: options.memoryDir,
     causalTrajectoryStoreDir: trajectoryDir,
   });
-  const recent = filterTrajectoriesByLookbackDays(trajectories, cfg.lookbackDays);
+  const recent = await collectProcedureMiningRecords({
+    trajectories,
+    lookbackDays: cfg.lookbackDays,
+    storage: options.storage,
+    experienceEnabled: options.config.sessionExperience?.enabled === true,
+  });
 
   const clusters = clusterByKey(recent, clusterKey);
 
