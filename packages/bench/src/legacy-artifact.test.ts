@@ -487,7 +487,7 @@ test("loadBenchmarkResult rejects legacy-looking artifacts that fail canonical r
 });
 
 test("loadBenchmarkResult surfaces the legacy rejection reason for malformed files", async () => {
-  await withResultFile({ meta: { id: "x", benchmark: "y", timestamp: "t", mode: "eval" } }, async (filePath) => {
+  await withResultFile({ meta: { id: "x", benchmark: "y", timestamp: "2026-03-01T00:00:00.000Z", mode: "eval" } }, async (filePath) => {
     await assert.rejects(
       () => loadBenchmarkResult(filePath),
       /Invalid benchmark result file: .+ \(meta\.mode must be "quick" or "full" when present\)/,
@@ -569,6 +569,98 @@ test("loadBenchmarkResult rejects a modern artifact missing results instead of f
       /missing results is not a legacy artifact/,
     );
   });
+});
+
+test("recognizeLegacyBenchmarkArtifact rejects invalid integers, timestamps, scalars, and partial aggregates", () => {
+  const meta = minimalLegacyArtifact().meta as Record<string, unknown>;
+  const completeAccuracy = { mean: 0.5, median: 0.5, stdDev: 0, min: 0.5, max: 0.5 };
+  const rejections: Array<[unknown, RegExp]> = [
+    [
+      {
+        ...minimalLegacyArtifact(),
+        meta: { ...meta, runCount: 1.5 },
+        results: { tasks: [{ taskId: "t1" }], aggregates: { accuracy: completeAccuracy } },
+      },
+      /meta\.runCount must be a non-negative integer when present/,
+    ],
+    [
+      {
+        ...minimalLegacyArtifact(),
+        meta: { ...meta, runCount: -1 },
+      },
+      /meta\.runCount must be a non-negative integer when present/,
+    ],
+    [
+      {
+        ...minimalLegacyArtifact(),
+        meta: { ...meta, seeds: [0.5] },
+      },
+      /meta\.seeds must be an array of integers when present/,
+    ],
+    [
+      {
+        ...minimalLegacyArtifact(),
+        results: {
+          tasks: [{ taskId: "t1" }],
+          aggregates: { accuracy: { mean: 0.5, median: 0.4 } },
+        },
+      },
+      /partial aggregates cannot mix persisted and synthesized values/,
+    ],
+    [
+      {
+        ...minimalLegacyArtifact(),
+        meta: { ...meta, runCount: 3 },
+        results: {
+          tasks: [{ taskId: "t1" }],
+          aggregates: { accuracy: { mean: 0.75 } },
+        },
+      },
+      /declared multi-run artifact/,
+    ],
+    [
+      {
+        ...minimalLegacyArtifact(),
+        meta: { ...meta, seeds: [1, 2] },
+        results: {
+          tasks: [{ taskId: "t1" }],
+          aggregates: { accuracy: { mean: 0.75 } },
+        },
+      },
+      /declared multi-run artifact/,
+    ],
+    [
+      {
+        ...minimalLegacyArtifact(),
+        results: {
+          tasks: [{ taskId: "t1" }],
+          aggregates: { accuracy: 0.75 },
+        },
+      },
+      /results\.aggregates\.accuracy must be an object with a finite mean number/,
+    ],
+    [
+      {
+        ...minimalLegacyArtifact(),
+        meta: { ...meta, timestamp: "not-a-date" },
+      },
+      /meta\.timestamp must be a parseable date/,
+    ],
+    [
+      {
+        ...minimalLegacyArtifact(),
+        meta: { ...meta, timestamp: "999999-01-01" },
+      },
+      /meta\.timestamp must be a parseable date/,
+    ],
+  ];
+
+  for (const [artifact, pattern] of rejections) {
+    const recognition = recognizeLegacyBenchmarkArtifact(artifact);
+    assert.equal(recognition.ok, false, `expected rejection for ${JSON.stringify(artifact)}`);
+    if (recognition.ok) continue;
+    assert.match(recognition.reason, pattern);
+  }
 });
 
 test("recognizeLegacyBenchmarkArtifact rejects any single modern provenance marker", () => {

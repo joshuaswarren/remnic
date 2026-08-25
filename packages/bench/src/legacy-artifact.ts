@@ -93,6 +93,28 @@ function optionalFiniteNumber(where: string, container: JsonRecord, key: string)
   return container[key];
 }
 
+function optionalNonNegativeInteger(where: string, container: JsonRecord, key: string): number | undefined {
+  if (!(key in container)) {
+    return undefined;
+  }
+  const value = container[key];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    reject(`${where} must be a non-negative integer when present`);
+  }
+  return value;
+}
+
+function isDeclaredMultiSample(legacy: JsonRecord): boolean {
+  if (!isRecord(legacy.meta)) {
+    return false;
+  }
+  const runCount = legacy.meta.runCount;
+  if (typeof runCount === "number" && Number.isFinite(runCount) && runCount > 1) {
+    return true;
+  }
+  return Array.isArray(legacy.meta.seeds) && legacy.meta.seeds.length > 1;
+}
+
 function optionalMode(where: string, container: JsonRecord): BenchmarkMode | undefined {
   if (!("mode" in container)) {
     return undefined;
@@ -136,8 +158,8 @@ function optionalSeeds(where: string, value: unknown): number[] | undefined {
   if (value === undefined) {
     return undefined;
   }
-  if (!Array.isArray(value) || !value.every(isFiniteNumber)) {
-    reject(`${where} must be an array of finite numbers when present`);
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "number" && Number.isInteger(item))) {
+    reject(`${where} must be an array of integers when present`);
   }
   return value;
 }
@@ -147,11 +169,11 @@ function isBenchRuntimeProfile(value: unknown): value is BenchRuntimeProfile {
     value === "baseline" || value === "real" || value === "openclaw-chain" || value === "local-lab"
   );
 }
-
 function normalizeMetricAggregate(
   where: string,
   raw: unknown,
   taskCount: number,
+  declaredMultiSample: boolean,
 ): MetricAggregate {
   if (
     isRecord(raw) &&
@@ -164,61 +186,49 @@ function normalizeMetricAggregate(
     return raw as unknown as MetricAggregate;
   }
 
-  let mean: number | undefined;
-  let rawMedian: number | undefined;
-  let rawStdDev: number | undefined;
-  let rawMin: number | undefined;
-  let rawMax: number | undefined;
+  if (!isRecord(raw)) {
+    reject(`${where} must be an object with a finite mean number`);
+  }
 
-  if (isFiniteNumber(raw)) {
-    mean = raw;
-  } else if (isRecord(raw)) {
-    for (const field of ["mean", "median", "stdDev", "min", "max"] as const) {
-      if (field in raw && !isFiniteNumber(raw[field])) {
-        reject(`${where}.${field} must be a finite number when present`);
-      }
-    }
-    if (isFiniteNumber(raw.mean)) {
-      mean = raw.mean;
-    }
-    if (isFiniteNumber(raw.median)) {
-      rawMedian = raw.median;
-    }
-    if (isFiniteNumber(raw.stdDev)) {
-      rawStdDev = raw.stdDev;
-    }
-    if (isFiniteNumber(raw.min)) {
-      rawMin = raw.min;
-    }
-    if (isFiniteNumber(raw.max)) {
-      rawMax = raw.max;
+  for (const field of ["mean", "median", "stdDev", "min", "max"] as const) {
+    if (field in raw && !isFiniteNumber(raw[field])) {
+      reject(`${where}.${field} must be a finite number when present`);
     }
   }
 
-  if (mean === undefined) {
-    reject(`${where} must be a finite number or an object with a finite mean number`);
+  if (!isFiniteNumber(raw.mean)) {
+    reject(`${where} must be an object with a finite mean number`);
   }
 
-  // Inline the guard: an aliased boolean does not narrow `let` locals,
-  // and this branch returns the raw values as required numbers.
-  if (rawMedian !== undefined && rawStdDev !== undefined && rawMin !== undefined && rawMax !== undefined) {
+  const rawMedian = isFiniteNumber(raw.median) ? raw.median : undefined;
+  const rawStdDev = isFiniteNumber(raw.stdDev) ? raw.stdDev : undefined;
+  const rawMin = isFiniteNumber(raw.min) ? raw.min : undefined;
+  const rawMax = isFiniteNumber(raw.max) ? raw.max : undefined;
+  if (
+    rawMedian !== undefined ||
+    rawStdDev !== undefined ||
+    rawMin !== undefined ||
+    rawMax !== undefined
+  ) {
+    reject(
+      `${where} missing required fields (median, stdDev, min, max); partial aggregates cannot mix persisted and synthesized values`,
+    );
+  }
+
+  if (taskCount === 1 && !declaredMultiSample) {
     return {
-      mean,
-      median: rawMedian,
-      stdDev: rawStdDev,
-      min: rawMin,
-      max: rawMax,
+      mean: raw.mean,
+      median: raw.mean,
+      stdDev: 0,
+      min: raw.mean,
+      max: raw.mean,
     };
   }
 
-  if (taskCount === 1) {
-    return {
-      mean,
-      median: rawMedian ?? mean,
-      stdDev: rawStdDev ?? 0,
-      min: rawMin ?? mean,
-      max: rawMax ?? mean,
-    };
+  if (declaredMultiSample) {
+    reject(
+      `${where} missing required multi-sample fields (median, stdDev, min, max) for declared multi-run artifact`,
+    );
   }
 
   if (taskCount === 0) {
@@ -233,6 +243,7 @@ function normalizeMetricAggregate(
 }
 
 
+
 function upgradeMeta(legacy: JsonRecord, recognizedTaskCount: number): BenchmarkResult["meta"] {
   if (!isRecord(legacy.meta)) {
     reject("meta with non-empty id, benchmark, and timestamp strings is required");
@@ -243,6 +254,9 @@ function upgradeMeta(legacy: JsonRecord, recognizedTaskCount: number): Benchmark
     if (typeof value !== "string" || value.trim().length === 0) {
       reject(`meta.${key} must be a non-empty string`);
     }
+  }
+  if (!Number.isFinite(Date.parse(meta.timestamp as string))) {
+    reject("meta.timestamp must be a parseable date");
   }
 
   const taskCount = recognizedTaskCount;
@@ -261,7 +275,7 @@ function upgradeMeta(legacy: JsonRecord, recognizedTaskCount: number): Benchmark
     // Old UI display default for an absent mode.
     mode: optionalMode("meta.mode", meta) ?? "quick",
     // Old UI fell back to the task count when runCount was absent.
-    runCount: optionalFiniteNumber("meta.runCount", meta, "runCount") ?? taskCount,
+    runCount: optionalNonNegativeInteger("meta.runCount", meta, "runCount") ?? taskCount,
     seeds: optionalSeeds("meta.seeds", meta.seeds) ?? [],
   };
 
@@ -472,6 +486,7 @@ function upgradeResults(legacy: JsonRecord): BenchmarkResult["results"] {
     reject("results must be an object when present");
   }
   const results = legacy.results;
+  const declaredMultiSample = isDeclaredMultiSample(legacy);
 
   if ("tasks" in results) {
     if (!Array.isArray(results.tasks)) {
@@ -492,6 +507,7 @@ function upgradeResults(legacy: JsonRecord): BenchmarkResult["results"] {
         `results.aggregates.${metricName}`,
         rawValue,
         upgraded.tasks.length,
+        declaredMultiSample,
       );
     }
     upgraded.aggregates = normalizedAggregates;
@@ -513,6 +529,7 @@ function upgradeResults(legacy: JsonRecord): BenchmarkResult["results"] {
           `results.categoryAggregates.${catName}.${metricName}`,
           rawVal,
           upgraded.tasks.length,
+          declaredMultiSample,
         );
       }
       normalizedCategoryAggregates[catName] = catNormalized;
