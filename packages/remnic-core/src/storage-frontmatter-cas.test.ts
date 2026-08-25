@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -836,5 +836,53 @@ test("crash after memory write before writeLanded recovers from host-forwarded e
       recovered.status === "present" && recovered.revision > reserved,
       "the post-recovery write owns a strictly greater receipt",
     );
+  });
+});
+
+test("deleting a memory sweeps its CAS revision shard (#2837)", async () => {
+  await withStorageDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    const created = await storage.writeMemory("fact", "Deletion shard sweep content.", { source: "test" });
+    const memory = await storage.getMemoryById(created.id);
+    assert.ok(memory);
+
+    // Mint a standing receipt, then delete the memory through the public
+    // invalidation funnel (the same funnel maintenance purge and archive
+    // moves use underneath).
+    assert.equal(await storage.writeMemoryFrontmatter(memory, { tags: ["sweep"] }), true);
+    const shard = casShardPath(dir, memory.path);
+    assert.equal((await storage.readCasRevisionStatus(memory.path)).status, "present");
+    await stat(shard);
+
+    assert.equal(await storage.invalidateMemory(created.id), true);
+    assert.equal(await stat(shard).then(() => true, () => false), false, "the deleted memory's shard is swept");
+    assert.equal(
+      (await storage.readCasRevisionStatus(memory.path)).status,
+      "absent",
+      "no standing receipt survives the memory",
+    );
+  });
+});
+
+test("a pending shard survives memory deletion as recovery evidence, and the delete still succeeds (#2837)", async () => {
+  await withStorageDir(async (dir) => {
+    const storage = new StorageManager(dir);
+    const created = await storage.writeMemory("fact", "Pending shard kept on delete.", { source: "test" });
+    const memory = await storage.getMemoryById(created.id);
+    assert.ok(memory);
+
+    // Crash simulation: a reservation left PENDING for this target.
+    const seams = storage as unknown as { casRevisions: CasRevisionStore };
+    await seams.casRevisions.beginRevisionTransaction(memory.path);
+    const shard = casShardPath(dir, memory.path);
+    await stat(shard);
+
+    assert.equal(await storage.invalidateMemory(created.id), true, "the deletion itself never fails on the sweep");
+    assert.equal(
+      await stat(shard).then(() => true, () => false),
+      true,
+      "a PENDING marker is crash-recovery evidence and is kept",
+    );
+    assert.equal((await storage.readCasRevisionStatus(memory.path)).status, "unavailable");
   });
 });

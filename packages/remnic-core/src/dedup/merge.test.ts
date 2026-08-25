@@ -769,7 +769,6 @@ async function harness(
     registerFactContentHash: async (id: string, hash: string, _expectedContent: string) => {
       calls.hashRegistrations.push({ id, hash });
     },
-    readCasRevision: async (p: string) => (p === targetPath ? casRevision : undefined),
     readCasRevisionStatus: async (p: string): Promise<CasRevisionReadStatus> => {
       if (p !== targetPath) return { status: "absent" };
       if (overrides.receiptStatus === "unavailable") {
@@ -3460,7 +3459,10 @@ async function postEffectsHarness(options: {
         : null,
     // #2807: static token — these fixtures drive the rollback paths, not
     // ownership attribution.
-    readCasRevision: async () => "2026-08-20T00:00:00.000Z",
+    readCasRevisionStatus: async (): Promise<CasRevisionReadStatus> => ({
+      status: "present",
+      revision: "2026-08-20T00:00:00.000Z",
+    }),
   } as unknown as StorageManager;
   const deps = {
     config: parseConfig({ memoryDir: dir }),
@@ -3729,6 +3731,12 @@ test("runMergedTargetPostEffects: a writer committing mid-rebuild keeps its edge
             content: buildGraphEdgeCalls > 0 ? NEWER_BODY : MERGED,
           }
         : null,
+    // #2807: B's mid-rebuild commit mints a NEW token — the identity the
+    // revision guard compares (public `updated` no longer carries it).
+    readCasRevisionStatus: async (): Promise<CasRevisionReadStatus> =>
+      buildGraphEdgeCalls > 0
+        ? { status: "present", revision: "2026-08-22T01:00:00.001Z" }
+        : { status: "present", revision: "2026-08-20T00:00:00.000Z" },
   } as unknown as StorageManager;
   const deps = {
     ...h.deps,
@@ -3800,8 +3808,10 @@ test("runMergedTargetPostEffects: a stale writer's rollback preserves the newer 
         : null,
     // #2807: B's mid-rebuild commit mints a NEW token — the identity the
     // revision guard compares (public `updated` no longer carries it).
-    readCasRevision: async () =>
-      buildStarted ? "2026-08-22T01:00:00.001Z" : "2026-08-20T00:00:00.000Z",
+    readCasRevisionStatus: async (): Promise<CasRevisionReadStatus> =>
+      buildStarted
+        ? { status: "present", revision: "2026-08-22T01:00:00.001Z" }
+        : { status: "present", revision: "2026-08-20T00:00:00.000Z" },
   } as unknown as StorageManager;
   const graphConfig = parseConfig({ memoryDir: h.dir });
   const graphIndex = new GraphIndex(h.dir, graphConfig);
@@ -3847,6 +3857,170 @@ test("runMergedTargetPostEffects: a stale writer's rollback preserves the newer 
     [bEntity],
     `the graph must hold exactly B's rebuilt edges after the stale writer's rollback — no pre-A rows, no A rows (entity.jsonl: ${JSON.stringify(entityEdges)})`,
   );
+});
+
+// ── #2837: the revision guard must FAIL CLOSED. The old guard read the
+// receipt fail-open (readCasRevision), so a rewrite whose BOTH sidecar reads
+// were unavailable compared undefined against undefined, passed, and
+// installed replacement edges no receipt ever verified. ────────────────────
+
+test("runMergedTargetPostEffects: both receipt reads unavailable skips the graph rewrite instead of installing unchecked (#2837)", async () => {
+  const h = await postEffectsHarness();
+  const OTHER = "facts/2026-08-19/other.md";
+  const priorEntity: GraphEdge = { from: h.targetRelPath, to: OTHER, type: "entity", weight: 1, label: "entity-billing-service", ts: "2026-08-19T00:00:00.000Z" };
+  await seedGraphFile(h.dir, "entity", [priorEntity]);
+  let built = false;
+  const storage = {
+    dir: h.dir,
+    getMemoryByIdIncludingArchived: async (id: string) =>
+      id === "fact-target"
+        ? {
+            path: path.join(h.dir, h.targetRelPath),
+            frontmatter: { id, category: "fact", entityRef: "entity-billing-service" },
+            content: MERGED,
+          }
+        : null,
+    // The fail-open collapse the OLD guard trusted: an unreadable sidecar
+    // reads as undefined on both sides of the remove-and-rebuild.
+    readCasRevision: async () => undefined,
+    readCasRevisionStatus: async (): Promise<CasRevisionReadStatus> => ({
+      status: "unavailable",
+      reason: "simulated sidecar outage",
+    }),
+  } as unknown as StorageManager;
+  const deps = {
+    ...h.deps,
+    buildGraphEdge: async () => {
+      built = true;
+    },
+  } as unknown as ExtractionPersistDeps;
+  const graphContext = { allMemsForGraph: [], memoryPathById: new Map(), previousPersistedRelPath: "facts/2026-08-18/prev.md" };
+  await runMergedTargetPostEffects(
+    deps,
+    storage,
+    { targetId: "fact-target", mergedContent: MERGED },
+    {
+      category: "fact",
+      incomingContent: INCOMING,
+      incomingConfidence: 0.9,
+      namespace: "default",
+      graphCaps: ALL_GRAPH_CAPS,
+      graphContext,
+      threadIdForEdge: undefined,
+      threadEpisodeIdsForGraph: undefined,
+    },
+  );
+  assert.equal(built, false, "the graph effect must be SKIPPED while receipt identity is unavailable");
+  assert.deepEqual(
+    await readGraphFile(h.dir, "entity"),
+    [priorEntity],
+    "the prior edges survive untouched — nothing was removed for an install that could never be verified",
+  );
+  assert.equal(graphContext.previousPersistedRelPath, "facts/2026-08-18/prev.md", "a skipped rewrite must not advance the adjacency chain");
+});
+
+test("runMergedTargetPostEffects: a receipt that becomes unavailable mid-rebuild rolls the install back (#2837)", async () => {
+  const h = await postEffectsHarness();
+  const OTHER = "facts/2026-08-19/other.md";
+  const priorEntity: GraphEdge = { from: h.targetRelPath, to: OTHER, type: "entity", weight: 1, label: "entity-billing-service", ts: "2026-08-19T00:00:00.000Z" };
+  await seedGraphFile(h.dir, "entity", [priorEntity]);
+  let buildStarted = false;
+  const storage = {
+    dir: h.dir,
+    getMemoryByIdIncludingArchived: async (id: string) =>
+      id === "fact-target"
+        ? {
+            path: path.join(h.dir, h.targetRelPath),
+            frontmatter: { id, category: "fact", entityRef: "entity-billing-service" },
+            content: MERGED,
+          }
+        : null,
+    readCasRevision: async () => undefined,
+    readCasRevisionStatus: async (): Promise<CasRevisionReadStatus> =>
+      buildStarted
+        ? { status: "unavailable", reason: "simulated transient sidecar read failure" }
+        : { status: "present", revision: "2026-08-20T00:00:00.000Z" },
+  } as unknown as StorageManager;
+  const rebuilt: GraphEdge = { from: h.targetRelPath, to: OTHER, type: "entity", weight: 1, label: "entity-billing-service-v3", ts: "2026-08-23T00:00:00.000Z" };
+  const deps = {
+    ...h.deps,
+    buildGraphEdge: async () => {
+      buildStarted = true;
+      await appendEdge(h.dir, { ...rebuilt });
+      return [{ ...rebuilt }];
+    },
+  } as unknown as ExtractionPersistDeps;
+  const graphContext = { allMemsForGraph: [], memoryPathById: new Map(), previousPersistedRelPath: "facts/2026-08-18/prev.md" };
+  await runMergedTargetPostEffects(
+    deps,
+    storage,
+    { targetId: "fact-target", mergedContent: MERGED },
+    {
+      category: "fact",
+      incomingContent: INCOMING,
+      incomingConfidence: 0.9,
+      namespace: "default",
+      graphCaps: ALL_GRAPH_CAPS,
+      graphContext,
+      threadIdForEdge: undefined,
+      threadEpisodeIdsForGraph: undefined,
+    },
+  );
+  assert.deepEqual(
+    await readGraphFile(h.dir, "entity"),
+    [priorEntity],
+    "an unverifiable post-build receipt must roll the remove-and-rebuild back to the prior edges",
+  );
+  assert.equal(graphContext.previousPersistedRelPath, "facts/2026-08-18/prev.md", "a rolled-back rewrite must not advance the adjacency chain");
+});
+test("runMergedTargetPostEffects: a genuinely absent receipt on both reads still installs (#2837)", async () => {
+  const h = await postEffectsHarness();
+  const OTHER = "facts/2026-08-19/other.md";
+  const priorEntity: GraphEdge = { from: h.targetRelPath, to: OTHER, type: "entity", weight: 1, label: "entity-billing-service", ts: "2026-08-19T00:00:00.000Z" };
+  await seedGraphFile(h.dir, "entity", [priorEntity]);
+  const storage = {
+    dir: h.dir,
+    getMemoryByIdIncludingArchived: async (id: string) =>
+      id === "fact-target"
+        ? {
+            path: path.join(h.dir, h.targetRelPath),
+            frontmatter: { id, category: "fact", entityRef: "entity-billing-service" },
+            content: MERGED,
+          }
+        : null,
+    readCasRevision: async () => undefined,
+    readCasRevisionStatus: async (): Promise<CasRevisionReadStatus> => ({ status: "absent" }),
+  } as unknown as StorageManager;
+  const rebuilt: GraphEdge = { from: h.targetRelPath, to: OTHER, type: "entity", weight: 1, label: "entity-billing-service-v3", ts: "2026-08-23T00:00:00.000Z" };
+  const deps = {
+    ...h.deps,
+    buildGraphEdge: async () => {
+      await appendEdge(h.dir, { ...rebuilt });
+      return [{ ...rebuilt }];
+    },
+  } as unknown as ExtractionPersistDeps;
+  const graphContext = { allMemsForGraph: [], memoryPathById: new Map(), previousPersistedRelPath: "facts/2026-08-18/prev.md" };
+  await runMergedTargetPostEffects(
+    deps,
+    storage,
+    { targetId: "fact-target", mergedContent: MERGED },
+    {
+      category: "fact",
+      incomingContent: INCOMING,
+      incomingConfidence: 0.9,
+      namespace: "default",
+      graphCaps: ALL_GRAPH_CAPS,
+      graphContext,
+      threadIdForEdge: undefined,
+      threadEpisodeIdsForGraph: undefined,
+    },
+  );
+  assert.deepEqual(
+    await readGraphFile(h.dir, "entity"),
+    [rebuilt],
+    "a target that never minted a receipt (pre-sidecar legacy) still installs its rebuilt edges",
+  );
+  assert.equal(graphContext.previousPersistedRelPath, h.targetRelPath, "the verified install advances the batch's adjacency chain");
 });
 
 // ── Round N+16 (A): the N+14 surgical rollback leaned on build()'s RETURN
@@ -4194,11 +4368,12 @@ test("applySemanticMergeAtPersist: a timestamp-less retirement between the conte
   // identity the rollback compares.
   const receipt = h.calls.commitRevisions[0];
   assert.ok(receipt, "the content CAS stamped a receipt");
-  const standingToken = await h.storage.readCasRevision(h.target.path);
-  assert.ok(standingToken, "the retirement minted a new token");
+  const standingStatus = await h.storage.readCasRevisionStatus(h.target.path);
+  assert.ok(standingStatus.status === "present", "the retirement minted a standing receipt");
+  const standingToken = standingStatus.status === "present" ? standingStatus.revision : undefined;
   assert.notEqual(standingToken, receipt, "the timestamp-less retirement retired the CAS's receipt token");
   assert.ok(
-    new Date(standingToken).getTime() > new Date(receipt).getTime(),
+    standingToken !== undefined && new Date(standingToken).getTime() > new Date(receipt).getTime(),
     "the timestamp-less retirement advanced the token strictly past the CAS receipt",
   );
   assert.deepEqual(
@@ -4324,7 +4499,9 @@ test("applySemanticMergeAtPersist: the monotonic receipt survives the metadata p
     T.toISOString(),
     "#2807: the metadata patch stamps business time (mergePatch.updated) verbatim — never a revision",
   );
-  const standingToken = await h.storage.readCasRevision(h.target.path);
+  const standingRead = await h.storage.readCasRevisionStatus(h.target.path);
+  assert.equal(standingRead.status, "present", "the standing receipt is readable after the metadata patches");
+  const standingToken = standingRead.status === "present" ? standingRead.revision : undefined;
   const [aReceipt, bReceipt, cReceipt2] = h.calls.commitRevisions;
   assert.ok(aReceipt && bReceipt && cReceipt2);
   assert.ok(aReceipt < bReceipt && bReceipt < cReceipt2, "A, B, C receipts are unique and strictly increasing");

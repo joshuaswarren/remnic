@@ -72,4 +72,26 @@ export class CasRevisionHost extends CasRevisionStore {
     await this.recoverPendingRevision(pathname);
     return await this.beginRevisionTransaction(pathname, expectedContent);
   }
+
+  /** #2837: best-effort post-deletion sweep of the target's receipt shard.
+   * The durable memory file is already gone, so a failed sweep must never
+   * fail the deletion itself — it logs instead. A PENDING shard (crash
+   * recovery evidence) and a foreign shard (another target's receipt) are
+   * kept, with a warning naming the recovery path. */
+  async sweepShardAfterDeletion(filePath: string): Promise<void> {
+    try {
+      const outcome = await this.removeRevisionShard(filePath);
+      if (outcome === "pending") {
+        log.warn(
+          `CAS revision shard for ${filePath} kept after memory deletion: a pending reservation stands — run recovery before the path is reused`,
+        );
+      } else if (outcome === "foreign") {
+        log.warn(
+          `CAS revision shard for ${filePath} kept after memory deletion: the shard names another target`,
+        );
+      }
+    } catch (err) {
+      log.warn(`failed to sweep CAS revision shard for deleted memory ${filePath}: ${err}`);
+    }
+  }
 }

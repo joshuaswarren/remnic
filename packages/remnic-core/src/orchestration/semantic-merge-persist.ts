@@ -1144,15 +1144,26 @@ export async function runMergedTargetPostEffects(
     if (input.graphCaps.entityGraph) rewriteTypes.push("entity");
     if (input.graphCaps.timeGraph) rewriteTypes.push("time");
     if (input.graphCaps.causalGraph) rewriteTypes.push("causal");
-    // Round N+12 (C): the remove-and-rebuild is revision-guarded end to end
-    // (see rewriteMergedTargetGraphEdges) — a writer committing a newer body
-    // mid-rebuild aborts this install instead of clobbering its edges.
+    // Round N+12 (C) + #2837: the remove-and-rebuild is revision-guarded
+    // end to end (see rewriteMergedTargetGraphEdges) — a writer committing
+    // a newer body mid-rebuild aborts this install instead of clobbering
+    // its edges. The guard compares the truthful receipt STATUS (#2807:
+    // the dedicated CAS revision token, never public `updated`), and an
+    // UNAVAILABLE sidecar SKIPS the effect entirely: passing a fail-open
+    // undefined into the install is what let an unchecked replacement
+    // install when both sidecar reads failed.
+    const receiptStatus = await storage.readCasRevisionStatus(committed.path);
+    if (receiptStatus.status === "unavailable") {
+      log.warn(
+        `runMergedTargetPostEffects: CAS revision status for ${committed.path} is unavailable (${receiptStatus.reason}); skipping the graph rewrite — the next merge retries it (#2837)`,
+      );
+      return signals;
+    }
     rewriteInstalled = await rewriteMergedTargetGraphEdges(storage, {
       targetId: merge.targetId,
       memoryRelPath,
       mergedContent: merge.mergedContent,
-      // #2807: the dedicated CAS revision token, not public `updated`.
-      revisionChecked: await storage.readCasRevision(committed.path),
+      revisionChecked: receiptStatus.status === "present" ? receiptStatus.revision : undefined,
       rewriteTypes,
       build: () =>
         deps.buildGraphEdge(
