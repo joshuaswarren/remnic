@@ -43,7 +43,7 @@
       "packages/remnic-core/src/event-order-recall.ts": 2902,
       "packages/remnic-core/src/explicit-cue-recall.ts": 5764,
       "packages/remnic-core/src/extraction-faithfulness.ts": 1271,
-      "packages/remnic-core/src/extraction.ts": 2827,
+      "packages/remnic-core/src/extraction.ts": 2816,
       "packages/remnic-core/src/index.ts": 1468,
       "packages/remnic-core/src/local-llm.ts": 1481,
       "packages/remnic-core/src/maintenance/rebuild-memory-projection.ts": 1356,
