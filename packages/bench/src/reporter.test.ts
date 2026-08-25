@@ -465,6 +465,14 @@ test("writeBenchmarkResult rejects an invalid canary floor override without writ
       withCanaryFloorEnv("", () => writeBenchmarkResult(buildResult(), dir)),
       /Invalid REMNIC_BENCH_CANARY_FLOOR/,
     );
+    await assert.rejects(
+      withCanaryFloorEnv(" ", () => writeBenchmarkResult(buildResult(), dir)),
+      /Invalid REMNIC_BENCH_CANARY_FLOOR/,
+    );
+    await assert.rejects(
+      withCanaryFloorEnv("\t", () => writeBenchmarkResult(buildResult(), dir)),
+      /Invalid REMNIC_BENCH_CANARY_FLOOR/,
+    );
     assert.deepEqual(await readdir(dir), []);
   } finally {
     await rm(dir, { recursive: true, force: true });

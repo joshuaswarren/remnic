@@ -41,7 +41,8 @@ export function parseCanaryFloor(value: unknown, label = "canary floor"): number
 /**
  * Effective canary floor for this process: a validated
  * `REMNIC_BENCH_CANARY_FLOOR` override, else the canonical default.
- * An explicitly empty override is invalid, not absent.
+ * An explicitly empty or whitespace-only override is invalid, not absent:
+ * `Number(" ")` parses to 0, which would silently replace the floor.
  */
 export function resolveCanaryFloorFromEnv(
   raw: string | undefined = process.env.REMNIC_BENCH_CANARY_FLOOR,
@@ -49,8 +50,8 @@ export function resolveCanaryFloorFromEnv(
   if (raw === undefined) {
     return CANARY_SCORE_FLOOR;
   }
-  if (raw === "") {
-    throw new Error(`Invalid REMNIC_BENCH_CANARY_FLOOR: ${raw}`);
+  if (raw.trim() === "") {
+    throw new Error(`Invalid REMNIC_BENCH_CANARY_FLOOR: ${JSON.stringify(raw)}`);
   }
   try {
     return parseCanaryFloor(Number(raw), "REMNIC_BENCH_CANARY_FLOOR");

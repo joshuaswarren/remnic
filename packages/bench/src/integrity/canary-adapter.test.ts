@@ -109,9 +109,9 @@ test("resolveCanaryFloorFromEnv accepts valid non-negative overrides", () => {
   }
 });
 
-test("resolveCanaryFloorFromEnv rejects empty, invalid, non-finite, or negative overrides", () => {
+test("resolveCanaryFloorFromEnv rejects empty, whitespace-only, invalid, non-finite, or negative overrides", () => {
   const saved = process.env.REMNIC_BENCH_CANARY_FLOOR;
-  const invalid = ["", "abc", "-1", "NaN", "Infinity", "1e999"];
+  const invalid = ["", " ", "\t", "abc", "-1", "NaN", "Infinity", "1e999"];
   try {
     for (const raw of invalid) {
       process.env.REMNIC_BENCH_CANARY_FLOOR = raw;
