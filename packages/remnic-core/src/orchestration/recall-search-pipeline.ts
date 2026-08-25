@@ -34,6 +34,7 @@ import { RerankCache, rerankLocalOrNoop, reorderByRankedKeys } from "../rerank.j
 import type { SearchBackend, SearchDegradation, SearchExecutionOptions, SearchQueryOptions } from "../search/port.js";
 import { SecureStoreLockedError } from "../secure-store/index.js";
 import { isPathInsideStorageRoot } from "../storage-paths.js";
+import { applyRecencyBoost, collectMtimeFallbackContext } from "../memory-age.js";
 import type { CorpusReadOptions } from "../corpus-read-cancellation.js";
 import { extractTagsFromPrompt, isTemporalQuery, queryByDateRangeAsync, queryByTagsAsync, readIndexSnapshotAsync, recencyWindowFromPrompt } from "../temporal-index.js";
 import {
@@ -1558,20 +1559,23 @@ export class RecallSearchPipelineCoordinator {
 
     const boosted: QmdSearchResult[] = [];
     const recencyWeight = this.deps.effectiveRecencyWeight();
+    // #2976: mtime backs age only for memories without content dates, and a
+    // same-day mtime cluster (bulk import / restore / cp -r) is distrusted.
+    const mtimeFallback =
+      recencyWeight > 0
+        ? await collectMtimeFallbackContext(
+            safeResults.flatMap((r) => { const m = memoryForResult(memoryByPath, r); return m ? [m] : []; }),
+          )
+        : null;
     for (const r of safeResults) {
       const memory = memoryForResult(memoryByPath, r);
       let score = r.score;
 
       if (memory) {
-        // Recency boost: exponential decay over 7 days
-        if (recencyWeight > 0) {
-          const createdAt = new Date(memory.frontmatter.created).getTime();
-          const ageMs = now - createdAt;
-          const ageDays = ageMs / (1000 * 60 * 60 * 24);
-          const halfLifeDays = 7;
-          const recencyScore = Math.pow(0.5, ageDays / halfLifeDays);
-          score = score * (1 - recencyWeight) + recencyScore * recencyWeight;
-        }
+        // Recency boost: 7-day exponential decay over the shared age resolver
+        // (#2976): content dates first, trusted mtime as fallback, unknown
+        // age never fresh. See memory-age.ts.
+        score = applyRecencyBoost(score, memory, recencyWeight, now, mtimeFallback);
 
         // Access count boost: log scale, capped
         if (this.deps.config.boostAccessCount && memory.frontmatter.accessCount) {
