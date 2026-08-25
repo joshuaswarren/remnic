@@ -34,10 +34,6 @@ import { cloneDefaultSessionObserverBands } from "./session-observer-bands.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import { normalizeEntitySchemas } from "./entity-schema.js";
 import { expandTildePath } from "./utils/path.js";
-// Finding 4 (#394): use the shared coerce helper instead of inlining the same
-// boolean-coercion logic that connectors/index.ts already exports. The helper
-// lives in connectors/coerce.ts (a tiny, dependency-free module) so neither
-// config.ts → connectors/index.ts nor the reverse circular import arises.
 import { coerceBool, coerceBooleanLike, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
 import { parseSubjectRuntimeConfig } from "./subject-config.js";
 import { parseRecallStateViews } from "./recall-state-view.js";
@@ -58,6 +54,7 @@ import { parseDriftDetectionConfig } from "./preferences/drift-config.js";
 import { parseDeepRecallConfig } from "./deep-recall-config.js";
 import { parseRecallNavigationConfig } from "./recall-navigation-config.js";
 import { parseSessionExperienceConfig } from "./experience/session-experience-config.js";
+import { parseSeedGraduationConfig } from "./lifecycle/seed-graduation.js";
 import { parseContradictionLocalizationConfig, parseContradictionScanConfig } from "./contradiction-config.js";
 import { parseGraphPathScoringConfig } from "./graph-path-scoring-config.js";
 import { parseWritePathDedupConfig } from "./dedup/novelty-gate.js";
@@ -639,6 +636,7 @@ const MEMORY_OS_PRESETS: Record<MemoryOsPresetName, Record<string, unknown>> = {
     // explicitly.
     procedural: { enabled: false },
     sessionExperience: { enabled: false },
+    seedGraduation: { enabled: false },
     recallNavigation: { enabled: false },
   },
   balanced: {
@@ -1834,6 +1832,7 @@ export function parseConfig(
     recallNavigation: parseRecallNavigationConfig(cfg.recallNavigation),
     // Session-end experience extraction (issue #2979) — default off.
     sessionExperience: parseSessionExperienceConfig(cfg.sessionExperience),
+    seedGraduation: parseSeedGraduationConfig(cfg.seedGraduation),
     dependencyPropagation: parseDependencyPropagationConfig(cfg),
     // Temporal Supersession (issue #375)
     temporalSupersessionEnabled: cfg.temporalSupersessionEnabled !== false, // On by default

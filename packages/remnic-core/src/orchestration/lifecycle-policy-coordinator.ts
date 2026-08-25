@@ -49,6 +49,8 @@ import type {
   MemorySummary,
 } from "../types.js";
 import { excludeSupportPassportPrivateMemories } from "../support-passport/card-projection.js";
+import { runSeedGraduationPass } from "../lifecycle/seed-graduation.js";
+import type { RecallHandleHistoryStore } from "../recall-state.js";
 
 /** Dependencies injected by the orchestrator. All stable references or
  *  live accessors. */
@@ -76,6 +78,8 @@ export interface LifecyclePolicyCoordinatorDeps {
   ) => Promise<void>;
   /** Persist all dirty content-hash indexes to disk. */
   saveContentHashIndexes: () => Promise<void>;
+  /** Recall-handle ring used to suppress quoted-back echo during seed graduation. */
+  getHandleHistory?: () => RecallHandleHistoryStore;
 }
 
 /**
@@ -255,6 +259,14 @@ export class LifecyclePolicyCoordinator {
       });
       if (wrote) updatedCount += 1;
     }
+
+    const history = this.deps.getHandleHistory?.();
+    await runSeedGraduationPass({
+      memories: allMemories,
+      storage,
+      config: this.config.seedGraduation,
+      recalledBySession: history ? (sessionKey) => history.recent(sessionKey) : undefined,
+    });
 
     // Report how many memories had frontmatter rewritten so callers can record a
     // catalog write touch for lifecycle-only passes (codex NR-tS).

@@ -1711,6 +1711,7 @@ export class Orchestrator {
       removeContentHashForMemory: (targetStorage, memory, context) =>
         this.removeContentHashForMemory(targetStorage, memory, context),
       saveContentHashIndexes: () => this.saveContentHashIndexes(),
+      getHandleHistory: () => this.handleHistory,
     });
     this.threading = new ThreadingManager(
       path.join(config.memoryDir, "threads"),
