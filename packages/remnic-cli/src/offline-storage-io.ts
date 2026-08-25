@@ -161,24 +161,7 @@ export async function createOfflineStorageIo(
       : createSupportPassportPrivateFileExclusion(storage),
     readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
     readDeletionRevisions: () => storage.readDeletionRevisions(),
-    readFileDigest: async ({ filePath }) => {
-      const hash = createHash("sha256");
-      let bytes = 0;
-      for await (const rawChunk of readOfflineSyncFileChunks({
-        filePath,
-        memoryDir,
-        secureStoreKey,
-        chunkSize: OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
-      })) {
-        const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
-        hash.update(chunk);
-        bytes += chunk.length;
-      }
-      return {
-        sha256: hash.digest("hex"),
-        bytes,
-      };
-    },
+    readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
     readFileChunks: ({ filePath, chunkSize }) =>
       readOfflineSyncFileChunks({
         filePath,

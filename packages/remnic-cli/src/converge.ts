@@ -8,6 +8,7 @@ import {
   type PluginConfig,
   type ResolveSecretRefFn,
   applyOfflineSyncFileContentChunk,
+  compileOfflineSyncExcludeGlobs,
   envConvergePeerRequestTimeoutMs,
   isInternalRemnicStatePath,
   normalizeConvergePeerRequestTimeoutMs,
@@ -25,7 +26,10 @@ import {
   readConvergeCursor,
   writeConvergeCursor,
 } from "@remnic/core/reconcile/cursor.js";
-import { type ReconcileManifest, collapseActiveFactDuplicates } from "@remnic/core/reconcile/manifest.js";
+import {
+  type ReconcileManifest,
+  collapseActiveFactDuplicates,
+} from "@remnic/core/reconcile/manifest.js";
 import {
   type ReconcileFileState,
   type ReconcileNamespaceInput,
@@ -43,7 +47,6 @@ import {
 } from "./converge-plan-cache.js";
 
 import type { ConvergeConflictPolicy } from "@remnic/core/types.js";
-import { loadConvergeIdentityCache, saveConvergeIdentityCache } from "./converge-identity-cache.js";
 import { formatConvergeApplyReport, formatConvergeReport } from "./converge-report.js";
 import {
   DEFAULT_PEER_REQUEST_TIMEOUT_MS,
@@ -223,7 +226,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     }
   }
   const memoryDir = options.cursorDir ?? config?.memoryDir;
-
+  const userExcludeRegexps = compileOfflineSyncExcludeGlobs(config?.offlineSyncExcludes ?? []);
   const peerUrl = options.peerUrl;
 
   // Resumable planning cache (#2803): active only when this run does live
@@ -259,6 +262,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
           onProgress: options.onProgress,
           memoryDir,
           peerUrl: options.peerUrl,
+          userExcludeRegexps,
         });
         localMap.set(rootInfo.namespace, census.files);
         localManifests.set(rootInfo.namespace, census.manifest);

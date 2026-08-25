@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.40] — 2026-08-25
+
 ### Fixed
 
 - QMD startup collection checks now have a batch-wide deadline. If any namespace check never settles despite its per-check abort signal, Remnic continues with fail-open `unknown` states so the daemon can become available; normal background QMD retry can reconcile search afterward.

@@ -11,6 +11,7 @@
  */
 
 import { coerceBool, coerceNumber } from "./connectors/coerce.js";
+import { EngramAccessInputError } from "./access-errors.js";
 
 export interface DeepRecallConfig {
   /** Master switch for the deep-recall surface. Default false. */
@@ -80,4 +81,67 @@ export function parseDeepRecallConfig(raw: unknown): DeepRecallConfig {
     stepTimeoutMs: parseCount(src, "stepTimeoutMs", DEEP_RECALL_CONFIG_DEFAULTS.stepTimeoutMs),
     totalTimeoutMs: parseCount(src, "totalTimeoutMs", DEEP_RECALL_CONFIG_DEFAULTS.totalTimeoutMs),
   };
+}
+
+/**
+ * Strict request-surface parse of an optional `maxSteps` override
+ * (issue #2915). Shared by MCP, HTTP, and CLI so every boundary rejects the
+ * same way instead of silently defaulting: absent/null is `undefined`;
+ * anything else must be a non-negative safe integer — a JS safe integer, or a
+ * string whose trimmed form is bare digits that parse without overflow.
+ * Malformed (`"abc"`), empty (`""`), fractional (`"1.5"` / `1.5`), negative,
+ * unsafe (`Number.MAX_SAFE_INTEGER + 1`), and non-number values throw instead
+ * of falling back to the configured default (§39).
+ */
+export function parseDeepRecallMaxSteps(raw: unknown): number | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === "number") {
+    if (!Number.isSafeInteger(raw) || raw < 0) {
+      throw new Error(`maxSteps must be a non-negative integer; got ${JSON.stringify(raw)}`);
+    }
+    return raw;
+  }
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!/^[0-9]+$/.test(trimmed)) {
+      throw new Error(`maxSteps must be a non-negative integer; got ${JSON.stringify(raw)}`);
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isSafeInteger(parsed)) {
+      throw new Error(`maxSteps must be a non-negative integer; got ${JSON.stringify(raw)}`);
+    }
+    return parsed;
+  }
+  throw new Error(`maxSteps must be a non-negative integer; got ${JSON.stringify(raw)}`);
+}
+
+/**
+ * Resolve the effective per-invocation config from a caller-requested
+ * `maxSteps` override (§33 semantics, extracted from the access service so
+ * the god file stays under its ratchet cap):
+ * - undefined request keeps the parsed config untouched;
+ * - `deepRecall.maxSteps: 0` is a documented disable value — any positive
+ *   override is a refusal, not a ceiling comparison;
+ * - otherwise the override must not exceed the configured ceiling.
+ */
+export function resolveEffectiveDeepRecallConfig(
+  cfg: DeepRecallConfig,
+  requestedSteps: number | undefined,
+): DeepRecallConfig {
+  if (requestedSteps === undefined) return cfg;
+  if (typeof requestedSteps !== "number" || !Number.isInteger(requestedSteps) || requestedSteps < 0) {
+    throw new EngramAccessInputError("deepRecall: maxSteps must be a non-negative integer");
+  }
+  if (cfg.maxSteps <= 0) {
+    if (requestedSteps > 0) {
+      throw new EngramAccessInputError(
+        "deepRecall: the policy loop is disabled (deepRecall.maxSteps=0); maxSteps must be 0"
+      );
+    }
+  } else if (requestedSteps > cfg.maxSteps) {
+    throw new EngramAccessInputError(
+      `deepRecall: maxSteps ${requestedSteps} exceeds the configured ceiling ${cfg.maxSteps}`
+    );
+  }
+  return { ...cfg, maxSteps: requestedSteps };
 }
