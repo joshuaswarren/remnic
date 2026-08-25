@@ -26,7 +26,7 @@ test("peer census threads the abort signal into snapshot, per-file, and tombston
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = new URL(String(input));
     if (url.pathname.endsWith("/offline-sync/snapshot")) {
-      signals.snapshot = init?.signal;
+      signals.snapshot = init?.signal ?? undefined;
       return Response.json({
         files: [
           { path: "facts/census-abort.md", sha256: memorySha, bytes: memoryContent.length },
@@ -38,12 +38,12 @@ test("peer census threads the abort signal into snapshot, per-file, and tombston
     if (url.pathname.endsWith("/offline-sync/file-content")) {
       const request = JSON.parse(String(init?.body)) as { path: string };
       if (request.path === "facts/census-abort.md") {
-        signals.perFile = init?.signal;
+        signals.perFile = init?.signal ?? undefined;
         return chunkResponse(memoryContent, request.path);
       }
       // The operator hits Ctrl+C while the tombstone-evidence fetch is in
       // flight: the request must reject, not hang or silently retry forever.
-      signals.tombstone = init?.signal;
+      signals.tombstone = init?.signal ?? undefined;
       controller.abort();
       throw init?.signal?.reason ?? new Error("aborted");
     }
