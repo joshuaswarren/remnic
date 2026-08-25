@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { test } from "node:test";
 import { ContentHashIndex, parseConfig } from "@remnic/core";
 import type { ReconcilePlan } from "@remnic/core/reconcile/plan.js";
+import type { ReconcileManifestFile } from "@remnic/core/reconcile/manifest.js";
 import {
   CONVERGE_PLAN_CACHE_MAX_AGE_MS,
   ConvergePlanCache,
@@ -1086,16 +1087,19 @@ test("converge plan: cached memory rows with an unknown status fail open to reco
         capturedAtMs: 1,
         savedAt: new Date().toISOString(),
       };
-      const memoryRow = (status: string) => ({
-        path: "facts/a.md",
-        sha256: "a".repeat(64),
-        memory: {
-          id: "mem-1",
-          category: "fact",
-          contentHash: ContentHashIndex.computeHash("body"),
-          status,
-        },
-      });
+      // `status` is intentionally widened so the rejection case can build an
+      // invalid row ("heroic"); the cast keeps the allow-list under test.
+      const memoryRow = (status: string) =>
+        ({
+          path: "facts/a.md",
+          sha256: "a".repeat(64),
+          memory: {
+            id: "mem-1",
+            category: "fact",
+            contentHash: ContentHashIndex.computeHash("body"),
+            status,
+          },
+        }) as unknown as ReconcileManifestFile;
       await cache.writeEntry({ ...base, files: [memoryRow("heroic")] });
       assert.equal(await cache.readEntry("peer", "default"), null, "unknown status must reject the entry");
 
