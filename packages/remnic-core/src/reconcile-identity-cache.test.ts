@@ -3,9 +3,15 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
+import * as fsp from "node:fs/promises";
 
 import { createHash } from "node:crypto";
-import { type ServerIdentityCacheEntry, planServerIdentityCacheWrite } from "./access-offline-manifest.js";
+import {
+  type ServerIdentityCacheEntry,
+  mergeServerIdentityCacheEntries,
+  planServerIdentityCacheWrite,
+  retainExcludedClassifications,
+} from "./access-offline-manifest.js";
 import { isInternalRemnicStatePath } from "./offline-sync.js";
 import { convergeIdentityCachePath } from "./reconcile/cursor.js";
 import {
@@ -373,6 +379,81 @@ test("a thrown memory-file read is not cached as a reusable negative", async () 
     },
   });
   assert.equal(reads, 1, "a failed read must not become a warm negative hit");
+});
+
+test("the write plan retains never-yielded excluded paths on a completed walk", () => {
+  const persisted = new Map<string, ServerIdentityCacheEntry>([
+    ["facts/gone.md", { path: "facts/gone.md", sha256: "aa" }],
+    ["facts/private.md", { path: "facts/private.md", sha256: "", statIdentity: "s", excluded: true }],
+  ]);
+  const plan = planServerIdentityCacheWrite({
+    persisted,
+    yieldedPaths: new Set([]),
+    retainedPaths: new Set(["facts/private.md"]),
+    streamCompleted: true,
+    cacheDirty: false,
+  });
+  assert.ok(plan.shouldWrite, "the vanished path still forces a write");
+  assert.deepEqual(
+    plan.entries.map((entry) => entry.path),
+    ["facts/private.md"],
+    "an excluded file's entry survives the deleted-path prune; a vanished path's does not"
+  );
+});
+
+test("excluded classifications persist for never-yielded paths without retaining unseen ones", () => {
+  const persisted = new Map<string, ServerIdentityCacheEntry>([
+    ["facts/deleted.md", { path: "facts/deleted.md", sha256: "aa" }],
+  ]);
+  const classifications = new Map([
+    ["facts/private.md", { statIdentity: "1:1:1:1:1", excluded: true }],
+    ["facts/yielded.md", { statIdentity: "2:2:2:2:2", excluded: false }],
+  ]);
+  const { retained, changed } = retainExcludedClassifications({
+    persisted,
+    classifications,
+    yieldedPaths: new Set(["facts/yielded.md"]),
+  });
+  assert.deepEqual([...retained], ["facts/private.md"]);
+  assert.equal(changed, true);
+  assert.equal(persisted.get("facts/private.md")?.excluded, true);
+  assert.equal(typeof persisted.get("facts/private.md")?.statIdentity, "string");
+  assert.ok(!retained.has("facts/deleted.md"), "a path the walk never saw must not be retained");
+});
+
+test("a concurrent server merge preserves the other writer's classification", async () => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "server-identity-merge-"));
+  try {
+    const cachePath = path.join(dir, "identity.json");
+    await fs.promises.writeFile(
+      cachePath,
+      JSON.stringify({
+        citationTemplate: citationTemplateFingerprint(undefined),
+        files: [
+          { path: "facts/a.md", sha256: "aa", statIdentity: "1:2:3:4:5", excluded: false },
+          { path: "facts/dropped.md", sha256: "dd", statIdentity: "9:9:9:9:9", excluded: true },
+        ],
+      })
+    );
+    const merged = await mergeServerIdentityCacheEntries(
+      fsp,
+      cachePath,
+      [{ path: "facts/b.md", sha256: "bb" }],
+      undefined,
+      new Set(["facts/dropped.md"])
+    );
+    const byPath = new Map(merged.map((entry) => [entry.path, entry]));
+    assert.equal(
+      byPath.get("facts/a.md")?.statIdentity,
+      "1:2:3:4:5",
+      "the other writer's classification survives the merge"
+    );
+    assert.equal(byPath.get("facts/a.md")?.excluded, false);
+    assert.ok(byPath.has("facts/b.md"), "this writer's entry survives too");
+    assert.equal(byPath.has("facts/dropped.md"), false, "a dropped path is still not resurrected");
+  } finally {
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  }
 });
 
 

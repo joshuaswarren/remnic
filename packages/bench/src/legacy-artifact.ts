@@ -37,6 +37,7 @@
  */
 import type { AggregateMetrics, BenchRuntimeProfile, BenchmarkMode, BenchmarkResult, BenchmarkTier, MetricAggregate, ProviderConfig, TaskResult } from "./types.js";
 import { INTEGRITY_META_FIELDS } from "./integrity/types.js";
+import { validateProviderConfigShape } from "./provider-config.js";
 
 /**
  * Recognized legacy shape version. Shape 1 is the pre-#2800 bench-ui
@@ -117,8 +118,16 @@ function optionalProviderConfig(where: string, value: unknown): ProviderConfig |
   if (value === undefined || value === null) {
     return null;
   }
-  if (!isRecord(value) || typeof value.provider !== "string" || typeof value.model !== "string") {
-    reject(`${where} must be a provider config ({ provider, model }) or null when present`);
+  // Complete-shape validation (issue #2895): a malformed optional field
+  // (e.g. a numeric rubricVersion) rejects with its field path instead of
+  // surviving the cast into typed results and exports.
+  const issue = validateProviderConfigShape(value);
+  if (issue) {
+    reject(
+      issue.fieldPath
+        ? `${where}.${issue.fieldPath} ${issue.reason}`
+        : `${where} ${issue.reason} or null when present`,
+    );
   }
   return value as unknown as ProviderConfig;
 }
