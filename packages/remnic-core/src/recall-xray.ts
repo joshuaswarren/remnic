@@ -631,7 +631,7 @@ function cloneResult(result: RecallXrayResult): RecallXrayResult {
  * "per-disclosure token spend" line and exposed for tests / surfaces.
  */
 export function summarizeDisclosureTokens(
-  results: ReadonlyArray<RecallXrayResult>,
+  results: ReadonlyArray<Pick<RecallXrayResult, "disclosure" | "estimatedTokens">>,
 ): RecallXrayDisclosureSummary {
   const summary: RecallXrayDisclosureSummary = {
     chunk: { count: 0, estimatedTokens: 0 },

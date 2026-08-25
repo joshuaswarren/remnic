@@ -43,6 +43,7 @@ import { buildProcedureRecallSection, mergeProcedureInjections } from "../proced
 import { canRecallToolScopedMemory } from "../tool-scoped-memory.js";
 import { buildQmdRecallCacheKey, getCachedQmdRecall, setCachedQmdRecall } from "../qmd-recall-cache.js";
 import { MEMORY_ID_PATTERN } from "../recall-handles.js";
+import { shouldRecordRecallAuthorityHistory } from "../recall-navigation-config.js";
 import {
   boundRecallContextComposition, composeRecallContext, contextBudgetForFooter,
   formatCuriosityFooter, renderAuthorityBoundContent, selectCuriosityQuestion,
@@ -5256,10 +5257,9 @@ export class RecallInternalCoordinator {
         }),
         "last recall record",
       );
-      // Issue #1582 — record the admitted memory-id set for handle resolution.
-      // Only when handles are enabled: if injection is off, no handle is ever
-      // rendered, so there is nothing to resolve and we skip the write.
-      if (this.deps.config.recallMemoryHandles && recalledMemoryIds.length > 0) {
+      // Record admitted ids when handles render OR navigation needs authority.
+      // Handles-off + navigation-on is the shipped default; skip only when both are off.
+      if (shouldRecordRecallAuthorityHistory(this.deps.config) && recalledMemoryIds.length > 0) {
         // Only handle-eligible ids aid resolution; filter out non-memory .md
         // basenames (entity reconstructions) so the resolver never records a
         // citation target that cannot be loaded.

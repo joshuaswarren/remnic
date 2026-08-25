@@ -52,7 +52,7 @@ import {
   withToolAliases,
 } from "./access-mcp-tool-names.js";
 import { MCP_READ_ONLY_TOOL_SUFFIXES } from "./mcp-read-only-tools.js";
-import { MEETINGS_MCP_TOOLS } from "./meetings/mcp-tools.js"; import { DEEP_RECALL_MCP_TOOLS } from "./deep-recall-mcp-tools.js";
+import { MEETINGS_MCP_TOOLS } from "./meetings/mcp-tools.js"; import { DEEP_RECALL_MCP_TOOLS } from "./deep-recall-mcp-tools.js"; import { RECALL_NAVIGATION_MCP_TOOLS } from "./recall-navigation-mcp-tools.js";
 import { WEARABLES_MCP_TOOLS } from "./wearables/mcp-tools.js";
 import { WHO_KNOWS_MCP_TOOLS } from "./who-knows.js"; import { LOCATION_MCP_TOOLS } from "./location/mcp-tools.js"; import { STANDUP_MCP_TOOLS } from "./standup/mcp-tools.js";
 import { PROMOTION_CANDIDATES_MCP_TOOLS } from "./memory-subject.js";
@@ -247,7 +247,7 @@ export const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = 
   "engram.console_state": "console_state",
   "engram.dreams_status": "dreams_status",
   "engram.dreams_run": "dreams_run",
-  ...SUPPORT_PASSPORT_MCP_MIGRATED_OPERATIONS, ...MCP_ADMIN_OPS_MIGRATED_OPERATIONS, "engram.deep_recall": "deep_recall",
+  ...SUPPORT_PASSPORT_MCP_MIGRATED_OPERATIONS, ...MCP_ADMIN_OPS_MIGRATED_OPERATIONS, "engram.deep_recall": "deep_recall", "engram.memory_expand": "memory_expand", "engram.memory_traverse": "memory_traverse",
   "engram.memory_chat": "chat_message",
 };
 
@@ -688,7 +688,7 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      ...WEARABLES_MCP_TOOLS, ...MEETINGS_MCP_TOOLS, ...WHO_KNOWS_MCP_TOOLS, ...PROMOTION_CANDIDATES_MCP_TOOLS, ...LOCATION_MCP_TOOLS, ...STANDUP_MCP_TOOLS, ...DEEP_RECALL_MCP_TOOLS,
+      ...WEARABLES_MCP_TOOLS, ...MEETINGS_MCP_TOOLS, ...WHO_KNOWS_MCP_TOOLS, ...PROMOTION_CANDIDATES_MCP_TOOLS, ...LOCATION_MCP_TOOLS, ...STANDUP_MCP_TOOLS, ...DEEP_RECALL_MCP_TOOLS, ...(service.recallNavigationEnabled !== false ? RECALL_NAVIGATION_MCP_TOOLS : []),
       ...(service.supportPassportEnabled ? SUPPORT_PASSPORT_MCP_TOOLS : []),
       {
         name: "engram.action_confidence",

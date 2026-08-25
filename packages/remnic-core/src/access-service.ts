@@ -173,6 +173,9 @@ import {
 } from "./admin/admin-surfaces.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import { type DeepRecallResult, runBudgetedDeepRecall } from "./deep-recall.js";
+import { resolveEffectiveDeepRecallConfig } from "./deep-recall-config.js";
+import { type RecallNavigationRequest, type RecallNavigationResult, runRecallNavigation } from "./recall-navigation.js";
+import { RECALL_NAVIGATION_CONFIG_DEFAULTS } from "./recall-navigation-config.js";
 import { callDeepRecallPolicyLlm } from "./deep-recall-policy-llm.js";
 import { createDeepRecallSeedSearch } from "./deep-recall-seeds.js";
 import { renderDeepRecallResult } from "./deep-recall-renderer.js";
@@ -1278,6 +1281,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   private readonly replicaDivergenceMonitor: ReplicaDivergenceMonitor;
   private readonly injectedSupportPassportGatewayRoute: SupportPassportModelRoute | null;
   readonly reviewDeckEnabled: boolean;
+  readonly recallNavigationEnabled: boolean;
 
   /** AccessObserveWriteSurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessObserveWriteSurface: AccessObserveWriteSurface | undefined;
@@ -1366,6 +1370,9 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     this.replicaDivergenceMonitor = new ReplicaDivergenceMonitor({ resolveSecretRef: options.resolveSecretRef });
     this.injectedSupportPassportGatewayRoute = options.supportPassportGatewayRoute ?? null;
     this.reviewDeckEnabled = options.reviewDeckEnabled === true;
+    // Configs built without parseConfig (test stubs, older host shapes) may
+    // omit the block; the parsed default (enabled: true) is the contract.
+    this.recallNavigationEnabled = (orchestrator.config.recallNavigation ?? RECALL_NAVIGATION_CONFIG_DEFAULTS).enabled;
     const accessCaps = resolveAccessSetupCapabilities(orchestrator.config); // #1566 Cluster B
     this.budget = new CrossNamespaceBudget({
       enabled: accessCaps.recallCrossNamespaceBudget,
@@ -2743,29 +2750,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     if (query.length === 0) {
       throw new EngramAccessInputError("deepRecall: query is required");
     }
-    let effective = cfg;
-    const requestedSteps = request.maxSteps;
-    if (requestedSteps !== undefined) {
-      if (typeof requestedSteps !== "number" || !Number.isInteger(requestedSteps) || requestedSteps < 0) {
-        throw new EngramAccessInputError("deepRecall: maxSteps must be a non-negative integer");
-      }
-      // `deepRecall.maxSteps: 0` is a documented disable value (§33): the
-      // policy loop is off, so ANY positive override is a refusal rather than
-      // a ceiling comparison. The zero case resolves first, so the ceiling
-      // threshold below only runs while the loop is enabled.
-      if (cfg.maxSteps <= 0) {
-        if (requestedSteps > 0) {
-          throw new EngramAccessInputError(
-            "deepRecall: the policy loop is disabled (deepRecall.maxSteps=0); maxSteps must be 0"
-          );
-        }
-      } else if (requestedSteps > cfg.maxSteps) {
-        throw new EngramAccessInputError(
-          `deepRecall: maxSteps ${requestedSteps} exceeds the configured ceiling ${cfg.maxSteps}`
-        );
-      }
-      effective = { ...cfg, maxSteps: requestedSteps };
-    }
+    const effective = resolveEffectiveDeepRecallConfig(cfg, request.maxSteps);
     const principal =
       request.authenticatedPrincipal?.trim() || resolvePrincipal(request.sessionKey, this.orchestrator.config);
     // Read path resolves through the SAME namespace layer as memoryGet (§30):
@@ -2842,6 +2827,11 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       query
     );
     return { ...result, rendered: renderDeepRecallResult(result) };
+  }
+
+  async recallNavigate(request: RecallNavigationRequest): Promise<RecallNavigationResult> {
+    const principal = request.authenticatedPrincipal?.trim() || resolvePrincipal(request.sessionKey, this.orchestrator.config);
+    return runRecallNavigation({ config: this.orchestrator.config.recallNavigation ?? RECALL_NAVIGATION_CONFIG_DEFAULTS, recallBudgetChars: this.orchestrator.config.recallBudgetChars, recentServedIds: (sessionKey, depth) => this.orchestrator.handleHistory.recent(sessionKey, depth), resolveReadableNamespace: (ns, p) => this.resolveReadableNamespace(ns, p || undefined), getStorage: (namespace) => this.orchestrator.getStorage(namespace) }, { ...request, authenticatedPrincipal: (principal ?? "").length > 0 ? principal : undefined });
   }
 
   async recallXray(request: {

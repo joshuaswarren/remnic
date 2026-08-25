@@ -1769,6 +1769,24 @@ Surfaces: MCP `engram.deep_recall` (canonical `remnic.deep_recall`), `POST /engr
 
 The `--max-steps` CLI flag and `maxSteps` request field are ceilings under the configured `maxSteps`; a value above the configuration is rejected, never silently clamped. Invalid values (non-object block, unrecognized boolean-like strings, non-integer or negative counts) throw at `parseConfig`. Timeout or budget exhaustion mid-loop returns the partial working set with `ok: true` and a `BUDGET_EXHAUSTED` trace tail; only a seed-search backend failure returns `ok: false` with `error: "backend_unavailable"` (§22: empty and failed are different outcomes).
 
+## Recall navigation (issue #1956)
+
+Session-scoped follow-up tools over results a recall already served: expand one served memory at a deeper disclosure level (chunk → section → raw) and traverse its typed frontmatter links — without re-running a search. An id is expandable only when one of the session's last `windowSnapshots` recall snapshots served it; unknown, expired, and foreign ids are rejected with a typed error naming the constraint, never silently reinterpreted. Every read resolves through the caller's resolved readable namespace, so navigation cannot cross namespaces even when a link's target id exists elsewhere.
+
+Surfaces: MCP `engram.memory_expand` and `engram.memory_traverse` (canonical `remnic.*` aliases), `POST /engram|remnic/v1/memory/{expand,traverse}`, and `remnic navigate expand|traverse <memoryId> --session-key <key> [--json]`. All three call the same `EngramAccessService.recallNavigate` implementation and share one renderer. With `enabled` off, the MCP tools are absent from `tools/list` (not present-but-erroring) and the HTTP/CLI surfaces return a typed `error: "disabled"` refusal.
+
+Every response is budget-capped against `recallBudgetChars` and reports `budget: {chars, used}`, per-item disclosure depth, and a per-disclosure token-spend summary aggregated by the same accounting recall X-ray uses.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `recallNavigation.enabled` | `true` | Master gate. Read-only surface, so on by default; the `conservative` preset pins it `false`. |
+| `recallNavigation.windowSnapshots` | `3` | How many of the session's most recent recall snapshots authorize an id. |
+| `recallNavigation.maxNeighbors` | `10` | Ceiling for a traverse or entity-neighbor result count. Request `limit` values above it clamp; invalid values are rejected. |
+
+Expansion must go strictly deeper than the chunk preview recall already served — a `chunk` target is refused with `not_deeper`. Traverse relations are the persisted link vocabulary plus the navigation set: `supports`, `contradicts`, `elaborates`, `causes`, `caused_by`, `supersedes`, `follows`, `references`, `related`; an unknown relation is rejected listing the valid ones.
+
+Invalid config (non-object block, unrecognized boolean-like strings, out-of-range counts, unknown keys) throws at `parseConfig` (§24, §33).
+
 ## Extraction pipeline liveness (issue #2151)
 
 Surfaces a checkable liveness watermark for the implicit extraction pipeline so a daemon that has not persisted an extraction in a long time is distinguishable from one that simply has nothing to extract (the §22 error-vs-empty principle at the pipeline level). Exposed on the authenticated `/health` payload (the `extraction` object), the `remnic doctor` `extraction_liveness` check, and `remnic stats`. When the pipeline is degraded, a single aggregated WARN is logged per staleness window rather than one line per failed extraction attempt. The `extraction` block reflects the daemon's single extraction pipeline, so `/health` returns the same block for every namespace argument. Its last-successful-extraction watermark is the newest value across the root and every distinct namespace store. If namespace enumeration or any metadata read fails, the watermark reports an explicit unreadable outcome instead of publishing a surviving store's timestamp as fresh. A buffer that cannot be read is likewise reported degraded with a distinct reason.

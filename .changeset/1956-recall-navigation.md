@@ -1,0 +1,5 @@
+---
+"@remnic/core": patch
+---
+
+Session-scoped recall navigation (issue #1956): `memory_expand` re-renders a served memory at deeper disclosure (section/raw) and `memory_traverse` follows its typed frontmatter links as chunk-level summaries — no fresh search. An id must come from the session's last `recallNavigation.windowSnapshots` (default 3) recall snapshots; unknown, expired, and foreign ids are rejected with a typed error, and every read resolves through the caller's resolved namespace so navigation never crosses tenants. Responses are budget-capped against `recallBudgetChars` and report per-disclosure token spend through the same accounting recall X-ray uses. Surfaces: MCP `engram.memory_expand`/`engram.memory_traverse` (canonical `remnic.*` aliases; absent from `tools/list` when `recallNavigation.enabled` is false), `POST /engram|remnic/v1/memory/{expand,traverse}`, and `remnic navigate expand|traverse <id> --session-key <key>`. On by default; the `conservative` preset pins it off. Closes #1956.

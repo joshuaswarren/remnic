@@ -271,8 +271,17 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
       // must not be keyed — validateDispatchCoverage will flag any catalog
       // entry claiming migration through it (no pathname-only fallback).
       currentKey = method ? `${method} ${pathname}` : null;
-      if (currentKey && !routeOps.has(currentKey)) {
-        routeOps.set(currentKey, new Set<string>());
+      if (currentKey) {
+        if (!routeOps.has(currentKey)) {
+          routeOps.set(currentKey, new Set<string>());
+        }
+        // One-line route branches (compact style, e.g. the deep-recall
+        // route) carry their dispatch marker on the SAME line as the route
+        // match — collect it before the loop advances or it is lost.
+        const sameLineOp = line.match(/(?:getOperation|enforceTokenOp)\("(\w+)"\)/);
+        if (sameLineOp) {
+          routeOps.get(currentKey)!.add(sameLineOp[1]!);
+        }
       }
       continue;
     }
@@ -346,6 +355,25 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
     ] as const;
     for (const [method, pathname, operation] of deckRoutes) {
       if (deckSource.includes(`"${pathname}"`) && deckSource.includes(`enforceTokenOp("${operation}")`)) {
+        routeOps.set(`${method} ${pathname}`, new Set([operation]));
+      }
+    }
+  }
+
+  // Recall-navigation routes (issue #1956): the compact catch-all in
+  // access-http.ts delegates to maybeRespondRecallNavigation; the boundary
+  // dispatch markers live per-route in recall-navigation-http-glue.ts.
+  if (/\bawait\s+maybeRespondRecallNavigation\(/.test(source)) {
+    const navigationSource = readFileSync(
+      new URL("./recall-navigation-http-glue.ts", import.meta.url),
+      "utf-8",
+    );
+    const navigationRoutes = [
+      ["POST", "/engram/v1/memory/expand", "memory_expand"],
+      ["POST", "/engram/v1/memory/traverse", "memory_traverse"],
+    ] as const;
+    for (const [method, pathname, operation] of navigationRoutes) {
+      if (navigationSource.includes(`"${pathname}"`) && navigationSource.includes(`enforceTokenOp("${operation}")`)) {
         routeOps.set(`${method} ${pathname}`, new Set([operation]));
       }
     }

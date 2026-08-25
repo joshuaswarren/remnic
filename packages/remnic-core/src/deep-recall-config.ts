@@ -11,6 +11,7 @@
  */
 
 import { coerceBool, coerceNumber } from "./connectors/coerce.js";
+import { EngramAccessInputError } from "./access-errors.js";
 
 export interface DeepRecallConfig {
   /** Master switch for the deep-recall surface. Default false. */
@@ -112,4 +113,35 @@ export function parseDeepRecallMaxSteps(raw: unknown): number | undefined {
     return parsed;
   }
   throw new Error(`maxSteps must be a non-negative integer; got ${JSON.stringify(raw)}`);
+}
+
+/**
+ * Resolve the effective per-invocation config from a caller-requested
+ * `maxSteps` override (§33 semantics, extracted from the access service so
+ * the god file stays under its ratchet cap):
+ * - undefined request keeps the parsed config untouched;
+ * - `deepRecall.maxSteps: 0` is a documented disable value — any positive
+ *   override is a refusal, not a ceiling comparison;
+ * - otherwise the override must not exceed the configured ceiling.
+ */
+export function resolveEffectiveDeepRecallConfig(
+  cfg: DeepRecallConfig,
+  requestedSteps: number | undefined,
+): DeepRecallConfig {
+  if (requestedSteps === undefined) return cfg;
+  if (typeof requestedSteps !== "number" || !Number.isInteger(requestedSteps) || requestedSteps < 0) {
+    throw new EngramAccessInputError("deepRecall: maxSteps must be a non-negative integer");
+  }
+  if (cfg.maxSteps <= 0) {
+    if (requestedSteps > 0) {
+      throw new EngramAccessInputError(
+        "deepRecall: the policy loop is disabled (deepRecall.maxSteps=0); maxSteps must be 0"
+      );
+    }
+  } else if (requestedSteps > cfg.maxSteps) {
+    throw new EngramAccessInputError(
+      `deepRecall: maxSteps ${requestedSteps} exceeds the configured ceiling ${cfg.maxSteps}`
+    );
+  }
+  return { ...cfg, maxSteps: requestedSteps };
 }
