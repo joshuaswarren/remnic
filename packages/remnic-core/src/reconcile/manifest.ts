@@ -82,6 +82,9 @@ export interface BuildReconcileManifestOptions {
   parseMemory: ReconcileMemoryParser;
   cachedFiles?: Iterable<ReconcileManifestFile>;
   citationTemplate?: string;
+  /** Cancellation (#2954): checked between read batches so an aborted run
+   * stops scheduling new file reads instead of walking the whole corpus. */
+  signal?: AbortSignal;
 }
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
@@ -287,6 +290,10 @@ export async function buildReconcileManifest(options: BuildReconcileManifestOpti
     }
   }
   for (let i = 0; i < uncached.length; i += MANIFEST_BUILD_BATCH_SIZE) {
+    // Between batches, not within one: an abort mid-batch lets the in-flight
+    // reads settle (their own fetch signal does the aborting) and stops the
+    // NEXT batch from ever being scheduled.
+    options.signal?.throwIfAborted();
     const batch = uncached.slice(i, i + MANIFEST_BUILD_BATCH_SIZE);
     const results = await Promise.all(
       batch.map(({ file }) =>
