@@ -14,6 +14,7 @@ export * from "./analysis-provider.js";
 export * from "./analysis-run.js";
 export * from "./regenerate.js";
 export * from "./recap-export.js";
+export * from "./recap-export-range.js";
 export * from "./recap-markdown.js";
 export * from "./week-export.js";
 export * from "./week-snapshot.js";
