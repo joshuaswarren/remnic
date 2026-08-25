@@ -3104,6 +3104,11 @@
         "default": "[Source: agent={agent}, session={sessionId}, ts={ts}]",
         "description": "Template used when inline source attribution is enabled."
       },
+      "inlineSourceAttributionFormatHistory": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Prior inline citation templates still recognized during merge after a format change."
+      },
       "intentRoutingBoost": {
         "type": "number",
         "default": 0.12,

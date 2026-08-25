@@ -1608,6 +1608,11 @@ export interface PluginConfig
    * `[Source: agent={agent}, session={sessionId}, ts={ts}]`.
    */
   inlineSourceAttributionFormat: string;
+  /**
+   * Prior citation templates still recognized after a format change.
+   * Empty when the operator has never changed the template.
+   */
+  inlineSourceAttributionFormatHistory: string[];
   consolidationRequireNonZeroExtraction: boolean;
   consolidationMinIntervalMs: number;
   // QMD maintenance (debounced singleflight)

@@ -49,6 +49,7 @@ import {
 import type { SemanticDedupHit } from "./semantic.js";
 import { invalidationCommitFingerprint, isSemanticFrontmatterChange, markCasCommittedRevision, nextCasRevisionIso } from "../storage/deletion-revision-store.js";
 import type { CasRevisionReadStatus } from "../storage/cas-revision-store.js";
+import { attachCitation } from "../source-attribution.js";
 
 // The merge snapshot trigger must stay a literal union: a widened
 // `VersionTrigger` (e.g. annotated `readonly string[]`) would let an unknown
@@ -3145,6 +3146,288 @@ test("applySemanticMergeAtPersist: mixed default+custom citation markers hash as
   // Identity stays on the RAW pre-citation body with BOTH forms stripped.
   const stamped = h.calls.frontmatterPatches.at(-1)?.patch.contentHash;
   assert.equal(stamped, ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text));
+});
+
+// ── #2916: reapply inline attribution to the committed merged body ───────────
+
+test("applySemanticMergeAtPersist: a legacy target with no liftable marker still commits an attributed body (#2916)", async () => {
+  const h = await harness({ topLevelConfig: { inlineSourceAttributionEnabled: true } });
+  const NOW = new Date("2026-08-23T00:00:00.000Z");
+  const CONTEXT = { agent: "agent-a", session: "project/example/s-42" };
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    // No cited body supplied: the target was created before attribution was
+    // enabled, so without the fresh-write fallback nothing in the pipeline
+    // would attribute the merged claims.
+    incomingCitationContext: CONTEXT,
+    now: () => NOW,
+    judgeCall: (options) => acceptingJudge(options),
+  } as ApplySemanticMergeOptions);
+  assert.equal(outcome.action, "merged");
+  // Exactly what a fresh attributed write of the merged body would persist:
+  // the shared attachCitation helper, this write's context, the merge's
+  // commit timestamp.
+  const expected = attachCitation(MERGED, { ...CONTEXT, ts: NOW.toISOString() });
+  const committed = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(committed?.content, expected);
+  assert.ok(expected.includes("[Source:"), "the reapplied marker must use the configured format");
+  if (outcome.action !== "merged") return;
+  assert.equal(outcome.mergedContent, expected);
+  // Canonical identity survives: the hash stays on the RAW pre-citation body.
+  const stamped = h.calls.frontmatterPatches.at(-1)?.patch.contentHash;
+  assert.equal(stamped, ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text));
+  // Promotion parity: the committed attributed record still yields a payload.
+  const { payload } = await buildMergedTargetPromotionPayload(h.storage, outcome);
+  assert.ok(payload, "a fully patched attributed merge must still promote");
+  assert.equal(payload?.sourceMemoryId, "fact-target");
+});
+
+test("applySemanticMergeAtPersist: an already-attributed merged body gains no duplicate marker on retry (#2916)", async () => {
+  const MARKER = "[Source: agent=agent-a, session=s-42, ts=2026-08-23T00:00:00.000Z]";
+  const RETRY_BODY = `${MERGED} ${MARKER}`;
+  const retryJudge = async () => ({
+    decision: "merge" as const,
+    targetId: "fact-target",
+    mergedContent: RETRY_BODY,
+    reason: "retry of an already-attributed merge",
+  });
+  // (a) The incoming marker already trails the judge's body — the N+7 (C)
+  // retry shape, where the previous merge committed the marker into the
+  // target the judge then re-merged.
+  const a = await harness({ topLevelConfig: { inlineSourceAttributionEnabled: true } });
+  const outcomeA = await applySemanticMergeAtPersist(a.deps, {
+    storage: a.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingCitedContent: `${INCOMING} ${MARKER}`,
+    judgeCall: retryJudge,
+  } as ApplySemanticMergeOptions);
+  assert.equal(outcomeA.action, "merged");
+  // (b) No cited body; the body already carries a marker — the #2916
+  // fallback must be a no-op, not a second attachment.
+  const b = await harness({ topLevelConfig: { inlineSourceAttributionEnabled: true } });
+  const outcomeB = await applySemanticMergeAtPersist(b.deps, {
+    storage: b.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingCitationContext: { agent: "agent-a", session: "project:s-42" },
+    judgeCall: retryJudge,
+  } as ApplySemanticMergeOptions);
+  assert.equal(outcomeB.action, "merged");
+  const cases = [
+    ["lifted-marker retry", a, outcomeA],
+    ["attached-marker retry", b, outcomeB],
+  ] as const;
+  for (const [label, h, outcome] of cases) {
+    const committed = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+    assert.equal(committed?.content, RETRY_BODY, label);
+    assert.equal(
+      committed?.content.split("[Source:").length - 1,
+      1,
+      `${label}: exactly one marker, never a duplicate`,
+    );
+    if (outcome.action === "merged") {
+      assert.equal(outcome.mergedContent, RETRY_BODY, label);
+    }
+  }
+});
+
+test("applySemanticMergeAtPersist: the reapplied citation honors a custom template (#2916)", async () => {
+  const CUSTOM_TEMPLATE = "[src:{agent}/{sessionId}@{ts}]";
+  const h = await harness({
+    topLevelConfig: {
+      inlineSourceAttributionEnabled: true,
+      inlineSourceAttributionFormat: CUSTOM_TEMPLATE,
+    },
+  });
+  const NOW = new Date("2026-08-23T00:00:00.000Z");
+  const CONTEXT = { agent: "agent-a", session: "project:s-42" };
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingCitationContext: CONTEXT,
+    now: () => NOW,
+    judgeCall: (options) => acceptingJudge(options),
+  } as ApplySemanticMergeOptions);
+  assert.equal(outcome.action, "merged");
+  const expected = attachCitation(MERGED, { ...CONTEXT, ts: NOW.toISOString() }, CUSTOM_TEMPLATE);
+  assert.ok(expected.includes("[src:agent-a/s-42@"), "the custom template must format the marker");
+  const committed = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(committed?.content, expected);
+  // Identity stays on the raw body — the custom marker strips before hashing.
+  const stamped = h.calls.frontmatterPatches.at(-1)?.patch.contentHash;
+  assert.equal(stamped, ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text));
+});
+
+test("applySemanticMergeAtPersist: attribution disabled commits the judge's body unchanged (#2916)", async () => {
+  const h = await harness();
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    // The context is present but the feature flag is off — no marker.
+    incomingCitationContext: { agent: "agent-a", session: "project:s-42" },
+    now: () => new Date("2026-08-23T00:00:00.000Z"),
+    judgeCall: (options) => acceptingJudge(options),
+  } as ApplySemanticMergeOptions);
+  assert.equal(outcome.action, "merged");
+  const committed = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(committed?.content, MERGED, "the committed body carries no citation marker");
+});
+
+test("applySemanticMergeAtPersist: a degraded merge registers the RAW identity of a freshly attributed body (#2916)", async () => {
+  // Patch fails AND rollback fails: the target holds the attributed merged
+  // body with its pre-merge metadata. The degraded repair must register the
+  // RAW pre-citation identity, and the degraded promotion refusal must hold.
+  const h = await harness({
+    frontmatterFails: true,
+    rollbackFails: true,
+    topLevelConfig: { inlineSourceAttributionEnabled: true },
+  });
+  const degraded = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingCitationContext: { agent: "agent-a", session: "project:s-42" },
+    now: () => new Date("2026-08-23T00:00:00.000Z"),
+    judgeCall: (options) => acceptingJudge(options),
+  } as ApplySemanticMergeOptions);
+  assert.equal(degraded.action, "merged");
+  if (degraded.action !== "merged") return;
+  assert.equal(degraded.provenancePatched, false);
+  assert.ok(
+    degraded.mergedContent.includes("[Source:"),
+    "the degraded body still carries the freshly attached marker",
+  );
+  assert.deepEqual(h.calls.hashRegistrations, [
+    { id: "fact-target", hash: ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text) },
+  ]);
+  assert.equal(
+    (await buildMergedTargetPromotionPayload(h.storage, degraded)).payload,
+    null,
+    "a degraded merge never yields a promotion payload",
+  );
+});
+
+test("applySemanticMergeAtPersist: a rolled-back merge restores the marker-free pre-merge body (#2916)", async () => {
+  const h = await harness({
+    frontmatterFails: true,
+    topLevelConfig: { inlineSourceAttributionEnabled: true },
+  });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingCitationContext: { agent: "agent-a", session: "project:s-42" },
+    now: () => new Date("2026-08-23T00:00:00.000Z"),
+    judgeCall: (options) => acceptingJudge(options),
+  } as ApplySemanticMergeOptions);
+  assert.deepEqual(outcome, { action: "created", reason: "update_failed" });
+  const committed = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(committed?.content, EXISTING, "rollback restores the exact pre-merge body");
+});
+
+test("applySemanticMergeAtPersist: an all-placeholder template does not attach or hash a citation", async () => {
+  const TEMPLATE = "{agent}{sessionId}";
+  const CONTEXT = { agent: "agent-a", session: "project:s-42" };
+  const h = await harness({
+    topLevelConfig: {
+      inlineSourceAttributionEnabled: true,
+      inlineSourceAttributionFormat: TEMPLATE,
+    },
+  });
+  const first = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingCitationContext: CONTEXT,
+    now: () => new Date("2026-08-23T00:00:00.000Z"),
+    judgeCall: (options) => acceptingJudge(options),
+  } as ApplySemanticMergeOptions);
+  assert.equal(first.action, "merged");
+  const committed = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(committed?.content, MERGED, "unmatchable templates must not attach a marker");
+  assert.equal(
+    h.calls.frontmatterPatches.at(-1)?.patch.contentHash,
+    ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text),
+  );
+
+  const retry = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingCitationContext: CONTEXT,
+    now: () => new Date("2026-08-23T00:00:01.000Z"),
+    judgeCall: (options) => acceptingJudge(options),
+  } as ApplySemanticMergeOptions);
+  assert.equal(retry.action, "merged");
+  const retried = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(retried?.content, MERGED, "retry must not accumulate an unmatchable marker");
+});
+
+test("applySemanticMergeAtPersist: a prior-template marker is preserved and stripped from the hash", async () => {
+  const PRIOR = "[src:{agent}/{sessionId}@{date}]";
+  const PRIOR_CIT = "[src:agent-a/s-old@2026-08-19]";
+  const CURRENT = "[via:{agent}]";
+  const MERGED_WITH_PRIOR = `${MERGED} ${PRIOR_CIT}`;
+  const h = await harness({
+    topLevelConfig: {
+      inlineSourceAttributionEnabled: true,
+      inlineSourceAttributionFormat: CURRENT,
+      inlineSourceAttributionFormatHistory: [PRIOR],
+    },
+  });
+  await h.setTargetContent(`${EXISTING} ${PRIOR_CIT}`);
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingCitationContext: { agent: "agent-a", session: "project:s-42" },
+    now: () => new Date("2026-08-23T00:00:00.000Z"),
+    judgeCall: async () => ({
+      decision: "merge" as const,
+      targetId: "fact-target",
+      mergedContent: MERGED_WITH_PRIOR,
+      reason: "template migration keeps the prior marker",
+    }),
+  } as ApplySemanticMergeOptions);
+  assert.equal(outcome.action, "merged");
+  const committed = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(committed?.content, MERGED_WITH_PRIOR, "the prior marker stays and is not duplicated");
+  assert.equal(committed?.content.includes("[via:"), false);
+  assert.equal(
+    h.calls.frontmatterPatches.at(-1)?.patch.contentHash,
+    ContentHashIndex.computeHash(sanitizeMemoryContent(MERGED).text),
+    "the prior marker is stripped before hashing",
+  );
+});
+
+test("applySemanticMergeAtPersist: a lost CAS race does not hash an all-placeholder citation", async () => {
+  const RACED = "Billing service deploys happen on Tuesdays, except during a freeze.";
+  const h = await harness({
+    mutateOnWrite: RACED,
+    topLevelConfig: {
+      inlineSourceAttributionEnabled: true,
+      inlineSourceAttributionFormat: "{agent}{sessionId}",
+    },
+  });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    incomingCitationContext: { agent: "agent-a", session: "project:s-42" },
+    now: () => new Date("2026-08-23T00:00:00.000Z"),
+    judgeCall: (options) => acceptingJudge(options),
+  } as ApplySemanticMergeOptions);
+  assert.deepEqual(outcome, { action: "created", reason: "target_changed" });
+  assert.deepEqual(h.calls.contentUpdates, []);
+  assert.deepEqual(h.calls.hashRegistrations, []);
+  const onDisk = await readFile(h.target.path, "utf8");
+  assert.equal(onDisk.includes(RACED), true);
+  assert.equal(onDisk.includes("agent-a"), false);
 });
 
 /** Minimal real-dir harness for the merged-target post-effects executor. */

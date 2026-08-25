@@ -483,6 +483,78 @@ export function lastCitationMarkerForTemplate(
 }
 
 /**
+ * True when a template can be matched and stripped later. All-placeholder
+ * templates such as `{agent}{sessionId}` have no literal anchors.
+ */
+export function citationTemplateIsDetectable(template: string): boolean {
+  if (typeof template !== "string" || template.length === 0) return false;
+  if (template === DEFAULT_CITATION_FORMAT) return true;
+  PLACEHOLDER_REGEX.lastIndex = 0;
+  if (!PLACEHOLDER_REGEX.test(template)) {
+    PLACEHOLDER_REGEX.lastIndex = 0;
+    return true;
+  }
+  PLACEHOLDER_REGEX.lastIndex = 0;
+  return templateMatcher(template) !== null;
+}
+
+/**
+ * Templates the merge path may lift, preserve, or strip: the default
+ * format, the current format when it is detectable, then any prior
+ * configured formats the caller still holds. Undetectable shapes are
+ * dropped so we never hash or attach a marker we cannot re-match.
+ */
+export function citationTemplatesToRecognize(
+  primary: string | undefined,
+  extra: readonly string[] = [],
+): string[] {
+  const out: string[] = [];
+  const add = (template: string | undefined): void => {
+    if (typeof template !== "string" || template.length === 0) return;
+    if (!citationTemplateIsDetectable(template)) return;
+    if (!out.includes(template)) out.push(template);
+  };
+  add(DEFAULT_CITATION_FORMAT);
+  add(primary);
+  for (const template of extra) add(template);
+  return out;
+}
+
+/**
+ * Prior formats the caller still holds, if any. Absent or malformed
+ * history is ignored — fail safe, do not invent templates.
+ */
+export function citationTemplatesForMerge(config: {
+  inlineSourceAttributionFormat?: string;
+  inlineSourceAttributionFormatHistory?: unknown;
+}): string[] {
+  const raw = config.inlineSourceAttributionFormatHistory;
+  const extra = Array.isArray(raw)
+    ? raw.filter((value): value is string => typeof value === "string" && value.length > 0)
+    : [];
+  return citationTemplatesToRecognize(config.inlineSourceAttributionFormat, extra);
+}
+
+export function lastRecognizedCitationMarker(
+  text: string,
+  templates: readonly string[],
+): string | null {
+  for (const template of templates) {
+    const marker = lastCitationMarkerForTemplate(text, template);
+    if (marker) return marker;
+  }
+  return null;
+}
+
+export function stripRecognizedCitations(text: string, templates: readonly string[]): string {
+  let out = text;
+  for (const template of templates) {
+    out = stripCitationForTemplate(out, template);
+  }
+  return out;
+}
+
+/**
  * Attach an inline citation to fact text.
  *
  * If the text already has a citation — either the default `[Source: ...]`
