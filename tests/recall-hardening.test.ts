@@ -411,7 +411,10 @@ test("recall aborts the in-flight pipeline when the outer timeout fires", async 
         abortSignal: callerAbortController.signal,
       },
     );
-    assert.equal(result, "");
+    // Explicit degradation contract (#2972): an outer timeout is a recall
+    // failure, so the injected context names it instead of silently
+    // omitting memory context.
+    assert.match(result, /Memory context unavailable/);
     assert.ok(observedAbortSignal);
     assert.notEqual(observedAbortSignal, callerAbortController.signal);
     assert.equal(observedAbortSignal?.aborted, true);

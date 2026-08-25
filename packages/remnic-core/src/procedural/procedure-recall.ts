@@ -1,5 +1,6 @@
 /**
  * Intent-gated recall for active procedure memories (issue #519).
+ * Session-end experience episodes (issue #2979) compete here after promotion.
  */
 
 import type { MemoryFile, PluginConfig } from "../types.js";
@@ -9,6 +10,10 @@ import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { canRecallToolScopedMemory } from "../tool-scoped-memory.js";
 import { resolveSecurityCapabilities } from "../capabilities.js";
 import { renderAuthorityBoundContent } from "../recall-context-composition.js";
+import {
+  renderSessionExperiencePreview,
+  scoreSessionExperienceForPrompt,
+} from "../experience/session-experience-recall.js";
 
 function tokenOverlapScore(prompt: string, memoryText: string): number {
   const norm = (s: string) =>
@@ -31,12 +36,16 @@ function scoreProcedureForPrompt(
   m: MemoryFile,
   prompt: string,
   queryIntent: ReturnType<typeof inferIntentFromText>,
+  experienceEnabled: boolean,
 ): number {
   const memText = `${m.content}\n${(m.frontmatter.tags ?? []).join(" ")}`;
   const jaccard = tokenOverlapScore(prompt, memText);
   const memIntent = inferIntentFromText(m.content.slice(0, 2000));
   const intentScore = intentCompatibilityScore(queryIntent, memIntent);
-  return jaccard * 0.55 + intentScore * 0.45;
+  const base = jaccard * 0.55 + intentScore * 0.45;
+  if (!experienceEnabled) return base;
+  const experience = scoreSessionExperienceForPrompt(m, prompt);
+  return experience === null ? base : Math.max(base, experience);
 }
 
 /**
@@ -83,6 +92,7 @@ export async function buildProcedureRecallSection(
   );
 
   const all = await storage.readAllMemories();
+  const experienceEnabled = config.sessionExperience?.enabled === true;
   const scored = all
     .filter(
       (m) =>
@@ -91,7 +101,7 @@ export async function buildProcedureRecallSection(
         (options?.partitionToolScoped !== true ||
           canRecallToolScopedMemory(m.frontmatter, options.requestingConnector)),
     )
-    .map((m) => ({ m, score: scoreProcedureForPrompt(m, trimmed, queryIntent) }))
+    .map((m) => ({ m, score: scoreProcedureForPrompt(m, trimmed, queryIntent, experienceEnabled) }))
     .filter((x) => x.score > 0.04)
     .sort((a, b) => b.score - a.score)
     .slice(0, maxN);
@@ -110,7 +120,8 @@ export async function buildProcedureRecallSection(
   const security = resolveSecurityCapabilities(config);
   const blocks = scored.map(({ m, score }) => {
     const id = m.frontmatter.id;
-    const flat = m.content.replace(/\s+/g, " ").trim();
+    const labeled = experienceEnabled ? renderSessionExperiencePreview(m) : null;
+    const flat = (labeled ?? m.content).replace(/\s+/g, " ").trim();
     const preview = flat.slice(0, 320);
     const suffix = flat.length > 320 ? "…" : "";
     const body = renderAuthorityBoundContent(`${preview}${suffix}`, m.frontmatter.origin, {
