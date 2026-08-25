@@ -1274,8 +1274,10 @@ export class QmdClient implements SearchBackend {
     return env;
   }
 
-  async probe(): Promise<boolean> {
-    const cliOk = await this.probeCli();
+  async probe(execution?: SearchExecutionOptions): Promise<boolean> {
+    if (execution?.signal?.aborted) return false;
+    const cliOk = await this.probeCli({ signal: execution?.signal });
+    if (execution?.signal?.aborted) return false;
     if (this.daemonEnabled) {
       await this.probeDaemon();
     }
@@ -1386,14 +1388,15 @@ export class QmdClient implements SearchBackend {
       qmdPath: string,
       source: typeof this.qmdPathSource
     ): Promise<void> => {
+      if (options.signal?.aborted) return;
       this.available = true;
       this.qmdPath = qmdPath;
       this.qmdPathSource = source;
       this.cliVersion = parseQmdVersionOutput(result.stdout, result.stderr);
       this.qmdCapabilities = resolveQmdCapabilities(this.cliVersion);
       this.lastCliProbeError = null;
-      if (options.allowAutoUpgrade !== false) {
-        await this.maybeAutoUpgradeQmd();
+      if (options.allowAutoUpgrade !== false && !options.signal?.aborted) {
+        await this.maybeAutoUpgradeQmd(options.signal);
       }
     };
 
@@ -1485,8 +1488,8 @@ export class QmdClient implements SearchBackend {
     }
   }
 
-  private async maybeAutoUpgradeQmd(): Promise<void> {
-    if (!this.qmdAutoUpgradeEnabled) return;
+  private async maybeAutoUpgradeQmd(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted || !this.qmdAutoUpgradeEnabled) return;
     const state = getGlobalQmdState();
     const targetKey = this.autoUpgradeTargetKey();
     const now = Date.now();
@@ -1522,13 +1525,16 @@ export class QmdClient implements SearchBackend {
       return;
     }
 
+    if (signal?.aborted) return;
     const packageSpec = `${QMD_PACKAGE_NAME}@${this.qmdSupportedVersion}`;
     try {
       log.warn(
         `QMD auto-upgrade: installed=${qmdVersionToString(installed)} supported=${qmdVersionToString(supported)}; running npm install -g ${packageSpec}`
       );
-      await runProcessCommand("npm", ["install", "-g", packageSpec], QMD_AUTO_UPGRADE_TIMEOUT_MS);
-      const postInstall = await this.probePostInstallQmdVersion(supported);
+      await runProcessCommand("npm", ["install", "-g", packageSpec], QMD_AUTO_UPGRADE_TIMEOUT_MS, signal);
+      if (signal?.aborted) return;
+      const postInstall = await this.probePostInstallQmdVersion(supported, signal);
+      if (signal?.aborted) return;
       this.qmdPath = postInstall.qmdPath;
       this.qmdPathSource = postInstall.source;
       this.cliVersion = postInstall.version;
@@ -1551,13 +1557,17 @@ export class QmdClient implements SearchBackend {
         `upgraded: installed=${this.cliVersion ?? "unknown"} target=${this.qmdSupportedVersion}`
       );
     } catch (err) {
+      if (signal?.aborted) return;
       const msg = err instanceof Error ? err.message : String(err);
       recordAutoUpgradeStatus(state, targetKey, `failed: ${msg}`);
       log.warn(`QMD auto-upgrade failed: ${msg}`);
     }
   }
 
-  private async probePostInstallQmdVersion(supported: QmdVersionTuple): Promise<{
+  private async probePostInstallQmdVersion(
+    supported: QmdVersionTuple,
+    signal?: AbortSignal,
+  ): Promise<{
     qmdPath: string;
     source: "auto-path" | "auto-fallback";
     version: string | null;
@@ -1565,12 +1575,13 @@ export class QmdClient implements SearchBackend {
     let lastErr: unknown;
     let lastResult: { qmdPath: string; source: "auto-path" | "auto-fallback"; version: string | null } | null = null;
     for (const candidate of getQmdPostInstallProbeTargets(this.qmdPath, this.qmdPathSource)) {
+      if (signal?.aborted) throw new Error("QMD auto-upgrade post-install probe aborted");
       try {
         const result = await runQmd(
           ["--version"],
           QMD_PROBE_TIMEOUT_MS,
           candidate.qmdPath,
-          undefined,
+          signal,
           this.qmdRuntimeEnv
         );
         const postInstall = {

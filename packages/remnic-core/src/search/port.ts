@@ -91,7 +91,7 @@ export interface SearchBackendStatus {
  */
 export interface SearchBackend {
   // ── Lifecycle ──
-  probe(): Promise<boolean>;
+  probe(execution?: SearchExecutionOptions): Promise<boolean>;
   /**
    * Optional non-mutating availability probe for health/readiness checks.
    * Implementations must avoid auto-upgrades, collection creation, daemon

@@ -45,6 +45,7 @@ type NamespaceBackendRecord = {
   available: boolean;
   collectionState: CollectionState;
   filtersNestedNamespaces: boolean;
+  disposed: boolean;
 };
 
 export interface NamespaceUpdateResult {
@@ -83,6 +84,7 @@ type BackendRecordOptions = {
 
 export class NamespaceSearchRouter {
   private readonly cache = new Map<string, Promise<NamespaceBackendRecord>>();
+  private readonly pendingDisposals = new Set<Promise<void>>();
 
   constructor(
     private readonly config: PluginConfig,
@@ -344,21 +346,62 @@ export class NamespaceSearchRouter {
     return cachedRecord;
   }
 
+  private trackDisposal(promise: Promise<void>): void {
+    this.pendingDisposals.add(promise);
+    void promise.finally(() => this.pendingDisposals.delete(promise));
+  }
+
+  private async drainPendingDisposals(): Promise<void> {
+    if (this.pendingDisposals.size === 0) return;
+    await Promise.allSettled(this.pendingDisposals);
+  }
+
   /** Clear cached backend records so the next access re-probes availability. */
   clearCache(): void {
+    const pendingRecords = Array.from(this.cache.values());
     this.cache.clear();
+    const disposal = Promise.allSettled(pendingRecords).then(async (settled) => {
+      await Promise.allSettled(
+        settled.flatMap((entry) =>
+          entry.status === "fulfilled" ? [this.disposeRecord(entry.value)] : []),
+      );
+    });
+    this.trackDisposal(disposal);
+  }
+
+  private async disposeRecord(record: NamespaceBackendRecord): Promise<void> {
+    if (record.disposed) return;
+    record.disposed = true;
+    const dispose = (record.backend as { dispose?: () => void | Promise<void> }).dispose;
+    await dispose?.call(record.backend);
   }
 
   /** Release any per-namespace backend handles held by cached records. */
   async dispose(): Promise<void> {
+    await this.drainPendingDisposals();
     const pendingRecords = Array.from(this.cache.values());
     this.cache.clear();
     const settled = await Promise.allSettled(pendingRecords);
     await Promise.allSettled(
+      settled.flatMap((entry) =>
+        entry.status === "fulfilled" ? [this.disposeRecord(entry.value)] : []),
+    );
+  }
+
+  /**
+   * Disable namespace search for this runtime while retaining the resolved
+   * records as unavailable/missing. This releases concrete QMD/daemon handles
+   * without letting later reads recreate a search backend after the root path
+   * has been switched to NoopSearchBackend for a missing collection.
+   */
+  async disableSearchBackends(): Promise<void> {
+    const settled = await Promise.allSettled(this.cache.values());
+    await Promise.allSettled(
       settled.flatMap((entry) => {
         if (entry.status !== "fulfilled") return [];
-        const dispose = (entry.value.backend as { dispose?: () => void | Promise<void> }).dispose;
-        return dispose ? [dispose.call(entry.value.backend)] : [];
+        entry.value.available = false;
+        entry.value.collectionState = "missing";
+        return [this.disposeRecord(entry.value)];
       }),
     );
   }
@@ -367,6 +410,7 @@ export class NamespaceSearchRouter {
     namespace: string,
     execution?: SearchExecutionOptions,
   ): Promise<NamespaceBackendRecord> {
+    await this.drainPendingDisposals();
     const key = namespace.trim() || this.config.defaultNamespace;
     const existing = this.cache.get(key);
     if (existing) return await existing;
@@ -412,7 +456,7 @@ export class NamespaceSearchRouter {
     try {
       const availabilityProbe =
         options.autoCreateCollection || typeof backend.checkAvailability !== "function"
-          ? backend.probe()
+          ? backend.probe(execution)
           : backend.checkAvailability({ signal: execution?.signal });
       const available = await awaitWithAbort(availabilityProbe, execution?.signal).catch((error) => {
         if (error instanceof NamespaceSearchAbortError && !options.abortAsUnavailable) {
@@ -453,6 +497,7 @@ export class NamespaceSearchRouter {
         available,
         collectionState,
         filtersNestedNamespaces,
+        disposed: false,
       };
     } catch (error) {
       const dispose = (backend as { dispose?: () => void | Promise<void> }).dispose;

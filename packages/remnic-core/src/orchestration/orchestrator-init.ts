@@ -46,11 +46,13 @@ import { TranscriptManager } from "../transcript.js";
 import type { PluginConfig } from "../types.js";
 import { type UtilityRuntimeValues, loadUtilityRuntimeValues } from "../utility-runtime.js";
 import { WearablesService } from "../wearables/service.js";
+import { startupDiscoveryWithTimeout } from "./startup-collection-checks.js";
 import type { MeetingsService } from "../meetings/service.js";
 import {
   COMPACTION_SIGNAL_MAX_AGE_MS,
   defaultWorkspaceDir,
   qmdStartupCollectionCheckWithTimeout,
+  qmdStartupCollectionChecksWithTimeout,
 } from "../orchestrator.js";
 
 export interface OrchestratorInitDeps {
@@ -98,19 +100,204 @@ export interface OrchestratorInitDeps {
 }
 
 export class OrchestratorInitCoordinator {
+  private nextStartupEpoch = 0;
+  private activeStartupEpoch: number | null = null;
+  private startupClosed = false;
+  private maintenanceNamespacesFlight:
+    | { epoch: number; promise: Promise<string[]> }
+    | undefined;
+  private correctionCatalogFlight:
+    | { epoch: number; promise: Promise<Awaited<ReturnType<NamespaceCatalog["listNamespaces"]>>> }
+    | undefined;
+  private recoveredCorrectionNamespaces = new Set<string>();
+  private correctionRecoveryChain: Promise<void> = Promise.resolve();
+  private startupEpochAbort:
+    | { epoch: number; controller: AbortController }
+    | undefined;
+
   constructor(
     private readonly deps: OrchestratorInitDeps,
   ) {}
 
+  /** Retire the current lifecycle without constructing a lazy coordinator. */
+  retireStartupEpoch(): void {
+    this.startupEpochAbort?.controller.abort();
+    this.startupEpochAbort = undefined;
+    this.startupClosed = true;
+    this.activeStartupEpoch = null;
+  }
+
+  private beginStartupEpoch(): number {
+    this.startupEpochAbort?.controller.abort();
+    this.startupEpochAbort = undefined;
+    // A replacement lifecycle owns new deferred work. Abort the previous
+    // controller before replacing it so stale warmup/cache/cron phases cannot
+    // continue after a same-instance re-initialize.
+    this.deps.deferredInitAbort?.abort();
+    this.deps.deferredInitAbort = null;
+    this.deps.deferredSyncSucceeded = false;
+    const epoch = ++this.nextStartupEpoch;
+    this.startupEpochAbort = { epoch, controller: new AbortController() };
+    this.activeStartupEpoch = epoch;
+    this.startupClosed = false;
+    this.maintenanceNamespacesFlight = undefined;
+    this.correctionCatalogFlight = undefined;
+    this.recoveredCorrectionNamespaces = new Set<string>();
+    this.correctionRecoveryChain = Promise.resolve();
+    return epoch;
+  }
+
+  private currentOrNewStartupEpoch(): number | null {
+    if (this.startupClosed) return null;
+    return this.activeStartupEpoch ?? this.beginStartupEpoch();
+  }
+
+  private isCurrentStartupEpoch(epoch: number): boolean {
+    return !this.startupClosed && this.activeStartupEpoch === epoch;
+  }
+
+  private startupEpochSignal(epoch: number): AbortSignal | undefined {
+    return this.startupEpochAbort?.epoch === epoch
+      ? this.startupEpochAbort.controller.signal
+      : undefined;
+  }
+
+  private linkedEpochAbortController(
+    epoch: number,
+    externalSignal?: AbortSignal,
+  ): { controller: AbortController; dispose(): void } {
+    const controller = new AbortController();
+    const signals = [this.startupEpochSignal(epoch), externalSignal]
+      .filter((signal): signal is AbortSignal => signal !== undefined);
+    const abort = () => controller.abort();
+    for (const signal of signals) {
+      if (signal.aborted) abort();
+      else signal.addEventListener("abort", abort, { once: true });
+    }
+    return {
+      controller,
+      dispose: () => {
+        for (const signal of signals) signal.removeEventListener("abort", abort);
+      },
+    };
+  }
+
+  private async probeForStartupEpoch(
+    epoch: number,
+    externalSignal?: AbortSignal,
+  ): Promise<boolean> {
+    const abort = this.linkedEpochAbortController(epoch, externalSignal);
+    try {
+      if (!this.isCurrentStartupEpoch(epoch) || abort.controller.signal.aborted) return false;
+      return await this.deps.qmd.probe({ signal: abort.controller.signal });
+    } finally {
+      abort.dispose();
+    }
+  }
+
+  private maintenanceNamespacesFlightFor(epoch: number): Promise<string[]> {
+    if (this.maintenanceNamespacesFlight?.epoch === epoch) {
+      return this.maintenanceNamespacesFlight.promise;
+    }
+    const promise = Promise.resolve().then(() => {
+      if (!this.isCurrentStartupEpoch(epoch)) return [];
+      return this.deps.maintenanceNamespaces();
+    });
+    this.maintenanceNamespacesFlight = { epoch, promise };
+    void promise.catch(() => {
+      if (
+        this.isCurrentStartupEpoch(epoch) &&
+        this.maintenanceNamespacesFlight?.epoch === epoch &&
+        this.maintenanceNamespacesFlight.promise === promise
+      ) {
+        this.maintenanceNamespacesFlight = undefined;
+      }
+    });
+    return promise;
+  }
+
+  private correctionCatalogFlightFor(
+    epoch: number,
+  ): Promise<Awaited<ReturnType<NamespaceCatalog["listNamespaces"]>>> {
+    if (!this.isCurrentStartupEpoch(epoch)) {
+      return Promise.resolve([]);
+    }
+    if (this.correctionCatalogFlight?.epoch === epoch) {
+      return this.correctionCatalogFlight.promise;
+    }
+    const promise = Promise.resolve().then(() => {
+      if (!this.isCurrentStartupEpoch(epoch)) return [];
+      return this.deps.namespaceCatalog.listNamespaces();
+    });
+    this.correctionCatalogFlight = { epoch, promise };
+    return promise;
+  }
+
+  private enqueueCorrectionRecovery(epoch: number, namespaces: Iterable<string>): Promise<void> {
+    if (!this.isCurrentStartupEpoch(epoch)) return Promise.resolve();
+    const unrecovered = [...new Set(namespaces)].filter(
+      (namespace) => !this.recoveredCorrectionNamespaces.has(namespace),
+    );
+    if (unrecovered.length === 0) return this.correctionRecoveryChain;
+    for (const namespace of unrecovered) this.recoveredCorrectionNamespaces.add(namespace);
+
+    this.correctionRecoveryChain = this.correctionRecoveryChain.then(async () => {
+      if (!this.isCurrentStartupEpoch(epoch)) return;
+      try {
+        const recovered = await this.deps.passiveCorrectionService().recoverStaleApplyingPlans(
+          unrecovered,
+        );
+        if (recovered > 0) {
+          log.info(`correction: recovered ${recovered} stale applying plan(s) on startup`);
+        }
+      } catch (staleErr) {
+        log.debug(`correction: stale-plan recovery skipped: ${staleErr instanceof Error ? staleErr.message : String(staleErr)}`);
+      }
+    });
+    return this.correctionRecoveryChain;
+  }
+
+  private async startupNamespaces(epoch: number): Promise<{ namespaces: string[]; complete: boolean }> {
+    if (!this.isCurrentStartupEpoch(epoch)) {
+      return { namespaces: this.deps.configuredNamespaceList(), complete: false };
+    }
+    if (!resolveNamespaceCapabilities(this.deps.config).namespaces) {
+      return { namespaces: [this.deps.config.defaultNamespace], complete: true };
+    }
+    const discovery = await startupDiscoveryWithTimeout(
+      () => this.maintenanceNamespacesFlightFor(epoch),
+      this.deps.configuredNamespaceList(),
+    );
+    return { namespaces: discovery.value, complete: discovery.complete };
+  }
+
   async initialize(): Promise<void> {
+    const epoch = this.beginStartupEpoch();
     // Recreate the deferred-ready gate on every initialize() call.
     // The same Orchestrator instance may be reused across stop/start cycles
     // (src/index.ts does this). Without this reset, the second cycle's
     // `await orchestrator.deferredReady` resolves immediately (already settled
     // from the first cycle) while the new deferredInitialize() is still running.
+    let resolveDeferred: (() => void) | undefined;
     this.deps.deferredReady = new Promise<void>((resolve) => {
-      this.deps.resolveDeferredReady = resolve;
+      resolveDeferred = () => resolve();
+      this.deps.resolveDeferredReady = resolveDeferred;
     });
+    const settleOwnDeferredReady = () => {
+      if (this.deps.resolveDeferredReady === resolveDeferred) {
+        this.deps.resolveDeferredReady = null;
+      }
+      resolveDeferred?.();
+    };
+    const exitIfStale = () => {
+      if (this.isCurrentStartupEpoch(epoch)) return false;
+      if (this.startupClosed && this.deps.resolveInit) {
+        this.deps.resolveInit();
+        this.deps.resolveInit = null;
+      }
+      settleOwnDeferredReady();
+      return true;
+    };
 
     try {
       await migrateFromEngram({
@@ -148,30 +335,40 @@ export class OrchestratorInitCoordinator {
         await this.deps.namespaceCatalog.registerConfiguredNamespaces().catch(() => undefined);
       }
       // #1713 Item 2: recover stale `applying` correction plans left behind
-      // by a process that died mid-apply. Best-effort — a failure here must
-      // never block initialization (rule 13). Runs for every configured
-      // namespace since correction plans can exist in any of them.
+      // by a process that died mid-apply. The raw catalog flight is per-startup
+      // epoch: fallback recovery stays bounded, while a guarded late result can
+      // recover dynamic plans without restarting any QMD work.
       try {
-        // #1713 Item 2 + P2 (cursor): sweep ALL known namespaces — configured
-        // + catalog-discovered — so stale applying plans in derived namespaces
-        // (coding-scoped, session-derived) are also recovered.
         const correctionNamespaces = new Set(this.deps.configuredNamespaceList());
         if (this.deps.namespaceCatalog.enabled) {
           try {
-            for (const rec of await this.deps.namespaceCatalog.listNamespaces()) {
+            const catalogFlight = this.correctionCatalogFlightFor(epoch);
+            const catalogDiscovery = await startupDiscoveryWithTimeout(
+              () => catalogFlight,
+              [],
+            );
+            for (const rec of catalogDiscovery.value) {
               correctionNamespaces.add(rec.namespace);
+            }
+            if (!catalogDiscovery.complete) {
+              void catalogFlight.then(
+                (records) => {
+                  if (!this.isCurrentStartupEpoch(epoch)) return;
+                  void this.enqueueCorrectionRecovery(
+                    epoch,
+                    records.map((record) => record.namespace),
+                  );
+                },
+                () => undefined,
+              );
             }
           } catch { /* best-effort */ }
         }
-        const recovered = await this.deps.passiveCorrectionService().recoverStaleApplyingPlans(
-          [...correctionNamespaces],
-        );
-        if (recovered > 0) {
-          log.info(`correction: recovered ${recovered} stale applying plan(s) on startup`);
-        }
+        await this.enqueueCorrectionRecovery(epoch, correctionNamespaces);
       } catch (staleErr) {
         log.debug(`correction: stale-plan recovery skipped: ${staleErr instanceof Error ? staleErr.message : String(staleErr)}`);
       }
+      if (exitIfStale()) return;
       await this.deps.relevance.load();
       await this.deps.negatives.load();
       await this.deps.lastRecall.load();
@@ -253,7 +450,7 @@ export class OrchestratorInitCoordinator {
       // this.deps.qmd while it's still the real client, then get errors when
       // deferredInitialize() swaps it to NoopSearchBackend mid-query.
       try {
-        const available = await this.deps.qmd.probe();
+        const available = await this.probeForStartupEpoch(epoch);
         if (available) {
           log.info(`Search backend: available ${this.deps.qmd.debugStatus()}`);
           // Ensure collections at startup for the catalog-union namespace set, not
@@ -263,54 +460,68 @@ export class OrchestratorInitCoordinator {
           // after a restart. `registerConfiguredNamespaces()` already seeded the
           // catalog above, so `maintenanceNamespaces()` is readable here; it falls
           // back to the configured set on any catalog read failure.
-          const namespaces = resolveNamespaceCapabilities(this.deps.config).namespaces
-            ? await this.deps.maintenanceNamespaces()
-            : [this.deps.config.defaultNamespace];
-          const states = await Promise.all(
-            namespaces.map(async (namespace) => {
-              const collectionCheckAbort = new AbortController();
-              const state = await qmdStartupCollectionCheckWithTimeout(
-                resolveNamespaceCapabilities(this.deps.config).namespaces
-                  ? this.deps.namespaceSearchRouter.ensureNamespaceCollection(
-                      namespace,
-                      { signal: collectionCheckAbort.signal },
-                    )
-                  : this.deps.qmd.ensureCollection(
-                      this.deps.config.memoryDir,
-                      this.deps.config.qmdCollection,
-                      { signal: collectionCheckAbort.signal },
-                    ),
-                collectionCheckAbort,
-                namespace,
-              );
-              return { namespace, state };
-            }),
-          );
-          const defaultState =
-            states.find(
-              (entry) => entry.namespace === this.deps.config.defaultNamespace,
-            )?.state ?? "unknown";
-          if (defaultState === "missing") {
-            await this.deps.disposeSearchBackendIfNeeded();
-            this.deps.qmd = new NoopSearchBackend();
-            log.warn(
-              "Search collection missing for Remnic memory store; disabling search retrieval for this runtime (fallback retrieval remains enabled)",
-            );
-          } else if (defaultState === "unknown") {
-            log.warn(
-              "Search collection check unavailable; keeping search retrieval enabled for fail-open behavior",
-            );
-          } else if (defaultState === "skipped") {
-            log.debug(
-              "Search collection check skipped (remote or daemon-only mode)",
-            );
-          }
-          for (const entry of states) {
-            if (entry.namespace === this.deps.config.defaultNamespace) continue;
-            if (entry.state === "missing") {
+          const namespaceCapabilities = resolveNamespaceCapabilities(this.deps.config).namespaces;
+          const discovery = await this.startupNamespaces(epoch);
+          if (!this.isCurrentStartupEpoch(epoch)) {
+            log.debug("startup collection check skipped for a retired startup epoch");
+          } else {
+            const checks = discovery.namespaces.map(async (namespace) => {
+              const epochAbort = this.linkedEpochAbortController(epoch);
+              try {
+                const state = await qmdStartupCollectionCheckWithTimeout(
+                  namespaceCapabilities
+                    ? this.deps.namespaceSearchRouter.ensureNamespaceCollection(
+                        namespace,
+                        { signal: epochAbort.controller.signal },
+                      )
+                    : this.deps.qmd.ensureCollection(
+                        this.deps.config.memoryDir,
+                        this.deps.config.qmdCollection,
+                        { signal: epochAbort.controller.signal },
+                      ),
+                  epochAbort.controller,
+                  namespace,
+                );
+                return { namespace, state };
+              } finally {
+                epochAbort.dispose();
+              }
+            });
+            const states = await qmdStartupCollectionChecksWithTimeout(checks, discovery.namespaces);
+            if (!this.isCurrentStartupEpoch(epoch)) {
+              log.debug("startup collection-check batch completed for a retired startup epoch");
+            } else {
+              const defaultState =
+                states.find(
+                  (entry) => entry.namespace === this.deps.config.defaultNamespace,
+                )?.state ?? "unknown";
+              if (defaultState === "missing") {
+                await this.deps.disposeSearchBackendIfNeeded();
+                if (!this.isCurrentStartupEpoch(epoch)) {
+                  log.debug("startup collection-check disposal completed for a retired startup epoch");
+                } else {
+                  this.deps.qmd = new NoopSearchBackend();
+                  log.warn(
+                    "Search collection missing for Remnic memory store; disabling search retrieval for this runtime (fallback retrieval remains enabled)",
+                  );
+                }
+              } else if (defaultState === "unknown") {
               log.warn(
-                `Search collection missing for namespace '${entry.namespace}'; namespace retrieval will fail open to non-search paths`,
+                "Search collection check unavailable; keeping search retrieval enabled for fail-open behavior",
               );
+            } else if (defaultState === "skipped") {
+              log.debug(
+                "Search collection check skipped (remote or daemon-only mode)",
+              );
+            }
+            for (const entry of states) {
+              if (entry.namespace === this.deps.config.defaultNamespace) continue;
+              if (entry.state === "missing") {
+                log.warn(
+                  `Search collection missing for namespace '${entry.namespace}'; namespace retrieval will fail open to non-search paths`,
+                );
+              }
+            }
             }
           }
         } else if (this.deps.qmd instanceof NoopSearchBackend) {
@@ -321,6 +532,7 @@ export class OrchestratorInitCoordinator {
       } catch (err) {
         log.error(`QMD probe/collection check failed (non-fatal): ${err}`);
       }
+      if (exitIfStale()) return;
 
       // Open the init gate — essential state (storage, aliases, relevance,
       // transcript, summarizer, buffer) is loaded AND QMD state is finalized
@@ -344,15 +556,16 @@ export class OrchestratorInitCoordinator {
       // overwrite this.deps.resolveDeferredReady before .finally() runs — that would
       // cause the first cycle's .finally() to resolve the *second* cycle's
       // promise prematurely while leaving the first cycle's promise pending.
-      const resolveDeferred = this.deps.resolveDeferredReady;
-      this.deps.resolveDeferredReady = null;
+      if (this.deps.resolveDeferredReady === resolveDeferred) {
+        this.deps.resolveDeferredReady = null;
+      }
       this.deps.deferredInitAbort = new AbortController();
       this.deps.deferredInitialize(this.deps.deferredInitAbort.signal)
         .catch((err) => {
           log.error(`deferred initialization failed (non-fatal): ${err}`);
         })
         .finally(() => {
-          resolveDeferred?.();
+          settleOwnDeferredReady();
         });
     } catch (err) {
       // Resolve both gates so callers never hang on permanently-pending promises
@@ -364,19 +577,18 @@ export class OrchestratorInitCoordinator {
       //
       // - deferredReady: CLI callers await this for full QMD readiness. Without
       //   resolution it hangs forever since deferredInitialize() never ran.
-      if (this.deps.resolveInit) {
+      if ((this.isCurrentStartupEpoch(epoch) || this.startupClosed) && this.deps.resolveInit) {
         this.deps.resolveInit();
         this.deps.resolveInit = null;
       }
-      if (this.deps.resolveDeferredReady) {
-        this.deps.resolveDeferredReady();
-        this.deps.resolveDeferredReady = null;
-      }
+      settleOwnDeferredReady();
       throw err;
     }
   }
 
   async deferredInitialize(signal: AbortSignal): Promise<void> {
+    const epoch = this.currentOrNewStartupEpoch();
+    if (epoch === null) return;
     const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.deps.config);
 
     // Sync QMD index with current disk state so recall finds recently-written
@@ -387,20 +599,28 @@ export class OrchestratorInitCoordinator {
     if (this.deps.qmd.isAvailable() && resolveQmdCapabilities(this.deps.config).qmdMaintenance) {
       try {
         log.info("QMD startup sync: updating index to match current disk state");
+        const discovery = await this.startupNamespaces(epoch);
+        if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
         if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
           // Cover cataloged dynamic namespaces at startup too (NHZEV, codex P2):
           // a dynamic namespace written before a daemon restart must be synced on
           // boot, not only by the debounced runQmdMaintenance() path. Same union +
           // catalog-read-failure fallback as runQmdMaintenance.
           await this.deps.namespaceSearchRouter.updateNamespaces(
-            await this.deps.maintenanceNamespaces(),
+            discovery.namespaces,
             { signal },
           );
         } else {
           await this.deps.qmd.update({ signal });
         }
+        if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
         log.info("QMD startup sync: complete");
-        this.deps.deferredSyncSucceeded = true;
+        if (discovery.complete) {
+          this.deps.deferredSyncSucceeded = true;
+        } else {
+          this.deps.deferredSyncSucceeded = false;
+          log.warn("QMD startup sync used configured namespace fallback; retry remains armed");
+        }
       } catch (err) {
         log.warn(`QMD startup sync failed (non-fatal): ${err}`);
         // deferredSyncSucceeded stays false — server retry will attempt sync
@@ -412,7 +632,7 @@ export class OrchestratorInitCoordinator {
       this.deps.deferredSyncSucceeded = true;
     }
 
-    if (signal.aborted) return;
+    if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
 
     // Warmup: run cheap searches to pre-load QMD embedding models and the
     // embedding-fallback JSON index so the first real recall is fast.
@@ -446,7 +666,7 @@ export class OrchestratorInitCoordinator {
       );
     }
     await Promise.all(warmupPromises);
-    if (signal.aborted) return;
+    if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
 
     // Pre-warm knowledge index, memory, and entity caches.
     // Awaited so callers of `deferredReady` can rely on warmups being complete
@@ -468,11 +688,12 @@ export class OrchestratorInitCoordinator {
     cacheWarmups.push(this.deps.storage.readAllMemories().then(() => {}).catch(() => {}));
     cacheWarmups.push(this.deps.storage.readAllEntityFiles().then(() => {}).catch(() => {}));
     await Promise.all(cacheWarmups);
-    if (signal.aborted) return;
+    if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
 
     if (resolveIndexingCapabilities(this.deps.config).conversationIndex && this.deps.conversationIndexBackend) {
       try {
         const init = await this.deps.conversationIndexBackend.initialize();
+        if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
         if (!init.enabled) {
           this.deps.config.conversationIndexEnabled = false;
         }
@@ -484,12 +705,13 @@ export class OrchestratorInitCoordinator {
           log.debug(init.message);
         }
       } catch (err) {
+        if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
         log.error(`Conversation index initialization failed (non-fatal): ${err}`);
         this.deps.config.conversationIndexEnabled = false;
       }
     }
 
-    if (signal.aborted) return;
+    if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
 
     if (resolveLocalLlmCapabilities(this.deps.config).localLlm) {
       try {
@@ -499,7 +721,7 @@ export class OrchestratorInitCoordinator {
       }
     }
 
-    if (signal.aborted) return;
+    if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
 
     // Await cron auto-registration so callers that `await deferredReady` can
     // rely on cron jobs being registered when it resolves. Without this, the
@@ -515,11 +737,12 @@ export class OrchestratorInitCoordinator {
     // touched by the lifecycle policy, run a one-time rate-limited demotion
     // sweep (capped at 50 demotions) so the hot tier isn't flooded on the
     // first real cron pass. Non-fatal — a failure here must not break init.
-    if (signal.aborted) return;
+    if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
     if (lifecycleCaps.lifecyclePolicy && resolveQmdCapabilities(this.deps.config).qmdTierMigration) {
       try {
         const { runFirstStartMigration } = await import("../maintenance/first-start-migration.js"
         );
+        if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
         const result = await runFirstStartMigration({
           storage: this.deps.storage,
           config: this.deps.config,
@@ -548,7 +771,7 @@ export class OrchestratorInitCoordinator {
     // The timer is unref'd, so one-shot CLI runs exit naturally without
     // ever ticking; idempotent across stop/start cycles via the handle
     // guard. Non-fatal: a failure to start must not break init.
-    if (signal.aborted) return;
+    if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
     if (
       !this.deps.wearablesAutoSyncHandle &&
       this.deps.config.wearables.enabled &&
@@ -562,7 +785,7 @@ export class OrchestratorInitCoordinator {
         // starting now would leave a live interval on a destroyed
         // orchestrator (Cursor review on PR #1464). Handle creation
         // below is synchronous, so no further window exists.
-        if (signal.aborted) return;
+        if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
         this.deps.wearablesAutoSyncHandle = startWearablesAutoSync(
           {
             intervalMinutes: this.deps.config.wearables.autoSyncIntervalMinutes,
@@ -612,11 +835,13 @@ export class OrchestratorInitCoordinator {
    */
   async startupSearchSync(signal?: AbortSignal): Promise<boolean> {
     if (signal?.aborted) return false;
+    const epoch = this.currentOrNewStartupEpoch();
+    if (epoch === null) return false;
 
-    const available = await this.deps.qmd.probe();
+    const available = await this.probeForStartupEpoch(epoch, signal);
     if (!available) return false;
-    if (signal?.aborted) {
-      log.debug("startupSearchSync: aborted after probe");
+    if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
+      log.debug("startupSearchSync: aborted or retired after probe");
       return false;
     }
 
@@ -635,27 +860,49 @@ export class OrchestratorInitCoordinator {
     // re-synced here too, otherwise after a backend-was-unavailable-at-boot
     // recovery its collection stays stale. Falls back to the configured set on any
     // catalog read failure.
-    const namespaces = resolveNamespaceCapabilities(this.deps.config).namespaces
-      ? await this.deps.maintenanceNamespaces()
-      : [this.deps.config.defaultNamespace];
+    const discovery = await this.startupNamespaces(epoch);
+    if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
+      log.debug("startupSearchSync: aborted or retired after namespace discovery");
+      return false;
+    }
+    const namespaces = discovery.namespaces;
 
     const states = await Promise.all(
-      namespaces.map(async (namespace) => ({
-        namespace,
-        state: resolveNamespaceCapabilities(this.deps.config).namespaces
-          ? await this.deps.namespaceSearchRouter.ensureNamespaceCollection(namespace, { signal })
-          : await this.deps.qmd.ensureCollection(this.deps.config.memoryDir, this.deps.config.qmdCollection, { signal }),
-      })),
+      namespaces.map(async (namespace) => {
+        const epochAbort = this.linkedEpochAbortController(epoch, signal);
+        try {
+          return {
+            namespace,
+            state: resolveNamespaceCapabilities(this.deps.config).namespaces
+              ? await this.deps.namespaceSearchRouter.ensureNamespaceCollection(
+                  namespace,
+                  { signal: epochAbort.controller.signal },
+                )
+              : await this.deps.qmd.ensureCollection(
+                  this.deps.config.memoryDir,
+                  this.deps.config.qmdCollection,
+                  { signal: epochAbort.controller.signal },
+                ),
+          };
+        } finally {
+          epochAbort.dispose();
+        }
+      }),
     );
 
-    if (signal?.aborted) {
-      log.debug("startupSearchSync: aborted after ensureCollection");
+    if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
+      log.debug("startupSearchSync: aborted or retired after ensureCollection");
       return false;
     }
 
     const defaultState =
       states.find((e) => e.namespace === this.deps.config.defaultNamespace)?.state ?? "unknown";
     if (defaultState === "missing") {
+      await this.deps.disposeSearchBackendIfNeeded();
+      if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
+        log.debug("startupSearchSync: aborted or retired while disposing a missing backend");
+        return false;
+      }
       // Reset the real backend's available flag before replacing it with noop.
       // probe() set available=true earlier in this call; without this reset,
       // any code that captured a reference to the old backend (e.g. a concurrent
@@ -664,7 +911,6 @@ export class OrchestratorInitCoordinator {
       if ("available" in this.deps.qmd) {
         (this.deps.qmd as any).available = false;
       }
-      await this.deps.disposeSearchBackendIfNeeded();
       this.deps.qmd = new NoopSearchBackend();
       log.warn("startupSearchSync: search collection missing; disabling search (fallback retrieval remains enabled)");
       return false;
@@ -687,17 +933,22 @@ export class OrchestratorInitCoordinator {
           (this.deps.qmd as any).resetUpdateThrottles();
         }
         log.info("startupSearchSync: updating index to match current disk state");
+        const updateAbort = this.linkedEpochAbortController(epoch, signal);
         let namespacesUpdated = 0;
-        if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
-          namespacesUpdated = await this.deps.namespaceSearchRouter.updateNamespaces(
-            namespaces,
-            { signal },
-          );
-        } else {
-          await this.deps.qmd.update({ signal });
+        try {
+          if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
+            namespacesUpdated = await this.deps.namespaceSearchRouter.updateNamespaces(
+              namespaces,
+              { signal: updateAbort.controller.signal },
+            );
+          } else {
+            await this.deps.qmd.update({ signal: updateAbort.controller.signal });
+          }
+        } finally {
+          updateAbort.dispose();
         }
-        if (signal?.aborted) {
-          log.debug("startupSearchSync: aborted after update");
+        if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
+          log.debug("startupSearchSync: aborted or retired after update");
           return false;
         }
         const failTsAfter = "lastUpdateFailedAtMs" in this.deps.qmd
@@ -728,15 +979,24 @@ export class OrchestratorInitCoordinator {
     }
 
     // Warmup search to pre-load embedding models
-    if (!signal?.aborted) {
+    if (!signal?.aborted && this.isCurrentStartupEpoch(epoch)) {
+      const warmupAbort = this.linkedEpochAbortController(epoch, signal);
       try {
-        await this.deps.qmd.search("warmup", this.deps.config.defaultNamespace, 1, undefined, { signal });
+        await this.deps.qmd.search(
+          "warmup",
+          this.deps.config.defaultNamespace,
+          1,
+          undefined,
+          { signal: warmupAbort.controller.signal },
+        );
         log.info("startupSearchSync: warmup complete");
       } catch (err) {
         log.debug(`startupSearchSync: warmup search failed (non-fatal): ${err}`);
+      } finally {
+        warmupAbort.dispose();
       }
     }
 
-    return true;
+    return discovery.complete;
   }
 }
