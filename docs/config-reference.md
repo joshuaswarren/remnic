@@ -66,7 +66,7 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.timeline.analysis.provider` | `(required when enabled)` | Explicit provider id: `"local"` routes to the local LLM client; any other identifier routes to the configured remote provider registry pinned to exactly this provider (no chain fallback). Single provider segment only (letters, digits, `._:-`; no `/`); at most 120 characters. An invalid explicit provider fails, never silently defaults. |
 | `activity.timeline.analysis.model` | `(required when enabled)` | Model id (letters, digits, `._:-/`); at most 120 characters. May include `/`. |
 | `activity.timeline.analysis.timeoutMs` | `15000` | Per-request timeout in ms. Integer 1000..120000. |
-| `activity.timeline.analysis.preferences` | `[]` | Up to 16 free-form user preference strings (≤200 chars each) passed to the analysis prompt. Never secrets: prompt payloads are evidence-only — no screenshots, audio, OCR text, keystrokes, clipboard contents, or media are ever sent. |
+| `activity.timeline.analysis.preferences` | `[]` | Up to 16 free-form user preference strings, each non-blank and ≤200 characters, passed to the analysis prompt. The OpenClaw config schema enforces the same bounds. Never secrets: prompt payloads are evidence-only — no screenshots, audio, OCR text, keystrokes, clipboard contents, or media are ever sent. |
 | `activity.timeline.journal.enabled` | `false` | Master gate for every `remnic journal` action — show, edit-path, seed, and extract all refuse before any journal read when false (issues #1984, #1987). Journal files live at `journal/<YYYY-MM-DD>.md` and are excluded from generic recall. |
 | `activity.timeline.journal.source` | `"memoryDir"` | Where journal text is read from (issue #1987): `"memoryDir"` reads `journal/<YYYY-MM-DD>.md`; `"vault"` reads the `activity.timeline.vault.readback.journalSection` section of the daily vault note. `"vault"` requires `activity.timeline.vault.enabled: true` and a resolvable `dailyNotePath` — parse fails naming every missing prerequisite. Legacy `"file"` is accepted as an alias of `"memoryDir"` and emits a deprecation warning. |
 | `activity.timeline.journal.extractionMode` | `"off"` | Review-only journal extraction (issue #1987): `"review"` runs a pass over changed journal text producing `pending_review` candidates only (tags `journal`, `journal-day:<date>`; `valid_at` pinned to the day; `structuredAttributes.journalSource` records the source). No auto mode by design. |
@@ -891,13 +891,15 @@ Behavior:
   path), so the login precheck and the exec child always see the same auth
   home. Detached Codex child process groups are tracked by the owning
   runtime's runner. The owning server or plugin runtime invokes
-  `beginCodexSubscriptionShutdown` on its own runner at shutdown,
+  `terminateActiveCodexSubscriptionChildren` and `beginCodexSubscriptionShutdown`
+  on its own runner at shutdown,
   so stopping one Remnic instance cannot kill another instance's in-flight
   subscription requests. A SIGKILL timer starts before orchestrator drain.
   The provider does not install process signal
   listeners or call `process.exit`.
-  A host or benchmark run that registers its own `codex-cli` transport
-  always wins; the core default process runner does not override a
+- A host or benchmark run that registers its own `codex-cli` transport
+  always wins; Remnic registers its subprocess transport only when the seam
+  is free. The core default process runner does not override a
   runtime-owned runner.
 
 ### Setup
@@ -1238,7 +1240,7 @@ See [shared-context.md](shared-context.md).
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `sharedContextAllowBindingAuthority` | `false` | Allow shared-context items to carry binding authority. In-process writers must still request it explicitly; the MCP and OpenClaw tool surfaces cannot request it yet, so tool writes stay `informational` |
+| `sharedContextAllowBindingAuthority` | `false` | Allow shared-context items to carry binding authority. Writers must still request it explicitly. MCP and OpenClaw tool surfaces can request `binding`; the write is rejected unless this flag is true |
 | `sharedContextEnabled` | `false` | Enable shared cross-agent context. Accepts boolean and CLI string forms (`true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off`); a deployment already carrying the string `"true"` (previously ignored by the strict parser) now activates on upgrade. An unrecognized value warns and stays off — malformed input never silently enables |
 | `sharedContextDir` | `(unset)` | Directory for shared context files |
 | `sharedContextMaxInjectChars` | `4000` | Max chars injected from shared context |
@@ -2295,7 +2297,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `autoPromoteMinConfidenceTier` | `explicit` | `implied` (recommended) |
 | `routingRulesEnabled` | `false` | `false` |
 | `routingRulesStateFile` | `state/routing-rules.json` | `state/routing-rules.json` |
-| `sharedContextAllowBindingAuthority` | `false` | `false` unless in-process writers need to publish binding-authority shared items (tool surfaces cannot request it yet) |
+| `sharedContextAllowBindingAuthority` | `false` | `false` unless writers need to publish binding-authority shared items (MCP and OpenClaw tools can request binding when this is true) |
 | `sharedContextEnabled` | `false` | `false` unless you are actively using cross-agent memory sharing; a config already carrying the string `"true"` now activates it (string boolean forms are coerced, malformed values warn and stay off) |
 | `sharedContextDir` | (unset) | (unset) |
 | `sharedContextMaxInjectChars` | `4000` | `4000` |
