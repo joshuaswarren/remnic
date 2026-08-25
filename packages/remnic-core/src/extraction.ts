@@ -1350,7 +1350,7 @@ export class ExtractionEngine {
         this.withGatewayAgent({
           temperature: 0.3,
           maxTokens: this.config.extractionMaxOutputTokens,
-          timeoutMs: this.config.localLlmTimeoutMs,
+          timeoutMs: this.config.taskLlmTimeoutMs ?? this.config.localLlmTimeoutMs,
           jsonSchema: {
             name: "extraction_result",
             schema: EXTRACTION_PROVIDER_JSON_SCHEMA,
