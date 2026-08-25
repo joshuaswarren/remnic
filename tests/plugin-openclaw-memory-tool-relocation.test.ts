@@ -52,7 +52,7 @@ test("relocated executors keep their tool contracts", async () => {
   );
 
   const eligibility = deriveMemoryActionPolicyEligibility({
-    frontmatter: { id: "m3", confidence: 7, importance: { score: 2, level: "important", reasons: ["test"], keywords: ["k"] } },
+    frontmatter: { id: "m3", confidence: 7, importance: { score: 2, level: "normal", reasons: ["test"], keywords: ["k"] } },
   });
   assert.equal(eligibility?.confidence, 1);
   assert.equal(eligibility?.importance, 1);
