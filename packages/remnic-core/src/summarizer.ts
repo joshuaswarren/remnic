@@ -360,6 +360,24 @@ Respond with valid JSON matching this schema:
 
     const user = `Hour: ${hourIso}\nSession: ${sessionKey}\n\n${statsLine}${toolStatsLine}Conversation:\n${conversation}\n`;
 
+    if (this.config.backgroundGeneration) {
+      try {
+        const text = await completeBackgroundGeneration(this.config, [
+          { role: "system", content: sys },
+          { role: "user", content: user },
+        ]);
+        const parsed = parseBackgroundGenerationJson(text, (value) => HourlySummaryExtendedSchema.parse(value));
+        if (parsed) {
+          log.debug(
+            `generated extended hourly summary for ${sessionKey} at ${hourIso} in ${Date.now() - startTime}ms (background)`
+          );
+          return { ...parsed, _meta: { userTurns, assistantTurns, toolCalls, toolCounts } };
+        }
+      } catch {
+        log.info("extended summary: background generation unavailable, continuing");
+      }
+    }
+
     // Try local LLM first if enabled
     if (this.shouldUseLocalLlm) {
       try {
