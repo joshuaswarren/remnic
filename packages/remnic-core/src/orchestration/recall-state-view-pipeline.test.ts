@@ -96,8 +96,14 @@ test("default (stateViewActive unset) keeps filtering superseded — zero-diff b
     const explicitOff = coordinator.filterSearchResultsByRecallSafety(results, memories, {
       stateViewActive: false,
     });
-    assert.deepEqual(baseline.map((r) => r.path), [NEW]);
-    assert.deepEqual(explicitOff.map((r) => r.path), [NEW]);
+    assert.deepEqual(
+      baseline.map((r) => r.path),
+      [NEW]
+    );
+    assert.deepEqual(
+      explicitOff.map((r) => r.path),
+      [NEW]
+    );
     // No chain fields leak onto survivors when the view is off.
     assert.equal(baseline[0]?.supersededBy, undefined);
     assert.equal(baseline[0]?.id, undefined);
