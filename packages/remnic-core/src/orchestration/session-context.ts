@@ -22,6 +22,7 @@ import { StorageManager } from "../index.js";
 import { LocalLlmClient } from "../local-llm.js";
 import { log } from "../logger.js";
 import { canWriteNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "../namespaces/principal.js";
+import { runSessionExperienceExtraction } from "../experience/session-experience.js";
 import { ExtractionDeadlineError } from "./extraction-run.js";
 import type { ExtractionRunResult } from "./extraction-run.js";
 import type { EntitySynthesisCoordinator } from "./entity-synthesis-coordinator.js";
@@ -527,6 +528,9 @@ export class SessionContextCoordinator {
           })
             .catch(reject);
         });
+        if (options.reason === "session_end" && this.deps.config.sessionExperience?.enabled === true) {
+          await this.extractSessionEndExperience(turnsForSession, sessionKey, options);
+        }
       } finally {
         if (
           retainedTurnsForOtherSessions.length > 0 &&
@@ -550,6 +554,52 @@ export class SessionContextCoordinator {
             });
         }
       }
+    }
+  }
+
+  /**
+   * Session-end experience extraction (issue #2979): derive at most one
+   * Situation/Approach/Reflect episode from the drained session's turns.
+   * Best-effort by contract — a failure here must never fail the flush
+   * (the fact extraction already committed). Honors the shared abort signal
+   * and flush deadline; the write itself is gated, deduped per session, and
+   * lands as `pending_review` inside `runSessionExperienceExtraction`.
+   */
+  private async extractSessionEndExperience(
+    turns: BufferTurn[],
+    sessionKey: string,
+    options: SessionFlushOptions,
+  ): Promise<void> {
+    try {
+      const explicitNamespace =
+        typeof options.writeNamespaceOverride === "string" && options.writeNamespaceOverride.trim().length > 0
+          ? options.writeNamespaceOverride.trim()
+          : undefined;
+      // Same precedence as the extraction write path: explicit override →
+      // scope-profile plan → principal + coding overlay.
+      const namespace =
+        explicitNamespace ??
+        options.scopeProfileWritePlan?.writeNamespace ??
+        this.deps.applyCodingNamespaceOverlay(
+          sessionKey,
+          defaultNamespaceForPrincipal(this.deps.resolvePrincipal(sessionKey), this.deps.config),
+        );
+      const storage = await this.deps.orchestratorSelf.getStorageForNamespace(namespace);
+      const result = await runSessionExperienceExtraction({
+        turns,
+        sessionKey,
+        config: this.deps.config,
+        storage,
+        abortSignal: options.abortSignal,
+        deadlineMs: options.extractionDeadlineMs,
+      });
+      if (result.written) {
+        log.info(`session-experience: recorded ${result.episode.outcomeKind} episode for session end`);
+      } else {
+        log.debug(`session-experience skipped: ${result.skippedReason}`);
+      }
+    } catch (error) {
+      log.warn(`session-experience extraction failed (non-fatal): ${error}`);
     }
   }
 
