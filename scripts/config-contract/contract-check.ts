@@ -295,6 +295,176 @@ function collectDocsSections(docsText: string): Array<Set<string>> {
   return sections;
 }
 
+/**
+ * JSON.parse keeps only the last value for a repeated object member, so a
+ * doubled `meetings` (or `meetings.*`) schema key would otherwise look unique
+ * after parse. Walk the raw text and fail closed on the first duplicate.
+ */
+function findFirstDuplicateJsonMember(raw: string): { key: string; path: string } | null {
+  let i = raw.charCodeAt(0) === 0xfeff ? 1 : 0;
+  let found: { key: string; path: string } | null = null;
+  let aborted = false;
+
+  const skipWs = (): void => {
+    while (i < raw.length) {
+      const c = raw[i];
+      if (c !== " " && c !== "\n" && c !== "\r" && c !== "\t") break;
+      i += 1;
+    }
+  };
+
+  const parseString = (): string | null => {
+    i += 1;
+    let start = i;
+    let out = "";
+    while (i < raw.length) {
+      const c = raw[i];
+      if (c === '"') {
+        out += raw.slice(start, i);
+        i += 1;
+        return out;
+      }
+      if (c === "\\") {
+        out += raw.slice(start, i);
+        i += 1;
+        if (i >= raw.length) return null;
+        const esc = raw[i];
+        i += 1;
+        if (esc === "u") {
+          const hex = raw.slice(i, i + 4);
+          if (hex.length < 4) return null;
+          out += String.fromCharCode(Number.parseInt(hex, 16));
+          i += 4;
+        } else if (esc === "n") out += "\n";
+        else if (esc === "r") out += "\r";
+        else if (esc === "t") out += "\t";
+        else if (esc === "b") out += "\b";
+        else if (esc === "f") out += "\f";
+        else out += esc;
+        start = i;
+        continue;
+      }
+      i += 1;
+    }
+    return null;
+  };
+
+  const parseValue = (path: string): void => {
+    if (found || aborted) return;
+    skipWs();
+    if (i >= raw.length) {
+      aborted = true;
+      return;
+    }
+    const c = raw[i];
+    if (c === "{") {
+      parseObject(path);
+      return;
+    }
+    if (c === "[") {
+      parseArray(path);
+      return;
+    }
+    if (c === '"') {
+      if (parseString() === null) aborted = true;
+      return;
+    }
+    if (raw.startsWith("true", i)) {
+      i += 4;
+      return;
+    }
+    if (raw.startsWith("false", i)) {
+      i += 5;
+      return;
+    }
+    if (raw.startsWith("null", i)) {
+      i += 4;
+      return;
+    }
+    const num = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(raw.slice(i));
+    if (num) {
+      i += num[0].length;
+      return;
+    }
+    aborted = true;
+  };
+
+  const parseObject = (path: string): void => {
+    i += 1;
+    skipWs();
+    if (raw[i] === "}") {
+      i += 1;
+      return;
+    }
+    const seen = new Set<string>();
+    while (i < raw.length && !found && !aborted) {
+      skipWs();
+      if (raw[i] !== '"') {
+        aborted = true;
+        return;
+      }
+      const key = parseString();
+      if (key === null) {
+        aborted = true;
+        return;
+      }
+      const keyPath = path ? `${path}.${key}` : key;
+      if (seen.has(key)) {
+        found = { key, path: keyPath };
+        return;
+      }
+      seen.add(key);
+      skipWs();
+      if (raw[i] !== ":") {
+        aborted = true;
+        return;
+      }
+      i += 1;
+      parseValue(keyPath);
+      if (found || aborted) return;
+      skipWs();
+      if (raw[i] === "}") {
+        i += 1;
+        return;
+      }
+      if (raw[i] === ",") {
+        i += 1;
+        continue;
+      }
+      aborted = true;
+      return;
+    }
+  };
+
+  const parseArray = (path: string): void => {
+    i += 1;
+    skipWs();
+    if (raw[i] === "]") {
+      i += 1;
+      return;
+    }
+    while (i < raw.length && !found && !aborted) {
+      parseValue(path);
+      if (found || aborted) return;
+      skipWs();
+      if (raw[i] === "]") {
+        i += 1;
+        return;
+      }
+      if (raw[i] === ",") {
+        i += 1;
+        continue;
+      }
+      aborted = true;
+      return;
+    }
+  };
+
+  parseValue("");
+  return found;
+}
+
+
 export interface ContractCheckResult {
   violations: ContractViolation[];
   staleGrandfatherEntries: GrandfatherEntry[];
@@ -349,7 +519,13 @@ export function runContractCheck(options: {
   const parsedKeys = new Set(extraction.keys);
 
   const schemas = manifestPaths.map((manifestPath) => {
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
+    const raw = fs.readFileSync(manifestPath, "utf8");
+    const duplicate = findFirstDuplicateJsonMember(raw);
+    if (duplicate) {
+      const manifestRel = path.relative(repoRoot, manifestPath).split(path.sep).join("/");
+      throw new Error(`${manifestRel}: duplicate JSON member "${duplicate.key}" at ${duplicate.path}`);
+    }
+    const manifest = JSON.parse(raw) as {
       configSchema?: JsonSchemaNode;
     };
     return {

@@ -2727,6 +2727,8 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     sessionKey?: string;
     authenticatedPrincipal?: string;
     maxSteps?: number;
+    /** Transport cancellation (issue #2915): MCP tools/call cancelled, HTTP disconnect. */
+    abortSignal?: AbortSignal;
   }): Promise<DeepRecallResult & { rendered: string }> {
     const cfg = this.orchestrator.config.deepRecall;
     if (!cfg.enabled) {
@@ -2788,14 +2790,18 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     // (which also decodes the raw collection-qualified path forms the
     // namespaces-disabled fanout returns), so no invocation pre-scans the
     // namespace corpus.
+    // The transport cancellation signal reaches the seed router, the graph
+    // read, and the policy legs (issue #2915).
     const result = await runBudgetedDeepRecall(
       {
         config: effective,
+        ...(request.abortSignal ? { signal: request.abortSignal } : {}),
         searchSeed: createDeepRecallSeedSearch({
           namespace: resolvedNamespace,
           storage,
           router: this.orchestrator,
           resolver: this.orchestrator.qmdResultResolver,
+          ...(request.abortSignal ? { signal: request.abortSignal } : {}),
         }),
         // Nodes and anchors are projected against the namespace's CURRENT
         // active memories through the SAME helper searchHarmonicRetrieval
@@ -2808,6 +2814,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
             memoryDir: storage.dir,
             abstractionNodeStoreDir: graphStoreDir,
             anchorsEnabled: true,
+            ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
           }),
         loadMemory: async (memoryId) => {
           const memory = await storage.getMemoryById(memoryId);
@@ -2830,6 +2837,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
             localLlm: this.orchestrator.localLlm ?? null,
             fallbackLlm: this.orchestrator.fastGatewayLlm ?? null,
             timeoutMs,
+            ...(request.abortSignal ? { signal: request.abortSignal } : {}),
           }),
       },
       query
