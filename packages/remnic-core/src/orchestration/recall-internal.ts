@@ -69,7 +69,6 @@ import type { SearchDegradation } from "../search/port.js";
 import { type VerifiedSemanticRuleResult, compareVerifiedSemanticRuleResults, searchVerifiedSemanticRules } from "../semantic-rule-verifier.js";
 import { isDisagreementPrompt } from "../signal.js";
 import { buildTargetedFactRecallSection, shouldRecallTargetedFactEvidence } from "../targeted-fact-recall.js";
-import { shouldFilterSupersededFromRecall } from "../temporal-supersession.js";
 import { queryTemporalTimelineAsync } from "../temporal-index.js";
 import { type TrustStageResultItem, projectTrustForXray } from "../trust-score-stage.js";
 import { isValidAsOf } from "../temporal-validity.js";
@@ -99,6 +98,11 @@ import {
   type RecallInvocationOptions,
 } from "../orchestrator.js";
 import { isGenericRecallExcludedPath } from "./generic-recall-paths.js";
+import {
+  filterRecentScanMemories,
+  resolveRecallStateViewFlags,
+} from "../recall-state-view-anchors.js";
+import { indexStateViewAnnotatedResults } from "../recall-state-view-admission.js";
 import type { RecallSectionBuckets } from "./recall-section-coordinator.js";
 import {
   reconcileRecallResultPartition,
@@ -242,7 +246,14 @@ export class RecallInternalCoordinator {
         this.deps.effectiveCronRecallInstructionHeavyTokenCap(),
       cronConversationRecallMode: this.deps.config.cronConversationRecallMode,
     });
+    // #1952 state views: config flag OR per-call override, gated on change intent; computed once for all branches.
     const retrievalQuery = queryPolicy.retrievalQuery || prompt;
+    const { stateViewActive, stateViewPacketActive } = resolveRecallStateViewFlags(
+      options.stateView,
+      this.deps.config.recallStateViews,
+      retrievalQuery,
+      asOfMs,
+    );
     const retrievalQueryHash = createHash("sha256")
       .update(retrievalQuery)
       .digest("hex");
@@ -3842,6 +3853,7 @@ export class RecallInternalCoordinator {
         undefined,
         {
           asOfMs,
+          stateViewActive,
           // If QMD had already settled before the ordered assembly reached it,
           // do not let unrelated slow enrichment turn those known results into
           // unchecked misses. QMD that only settles during its own wait remains
@@ -3865,7 +3877,7 @@ export class RecallInternalCoordinator {
             recallNamespaces,
             retrievalQuery,
             qmdBoostInput.memoryByPath,
-            { asOfMs, requestingConnector: options.sourceConnector },
+            { asOfMs, stateViewActive, requestingConnector: options.sourceConnector },
           ),
         qmdBoostInput.results,
       );
@@ -3994,17 +4006,19 @@ export class RecallInternalCoordinator {
               recallResultLimit,
               retrievalQuery,
               caps,
+              stateViewPacketActive,
             )
           : null;
       memoryResults = hotQmdPartition
         ? [...hotQmdPartition.appliedResults]
-        : this.deps.diversifyAndLimitRecallResults(
+        : this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
             "memories",
             memoryResults,
             recallResultLimit,
             retrievalQuery,
             caps,
-          );
+            stateViewPacketActive,
+          ).appliedResults;
       // E-Mem-inspired memory reconstruction: fill gaps for referenced entities
       if (resolveRecallEnhancementCapabilities(this.deps.config).memoryReconstruction && memoryResults.length > 0) {
         try {
@@ -4068,6 +4082,8 @@ export class RecallInternalCoordinator {
             injectedChars: identityInjectedChars,
             truncated: identityInjectionTruncated,
           },
+        stateViewActive,
+        asOfMs,
         trustByPath: recallTrustByPath,
         });
         recalledMemoryPaths = memoryResults
@@ -4106,7 +4122,7 @@ export class RecallInternalCoordinator {
               recallNamespaces,
               retrievalQuery,
               undefined,
-              { asOfMs, requestingConnector: options.sourceConnector },
+              { asOfMs, stateViewActive, requestingConnector: options.sourceConnector },
             );
             xrayBranchPoolSize.hot_embedding = Math.max(
               xrayBranchPoolSize.hot_embedding,
@@ -4116,27 +4132,8 @@ export class RecallInternalCoordinator {
           },
           [] as QmdSearchResult[],
         );
-        const embeddingPartition =
-          options.xrayCapture === true
-            ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
-                "memories",
-                scoped,
-                recallResultLimit,
-                retrievalQuery,
-                caps,
-              )
-            : null;
-        scoped =
-          embeddingPartition?.appliedResults ??
-          this.deps.diversifyAndLimitRecallResults(
-            "memories",
-            scoped,
-            recallResultLimit,
-            retrievalQuery,
-            caps,
-          );
-        // Issue #1577 — apply TrustScore on the embedding-fallback path so the
-        // feature gate is consistent across ALL recall paths (rule 41 parity).
+        // Issue #1577 — trust filter before packet cap (AGENTS.md order).
+        // Feature gate is consistent across ALL recall paths (rule 41 parity).
         {
           // Deadline-bound (issue #1905). This branch has no preloaded
           // frontmatter map (boost ran without one), so pass undefined and let
@@ -4169,6 +4166,27 @@ export class RecallInternalCoordinator {
             success: !trustFellBack,
           });
         }
+        const embeddingPartition =
+          options.xrayCapture === true
+            ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+                "memories",
+                scoped,
+                recallResultLimit,
+                retrievalQuery,
+                caps,
+                stateViewPacketActive,
+              )
+            : null;
+        scoped =
+          embeddingPartition?.appliedResults ??
+          this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+            "memories",
+            scoped,
+            recallResultLimit,
+            retrievalQuery,
+            caps,
+            stateViewPacketActive,
+          ).appliedResults;
         if (scoped.length > 0) {
           if (shouldPersistGraphSnapshot) {
             graphSnapshotFinalResults = this.deps.buildGraphRecallRankedResults(
@@ -4190,6 +4208,8 @@ export class RecallInternalCoordinator {
               injectedChars: identityInjectedChars,
               truncated: identityInjectionTruncated,
             },
+          stateViewActive,
+          asOfMs,
           trustByPath: recallTrustByPath,
           });
           recalledMemoryPaths = scoped
@@ -4201,6 +4221,7 @@ export class RecallInternalCoordinator {
             options.xrayCapture === true ? { partition: null } : undefined;
           const longTerm = await this.deps.applyColdFallbackPipeline({
             prompt: retrievalQuery,
+            stateViewActive,
             recallNamespaces,
             recallResultLimit,
             recallMode,
@@ -4244,6 +4265,8 @@ export class RecallInternalCoordinator {
                 injectedChars: identityInjectedChars,
                 truncated: identityInjectionTruncated,
               },
+            stateViewActive,
+            asOfMs,
             trustByPath: recallTrustByPath,
             });
             recalledMemoryPaths = longTerm
@@ -4318,7 +4341,7 @@ export class RecallInternalCoordinator {
               recallNamespaces,
               retrievalQuery,
               undefined,
-              { asOfMs, requestingConnector: options.sourceConnector },
+              { asOfMs, stateViewActive, requestingConnector: options.sourceConnector },
             );
             // MMR runs on the pre-truncation pool (see the hot-embedding branch).
             xrayBranchPoolSize.hot_embedding = Math.max(
@@ -4329,27 +4352,8 @@ export class RecallInternalCoordinator {
           },
           [] as QmdSearchResult[],
         );
-        const embeddingPartition =
-          options.xrayCapture === true
-            ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
-                "memories",
-                scoped,
-                recallResultLimit,
-                retrievalQuery,
-                caps,
-              )
-            : null;
-        scoped =
-          embeddingPartition?.appliedResults ??
-          this.deps.diversifyAndLimitRecallResults(
-            "memories",
-            scoped,
-            recallResultLimit,
-            retrievalQuery,
-            caps,
-          );
-        // Issue #1577 — apply TrustScore on the embedding-fallback path so the
-        // feature gate is consistent across ALL recall paths (rule 41 parity).
+        // Issue #1577 — trust filter before packet cap (AGENTS.md order).
+        // Feature gate is consistent across ALL recall paths (rule 41 parity).
         {
           // Deadline-bound (issue #1905); no preloaded map on this branch.
           const trustT0 = Date.now();
@@ -4379,6 +4383,27 @@ export class RecallInternalCoordinator {
             success: !trustFellBack,
           });
         }
+        const embeddingPartition =
+          options.xrayCapture === true
+            ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+                "memories",
+                scoped,
+                recallResultLimit,
+                retrievalQuery,
+                caps,
+                stateViewPacketActive,
+              )
+            : null;
+        scoped =
+          embeddingPartition?.appliedResults ??
+          this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+            "memories",
+            scoped,
+            recallResultLimit,
+            retrievalQuery,
+            caps,
+            stateViewPacketActive,
+          ).appliedResults;
       if (scoped.length > 0) {
         if (shouldPersistGraphSnapshot) {
           graphSnapshotFinalResults = this.deps.buildGraphRecallRankedResults(
@@ -4400,6 +4425,8 @@ export class RecallInternalCoordinator {
             injectedChars: identityInjectedChars,
             truncated: identityInjectionTruncated,
           },
+        stateViewActive,
+        asOfMs,
         trustByPath: recallTrustByPath,
         });
         recalledMemoryPaths = scoped
@@ -4416,59 +4443,18 @@ export class RecallInternalCoordinator {
           [] as MemoryFile[],
         );
         if (memories.length > 0) {
-          // Filter out non-active memories.  Delegate to
-          // shouldFilterSupersededFromRecall for superseded-status logic so
-          // that the recent-scan path and the boostSearchResults (QMD) path
-          // have identical semantics:
-          //   • temporalSupersessionEnabled=false  → never filter superseded
-          //     (mirrors QMD path; user disabled the feature, so old marks
-          //     are ignored and all memories surface)
-          //   • temporalSupersessionIncludeInRecall=true → never filter (audit mode)
-          //   • enabled=true + includeInRecall=false → filter superseded
-          // Previously the recent-scan path checked `enabled && includeInRecall`
-          // directly, which disagreed with the QMD path when enabled=false
-          // (memories were still filtered, contrary to the kill-switch intent).
-          // Using the shared gate fixes both Finding 2 and Finding 3 from
-          // PR #402 (round 6).
-          const supersessionOptions = {
-            enabled: lifecycleCaps.temporalSupersession,
-            includeInRecall: this.deps.config.temporalSupersessionIncludeInRecall,
-          };
-          // Cursor Medium on PR #713: when `as_of` is active, the
-          // recent-scan path used to strip every non-active status
-          // (including superseded) before `boostSearchResults` ran,
-          // so the as_of bypass inside boostSearchResults never had
-          // a chance to admit historically-valid records. Pass
-          // superseded candidates through here when as_of is active;
-          // boostSearchResults's `[valid_at, invalid_at)` evaluation
-          // is the authoritative gate. Other non-active statuses
-          // (archived, forgotten, rejected) stay excluded — historical
-          // recall is about supersession history, not about reviving
-          // records the operator explicitly dropped.
-          const asOfActive =
-            typeof asOfMs === "number" && Number.isFinite(asOfMs);
-          const activeMemories = memories.filter(
-            (m) => {
-              if (isGenericRecallExcludedPath(m.path, this.deps.config)) return false;
-              const status = m.frontmatter.status;
-              if (!status || status === "active") return true;
-              if (status === "superseded") {
-                if (asOfActive) return true;
-                // Include superseded memory only if the canonical gate says
-                // NOT to filter it (kill switch off or audit mode on).
-                return !shouldFilterSupersededFromRecall(m.frontmatter, supersessionOptions);
-              }
-              // Other non-active statuses (archived, retired, etc.) are
-              // excluded from the recent-scan path by default.
-              return false;
+          const activeMemories = filterRecentScanMemories(memories, {
+            stateViewActive, asOfMs,
+            namespaceOf: (p) => this.deps.namespaceFromPath(p),
+            isExcluded: (p) => isGenericRecallExcludedPath(p, this.deps.config),
+            supersessionOptions: {
+              enabled: lifecycleCaps.temporalSupersession,
+              includeInRecall: this.deps.config.temporalSupersessionIncludeInRecall,
             },
-          );
-          // Convert all active memories to QmdSearchResult with recency-based
-          // baseline score, then pass through boostSearchResults so temporal/tag
-          // boosts apply consistently with the primary QMD retrieval path.
-          // Cap AFTER boosting so boosted-but-recency-ranked memories can surface.
-          // Pass a pre-populated memoryByPath so boostSearchResults skips redundant
-          // disk reads for files already loaded by readAllMemoriesForNamespaces.
+          });
+          // Convert to QmdSearchResult with recency baseline, then boost so
+          // temporal/tag boosts match the QMD path. Cap AFTER boosting, and
+          // pass a pre-populated memoryByPath to skip redundant disk reads.
           const queryAwareScopedMemories = queryAwarePrefilter.candidatePaths
             ? activeMemories.filter((memory) =>
                 queryAwarePrefilter.candidatePaths?.has(memory.path),
@@ -4482,6 +4468,7 @@ export class RecallInternalCoordinator {
               options.xrayCapture === true ? { partition: null } : undefined;
             const longTerm = await this.deps.applyColdFallbackPipeline({
               prompt: retrievalQuery,
+              stateViewActive,
               recallNamespaces,
               recallResultLimit,
               recallMode,
@@ -4517,6 +4504,8 @@ export class RecallInternalCoordinator {
                   injectedChars: identityInjectedChars,
                   truncated: identityInjectionTruncated,
                 },
+              stateViewActive,
+              asOfMs,
               trustByPath: recallTrustByPath,
               });
               recalledMemoryPaths = longTerm
@@ -4554,7 +4543,7 @@ export class RecallInternalCoordinator {
                     recallNamespaces,
                     retrievalQuery,
                     preloadedMap,
-                    { asOfMs, requestingConnector: options.sourceConnector },
+                    { asOfMs, stateViewActive, requestingConnector: options.sourceConnector },
                   )
                 ).sort((a, b) => b.score - a.score);
                 // MMR runs on the pre-truncation pool so diverse candidates just
@@ -4567,27 +4556,8 @@ export class RecallInternalCoordinator {
               },
               [] as QmdSearchResult[],
             );
-            const recentPartition =
-              options.xrayCapture === true
-                ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
-                    "memories",
-                    recent,
-                    recallResultLimit,
-                    retrievalQuery,
-                    caps,
-                  )
-                : null;
-            recent =
-              recentPartition?.appliedResults ??
-              this.deps.diversifyAndLimitRecallResults(
-                "memories",
-                recent,
-                recallResultLimit,
-                retrievalQuery,
-                caps,
-              );
-            // Issue #1577 — apply TrustScore on the recent-scan path so the
-            // feature gate is consistent across ALL recall paths (rule 41).
+            // Issue #1577 — trust filter before packet cap (AGENTS.md order).
+            // Feature gate is consistent across ALL recall paths (rule 41).
             {
               // Deadline-bound (issue #1905). The recent-scan branch already
               // loaded every candidate's MemoryFile (queryAwareScopedMemories),
@@ -4623,6 +4593,27 @@ export class RecallInternalCoordinator {
                 success: !trustFellBack,
               });
             }
+            const recentPartition =
+              options.xrayCapture === true
+                ? this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+                    "memories",
+                    recent,
+                    recallResultLimit,
+                    retrievalQuery,
+                    caps,
+                    stateViewPacketActive,
+                  )
+                : null;
+            recent =
+              recentPartition?.appliedResults ??
+              this.deps.recallRerankCoordinator.diversifyRecallResultsWithHeadroom(
+                "memories",
+                recent,
+                recallResultLimit,
+                retrievalQuery,
+                caps,
+                stateViewPacketActive,
+              ).appliedResults;
             if (recent.length > 0) {
               if (shouldPersistGraphSnapshot) {
                 graphSnapshotFinalResults = this.deps.buildGraphRecallRankedResults(
@@ -4644,6 +4635,8 @@ export class RecallInternalCoordinator {
                   injectedChars: identityInjectedChars,
                   truncated: identityInjectionTruncated,
                 },
+              stateViewActive,
+              asOfMs,
               trustByPath: recallTrustByPath,
               });
               recalledMemoryPaths = recent
@@ -4655,6 +4648,7 @@ export class RecallInternalCoordinator {
                 options.xrayCapture === true ? { partition: null } : undefined;
               const longTerm = await this.deps.applyColdFallbackPipeline({
                 prompt: retrievalQuery,
+                stateViewActive,
                 recallNamespaces,
                 recallResultLimit,
                 recallMode,
@@ -4697,6 +4691,8 @@ export class RecallInternalCoordinator {
                     injectedChars: identityInjectedChars,
                     truncated: identityInjectionTruncated,
                   },
+                stateViewActive,
+                asOfMs,
                 trustByPath: recallTrustByPath,
                 });
                 recalledMemoryPaths = longTerm
@@ -4711,6 +4707,7 @@ export class RecallInternalCoordinator {
             options.xrayCapture === true ? { partition: null } : undefined;
           const longTerm = await this.deps.applyColdFallbackPipeline({
             prompt: retrievalQuery,
+            stateViewActive,
             recallNamespaces,
             recallResultLimit,
             recallMode,
@@ -4752,6 +4749,8 @@ export class RecallInternalCoordinator {
                 injectedChars: identityInjectedChars,
                 truncated: identityInjectionTruncated,
               },
+            stateViewActive,
+            asOfMs,
             trustByPath: recallTrustByPath,
             });
             recalledMemoryPaths = longTerm
@@ -5050,8 +5049,8 @@ export class RecallInternalCoordinator {
         // Build a path → QmdSearchResult index so we can pull per-result
         // explain data (e.g. reinforcementBoost) from the result that
         // boostSearchResults annotated before surfacing to xray.
-        const xrayResultByPath = new Map<string, QmdSearchResult>(
-          xrayRecalledResults.map((xr) => [`${xr.namespace ?? ""}\0${xr.path}`, xr]),
+        const xrayResultByPath = indexStateViewAnnotatedResults(
+          xrayRecalledResults, retrievalQuery, this.deps.config, stateViewActive, asOfMs,
         );
         const results: RecallXrayResult[] = [];
         for (let xrayIdx = 0; xrayIdx < recalledMemoryPaths.length; xrayIdx += 1) {
@@ -5109,6 +5108,7 @@ export class RecallInternalCoordinator {
             servedBy,
             scoreDecomposition,
             admittedBy: [],
+            ...(xrayResult?.stateLabel ? { stateView: xrayResult.stateLabel } : {}),
             ...(xrayResult?.pathNodeIds ? { pathNodeIds: xrayResult.pathNodeIds } : {}),
             ...(typeof xrayResult?.pathPenaltyApplied === "boolean"
               ? { pathPenaltyApplied: xrayResult.pathPenaltyApplied }

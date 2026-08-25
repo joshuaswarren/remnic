@@ -18,6 +18,7 @@ export {
 export {
   builtInConnectorPackageSpecifier,
   registerWearableConnector,
+  selfRegisterWearableConnector,
   getWearableConnector,
   listWearableConnectors,
   clearWearableConnectors,

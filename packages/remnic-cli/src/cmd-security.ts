@@ -15,7 +15,7 @@ import {
   runAuditMemoryCliCommand,
   formatAuditMemoryReport,
 } from "@remnic/core";
-import { resolveConfigPath } from "./index.js";
+import { resolveConfigPath } from "./config-path.js";
 
 export async function cmdSecurity(rest: string[]): Promise<void> {
   const action = rest[0] ?? "help";

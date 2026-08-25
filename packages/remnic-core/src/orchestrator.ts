@@ -132,7 +132,7 @@ import { isDependencyPropagationEnabled } from "./orchestration/dependency-propa
 import { createDependencyPropagationReplayReconciliation } from "./orchestration/dependency-propagation-replay-reconciliation.js";
 import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
 import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-pipeline.js";
-import type { GraphRecallExpansionOptions, GraphRecallExpansionResult } from "./orchestration/graph-recall-seam.js";
+import type { GraphRecallExpansionOptions, GraphRecallExpansionResult } from "./orchestration/graph-recall-coordinator.js";
 import type { ArtifactRecallOptions } from "./orchestration/recall-search-prefilter.js";
 import type { CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { TurnIngestionCoordinator, type TurnIngestionOptions } from "./orchestration/turn-ingestion.js";
@@ -213,6 +213,7 @@ export {
   type RecallInvocationOptions,
   type RecallModeDecision,
 } from "./orchestration/orchestrator-helpers.js";
+export { qmdStartupCollectionChecksWithTimeout } from "./orchestration/startup-collection-checks.js";
 export { filterRecallCandidates } from "./orchestration/generic-recall-paths.js";
 
 export { hasIdentityRecoveryIntent, resolveEffectiveIdentityInjectionMode } from "./orchestration/recall-result-formatter.js";
@@ -360,7 +361,7 @@ import {
   extractTagsFromPrompt,
   resolvePromptTagPrefilterAsync,
 } from "./temporal-index.js";
-import { GraphIndex } from "./graph.js";
+import { GraphIndex, type GraphEdge } from "./graph.js";
 import {
   searchCausalTrajectories,
   type CausalTrajectorySearchResult,
@@ -716,8 +717,6 @@ export class Orchestrator {
       statuses: Map<string, "active" | "superseded" | "archived" | "missing">;
     }
   >();
-  /** Read by NamespaceReadFanoutCoordinator (seam 26), hence not `private`. */
-  static readonly ARTIFACT_STATUS_CACHE_TTL_MS = 60_000;
 
   // Batched access-tracking counts and timestamps (Phase 1A).
   private accessTrackingBuffer: Map<
@@ -859,6 +858,7 @@ export class Orchestrator {
         indexPersistedMemory: (storage, memoryId) => this.indexPersistedMemory(storage, memoryId),
         buildGraphEdge: (storage, memoryRelPath, entityRef, memoryId, factContent, allMemsForGraph, memoryPathById, threadIdForEdge, threadEpisodeIdsForGraph, fallbackCausalPredecessor, graphCaps) =>
           this.buildGraphEdge(storage, memoryRelPath, entityRef, memoryId, factContent, allMemsForGraph, memoryPathById, threadIdForEdge, threadEpisodeIdsForGraph, fallbackCausalPredecessor, graphCaps),
+        invalidateGraphEdgeCache: (storage) => this.graphIndexFor(storage).invalidateEdgeCache(),
         updateTemporalTagIndexes: (storage, persistedIds) =>
           this.updateTemporalTagIndexes(storage, persistedIds),
       });
@@ -949,6 +949,11 @@ export class Orchestrator {
       this.deferredInitAbort = null;
     }
   }
+  async disposeSearchBackendIfNeeded(): Promise<void> {
+    await this.namespaceSearchRouter.disableSearchBackends();
+    await (this.qmd as { dispose?: () => void | Promise<void> }).dispose?.();
+  }
+
   /** Track a recall-side write so destroy() can wait for it before teardown. @internal */
   trackRecallBackgroundWrite(promise: Promise<void>, label: string): void {
     trackRecallWrite(this, promise, label);
@@ -959,6 +964,7 @@ export class Orchestrator {
    * commands should call it before returning to let Node exit naturally.
    */
   async destroy(): Promise<void> {
+    this._orchestratorInitCoordinator?.retireStartupEpoch();
     this.abortDeferredInit();
     this.extractionQueueCoordinator.stopAccepting();
     if (this.wearablesAutoSyncHandle) {
@@ -3229,32 +3235,21 @@ export class Orchestrator {
     );
   }
 
+  /** Delegation wrapper so the persist wiring and root-test stubs route through `this` (#2813 CI-0). */
   private async buildGraphEdge(
     storage: StorageManager,
     memoryRelPath: string,
     entityRef: string | undefined,
     memoryId: string,
     factContent: string,
-    allMemsForGraph: import("./types.js").MemoryFile[] | null | undefined,
+    allMemsForGraph: MemoryFile[] | null | undefined,
     memoryPathById: Map<string, string>,
     threadIdForEdge: string | undefined,
     threadEpisodeIdsForGraph: string[] | undefined,
     fallbackCausalPredecessor: string | undefined,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
-  ): Promise<void> {
-    return this.persistenceIndexCoordinator.buildGraphEdge(
-      storage,
-      memoryRelPath,
-      entityRef,
-      memoryId,
-      factContent,
-      allMemsForGraph,
-      memoryPathById,
-      threadIdForEdge,
-      threadEpisodeIdsForGraph,
-      fallbackCausalPredecessor,
-      graphCaps,
-    );
+  ): Promise<GraphEdge[]> {
+    return this.persistenceIndexCoordinator.buildGraphEdge(storage, memoryRelPath, entityRef, memoryId, factContent, allMemsForGraph, memoryPathById, threadIdForEdge, threadEpisodeIdsForGraph, fallbackCausalPredecessor, graphCaps);
   }
 
   private graphIndexFor(storage: StorageManager): GraphIndex {
@@ -3425,27 +3420,9 @@ export class Orchestrator {
     );
   }
 
-  private publishRecallResults(options: {
-    title: string;
-    results: QmdSearchResult[];
-    sectionBuckets: RecallSectionBuckets;
-    retrievalQuery: string;
-    sessionKey: string | undefined;
-    identityInjection?: {
-      mode: IdentityInjectionMode | "none";
-      injectedChars: number;
-      truncated: boolean;
-    };
-    /**
-     * Issue #1577 — per-recall trust map. When present, quarantined items
-     * are filtered from injection on EVERY recall path (hot QMD, embedding
-     * fallback, cold archive, recent) so a faithfulness-contradicted memory
-     * cannot sneak in via a branch that bypasses trust scoring (review:
-     * fallback paths bypass trust). The map is also threaded to
-     * formatQmdResults for the epistemic hedge.
-     */
-    trustByPath?: Map<string, TrustStageResultItem> | null;
-  }): void {
+  private publishRecallResults(
+    options: Parameters<RecallEntryCoordinator["publishRecallResults"]>[0],
+  ): void {
     return (this.recallEntryCoordinator ?? new RecallEntryCoordinator(
       selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),
     )).publishRecallResults(

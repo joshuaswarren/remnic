@@ -32,6 +32,8 @@ import { type BufferTurn, type MemoryActionEvent, type MemoryFile, type MemoryFr
 import { categoryDirName } from "../utils/category-dir.js";
 import { parseFlexibleIsoTimestamp } from "../utils/iso-timestamp.js";
 
+/** Freshness window for the artifact source status cache read by NamespaceReadFanoutCoordinator. */
+export const ARTIFACT_STATUS_CACHE_TTL_MS = 60_000;
 export interface BulkImportBatchIngestResult {
   attemptedTurnCount: number;
   extractionCount: number;
@@ -246,6 +248,12 @@ export interface RecallInvocationOptions {
    * normally be pruned by confidence decay.  Default `false`.
    */
   includeLowConfidence?: boolean;
+  /**
+   * #1952 — per-call override enabling state-aware recall views for this
+   * recall only (MCP `stateView` boolean). ORs with the `recallStateViews`
+   * config flag; a change-intent query is still required for any effect.
+   */
+  stateView?: boolean;
   /**
    * User-aware context scopes active for this recall. Used by X-ray
    * provenance safety checks so boundary-scoped memories are evaluated

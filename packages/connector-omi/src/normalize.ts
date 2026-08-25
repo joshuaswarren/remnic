@@ -10,42 +10,26 @@
  * `speaker_name`/`speaker_id` instead; normalize both shapes.
  */
 
-import type {
-  WearableConversation,
-  WearableNativeMemory,
-  WearableTranscriptSegment,
+import {
+  activityDayWindow,
+  assertValidTimezone,
+  timezoneOffsetIso as resolveTimezoneOffset,
+  type WearableConversation,
+  type WearableNativeMemory,
+  type WearableTranscriptSegment,
 } from "@remnic/core";
 
 import type { OmiConversation, OmiMemory } from "./client.js";
 
 export const OMI_SOURCE_ID = "omi";
 
-/** "GMT+05:30" → "+05:30"; plain "GMT" → "+00:00". */
+/** "GMT+05:30" → "+05:30"; an unknown zone falls back to "+00:00" so a bad config never crashes the sync. */
 export function timezoneOffsetIso(instant: Date, timezone: string): string {
   try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone,
-      timeZoneName: "longOffset",
-    }).formatToParts(instant);
-    const name = parts.find((part) => part.type === "timeZoneName")?.value ?? "GMT";
-    const match = name.match(/GMT([+-]\d{2}:\d{2})?/);
-    return match?.[1] ?? "+00:00";
+    return resolveTimezoneOffset(instant, timezone);
   } catch {
     return "+00:00";
   }
-}
-
-/** ISO instant for local midnight of `date` in `timezone`. */
-export function zonedDayStartIso(date: string, timezone: string): string {
-  // Two-pass offset resolution: guess from midday (stable away from DST
-  // transitions), then re-derive at the candidate midnight itself.
-  let offset = timezoneOffsetIso(new Date(`${date}T12:00:00Z`), timezone);
-  const candidate = new Date(`${date}T00:00:00${offset}`);
-  const refined = timezoneOffsetIso(candidate, timezone);
-  if (refined !== offset) {
-    offset = refined;
-  }
-  return `${date}T00:00:00${offset}`;
 }
 
 export function nextIsoDate(date: string): string {
@@ -54,15 +38,83 @@ export function nextIsoDate(date: string): string {
   return parsed.toISOString().slice(0, 10);
 }
 
-/** Half-open [start, end) ISO bounds of a local day. */
+/**
+ * Half-open [start, end) local-midnight ISO bounds of a local day, in the
+ * offset-datetime form the Omi API's date filters expect. Field names and
+ * format map to the Omi API; the DST-aware window math is core's
+ * `activityDayWindow`.
+ */
+export function omiDayWindow(
+  date: string,
+  timezone: string,
+): { startIso: string; endIso: string } {
+  // Keep this package's documented never-throw zone contract (see
+  // `timezoneOffsetIso`): an unknown zone resolves to a UTC day instead of
+  // surfacing core's fail-fast RangeError.
+  let zone = timezone;
+  try {
+    assertValidTimezone(timezone);
+  } catch {
+    zone = "UTC";
+  }
+  const { startUtc, endUtc } = activityDayWindow(date, zone);
+  return {
+    startIso: instantToOffsetIso(new Date(startUtc), zone),
+    endIso: instantToOffsetIso(new Date(endUtc), zone),
+  };
+}
+
+/**
+ * Render a resolved instant as an offset datetime in `timezone`. Formatting
+ * the wall-clock at that instant (not `T00:00:00`) is what preserves skipped
+ * local midnights: a 00:00→01:00 spring-forward resolves to 01:00 local, and
+ * rebuilding `T00:00:00` would move the instant an hour into the prior day.
+ */
+function instantToOffsetIso(instant: Date, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(instant);
+  const field = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((part) => part.type === type)?.value ?? "00";
+  const day = `${field("year")}-${field("month")}-${field("day")}`;
+  const time = `${field("hour")}:${field("minute")}:${field("second")}`;
+  return `${day}T${time}${timezoneOffsetIso(instant, timezone)}`;
+}
+
+/**
+ * @deprecated Compatibility wrapper (pre-core-refactor export); delegates to
+ * `omiDayWindow`. Returns the resolved start bound, not a rebuilt midnight.
+ */
+export function zonedDayStartIso(date: string, timezone: string): string {
+  warnLegacyDayWindow("zonedDayStartIso");
+  return omiDayWindow(date, timezone).startIso;
+}
+
+/** @deprecated Compatibility wrapper (pre-core-refactor export); delegates to `omiDayWindow`. */
 export function zonedDayBounds(
   date: string,
   timezone: string,
 ): { startIso: string; endIso: string } {
-  return {
-    startIso: zonedDayStartIso(date, timezone),
-    endIso: zonedDayStartIso(nextIsoDate(date), timezone),
-  };
+  warnLegacyDayWindow("zonedDayBounds");
+  return omiDayWindow(date, timezone);
+}
+
+const warnedLegacyDayWindow = new Set<string>();
+
+function warnLegacyDayWindow(name: "zonedDayBounds" | "zonedDayStartIso"): void {
+  if (warnedLegacyDayWindow.has(name)) return;
+  warnedLegacyDayWindow.add(name);
+  process.emitWarning(
+    `@remnic/connector-omi: ${name} is deprecated; use omiDayWindow instead.`,
+    { type: "DeprecationWarning", code: `REMNIC_DEP_OMI_${name.toUpperCase()}` },
+  );
 }
 
 export function conversationToWearable(

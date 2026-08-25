@@ -263,6 +263,79 @@ test("MCP memory write tools reject malformed arguments before dispatch", async 
   }
 });
 
+test("MCP memory write tools admit project-shaped category aliases (#2780)", async () => {
+  for (const toolName of ["engram.memory_store", "engram.suggestion_submit"]) {
+    let received: Record<string, unknown> | undefined;
+    const service = {
+      ...makeMockService(),
+      memoryStore: async (req: Record<string, unknown>) => {
+        received = req;
+        return {
+          schemaVersion: 1,
+          operation: "memory_store",
+          namespace: "default",
+          dryRun: true,
+          accepted: true,
+          queued: false,
+          status: "validated",
+        };
+      },
+      suggestionSubmit: async (req: Record<string, unknown>) => {
+        received = req;
+        return {
+          schemaVersion: 1,
+          operation: "suggestion_submit",
+          namespace: "default",
+          dryRun: true,
+          accepted: true,
+          queued: false,
+          status: "validated",
+        };
+      },
+    } as unknown as EngramAccessService;
+    const server = new EngramMcpServer(service);
+
+    const response = await server.handleRequest(
+      makeToolRequest(toolName, {
+        content: "valid durable content",
+        category: "project_state",
+        dryRun: true,
+      })
+    );
+    const result = (response as Record<string, unknown> & { result?: { isError?: boolean } }).result;
+
+    assert.equal(result?.isError, false, `${toolName} must admit project-shaped category aliases`);
+    assert.equal(
+      received?.category,
+      "fact",
+      `${toolName} must dispatch the schema-canonicalized category`
+    );
+  }
+});
+
+test("MCP memory_store invalid category error names valid categories and the fact hint (#2780)", async () => {
+  const server = new EngramMcpServer(makeMockService());
+
+  for (const bad of ["vibe", "projection", "project_typo"]) {
+    const response = await server.handleRequest(
+      makeToolRequest("engram.memory_store", {
+        content: "valid durable content",
+        category: bad,
+        dryRun: true,
+      })
+    );
+    const result = (response as Record<string, unknown> & {
+      result?: { isError?: boolean; content?: Array<{ text?: string }> };
+    }).result;
+
+    assert.equal(result?.isError, true, `${bad} must reject, not coerce`);
+    const text = (result?.content ?? []).map((part) => part.text ?? "").join("\n");
+    assert.match(text, /must be one of: /, "error must name the valid categories");
+    assert.match(text, /reasoning_trace/, "the full valid list must be present");
+    assert.match(text, /for project state\/facts use "fact"/, "error must carry the fact hint");
+  }
+});
+
 test("MCP write tools accept and forward client-injected cwd/projectTag (#1434)", async () => {
   for (const toolName of ["engram.memory_store", "engram.suggestion_submit"]) {
     let received: Record<string, unknown> | undefined;

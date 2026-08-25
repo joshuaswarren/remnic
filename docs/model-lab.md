@@ -176,10 +176,42 @@ a model-backed detector lands in the consuming child.
 
 ## Privacy + consent
 
-- The **harvest stream** (teacher labels from shadow mode) is opt-in, local-only,
-  and documented. `harvest-shadow-logs.py` requires `--i-consent-local-data` and
-  prints exactly what it will read. It is a **stub** until the relevant shadow
-  telemetry lands (#1576 for the gate, #1581 for correction-intent).
+- The **harvest stream** (teacher labels from shadow telemetry) is real, opt-in,
+  and local-only (issue #2852). The deleted `harvest-shadow-logs.py` scripts
+  (#2847) were unimplemented stubs, and the #1585 GPU-run work landed with
+  synthetic-data training only. Shadow verdicts themselves exist —
+  `extraction-persist.ts` records them in fact frontmatter (#1576). The
+  harvest tool is `model-lab/harvest.py`: it requires an explicit
+  `--consent` flag plus explicit local `--input`/`--out` paths, prints exactly
+  what it will read, and refuses otherwise (exit 2, nothing read). It walks
+  exactly the named directory — no vault scan, no symlink `--input` root, no
+  descendant symlink follow — refuses a `--out` that overlaps `--input`
+  (equal, ancestor, or descendant, #2886), strips session keys, principals,
+  namespaces, memory ids, and model ids by projecting records field-by-field
+  from an allowlist, emits an unlinkable hashed `sourceId`, keeps every
+  verified source quote (joined with a newline, same as the gate), skips
+  redacted/never-store plans, treats unknown classification/status/version/
+  action kind or required field, a confidence outside `[0, 1]`, or invalid
+  UTF-8 (strict decode, never U+FFFD replacement text) as malformed, derives
+  polarity and assertion from the action, reconstructs gated `factText` by
+  stripping the persist-time attribute suffix and default inline citation,
+  inverts a custom attribution template exactly when the operator supplies
+  the configured `inlineSourceAttributionFormat` via `--citation-template`
+  (anchored literals plus in-order separators), and skips any other
+  trailing attribution-shaped suffix as private — no punctuation
+  heuristics (#2896),
+  skips child files that persist `parentId` plus `chunkIndex` with an inherited
+  whole-fact verdict, skips a post-gate sanitization rewrite when persist
+  recorded that evidence or the stored content hash does not match the recovered
+  bytes, streams reads (one payload resident at a time, fingerprint chained
+  per-file in walk order, row set bounded by `--max-records`), stats-and-streams
+  `--max-text-bytes` before a full read, and never
+  runs from the daemon, build, or CI. See `model-lab/README.md`
+  ("Harvesting shadow-telemetry labels") for the command recipe.
+- **No committed dataset contains harvested data.** Both v1 datasets are
+  synthetic-only; any harvested dataset lives under the gitignored
+  `model-lab/**/data/` dirs with a provenance manifest + sha256, and never
+  reaches git.
 - Teacher-model outputs ("LLM traces") live under the gitignored data dir like
   everything else.
 

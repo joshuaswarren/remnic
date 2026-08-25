@@ -25,6 +25,8 @@ import type {
   TriggerMode,
   TrustWeights,
 } from "./types.js";
+import { parseBackgroundGeneration } from "./background-generation-config.js";
+import { parseLocalLlmConfig } from "./local-llm-config.js";
 import { parseConvergeConfig } from "./converge-config.js";
 import { parseExternalWikiRecallGuard } from "./external-wiki-guard.js";
 import { log } from "./logger.js";
@@ -38,8 +40,9 @@ import { expandTildePath } from "./utils/path.js";
 // config.ts → connectors/index.ts nor the reverse circular import arises.
 import { coerceBool, coerceBooleanLike, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
 import { parseSubjectRuntimeConfig } from "./subject-config.js";
+import { parseRecallStateViews } from "./recall-state-view.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
-import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
+import { parseExtractionFields } from "./extraction-span-config.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
 import { parseDependencyPropagationConfig } from "./dependency-propagation-config.js";
 import { parseProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
@@ -50,6 +53,7 @@ import { parseDeepRecallConfig } from "./deep-recall-config.js";
 import { parseContradictionLocalizationConfig, parseContradictionScanConfig } from "./contradiction-config.js";
 import { parseGraphPathScoringConfig } from "./graph-path-scoring-config.js";
 import { parseWritePathDedupConfig } from "./dedup/novelty-gate.js";
+import { parseSemanticMergeConfig } from "./dedup/merge.js";
 import { hasLegacyConnectorEntries } from "./connectors/paths.js";
 import {
   parseQmdChunkStrategy,
@@ -459,6 +463,14 @@ function parseAgentAccessPrincipal(raw: unknown): string | undefined {
   );
 }
 
+function parseOptionalEnvName(raw: unknown, property: string): string | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (typeof raw !== "string" || !/^[A-Z_][A-Z0-9_]*$/.test(raw)) {
+    throw new Error(`${property} must name a conventional environment variable`);
+  }
+  return raw;
+}
+
 export function resolveEnvVars(value: string): string {
   const resolved = value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, envVar: string) => {
     const envValue = readEnvVar(envVar);
@@ -507,6 +519,7 @@ function normalizeOpenaiBaseUrl(value: string | undefined, source: "config" | "e
   while (url.endsWith("/")) url = url.slice(0, -1);
   return url;
 }
+
 
 function normalizeMemoryRelativeDir(raw: unknown, fallback: string): string {
   if (typeof raw !== "string") return fallback;
@@ -1471,6 +1484,7 @@ export function parseConfig(
   } else if (apiKey !== undefined) {
     baseUrl = normalizeOpenaiBaseUrl(readEnvVar("OPENAI_BASE_URL"), "env");
   }
+  const backgroundGeneration = parseBackgroundGeneration(cfg, resolveEnvVars);
 
   const sharedCrossSignalSemanticEnabled =
     cfg.sharedCrossSignalSemanticEnabled === true || cfg.crossSignalsSemanticEnabled === true;
@@ -1480,7 +1494,15 @@ export function parseConfig(
       : typeof cfg.crossSignalsSemanticTimeoutMs === "number"
         ? Math.max(1, Math.floor(cfg.crossSignalsSemanticTimeoutMs))
         : 4000;
-  const recallPipelineConfig = buildRecallPipelineConfig(cfg);
+  // Coerce once. The default recall-pipeline shared-context gate reads
+  // `cfg.sharedContextEnabled === true`, so it must see this boolean —
+  // not the raw CLI/config string. Custom `recallPipeline` is unchanged.
+  const sharedContextEnabled =
+    coerceBool(cfg.sharedContextEnabled, "sharedContextEnabled") ?? false;
+  const recallPipelineConfig = buildRecallPipelineConfig({
+    ...cfg,
+    sharedContextEnabled,
+  });
   const maintenanceNamespaceFanoutEnabled = resolveBooleanConfig(
     readFlatOrNestedConfig(
       cfg,
@@ -1544,10 +1566,12 @@ export function parseConfig(
 
   const { wikiMergeIntoRecall, qmdCollection, qmdColdCollection } =
     parseExternalWikiRecallGuard(cfg);
+  const localLlmApiKeyEnv = parseOptionalEnvName(cfg.localLlmApiKeyEnv, "localLlmApiKeyEnv");
 
   return {
     openaiApiKey: apiKey,
     openaiBaseUrl: baseUrl,
+    backgroundGeneration,
     model,
     reasoningEffort,
     triggerMode,
@@ -1921,6 +1945,9 @@ export function parseConfig(
     // explicitly opt in.
     recallDirectAnswerEnabled:
       coerceBool(cfg.recallDirectAnswerEnabled) ?? false,
+    // Recall state views (issue #1952). Default false; exact false/0/"false"
+    // disable (parseRecallStateViews → coerceBooleanLike).
+    recallStateViews: parseRecallStateViews(cfg.recallStateViews),
     // Disclosure auto-escalation (issue #677 PR 4/4).  Default `manual`
     // so pre-#677 callers see unchanged behavior.  Reject anything
     // outside the allow-list rather than silently defaulting (CLAUDE.md
@@ -2318,7 +2345,7 @@ export function parseConfig(
     dreaming,
     dreamsPhases,
     procedural,
-    extractionLiveness: parseExtractionLivenessConfig(cfg),
+    ...parseExtractionFields(cfg),
     replicaPeers: parseReplicaPeersConfig(cfg),
     converge: parseConvergeConfig(cfg.converge),
     wearables,
@@ -2666,46 +2693,7 @@ export function parseConfig(
       typeof cfg.abstractionNodeStoreDir === "string" && cfg.abstractionNodeStoreDir.trim().length > 0
         ? cfg.abstractionNodeStoreDir.trim()
         : path.join(memoryDir, "state", "abstraction-nodes"),
-    // Local LLM Provider (v2.1)
-    localLlmEnabled: cfg.localLlmEnabled === true || cfg.localLlmEnabled === "true", // default: false
-    localLlmUrl:
-      typeof cfg.localLlmUrl === "string" && cfg.localLlmUrl.length > 0
-        ? cfg.localLlmUrl
-        : "http://localhost:1234/v1",
-    localLlmModel:
-      typeof cfg.localLlmModel === "string" && cfg.localLlmModel.length > 0
-        ? cfg.localLlmModel
-        : "local-model",
-    localLlmApiKey:
-      typeof cfg.localLlmApiKey === "string" && cfg.localLlmApiKey.length > 0
-        ? resolveEnvVars(cfg.localLlmApiKey)
-        : undefined,
-    localLlmHeaders:
-      cfg.localLlmHeaders && typeof cfg.localLlmHeaders === "object" && !Array.isArray(cfg.localLlmHeaders)
-        ? Object.fromEntries(
-            Object.entries(cfg.localLlmHeaders as Record<string, unknown>)
-              .filter(([, value]) => typeof value === "string")
-              .map(([key, value]) => [key, String(value)]),
-          )
-        : undefined,
-    localLlmAuthHeader: cfg.localLlmAuthHeader !== false,
-    localLlmFallback: cfg.localLlmFallback !== false, // default: true
-    localLlmHomeDir:
-      typeof cfg.localLlmHomeDir === "string" && cfg.localLlmHomeDir.length > 0
-        ? cfg.localLlmHomeDir
-        : undefined,
-    localLmsCliPath:
-      typeof cfg.localLmsCliPath === "string" && cfg.localLmsCliPath.length > 0
-        ? cfg.localLmsCliPath
-        : undefined,
-    localLmsBinDir:
-      typeof cfg.localLmsBinDir === "string" && cfg.localLmsBinDir.length > 0
-        ? cfg.localLmsBinDir
-        : undefined,
-    localLlmTimeoutMs:
-      parseBoundedIntegerMs(cfg.localLlmTimeoutMs, 180_000, 1, 86_400_000),
-    localLlmMaxContext:
-      parseOptionalIntegerAtLeast(cfg.localLlmMaxContext, 1024, "localLlmMaxContext"),
+    ...parseLocalLlmConfig(cfg, localLlmApiKeyEnv, resolveEnvVars),
     // Observability (disabled by default to avoid log spam)
     slowLogEnabled: cfg.slowLogEnabled === true,
     slowLogThresholdMs:
@@ -3027,10 +3015,9 @@ export function parseConfig(
         ? cfg.routingRulesStateFile.trim()
         : "state/routing-rules.json",
 
-    // v4.0 shared-context (default off)
-    sharedContextEnabled: cfg.sharedContextEnabled === true,
-    // CLI values arrive as strings (`--config sharedContextAllowBindingAuthority=true`),
-    // so a strict `=== true` silently keeps the feature off. Default stays false.
+    // Reuse the hoisted coerce above (default pipeline already saw it).
+    sharedContextEnabled,
+    // Same coercion contract for the binding-authority sibling (#2918 parity).
     sharedContextAllowBindingAuthority:
       coerceBool(cfg.sharedContextAllowBindingAuthority, "sharedContextAllowBindingAuthority") ?? false,
     sharedContextDir:
@@ -3199,6 +3186,7 @@ export function parseConfig(
     // v6.0 Fact deduplication & archival
     factDeduplicationEnabled: cfg.factDeduplicationEnabled !== false,
     ...parseWritePathDedupConfig(cfg),
+    ...parseSemanticMergeConfig(cfg),
     factArchivalEnabled: cfg.factArchivalEnabled === true,
     factArchivalAgeDays:
       typeof cfg.factArchivalAgeDays === "number" ? cfg.factArchivalAgeDays : 90,
@@ -4240,6 +4228,7 @@ function buildDefaultRecallPipeline(cfg: Record<string, unknown>): RecallSection
   return [
     {
       id: "shared-context",
+      // Already coerced in parseConfig; do not coerce again.
       enabled: cfg.sharedContextEnabled === true,
       maxChars:
         typeof cfg.sharedContextMaxInjectChars === "number"

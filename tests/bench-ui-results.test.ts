@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -21,7 +21,10 @@ import {
   selectLowestScoringTasks,
 } from "../packages/bench-ui/src/pages/BenchmarkDetail.js";
 import { canCompareBenchRuns, filterComparableCandidateRuns } from "../packages/bench-ui/src/pages/Compare.js";
+import { writeBenchmarkResult } from "../packages/bench/src/reporter.js";
+import type { MetricAggregate } from "@remnic/bench";
 import { loadBenchResultSummaries } from "../packages/bench-ui/src/results.js";
+import { validResultFixture } from "../packages/bench-ui/src/testing/result-fixture.js";
 
 const FIXTURE_INTEGRITY: BenchIntegritySummary = {
   split: "unknown",
@@ -34,53 +37,53 @@ const FIXTURE_INTEGRITY: BenchIntegritySummary = {
   datasetHashShort: null,
 };
 
+function completeAggregate(mean: number): MetricAggregate {
+  return { mean, median: mean, stdDev: 0, min: mean, max: mean };
+}
+
 test("bench UI loader summarizes valid benchmark JSON files and ignores invalid entries", async () => {
   const resultsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-ui-"));
 
-  await writeFile(
-    path.join(resultsDir, "latest.json"),
-    JSON.stringify({
-      meta: {
-        id: "latest-run",
-        benchmark: "longmemeval",
-        timestamp: "2026-04-18T10:00:00.000Z",
-        mode: "quick",
+  const latestArtifact = validResultFixture("latest-run");
+  latestArtifact.meta.benchmark = "longmemeval";
+  latestArtifact.meta.timestamp = "2026-04-18T10:00:00.000Z";
+  latestArtifact.meta.mode = "quick";
+  latestArtifact.results = {
+    tasks: [
+      {
+        taskId: "task-1",
+        question: "q1",
+        expected: "e1",
+        actual: "a1",
+        scores: {},
+        latencyMs: 10,
+        tokens: { input: 1, output: 1 },
       },
-      cost: {
-        totalLatencyMs: 1234,
-        meanQueryLatencyMs: 617,
+      {
+        taskId: "task-2",
+        question: "q2",
+        expected: "e2",
+        actual: "a2",
+        scores: {},
+        latencyMs: 10,
+        tokens: { input: 1, output: 1 },
       },
-      results: {
-        tasks: [{ taskId: "task-1" }, { taskId: "task-2" }],
-        aggregates: {
-          accuracy: { mean: 0.75 },
-          f1: { mean: 0.63 },
-          llm_judge: { mean: 0.9 },
-          ignored: { mean: "bad" },
-        },
-      },
-    }, null, 2),
-  );
+    ],
+    aggregates: {
+      accuracy: completeAggregate(0.75),
+      f1: completeAggregate(0.63),
+      llm_judge: completeAggregate(0.9),
+    },
+  };
+  await writeFile(path.join(resultsDir, "latest.json"), JSON.stringify(latestArtifact, null, 2));
 
-  await writeFile(
-    path.join(resultsDir, "older.json"),
-    JSON.stringify({
-      meta: {
-        id: "older-run",
-        benchmark: "ama-bench",
-        timestamp: "2026-04-17T10:00:00.000Z",
-        mode: "full",
-      },
-      cost: {
-        totalLatencyMs: 99,
-        meanQueryLatencyMs: 33,
-      },
-      results: {
-        tasks: [],
-        aggregates: {},
-      },
-    }, null, 2),
-  );
+  const olderArtifact = validResultFixture("older-run");
+  olderArtifact.meta.benchmark = "ama-bench";
+  olderArtifact.meta.timestamp = "2026-04-17T10:00:00.000Z";
+  olderArtifact.meta.mode = "full";
+  olderArtifact.results.tasks = [];
+  olderArtifact.results.aggregates = {};
+  await writeFile(path.join(resultsDir, "older.json"), JSON.stringify(olderArtifact, null, 2));
 
   await writeFile(path.join(resultsDir, "broken.json"), "{oops");
   await mkdir(path.join(resultsDir, "nested"));
@@ -103,24 +106,15 @@ test("bench UI loader summarizes valid benchmark JSON files and ignores invalid 
 
 test("bench UI loader surfaces integrity metadata from result meta", async () => {
   const resultsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-ui-integrity-"));
-  await writeFile(
-    path.join(resultsDir, "holdout.json"),
-    JSON.stringify({
-      meta: {
-        id: "holdout-run",
-        benchmark: "longmemeval",
-        timestamp: "2026-04-18T10:00:00.000Z",
-        mode: "full",
-        splitType: "holdout",
-        qrelsSealedHash: "a".repeat(64),
-        judgePromptHash: "b".repeat(64),
-        datasetHash: "c".repeat(64),
-        canaryScore: 0.03,
-      },
-      cost: {},
-      results: { tasks: [], aggregates: {} },
-    }),
-  );
+  const artifact = validResultFixture("holdout-run");
+  artifact.meta.benchmark = "longmemeval";
+  artifact.meta.timestamp = "2026-04-18T10:00:00.000Z";
+  artifact.meta.splitType = "holdout";
+  artifact.meta.qrelsSealedHash = "a".repeat(64);
+  artifact.meta.judgePromptHash = "b".repeat(64);
+  artifact.meta.datasetHash = "c".repeat(64);
+  artifact.meta.canaryScore = 0.03;
+  await writeFile(path.join(resultsDir, "holdout.json"), JSON.stringify(artifact));
 
   const payload = await loadBenchResultSummaries(resultsDir);
   const summary = payload.summaries[0];
@@ -137,25 +131,16 @@ test("bench UI loader honors a per-result canaryFloor when present", async () =>
   // With a floor of 0.05 and a score of 0.08 the canary is OVER floor —
   // the badge must mark the result unverified even though the default
   // floor (0.1) would accept the same score.
-  await writeFile(
-    path.join(resultsDir, "custom-floor.json"),
-    JSON.stringify({
-      meta: {
-        id: "custom-floor-run",
-        benchmark: "longmemeval",
-        timestamp: "2026-04-18T10:00:00.000Z",
-        mode: "full",
-        splitType: "holdout",
-        qrelsSealedHash: "a".repeat(64),
-        judgePromptHash: "b".repeat(64),
-        datasetHash: "c".repeat(64),
-        canaryScore: 0.08,
-        canaryFloor: 0.05,
-      },
-      cost: {},
-      results: { tasks: [], aggregates: {} },
-    }),
-  );
+  const artifact = validResultFixture("custom-floor-run");
+  artifact.meta.benchmark = "longmemeval";
+  artifact.meta.timestamp = "2026-04-18T10:00:00.000Z";
+  artifact.meta.splitType = "holdout";
+  artifact.meta.qrelsSealedHash = "a".repeat(64);
+  artifact.meta.judgePromptHash = "b".repeat(64);
+  artifact.meta.datasetHash = "c".repeat(64);
+  artifact.meta.canaryScore = 0.08;
+  artifact.meta.canaryFloor = 0.05;
+  await writeFile(path.join(resultsDir, "custom-floor.json"), JSON.stringify(artifact));
 
   const payload = await loadBenchResultSummaries(resultsDir);
   const summary = payload.summaries[0];
@@ -164,21 +149,94 @@ test("bench UI loader honors a per-result canaryFloor when present", async () =>
   assert.equal(summary.integrity.canaryUnderFloor, false);
 });
 
+test("artifact written under a custom canary floor judges over-floor after reload without the env", async () => {
+  // Producer-path parity: every canonical producer (CLI run, partial
+  // capture, custom benchmark, coding-graph suite) persists the floor via
+  // writeBenchmarkResult, so exercising the writer IS exercising each path.
+  const saved = process.env.REMNIC_BENCH_CANARY_FLOOR;
+  const resultsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-ui-e2e-floor-"));
+  try {
+    process.env.REMNIC_BENCH_CANARY_FLOOR = "0.05";
+    await writeBenchmarkResult(
+      {
+        meta: {
+          id: "custom-floor-e2e",
+          benchmark: "longmemeval",
+          benchmarkTier: "published",
+          version: "1.0.0",
+          remnicVersion: "9.69.33",
+          gitSha: "deadbeef",
+          timestamp: "2026-04-18T10:00:00.000Z",
+          mode: "full",
+          runCount: 1,
+          seeds: [0],
+          canaryScore: 0.08,
+        },
+        config: {
+          systemProvider: null,
+          judgeProvider: null,
+          adapterMode: "direct",
+          remnicConfig: {},
+        },
+        cost: {
+          totalTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          estimatedCostUsd: 0,
+          totalLatencyMs: 0,
+          meanQueryLatencyMs: 0,
+        },
+        results: { tasks: [], aggregates: {} },
+        environment: { os: "linux", nodeVersion: process.version },
+      },
+      resultsDir,
+    );
+  } finally {
+    if (saved === undefined) {
+      delete process.env.REMNIC_BENCH_CANARY_FLOOR;
+    } else {
+      process.env.REMNIC_BENCH_CANARY_FLOOR = saved;
+    }
+  }
+
+  // Restart condition: the env override is gone; only the persisted
+  // meta.canaryFloor can mark this 0.08 canary as over-floor.
+  const payload = await loadBenchResultSummaries(resultsDir);
+  const summary = payload.summaries[0];
+  assert.ok(summary);
+  assert.equal(summary.integrity.canaryFloor, 0.05);
+  assert.equal(summary.integrity.canaryScore, 0.08);
+  assert.equal(summary.integrity.canaryUnderFloor, false);
+  await rm(resultsDir, { recursive: true, force: true });
+});
+
+test("artifact without a persisted canaryFloor judges against the canonical default", async () => {
+  const resultsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-ui-legacy-floor-"));
+  const artifact = validResultFixture("legacy-no-floor-run");
+  artifact.meta.canaryScore = 0.08;
+  delete artifact.meta.canaryFloor;
+  await writeFile(path.join(resultsDir, "legacy-no-floor.json"), JSON.stringify(artifact));
+
+  const payload = await loadBenchResultSummaries(resultsDir);
+  const summary = payload.summaries[0];
+  assert.ok(summary);
+  assert.equal(summary.integrity.canaryFloor, 0.1);
+  assert.equal(summary.integrity.canaryUnderFloor, true);
+  await rm(resultsDir, { recursive: true, force: true });
+});
+
 test("bench UI loader marks legacy results without integrity metadata as unknown split", async () => {
   const resultsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-ui-legacy-"));
-  await writeFile(
-    path.join(resultsDir, "legacy.json"),
-    JSON.stringify({
-      meta: {
-        id: "legacy-run",
-        benchmark: "longmemeval",
-        timestamp: "2026-04-18T10:00:00.000Z",
-        mode: "quick",
-      },
-      cost: {},
-      results: { tasks: [], aggregates: {} },
-    }),
-  );
+  const artifact = validResultFixture("legacy-run");
+  artifact.meta.benchmark = "longmemeval";
+  artifact.meta.timestamp = "2026-04-18T10:00:00.000Z";
+  artifact.meta.mode = "quick";
+  delete artifact.meta.splitType;
+  delete artifact.meta.qrelsSealedHash;
+  delete artifact.meta.judgePromptHash;
+  delete artifact.meta.datasetHash;
+  delete artifact.meta.canaryScore;
+  await writeFile(path.join(resultsDir, "legacy.json"), JSON.stringify(artifact));
 
   const payload = await loadBenchResultSummaries(resultsDir);
   const summary = payload.summaries[0];

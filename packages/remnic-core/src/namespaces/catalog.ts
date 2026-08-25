@@ -22,6 +22,7 @@ import { isSafeRouteNamespace } from "../routing/engine.js";
 import { namespaceIdentityFromToken, namespaceIdentityLegacyToken, namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
 import { resolveDefaultNamespaceRoot, resolveNamespaceStorageRoot } from "./storage.js";
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
+import { isNotFoundError } from "../utils/errno.js";
 
 /**
  * Rebuildable namespace catalog (issue #1499).
@@ -190,15 +191,6 @@ type MemoryDataRootStatus = {
   hasData: boolean;
   invalidMarker?: string;
 };
-
-function isNotFoundError(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    (err as { code?: string }).code === "ENOENT"
-  );
-}
 
 /**
  * Inspect `child` under `rootDir` as a memory-data marker (NIw0F / PR #1506).

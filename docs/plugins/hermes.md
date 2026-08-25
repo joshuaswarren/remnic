@@ -17,6 +17,8 @@ Canonical upstream references:
 - [Installation](#installation)
 - [How Hermes discovers the provider](#how-hermes-discovers-the-provider)
 - [Configuration reference](#configuration-reference)
+- [Optional Hermes-managed LLM bridge](#optional-hermes-managed-llm-bridge)
+- [Policy-bound LLM bridge (opt-in)](#policy-bound-llm-bridge-opt-in)
 - [Environment variable overrides](#environment-variable-overrides)
 - [Token bootstrap](#token-bootstrap)
 - [How the provider works](#how-the-provider-works)
@@ -148,6 +150,14 @@ remnic:
   session_key: ""
   timeout: 30.0
   prefetch_wait_timeout: 2.0
+  # Optional loopback LLM bridge — off unless llm_bridge.enabled is true.
+  # llm_bridge:
+  #   enabled: true
+  #   host: "127.0.0.1"
+  #   port: 8765          # 0 = pick a free ephemeral port (a fixed port is REQUIRED when client_config_path is set)
+  #   max_body_bytes: 524288
+  #   timeout_seconds: 120.0
+  #   client_config_path: ""   # set to write the 0600 client JSON (includes a loopback bearer)
 ```
 
 ### Field reference
@@ -163,11 +173,70 @@ remnic:
 | `timeout` | float | `30.0` | HTTP request timeout in seconds applied to all daemon calls. |
 | `prefetch_wait_timeout` | float | `2.0` | Maximum seconds `prefetch()` blocks the turn waiting for a first-fetch recall (always additionally capped by `timeout`). Set `0` for pure fire-and-forget: prefetch only ever returns cached results and never waits. Invalid values (negative, non-numeric, NaN/inf) are rejected at load. Added in 1.0.5 (issue #1929). |
 
+The nested `llm_bridge` block is documented in [Policy-bound LLM bridge (opt-in)](#policy-bound-llm-bridge-opt-in). It is the only nested config section; every other field is flat. Unknown `llm_bridge` keys — including any attempt to set a `model` or `provider` — are rejected at load, because the bridge's model policy is server-owned.
+
 `namespace` is accepted as an alias for `client_id`. A non-empty `client_id` takes precedence when both fields are set.
 
 Remote HTTP users must set `allow_insecure_http: true` before upgrading. Remove this option after the daemon serves HTTPS.
 
 No other fields are read. Fields documented elsewhere, such as `recall_top_k`, `recall_mode`, or `token_env`, do not exist in this implementation.
+
+---
+
+## Optional Hermes-managed LLM bridge
+
+`remnic-hermes` can expose a Hermes-resolved provider to Remnic through a small **loopback-only** OpenAI-compatible bridge. This is opt-in and intended for deferred extraction, consolidation, and summary jobs — not recall-critical work with a short latency budget.
+
+The bridge policy never stores a provider API key or OAuth token. The supervisor passes provider environment variables to the bridge process only for Hermes resolution and does not forward them to the Remnic daemon. It generates a separate, launch-scoped **bridge request token** for the bridge and Remnic daemon children; that token is used solely in their local HTTP Authorization header. The daemon child receives basic runtime variables plus supported `REMNIC_*`/`ENGRAM_*` daemon settings, except the bridge readiness secret. Hermes remains the sole resolver and owner of provider credentials.
+
+### Policy
+
+Create a local policy file, for example `~/.remnic/hermes-llm-bridge/policy.json`:
+
+```json
+{
+  "provider": "openai-codex",
+  "model": "gpt-5.6-terra",
+  "timeout_seconds": 90
+}
+```
+
+These are the only accepted policy keys. The bridge rejects policy files containing credential-bearing or unrecognized fields, exposes only the policy model from `GET /v1/models`, ignores a client-supplied model selector, requires the launch-scoped bearer token on all provider-facing endpoints, and binds only `127.0.0.1`.
+
+### Remnic daemon configuration
+
+In the **Remnic daemon configuration** (not the `remnic:` block in Hermes' `config.yaml`), route deferred local-LLM work to the bridge and leave direct-provider fallback disabled:
+
+```json
+{
+  "remnic": {
+    "localLlmEnabled": true,
+    "localLlmUrl": "http://127.0.0.1:4329/v1",
+    "localLlmModel": "gpt-5.6-terra",
+    "localLlmApiKeyEnv": "REMNIC_HERMES_BRIDGE_TOKEN",
+    "localLlmAuthHeader": true,
+    "localLlmFallback": false,
+    "openaiApiKey": false,
+    "rerankEnabled": false,
+    "recallPlannerLlmEnabled": false
+  }
+}
+```
+
+The explicit `openaiApiKey: false` disables Remnic's fallback inheritance of `OPENAI_API_KEY`; it is required even on hosts that currently have no direct provider key. Keep `rerankEnabled` and `recallPlannerLlmEnabled` off unless the chosen provider has been measured against their synchronous recall budget. Their deterministic/QMD retrieval path remains independent of this bridge.
+
+### Lifecycle
+
+Run the supervisor with the Python executable that has both Hermes and `remnic-hermes` installed:
+
+```bash
+remnic-hermes-supervisor \
+  --python /absolute/path/to/hermes-python \
+  --policy "$HOME/.remnic/hermes-llm-bridge/policy.json" \
+  --remnic-bin "$(command -v remnic-server)"
+```
+
+The supervisor starts the bridge first, generates the bridge request token, requires a separate per-launch cryptographic readiness proof from that exact bridge instance, then starts the daemon with a restricted child environment containing runtime basics, supported `REMNIC_*`/`ENGRAM_*` daemon settings, and the request token. Provider environment variables are passed only to the bridge for Hermes resolution and are not forwarded to the Remnic daemon. The readiness secret is delivered to the bridge through a dedicated launch-scoped environment variable, never process arguments or the daemon environment. A different process that already owns the port cannot satisfy the readiness check, and a local process without the request token cannot use the provider-facing endpoints. An unexpected exit from either child stops its peer and makes the supervisor fail. Do not run the daemon outside this supervisor when using the `${REMNIC_HERMES_BRIDGE_TOKEN}` configuration above. On `SIGTERM` or `SIGINT`, it forwards the received signal to both children before final cleanup.
 
 ---
 
@@ -185,6 +254,108 @@ Environment variables are consulted only when the corresponding field is absent 
 **Precedence (highest to lowest):** inline config field → `REMNIC_*` env var → `ENGRAM_*` env var → compiled default.
 
 The auth token is **not** read from an environment variable. It comes from the inline `token:` field or the token store file.
+
+---
+
+## Policy-bound LLM bridge (opt-in)
+
+Hermes deployments that authenticate through host-managed providers (OAuth
+profiles, portal subscriptions) can let a local Remnic daemon use those
+provider policies for **optional background generation** without copying any
+provider credential into Remnic configuration.
+
+When enabled, the plugin starts a tiny HTTP server inside the Hermes process
+that exposes exactly one OpenAI-compatible endpoint on loopback:
+
+```text
+POST /v1/chat/completions   # chat completions (non-streaming)
+GET  /healthz               # supervision health check
+```
+
+Completion is delegated to Hermes' installed `PluginLlm` runtime
+(`agent.plugin_llm.PluginLlm`, the host facade over
+`agent.auxiliary_client.call_llm`). Memory-provider discovery uses a
+collector that can register providers but does not carry that facade;
+the plugin resolves `PluginLlm` from the live Hermes runtime and defers
+listener start until it is importable. The host keeps owning provider
+routing, auth resolution, timeouts, and fallback; the plugin never sees
+a raw API key or OAuth token.
+
+### Security properties
+
+- **Loopback-only listener.** The bind host is validated with the same
+  classifier the daemon client uses. IPv4 and IPv6 loopback literals and
+  `localhost` are accepted; wildcard (`0.0.0.0`, `::`) and non-loopback
+  binds are rejected before any socket is created.
+- **Server-owned model policy.** A request's `model`, `provider`, or any
+  other routing field is discarded at the door: the delegate receives only
+  the message list, and the response reports the model the host actually
+  used. There is no `model`/`provider` key in `llm_bridge` config either —
+  setting one fails registration loudly instead of being honored.
+- **Generated loopback bearer.** The optional `client_config_path` output
+  describes the endpoint, limits, and a generated random token. It is
+  written with `0600` permissions. It never copies a host provider
+  credential. Every request, including `/healthz`, is checked with a
+  constant-time compare. Local callers without the bearer are denied.
+  The token is never logged. Generating the file requires a fixed
+  `port` (an ephemeral port would move the endpoint on every restart),
+  and the bearer is reused across restarts, so a daemon that read the
+  file once keeps working across Hermes restarts.
+- **Bounded and quiet.** Bodies above `max_body_bytes` get `413`;
+  queue wait and delegate work share one `timeout_seconds` deadline.
+  A depleted queue budget starts no delegate. Request bodies are never
+  logged, and error responses are fixed strings — no exception text, no
+  echoes.
+
+### Daemon configuration
+
+Point the Remnic daemon at the generated client JSON by setting
+`llmBridgeClientConfigPath` to the same path as Hermes
+`remnic.llm_bridge.client_config_path`. `parseConfig` reads `endpoint`
+and `token` into `backgroundGeneration` only. Extraction, day summary,
+dependency revalidation, and embeddings keep using `openaiBaseUrl` and
+are unchanged. Hourly summarizer is the background-generation consumer.
+
+```json
+{
+  "llmBridgeClientConfigPath": "/path/to/llm-bridge-client.json"
+}
+```
+
+Equivalent explicit fields:
+
+```json
+{
+  "backgroundGeneration": {
+    "endpoint": "http://127.0.0.1:8765/v1/chat/completions",
+    "token": "<generated-loopback-bearer>",
+    "timeoutSeconds": 120
+  }
+}
+```
+
+Do not assign the bridge to `openaiBaseUrl`. That shared base URL is
+used for `/v1/responses` and `/v1/embeddings`, which this listener does
+not serve. The `model` value a client sends is ignored by the bridge —
+it exists only to satisfy OpenAI-shaped callers.
+
+### Supervision
+
+The bridge runs on daemon threads inside the Hermes process and lives and
+dies with it — there is no separate service to supervise. Supervisors should
+watch the Hermes process itself and may probe `GET /healthz` with the
+generated bearer from the client file. The bridge is **fail-open**: invalid
+config, a missing Hermes `PluginLlm` runtime, or a failed bind logs a
+warning and leaves plugin registration, recall, and observation fully
+working.
+
+### Background-only: never on the recall path
+
+Memory recall and observation always go directly from the provider to the
+Remnic daemon and never route through the bridge. The bridge exists solely
+for optional background generation (for example, daemon-side summaries). If
+the bridge is down, disabled, or slow, recall quality and turn latency are
+unaffected.
 
 ---
 

@@ -119,6 +119,27 @@ test("stripCitationForTemplate: custom template — strips custom citation", () 
   assert.equal(result, body);
 });
 
+// #2330 round N+8 (P2-C): a body tagged under the DEFAULT format can later
+// receive a CUSTOM template marker after a config change. Canonicalization
+// must strip BOTH recognized forms in either order — the default fast path
+// alone left the custom marker inside the hash input.
+test("stripCitationForTemplate: mixed default + custom markers — strips both, in either order", () => {
+  const body = "Cache TTL is 30 seconds.";
+  const template = "[src:{agent}@{date}]";
+  const defaultCited = `[Source: agent=planner, session=main, ts=2026-04-10T00:00:00Z]`;
+  const customCited = `[src:scout@2026-04-11]`;
+  assert.equal(
+    stripCitationForTemplate(`${body} ${defaultCited} ${customCited}`, template),
+    body,
+    "default marker first: both forms stripped",
+  );
+  assert.equal(
+    stripCitationForTemplate(`${body} ${customCited} ${defaultCited}`, template),
+    body,
+    "custom marker first: both forms stripped",
+  );
+});
+
 test("stripCitationForTemplate: all-placeholder template (no literal anchors) — text returned unchanged", () => {
   // A template with no literal prefix, suffix, or separator between
   // placeholders cannot produce a reliable matcher. hasCitationForTemplate

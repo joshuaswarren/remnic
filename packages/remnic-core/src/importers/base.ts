@@ -483,3 +483,48 @@ export async function defaultWriteMemoriesToOrchestrator(
   await target.ingestBulkImportBatch(turns);
   return { memoriesIngested: memories.length };
 }
+
+// ---------------------------------------------------------------------------
+// File-importer factory (issue #2794)
+// ---------------------------------------------------------------------------
+
+/** Parse args `defineFileImporterAdapter` forwards — the keys file adapters use. */
+export interface FileImporterParseArgs {
+  strict?: boolean;
+  filePath?: string;
+}
+
+/** Per-package config consumed by `defineFileImporterAdapter`. */
+export interface FileImporterDefinition<Parsed> {
+  name: string;
+  sourceLabel: string;
+  /** Decode the raw export file. Receives only `strict` / `filePath`. */
+  parse(input: unknown, options: FileImporterParseArgs): Parsed | Promise<Parsed>;
+  /** Flatten the parsed export into `ImportedMemory[]` with provenance. */
+  transform(
+    parsed: Parsed,
+    options: ImporterTransformOptions | undefined,
+  ): ImportedMemory[] | Promise<ImportedMemory[]>;
+}
+
+/**
+ * Build the standard file-importer `ImporterAdapter`: parse with the
+ * `strict`/`filePath` spread, a package-specific `transform`, and `writeTo`
+ * delegating to `defaultWriteMemoriesToOrchestrator` (issue #2794).
+ */
+export function defineFileImporterAdapter<Parsed>(
+  definition: FileImporterDefinition<Parsed>,
+): ImporterAdapter<Parsed> {
+  return {
+    name: definition.name,
+    sourceLabel: definition.sourceLabel,
+    parse(input, options) {
+      return definition.parse(input, {
+        ...(options?.strict !== undefined ? { strict: options.strict } : {}),
+        ...(options?.filePath !== undefined ? { filePath: options.filePath } : {}),
+      });
+    },
+    transform: (parsed, options) => definition.transform(parsed, options),
+    writeTo: defaultWriteMemoriesToOrchestrator,
+  };
+}

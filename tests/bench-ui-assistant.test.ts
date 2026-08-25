@@ -16,6 +16,12 @@ import {
   type BenchResultSummaryPayload,
 } from "../packages/bench-ui/src/bench-data.js";
 import { loadBenchResultSummaries } from "../packages/bench-ui/src/results.js";
+import type { MetricAggregate } from "@remnic/bench";
+import { validResultFixture } from "../packages/bench-ui/src/testing/result-fixture.js";
+
+function completeAggregate(mean: number): MetricAggregate {
+  return { mean, median: mean, stdDev: 0, min: mean, max: mean };
+}
 
 function buildAssistantSummary(overrides: Partial<BenchResultSummary> = {}): BenchResultSummary {
   const base: BenchResultSummary = {
@@ -249,82 +255,67 @@ test("bench UI loader surfaces assistant rubric metadata and per-seed details", 
   const resultsDir = await mkdtemp(
     path.join(os.tmpdir(), "remnic-bench-ui-assistant-"),
   );
-  await writeFile(
-    path.join(resultsDir, "assistant.json"),
-    JSON.stringify(
+  const artifact = validResultFixture("assistant-run-1");
+  artifact.meta.benchmark = "assistant-morning-brief";
+  artifact.meta.timestamp = "2026-04-18T10:00:00.000Z";
+  artifact.config.remnicConfig = {
+    assistantRubricId: "assistant-rubric-v1",
+    assistantRubricSha256: "deadbeef".repeat(8),
+    assistantRunId: "assistant-morning-brief-2026-04-18T10-00-00-000Z",
+  };
+  artifact.cost.totalLatencyMs = 100;
+  artifact.cost.meanQueryLatencyMs = 50;
+  artifact.results = {
+    tasks: [
       {
-        meta: {
-          id: "assistant-run-1",
-          benchmark: "assistant-morning-brief",
-          benchmarkTier: "remnic",
-          timestamp: "2026-04-18T10:00:00.000Z",
-          mode: "full",
+        taskId: "morning-brief.monday-priorities",
+        question: "Morning brief",
+        expected: "<rubric-judged>",
+        actual: "synthesized",
+        scores: {
+          identity_accuracy: 4,
+          calibration: 4.5,
+          overall: 4.2,
         },
-        config: {
-          remnicConfig: {
-            assistantRubricId: "assistant-rubric-v1",
-            assistantRubricSha256:
-              "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-            assistantRunId: "assistant-morning-brief-2026-04-18T10-00-00-000Z",
-          },
-        },
-        cost: { totalLatencyMs: 100, meanQueryLatencyMs: 50 },
-        results: {
-          aggregates: {
-            identity_accuracy: { mean: 4 },
-            calibration: { mean: 4.5 },
-            overall: { mean: 4.2 },
-          },
-          statistics: {
-            confidenceIntervals: {
-              identity_accuracy: { lower: 3.8, upper: 4.2, level: 0.95 },
-              calibration: { lower: 4.3, upper: 4.7, level: 0.95 },
-              overall: { lower: 4.0, upper: 4.4, level: 0.95 },
-            },
-            bootstrapSamples: 1000,
-          },
-          tasks: [
+        latencyMs: 120,
+        tokens: { input: 0, output: 0 },
+        details: {
+          focus: "priority_surfacing",
+          rubricId: "assistant-rubric-v1",
+          rubricSha256: "deadbeef".repeat(8),
+          perSeedScores: [
             {
-              taskId: "morning-brief.monday-priorities",
-              question: "Morning brief",
-              expected: "<rubric-judged>",
-              actual: "synthesized",
+              seed: 1,
               scores: {
                 identity_accuracy: 4,
-                calibration: 4.5,
-                overall: 4.2,
+                stance_coherence: 3,
+                novelty: 4,
+                calibration: 5,
               },
+              parseOk: true,
+              notes: "seed 1",
               latencyMs: 120,
-              tokens: { input: 0, output: 0 },
-              details: {
-                focus: "priority_surfacing",
-                rubricId: "assistant-rubric-v1",
-                rubricSha256:
-                  "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-                perSeedScores: [
-                  {
-                    seed: 1,
-                    scores: {
-                      identity_accuracy: 4,
-                      stance_coherence: 3,
-                      novelty: 4,
-                      calibration: 5,
-                    },
-                    parseOk: true,
-                    notes: "seed 1",
-                    latencyMs: 120,
-                  },
-                ],
-                judgeParseFailures: 0,
-              },
             },
           ],
+          judgeParseFailures: 0,
         },
       },
-      null,
-      2,
-    ),
-  );
+    ],
+    aggregates: {
+      identity_accuracy: completeAggregate(4),
+      calibration: completeAggregate(4.5),
+      overall: completeAggregate(4.2),
+    },
+    statistics: {
+      bootstrapSamples: 1000,
+      confidenceIntervals: {
+        identity_accuracy: { lower: 3.8, upper: 4.2, level: 0.95 },
+        calibration: { lower: 4.3, upper: 4.7, level: 0.95 },
+        overall: { lower: 4.0, upper: 4.4, level: 0.95 },
+      },
+    },
+  };
+  await writeFile(path.join(resultsDir, "assistant.json"), JSON.stringify(artifact, null, 2));
 
   const payload = await loadBenchResultSummaries(resultsDir);
   assert.equal(payload.summaries.length, 1);

@@ -64,6 +64,29 @@ export function getWearableConnector(
   return registrations.get(key);
 }
 
+/**
+ * Register a connector package with this registry immediately (idempotent)
+ * and return its `ensure*Registered()` companion.
+ *
+ * Connector packages call this once at module scope with their registration
+ * record, so importing the module registers the connector as a side effect.
+ * The returned companion re-checks the live registry on every call — so it
+ * also re-registers after a test-only registry reset — and returns false
+ * while the connector stays registered. `registerWearableConnector` throws
+ * on duplicate ids, which is why the registry is checked before each call.
+ */
+export function selfRegisterWearableConnector(
+  registration: WearableConnectorRegistration,
+): () => boolean {
+  const ensureRegistered = (): boolean => {
+    if (getWearableConnector(registration.id) !== undefined) return false;
+    registerWearableConnector(registration);
+    return true;
+  };
+  ensureRegistered();
+  return ensureRegistered;
+}
+
 export function listWearableConnectors(): string[] {
   return [...registrations.keys()];
 }

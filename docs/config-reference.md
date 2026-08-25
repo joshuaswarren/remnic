@@ -10,6 +10,11 @@ Use `openclaw engram config-review` for opinionated tuning recommendations and `
 |---------|---------|-------------|
 | `openaiApiKey` | `(env fallback in plugin mode)` | Optional OpenAI API key, `${ENV_VAR}` reference, or `false` to disable direct OpenAI entirely. When `modelSource` is `gateway`, Remnic does not inherit `OPENAI_API_KEY`; gateway provider auth is used instead. |
 | `openaiBaseUrl` | `(env fallback)` | Override OpenAI API base URL (e.g. for proxies or compatible endpoints); falls back to `OPENAI_BASE_URL` env var |
+| `llmBridgeClientConfigPath` | (unset) | Path to the Hermes loopback-bridge client JSON. Parsed into `backgroundGeneration` only. Never copied onto `openaiBaseUrl`. |
+| `backgroundGeneration.endpoint` | (unset) | Chat-completions URL for the Hermes loopback bridge. Consumed only by hourly background generation. |
+| `backgroundGeneration.token` | (unset) | Loopback bearer from the generated client file. |
+| `backgroundGeneration.timeoutSeconds` | `120` | Absolute deadline for one background-generation request. |
+| `backgroundGeneration.timeout_seconds` | `120` | Snake-case alias of `timeoutSeconds` from the generated Hermes client file. |
 | `model` | `gpt-5.5` | OpenAI model for extraction and consolidation |
 | `reasoningEffort` | `low` | `none`, `low`, `medium`, `high` |
 | `memoryDir` | `~/.openclaw/workspace/memory/local` | Memory storage root |
@@ -54,9 +59,14 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.sources.baseUrl` | `(required)` | HTTP or HTTPS URL of the local capture daemon; must target a loopback host (`localhost`, `127.0.0.0/8`, or `::1`) since the bearer token travels in the request. |
 | `activity.sources.token` | `(unset)` | Literal bearer token sent to a trusted local capture daemon over loopback. This parser does not resolve secret references or `${ENV_VAR}` placeholders; omit the field when the daemon needs no auth. |
 | `activity.timeline.enabled` | `false` | Master gate for timeline-card derivation (issue #2049). When false, no timeline cards are built or exposed. |
-| `activity.timeline.journal.enabled` | `false` | Master gate for daily journal seed/show (issue #1984). Journal files live at `journal/<YYYY-MM-DD>.md` and are excluded from generic recall. |
-| `activity.timeline.journal.source` | `"file"` | Where journal text is read from (issue #1987): `"file"` reads `journal/<YYYY-MM-DD>.md`; `"vault"` reads a section of the daily vault note named by `heading`. |
-| `activity.timeline.journal.heading` | `(unset)` | Vault section heading required when `source` is `"vault"`; trimmed on parse, rejected when empty or whitespace-only. Ignored (not stored) in `"file"` mode. |
+| `activity.timeline.analysis.enabled` | `false` | Independent gate for optional AI analysis over deterministic timeline cards (issue #2050). Gated separately from capture, timeline derivation, and memory creation: disabled makes zero provider calls and writes zero analysis artifacts. |
+| `activity.timeline.analysis.provider` | `(required when enabled)` | Explicit provider id: `"local"` routes to the local LLM client; any other identifier routes to the configured remote provider registry pinned to exactly this provider (no chain fallback). Single provider segment only (letters, digits, `._:-`; no `/`); at most 120 characters. An invalid explicit provider fails, never silently defaults. |
+| `activity.timeline.analysis.model` | `(required when enabled)` | Model id (letters, digits, `._:-/`); at most 120 characters. May include `/`. |
+| `activity.timeline.analysis.timeoutMs` | `15000` | Per-request timeout in ms. Integer 1000..120000. |
+| `activity.timeline.analysis.preferences` | `[]` | Up to 16 free-form user preference strings (≤200 chars each) passed to the analysis prompt. Never secrets: prompt payloads are evidence-only — no screenshots, audio, OCR text, keystrokes, clipboard contents, or media are ever sent. |
+| `activity.timeline.journal.enabled` | `false` | Master gate for every `remnic journal` action — show, edit-path, seed, and extract all refuse before any journal read when false (issues #1984, #1987). Journal files live at `journal/<YYYY-MM-DD>.md` and are excluded from generic recall. |
+| `activity.timeline.journal.source` | `"memoryDir"` | Where journal text is read from (issue #1987): `"memoryDir"` reads `journal/<YYYY-MM-DD>.md`; `"vault"` reads the `activity.timeline.vault.readback.journalSection` section of the daily vault note. `"vault"` requires `activity.timeline.vault.enabled: true` and a resolvable `dailyNotePath` — parse fails naming every missing prerequisite. Legacy `"file"` is accepted as an alias of `"memoryDir"` and emits a deprecation warning. |
+| `activity.timeline.journal.extractionMode` | `"off"` | Review-only journal extraction (issue #1987): `"review"` runs a pass over changed journal text producing `pending_review` candidates only (tags `journal`, `journal-day:<date>`; `valid_at` pinned to the day; `structuredAttributes.journalSource` records the source). No auto mode by design. |
 | `activity.timeline.qa.enabled` | `false` | Gate for `remnic timeline range|search` (issue #1983). |
 | `activity.timeline.qa.maxRangeDays` | `31` | Maximum `timeline_range` span in days. Integer 1..366. |
 | `activity.timeline.vault.enabled` | `false` | Master gate for the markdown-vault publisher (issue #1985). When false, no vault reads or writes ever occur. |
@@ -83,6 +93,8 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.timeline.vault.wikilinks.placesFolder` | `"Places"` | Vault folder for place wikilink targets. |
 | `activity.timeline.vault.properties.mode` | `"off"` | `"off"` writes no properties; `"frontmatter"` adds/updates only prefix-owned keys via targeted line edits (key order and formatting of everything else preserved byte-exactly); `"dataview-inline"` appends `key:: value` lines inside the managed region. |
 | `activity.timeline.vault.properties.prefix` | `"remnic_"` | Property key prefix (e.g. `remnic_focus_minutes`). |
+| `activity.timeline.vault.readback.journalSection` | `""` | Heading whose section of the daily note is the user's journal (issue #1987). Arbitrary user-chosen text — any language, emoji, or punctuation — matched exactly. Required non-empty when `activity.timeline.journal.source` is `"vault"`. Legacy `activity.timeline.journal.heading` is copied here when this key is empty and ignored (with a deprecation warning) when this key is set. |
+| `activity.timeline.journal.heading` | _(unset)_ | Deprecated alias of `activity.timeline.vault.readback.journalSection`. Used only when the new key is absent; the new key wins if both are present. |
 | `activity.timeline.vault.autoPublish` | `true` | Publish after each successful artifact generation, once those hooks land. The `remnic timeline publish` CLI is always available. |
 
 ### Timeline cards (issue #2049)
@@ -380,6 +392,7 @@ QMD, hot facts, or default recall. See [External wiki search](external-wikis.md)
 | `recallDirectAnswerImportanceFloor` | `0.7` | Minimum calibrated importance score required for direct-answer eligibility. Set to `0` to disable the gate. `verificationState: "user_confirmed"` bypasses this check. |
 | `recallDirectAnswerAmbiguityMargin` | `0.15` | If the second-best candidate scores within this ratio of the top, direct-answer defers to the hybrid tier. |
 | `recallDirectAnswerEligibleTaxonomyBuckets` | `["decisions","principles","conventions","runbooks","entities"]` | Taxonomy category IDs eligible for direct-answer routing. Set to `[]` to disable the gate without unsetting `enabled`. |
+| `recallStateViews` | `false` | Opt in to state-aware recall views (issue #1952). On change-intent queries ("when did", "used to", "switched", "changed" and conjugations), recall admits a superseded memory when its successor is also in the candidate set, labels rows `current`/`historical`/`transition`, and renders historical rows with a `[superseded <date> by <id>]` prefix. A superseded row never renders without its successor. Exact `false`/`0`/`"false"` disable; non-change queries and the disabled flag keep output byte-identical. The MCP `recall` tool also accepts a per-call `stateView` boolean that ORs with this flag. #2859 pair semantics: pairs reconcile before the user cap/MMR (orphan removal never underfills; a predecessor admitted with its successor counts as ONE evidence packet toward the cap), reverse chains derive from the successor `supersedes` back-pointer, chain identities are namespace-qualified (identical ids across namespaces never cross-anchor), and asOf labels use the temporal validity boundary (`invalidAt`, `supersededAt` only as legacy fallback), not the write-time stamp. |
 | `hotMemoriesCacheEnabled` | `true` | Serve `readAllMemories()` from a version-keyed in-process cache of the full parsed corpus (issue #1902), eliminating repeated full-corpus disk scans on the recall hot path. Cross-process coherence is preserved by an on-disk corpus version sentinel; single-file writes patch the cache in place. Set `false` to force disk scans on memory-constrained hosts (behavior then matches the pre-#1902 scan path). Version invalidation is the primary coherence mechanism; `hotMemoriesCacheTtlMs` bounds staleness from external edits. |
 | `hotMemoriesCacheTtlMs` | `60000` | Max age (ms) a hot-cache entry is served before a fresh disk scan (issue #1902). The version sentinel gives immediate coherence for writers that go through StorageManager or the corpus-bump helper, but direct filesystem edits (manual, git checkout, external tools) don't bump it; this TTL bounds how long such an edit stays stale. Set `0` to disable the TTL (version invalidation only; max performance for pure-daemon deployments with no external edits). |
 
@@ -489,6 +502,13 @@ Note: `recallPipeline` controls ordering and can explicitly disable sections via
 | `extractionScopeClassificationEnabled` | `true` | Classify extracted facts as `"global"` or `"project"` scope. Global facts are promoted to the shared root namespace so they are visible across all projects. |
 
 See [Coding agent mode](coding-agent.md) for full details on project detection, `cwd` auto-resolution, `projectTag` for non-git sessions, and cross-project knowledge sharing.
+
+## Span-Mode Extraction
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `extraction.spanMode` | `"off"` | `"off"` (default) — extraction generates full content restatements as before. `"shadow"` — request span offsets AND content; materialize + compare and log agreement telemetry, but persist the generated content unchanged (zero behavior change; use to evaluate on live traffic). `"on"` — persist materialized frame+span content (verbatim source slice plus a ≤15-word frame), falling back per fact to the generated frame when a span fails validation. Spans are validated against a hash of the exact per-turn text the model saw (offset drift is rejected), materialized before sanitize/grounding/dedup, and never persisted as offsets. Unrecognized values are rejected at config parse (bench-gated feature, issue #2333). |
+
 ## Coding Knowledge
 
 | Setting | Default | Description |
@@ -803,6 +823,61 @@ Notes:
 - It **only applies in `gateway` mode.** In `plugin` mode it is ignored and Remnic logs a startup warning. Plugin-mode users who hit non-OpenAI model-ID failures at the direct client should switch to `modelSource: "gateway"` and use `taskModelChain` (see issue #1365).
 - A present-but-malformed value (missing `primary`, wrong types) is rejected at config-parse time rather than silently ignored.
 
+#### Codex subscription provider (`codex-subscription`)
+
+Built-in provider (issue #2784) that runs extraction and consolidation LLM
+calls through the `codex` CLI, authenticated by your Codex subscription
+login — no OpenAI API key and no codex-openai-proxy. Reference it in any
+gateway-mode model chain:
+
+```jsonc
+{
+  "modelSource": "gateway",
+  "taskModelChain": {
+    "primary": "codex-subscription/gpt-5.5"
+  }
+}
+```
+
+Behavior:
+
+- Credentials come exclusively from `codex login` (ChatGPT account). The
+  provider never reads, accepts, or logs tokens; an `apiKey` in the provider
+  config is rejected with a pointer to `codex login`.
+- Requests run sandboxed and ephemeral (`codex exec` with tools, hooks,
+  plugins, memories, and web search disabled), so extraction cannot touch
+  your machine and transcript text cannot cause browsing.
+- Ambient `OPENAI_API_KEY` / `OPENAI_BASE_URL` are stripped from the child
+  environment so the subscription login — not metered API auth — is used.
+- Optional provider overrides via `models.providers["codex-subscription"]`:
+  `executable` (or `REMNIC_CODEX_EXECUTABLE` env), `reasoningEffort`
+  (`low` | `medium` | `high` | `xhigh`, default `medium`), and
+  `retryOptions.timeoutMs` (positive integer; the request deadline when the
+  caller does not set one — an explicit call timeout always wins). The
+  deadline covers the login precheck and the exec subprocess as one budget,
+  including waits on a login check another request already started: each
+  request times out on its own budget without cancelling the shared check.
+- Not logged in → the provider fails fast with `codex login` guidance; an
+  expired or revoked session fails with re-auth guidance. Timeouts surface
+  as `TimeoutError` and survive the model chain (a sole/last
+  `codex-subscription` model propagates the typed error instead of an empty
+  result); caller cancellations keep their original abort reason. A cached
+  login is revalidated whenever the Codex auth store changes on disk, so a
+  later API-key login cannot be masked by an earlier ChatGPT cache entry.
+- Relative `HOME`/`CODEX_HOME` values resolve against the daemon's working
+  directory before either subprocess starts (same rule as the executable
+  path), so the login precheck and the exec child always see the same auth
+  home. Detached Codex child process groups are tracked by the owning
+  runtime's runner. The owning server or plugin runtime invokes
+  `beginCodexSubscriptionShutdown` on its own runner at shutdown,
+  so stopping one Remnic instance cannot kill another instance's in-flight
+  subscription requests. A SIGKILL timer starts before orchestrator drain.
+  The provider does not install process signal
+  listeners or call `process.exit`.
+  A host or benchmark run that registers its own `codex-cli` transport
+  always wins; the core default process runner does not override a
+  runtime-owned runner.
+
 ### Setup
 
 1. **Define providers** in `agents/main/agent/models.json` with the endpoints and credentials you want Remnic to use (e.g., `fireworks`, `zai`, `anthropic`, `lmstudio`).
@@ -878,6 +953,7 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `localLlmUrl` | `http://localhost:1234/v1` | Base URL for endpoint |
 | `localLlmModel` | `local-model` | Model ID |
 | `localLlmApiKey` | `(unset)` | Optional API key |
+| `localLlmApiKeyEnv` | `(unset)` | Optional environment-variable name for a local API key; if it is unset, local auth remains unset so read-only CLI commands can load config |
 | `localLlmHeaders` | `(unset)` | Extra HTTP headers |
 | `localLlmAuthHeader` | `true` | Send `Authorization: Bearer` header when key set |
 | `localLlmFallback` | `true` | Fall back to gateway model chain on failure |
@@ -1139,7 +1215,7 @@ See [shared-context.md](shared-context.md).
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `sharedContextAllowBindingAuthority` | `false` | Allow shared-context items to carry binding authority. In-process writers must still request it explicitly; the MCP and OpenClaw tool surfaces cannot request it yet, so tool writes stay `informational` |
-| `sharedContextEnabled` | `false` | Enable shared cross-agent context |
+| `sharedContextEnabled` | `false` | Enable shared cross-agent context. Accepts boolean and CLI string forms (`true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off`); a deployment already carrying the string `"true"` (previously ignored by the strict parser) now activates on upgrade. An unrecognized value warns and stays off — malformed input never silently enables |
 | `sharedContextDir` | `(unset)` | Directory for shared context files |
 | `sharedContextMaxInjectChars` | `4000` | Max chars injected from shared context |
 | `sharedCrossSignalSemanticEnabled` | `false` | Enable optional semantic overlap enhancement during daily curation |
@@ -1163,6 +1239,12 @@ See [compounding.md](compounding.md).
 | `semanticDedupEnabled` | `true` | Write-time semantic similarity guard (issue #373) — embeds each candidate fact, queries the top-K nearest neighbors, and skips the write when cosine similarity ≥ `semanticDedupThreshold`. Fails open when the embedding backend is unavailable. |
 | `semanticDedupThreshold` | `0.92` | Cosine similarity threshold in `[0, 1]` above which a candidate fact is treated as a near-duplicate and skipped. |
 | `semanticDedupCandidates` | `5` | Number of nearest-neighbor candidates to compare against during the write-time semantic dedup check. |
+| `semanticMerge` | — | Must be an object when present; a present non-object value (`semanticMerge: true`, `"enabled"`, an array, `null`, `undefined`) is rejected at parse time. Only an absent block falls back to the defaults below. Presence is own-property presence throughout this block: a key inherited through the prototype chain never applies, and a present-but-`undefined` value is rejected rather than treated as absent. |
+| `semanticMerge.enabled` | `false` | Judge-mediated merge-on-write (issue #2330). Master gate; with it off there is no lookup and no judge call — byte-identical behavior to before the feature. |
+| `semanticMerge.minSimilarity` | `0.8` | Lower bound of the merge band `[minSimilarity, semanticDedupThreshold)`. Must be **strictly below** `semanticDedupThreshold` (which owns the near-duplicate skip path above it); an equal or higher value is rejected at config parse time whenever merging is enabled or this key is set explicitly. A pre-existing config that lowered `semanticDedupThreshold` to at or below `0.8` and never configured `semanticMerge` keeps starting — the disabled feature performs no band lookup. |
+| `semanticMerge.maxCandidates` | `3` | Maximum in-band neighbors offered to the merge judge. Must be an **integer ≥ 0** — non-integer values (`0.5`, `3.7`) are rejected at parse time rather than floored, and a **present-but-unparseable** value (`"abc"`, an object, `null`, `undefined`, `NaN`, `Infinity`) is rejected too instead of silently falling back to the default: only an absent key means `3`. **Set to `0` to disable merging entirely** — the short-circuit happens before any embedding lookup. |
+| `semanticMerge.categories` | `["fact","preference","decision","relationship","skill"]` | Memory categories eligible for merging; must be an array of mergeable category names — every entry must be one of `fact, preference, entity, decision, relationship, principle, commitment, skill, rule`. Anything else (a malformed array, an unknown entry such as `facts`, or an episodic/immutable category) is rejected at parse time with the valid list, never silently replaced with the defaults — an unknown entry would silently disable merging for every category because no extracted memory can match it. The episodic and immutable categories (procedure, reasoning trace, moment, correction) never merge regardless of this list and cannot be listed. |
+| `semanticMerge.shadowMode` | `false` | Decision-only rollout mode: run the lookup and judge, log the would-merge verdict, then always create. Never mutates an existing memory. |
 | `noveltyGateEnabled` | `false` | Write-path embedding-density novelty gate (issue #1953). Off = unchanged persist path. |
 | `noveltyAddThreshold` | `0.55` | Novelty score ≥ this value is ADD (skip semantic/LLM dedup). |
 | `noveltyNoopThreshold` | `0.15` | Novelty score ≤ this value is NOOP (drop; do not write contentHashIndex). Between the two thresholds is UNCERTAIN. |
@@ -1189,6 +1271,212 @@ miss and before any storage work:
 The guard shares its decision function with the CLI `remnic dedup` tooling
 via `packages/remnic-core/src/dedup/semantic.ts`, so there is a single source
 of truth for similarity logic across read-time and write-time code paths.
+
+### Judge-mediated merge-on-write (issue #2330)
+
+Semantic dedup only ever *rejects*: a paraphrase below `semanticDedupThreshold`
+is written as a brand-new fragment, so near-duplicate variants accumulate in the
+`[0.80, 0.92)` band. `semanticMerge` closes that gap by turning an in-band match
+into a create-or-update decision:
+
+1. Query the same namespace-scoped lookup semantic dedup uses, keeping only
+   neighbors inside `[minSimilarity, semanticDedupThreshold)` that share the
+   candidate's category, carry the identical provenance connector — or are
+   unscoped when the fact itself is unscoped (stricter than the novelty and
+   near-duplicate gates, which keep the broad unscoped neighborhood, because
+   a merge rewrites the neighbor's body: an unscoped merge into a
+   connector-owned target would rewrite it while its `sourceConnector`
+   frontmatter kept naming that connector) — and are still `active`.
+2. Ask an LLM merge judge (routed like the extraction judge — local model first,
+   then the gateway fallback chain) whether the pair describes the same
+   underlying concept. `contradicts` and `create` verdicts fall through to the
+   normal write, leaving contradiction detection and temporal supersession
+   untouched.
+3. On a `merge` verdict, validate the returned target id against the candidate
+   snapshot the target as a page version with trigger `semantic-merge`
+   — staged WITHOUT pruning the version history; the cap-based prune runs
+   only after the COMPLETE content-and-metadata transaction commits (both
+   compare-and-swaps), so an attempt that loses either CAS race — or whose
+   frontmatter patch is rejected and rolled back — never discards the
+   oldest rollback point —
+   then update the memory **in place** (same id and path) with a
+   compare-and-swap against the exact body the judge was shown, then stamp
+   `derived_via: merge`, bump `reinforcement_count`, restamp `contentHash`
+   from the same canonical form the normal write path hashes — the sanitized
+   RAW body with the configured citation form stripped off the judge-composed
+   merged text first, so a merged record's identity equals the ordinary write
+   of the equivalent raw fact and exact dedup never fragments — and append
+   the incoming fact's provenance `sources` through
+   the conditional frontmatter API — a second compare-and-swap, so provenance
+   can only ever land on the merged body this run committed — resync the
+   fact-content hash index, reindex, and, when verbatim artifacts are enabled
+   and the fact's category and confidence qualify, store the incoming
+   extraction's text as a verbatim artifact anchored to the merged target —
+   the same anchor the normal write would have stored; this artifact write is
+   the merge's FINAL durable effect, so a failing artifact write is logged
+   and skipped (the committed target stays fully discoverable) — and commits
+   merged body WITH the incoming extraction's citation marker appended
+   (lifted from the same cited string the artifact stores, so memory and
+   artifact share one timestamp), so incoming claims stay attributed even
+   when the judge's merged text embeds the target's older citation; quoting
+   or copying the combined body carries both attributions. A lower incoming
+   confidence downgrades the merged record to `min(incoming, target)`
+   (restamped with the tier that score maps to; an unreadable value
+   bypasses the merge), so a low-confidence extraction can never leave a
+   merged record — or a copy promoted from it — scoring above what the
+   create path would have stored for that fact alone.
+   When intent routing is on, the same patch restamps
+   `intentGoal`/`intentActionType`/`intentEntityTypes` by recomputing them
+   from the committed merged body — the record's own category and tags plus
+   the RAW pre-citation body, the same `inferIntentFromText` call the normal
+   write runs — so the record's intent routing always describes the body it
+   holds instead of the target's stale pre-merge values (an empty entity-type
+   list clears a stale field, exactly as a fresh write would omit it; with
+   routing off the fields are untouched). A successful merge also enqueues
+   the surviving target — committed merged body as content — into the batch's
+   harmonic construction pass, so a merge-only extraction still derives its
+   episode/abstraction nodes and cue anchors; two facts merging into the
+   same target in one batch coalesce to a single entry (the latest committed
+   body replaces the earlier cumulative snapshot, cue anchors union across
+   merges). The returned `persistedIds` stay new-fragment only, while the
+   surviving target joins the batch's internal temporal/tag index refresh —
+   resolved through the cold-aware id lookup when the hot-tier scan misses
+   it, so a `cold/` target's row refreshes too — so event-order queries see
+   the merged tokens without a full corpus rebuild.
+   When multi-graph memory is enabled, a successful merge also builds the
+   surviving target's graph edges — entity, time, and causal — through the
+   same `buildGraphEdge` call the create path runs, derived from the
+   re-read committed record (its category, entity ref, relative path, and
+   raw pre-citation merged body — the cold-aware committed path, never a
+   hot-only path-map fallback), replacing the target's prior generated
+   edges in EVERY enabled graph type — entity from-side, time and causal
+   inbound — instead of re-appending them (one shared routine; if the
+   replacement build fails, the removed edges are restored, so failure
+   leaves either the old or the new complete set; the whole
+   remove-and-rebuild is revision-guarded, so a writer committing a newer
+   body mid-rebuild aborts the stale install instead of clobbering the
+   newer merge's edges), and enrolling the target
+   at the END of the batch's thread episode list — deduped first when
+   already present, so the merge is the thread's latest event — so later
+   facts in the same extraction chain time/causal adjacency through it.
+   The target is ALSO persisted in the thread's durable episode-set file
+   MOVE-TO-END — a target already earlier in the durable list moves to the
+   tail, matching the batch-local ordering — so a target that entered the
+   thread only through a merge, or merged again later, is still at the tail
+   when the next extraction reloads the thread — without widening the public
+   `persistedIds` contract, which stays new-fragment-only. All of it is
+   fail-open like the create path's graph block; and a `preference`-category
+   merge records its
+   `preference_affinity` event in the behavior-signal ledger, so
+   graph-mode recall and runtime-policy learning observe claims accepted
+   through a merge.
+4. A merge carries only content, category, sources, and connector. A fact
+   that also carries extraction metadata the merge cannot preserve —
+   structured attributes, an entity ref, bi-temporal bounds, effective
+   validity bounds the incoming fact does not carry identically (the merged
+   body inherits the target's `valid_at`/`invalid_at`, so a target with
+   `invalid_at` never merges and a target with `valid_at` merges only with an
+   incoming fact carrying the same bound — otherwise a fresh unbounded claim
+   would inherit an expired bound and drop out of normal recall the moment it
+   merges), tags the target lacks, a higher importance, stronger provenance, a
+   subject classification
+   whose effective value (absent = the least-privileged `user`, the same
+   default the subject guard applies) differs from the target's effective
+   subject (so an unclassified fact extracted with classification disabled is
+   never merged into an `agent`-labeled memory that reinforcement could then
+   promote), a computed episode/note `memoryKind` that differs from the
+   target's committed kind (the merged record keeps the target's kind — the
+   classification that drives episode-cache membership and the episode-only
+   verification and promotion paths — so a time-specific fact is never filed
+   as a note and a stable note never rides the episode-only paths; a fact
+   extracted with classification disabled carries no kind and still merges), a
+   `toolScoped: true` classification the target lacks (a
+   tool-scoped fact never widens into an unscoped target; an already-scoped
+   target keeps its stricter flag), or an untrusted authority origin (per
+   `untrustedOrigins`) offered to a trusted-origin target (the merged body
+   renders under the target's origin at recall, so such a merge would hand
+   untrusted text the target's unfenced authority; mismatches that never
+   reduce fencing — equal origins, or trusted content into an untrusted
+   target — still merge, so legacy targets with no `origin` stamp keep
+   receiving user-origin facts) — is created through the normal write
+   instead, so metadata, access scope, and authority are never silently
+   discarded or escalated. A would-be target that already has promoted
+   shared/profile copies (memories linked back by `sourceMemoryId`) also
+   bypasses the merge: those copies are reconciled only by the normal write's
+   promotion step, so merging would strand them at the pre-merge body. Only
+   copies that are still ACTIVE count — a superseded or archived copy serves
+   no body, so it does not block later judge-approved merges into the target.
+   The
+   copy scan inspects every known promotion layer and the shared namespace
+   regardless of current write authorization, so a permission revoked after a
+   copy was promoted cannot hide that copy from the scan. A successful merge
+   into a target with no promoted copy yet still runs the shared/profile
+   promotion the create path would have performed, anchored to the merged
+   target id and fail-open like the create path — but never off an
+   unpatched provenance record: a degraded merge (see step 5) yields no
+   promotion payload at all, so nothing trust-elevating is copied from a
+   record still holding its pre-merge trust metadata. Once the merged-body
+   copy lands, any concurrently promoted pre-merge copy of the same target
+   (same `sourceMemoryId`, older body — the pre-mutation copy probe can race
+   a concurrent writer) is superseded with `supersededBy` naming the current
+   copy, so a stale and a current copy cannot both stay active across
+   namespaces. The promotion payload is
+   derived solely from the re-read committed record — body, category,
+   confidence, tags, entity ref, structured attributes, importance, intent
+   fields, memory kind, bi-temporal bounds (`validAt`, `invalidAt`,
+   `observedAt`, `eventTimeSource`), provenance strength, claim spans,
+   subject, write-provenance label, and the tool-scope marker with its owning
+   `sourceConnector` — so no field on the promotion path reads the incoming
+   extraction, and a copy is authority-fenced exactly like the
+   source its `sourceMemoryId` names (an unstamped legacy target promotes
+   as `unknown`, the fence's least-privilege default; a target whose temporal
+   bounds or attributes the incoming fact omits keeps them on the copy; a
+   `toolScoped: true` target's copy stays withheld from the shared
+   namespace even when the merged body no longer matches the content
+   heuristics that earned the marker). When memory linking is on and the
+   caller suggested navigation links for the incoming fact, a successful
+   merge attaches them to the target's committed `links` (deduped on
+   target+type; a suggestion naming the surviving target itself is
+   dropped rather than becoming a self-edge, since memory linking and the
+   merge judge both search on the incoming content and suggest the target
+   itself) in the same conditional frontmatter patch, so the
+   relationships the create path would have stamped on the new fact stay
+   traversable from the target instead of being lost.
+   Promotion eligibility gates on the committed target's own confidence —
+   the downgraded `min(incoming, target)` value where a lower incoming
+   confidence merged in. A target that cannot ground the promotion after
+   the merge commits (deleted, its body replaced by another writer, or
+   archived/superseded by a concurrent lifecycle operation — promoting
+   from a retired record would resurrect it) skips the promotion
+   fail-open — the merge itself stands. The
+   merge lookup also honors the batch's embedding-outage short circuit (its
+   own lookup failures arm it for the remaining facts) and the novelty
+   gate's `add` decision: when either bypasses semantic dedup for a fact, no
+   merge lookup runs either.
+5. Any doubt — no in-band candidate, fabricated target id, empty or oversized
+   merged content, judge error or timeout, inactive target, a target another
+   writer changed after it was judged, a metadata, subject, or authority-origin
+   guard refusal, a target with promoted copies, failed
+   snapshot or update — creates the
+   new fact exactly as before. The unsafe default is always *create*, and the
+   merged entry is recoverable from the page-version snapshot. When a content
+   update commits but its provenance patch fails, storage is re-read before
+   anything is reported: if the target still holds this run's merged body it is
+   restored to the pre-merge text and the outcome falls back to create, and if
+   another writer has already replaced that body the restore is skipped — that
+   writer's content is never clobbered — and the outcome is likewise a create,
+   because nothing of this merge remains. Only when the merged body is still
+   present and cannot be restored, or the target cannot be read at all, is the
+   outcome reported as a merge rather than a create, so the fact is still never
+   written twice; the target then holds merged text without the incoming
+   provenance and reinforcement metadata, the hash-index resync and reindex
+   still run before that outcome is reported, no shared/profile promotion is
+   built from that record, and the error log names the page
+   version to recover from.
+
+Merging requires page versioning (`versioningEnabled`): without it there is no
+pre-merge snapshot to roll back to, so the merge is refused and the fact is
+created instead.
 
 ## v8.2 Graph Recall Activation
 
@@ -1565,6 +1853,11 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 |---------|---------|-------------|
 | `openaiApiKey` | `(env fallback in plugin mode)` | unset when `modelSource` is `gateway`; set `false` for local-only plugin mode; otherwise explicit key or `OPENAI_API_KEY` env fallback |
 | `openaiBaseUrl` | (unset) | (unset) |
+| `llmBridgeClientConfigPath` | (unset) | (unset); parse into `backgroundGeneration` only |
+| `backgroundGeneration.endpoint` | (unset) | (unset); hourly background generation only |
+| `backgroundGeneration.token` | (unset) | (unset); generated loopback bearer |
+| `backgroundGeneration.timeoutSeconds` | `120` | `120` |
+| `backgroundGeneration.timeout_seconds` | `120` | `120`; generated-file alias |
 | `model` | `gpt-5.5` | `gpt-5.5` |
 | `reasoningEffort` | `low` | `low` |
 | `supportPassport.enabled` | `false` | `false` until an owner chooses to enable What Helps Me |
@@ -1974,7 +2267,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `routingRulesEnabled` | `false` | `false` |
 | `routingRulesStateFile` | `state/routing-rules.json` | `state/routing-rules.json` |
 | `sharedContextAllowBindingAuthority` | `false` | `false` unless in-process writers need to publish binding-authority shared items (tool surfaces cannot request it yet) |
-| `sharedContextEnabled` | `false` | `false` unless you are actively using cross-agent memory sharing |
+| `sharedContextEnabled` | `false` | `false` unless you are actively using cross-agent memory sharing; a config already carrying the string `"true"` now activates it (string boolean forms are coerced, malformed values warn and stay off) |
 | `sharedContextDir` | (unset) | (unset) |
 | `sharedContextMaxInjectChars` | `4000` | `4000` |
 | `crossSignalsSemanticEnabled` | `false` | `false` |
@@ -2137,8 +2430,8 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `activity.maxMemoriesPerDay` | `0` | `0` (no count cap) |
 | `activity.timeline.enabled` | `false` | `false` |
 | `activity.timeline.journal.enabled` | `false` | `false` |
-| `activity.timeline.journal.source` | `"file"` | `"file"`; `"vault"` only once vault-section journals are deliberately adopted |
-| `activity.timeline.journal.heading` | `(unset)` | `(unset)`; required non-empty when `source` is `"vault"` |
+| `activity.timeline.journal.source` | `"memoryDir"` | `"memoryDir"`; `"vault"` only once vault-section journals are deliberately adopted |
+| `activity.timeline.journal.extractionMode` | `"off"` | `"off"` |
 | `activity.timeline.qa.enabled` | `false` | `false` |
 | `activity.timeline.qa.maxRangeDays` | `31` | `31` |
 

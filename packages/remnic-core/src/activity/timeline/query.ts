@@ -74,6 +74,8 @@ export interface TimelineCliDeps {
   timelineEnabled?: boolean;
   /** Required for `publish`; range/search never read it. */
   config?: PluginConfig;
+  /** Production host loads cards through regenerateTimelineDay. */
+  loadCards?: (window: { from?: string; to?: string }) => Promise<readonly TimelineQueryCard[] | null>;
 }
 
 const USAGE = `Usage: timeline <command> [options]
@@ -117,6 +119,32 @@ function assertRange(fromMs: number, toMs: number, maxRangeDays: number): void {
   if (toMs - fromMs > maxRangeDays * MS_PER_DAY) {
     throw new RangeError(`range exceeds timeline.qa.maxRangeDays (${maxRangeDays})`);
   }
+}
+
+/**
+ * Validate a range request completely - format, instants, ordering, and
+ * qa.maxRangeDays - with no card access. Production callers must run this
+ * before any side-effecting card loader so an invalid range fails before
+ * day regeneration or analysis spend.
+ */
+export function validateTimelineRangeQuery(query: {
+  from: string;
+  to: string;
+  format: string;
+  maxRangeDays?: number;
+}): void {
+  if (!RANGE_FORMATS.includes(query.format as TimelineRangeFormat)) {
+    throw new TypeError(`format must be one of: ${RANGE_FORMATS.join(", ")}`);
+  }
+  const maxRangeDays = query.maxRangeDays ?? DEFAULT_MAX_RANGE_DAYS;
+  assertRange(parseInstant(query.from, "from"), parseInstant(query.to, "to"), maxRangeDays);
+}
+
+/** Validate optional search bounds the way queryTimelineSearch applies them. */
+export function validateTimelineSearchBounds(bounds: { from?: string; to?: string }): void {
+  const fromMs = parseInstant(bounds.from ?? bounds.to!, "from");
+  const toMs = parseInstant(bounds.to ?? bounds.from!, "to");
+  assertRange(fromMs, toMs, DEFAULT_MAX_RANGE_DAYS);
 }
 
 function cardOverlaps(card: TimelineQueryCard, fromMs: number, toMs: number): boolean {
@@ -283,7 +311,14 @@ export async function runTimelineCliCommand(
         io.stderr.write("timeline publish requires the Remnic config — run `remnic doctor`\n");
         return 1;
       }
-      const publishFlags = parseFlags(rest, PUBLISH_FLAGS).flags;
+      const { flags: publishFlags, positional } = parseFlags(rest, PUBLISH_FLAGS);
+      // `publish` takes flags only (issue #2917): a stray positional used
+      // to be silently discarded while today's note published.
+      if (positional.length > 0) {
+        throw new TypeError(
+          `timeline publish takes no positional arguments (got ${JSON.stringify(positional.join(" "))})`,
+        );
+      }
       return runTimelinePublishCli(
         deps.config,
         {
@@ -304,16 +339,25 @@ export async function runTimelineCliCommand(
       const from = flagString(flags, "--from");
       const to = flagString(flags, "--to");
       if (!from || !to) throw new TypeError("range requires --from and --to");
-      if (!Array.isArray(deps.cards)) {
-        io.stderr.write("store_unreadable\n");
-        return 1;
-      }
       const formatRaw = flagString(flags, "--format") ?? "compact";
       if (formatRaw !== "cards" && formatRaw !== "compact") {
         throw new TypeError("format must be one of: cards, compact");
       }
+      // Validate the complete request before the side-effecting loader: an
+      // over-wide or malformed range must fail before any day regeneration
+      // or analysis spend.
+      validateTimelineRangeQuery({ from, to, format: formatRaw, maxRangeDays: deps.qa.maxRangeDays });
+      const cards = Array.isArray(deps.cards)
+        ? deps.cards
+        : deps.loadCards === undefined
+          ? null
+          : await deps.loadCards({ from, to });
+      if (!Array.isArray(cards)) {
+        io.stderr.write("store_unreadable\n");
+        return 1;
+      }
       const categoriesRaw = flagString(flags, "--categories");
-      const result = queryTimelineRange(deps.cards, {
+      const result = queryTimelineRange(cards, {
         from,
         to,
         format: formatRaw,
@@ -332,10 +376,22 @@ export async function runTimelineCliCommand(
       if (limitRaw !== undefined && !Number.isInteger(limit)) {
         throw new RangeError("limit must be an integer from 1 to 50");
       }
-      const result = queryTimelineSearch(deps.cards, {
+      const from = flagString(flags, "--from");
+      const to = flagString(flags, "--to");
+      // Bounds are validated before the side-effecting loader so a malformed
+      // or over-wide window fails before any day regeneration or analysis.
+      if (from !== undefined || to !== undefined) {
+        validateTimelineSearchBounds({ from, to });
+      }
+      const cards = Array.isArray(deps.cards)
+        ? deps.cards
+        : deps.loadCards === undefined
+          ? null
+          : await deps.loadCards({ from, to });
+      const result = queryTimelineSearch(cards, {
         query: q,
-        from: flagString(flags, "--from"),
-        to: flagString(flags, "--to"),
+        from,
+        to,
         limit,
       });
       io.stdout.write(`${JSON.stringify(result)}\n`);

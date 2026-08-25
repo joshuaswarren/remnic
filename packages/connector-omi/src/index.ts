@@ -14,8 +14,7 @@
  */
 
 import {
-  registerWearableConnector,
-  getWearableConnector,
+  selfRegisterWearableConnector,
   type WearableConnectorFactoryOptions,
   type WearableConnectorRegistration,
   type WearableFetchOptions,
@@ -28,8 +27,8 @@ import { OmiClient } from "./client.js";
 import {
   conversationToWearable,
   memoryToNativeMemory,
+  omiDayWindow,
   OMI_SOURCE_ID,
-  zonedDayBounds,
 } from "./normalize.js";
 
 export { OmiApiError, OmiClient, OMI_DEFAULT_BASE_URL } from "./client.js";
@@ -45,6 +44,7 @@ export {
   conversationToWearable,
   memoryToNativeMemory,
   nextIsoDate,
+  omiDayWindow,
   OMI_SOURCE_ID,
   timezoneOffsetIso,
   zonedDayBounds,
@@ -99,7 +99,7 @@ export function createOmiConnector(
       return getClient().verifyAuth(signal);
     },
     async fetchConversations(opts: WearableFetchOptions): Promise<WearableFetchPage> {
-      const bounds = zonedDayBounds(opts.date, opts.timezone);
+      const bounds = omiDayWindow(opts.date, opts.timezone);
       const page = await getClient().listConversations({
         startIso: bounds.startIso,
         endIso: bounds.endIso,
@@ -145,12 +145,5 @@ export const wearableConnectorRegistration: WearableConnectorRegistration = {
  * this module registers it as a side effect; calling this again is safe
  * (returns false when already registered).
  */
-export function ensureOmiConnectorRegistered(): boolean {
-  if (getWearableConnector(OMI_SOURCE_ID) !== undefined) {
-    return false;
-  }
-  registerWearableConnector(wearableConnectorRegistration);
-  return true;
-}
-
-ensureOmiConnectorRegistered();
+export const ensureOmiConnectorRegistered =
+  selfRegisterWearableConnector(wearableConnectorRegistration);

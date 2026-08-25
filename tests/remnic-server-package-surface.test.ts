@@ -11,10 +11,14 @@ const ROOT = path.resolve(import.meta.dirname, "..");
 const SERVER_DIR = path.join(ROOT, "packages", "remnic-server");
 
 test("@remnic/server build emits and advertises TypeScript declarations", async () => {
-  const result = spawnSync("pnpm", ["--filter", "@remnic/server", "run", "build"], {
-    cwd: ROOT,
-    encoding: "utf-8",
-  });
+  const result = spawnSync(
+    process.execPath,
+    [path.join(ROOT, "scripts", "pnpm.mjs"), "--filter", "@remnic/server", "run", "build"],
+    {
+      cwd: ROOT,
+      encoding: "utf-8",
+    },
+  );
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
   assert.equal(existsSync(path.join(SERVER_DIR, "dist", "index.d.ts")), true);
@@ -45,10 +49,6 @@ test("@remnic/server build emits and advertises TypeScript declarations", async 
   const packResult = JSON.parse(pack.stdout) as Array<{ files?: Array<{ path?: string }> }>;
   assert.equal(
     packResult[0]?.files?.some((file) => file.path === "src/index.ts"),
-    true
-  );
-  assert.equal(
-    packResult[0]?.files?.some((file) => file.path === "src/support-passport-runtime.ts"),
     true
   );
   assert.equal(

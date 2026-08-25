@@ -31,6 +31,13 @@
  */
 
 import { persistEnrichmentCandidate } from "./enrichment-persist.js";
+import {
+  discoverBenchDatasetDir,
+  isDatasetDownloaded,
+  listDownloadableBenchmarks,
+  resolveRepoDatasetRoot,
+  resetLegacyDatasetWarningState,
+} from "./bench-dataset-store.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -162,6 +169,7 @@ import {
   evaluateActionConfidence,
   renderActionConfidenceText,
   expandTildePath,
+  readCompatEnv,
   forkCapsule,
   readForkLineage,
   OPERATION_NAMES,
@@ -187,6 +195,7 @@ import { runRecallNavigateCommand } from "./commands/recall-navigate.js";
 // optional-weclone-export.ts for the install-hint behaviour.
 import { loadWecloneExportModule } from "./optional-weclone-export.js";
 import { cmdConverge } from "./converge.js";
+import { resolveCredentialChannel } from "./credential-channel.js";
 import {
   type ConfiguredNamespace,
   readConfiguredNamespace,
@@ -273,12 +282,6 @@ import {
   readBenchStatus,
 } from "./bench-status.js";
 import {
-  buildBenchRunnerArgs,
-  createFallbackBenchOutputDir,
-  findUnsupportedFallbackBenchOptions,
-  resolveFallbackBenchResultPath,
-} from "./bench-fallback.js";
-import {
   atomicWriteFileSync, cleanupRollbackDirectoryBestEffort,
   createOpenclawUpgradeRollbackFailure,
   runBestEffortGatewayRestart,
@@ -291,11 +294,12 @@ import {
   loadOpenclawManagedUpgradeModule,
 } from "./openclaw-managed-upgrade-loader.js";
 import { expandTilde, resolveHomeDir } from "./path-utils.js";
+import { resolveConfigPath } from "./config-path.js";
+export { resolveConfigPath };
 import {
   hostedOnlyDaemonRefusalMessage,
   probeDaemonHealth,
   printHealthCheck,
-  readCompatEnv,
   remoteRecall,
   remoteRecallXray,
   resolveDaemonBaseUrl,
@@ -477,7 +481,6 @@ const LOG_FILE = path.join(PID_DIR, "server.log");
 const LEGACY_LOG_FILE = path.join(LEGACY_PID_DIR, "server.log");
 const CLI_MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLI_REPO_ROOT = path.resolve(CLI_MODULE_DIR, "../../..");
-const EVAL_RUNNER_PATH = path.join(CLI_REPO_ROOT, "evals", "run.ts");
 const OPENCLAW_GATEWAY_LABEL = "ai.openclaw.gateway";
 // QMD teardown and cache reads can leave short-lived filesystem requests after
 // successful one-shot commands; give them enough time to drain before forcing.
@@ -1173,6 +1176,13 @@ async function loadBenchDefinitionsFromPackage(): Promise<BenchmarkDefinition[] 
   return Array.isArray(result) ? result : undefined;
 }
 
+// Shared install hint for `bench run` paths that need @remnic/bench — the
+// only benchmark runtime since the legacy evals fallback was removed
+// (issue #2798). Used by both the per-benchmark run loop and the --all
+// expansion guard so every missing-runtime exit reads the same.
+const MISSING_BENCH_RUNTIME_HINT =
+  "@remnic/bench. Build the workspace packages (or install @remnic/bench) and retry.";
+
 async function resolveAllBenchmarks(): Promise<string[]> {
   const packageBenchmarks = await loadBenchDefinitionsFromPackage();
   if (packageBenchmarks) {
@@ -1180,14 +1190,7 @@ async function resolveAllBenchmarks(): Promise<string[]> {
       .filter((entry) => entry.runnerAvailable)
       .map((entry) => entry.id);
   }
-
-  if (!fs.existsSync(EVAL_RUNNER_PATH)) {
-    return [];
-  }
-
-  return BENCHMARK_CATALOG
-    .filter((entry) => entry.category !== "ingestion")
-    .map((entry) => entry.id);
+  return [];
 }
 
 async function resolveKnownBenchmarkIds(): Promise<Set<string>> {
@@ -1201,452 +1204,11 @@ async function resolveKnownBenchmarkIds(): Promise<Set<string>> {
   return knownIds;
 }
 
-async function runBenchViaFallback(
-  parsed: ParsedBenchArgs,
-  benchmarkId: string,
-  runtimeProfile: BenchRuntimeProfile,
-): Promise<string> {
-  if (parsed.taskIdsFile) {
-    throw new Error(
-      "Fallback benchmark runner does not support hash-pinned LoCoMo task selection. Build/install @remnic/bench to use --task-ids-file.",
-    );
-  }
-  if (runtimeProfile === "real" && parsed.remnicConfigPath) {
-    resolveExistingBenchRemnicConfigPath(parsed.remnicConfigPath);
-  }
-  if (runtimeProfile === "openclaw-chain" && parsed.openclawConfigPath) {
-    resolveExistingBenchOpenclawConfigPath(parsed.openclawConfigPath);
-  }
-  if (runtimeProfile === "real") {
-    throw new Error(
-      'Fallback benchmark runner does not support --runtime-profile "real". Build/install @remnic/bench to use package-backed runtime profiles.',
-    );
-  }
-  if (runtimeProfile === "openclaw-chain") {
-    throw new Error(
-      'Fallback benchmark runner does not support --runtime-profile "openclaw-chain". Build/install @remnic/bench to use package-backed runtime profiles.',
-    );
-  }
-  if (runtimeProfile === "local-lab") {
-    throw new Error(
-      'Fallback benchmark runner does not support --runtime-profile "local-lab". Build/install @remnic/bench to use package-backed runtime profiles with local-lab manifests.',
-    );
-  }
-  const unsupportedOptions = findUnsupportedFallbackBenchOptions(parsed);
-  if (unsupportedOptions.length > 0) {
-    throw new Error(
-      `Fallback benchmark runner does not support provider-backed, gateway, or thinking/timeout flags (${unsupportedOptions.join(", ")}). Build/install @remnic/bench to use those options.`,
-    );
-  }
-  if (!fs.existsSync(EVAL_RUNNER_PATH)) {
-    console.error(
-      "Benchmark runner not found. Expected eval runner at evals/run.ts or a phase-1 @remnic/bench runtime export.",
-    );
-    process.exit(1);
-  }
-
-  const tsxCandidates = [
-    path.join(CLI_REPO_ROOT, "node_modules", ".bin", "tsx"),
-    path.join(CLI_REPO_ROOT, "packages", "remnic-cli", "node_modules", ".bin", "tsx"),
-  ];
-  const tsxCmd = tsxCandidates.find((candidate) => fs.existsSync(candidate)) ?? "tsx";
-  const fallbackOutputDir = createFallbackBenchOutputDir(
-    parsed.resultsDir ?? resolveBenchOutputDir(),
-    benchmarkId,
-    process.pid,
-  );
-  const fallbackArgs = [
-    EVAL_RUNNER_PATH,
-    ...buildBenchRunnerArgs(parsed, benchmarkId, fallbackOutputDir),
-  ];
-  childProcess.execFileSync(tsxCmd, fallbackArgs, {
-    stdio: "inherit",
-    env: process.env,
-  });
-  return resolveFallbackBenchResultPath(fallbackOutputDir);
-}
 
 function resolveBenchOutputDir(): string {
   return path.join(resolveHomeDir(), ".remnic", "bench", "results");
 }
 
-const DOWNLOADABLE_BENCHMARK_DATASETS = [
-  "ama-bench",
-  "memory-arena",
-  "amemgym",
-  "longmemeval",
-  "locomo",
-  "beam",
-  "personamem",
-  "membench",
-  "memoryagentbench",
-] as const;
-
-const MEMORY_ARENA_WEBSHOP_PRODUCT_SIDECAR_FILENAMES = [
-  "webshop-products.jsonl",
-  "webshop-products.json",
-  "memory-arena-webshop-products.jsonl",
-  "memory-arena-webshop-products.json",
-] as const;
-
-const MEMORY_AGENT_BENCH_BUNDLE_FILENAMES = [
-  "memoryagentbench.json",
-  "memoryagentbench.jsonl",
-  "MemoryAgentBench.json",
-  "MemoryAgentBench.jsonl",
-] as const;
-
-const MEMORY_AGENT_BENCH_SPLIT_FILENAMES = [
-  "Accurate_Retrieval.json",
-  "Accurate_Retrieval.jsonl",
-  "accurate_retrieval.json",
-  "accurate_retrieval.jsonl",
-  "Test_Time_Learning.json",
-  "Test_Time_Learning.jsonl",
-  "test_time_learning.json",
-  "test_time_learning.jsonl",
-  "Long_Range_Understanding.json",
-  "Long_Range_Understanding.jsonl",
-  "long_range_understanding.json",
-  "long_range_understanding.jsonl",
-  "Conflict_Resolution.json",
-  "Conflict_Resolution.jsonl",
-  "conflict_resolution.json",
-  "conflict_resolution.jsonl",
-] as const;
-
-const MEMORY_AGENT_BENCH_ENTITY_MAPPING_CANDIDATES = [
-  "entity2id.json",
-  path.join("processed_data", "Recsys_Redial", "entity2id.json"),
-  path.join("Recsys_Redial", "entity2id.json"),
-] as const;
-
-type DownloadedDatasetMarker = {
-  anyOf?: string[];
-  allOf?: string[];
-  ext?: string;
-  exclude?: readonly string[];
-};
-
-// Required content markers per benchmark. `anyOf` lists the filenames
-// a benchmark runner will accept — a dataset directory is considered
-// "downloaded" as soon as any one of them is present. `allOf` lists
-// required sidecar files. `ext` matches any file in the directory with
-// the given extension. The filename sets mirror the dataset loaders
-// under packages/bench/src/benchmarks so `datasets status` and
-// `resolveBenchDatasetDir` never disagree with the runner about whether
-// a dataset is ready.
-const DOWNLOADED_DATASET_MARKERS: Record<string, DownloadedDatasetMarker> = {
-  "ama-bench": { anyOf: ["open_end_qa_set.jsonl"] },
-  longmemeval: {
-    // Keep this list in lock-step with `LONG_MEM_EVAL_DATASET_FILENAMES`
-    // in packages/bench/src/benchmarks/published/dataset-loader.ts so
-    // `datasets status` never disagrees with the runner about what
-    // counts as "downloaded".
-    anyOf: [
-      "longmemeval_s_cleaned.json",
-      "longmemeval_s.json",
-      "longmemeval.json",
-      "longmemeval_oracle.json",
-    ],
-  },
-  amemgym: {
-    anyOf: ["amemgym-v1-base.json", "amemgym-tasks.json", "data.json"],
-  },
-  locomo: { anyOf: ["locomo10.json", "locomo.json"] },
-  "memory-arena": {
-    ext: ".jsonl",
-    exclude: MEMORY_ARENA_WEBSHOP_PRODUCT_SIDECAR_FILENAMES,
-  },
-  beam: {
-    anyOf: [
-      "beam_100k.json",
-      "beam_500k.json",
-      "beam_1m.json",
-      "beam_10m.json",
-      "100k.json",
-      "500k.json",
-      "1m.json",
-      "10m.json",
-      "data/100K-00000-of-00001.parquet",
-      "data/500K-00000-of-00001.parquet",
-      "data/1M-00000-of-00001.parquet",
-      "data/10M-00000-of-00002.parquet",
-      "data/10M-00001-of-00002.parquet",
-    ],
-  },
-  personamem: {
-    anyOf: [
-      "benchmark/text/benchmark.csv",
-      "benchmark/benchmark.csv",
-      "benchmark.csv",
-    ],
-  },
-  membench: {
-    anyOf: [
-      "membench.json",
-      "membench.jsonl",
-      "data.json",
-      "FirstAgentDataLowLevel.json",
-      "FirstAgentDataHighLevel.json",
-      "ThirdAgentDataLowLevel.json",
-      "ThirdAgentDataHighLevel.json",
-      "FirstAgentDataLowLevel.jsonl",
-      "FirstAgentDataHighLevel.jsonl",
-      "ThirdAgentDataLowLevel.jsonl",
-      "ThirdAgentDataHighLevel.jsonl",
-    ],
-  },
-  memoryagentbench: {
-    anyOf: [
-      ...MEMORY_AGENT_BENCH_BUNDLE_FILENAMES,
-      ...MEMORY_AGENT_BENCH_SPLIT_FILENAMES,
-    ],
-  },
-};
-
-const PERSONAMEM_DATASET_FILE_CANDIDATES = [
-  "benchmark/text/benchmark.csv",
-  "benchmark/benchmark.csv",
-  "benchmark.csv",
-] as const;
-
-const PERSONAMEM_COMPLETION_MARKER = path.join(
-  "data",
-  "chat_history_32k",
-  ".download-complete",
-);
-
-function resolveRealpathWithinDataset(
-  datasetPath: string,
-  relativePath: string,
-): string | null {
-  try {
-    const datasetRoot = fs.realpathSync(datasetPath);
-    const candidatePath = path.resolve(datasetRoot, relativePath);
-    const candidateRealPath = fs.realpathSync(candidatePath);
-    const relativeToRoot = path.relative(datasetRoot, candidateRealPath);
-    if (
-      relativeToRoot.startsWith("..")
-      || path.isAbsolute(relativeToRoot)
-    ) {
-      return null;
-    }
-    return candidateRealPath;
-  } catch {
-    return null;
-  }
-}
-
-function parseCsvRows(raw: string): string[][] {
-  const rows: string[][] = [];
-  let currentRow: string[] = [];
-  let currentField = "";
-  let inQuotes = false;
-
-  const pushRow = () => {
-    const values = [...currentRow, currentField];
-    const isHeader = rows.length === 0;
-    const isBlank = values.every((value) => value.trim().length === 0);
-    if (isHeader || !isBlank) {
-      rows.push(values);
-    }
-    currentRow = [];
-    currentField = "";
-  };
-
-  for (let index = 0; index < raw.length; index += 1) {
-    const char = raw[index]!;
-    const next = raw[index + 1];
-
-    if (char === "\"") {
-      if (inQuotes && next === "\"") {
-        currentField += "\"";
-        index += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-
-    if (!inQuotes && char === ",") {
-      currentRow.push(currentField);
-      currentField = "";
-      continue;
-    }
-
-    if (!inQuotes && (char === "\n" || char === "\r")) {
-      if (char === "\r" && next === "\n") {
-        index += 1;
-      }
-      pushRow();
-      continue;
-    }
-
-    currentField += char;
-  }
-
-  if (currentField.length > 0 || currentRow.length > 0) {
-    pushRow();
-  }
-
-  return rows;
-}
-
-function isPersonaMemDatasetComplete(datasetPath: string): boolean {
-  try {
-    const completionMarkerPath = path.join(datasetPath, PERSONAMEM_COMPLETION_MARKER);
-    if (fs.statSync(completionMarkerPath).isFile()) {
-      return true;
-    }
-  } catch {
-    // Fall back to verifying every CSV-linked history file for pre-marker mirrors.
-  }
-
-  const datasetFile = PERSONAMEM_DATASET_FILE_CANDIDATES.find((candidate) => {
-    try {
-      return fs.statSync(path.join(datasetPath, candidate)).isFile();
-    } catch {
-      return false;
-    }
-  });
-  if (!datasetFile) {
-    return false;
-  }
-
-  try {
-    const rows = parseCsvRows(fs.readFileSync(path.join(datasetPath, datasetFile), "utf8"));
-    if (rows.length < 2) {
-      return false;
-    }
-    const [header, ...dataRows] = rows;
-    const chatHistoryIndex = header.indexOf("chat_history_32k_link");
-    if (chatHistoryIndex < 0) {
-      return false;
-    }
-    const historyPaths = dataRows
-      .map((row) => row[chatHistoryIndex]?.trim() ?? "")
-      .filter((value) => value.length > 0);
-    if (historyPaths.length === 0) {
-      return false;
-    }
-    return historyPaths.every((relativePath) => {
-      const resolvedPath = resolveRealpathWithinDataset(datasetPath, relativePath);
-      return resolvedPath !== null && fs.statSync(resolvedPath).isFile();
-    });
-  } catch {
-    return false;
-  }
-}
-
-function hasDatasetFile(datasetPath: string, relativePath: string): boolean {
-  try {
-    return fs.statSync(path.join(datasetPath, relativePath)).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function hasMemoryAgentBenchEntityMapping(datasetPath: string): boolean {
-  const absoluteDatasetPath = path.resolve(datasetPath);
-  const roots = [absoluteDatasetPath, path.dirname(absoluteDatasetPath)];
-  return (
-    hasDatasetFile(absoluteDatasetPath, "entity2id.json") ||
-    roots.some((root) =>
-      MEMORY_AGENT_BENCH_ENTITY_MAPPING_CANDIDATES
-        .filter((relativePath) => relativePath !== "entity2id.json")
-        .some((relativePath) => hasDatasetFile(root, relativePath)),
-    )
-  );
-}
-
-function memoryAgentBenchDatasetHasRecSysSamples(datasetPath: string): boolean {
-  const candidateFilenames = [
-    ...MEMORY_AGENT_BENCH_BUNDLE_FILENAMES,
-    ...MEMORY_AGENT_BENCH_SPLIT_FILENAMES,
-  ];
-  return candidateFilenames.some((filename) => {
-    const filePath = path.join(datasetPath, filename);
-    try {
-      if (!fs.statSync(filePath).isFile()) {
-        return false;
-      }
-      const raw = fs.readFileSync(filePath, "utf8");
-      return /"source"\s*:\s*"recsys[_-]/i.test(raw);
-    } catch {
-      return false;
-    }
-  });
-}
-
-function isMemoryAgentBenchDatasetComplete(datasetPath: string): boolean {
-  if (hasMemoryAgentBenchEntityMapping(datasetPath)) {
-    return true;
-  }
-  return !memoryAgentBenchDatasetHasRecSysSamples(datasetPath);
-}
-
-function isDatasetDownloaded(datasetPath: string, benchmarkId: string): boolean {
-  let stats: fs.Stats;
-  try {
-    stats = fs.statSync(datasetPath);
-  } catch {
-    return false;
-  }
-  if (!stats.isDirectory()) {
-    return false;
-  }
-  const marker = DOWNLOADED_DATASET_MARKERS[benchmarkId];
-  if (!marker) {
-    // Unknown benchmark: fall back to "directory has at least one file".
-    try {
-      return fs.readdirSync(datasetPath).length > 0;
-    } catch {
-      return false;
-    }
-  }
-  if (marker.allOf) {
-    const hasAllRequiredFiles = marker.allOf.every((name) => {
-      try {
-        return fs.statSync(path.join(datasetPath, name)).isFile();
-      } catch {
-        return false;
-      }
-    });
-    if (!hasAllRequiredFiles) {
-      return false;
-    }
-  }
-  if (marker.anyOf) {
-    const hasMarkerFile = marker.anyOf.some((name) => {
-      try {
-        return fs.statSync(path.join(datasetPath, name)).isFile();
-      } catch {
-        return false;
-      }
-    });
-    if (!hasMarkerFile) {
-      return false;
-    }
-    if (benchmarkId === "personamem") {
-      return isPersonaMemDatasetComplete(datasetPath);
-    }
-    if (benchmarkId === "memoryagentbench") {
-      return isMemoryAgentBenchDatasetComplete(datasetPath);
-    }
-    return true;
-  }
-  if (marker.ext) {
-    try {
-      return fs.readdirSync(datasetPath).some((name) =>
-        name.endsWith(marker.ext!) && !marker.exclude?.includes(name),
-      );
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
 
 async function launchBenchUi(resultsDir: string): Promise<void> {
   const benchUiDir = path.join(CLI_REPO_ROOT, "packages", "bench-ui");
@@ -1677,27 +1239,9 @@ async function launchBenchUi(resultsDir: string): Promise<void> {
         resolve();
         return;
       }
-
       reject(new Error(`bench UI exited with code ${code ?? "unknown"}`));
     });
   });
-}
-
-// Resolve the dataset root. In a monorepo checkout we keep using
-// evals/datasets so local dev state stays stable; in a published CLI
-// install CLI_REPO_ROOT points under node_modules (not user-writable
-// and missing the repo-only evals/ tree) so we fall back to
-// ~/.remnic/bench/datasets.
-function resolveRepoDatasetRoot(): string {
-  const repoCandidate = path.join(CLI_REPO_ROOT, "evals", "datasets");
-  if (isRepoCheckout()) {
-    return repoCandidate;
-  }
-  return path.join(resolveHomeDir(), ".remnic", "bench", "datasets");
-}
-
-function listDownloadableBenchmarks(): string[] {
-  return [...DOWNLOADABLE_BENCHMARK_DATASETS];
 }
 
 // The download script is shipped with the CLI package at
@@ -1709,18 +1253,7 @@ function resolveDatasetDownloadScriptPath(): string {
   if (fs.existsSync(bundled)) {
     return bundled;
   }
-  return path.join(CLI_REPO_ROOT, "evals", "scripts", "download-datasets.sh");
-}
-
-function isRepoCheckout(): boolean {
-  // Treat the install as a repo checkout only when the monorepo
-  // marker files are present next to CLI_REPO_ROOT. In published
-  // @remnic/cli installs, CLI_REPO_ROOT points inside node_modules
-  // where these files do not exist.
-  return (
-    fs.existsSync(path.join(CLI_REPO_ROOT, "pnpm-workspace.yaml")) &&
-    fs.existsSync(path.join(CLI_REPO_ROOT, "evals", "scripts", "download-datasets.sh"))
-  );
+  return path.join(CLI_REPO_ROOT, "packages", "remnic-cli", "assets", "download-datasets.sh");
 }
 
 function runDatasetDownloadScript(
@@ -1800,22 +1333,15 @@ function resolveBenchDatasetDir(
     return undefined;
   }
 
-  // Match the dataset root that `datasets download` and `datasets
-  // status` use so full benchmark runs can consume a dataset that
-  // was just downloaded through the packaged CLI without requiring
-  // an explicit `--dataset-dir` override. Gate auto-selection on the
-  // same per-benchmark content markers as `datasets status` so a
-  // partial/interrupted download doesn't silently feed an empty
-  // directory into the benchmark loader. `resolveRepoDatasetRoot`
-  // already picks the correct layout (evals/datasets in monorepo
-  // checkouts, ~/.remnic/bench/datasets in packaged installs), so one
-  // lookup covers both install modes.
-  const datasetDir = path.join(resolveRepoDatasetRoot(), benchmarkId);
-  if (isDatasetDownloaded(datasetDir, benchmarkId)) {
-    return datasetDir;
-  }
-
-  return undefined;
+  // Match the dataset discovery that `datasets download` and `datasets
+  // status` use so full benchmark runs can consume a dataset that was just
+  // downloaded through the packaged CLI without requiring an explicit
+  // `--dataset-dir` override. `discoverBenchDatasetDir` gates auto-selection
+  // on the same per-benchmark content markers as `datasets status` (so a
+  // partial/interrupted download doesn't silently feed an empty directory
+  // into the benchmark loader) and falls back to a read-only legacy
+  // evals/datasets copy when the canonical store is missing (#2867).
+  return discoverBenchDatasetDir(benchmarkId)?.dir;
 }
 
 function resolveDownloadedBenchDatasetDir(
@@ -1839,6 +1365,8 @@ export const __benchDatasetTestHooks = {
   resolveBenchDatasetDir,
   resolveDownloadedBenchDatasetDir,
   pairedAnswerReplayCacheForBenchmark,
+  discoverBenchDatasetDir,
+  resetLegacyDatasetDiscoveryWarningForTest: resetLegacyDatasetWarningState,
   orderPairedLoCoMoWorkItemsForTest: orderPairedLoCoMoWorkItems,
   buildPublishedBenchmarkOptionsForTest(
     benchmarkId: string,
@@ -2176,11 +1704,15 @@ async function manageBenchDatasets(parsed: ParsedBenchArgs): Promise<void> {
     }
 
     const status = supported.map((benchmarkId) => {
-      const datasetPath = path.join(datasetRoot, benchmarkId);
+      // Read discovery shares the run path's single seam (#2867): a
+      // benchmark present only at the legacy evals/datasets location
+      // reports as downloaded there (read-only), not as missing.
+      const discovered = discoverBenchDatasetDir(benchmarkId);
       return {
         benchmark: benchmarkId,
-        downloaded: isDatasetDownloaded(datasetPath, benchmarkId),
-        path: datasetPath,
+        downloaded: discovered !== undefined,
+        path: discovered ? discovered.dir : path.join(datasetRoot, benchmarkId),
+        source: discovered?.source ?? "canonical",
       };
     });
 
@@ -4109,22 +3641,6 @@ export function loadConvergeCommandConfig(): PluginConfig {
   return loadStandaloneConvergeCommandConfig();
 }
 
-export function resolveConfigPath(cliPath?: string): string {
-  if (cliPath) return path.resolve(expandTilde(cliPath));
-  const envPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH");
-  if (envPath) return path.resolve(expandTilde(envPath));
-
-  const candidates = [
-    path.join(process.cwd(), "remnic.config.json"),
-    path.join(process.cwd(), "engram.config.json"),
-    path.join(resolveHomeDir(), ".config", "remnic", "config.json"),
-    path.join(resolveHomeDir(), ".config", "engram", "config.json"),
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return path.join(resolveHomeDir(), ".config", "remnic", "config.json");
-}
 
 function resolveExistingBenchRemnicConfigPath(cliPath?: string): string | undefined {
   const configPath = resolveConfigPath(cliPath);
@@ -6999,18 +6515,38 @@ function resolveOfflineRemoteUrl(args: string[]): string {
   return parsed;
 }
 
-function resolveOfflineToken(args: string[]): string {
-  const token =
-    resolveRequiredValueFlag(args, "--token") ??
-    process.env.REMNIC_OFFLINE_TOKEN ??
-    process.env.REMNIC_AUTH_TOKEN ??
-    process.env.ENGRAM_AUTH_TOKEN;
-  if (!token || token.trim().length === 0) {
-    throw new Error(
-      "offline mode requires --token <token>, REMNIC_OFFLINE_TOKEN, or REMNIC_AUTH_TOKEN",
+/** Env credential chain for offline commands, highest precedence first (#2831). */
+const OFFLINE_TOKEN_ENV_NAMES = ["REMNIC_OFFLINE_TOKEN", "REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN"] as const;
+
+/**
+ * Resolve the offline bearer token through the shared credential channel
+ * (#2831): --token > --token-file > REMNIC_OFFLINE_TOKEN > REMNIC_AUTH_TOKEN
+ * > ENGRAM_AUTH_TOKEN. Every PRESENT source is validated for all four offline
+ * subcommands — status included, so a bad --token-file or an empty env
+ * credential is reported even where no network call happens. Absence is not
+ * an error here; the remote-hitting callers (prepare/sync/watch) require the
+ * token themselves.
+ */
+function resolveOfflineToken(args: string[]): string | undefined {
+  const channel = resolveCredentialChannel(
+    {
+      argvToken: resolveRequiredValueFlag(args, "--token"),
+      tokenFile: resolveRequiredValueFlag(args, "--token-file"),
+      envNames: OFFLINE_TOKEN_ENV_NAMES,
+    },
+    process.env
+  );
+  if (!channel.ok) {
+    throw new Error(`offline: ${channel.error}`);
+  }
+  if (channel.tokenFromArgv) {
+    // Warn once per invocation — resolution runs exactly once per command —
+    // and never echo the value: the warning itself must not leak the token.
+    process.stderr.write(
+      "offline: note: --token is argv-visible; prefer --token-file or REMNIC_OFFLINE_TOKEN\n"
     );
   }
-  return token.trim();
+  return channel.token?.trim();
 }
 
 function offlineEndpoint(
@@ -9244,7 +8780,9 @@ async function cmdOffline(action: string, rest: string[], json: boolean): Promis
 
 Options:
   --remote-url <url>       Remote Remnic server URL, e.g. http://home:4242 (--remote alias accepted)
-  --token <token>          Bearer token for the remote server
+  --token <token>          Bearer token for the remote server (argv-visible;
+                           prefer --token-file or the env fallbacks)
+  --token-file <path>      Read the bearer token from a 0600 regular file
   --namespace <name>       Namespace to sync
   --memory-dir <dir>       Local memory dir (defaults to resolved memoryDir)
   --state <path>           Override offline sync state file
@@ -9256,7 +8794,9 @@ Options:
   --json                   JSON output
 
 Environment fallbacks:
-  REMNIC_OFFLINE_REMOTE_URL, REMNIC_OFFLINE_TOKEN, REMNIC_AUTH_TOKEN`);
+  REMNIC_OFFLINE_REMOTE_URL, REMNIC_OFFLINE_TOKEN, REMNIC_AUTH_TOKEN,
+  ENGRAM_AUTH_TOKEN (legacy). Token precedence: --token > --token-file >
+  REMNIC_OFFLINE_TOKEN > REMNIC_AUTH_TOKEN > ENGRAM_AUTH_TOKEN.`);
     return;
   }
 
@@ -9283,7 +8823,11 @@ Environment fallbacks:
   const remoteUrl = needsRemote
     ? resolveOfflineRemoteUrl(rest)
     : resolveOptionalOfflineRemoteUrl(rest);
-  const token = needsRemote ? resolveOfflineToken(rest) : undefined;
+  // All four offline subcommands validate credential sources through the
+  // shared channel (#2831) — status included. Unknown actions fall through
+  // to the usage banner below; they must not die on flag parsing first.
+  const knownAction = needsRemote || action === "status";
+  const token = knownAction ? resolveOfflineToken(rest) : undefined;
   const statePath = statePathExplicit
     ? path.resolve(expandTilde(stateOverride))
     : remoteUrl !== undefined
@@ -10543,6 +10087,15 @@ async function cmdBench(rest: string[]): Promise<void> {
     return;
   }
 
+  // --all expands from the @remnic/bench registry; without the optional
+  // package there is nothing to expand. Fail here with the same
+  // actionable install hint a named benchmark gets, before the empty
+  // expansion can be misread as "no runnable benchmarks in this install".
+  if (parsed.all && !(await tryLoadBenchModule())) {
+    console.error(`ERROR: bench run --all requires ${MISSING_BENCH_RUNTIME_HINT}`);
+    process.exit(1);
+  }
+
   let selectedBenchmarks = parsed.all
     ? await resolveAllBenchmarks()
     : parsed.benchmarks;
@@ -10669,9 +10222,11 @@ async function cmdBench(rest: string[]): Promise<void> {
             }
             try { await updateBenchmarkCompleted(benchStatusPath, statusId, handledByPackage.writtenPath ?? ""); } catch { /* non-fatal */ }
           } else {
-            const fallbackResultPath = await runBenchViaFallback(parsed, benchmarkId, runtimeProfile);
-            writtenPaths.push(fallbackResultPath);
-            try { await updateBenchmarkCompleted(benchStatusPath, statusId, fallbackResultPath); } catch { /* non-fatal */ }
+            // The legacy eval-runner fallback was removed (issue #2798);
+            // @remnic/bench is the only benchmark runtime.
+            throw new Error(
+              `Benchmark "${benchmarkId}" requires ${MISSING_BENCH_RUNTIME_HINT}`,
+            );
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

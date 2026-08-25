@@ -19,7 +19,8 @@ test("parseActivityConfig defaults to an inert, search-only configuration", () =
     maxMemoriesPerDay: 0,
     timeline: {
       enabled: false,
-      journal: { enabled: false, source: "file" },
+      analysis: { enabled: false },
+      journal: { enabled: false, source: "memoryDir", extractionMode: "off" },
       qa: { enabled: false, maxRangeDays: 31 },
       vault: {
         enabled: false,
@@ -36,6 +37,7 @@ test("parseActivityConfig defaults to an inert, search-only configuration", () =
           locations: { enabled: false, target: "daily", section: "Locations" },
         },
         insertUnderHeading: "",
+        readback: { journalSection: "" },
         wikilinks: { places: false, placesFolder: "Places" },
         properties: { mode: "off", prefix: "remnic_" },
         autoPublish: true,
@@ -174,6 +176,127 @@ test("activity config rejects a null maxMemoriesPerDay instead of silently uncap
   assert.throws(() => parseActivityConfig({ maxMemoriesPerDay: null }), /maxMemoriesPerDay/);
 });
 
+test("activity timeline analysis defaults off with no provider settings stored", () => {
+  const timeline = parseActivityConfig(undefined).timeline;
+  assert.deepEqual(timeline.analysis, { enabled: false });
+  // The gate is independent of the timeline master switch and of capture.
+  assert.equal(parseActivityConfig({ timeline: { enabled: true } }).timeline.analysis.enabled, false);
+});
+
+test("activity timeline analysis parses a valid enabled block", () => {
+  const analysis = parseActivityConfig({
+    timeline: {
+      analysis: {
+        enabled: true,
+        provider: "openai",
+        model: "gpt-5.2",
+        timeoutMs: 30_000,
+        preferences: ["terse titles", "no emoji"],
+      },
+    },
+  }).timeline.analysis;
+  assert.deepEqual(analysis, {
+    enabled: true,
+    provider: "openai",
+    model: "gpt-5.2",
+    timeoutMs: 30_000,
+    preferences: ["terse titles", "no emoji"],
+  });
+});
+
+test("activity timeline analysis rejects enabling without an explicit provider and model", () => {
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { enabled: true } } }),
+    /provider and model are required/,
+  );
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { enabled: true, provider: "openai" } } }),
+    /provider and model are required/,
+  );
+});
+
+test("activity timeline analysis rejects prose or blank provider/model identifiers", () => {
+  for (const provider of ["Summarize this user's activity", "  ", "has space"]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { analysis: { provider, model: "m" } } }),
+      /activity\.timeline\.analysis\.provider must be an identifier/,
+    );
+  }
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { provider: "openai", model: "" } } }),
+    /activity\.timeline\.analysis\.model must be an identifier/,
+  );
+});
+
+test("activity timeline analysis rejects a slash in the provider segment", () => {
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: { analysis: { enabled: true, provider: "gateway/openai", model: "gpt-test" } },
+      }),
+    /provider must be a single provider segment/,
+  );
+  const ok = parseActivityConfig({
+    timeline: { analysis: { enabled: true, provider: "openai", model: "org/gpt-test" } },
+  }).timeline.analysis;
+  assert.equal(ok.model, "org/gpt-test");
+});
+
+test("activity timeline analysis rejects provider and model longer than metadata max", () => {
+  const tooLong = `m${"x".repeat(120)}`;
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: { analysis: { enabled: true, provider: tooLong, model: "gpt-test" } },
+      }),
+    /provider must be at most 120 characters/,
+  );
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: { analysis: { enabled: true, provider: "openai", model: tooLong } },
+      }),
+    /model must be at most 120 characters/,
+  );
+});
+
+test("activity timeline analysis rejects invalid timeout and preferences shapes", () => {
+  const base = { provider: "openai", model: "gpt-5.2" } as const;
+  for (const timeoutMs of [0, 999, 120_001, 1.5, "fast"]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { analysis: { ...base, enabled: true, timeoutMs } } }),
+      /timeoutMs/,
+    );
+  }
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { ...base, preferences: "terse" } } }),
+    /preferences must be an array/,
+  );
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { ...base, preferences: [""] } } }),
+    /preferences entries/,
+  );
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: { analysis: { ...base, preferences: Array.from({ length: 17 }, () => "p") } },
+      }),
+    /at most 16/,
+  );
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { ...base, preferences: ["x".repeat(201)] } } }),
+    /at most 200 characters/,
+  );
+});
+
+test("activity timeline analysis rejects a non-object or non-boolean block", () => {
+  assert.throws(() => parseActivityConfig({ timeline: { analysis: "on" } }), /analysis must be an object/);
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { enabled: 3 } } }),
+    /analysis\.enabled must be a boolean/,
+  );
+});
+
 test("vault publish section names are rejected at config load when the publisher would reject them", () => {
   // `Timeline-->` and an embedded newline both pass a trimmed-string check
   // but break the `<!-- remnic:<name>:start -->` marker, so `publishVaultNote`
@@ -242,4 +365,65 @@ test("an enabled vault rejects relative or whitespace-only vaultPath at config l
   // A disabled vault may carry any placeholder — nothing resolves it.
   const inert = parseActivityConfig({ timeline: { vault: { enabled: false, vaultPath: "." } } });
   assert.equal(inert.timeline.vault.vaultPath, ".");
+});
+
+test("insertUnderHeading must be a trimmed single-line heading (#2917)", () => {
+  for (const insertUnderHeading of ["   ", "  Journal  ", "Journal\nExtra"]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { vault: { insertUnderHeading } } }),
+      /insertUnderHeading must be a non-empty trimmed single-line heading/,
+      `value ${JSON.stringify(insertUnderHeading)} must be rejected`,
+    );
+  }
+  const ok = parseActivityConfig({ timeline: { vault: { insertUnderHeading: "Journal" } } });
+  assert.equal(ok.timeline.vault.insertUnderHeading, "Journal");
+});
+
+test("readback.journalSection must be a trimmed single-line heading (#2917)", () => {
+  for (const journalSection of ["  Journal  ", "Journal\r\nExtra"]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { vault: { readback: { journalSection } } } }),
+      /journalSection must be a non-empty trimmed single-line heading/,
+    );
+  }
+  const ok = parseActivityConfig({ timeline: { vault: { readback: { journalSection: "Journal" } } } });
+  assert.equal(ok.timeline.vault.readback.journalSection, "Journal");
+});
+
+test("heading-strategy section names that cannot round-trip are rejected at config load (#2917)", () => {
+  // `## Timeline #` parses back as `Timeline`. Accepted at load, every
+  // publish would throw before producing a status.
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: {
+          vault: { sectionStrategy: "heading", publish: { timeline: { section: "Timeline #" } } },
+        },
+      }),
+    /publish\.timeline\.section must survive a heading render-and-parse round trip/,
+  );
+  const ok = parseActivityConfig({
+    timeline: {
+      vault: { sectionStrategy: "heading", publish: { timeline: { section: "Timeline" } } },
+    },
+  });
+  assert.equal(ok.timeline.vault.publish.timeline.section, "Timeline");
+});
+
+test("marker-strategy still accepts a section name that would fail heading round-trip (#2917)", () => {
+  const ok = parseActivityConfig({
+    timeline: {
+      vault: { sectionStrategy: "markers", publish: { timeline: { section: "Timeline #" } } },
+    },
+  });
+  assert.equal(ok.timeline.vault.publish.timeline.section, "Timeline #");
+});
+
+test("insertUnderHeading that cannot round-trip is rejected at config load (#2917)", () => {
+  assert.throws(
+    () => parseActivityConfig({ timeline: { vault: { insertUnderHeading: "Timeline #" } } }),
+    /insertUnderHeading must survive a heading render-and-parse round trip/,
+  );
+  const ok = parseActivityConfig({ timeline: { vault: { insertUnderHeading: "Journal" } } });
+  assert.equal(ok.timeline.vault.insertUnderHeading, "Journal");
 });
