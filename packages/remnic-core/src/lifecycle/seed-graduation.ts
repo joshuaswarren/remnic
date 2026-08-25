@@ -31,20 +31,18 @@ import { stripAttributesSuffix } from "../storage.js";
 import { STRUCTURED_ATTRIBUTE_LIMITS } from "../write-envelope.js";
 import { excludeSupportPassportPrivateMemories } from "../support-passport/card-projection.js";
 import type { MemoryFile, MemoryFrontmatter, MemoryStatus } from "../types.js";
+import type { SeedGraduationConfig } from "./seed-graduation-config-types.js";
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-export interface SeedGraduationConfig {
-  /** Master gate. Default false: review-mode stays the only promotion path. */
-  enabled: boolean;
-  /**
-   * Independent corroborating memories required before a seed graduates.
-   * `Infinity` is not a config value — `enabled: false` is the disabled state.
-   */
-  minCorroborations: number;
-}
+// Canonical definitions live in seed-graduation-config-types.ts (a leaf) so
+// types.ts can consume them without this module's storage.js import cycle.
+export type {
+  SeedGraduationConfig,
+  SeedGraduationSettings,
+} from "./seed-graduation-config-types.js";
 
 export const SEED_GRADUATION_DEFAULTS: SeedGraduationConfig = {
   enabled: false,

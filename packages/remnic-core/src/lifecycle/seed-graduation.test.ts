@@ -4,7 +4,16 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 
+import { parseConfig } from "../config.js";
+import type { EmbeddingFallback } from "../embedding-fallback.js";
+import type { ExtractionEngine } from "../extraction.js";
+import {
+  LifecyclePolicyCoordinator,
+  type LifecyclePolicyCoordinatorDeps,
+} from "../orchestration/lifecycle-policy-coordinator.js";
+import { RecallHandleHistoryStore } from "../recall-state.js";
 import { StorageManager } from "../storage.js";
+import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import {
   SEED_GRADUATION_DEFAULTS,
   evaluateSeedGraduation,
@@ -12,7 +21,6 @@ import {
   runSeedGraduationPass,
   type SeedGraduationConfig,
 } from "./seed-graduation.js";
-import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 
 const ENABLED: SeedGraduationConfig = { enabled: true, minCorroborations: 1 };
 
@@ -77,6 +85,37 @@ test("seedGraduation rejects invalid values instead of defaulting", () => {
   assert.throws(
     () => parseSeedGraduationConfig({ minCorroborations: 1.5 }),
     /minCorroborations must be an integer in \[1, 50\]/,
+  );
+  assert.throws(
+    () => parseConfig({ memoryDir: "/tmp/remnic-seed-graduation-invalid", seedGraduation: "yes" }),
+    /seedGraduation must be an object/,
+  );
+});
+
+test("parseConfig wires seedGraduation; conservative pins it off", () => {
+  const memoryDir = "/tmp/remnic-seed-graduation-parse";
+  const defaults = parseConfig({ memoryDir });
+  assert.deepEqual(defaults.seedGraduation, SEED_GRADUATION_DEFAULTS);
+  assert.equal(defaults.seedGraduation.enabled, false);
+
+  const optedIn = parseConfig({
+    memoryDir,
+    seedGraduation: { enabled: true, minCorroborations: 3 },
+  });
+  assert.deepEqual(optedIn.seedGraduation, { enabled: true, minCorroborations: 3 });
+
+  assert.equal(
+    parseConfig({ memoryDir, memoryOsPreset: "conservative" }).seedGraduation.enabled,
+    false,
+    "the conservative preset pins seed graduation off",
+  );
+  assert.equal(
+    parseConfig({
+      memoryDir,
+      memoryOsPreset: "balanced",
+      seedGraduation: { enabled: true },
+    }).seedGraduation.enabled,
+    true,
   );
 });
 
@@ -418,6 +457,126 @@ test("pass: disabled config touches nothing", async () => {
       (memory) => memory.frontmatter.source === "wearable:bee",
     );
     assert.equal(seed?.frontmatter.status, "pending_review");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Wiring — parseConfig + lifecycle policy pass
+// ---------------------------------------------------------------------------
+
+function coordinatorDeps(
+  storage: StorageManager,
+  config: ReturnType<typeof parseConfig>,
+  handleHistory?: RecallHandleHistoryStore,
+): LifecyclePolicyCoordinatorDeps {
+  return {
+    config,
+    getStorage: () => storage,
+    extraction: {} as unknown as ExtractionEngine,
+    embeddingFallback: {} as unknown as EmbeddingFallback,
+    getEffectiveLifecycleThresholds: () => ({
+      promoteHeatThreshold: 1,
+      staleDecayThreshold: 0,
+      archiveDecayThreshold: 0,
+    }),
+    async removeContentHashForMemory(): Promise<void> {},
+    async saveContentHashIndexes(): Promise<void> {},
+    getHandleHistory: handleHistory ? () => handleHistory : undefined,
+  };
+}
+
+test("lifecycle pass: gate off makes zero promoteWearableMemory calls", async () => {
+  const { storage, dir } = makeStorage();
+  try {
+    await storage.writeMemory("fact", SEED_TEXT, {
+      source: "wearable:bee",
+      status: "pending_review",
+    });
+    await storage.writeMemory("fact", RESTATE_TEXT, {
+      source: "wearable:limitless",
+    });
+    const config = parseConfig({ memoryDir: dir });
+    assert.equal(config.seedGraduation.enabled, false);
+
+    let promoteCalls = 0;
+    const original = storage.promoteWearableMemory.bind(storage);
+    storage.promoteWearableMemory = async (id, attrs, confidence) => {
+      promoteCalls += 1;
+      return original(id, attrs, confidence);
+    };
+
+    const memories = await storage.readAllMemories();
+    await new LifecyclePolicyCoordinator(coordinatorDeps(storage, config)).runLifecyclePolicyPass(
+      memories,
+      storage,
+    );
+    assert.equal(promoteCalls, 0, "disabled seed graduation must not call promoteWearableMemory");
+    const seed = (await storage.readAllMemories()).find(
+      (memory) => memory.frontmatter.source === "wearable:bee",
+    );
+    assert.equal(seed?.frontmatter.status, "pending_review");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("lifecycle pass: enabled independent corroboration promotes through the policy seam", async () => {
+  const { storage, dir } = makeStorage();
+  try {
+    await storage.writeMemory("fact", SEED_TEXT, {
+      source: "wearable:bee",
+      status: "pending_review",
+    });
+    await storage.writeMemory("fact", RESTATE_TEXT, {
+      source: "wearable:limitless",
+    });
+    const config = parseConfig({
+      memoryDir: dir,
+      seedGraduation: { enabled: true, minCorroborations: 1 },
+    });
+    const memories = await storage.readAllMemories();
+    await new LifecyclePolicyCoordinator(coordinatorDeps(storage, config)).runLifecyclePolicyPass(
+      memories,
+      storage,
+    );
+    const seed = (await storage.readAllMemories()).find(
+      (memory) => memory.frontmatter.source === "wearable:bee",
+    );
+    assert.equal(seed?.frontmatter.status, "active");
+    assert.equal(seed?.frontmatter.structuredAttributes?.graduatedBy, "independent-corroboration");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("lifecycle pass: recall-handle history suppresses echo corroboration", async () => {
+  const { storage, dir } = makeStorage();
+  try {
+    const seedWrite = await storage.writeMemory("fact", SEED_TEXT, {
+      source: "wearable:bee",
+      status: "pending_review",
+      structuredAttributes: { sessionKey: "session-a" },
+    });
+    await storage.writeMemory("fact", RESTATE_TEXT, {
+      source: "extraction",
+      structuredAttributes: { sessionKey: "session-b" },
+    });
+    const history = new RecallHandleHistoryStore(dir);
+    await history.record("session-b", [seedWrite.id]);
+    const config = parseConfig({
+      memoryDir: dir,
+      seedGraduation: { enabled: true, minCorroborations: 1 },
+    });
+    const memories = await storage.readAllMemories();
+    await new LifecyclePolicyCoordinator(
+      coordinatorDeps(storage, config, history),
+    ).runLifecyclePolicyPass(memories, storage);
+    const seed = (await storage.readAllMemories()).find(
+      (memory) => memory.frontmatter.source === "wearable:bee",
+    );
+    assert.equal(seed?.frontmatter.status, "pending_review", "quoted-back echo must not graduate");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

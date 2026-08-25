@@ -23,6 +23,7 @@ import type {
 import type { DeepRecallSettings } from "./deep-recall-config.js";
 import type { RecallNavigationSettings } from "./recall-navigation-config.js";
 import type { RecognitionTierSettings } from "./recall-recognition-tier.js";
+import type { SeedGraduationSettings } from "./lifecycle/seed-graduation-config-types.js";
 import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
 import type { SkillProjectionConfig } from "./procedural/skill-projection.js";
 import type { SessionExperienceConfig } from "./experience/session-experience-config.js";
@@ -698,6 +699,7 @@ export interface PluginConfig
     DeepRecallSettings,
     RecallNavigationSettings,
     RecognitionTierSettings,
+    SeedGraduationSettings,
     LocalLlmConfig {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
@@ -3877,12 +3879,8 @@ export interface HourlySummary {
   generatedAt: string;
 }
 
-// ============================================================================
-// Dreams Pipeline Telemetry (issue #678 PR 3/4)
-// ============================================================================
-// Re-export from the authoritative source to avoid duplicate definitions.
-// dreams-ledger.ts is the single source of truth; types.ts re-exports so
-// callers that import from types.js continue to work unchanged.
+// Dreams Pipeline Telemetry (issue #678 PR 3/4). Re-export from
+// dreams-ledger.ts so callers importing types.js stay unchanged.
 export type {
   DreamsPhase,
   DreamsPhaseStatus,
