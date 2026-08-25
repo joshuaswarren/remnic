@@ -4,6 +4,7 @@
  * generic chain helpers used by the same client.
  */
 
+import path from "node:path";
 import { raceAbort } from "./abort-error.js";
 import { callCodexCliFallback, isCodexCliFallbackRunnerRegistered } from "./cli-fallback.js";
 import type { CodexCliFallbackRunner } from "./cli-fallback.js";
@@ -14,10 +15,14 @@ import {
   CodexSubscriptionTimeoutError,
   assertNoApiKeyConfig,
   ensureCodexSubscriptionRunnerRegistered,
+  getCodexSubscriptionRunnerForOwner,
   getCodexSubscriptionShutdownSignal,
   isDefaultRegisteredCodexSubscriptionRunner,
 } from "./providers/codex-subscription.js";
-import type { ModelProviderConfig } from "./types.js";
+import type { GetRuntimeAuthForModelFn, ResolveApiKeyFn } from "./resolve-provider-secret.js";
+import { resolveHomeDir } from "./runtime/env.js";
+import type { GatewayConfig, ModelProviderConfig } from "./types.js";
+import { expandTildePath } from "./utils/path.js";
 
 type CodexSubscriptionAttemptResult = {
   content: string;
@@ -214,4 +219,136 @@ export function extractResponsesOutputText(data: {
 
   const joined = chunks.join("\n").trim();
   return joined.length > 0 ? joined : null;
+}
+
+export type StructuredParseFailureReason =
+  | "no_models"
+  | "empty"
+  | "http_error"
+  | "schema_rejection"
+  | "timeout";
+
+export interface StructuredParseFailure {
+  result: null;
+  failureReason: StructuredParseFailureReason;
+  /** Model string of the last attempt, when one was selected. Not `modelUsed`. */
+  attemptedModel?: string;
+  /** HTTP status when known. Never a response body. */
+  httpStatus?: number;
+  /** Coarse class: http_4xx / http_5xx / timeout / network / empty / schema_rejection / no_models. */
+  errorClass?: string;
+}
+
+export type StructuredParseResult<T> =
+  | { result: T; modelUsed: string }
+  | StructuredParseFailure;
+
+export interface FallbackLlmRuntimeContext {
+  agentDir?: string;
+  getRuntimeAuthForModel?: GetRuntimeAuthForModelFn | null;
+  resolveApiKeyForProvider?: ResolveApiKeyFn | null;
+  workspaceDir?: string;
+  /** Per-runtime Codex child owner. Shutdown must terminate only this runner. */
+  codexSubscriptionRunner?: CodexCliFallbackRunner;
+}
+
+type GatewayBackedRuntimeConfig = {
+  providerApiKeyResolver?: ResolveApiKeyFn | null;
+  runtimeAuthForModelResolver?: GetRuntimeAuthForModelFn | null;
+  workspaceDir?: string;
+};
+
+export function fallbackLlmRuntimeContextFromConfig(
+  config: Pick<
+    GatewayBackedRuntimeConfig,
+    "providerApiKeyResolver" | "runtimeAuthForModelResolver" | "workspaceDir"
+  >,
+  overrides: FallbackLlmRuntimeContext = {},
+): FallbackLlmRuntimeContext {
+  return {
+    workspaceDir: config.workspaceDir,
+    resolveApiKeyForProvider: config.providerApiKeyResolver,
+    getRuntimeAuthForModel: config.runtimeAuthForModelResolver,
+    codexSubscriptionRunner: getCodexSubscriptionRunnerForOwner(config),
+    ...overrides,
+  };
+}
+
+const HTTP_STATUS_IN_MESSAGE = /\b([1-5]\d{2})\b/;
+
+export function isTimeoutError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /timed out after \d+ms/i.test(msg) || /timed out before request started/i.test(msg);
+}
+
+function isEmptyProviderResponse(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /^Empty response from /i.test(msg);
+}
+
+function finiteHttpStatus(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) return undefined;
+  if (value < 100 || value > 599) return undefined;
+  return value;
+}
+
+function httpStatusFromProviderError(err: unknown): number | undefined {
+  if (err && typeof err === "object") {
+    if ("status" in err) {
+      const status = finiteHttpStatus(err.status);
+      if (status !== undefined) return status;
+    }
+    if ("statusCode" in err) {
+      const status = finiteHttpStatus(err.statusCode);
+      if (status !== undefined) return status;
+    }
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  const match = HTTP_STATUS_IN_MESSAGE.exec(msg);
+  if (!match) return undefined;
+  return finiteHttpStatus(Number(match[1]));
+}
+
+function errorClassForHttpStatus(status: number): string {
+  if (status >= 500) return "http_5xx";
+  if (status >= 400) return "http_4xx";
+  return `http_${status}`;
+}
+
+export function classifyThrownProviderError(err: unknown): Omit<StructuredParseFailure, "result"> {
+  if (isTimeoutError(err)) {
+    return { failureReason: "timeout", errorClass: "timeout" };
+  }
+  if (isEmptyProviderResponse(err)) {
+    return { failureReason: "empty", errorClass: "empty" };
+  }
+  const httpStatus = httpStatusFromProviderError(err);
+  if (httpStatus !== undefined) {
+    return {
+      failureReason: "http_error",
+      httpStatus,
+      errorClass: errorClassForHttpStatus(httpStatus),
+    };
+  }
+  return { failureReason: "http_error", errorClass: "network" };
+}
+
+export function normalizeRuntimePath(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? expandTildePath(trimmed) : undefined;
+}
+
+export function readGatewayWorkspaceDir(gatewayConfig: GatewayConfig | undefined): string | undefined {
+  if (!gatewayConfig || typeof gatewayConfig !== "object") return undefined;
+  const raw = gatewayConfig as Record<string, unknown>;
+  return (
+    normalizeRuntimePath(raw.workspaceDir) ??
+    normalizeRuntimePath(raw.workspacePath) ??
+    normalizeRuntimePath(raw.workspace)
+  );
+}
+
+export function defaultOpenClawWorkspaceDir(): string {
+  return path.join(resolveHomeDir(), ".openclaw", "workspace");
 }
