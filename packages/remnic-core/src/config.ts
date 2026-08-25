@@ -41,6 +41,11 @@ import { expandTildePath } from "./utils/path.js";
 import { coerceBool, coerceBooleanLike, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
 import { parseSubjectRuntimeConfig } from "./subject-config.js";
 import { parseRecallStateViews } from "./recall-state-view.js";
+import {
+  parseRecallStandingBlock,
+  parseStandingBlockFreshDays,
+  parseStandingBlockMaxChars,
+} from "./standing-memory-block.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
 import { parseExtractionFields } from "./extraction-span-config.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
@@ -1952,6 +1957,12 @@ export function parseConfig(
     // Recall state views (issue #1952). Default false; exact false/0/"false"
     // disable (parseRecallStateViews → coerceBooleanLike).
     recallStateViews: parseRecallStateViews(cfg.recallStateViews),
+    // Prefix-cache-stable standing memory block (issue #2971). Default
+    // false, and nothing on the recall path reads these keys until the
+    // server wiring slice lands — pre-wiring behavior is byte-identical.
+    recallStandingBlock: parseRecallStandingBlock(cfg.recallStandingBlock),
+    standingBlockFreshDays: parseStandingBlockFreshDays(cfg.standingBlockFreshDays),
+    standingBlockMaxChars: parseStandingBlockMaxChars(cfg.standingBlockMaxChars),
     // Disclosure auto-escalation (issue #677 PR 4/4).  Default `manual`
     // so pre-#677 callers see unchanged behavior.  Reject anything
     // outside the allow-list rather than silently defaulting (CLAUDE.md

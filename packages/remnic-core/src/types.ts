@@ -991,6 +991,12 @@ export interface PluginConfig
   recallDirectAnswerEnabled: boolean;
   /** Recall state views (issue #1952): label current/historical/transition on change-intent queries. Default false. */
   recallStateViews: boolean;
+  /** Standing memory block (issue #2971): byte-stable pinned-memory index injected before per-turn recall; parsed now, injection lands in a later slice. Default false. */
+  recallStandingBlock: boolean;
+  /** Days a memory stays in the standing block's full-text fresh band. Default 14. */
+  standingBlockFreshDays: number;
+  /** Hard character budget for the standing memory block. Default 2048. */
+  standingBlockMaxChars: number;
   /**
    * Disclosure auto-escalation policy (issue #677 PR 4/4).  `"auto"`
    * escalates chunk → section when top-K confidence falls below
