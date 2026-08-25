@@ -16,10 +16,10 @@ import { loadProductionTimelineCards } from "./timeline.js";
 
 const NOW = () => new Date("2026-08-23T12:00:00.000Z");
 
-function configFor(memoryDir: string, timelineEnabled = true): PluginConfig {
+function configFor(memoryDir: string, timelineEnabled = true, timezone = "UTC"): PluginConfig {
   return parseConfig({
     memoryDir,
-    activity: { timezone: "UTC", timeline: { enabled: timelineEnabled } },
+    activity: { timezone, timeline: { enabled: timelineEnabled } },
   });
 }
 
@@ -82,6 +82,80 @@ test("a disabled timeline and an empty store both load without error", async () 
     const empty = await loadProductionTimelineCards(configFor(memoryDir), {}, NOW);
     assert.ok(Array.isArray(empty));
     assert.deepEqual(empty, []);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a lone --to loads the day containing the to instant, not today (#2931)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-timeline-load-"));
+  try {
+    const store = ActivityStore.open(memoryDir);
+    store.insertSnapshot(snap("2026-08-23T10:00:00.000Z", "h-today"));
+    store.insertSnapshot(snap("2026-08-20T10:00:00.000Z", "h-past"));
+    store.close();
+    const cards = await loadProductionTimelineCards(
+      configFor(memoryDir),
+      { to: "2026-08-20T23:00:00.000Z" },
+      NOW,
+    );
+    assert.ok(Array.isArray(cards));
+    assert.deepEqual(dayKeys(cards as { dayKey: string }[]), ["2026-08-20"]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a lone --to resolves its day through the configured timezone (#2931)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-timeline-load-"));
+  try {
+    // 2026-08-20T23:30Z belongs to local day 2026-08-21 under Pacific/Kiritimati
+    // (UTC+14), so a to bound just after it must load the Kiritimati day, not
+    // the UTC day and not today.
+    const store = ActivityStore.open(memoryDir);
+    store.insertSnapshot(snap("2026-08-20T23:30:00.000Z", "h-kiritimati"));
+    store.close();
+    const cards = await loadProductionTimelineCards(
+      configFor(memoryDir, true, "Pacific/Kiritimati"),
+      { to: "2026-08-20T23:45:00.000Z" },
+      NOW,
+    );
+    assert.ok(Array.isArray(cards));
+    assert.deepEqual(dayKeys(cards as { dayKey: string }[]), ["2026-08-21"]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a lone --from keeps loading only its own day (#2931)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-timeline-load-"));
+  try {
+    const store = ActivityStore.open(memoryDir);
+    store.insertSnapshot(snap("2026-08-23T10:00:00.000Z", "h-today"));
+    store.insertSnapshot(snap("2026-08-20T10:00:00.000Z", "h-past"));
+    store.close();
+    const cards = await loadProductionTimelineCards(
+      configFor(memoryDir),
+      { from: "2026-08-20T10:00:00.000Z" },
+      NOW,
+    );
+    assert.ok(Array.isArray(cards));
+    assert.deepEqual(dayKeys(cards as { dayKey: string }[]), ["2026-08-20"]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a lone --to on an empty store loads nothing without error (#2931)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-timeline-load-"));
+  try {
+    const cards = await loadProductionTimelineCards(
+      configFor(memoryDir),
+      { to: "2026-08-20T23:00:00.000Z" },
+      NOW,
+    );
+    assert.ok(Array.isArray(cards));
+    assert.deepEqual(cards, []);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

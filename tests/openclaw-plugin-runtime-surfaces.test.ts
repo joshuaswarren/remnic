@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import { parseActivityConfig } from "../packages/remnic-core/src/activity/config.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -651,6 +652,48 @@ test("all OpenClaw manifests expose contradiction localization schema and UI met
     assert.equal(uiHint?.label, "Contradiction Localization");
     assert.match(String(uiHint?.help), /anchor/i);
   }
+});
+
+test("all OpenClaw manifests enforce parser-equivalent analysis preference bounds (#2931)", () => {
+  for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
+    const manifest = readManifest(manifestPath);
+    const prefs =
+      manifest.configSchema?.properties?.activity?.properties?.timeline?.properties?.analysis?.properties
+        ?.preferences;
+    assert.ok(prefs, `${manifestPath} must declare activity.timeline.analysis.preferences`);
+    assert.equal(prefs.maxItems, 16, `${manifestPath} preferences schema must cap the array at 16 items`);
+    assert.equal(
+      prefs.items?.maxLength,
+      200,
+      `${manifestPath} preferences items must enforce the parser's 200-character limit`,
+    );
+    assert.equal(
+      prefs.items?.pattern,
+      "\\S",
+      `${manifestPath} preferences items must reject blank entries like the parser`,
+    );
+  }
+});
+
+test("manifest preference bounds match what the config parser enforces (#2931)", () => {
+  const sixteen = Array.from({ length: 16 }, (_, i) => `preference ${i + 1}`);
+  const parsed = parseActivityConfig({ timeline: { analysis: { preferences: sixteen } } });
+  assert.deepEqual(parsed.timeline.analysis.preferences, sixteen);
+  assert.throws(
+    () =>
+      parseActivityConfig({
+        timeline: { analysis: { preferences: [...sixteen, "one too many"] } },
+      }),
+    /at most 16/,
+  );
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { preferences: ["x".repeat(201)] } } }),
+    /at most 200 characters/,
+  );
+  assert.throws(
+    () => parseActivityConfig({ timeline: { analysis: { preferences: ["   "] } } }),
+    /non-empty strings/,
+  );
 });
 
 test("workspace build verifies manifest sync instead of silently rewriting root state", () => {
