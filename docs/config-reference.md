@@ -415,8 +415,22 @@ QMD, hot facts, or default recall. See [External wiki search](external-wikis.md)
 | `recallDirectAnswerAmbiguityMargin` | `0.15` | If the second-best candidate scores within this ratio of the top, direct-answer defers to the hybrid tier. |
 | `recallDirectAnswerEligibleTaxonomyBuckets` | `["decisions","principles","conventions","runbooks","entities"]` | Taxonomy category IDs eligible for direct-answer routing. Set to `[]` to disable the gate without unsetting `enabled`. |
 | `recallStateViews` | `false` | Opt in to state-aware recall views (issue #1952). On change-intent queries ("when did", "used to", "switched", "changed" and conjugations), recall admits a superseded memory when its successor is also in the candidate set, labels rows `current`/`historical`/`transition`, and renders historical rows with a `[superseded <date> by <id>]` prefix. A superseded row never renders without its successor. Exact `false`/`0`/`"false"` disable; non-change queries and the disabled flag keep output byte-identical. The MCP `recall` tool also accepts a per-call `stateView` boolean that ORs with this flag. #2859 pair semantics: pairs reconcile before the user cap/MMR (orphan removal never underfills; a predecessor admitted with its successor counts as ONE evidence packet toward the cap), reverse chains derive from the successor `supersedes` back-pointer, chain identities are namespace-qualified (identical ids across namespaces never cross-anchor), and asOf labels use the temporal validity boundary (`invalidAt`, `supersededAt` only as legacy fallback), not the write-time stamp. |
+| `recallStandingBlock` | `false` | Opt in to the prefix-cache-stable standing memory block (issue #2971): a byte-stable index over pinned/high-value memories that hosts inject before per-turn recall so the LLM prefix cache survives across turns. The builder refuses clock/date/counter content at build time (a changed word at the prefix front reprices the whole cache). Exact `false`/`0`/`"false"` disable. Default false keeps recall output byte-identical; the builder ships in `@remnic/core` now and recall-path injection lands in a later wiring slice. |
+| `standingBlockFreshDays` | `14` | Days a memory stays in the standing block's full-text fresh band (counted from its last content change) before it compresses to a short recognition hook. |
+| `standingBlockMaxChars` | `2048` | Hard character budget for the standing memory block. Pinned lines that cannot fit refuse the build rather than truncate. |
 | `hotMemoriesCacheEnabled` | `true` | Serve `readAllMemories()` from a version-keyed in-process cache of the full parsed corpus (issue #1902), eliminating repeated full-corpus disk scans on the recall hot path. Cross-process coherence is preserved by an on-disk corpus version sentinel; single-file writes patch the cache in place. Set `false` to force disk scans on memory-constrained hosts (behavior then matches the pre-#1902 scan path). Version invalidation is the primary coherence mechanism; `hotMemoriesCacheTtlMs` bounds staleness from external edits. |
 | `hotMemoriesCacheTtlMs` | `60000` | Max age (ms) a hot-cache entry is served before a fresh disk scan (issue #1902). The version sentinel gives immediate coherence for writers that go through StorageManager or the corpus-bump helper, but direct filesystem edits (manual, git checkout, external tools) don't bump it; this TTL bounds how long such an edit stays stale. Set `0` to disable the TTL (version invalidation only; max performance for pure-daemon deployments with no external edits). |
+
+**Prefix-cache stability (issue #2971).** A standing memory block keeps the
+system prompt prefix byte-identical between turns so provider prefix caches
+stay warm; measured on a local OpenAI-compatible server, an identical
+4k-token prefix reprices at 0.14 s vs 0.68 s cold, and one changed word at
+the front costs the whole cache. Three rules keep it stable: the block
+carries no clock, date, or counter (the builder refuses one at build time);
+hosts rebuild it only when the memory store changes, never per turn; and
+hosts order the prompt standing block first, then per-turn dynamic recall,
+then any content that ticks (personas carrying a clock). Line order is band
+rank then id, so appending a memory never moves existing lines.
 
 **Effective core section deadline.** A section budget only helps if it expires
 *before* the request ceiling that cancels everything, and sections start after

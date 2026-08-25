@@ -4952,6 +4952,23 @@
         "default": false,
         "description": "State-aware recall views: on change-intent queries, superseded memories surface as labeled history (current/historical/transition) when their successor is also recalled. Default false keeps recall output byte-identical."
       },
+      "recallStandingBlock": {
+        "type": "boolean",
+        "default": false,
+        "description": "Prefix-cache-stable standing memory block (issue #2971): a byte-stable index over pinned/high-value memories placed before per-turn recall so the LLM prefix cache survives across turns. The builder refuses clock/date/counter content at build time. Default false keeps recall output byte-identical; recall-path injection lands in a later wiring slice."
+      },
+      "standingBlockFreshDays": {
+        "type": "number",
+        "minimum": 0,
+        "default": 14,
+        "description": "Days a memory stays in the standing block's full-text fresh band before it compresses to a recognition hook."
+      },
+      "standingBlockMaxChars": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 2048,
+        "description": "Hard character budget for the standing memory block. Pinned lines that cannot fit refuse the build rather than truncate."
+      },
       "recallConfidenceGateEnabled": {
         "type": "boolean",
         "default": false,
@@ -8738,6 +8755,23 @@
       "label": "State-Aware Recall Views",
       "advanced": true,
       "help": "Surface labeled supersession history on change-intent queries (when did / used to / switched)."
+    },
+    "recallStandingBlock": {
+      "label": "Standing Memory Block",
+      "advanced": true,
+      "help": "Byte-stable pinned-memory index placed before per-turn recall to keep the LLM prefix cache warm (issue #2971)."
+    },
+    "standingBlockFreshDays": {
+      "label": "Standing Block Fresh Window",
+      "advanced": true,
+      "placeholder": "14",
+      "help": "Days a memory stays in full text before compressing to a recognition hook."
+    },
+    "standingBlockMaxChars": {
+      "label": "Standing Block Budget",
+      "advanced": true,
+      "placeholder": "2048",
+      "help": "Hard character budget for the standing memory block."
     },
     "recallPipeline": {
       "label": "Recall Pipeline",
