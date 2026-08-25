@@ -235,6 +235,19 @@ function dedupeOrdered(tokens: string[]): string[] {
   return out;
 }
 
+const TRAILING_PUNCTUATION: Record<string, true> = { ".": true, ",": true, ";": true, ":": true };
+
+/**
+ * Strip trailing sentence punctuation in linear time. A quantified anchored
+ * regex (`/[.,;:]+$/`) backtracks polynomially on recognizer output made of
+ * many separators, and that output is uncontrolled model text.
+ */
+function stripTrailingPunctuation(value: string): string {
+  let end = value.length;
+  while (end > 0 && TRAILING_PUNCTUATION[value.charAt(end - 1)]) end -= 1;
+  return value.slice(0, end);
+}
+
 /**
  * Parse recognizer output into ordered unique id tokens. Accepts a JSON
  * string array or comma/whitespace-separated ids, and strips sentence
@@ -252,7 +265,7 @@ export function parseRecognizerIds(output: string | null | undefined): string[] 
         return dedupeOrdered(
           parsed
             .filter((item): item is string => typeof item === "string")
-            .map((item) => item.trim().replace(/[.,;:]+$/, "").trim()),
+            .map((item) => stripTrailingPunctuation(item.trim()).trim()),
         );
       }
     } catch {
@@ -262,7 +275,7 @@ export function parseRecognizerIds(output: string | null | undefined): string[] 
   return dedupeOrdered(
     text
       .split(/[\s,]+/)
-      .map((token) => token.replace(/^[•\-*\d.)\]]+/, "").replace(/[.,;:]+$/, "").trim()),
+      .map((token) => stripTrailingPunctuation(token.replace(/^[•\-*\d.)\]]+/, "")).trim()),
   );
 }
 
