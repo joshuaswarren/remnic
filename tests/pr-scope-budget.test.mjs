@@ -269,6 +269,56 @@ test("claimed issues come only from PR-body closing keywords (this-run #2919)", 
   }
 });
 
+test("same-repo qualified refs canonicalize to one issue identity (this-run #2948)", () => {
+  // `Fixes #1234` and `Fixes joshuaswarren/remnic#1234` name the SAME issue —
+  // GitHub renders the qualified spelling when a full reference is pasted.
+  // Counting both inflated the multi-issue signal on a single-issue PR.
+  // Cross-repo qualifiers stay distinct identities.
+  const bodies = [
+    ["bare", "Fixes #1234", [1234]],
+    ["qualified current repo", "Fixes joshuaswarren/remnic#1234", [1234]],
+    ["both spellings, one issue", "Fixes #1234 (also fixes joshuaswarren/remnic#1234)", [1234]],
+    ["case-insensitive qualifier", "Fixes joshuaswarren/Remnic#1234", [1234]],
+    ["cross-repo stays distinct", "Fixes octo-org/octo-repo#1234", ["octo-org/octo-repo#1234"]],
+    [
+      "same number, different repos",
+      "Fixes joshuaswarren/remnic#100. Fixes octo-org/octo-repo#100",
+      [100, "octo-org/octo-repo#100"],
+    ],
+    ["genuine multi-issue body", "Fixes #2948. Also fixes joshuaswarren/remnic#2919.", [2919, 2948]],
+  ];
+  for (const [name, body, expected] of bodies) {
+    assert.deepEqual(extractIssueRefs(body), new Set(expected), name);
+  }
+});
+
+test("gate level: same-repo spellings of one issue stay single-issue (#2948)", () => {
+  const files = [
+    coreFile(200, "packages/remnic-core/src/recall/recall.ts"),
+    coreFile(200, "packages/remnic-cli/src/main.ts"),
+  ];
+  const one = evaluateScopeBudget({
+    files,
+    labels: [],
+    thresholds: THRESHOLDS,
+    ignorePatterns: NO_IGNORES,
+    subsystemGroups: GROUPS,
+    prText: "Fixes #2948 and fixes joshuaswarren/remnic#2948",
+  });
+  assert.equal(one.verdict, "pass", "two spellings of one issue are one claimed issue");
+
+  const two = evaluateScopeBudget({
+    files,
+    labels: [],
+    thresholds: THRESHOLDS,
+    ignorePatterns: NO_IGNORES,
+    subsystemGroups: GROUPS,
+    prText: "Fixes #2948 and fixes joshuaswarren/remnic#2919",
+  });
+  assert.equal(two.verdict, "fail", "two genuinely distinct issues across unrelated groups still fails");
+  assert.match(two.detail, /2 referenced issues \(#2919, #2948\)/);
+});
+
 test("touched-code historical citations never inflate the count (#2769 shape, this-run #2919)", () => {
   // The #2769/#2774 failure: the gate reported the predecessor issues a
   // touched module's docstring cites, on a PR claiming ONE issue. The parser
