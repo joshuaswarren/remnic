@@ -949,6 +949,11 @@ export class Orchestrator {
       this.deferredInitAbort = null;
     }
   }
+  async disposeSearchBackendIfNeeded(): Promise<void> {
+    await this.namespaceSearchRouter.disableSearchBackends();
+    await (this.qmd as { dispose?: () => void | Promise<void> }).dispose?.();
+  }
+
   /** Track a recall-side write so destroy() can wait for it before teardown. @internal */
   trackRecallBackgroundWrite(promise: Promise<void>, label: string): void {
     trackRecallWrite(this, promise, label);
@@ -959,6 +964,7 @@ export class Orchestrator {
    * commands should call it before returning to let Node exit naturally.
    */
   async destroy(): Promise<void> {
+    this._orchestratorInitCoordinator?.retireStartupEpoch();
     this.abortDeferredInit();
     this.extractionQueueCoordinator.stopAccepting();
     if (this.wearablesAutoSyncHandle) {
