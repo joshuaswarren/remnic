@@ -26,12 +26,20 @@
  * for `index.md`/`log.md`) while staying full-text searchable. Files at the
  * sidecar path WITHOUT the marker are user content: never overwritten, never
  * removed.
+ *
+ * Layer 2 (this slice): {@link refreshDirectorySidecarsAfterWrite} refreshes
+ * only the changed directory and its category ancestors, so a memory write
+ * populates sidecars without walking the rest of the store. `enabled: false`
+ * is a proven no-op (no reads, no writes). Config parsing lives here;
+ * `parseConfig` wiring, retrieval drill-down, xray, and LLM summarization
+ * remain later layers on #2977 (`config.ts` is at its file-size ratchet).
  */
 
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
 
+import { coerceBooleanLike } from "./connectors/coerce.js";
 import { writeFileAtomically } from "./maintenance/atomic-file.js";
 import { normalizeProjectionPreview } from "./memory-projection-format.js";
 import { OKF_RESERVED_BASENAMES } from "./okf/type-mapping.js";
@@ -43,6 +51,18 @@ export const DIRECTORY_SIDECAR_MARKER = "<!-- remnic-directory-sidecar -->";
 const ABSTRACT_MAX_CHARS = 256;
 const OVERVIEW_MAX_CHARS = 4000;
 const DEFAULT_QUERY_LIMIT = 5;
+const CATEGORY_ROOTS: ReadonlySet<string> = new Set(RECALL_FALLBACK_DIRS);
+
+/** Config fields this slice owns. Mix into `PluginConfig` in a later layer. */
+export interface DirectorySidecarSettings {
+  /** Populate sidecars on memory writes. Default false. */
+  directorySidecarsEnabled: boolean;
+}
+
+/** Strict off-default: only an explicit true/"true"/1 opts in. */
+export function parseDirectorySidecarsEnabled(raw: unknown): boolean {
+  return coerceBooleanLike(raw, "directorySidecarsEnabled") === true;
+}
 
 /** Basenames never treated as child memories (ours plus OKF's reserved ones). */
 const RESERVED_CHILD_BASENAMES: Readonly<Record<string, true>> = Object.freeze({
@@ -238,8 +258,77 @@ function collectSidecarDirs(scopeRoot: string): string[] {
   return dirs;
 }
 
+async function syncSidecarDir(
+  dir: string,
+  enabled: boolean,
+  childAbstracts: Map<string, string>,
+  written: string[],
+  removed: string[],
+): Promise<void> {
+  const target = sidecarPath(dir);
+  const raw = readFileOrNull(target);
+  const existing = raw !== null && raw.startsWith(DIRECTORY_SIDECAR_MARKER) ? raw : null;
+  if (!enabled) {
+    if (existing !== null) {
+      unlinkSync(target);
+      removed.push(target);
+    }
+    return;
+  }
+  const next = renderSidecar(dir, directoryFingerprint(dir), childAbstracts);
+  if (next === null) {
+    if (existing !== null) {
+      unlinkSync(target);
+      removed.push(target);
+    }
+    return;
+  }
+  const parsedNext = parseSidecar(next);
+  if (parsedNext) childAbstracts.set(dir, parsedNext.abstract);
+  if (raw === next) return;
+  if (existing === null && raw !== null) return; // user-authored file: hands off
+  await writeFileAtomically(target, next);
+  written.push(target);
+}
+
+function childAbstractsFromDisk(dir: string): Map<string, string> {
+  const abstracts = new Map<string, string>();
+  for (const name of directoryChildren(dir)) {
+    const childDir = path.join(dir, name);
+    const parsed = parseSidecar(readFileOrNull(sidecarPath(childDir)) ?? "");
+    if (parsed) abstracts.set(childDir, parsed.abstract);
+  }
+  return abstracts;
+}
+
 /**
- * Regenerate directory sidecars incrementally. Unchanged sidecars are left
+ * Category-root ancestry of a changed memory path, deepest first.
+ * Paths outside a recall category return `[]` so writes to `state/` or
+ * `namespaces/<ns>/` itself never mint a sidecar.
+ */
+export function directorySidecarAncestry(memoryDir: string, changedPath: string): string[] {
+  const root = path.resolve(memoryDir);
+  const abs = path.isAbsolute(changedPath) ? path.resolve(changedPath) : path.resolve(root, changedPath);
+  const rel = path.relative(root, abs);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return [];
+  const parts = rel.split(path.sep).filter(Boolean);
+  const dirParts = isRealDirectory(abs) ? parts : parts.slice(0, -1);
+  let categoryAt = -1;
+  if (dirParts[0] === "namespaces" && dirParts.length >= 3 && CATEGORY_ROOTS.has(dirParts[2] ?? "")) {
+    categoryAt = 2;
+  } else if (CATEGORY_ROOTS.has(dirParts[0] ?? "")) {
+    categoryAt = 0;
+  }
+  if (categoryAt === -1) return [];
+  const dirs: string[] = [];
+  for (let i = dirParts.length; i > categoryAt; i--) {
+    dirs.push(path.join(root, ...dirParts.slice(0, i)));
+  }
+  return dirs;
+}
+
+/**
+ * Regenerates directory sidecars incrementally. Unchanged sidecars are left
  * untouched; emptied directories lose theirs; user files at the sidecar path
  * (no marker) are never written or removed. With `enabled: false` every
  * generated sidecar is removed — the OKF index-maintenance contract.
@@ -253,31 +342,27 @@ export async function runDirectorySidecarMaintenance(
   for (const scope of scopeRoots(memoryDir)) {
     const childAbstracts = new Map<string, string>();
     for (const dir of collectSidecarDirs(scope)) {
-      const target = sidecarPath(dir);
-      const raw = readFileOrNull(target);
-      const existing = raw !== null && raw.startsWith(DIRECTORY_SIDECAR_MARKER) ? raw : null;
-      if (!enabled) {
-        if (existing !== null) {
-          unlinkSync(target);
-          removed.push(target);
-        }
-        continue;
-      }
-      const next = renderSidecar(dir, directoryFingerprint(dir), childAbstracts);
-      if (next === null) {
-        if (existing !== null) {
-          unlinkSync(target);
-          removed.push(target);
-        }
-        continue;
-      }
-      const parsedNext = parseSidecar(next);
-      if (parsedNext) childAbstracts.set(dir, parsedNext.abstract);
-      if (raw === next) continue;
-      if (existing === null && raw !== null) continue; // user-authored file: hands off
-      await writeFileAtomically(target, next);
-      written.push(target);
+      await syncSidecarDir(dir, enabled, childAbstracts, written, removed);
     }
+  }
+  return { written, removed };
+}
+
+/**
+ * Incremental write-path refresh: only the changed directory and its
+ * category ancestors, using the same fingerprint/render path as maintenance.
+ * `enabled: false` returns immediately — no readdir, no writes.
+ */
+export async function refreshDirectorySidecarsAfterWrite(
+  memoryDir: string,
+  changedPath: string,
+  enabled: boolean,
+): Promise<DirectorySidecarReport> {
+  if (!enabled) return { written: [], removed: [] };
+  const written: string[] = [];
+  const removed: string[] = [];
+  for (const dir of directorySidecarAncestry(memoryDir, changedPath)) {
+    await syncSidecarDir(dir, true, childAbstractsFromDisk(dir), written, removed);
   }
   return { written, removed };
 }

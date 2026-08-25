@@ -10,6 +10,8 @@ import {
   DIRECTORY_SIDECAR_MARKER,
   findDirectorySidecarsForQuery,
   loadDirectorySidecar,
+  parseDirectorySidecarsEnabled,
+  refreshDirectorySidecarsAfterWrite,
   runDirectorySidecarMaintenance,
 } from "./directory-sidecars.js";
 import {
@@ -262,6 +264,123 @@ test("user-authored sidecar-named files are never clobbered or removed", async (
       "disabling maintenance never deletes a user file",
     );
     assert.equal(await readFile(userFile, "utf8"), "# my own notes\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("parseDirectorySidecarsEnabled defaults off and rejects nothing silently", () => {
+  assert.equal(parseDirectorySidecarsEnabled(undefined), false);
+  assert.equal(parseDirectorySidecarsEnabled(null), false);
+  assert.equal(parseDirectorySidecarsEnabled(false), false);
+  assert.equal(parseDirectorySidecarsEnabled("false"), false);
+  assert.equal(parseDirectorySidecarsEnabled(0), false);
+  assert.equal(parseDirectorySidecarsEnabled(true), true);
+  assert.equal(parseDirectorySidecarsEnabled("true"), true);
+  assert.equal(parseDirectorySidecarsEnabled(1), true);
+});
+
+test("write-path refresh is a zero-write no-op when disabled", async () => {
+  const root = store();
+  try {
+    const written = await writeMemory(
+      root,
+      "facts/2026-01-02/fact-1.md",
+      "North dome shutter cycle completed.",
+    );
+    const report = await refreshDirectorySidecarsAfterWrite(root, written, false);
+    assert.deepEqual(report.written, []);
+    assert.deepEqual(report.removed, []);
+    assert.equal(await exists(path.join(root, "facts", "2026-01-02", DIRECTORY_SIDECAR_BASENAME)), false);
+    assert.equal(await exists(path.join(root, "facts", DIRECTORY_SIDECAR_BASENAME)), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("write-path refresh populates the day sidecar and the parent abstract", async () => {
+  const root = store();
+  try {
+    const written = await writeMemory(
+      root,
+      "facts/2026-01-02/fact-1.md",
+      "Telescope calibration log for the north dome.",
+    );
+    const report = await refreshDirectorySidecarsAfterWrite(root, written, true);
+    const daySidecar = path.join(root, "facts", "2026-01-02", DIRECTORY_SIDECAR_BASENAME);
+    const parentSidecar = path.join(root, "facts", DIRECTORY_SIDECAR_BASENAME);
+    assert.ok(report.written.includes(daySidecar), "day sidecar written on the write path");
+    assert.ok(report.written.includes(parentSidecar), "parent sidecar written after the child");
+    assert.ok(
+      report.written.indexOf(daySidecar) < report.written.indexOf(parentSidecar),
+      "child sidecar written before parent (bottom-up)",
+    );
+
+    const day = await loadDirectorySidecar(path.join(root, "facts", "2026-01-02"), { refresh: false });
+    assert.equal(day?.fresh, true, "write-path reuse of fingerprints leaves the sidecar fresh");
+    assert.match(day?.overview ?? "", /Telescope calibration/);
+
+    const parent = await readFile(parentSidecar, "utf8");
+    assert.match(parent, /2026-01-02/);
+    assert.ok(parent.startsWith(DIRECTORY_SIDECAR_MARKER));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("write-path refresh after delete updates the parent and prunes an emptied directory", async () => {
+  const root = store();
+  try {
+    const fact1 = await writeMemory(root, "facts/2026-01-02/fact-1.md", "First observation run.");
+    await writeMemory(root, "facts/2026-01-02/fact-2.md", "Second observation run.");
+    await refreshDirectorySidecarsAfterWrite(root, fact1, true);
+
+    rmSync(fact1);
+    const report = await refreshDirectorySidecarsAfterWrite(root, fact1, true);
+    const dayDir = path.join(root, "facts", "2026-01-02");
+    const daySidecar = await readFile(path.join(dayDir, DIRECTORY_SIDECAR_BASENAME), "utf8");
+    assert.doesNotMatch(daySidecar, /First observation/, "deleted child leaves the sidecar");
+    assert.match(daySidecar, /Second observation/);
+    assert.ok(report.written.some((p) => p === path.join(dayDir, DIRECTORY_SIDECAR_BASENAME)));
+    assert.ok(report.written.some((p) => p === path.join(root, "facts", DIRECTORY_SIDECAR_BASENAME)));
+
+    rmSync(path.join(dayDir, "fact-2.md"));
+    const pruned = await refreshDirectorySidecarsAfterWrite(root, path.join(dayDir, "fact-2.md"), true);
+    assert.ok(pruned.removed.some((p) => p === path.join(dayDir, DIRECTORY_SIDECAR_BASENAME)));
+    assert.equal(await exists(path.join(dayDir, DIRECTORY_SIDECAR_BASENAME)), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("write-path refresh stays inside the changed namespace and skips unrelated categories", async () => {
+  const root = store();
+  try {
+    const alpha = await writeMemory(
+      root,
+      "namespaces/alpha/facts/2026-05-01/a-1.md",
+      "Alpha wing telescope mirror audit.",
+    );
+    await writeMemory(root, "namespaces/beta/facts/2026-05-01/b-1.md", "Beta wing spectrograph dark frames.");
+    await writeMemory(root, "entities/obs-1.md", "The north dome observer rotation schedule.");
+
+    const report = await refreshDirectorySidecarsAfterWrite(root, alpha, true);
+    assert.ok(
+      report.written.every((p) => p.includes(`${path.sep}namespaces${path.sep}alpha${path.sep}`)),
+      "write-path only touches the changed namespace ancestry",
+    );
+    assert.equal(
+      await exists(path.join(root, "namespaces", "beta", "facts", "2026-05-01", DIRECTORY_SIDECAR_BASENAME)),
+      false,
+    );
+    assert.equal(await exists(path.join(root, "entities", DIRECTORY_SIDECAR_BASENAME)), false);
+
+    const scoped = await loadDirectorySidecar(
+      path.join(root, "namespaces", "alpha", "facts", "2026-05-01"),
+      { refresh: false },
+    );
+    assert.equal(scoped?.fresh, true);
+    assert.match(scoped?.overview ?? "", /telescope mirror/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
