@@ -2090,3 +2090,41 @@ test("converge plan honors offlineSyncExcludes so node-local state is not a push
   }
 });
 
+
+test("remnic converge apply: an aborted signal stops cursor updates without mutating them (#2965)", async () => {
+  const body = Buffer.from("identical on both sides");
+  const sha = createHash("sha256").update(body).digest("hex");
+  const filePath = "facts/same.md";
+  const fileState: ReconcileFileState = { path: filePath, sha256: sha, mtimeMs: 1000, bytes: body.length };
+  const localMap = new Map<string, ReconcileFileState[]>([["default", [fileState]]]);
+  const peerMap = new Map<string, ReconcileFileState[]>([["default", [fileState]]]);
+  const buffers = new Map<string, Map<string, Buffer>>([
+    ["default", new Map([[filePath, body]])],
+  ]);
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-cursor-abort-"));
+  const controller = new AbortController();
+  controller.abort();
+  try {
+    await assert.rejects(
+      executeConvergeApply({
+        config: parseConfig({}),
+        baseFilesByNamespace: new Map(),
+        localFilesByNamespace: localMap,
+        peerFilesByNamespace: peerMap,
+        localFileBuffers: buffers,
+        peerFileBuffers: buffers,
+        cursorDir: tmpDir,
+        peerUrl: "buffer://peer",
+        signal: controller.signal,
+      }),
+      (error: unknown) => error instanceof Error && error.name === "AbortError",
+    );
+    assert.equal(
+      await readConvergeCursor(defaultConvergeCursorPath(tmpDir, "buffer://peer", "default")),
+      null,
+      "an aborted run must not persist cursor state",
+    );
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});

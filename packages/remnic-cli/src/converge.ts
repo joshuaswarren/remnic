@@ -872,6 +872,9 @@ async function updateCursorsForPlan(plan: ReconcilePlan, options: ConvergeApplyO
 
   const namespaces = new Set(plan.byNamespace.map((n) => n.namespace));
   for (const ns of namespaces) {
+    // The cursor write loop is the last mutation phase (#2965): an
+    // operator interrupt must stop it, not finish remaining namespaces.
+    options.signal?.throwIfAborted();
     const cursorPath = defaultConvergeCursorPath(memoryDir, peerUrl, ns);
     const priorSemanticAgreements =
       options.semanticAgreementsByNamespace?.get(ns) ??

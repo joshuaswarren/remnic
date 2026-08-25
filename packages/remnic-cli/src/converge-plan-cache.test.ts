@@ -1,5 +1,5 @@
 import * as assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -530,7 +530,10 @@ test("converge plan: streamed remanifest clears client-built provenance so a lat
       );
     }
 
-    const remanifested = ["alpha", "beta", "default"];
+    // Once the peer advertises streaming, NO namespace may full-hit its
+    // client-built entry — including "shared", whose empty census keeps an
+    // unchanged watermark across the content rewrite (#2965).
+    const remanifested = ["alpha", "beta", "default", "shared"];
     const streamed = createPeerMock(peer, "rev-1");
     await convergedPlan(memoryDir, streamed);
     assert.deepEqual(streamed.manifestStreamNamespaces, remanifested);
@@ -888,3 +891,254 @@ async function mutateCachedPeerRow(
     }
   }
 }
+
+/** Every namespace that currently has a cached PEER entry on disk. */
+async function cachedPeerNamespaces(memoryDir: string): Promise<string[]> {
+  const root = convergePlanCacheRoot(memoryDir);
+  const namespaces: string[] = [];
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    for (const name of await fs.readdir(dir)) {
+      const entryPath = path.join(dir, name);
+      if ((await fs.stat(entryPath)).isDirectory()) {
+        stack.push(entryPath);
+        continue;
+      }
+      if (!name.startsWith("peer-")) continue;
+      namespaces.push((JSON.parse(await fs.readFile(entryPath, "utf8")) as { namespace?: string }).namespace ?? "?");
+    }
+  }
+  return namespaces;
+}
+
+test("converge plan: progress still reports per namespace when the cache is unavailable (#2963)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-nocache-progress-"));
+  try {
+    const corpus = convergedCorpus();
+    await writeLocalCorpus(memoryDir, corpus);
+    // The read-only/broken audit deployment: open() degrades to null.
+    const cacheRoot = convergePlanCacheRoot(memoryDir);
+    await fs.mkdir(path.dirname(cacheRoot), { recursive: true });
+    await fs.writeFile(cacheRoot, "not-a-directory");
+    const events: ConvergePlanProgressEvent[] = [];
+    const plan = await convergedPlan(memoryDir, createPeerMock(corpus), {
+      onProgress: (event) => events.push(event),
+    });
+    assert.equal(plan.converged, true, JSON.stringify(plan.byNamespace));
+    for (const side of ["local", "peer"] as const) {
+      const sideEvents = events.filter((event) => event.side === side);
+      assert.equal(
+        sideEvents.length,
+        NAMESPACES.length,
+        `${side} progress must fire per namespace even without a cache`,
+      );
+      assert.deepEqual(
+        sideEvents.map((event) => event.namespace).sort(),
+        [...NAMESPACES].sort(),
+      );
+    }
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: a manifest diverging from its snapshot census is never checkpointed (#2963)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-snapshot-bind-"));
+  try {
+    const current = convergedCorpus();
+    await writeLocalCorpus(memoryDir, current);
+    // A stale SNAPSHOT view for alpha only: the file changed on the peer
+    // between the snapshot request and the manifest stream, so the stream
+    // serves newer rows than the census the watermark describes.
+    const stale = convergedCorpus();
+    const staleAlpha = stale.get("alpha") ?? [];
+    staleAlpha[0] = { ...staleAlpha[0]!, content: memoryFileBody("alpha body that no longer exists") };
+    const divergent = createPeerMock(current, "rev-1");
+    const staleView = createPeerMock(stale, "rev-1");
+    const mock = {
+      ...divergent,
+      fetchImpl: (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        const url = new URL(String(input));
+        if (
+          url.pathname.endsWith("/offline-sync/snapshot") &&
+          (url.searchParams.get("namespace") ?? "") === "alpha"
+        ) {
+          return staleView.fetchImpl(input, init);
+        }
+        return divergent.fetchImpl(input, init);
+      }) as typeof fetch,
+    };
+
+    const plan = await convergedPlan(memoryDir, mock);
+    assert.equal(plan.converged, true, JSON.stringify(plan.byNamespace));
+    // The poisoned namespace must NOT be checkpointed; its peers must be.
+    const cached = await cachedPeerNamespaces(memoryDir);
+    assert.equal(cached.includes("alpha"), false, `alpha must not be cached under a foreign census: ${cached}`);
+    for (const namespace of ["beta", "default", "shared"]) {
+      assert.equal(cached.includes(namespace), true, `${namespace} should be checkpointed normally`);
+    }
+
+    // Once the peer is consistent again the entry still cannot warm-hit —
+    // it was never written — so alpha re-streams.
+    const consistent = createPeerMock(current, "rev-1");
+    const replan = await convergedPlan(memoryDir, consistent);
+    assert.equal(replan.converged, true, JSON.stringify(replan.byNamespace));
+    assert.deepEqual(consistent.manifestStreamNamespaces, ["alpha"]);
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: close releases only the lock instance this cache owns (#2965)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-lock-nonce-"));
+  try {
+    const cache = await ConvergePlanCache.open(memoryDir, HEX16(9));
+    const lockPath = path.join(convergePlanCacheRoot(memoryDir), "lock.json");
+    // Another planner steals mid-run via the same atomic rename open() uses.
+    const foreignNonce = randomUUID();
+    const tmp = `${lockPath}.foreign.tmp`;
+    await fs.writeFile(
+      tmp,
+      `${JSON.stringify({ pid: process.pid, startTicks: -1, savedAt: new Date().toISOString(), nonce: foreignNonce })}\n`,
+    );
+    await fs.rename(tmp, lockPath);
+
+    await cache.close();
+    const survivor = JSON.parse(await fs.readFile(lockPath, "utf8")) as { nonce?: unknown };
+    assert.equal(survivor.nonce, foreignNonce, "close must not unlink a lock another owner holds");
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: this process reclaims a lock left by its own failed release (#2965)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-lock-reclaim-"));
+  try {
+    const lockPath = path.join(convergePlanCacheRoot(memoryDir), "lock.json");
+    const first = await ConvergePlanCache.open(memoryDir, HEX16(10));
+    // The persistent aftermath of a release whose unlink failed (Windows
+    // sharing error, permission change): our own payload survives close().
+    const leftover = await fs.readFile(lockPath, "utf8");
+    await first.close();
+    await fs.writeFile(lockPath, leftover);
+
+    const second = await ConvergePlanCache.open(memoryDir, HEX16(11));
+    await second.close();
+    assert.equal(
+      await fs.readFile(lockPath, "utf8").then(() => true, () => false),
+      false,
+      "reclaimed lock must be released by the new owner's close",
+    );
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: an open cache renews its lock lease at each checkpoint (#2965)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-lock-renew-"));
+  try {
+    const cache = await ConvergePlanCache.open(memoryDir, HEX16(12));
+    const lockPath = path.join(convergePlanCacheRoot(memoryDir), "lock.json");
+    // Backdate the lease without touching ownership.
+    const held = JSON.parse(await fs.readFile(lockPath, "utf8")) as { nonce?: unknown };
+    await fs.writeFile(lockPath, `${JSON.stringify({ ...held, savedAt: new Date(0).toISOString() })}\n`);
+
+    const sha = "a".repeat(64);
+    await cache.writeEntry({
+      version: 1,
+      scope: cache.scope,
+      side: "local",
+      namespace: "default",
+      watermark: "b".repeat(64),
+      fileCount: 1,
+      capturedAtMs: 1,
+      savedAt: new Date().toISOString(),
+      files: [{ path: "facts/a.md", sha256: sha }],
+    });
+
+    const renewed = JSON.parse(await fs.readFile(lockPath, "utf8")) as { nonce?: unknown; savedAt?: unknown };
+    assert.notEqual(renewed.savedAt, new Date(0).toISOString(), "checkpoint must refresh the lease");
+    assert.equal(renewed.nonce, held.nonce, "renewal must preserve the ownership nonce");
+    await cache.close();
+    assert.equal(
+      await fs.readFile(lockPath, "utf8").then(() => true, () => false),
+      false,
+      "close still owns the lock after renewal",
+    );
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: cached memory rows with an unknown status fail open to recompute (#2965)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-status-allowlist-"));
+  try {
+    const cache = await ConvergePlanCache.open(memoryDir, HEX16(13));
+    try {
+      const base = {
+        version: 1 as const,
+        scope: cache.scope,
+        side: "peer" as const,
+        namespace: "default",
+        watermark: "b".repeat(64),
+        fileCount: 1,
+        capturedAtMs: 1,
+        savedAt: new Date().toISOString(),
+      };
+      const memoryRow = (status: string) => ({
+        path: "facts/a.md",
+        sha256: "a".repeat(64),
+        memory: {
+          id: "mem-1",
+          category: "fact",
+          contentHash: ContentHashIndex.computeHash("body"),
+          status,
+        },
+      });
+      await cache.writeEntry({ ...base, files: [memoryRow("heroic")] });
+      assert.equal(await cache.readEntry("peer", "default"), null, "unknown status must reject the entry");
+
+      await cache.writeEntry({ ...base, watermark: "c".repeat(64), files: [memoryRow("archived")] });
+      const valid = await cache.readEntry("peer", "default");
+      assert.equal(valid?.files[0]?.memory?.status, "archived", "known statuses still round-trip");
+    } finally {
+      await cache.close();
+    }
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: a peer upgraded to manifest streaming rebuilds client-built rows (#2965)", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-stream-upgrade-"));
+  try {
+    const local = convergedCorpus();
+    // Same corpus on both sides: the interesting variable is HOW the peer
+    // manifest is built (fallback vs stream), not plan divergence.
+    const peer = new Map(local);
+    await writeLocalCorpus(memoryDir, local);
+
+    // Legacy peer: no streaming route, no advertised revision. The
+    // per-file fallback checkpoints client-built rows.
+    const legacy = createPeerMock(peer, undefined);
+    legacy.manifestStream = false;
+    await convergedPlan(memoryDir, legacy);
+    assert.deepEqual(legacy.manifestStreamNamespaces, [], "no stream advertised: fallback builds the rows");
+
+    // The peer upgrades to streaming WITHOUT any file changing: the
+    // unchanged watermark must not serve the client-built rows as a full
+    // cache hit — every namespace re-streams and becomes a streamed entry.
+    const upgraded = createPeerMock(peer, "rev-1");
+    const replan = await convergedPlan(memoryDir, upgraded);
+    assert.equal(replan.converged, true, JSON.stringify(replan.byNamespace));
+    assert.deepEqual(upgraded.manifestStreamNamespaces, [...NAMESPACES].sort());
+
+    // Streamed rows with a trusted revision now warm-hit normally.
+    const warm = createPeerMock(peer, "rev-1");
+    await convergedPlan(memoryDir, warm);
+    assert.deepEqual(warm.manifestStreamNamespaces, [], "streamed entries must warm-hit after the upgrade");
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
