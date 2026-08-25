@@ -24,6 +24,7 @@ import type { DeepRecallSettings } from "./deep-recall-config.js";
 import type { RecallNavigationSettings } from "./recall-navigation-config.js";
 import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
 import type { SkillProjectionConfig } from "./procedural/skill-projection.js";
+import type { SessionExperienceConfig } from "./experience/session-experience-config.js";
 import type { ActionGateConfig } from "./coding/action-gate.js";
 import type { ActiveContextConfigFields } from "./active-context-config.js";
 import type { LocalLlmConfig } from "./local-llm-config.js";
@@ -1245,6 +1246,8 @@ export interface PluginConfig
    */
   dreamsPhases: DreamsPhasesConfig;
   procedural: ProceduralConfig;
+  /** Session-end experience extraction (issue #2979). Default off. */
+  sessionExperience: SessionExperienceConfig;
   extractionLiveness: ExtractionLivenessConfig;
   /** Span-mode extraction (#2333 Phase B, bench-gated). Default off. */
   extraction: ExtractionSpanConfig;

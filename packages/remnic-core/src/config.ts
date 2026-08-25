@@ -57,6 +57,7 @@ import { parseSkillProjectionConfig } from "./procedural/skill-projection.js";
 import { parseDriftDetectionConfig } from "./preferences/drift-config.js";
 import { parseDeepRecallConfig } from "./deep-recall-config.js";
 import { parseRecallNavigationConfig } from "./recall-navigation-config.js";
+import { parseSessionExperienceConfig } from "./experience/session-experience-config.js";
 import { parseContradictionLocalizationConfig, parseContradictionScanConfig } from "./contradiction-config.js";
 import { parseGraphPathScoringConfig } from "./graph-path-scoring-config.js";
 import { parseWritePathDedupConfig } from "./dedup/novelty-gate.js";
@@ -637,6 +638,7 @@ const MEMORY_OS_PRESETS: Record<MemoryOsPresetName, Record<string, unknown>> = {
     // memory on a conservative preset must set `procedural.enabled: true`
     // explicitly.
     procedural: { enabled: false },
+    sessionExperience: { enabled: false },
     recallNavigation: { enabled: false },
   },
   balanced: {
@@ -1830,6 +1832,8 @@ export function parseConfig(
     deepRecall: parseDeepRecallConfig(cfg.deepRecall),
     // Session-scoped recall navigation (issue #1956)
     recallNavigation: parseRecallNavigationConfig(cfg.recallNavigation),
+    // Session-end experience extraction (issue #2979) — default off.
+    sessionExperience: parseSessionExperienceConfig(cfg.sessionExperience),
     dependencyPropagation: parseDependencyPropagationConfig(cfg),
     // Temporal Supersession (issue #375)
     temporalSupersessionEnabled: cfg.temporalSupersessionEnabled !== false, // On by default

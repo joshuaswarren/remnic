@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.69.47",
+  "version": "9.69.48",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -4431,6 +4431,19 @@
             "maximum": 50,
             "default": 10,
             "description": "Traverse neighbor ceiling."
+          }
+        }
+      },
+      "sessionExperience": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Session-end agent-experience episode extraction (issue #2979).",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master switch. Default off; conservative pins off."
           }
         }
       },

@@ -1738,6 +1738,14 @@ Stored as `category: procedure` markdown under `memoryDir/procedures/`. Narrativ
 | `procedural.skillProjection.enabled` | `false` | Project active procedures into host-native `skills/<slug>/SKILL.md` bundles during Codex materialization (issue #2369). Off by default. `remnic export skills` / `remnic import skills` are explicit user actions and work regardless of this gate. Only `status: active` procedures are ever projected. |
 | `procedural.skillProjection.maxSkills` | `20` | Maximum projected bundles per materialization, newest procedure first. **`0` disables projection entirely.** |
 
+## Session-end experience extraction (issue #2979)
+
+At `session_end` the completed session's buffered turns are distilled — deterministically, no LLM — into at most ONE Situation/Approach/Reflect "experience episode": situation (the task shape, from the first substantive user turn), approach (what the agent tried), reflection (terminal outcome evidence; a failed session records the failure). Episodes are agent-subject `category: procedure` memories stored under `procedures/` with `status: pending_review` — a machine-derived write that never activates itself; promotion stays the operator's call. Writes go through the sealed salvage-mode envelope, dedupe per session key (a replayed `session_end` cannot double-write), honor the shared flush abort signal and deadline, and land in the session's resolved write namespace. A transcript with no task or no agent work yields nothing (`skippedReason: "insufficient_signal"`).
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `sessionExperience.enabled` | `false` | Master gate for session-end episode extraction. Default off; the `conservative` preset pins it `false`. With the gate off a session end performs zero storage calls for this feature — nothing is read, composed, or written. |
+
 ## Preference drift detection (issue #2371)
 
 Covers the failure mode the agent-memory survey calls *stale preference reuse*: a `category: preference` memory keeps being injected at full prominence long after the last conversation that supported it. The contradiction scan and temporal supersession both need a new statement to arrive; this job looks instead at the *absence* of corroboration.
