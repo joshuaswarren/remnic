@@ -50,9 +50,19 @@ test("relocated executors keep their tool contracts", async () => {
     blocksSupportPassportMutation("link_graph", null),
     false,
   );
-
   const eligibility = deriveMemoryActionPolicyEligibility({
-    frontmatter: { id: "m3", confidence: 7, importance: { score: 2, level: "normal", reasons: ["test"], keywords: ["k"] } },
+    frontmatter: {
+      id: "m3",
+      category: "fact",
+      created: "2026-08-25T00:00:00.000Z",
+      updated: "2026-08-25T00:00:00.000Z",
+      source: "extraction",
+      confidence: 7,
+      confidenceTier: "inferred",
+      tags: [],
+      status: "active",
+      importance: { score: 2, level: "normal", reasons: ["test"], keywords: ["k"] },
+    },
   });
   assert.equal(eligibility?.confidence, 1);
   assert.equal(eligibility?.importance, 1);
