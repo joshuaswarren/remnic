@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { MessageChannel } from "node:worker_threads";
 import { OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES } from "@remnic/core";
 import {
+  fetchPeerManifestStream,
   fetchPeerSnapshot,
   postPeerFileContent,
   postPeerFileDeletion,
@@ -19,7 +20,7 @@ test("peer transport canonicalizes request URLs without credentials or request-o
     undefined,
     async (input, init) => {
       requestedUrl = String(input);
-      requestSignal = init?.signal;
+      requestSignal = init?.signal ?? undefined;
       return Response.json({ files: [], tombstones: [] });
     },
     50,
@@ -179,4 +180,37 @@ test("peer transport aborts a stalled request at the configured timeout", async 
     keepAlive.port1.close();
     keepAlive.port2.close();
   }
+});
+
+test("peer snapshot fetch threads the abort signal and does not retry the fallback route (#2954)", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const requestedPaths: string[] = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    requestedPaths.push(new URL(String(input)).pathname);
+    if (!init?.signal?.aborted) throw new Error("expected a pre-aborted request signal");
+    throw init.signal.reason;
+  };
+  await assert.rejects(
+    fetchPeerSnapshot("http://peer", "default", undefined, fetchImpl, 5_000, controller.signal),
+    (error: unknown) => (error as Error)?.name === "AbortError"
+  );
+  assert.equal(requestedPaths.length, 1);
+  assert.ok(requestedPaths[0]!.includes("/remnic/"));
+});
+
+test("peer manifest stream fetch carries the abort signal (#2954)", async () => {
+  const controller = new AbortController();
+  let requestSignal: AbortSignal | undefined;
+  const fetchImpl: typeof fetch = async (_input, init) => {
+    requestSignal = init?.signal ?? undefined;
+    controller.abort();
+    throw init?.signal?.reason ?? new Error("aborted");
+  };
+  await assert.rejects(
+    fetchPeerManifestStream("http://peer", "default", undefined, fetchImpl, 5_000, controller.signal),
+    (error: unknown) => (error as Error)?.name === "AbortError"
+  );
+  assert.ok(requestSignal instanceof AbortSignal);
+  assert.ok(requestSignal.aborted);
 });

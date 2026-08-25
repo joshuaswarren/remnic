@@ -90,6 +90,7 @@ export async function planLocalNamespaceCensus(args: LocalCensusArgs): Promise<L
   const evidence = await readLocalTombstoneEvidence(rootDir);
   let manifestReadFailed = false;
   const manifest = await buildReconcileManifest({
+    signal: args.signal,
     files,
     parseMemory: parseFrontmatter,
     citationTemplate: args.citationTemplate,

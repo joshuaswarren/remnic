@@ -58,7 +58,14 @@ export interface PeerCensusResult {
 export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<PeerCensusResult> {
   const { peerUrl, ns } = { peerUrl: args.peerUrl, ns: args.namespace };
   args.signal?.throwIfAborted();
-  const peerData = await fetchPeerSnapshot(peerUrl, ns, args.resolvedToken, args.fetchFn, args.timeoutMs);
+  const peerData = await fetchPeerSnapshot(
+    peerUrl,
+    ns,
+    args.resolvedToken,
+    args.fetchFn,
+    args.timeoutMs,
+    args.signal
+  );
   const priorPeerEntry = args.cache ? await args.cache.readEntry("peer", ns) : null;
   // Streamed rows carry the PEER's identity semantics. Client-built rows
   // (legacy per-file fallback) carry this client's parser and are safe
@@ -96,7 +103,14 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
     };
   } else {
     const streamedManifest = args.manifestStream
-      ? await fetchPeerManifestStream(peerUrl, ns, args.resolvedToken, args.fetchFn, args.timeoutMs)
+      ? await fetchPeerManifestStream(
+          peerUrl,
+          ns,
+          args.resolvedToken,
+          args.fetchFn,
+          args.timeoutMs,
+          args.signal
+        )
       : null;
     peerManifest = streamedManifest;
     if (peerManifest) {
@@ -108,6 +122,7 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
         files: peerData.files,
         parseMemory: parseFrontmatter,
         citationTemplate: args.citationTemplate,
+        signal: args.signal,
         // Older peers need one content request per memory file; prior cache
         // rows (sha-keyed) skip the ones already fetched.
         cachedFiles: priorPeerFiles ?? args.localManifestFiles,
@@ -120,7 +135,8 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
               file.path,
               args.resolvedToken,
               args.fetchFn,
-              args.timeoutMs
+              args.timeoutMs,
+              args.signal
             );
           } catch (error) {
             readFailure = error instanceof Error ? error : new Error(String(error));
@@ -147,7 +163,8 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
       tombstonePath,
       args.resolvedToken,
       args.fetchFn,
-      args.timeoutMs
+      args.timeoutMs,
+      args.signal
     );
     // A transport-level failure here is FATAL on purpose: tombstone evidence
     // is what stops a plan from pushing a peer-retracted memory back

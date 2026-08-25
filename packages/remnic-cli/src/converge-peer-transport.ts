@@ -99,7 +99,9 @@ export async function fetchPeerManifestStream(
   namespace: string,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS
+  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  /** Planning-phase cancellation (#2954): aborts the in-flight request. */
+  signal?: AbortSignal
 ): Promise<ReconcileManifest | null> {
   const base = normalizePeerBaseUrl(peerUrl);
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
@@ -108,7 +110,12 @@ export async function fetchPeerManifestStream(
     `/engram/v1/offline-sync/manifest-stream?namespace=${encodeURIComponent(namespace)}&include_transcripts=false`,
   ];
   for (const route of routes) {
-    const response = await fetchPeerRequest(fetchImpl, `${base}${route}`, { headers }, timeoutMs);
+    const response = await fetchPeerRequest(
+      fetchImpl,
+      `${base}${route}`,
+      { headers, ...(signal ? { signal } : {}) },
+      timeoutMs
+    );
     if (response.status === 404 || response.status === 405) continue;
     if (response.status === 401 || response.status === 403) {
       throw new Error(`peer manifest authentication failed: HTTP ${response.status}`);
@@ -124,7 +131,9 @@ export async function fetchPeerSnapshot(
   namespace: string,
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
-  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS
+  timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
+  /** Planning-phase cancellation (#2954): aborts the in-flight request. */
+  signal?: AbortSignal
 ): Promise<{
   files: ReconcileFileState[];
   tombstones: Set<string>;
@@ -145,8 +154,16 @@ export async function fetchPeerSnapshot(
   for (const route of routes) {
     let response: Response;
     try {
-      response = await fetchPeerRequest(fetchImpl, `${base}${route}`, { headers }, timeoutMs);
+      response = await fetchPeerRequest(
+        fetchImpl,
+        `${base}${route}`,
+        { headers, ...(signal ? { signal } : {}) },
+        timeoutMs
+      );
     } catch (error) {
+      // An aborted request is not a route failure: retrying the fallback
+      // route after Ctrl+C would race the operator's shutdown.
+      if (signal?.aborted) throw error;
       lastFailure = error instanceof Error ? error.message : String(error);
       continue;
     }

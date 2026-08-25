@@ -39,6 +39,33 @@ test("peer manifest revision includes the citation-template fingerprint", () => 
   assert.equal(peerManifestRevision("{{source}}"), custom);
 });
 
+test("buildReconcileManifest stops scheduling read batches once the signal aborts (#2954)", async () => {
+  const controller = new AbortController();
+  let reads = 0;
+  const stub = Buffer.from("stub");
+  // 120 files = three 50-file read batches; the abort lands inside batch 1.
+  const files = Array.from({ length: 120 }, (_, i) => ({
+    path: `facts/batch-abort-${i}.md`,
+    sha256: createHash("sha256").update(String(i)).digest("hex"),
+  }));
+  await assert.rejects(
+    buildReconcileManifest({
+      files,
+      parseMemory: parseFrontmatter,
+      signal: controller.signal,
+      readFile: async () => {
+        reads += 1;
+        if (reads === 1) controller.abort();
+        return stub;
+      },
+    }),
+    (error: unknown) => (error as Error)?.name === "AbortError"
+  );
+  // Batch 1 was already in flight when the abort landed, so exactly its 50
+  // reads ran; batches 2 and 3 must never be scheduled.
+  assert.equal(reads, 50);
+});
+
 test("reconcile manifest keeps file identity separate from canonical semantic identity", async () => {
   const content = "The deployment uses a durable queue with an enrichment suffix.";
   const semanticHash = ContentHashIndex.computeHash("The deployment uses a durable queue.");
