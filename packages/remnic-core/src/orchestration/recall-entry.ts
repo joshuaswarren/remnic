@@ -202,7 +202,11 @@ export class RecallEntryCoordinator {
       // endTrace() is safe here: if no trace is active (disabled or already
       // closed by recallInternal's try/finally), it returns null immediately.
       this.deps.profiler.endTrace();
-      const missing = recallFailureComposition(err);
+      // Caller-cancelled recalls stay quiet: the failure was the caller's
+      // abort, not a recall degradation (issue #2972 contract).
+      const missing = options.abortSignal?.aborted
+        ? null
+        : recallFailureComposition(err);
       if (!missing) return "";
       notifyContextComposition(options.onContextComposition, missing, (observerErr) => {
         log.warn("recall: context composition observer failed open", observerErr);
