@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { TimelineCard } from "./types.js";
 import { renderDeterministicJournal } from "./journal-recap.js";
+import { projectCardForRecapExport } from "./recap-export.js";
 
 const DATE = "2026-08-17";
 const TZ = "UTC";
@@ -110,4 +111,20 @@ test("recap does not invent people or mood claims", () => {
   assert.equal(/productivity|mood|intent|score/i.test(body), false);
   assert.match(body, /Terminal/);
   assert.match(body, /Idle/);
+});
+
+test("a privacy-projected card without a title renders its id", () => {
+  const projected = projectCardForRecapExport(
+    card({
+      id: "act-redacted",
+      title: "Secret Window Title",
+      startUtc: "2026-08-17T14:00:00.000Z",
+      endUtc: "2026-08-17T15:00:00.000Z",
+    }),
+    false,
+  );
+  const body = renderDeterministicJournal([projected], { date: DATE, timezone: TZ });
+  assert.equal(body.includes("Secret Window Title"), false);
+  assert.equal(body.includes("undefined"), false);
+  assert.equal(body.includes("- 60m act-redacted"), true);
 });
