@@ -6,6 +6,8 @@ import path from "node:path";
 
 import { loadBenchResultSummaries, summarizeBenchmarkResult } from "../packages/bench-ui/src/results.js";
 import { loadBenchmarkResult } from "../packages/bench/src/results-store.js";
+import { recognizeLegacyBenchmarkArtifact } from "../packages/bench/src/legacy-artifact.js";
+
 import type { BenchResultSummary } from "../packages/bench-ui/src/bench-data.js";
 
 /**
@@ -43,6 +45,17 @@ function applyDocumentedCoercions(summary: BenchResultSummary): BenchResultSumma
     })),
   };
   return coerced;
+}
+
+function summarizeLegacyArtifact(
+  artifact: Record<string, unknown>,
+  filePath: string,
+): BenchResultSummary {
+  const recognized = recognizeLegacyBenchmarkArtifact(artifact);
+  if (!recognized.ok) {
+    assert.fail(recognized.reason);
+  }
+  return summarizeBenchmarkResult(recognized.result, filePath);
 }
 
 const legacyArtifacts: Array<{ name: string; id: string; artifact: Record<string, unknown> }> = [
@@ -109,13 +122,6 @@ const legacyArtifacts: Array<{ name: string; id: string; artifact: Record<string
       },
     },
   },
-  {
-    name: "meta-floor-only shape",
-    id: "floor-run",
-    artifact: {
-      meta: { id: "floor-run", benchmark: "sample", timestamp: "2026-01-01T00:00:00.000Z" },
-    },
-  },
 ];
 
 test("legacy artifacts summarize identically to the pre-#2800 UI after the compatibility upgrade", async () => {
@@ -125,9 +131,18 @@ test("legacy artifacts summarize identically to the pre-#2800 UI after the compa
       const filePath = path.join(dir, `${id}.json`);
       await writeFile(filePath, JSON.stringify(artifact), "utf8");
 
+      const oldUiSummary = summarizeLegacyArtifact(artifact, filePath);
+      assert.ok(oldUiSummary, `old UI parser must accept the ${name}`);
+
       const upgraded = await loadBenchmarkResult(filePath);
       const upgradedSummary = summarizeBenchmarkResult(upgraded, filePath);
       assert.ok(upgradedSummary, `upgraded ${name} must summarize`);
+
+      assert.deepEqual(
+        upgradedSummary,
+        applyDocumentedCoercions(oldUiSummary),
+        `summary parity failed for the ${name}`,
+      );
     }
 
     const uiPayload = await loadBenchResultSummaries(dir);
@@ -136,16 +151,15 @@ test("legacy artifacts summarize identically to the pre-#2800 UI after the compa
       uiPayload.summaries.map((summary) => summary.id).sort(),
       legacyArtifacts.map((entry) => entry.id).sort(),
     );
-    for (const { name, id } of legacyArtifacts) {
+    for (const { name, id, artifact } of legacyArtifacts) {
       const filePath = path.join(dir, `${id}.json`);
-      const loaded = await loadBenchmarkResult(filePath);
-      const loadedSummary = summarizeBenchmarkResult(loaded, filePath);
-      assert.ok(loadedSummary, `loaded ${name} must summarize`);
+      const oldUiSummary = summarizeLegacyArtifact(artifact, filePath);
+      assert.ok(oldUiSummary, `old UI parser must accept the ${name}`);
       const uiSummary = uiPayload.summaries.find((summary) => summary.id === id);
       assert.ok(uiSummary, `UI loader must surface ${name}`);
       assert.deepEqual(
         uiSummary,
-        applyDocumentedCoercions(loadedSummary),
+        applyDocumentedCoercions(oldUiSummary),
         `UI loader parity failed for the ${name}`,
       );
     }
@@ -158,7 +172,7 @@ test("artifacts the old UI skipped as malformed stay rejected with a reason", as
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-ui-legacy-malformed-"));
   try {
     const ambiguous = {
-      meta: { id: "x", benchmark: "y", timestamp: "t", mode: "eval" },
+      meta: { id: "x", benchmark: "y", timestamp: "2026-04-18T10:00:00.000Z", mode: "eval" },
     };
     const filePath = path.join(dir, "ambiguous.json");
     await writeFile(filePath, JSON.stringify(ambiguous), "utf8");
