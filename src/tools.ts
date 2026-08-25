@@ -16,7 +16,8 @@ import {
 import { log } from "./logger.js";
 import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
 import { executeMemoryPromote } from "./memory-promote.js";
-import { openClawToolWriteOrigin } from "./tool-write-origin.js";
+
+import { registerSharedContextTools } from "./shared-context-tools.js";
 import { WorkStorage } from "@remnic/core/work/storage";
 import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "@remnic/core/work/board";
 import { wrapWorkLayerContext } from "@remnic/core/work/boundary";
@@ -29,7 +30,7 @@ import {
   readReferencedMemoryForPolicyEligibility,
 } from "./memory-action-target.js";
 
-interface ToolApi {
+export interface ToolApi {
   registerTool(
     spec: {
       name: string;
@@ -2866,181 +2867,9 @@ Best for:
     { name: "work_board" },
   );
 
-  api.registerTool(
-    {
-      name: "shared_context_write_output",
-      label: "Write Shared Agent Output",
-      description:
-        "Write an agent work product into the shared-context directory (v4.0). Other agents can read these files to coordinate without explicit message passing.",
-      parameters: Type.Object({
-        // Provenance is server-derived from the host runtime agent; a
-        // mismatching value here is rejected, never used as the origin.
-        agentId: Type.String({ description: "Agent ID producing this output; must match this host's runtime agent id when the host exposes one." }),
-        title: Type.String({ description: "Short title for the output." }),
-        content: Type.String({ description: "Markdown content to write." }),
-      }),
-      async execute(_toolCallId, params) {
-        const { agentId, title, content } = params as { agentId: string; title: string; content: string };
-        if (!orchestrator.sharedContext) {
-          return toolResult(
-            "Shared context is disabled. Enable `sharedContextEnabled: true` to use shared-context tools.",
-          );
-        }
-        try {
-          const fp = await orchestrator.sharedContext.writeAgentOutput({
-            title,
-            content,
-            ...openClawToolWriteOrigin(hostRuntimeAgentId, agentId),
-          });
-          return toolResult(`Wrote shared agent output: ${fp}`);
-        } catch (err) {
-          return toolResult(`shared_context_write_output error: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      },
-    },
-    { name: "shared_context_write_output" },
-  );
-
-  api.registerTool(
-    {
-      name: "shared_feedback_record",
-      label: "Record Shared Feedback",
-      description:
-        "Append an approval/rejection decision into shared-context feedback inbox (v4.0/v5.0). Intended to power compounding learning.",
-      parameters: Type.Object({
-        agent: Type.String({ description: "Agent name that produced the recommendation/output." }),
-        decision: Type.String({
-          enum: ["approved", "approved_with_feedback", "rejected"],
-          description: "Decision outcome.",
-        }),
-        reason: Type.String({ description: "Why the decision was made (short but specific)." }),
-        date: Type.Optional(Type.String({ description: "ISO timestamp. Defaults to now." })),
-        learning: Type.Optional(Type.String({ description: "Optional distilled learning/pattern." })),
-        outcome: Type.Optional(Type.String({ description: "Optional downstream outcome (day-one supported; may be empty initially)." })),
-        severity: Type.Optional(Type.String({
-          enum: ["low", "medium", "high"],
-          description: "Optional severity rating for the mistake/outcome.",
-        })),
-        confidence: Type.Optional(Type.Number({ description: "Optional confidence score from 0 to 1." })),
-        workflow: Type.Optional(Type.String({ description: "Optional workflow or playbook name associated with the feedback." })),
-        tags: Type.Optional(Type.Array(Type.String(), { description: "Optional tags for rubric grouping and recall matching." })),
-        evidenceWindowStart: Type.Optional(Type.String({ description: "Optional start timestamp for the evidence window." })),
-        evidenceWindowEnd: Type.Optional(Type.String({ description: "Optional end timestamp for the evidence window." })),
-        refs: Type.Optional(Type.Array(Type.String(), { description: "Optional references (URLs, IDs, filenames)." })),
-      }),
-      async execute(_toolCallId, params) {
-        if (!orchestrator.sharedContext) {
-          return toolResult(
-            "Shared context is disabled. Enable `sharedContextEnabled: true` to record shared feedback.",
-          );
-        }
-        const p = params as any;
-        const entry = {
-          agent: String(p.agent ?? ""),
-          decision: p.decision as "approved" | "approved_with_feedback" | "rejected",
-          reason: String(p.reason ?? ""),
-          date: typeof p.date === "string" && p.date.length > 0 ? p.date : new Date().toISOString(),
-          learning: typeof p.learning === "string" ? p.learning : undefined,
-          outcome: typeof p.outcome === "string" ? p.outcome : undefined,
-          severity: p.severity === "low" || p.severity === "medium" || p.severity === "high" ? p.severity : undefined,
-          confidence: typeof p.confidence === "number" && Number.isFinite(p.confidence) ? p.confidence : undefined,
-          workflow: typeof p.workflow === "string" ? p.workflow : undefined,
-          tags: Array.isArray(p.tags) ? p.tags.map(String) : undefined,
-          evidenceWindowStart: typeof p.evidenceWindowStart === "string" ? p.evidenceWindowStart : undefined,
-          evidenceWindowEnd: typeof p.evidenceWindowEnd === "string" ? p.evidenceWindowEnd : undefined,
-          refs: Array.isArray(p.refs) ? p.refs.map(String) : undefined,
-        };
-        await orchestrator.sharedContext.appendFeedback(entry);
-        return toolResult("OK");
-      },
-    },
-    { name: "shared_feedback_record" },
-  );
-
-  api.registerTool(
-    {
-      name: "shared_priorities_append",
-      label: "Append Priorities Inbox",
-      description:
-        "Append text into shared-context priorities inbox. A curator run should merge this into priorities.md.",
-      parameters: Type.Object({
-        agentId: Type.String({ description: "Agent ID appending priorities." }),
-        text: Type.String({ description: "Priority notes to append (markdown)." }),
-      }),
-      async execute(_toolCallId, params) {
-        if (!orchestrator.sharedContext) {
-          return toolResult(
-            "Shared context is disabled. Enable `sharedContextEnabled: true` to write priorities inbox.",
-          );
-        }
-        const { agentId, text } = params as { agentId: string; text: string };
-        await orchestrator.sharedContext.appendPrioritiesInbox({ agentId, text });
-        return toolResult("OK");
-      },
-    },
-    { name: "shared_priorities_append" },
-  );
-
-  api.registerTool(
-    {
-      name: "shared_context_cross_signals_run",
-      label: "Run Cross-Signal Synthesis",
-      description:
-        "Generate today's shared-context cross-signal markdown + JSON artifacts on demand, without requiring a full roundtable curation pass.",
-      parameters: Type.Object({
-        date: Type.Optional(Type.String({ description: "YYYY-MM-DD. Defaults to today." })),
-      }),
-      async execute(_toolCallId, params) {
-        if (!orchestrator.sharedContext) {
-          return toolResult(
-            "Shared context is disabled. Enable `sharedContextEnabled: true` to synthesize cross-signals.",
-          );
-        }
-        const { date } = params as { date?: string };
-        const result = await orchestrator.sharedContext.synthesizeCrossSignals({ date });
-        return toolResult(
-          [
-            `Cross-signals markdown: ${result.crossSignalsMarkdownPath}`,
-            `Cross-signals JSON: ${result.crossSignalsPath}`,
-            `Source outputs analyzed: ${result.report.sourceCount}`,
-            `Feedback entries analyzed: ${result.report.feedbackCount}`,
-            `Overlap count: ${result.overlapCount}`,
-          ].join("\n"),
-        );
-      },
-    },
-    { name: "shared_context_cross_signals_run" },
-  );
-
-  api.registerTool(
-    {
-      name: "shared_context_curate_daily",
-      label: "Curate Daily Roundtable",
-      description:
-        "Curator tool: generate today's roundtable summary in shared-context/roundtable (deterministic baseline).",
-      parameters: Type.Object({
-        date: Type.Optional(Type.String({ description: "YYYY-MM-DD. Defaults to today." })),
-      }),
-      async execute(_toolCallId, params) {
-        if (!orchestrator.sharedContext) {
-          return toolResult(
-            "Shared context is disabled. Enable `sharedContextEnabled: true` to curate roundtables.",
-          );
-        }
-        const { date } = params as { date?: string };
-        const result = await orchestrator.sharedContext.curateDaily({ date });
-        return toolResult(
-          [
-            `Roundtable: ${result.roundtablePath}`,
-            `Cross-signals markdown: ${result.crossSignalsMarkdownPath}`,
-            `Cross-signals JSON: ${result.crossSignalsPath}`,
-            `Overlap count: ${result.overlapCount}`,
-          ].join("\n"),
-        );
-      },
-    },
-    { name: "shared_context_curate_daily" },
-  );
+  // ── Shared Context tools (extracted to src/shared-context-tools.ts;
+  // tools.ts is at its fileSizeGrandfather ceiling — issue #2920) ──────
+  registerSharedContextTools(api, orchestrator, hostRuntimeAgentId);
 
   api.registerTool(
     {

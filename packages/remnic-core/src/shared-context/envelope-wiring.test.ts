@@ -36,12 +36,14 @@ test("authority envelope round-trips write -> cross-signals -> curation", async 
   const { manager, dir } = await makeManager();
   t.after(() => rm(dir, { recursive: true, force: true }));
 
+  // Within the write TTL policy (issue #2920): strictly future, ≤10 years.
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
   const fp = await manager.writeAgentOutput({
     agentId: "agent-alpha",
     title: "Deploy checklist",
     content: "Verified the deploy checklist end to end.",
     authority: "advisory",
-    expiresAt: "2099-01-01T00:00:00.000Z",
+    expiresAt,
     supersedes: "out-0001",
   });
 
@@ -49,7 +51,7 @@ test("authority envelope round-trips write -> cross-signals -> curation", async 
   assert.match(raw, /^kind: agent_output$/m);
   assert.match(raw, /^sharedBy: "agent-alpha"$/m);
   assert.match(raw, /^authority: "advisory"$/m);
-  assert.match(raw, /^expiresAt: "2099-01-01T00:00:00\.000Z"$/m);
+  assert.ok(raw.includes(`expiresAt: ${JSON.stringify(expiresAt)}`));
   assert.match(raw, /^supersedes: "out-0001"$/m);
 
   const signals = await manager.synthesizeCrossSignals({ date: today() });

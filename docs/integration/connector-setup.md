@@ -434,7 +434,7 @@ canonical `remnic.*` aliases are being added on the same MCP surface.
 | `engram.work_task` | Manage work-layer tasks (CRUD + transition) |
 | `engram.work_project` | Manage work-layer projects (CRUD + link_task) |
 | `engram.work_board` | Export/import work-layer board snapshots |
-| `engram.shared_context_write_output` | Write agent output to shared context |
+| `engram.shared_context_write_output` | Write agent output to shared context; optional `authority`/`expiresAt`/`supersedes` envelope controls |
 | `engram.shared_feedback_record` | Record approval/rejection feedback |
 | `engram.shared_priorities_append` | Append priorities to inbox |
 | `engram.shared_context_cross_signals_run` | Generate cross-signal synthesis |

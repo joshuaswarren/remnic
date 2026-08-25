@@ -29,6 +29,13 @@ export interface ComposeWriteEnvelopeInput {
   supersedes?: string;
   /** Config opt-in (`sharedContextAllowBindingAuthority`). Binding throws without it. */
   allowBinding: boolean;
+  /**
+   * Write instant for the expiry TTL policy (issue #2920). When finite, an
+   * `expiresAt` must land strictly after it and within the maximum TTL —
+   * a past or effectively-immortal expiry is a client input error, never a
+   * silently accepted stamp.
+   */
+  nowMs?: number;
 }
 
 function requireEnvelopeActor(agentId: string): string {
@@ -46,6 +53,21 @@ function optionalEnvelopeAt(expiresAt: string | undefined): string | undefined {
     throw new Error(`composeWriteEnvelope: expiresAt must be a valid ISO-8601 timestamp (${parsed.error})`);
   }
   return parsed.at;
+}
+
+/** Maximum write-side TTL: 10 years. A farther `expiresAt` is rejected. */
+export const MAX_WRITE_EXPIRES_AT_TTL_MS = 3650 * 24 * 60 * 60 * 1000;
+
+function assertBoundedFutureExpiry(expiresAt: string, nowMs: number): void {
+  const expiresAtMs = Date.parse(expiresAt);
+  if (expiresAtMs <= nowMs) {
+    throw new Error("composeWriteEnvelope: expiresAt must be an instant strictly after the write time");
+  }
+  if (expiresAtMs - nowMs > MAX_WRITE_EXPIRES_AT_TTL_MS) {
+    throw new Error(
+      `composeWriteEnvelope: expiresAt exceeds the maximum TTL of ${MAX_WRITE_EXPIRES_AT_TTL_MS}ms`,
+    );
+  }
 }
 
 function optionalEnvelopeId(supersedes: string | undefined): string | undefined {
@@ -137,6 +159,9 @@ function requireProducer(value: string): string {
 export function composeWriteEnvelope(input: ComposeWriteEnvelopeInput): SharedEnvelope {
   const sharedBy = requireEnvelopeActor(input.origin);
   const expiresAt = optionalEnvelopeAt(input.expiresAt);
+  if (expiresAt !== undefined && Number.isFinite(input.nowMs ?? Number.NaN)) {
+    assertBoundedFutureExpiry(expiresAt, input.nowMs as number);
+  }
   const supersedes = optionalEnvelopeId(input.supersedes);
   return applyDefaultEnvelope(
     { sharedBy, authority: input.authority, expiresAt, supersedes },

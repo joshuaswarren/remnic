@@ -605,6 +605,7 @@ export class SharedContextManager {
       expiresAt: opts.expiresAt,
       supersedes: opts.supersedes,
       allowBinding: this.allowBindingAuthority,
+      nowMs: createdAt.getTime(),
     });
 
     const dir = path.join(this.outputsDir, agentPathSegment, date);

@@ -33,6 +33,10 @@ import {
 } from "./access-namespace-preflight.js";
 import { expandTildePath } from "./utils/path.js";
 import { resolvePrincipal } from "./namespaces/principal.js";
+import {
+  parseSharedWriteOutputControls,
+  type SharedWriteOutputControls,
+} from "./shared-context/write-output-controls.js";
 import { getRecallTimingStatus, isRecallTimingsOperator } from "./recall-timings.js";
 import { parseDeepRecallMaxSteps } from "./deep-recall-config.js";
 import { validateBriefingFormat } from "./briefing.js";
@@ -319,7 +323,33 @@ defineOperation({ name: "memory_identity", description: "Memory identity.", sche
 defineOperation({ name: "work_task", description: "Manage work task.", schema: strictSchema({ action: S.str, id: S.str, title: S.str, description: S.str, status: S.str, priority: S.str, owner: S.str, assignee: S.str, projectId: S.str, tags: S.strArr, dueAt: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.workTask({ action: (optStr(input.action) as "update" | "list" | "get" | "create" | "delete" | "transition") ?? "list", id: optStr(input.id), title: optStr(input.title), description: optStr(input.description), status: optStr(input.status), priority: optStr(input.priority), owner: optStr(input.owner), assignee: optStr(input.assignee), projectId: optStr(input.projectId), tags: optStrArr(input.tags), dueAt: optStr(input.dueAt) }) }) });
 defineOperation({ name: "work_project", description: "Manage work project.", schema: strictSchema({ action: S.str, id: S.str, name: S.str, description: S.str, status: S.str, owner: S.str, tags: S.strArr, taskId: S.str, projectId: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.workProject({ action: (optStr(input.action) as "update" | "list" | "get" | "create" | "delete" | "link_task") ?? "list", id: optStr(input.id), name: optStr(input.name), description: optStr(input.description), status: optStr(input.status), owner: optStr(input.owner), tags: optStrArr(input.tags), taskId: optStr(input.taskId), projectId: optStr(input.projectId) }) }) });
 defineOperation({ name: "work_board", description: "Manage work board.", schema: strictSchema({ action: S.str, projectId: S.str, snapshotJson: S.str, linkToMemory: S.bool }), handler: async (input, ctx) => ({ result: await ctx.service.workBoard({ action: (optStr(input.action) as "export_markdown" | "export_snapshot" | "import_snapshot") ?? "export_markdown", projectId: optStr(input.projectId) ?? "", snapshotJson: optStr(input.snapshotJson) ?? "", linkToMemory: input.linkToMemory === true }) }) });
-defineOperation({ name: "shared_context_write_output", description: "Write shared output.", schema: strictSchema({ agentId: S.str, title: S.str, content: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.sharedContextWriteOutput({ agentId: optStr(input.agentId) ?? "", title: optStr(input.title) ?? "", content: optStr(input.content) ?? "", principal: ctx.authenticatedPrincipal }) }) });
+// Issue #2920: the envelope controls (authority/expiresAt/supersedes) are
+// parsed by the ONE canonical surface module shared with the OpenClaw tool
+// (write-output-controls.ts); semantics stay in composeWriteEnvelope. A
+// client-supplied principal/namespace is rejected here — identity and
+// scoping are server-resolved (ctx.authenticatedPrincipal).
+defineOperation({
+  name: "shared_context_write_output",
+  description: "Write shared output.",
+  schema: strictSchema({ agentId: S.str, title: S.str, content: S.str, authority: S.str, expiresAt: S.str, supersedes: S.str }),
+  handler: async (input, ctx) => {
+    let controls: SharedWriteOutputControls;
+    try {
+      controls = parseSharedWriteOutputControls(input);
+    } catch (error) {
+      throw new EngramAccessInputError(error instanceof Error ? error.message : String(error));
+    }
+    return {
+      result: await ctx.service.sharedContextWriteOutput({
+        agentId: optStr(input.agentId) ?? "",
+        title: optStr(input.title) ?? "",
+        content: optStr(input.content) ?? "",
+        ...controls,
+        principal: ctx.authenticatedPrincipal,
+      }),
+    };
+  },
+});
 defineOperation({ name: "shared_feedback_record", description: "Record shared feedback.", schema: strictSchema({ agent: S.str, decision: S.str, reason: S.str, date: S.str, learning: S.str, outcome: S.str, severity: S.str, confidence: S.num, workflow: S.str, tags: S.strArr, evidenceWindowStart: S.str, evidenceWindowEnd: S.str, refs: S.strArr }), handler: async (input, ctx) => { const sv = optStr(input.severity); return { result: await ctx.service.sharedFeedbackRecord({ agent: optStr(input.agent) ?? "", decision: (optStr(input.decision) as "rejected" | "approved" | "approved_with_feedback") ?? "approved", reason: optStr(input.reason) ?? "", date: optStr(input.date), learning: optStr(input.learning), outcome: optStr(input.outcome), severity: sv === "low" || sv === "medium" || sv === "high" ? sv as "low" | "medium" | "high" : undefined, confidence: optNum(input.confidence), workflow: optStr(input.workflow), tags: optStrArr(input.tags), evidenceWindowStart: optStr(input.evidenceWindowStart), evidenceWindowEnd: optStr(input.evidenceWindowEnd), refs: optStrArr(input.refs) }) }; } });
 defineOperation({ name: "shared_priorities_append", description: "Append priorities.", schema: strictSchema({ agentId: S.str, text: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.sharedPrioritiesAppend({ agentId: optStr(input.agentId) ?? "", text: optStr(input.text) ?? "" }) }) });
 defineOperation({ name: "shared_context_cross_signals_run", description: "Run cross signals.", fleetWide: true, schema: strictSchema({ date: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.sharedContextCrossSignalsRun({ date: optStr(input.date) }) }) });
