@@ -2770,6 +2770,11 @@ test("deferredInitialize startup sync covers cataloged dynamic namespaces (NHZEV
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   let updateArg: string[] | undefined;
   const abortController = new AbortController();
+  // #2980 fences startup work by lifecycle epoch: deferredInitialize() now
+  // begins an epoch that resets the gate fields the selfDeps seam fail-fasts
+  // on (PR #1801 set-trap contract). Prototype fakes must declare them.
+  orchestrator.deferredInitAbort = null;
+  orchestrator.deferredSyncSucceeded = false;
   const memoryDir = path.join(os.tmpdir(), "remnic-startup-maintenance-nhzev");
   const dynamicNamespace = "project-origin-dynamic";
   const dynamicStorageDir = path.join(
@@ -2838,6 +2843,8 @@ test("deferredInitialize startup sync falls back to configured set on catalog re
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   let updateArg: string[] | undefined;
   const abortController = new AbortController();
+  orchestrator.deferredInitAbort = null;
+  orchestrator.deferredSyncSucceeded = false;
 
   orchestrator.config = {
     namespacesEnabled: true,
