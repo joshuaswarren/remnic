@@ -300,7 +300,7 @@ function collectDocsSections(docsText: string): Array<Set<string>> {
  * doubled `meetings` (or `meetings.*`) schema key would otherwise look unique
  * after parse. Walk the raw text and fail closed on the first duplicate.
  */
-function findFirstDuplicateJsonMember(raw: string): { key: string; path: string } | null {
+export function findFirstDuplicateJsonMember(raw: string): { key: string; path: string } | null {
   let i = raw.charCodeAt(0) === 0xfeff ? 1 : 0;
   let found: { key: string; path: string } | null = null;
   let aborted = false;

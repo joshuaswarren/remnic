@@ -56,6 +56,43 @@ export interface ExtractedConfigKeys {
    * Kept for review visibility rather than silently discarded.
    */
   ambiguousValueMembers: string[];
+  /**
+   * Distinct parse*Config call sites per key (issue #2949). Omitted when 1.
+   * A second construction site for the same prefix is visible here even
+   * though `keys` stays a unique list.
+   */
+  keyMultiplicity: Record<string, number>;
+}
+
+type ParseSink = {
+  keys: Set<string>;
+  unparseable: UnparseableConstruct[];
+  ambiguousValueMembers: Set<string>;
+  parseSites: Map<string, Set<string>>;
+};
+
+function noteParseSite(out: ParseSink, prefixPath: string, siteId: string): void {
+  if (!prefixPath) return;
+  const sites = out.parseSites.get(prefixPath);
+  if (sites) sites.add(siteId);
+  else out.parseSites.set(prefixPath, new Set([siteId]));
+}
+
+function keyMultiplicityFromSites(
+  keys: Iterable<string>,
+  parseSites: Map<string, Set<string>>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const key of keys) {
+    let max = 1;
+    for (const [prefixPath, sites] of parseSites) {
+      if (sites.size > 1 && (key === prefixPath || key.startsWith(`${prefixPath}.`))) {
+        max = Math.max(max, sites.size);
+      }
+    }
+    if (max > 1) out[key] = max;
+  }
+  return out;
 }
 
 /** Helper names that wrap the raw input without changing its shape. */
@@ -229,7 +266,7 @@ function extractParserKeys(
   fn: ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction,
   sourceFile: ts.SourceFile,
   repoRoot: string,
-  out: { keys: Set<string>; unparseable: UnparseableConstruct[]; ambiguousValueMembers: Set<string> },
+  out: ParseSink,
   prefix: string[] = [],
   recursion: { program: ts.Program; depth: number; seen: Set<string> } | null = null,
   // param name -> literal string value, for helpers that receive key names as
@@ -645,6 +682,11 @@ function extractParserKeys(
           ts.isStringLiteral(keyArgument);
         if (hasLiteralBinding) {
           const literalKey = keyArgument.text;
+          noteParseSite(
+            out,
+            [...prefix, literalKey].join("."),
+            `${relPath(repoRoot, sourceFile.fileName)}:${node.getStart(sourceFile)}`,
+          );
           if (!localFunction.literalBindings.has(literalKey)) {
             localFunction.literalBindings.add(literalKey);
             visitLocalFunctionBody(localFunction, literalKey);
@@ -683,6 +725,13 @@ function extractParserKeys(
         if (!resolved) continue;
         const argPrefix = [...prefix, ...resolved.info.prefix, ...resolved.segments];
         const recursionKey = `${helperName}@${argIndex}@${argPrefix.join(".")}@${literalArgs}`;
+        if (/^parse[A-Z]\w*Config/.test(helperName)) {
+          noteParseSite(
+            out,
+            argPrefix.join("."),
+            `${relPath(repoRoot, sourceFile.fileName)}:${node.getStart(sourceFile)}`,
+          );
+        }
         if (recursion.seen.has(recursionKey)) continue;
         recursion.seen.add(recursionKey);
         // Prefer the calling file when resolving the helper: a same-named
@@ -914,10 +963,11 @@ export function extractParsedKeyPaths(options: {
     throw new Error(`extract-parsed-keys: could not find function ${entryFunction} in ${entryFile}`);
   }
 
-  const out = {
+  const out: ParseSink = {
     keys: new Set<string>(),
     unparseable: [] as UnparseableConstruct[],
     ambiguousValueMembers: new Set<string>(),
+    parseSites: new Map(),
   };
   const recursion = { program, depth: 0, seen: new Set<string>() };
 
@@ -1019,10 +1069,12 @@ export function extractParsedKeyPaths(options: {
     })
     .sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.reason.localeCompare(b.reason));
 
+  const keys = [...out.keys].sort();
   return {
-    keys: [...out.keys].sort(),
+    keys,
     unparseable,
     ambiguousValueMembers: [...out.ambiguousValueMembers].sort(),
+    keyMultiplicity: keyMultiplicityFromSites(keys, out.parseSites),
   };
 }
 
@@ -1114,12 +1166,18 @@ export function extractRealConfigKeys(repoRoot: string): ExtractedConfigKeys {
     entryFile: path.join(repoRoot, "packages", "plugin-openclaw", "src", "bridge.ts"),
     entryFunction: "parseOpenClawBridgeConfig",
   });
+  const keyMultiplicity: Record<string, number> = { ...core.keyMultiplicity };
+  for (const [key, count] of Object.entries(openClaw.keyMultiplicity)) {
+    const merged = Math.max(keyMultiplicity[key] ?? 1, count);
+    if (merged > 1) keyMultiplicity[key] = merged;
+  }
   return {
     keys: [...new Set([...core.keys, ...openClaw.keys])].sort(),
     unparseable: [...core.unparseable, ...openClaw.unparseable],
     ambiguousValueMembers: [
       ...new Set([...core.ambiguousValueMembers, ...openClaw.ambiguousValueMembers]),
     ].sort(),
+    keyMultiplicity,
   };
 }
 
@@ -1134,8 +1192,9 @@ if (invokedDirectly) {
   const repoRoot = process.cwd();
   const result = extractRealConfigKeys(repoRoot);
   const snapshot = {
-    ...result,
+    keys: result.keys,
     unparseable: result.unparseable.map(({ file, reason, id }) => ({ file, reason, id })),
+    ambiguousValueMembers: result.ambiguousValueMembers,
   };
   if (snapshot.keys.length === 0) {
     throw new Error("extract-parsed-keys: refused to emit an empty key list");
