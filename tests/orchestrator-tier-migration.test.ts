@@ -3,9 +3,9 @@ import { access, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import { StorageManager } from "../src/storage.js";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import { StorageManager } from "@remnic/core/storage";
 
 function buildConfig(memoryDir: string, workspaceDir: string, enabled: boolean, autoBackfill = true) {
   return parseConfig({

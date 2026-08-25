@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createContinuityIncidentRecord, serializeContinuityIncident } from "../src/identity-continuity.ts";
-import { StorageManager } from "../src/storage.ts";
+import { createContinuityIncidentRecord, serializeContinuityIncident } from "@remnic/core/identity-continuity";
+import { StorageManager } from "@remnic/core/storage";
 
 test("identity continuity storage writes/reads anchor and improvement loop artifacts", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "openclaw-engram-identity-anchor-"));

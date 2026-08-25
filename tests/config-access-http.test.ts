@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseConfig } from "../src/config.js";
+import { parseConfig } from "@remnic/core/config";
 
 test("parseConfig sets local HTTP access defaults", () => {
   const originalRemnic = process.env.OPENCLAW_REMNIC_ACCESS_TOKEN;

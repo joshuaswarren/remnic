@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { collectNativeKnowledgeChunks } from "../src/native-knowledge.js";
-import { Orchestrator } from "../src/orchestrator.js";
+import { parseConfig } from "@remnic/core/config";
+import { collectNativeKnowledgeChunks } from "@remnic/core/native-knowledge";
+import { Orchestrator } from "@remnic/core/orchestrator";
 
 async function buildNativeKnowledgeRecallHarness(options: {
   enabled: boolean;

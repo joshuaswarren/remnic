@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isDisagreementPrompt } from "../src/signal.ts";
+import { isDisagreementPrompt } from "@remnic/core/signal";
 
 test("isDisagreementPrompt detects pushback phrases", () => {
   assert.equal(isDisagreementPrompt("That's not right."), true);

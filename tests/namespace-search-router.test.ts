@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import type { PluginConfig } from "../src/types.js";
-import { parseConfig } from "../src/config.js";
-import { NamespaceSearchRouter, namespaceCollectionName } from "../src/namespaces/search.js";
-import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions } from "../src/search/port.js";
+import type { PluginConfig } from "@remnic/core/types";
+import { parseConfig } from "@remnic/core/config";
+import { NamespaceSearchRouter, namespaceCollectionName } from "@remnic/core/namespaces/search";
+import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions } from "@remnic/core/search/port";
 
 function tmpDir(prefix: string): string {
   return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseConfig } from "../src/config.js";
-import { ExtractedFactSchema, ExtractionResultSchema } from "../src/schemas.js";
+import { parseConfig } from "@remnic/core/config";
+import { ExtractedFactSchema, ExtractionResultSchema } from "@remnic/core/schemas";
 
 // ---------------------------------------------------------------------------
 // Config parsing

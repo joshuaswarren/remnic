@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, open, readFile, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
-import { AccessIdempotencyStore, setAccessIdempotencyTestHooks } from "../src/access-idempotency.js";
+import { AccessIdempotencyStore, setAccessIdempotencyTestHooks } from "@remnic/core/access-idempotency";
 
 test("access idempotency store refreshes when another process writes a key", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-idempotency-refresh-"));

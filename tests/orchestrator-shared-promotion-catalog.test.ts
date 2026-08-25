@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
 import { resolveScopeProfilePlan } from "../packages/remnic-core/src/namespaces/scope-profiles.js";
 
 // ── Round 2, Issue B (cursor[bot] Medium): a shared-namespace promotion writes

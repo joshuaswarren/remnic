@@ -6,13 +6,13 @@ import { createInterface } from "node:readline";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { buildEntityRecallSection, entityIndexVersion, readRecentEntityTranscriptEntries } from "../src/entity-retrieval.js";
+import { parseConfig } from "@remnic/core/config";
+import { buildEntityRecallSection, entityIndexVersion, readRecentEntityTranscriptEntries } from "@remnic/core/entity-retrieval";
 import { containsPhrase } from "../packages/remnic-core/src/entity-retrieval-boundaries.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import { StorageManager, normalizeEntityName } from "../src/storage.js";
-import { SecureStoreLockedError } from "../src/secure-store/index.js";
-import type { PluginConfig, TranscriptEntry } from "../src/types.js";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import { StorageManager, normalizeEntityName } from "@remnic/core/storage";
+import { SecureStoreLockedError } from "@remnic/core/secure-store/index";
+import type { PluginConfig, TranscriptEntry } from "@remnic/core/types";
 
 async function buildHarness(prefix: string, overrides: Record<string, unknown> = {}) {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), `${prefix}-memory-`));
@@ -1053,9 +1053,9 @@ test("entity retrieval refreshes a reader-process entity cache after a relations
   const writerStorage = new StorageManager(namespaceDir, config.entitySchemas);
   await writerStorage.ensureDirectories();
   const canonical = await writerStorage.writeEntity("Casey Example", "person", []);
-  const configModuleUrl = new URL("../src/config.js", import.meta.url).href;
-  const retrievalModuleUrl = new URL("../src/entity-retrieval.js", import.meta.url).href;
-  const storageModuleUrl = new URL("../src/storage.js", import.meta.url).href;
+  const configModuleUrl = import.meta.resolve("@remnic/core/config");
+  const retrievalModuleUrl = import.meta.resolve("@remnic/core/entity-retrieval");
+  const storageModuleUrl = import.meta.resolve("@remnic/core/storage");
   const childSource = `
     import path from "node:path";
     import { createInterface } from "node:readline";

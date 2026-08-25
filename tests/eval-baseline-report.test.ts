@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { runBenchmarkBaselineReportCliCommand } from "../src/cli.js";
-import { createEvalBaselineSnapshot } from "../src/evals.js";
+import { runBenchmarkBaselineReportCliCommand } from "@remnic/core/cli";
+import { createEvalBaselineSnapshot } from "@remnic/core/evals";
 
 async function writeBenchmarkStore(options: {
   rootDir: string;

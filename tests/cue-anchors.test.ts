@@ -8,8 +8,8 @@ import {
   recordCueAnchor,
   resolveCueAnchorStoreDir,
   validateCueAnchor,
-} from "../src/cue-anchors.js";
-import { runCueAnchorStatusCliCommand } from "../src/cli.js";
+} from "@remnic/core/cue-anchors";
+import { runCueAnchorStatusCliCommand } from "@remnic/core/cli";
 
 test("cue-anchor config path resolves under abstraction-node storage by default", () => {
   assert.equal(

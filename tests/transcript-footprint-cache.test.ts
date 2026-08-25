@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, rm, writeFile, unlink } from "node:fs/promises";
-import { TranscriptManager } from "../src/transcript.ts";
+import { TranscriptManager } from "@remnic/core/transcript";
 
 function makeLine(sessionKey: string, content: string): string {
   return `${JSON.stringify({ sessionKey, role: "user", content })}\n`;

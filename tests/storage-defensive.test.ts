@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 
 test("StorageManager.readMemoryByPath returns synthetic MemoryFile for entity files (no frontmatter)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "openclaw-engram-storage-"));

@@ -4,7 +4,7 @@ import {
   runDashboardStartCliCommand,
   runDashboardStatusCliCommand,
   runDashboardStopCliCommand,
-} from "../src/cli.js";
+} from "@remnic/core/cli";
 
 test("dashboard CLI wrappers manage lifecycle", async () => {
   let running = false;

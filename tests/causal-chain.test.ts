@@ -13,8 +13,8 @@ import {
   stitchCausalChain,
   validateCausalEdge,
   writeChainIndex,
-} from "../src/causal-chain.js";
-import { type CausalTrajectoryRecord, recordCausalTrajectory } from "../src/causal-trajectory.js";
+} from "@remnic/core/causal-chain";
+import { type CausalTrajectoryRecord, recordCausalTrajectory } from "@remnic/core/causal-trajectory";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

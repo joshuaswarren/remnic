@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { StorageManager } from "../src/storage.ts";
+import { StorageManager } from "@remnic/core/storage";
 
 test("StorageManager preserves escaped link reasons with backslashes/quotes/newlines", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "openclaw-engram-link-reason-"));

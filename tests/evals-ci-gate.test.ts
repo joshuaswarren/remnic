@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { runBenchmarkCiGateCliCommand, runBenchmarkStoredBaselineCiGateCliCommand } from "../src/cli.js";
-import { createEvalBaselineSnapshot, runEvalBenchmarkCiGate } from "../src/evals.js";
+import { runBenchmarkCiGateCliCommand, runBenchmarkStoredBaselineCiGateCliCommand } from "@remnic/core/cli";
+import { createEvalBaselineSnapshot, runEvalBenchmarkCiGate } from "@remnic/core/evals";
 
 async function writeBenchmarkStore(options: {
   rootDir: string;

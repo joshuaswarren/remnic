@@ -8,7 +8,7 @@ import {
   buildCalibrationRecallSection,
   getCalibrationRulesForRecall,
   type CalibrationRule,
-} from "../src/calibration.js";
+} from "@remnic/core/calibration";
 
 // ─── readCalibrationIndex ────────────────────────────────────────────────────
 

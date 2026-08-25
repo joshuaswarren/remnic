@@ -4,8 +4,8 @@ import {
   findSimilarClusters,
   buildConsolidationPrompt,
   parseConsolidationResponse,
-} from "../src/semantic-consolidation.ts";
-import type { MemoryFile } from "../src/types.ts";
+} from "@remnic/core/semantic-consolidation";
+import type { MemoryFile } from "@remnic/core/types";
 
 function makeMemory(overrides: Partial<MemoryFile> & { id?: string; category?: string; content?: string; status?: string }): MemoryFile {
   const id = overrides.id ?? `fact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;

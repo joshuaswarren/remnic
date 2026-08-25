@@ -3,20 +3,20 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { makeTempDir as managedTempDir } from "./helpers/tmp-dir.mjs";
-import { StorageManager, serializeEntityFile } from "../src/storage.js";
+import { StorageManager, serializeEntityFile } from "@remnic/core/storage";
 import {
   buildBriefing,
   focusMatchesEntity,
   parseBriefingWindow,
   parseBriefingFocus,
-} from "../src/briefing.js";
+} from "@remnic/core/briefing";
 import type {
   BriefingFollowup,
   EntityFile,
   CalendarSource,
   CalendarEvent,
   PluginConfig,
-} from "../src/types.js";
+} from "@remnic/core/types";
 
 // Fixed "now" so facts written into a particular YYYY-MM-DD directory land
 // inside the briefing's lookback window deterministically.

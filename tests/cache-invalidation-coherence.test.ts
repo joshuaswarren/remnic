@@ -21,13 +21,13 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 
-import { StorageManager } from "../src/storage.ts";
-import { ALL_CACHE_LAYERS, clearMemoryCache } from "../src/memory-cache.ts";
+import { StorageManager } from "@remnic/core/storage";
+import { ALL_CACHE_LAYERS, clearMemoryCache } from "@remnic/core/memory-cache";
 import {
   buildQmdRecallCacheKey,
   getCachedQmdRecall,
   setCachedQmdRecall,
-} from "../src/qmd-recall-cache.ts";
+} from "@remnic/core/qmd-recall-cache";
 import {
   getCachedEntities,
   setCachedMemories,
@@ -36,9 +36,9 @@ import {
   setCachedEpisodeMap,
   setCachedRuleMemories,
   setCachedQmdSearch,
-} from "../src/memory-cache.ts";
-import { parseConfig } from "../src/config.ts";
-import type { EntityFile, MemoryFile } from "../src/types.ts";
+} from "@remnic/core/memory-cache";
+import { parseConfig } from "@remnic/core/config";
+import type { EntityFile, MemoryFile } from "@remnic/core/types";
 
 const RECALL_TTLS = { freshTtlMs: 60_000, staleTtlMs: 600_000 };
 

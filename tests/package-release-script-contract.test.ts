@@ -32,7 +32,7 @@ test("release smoke coverage verifies build artifacts after the build", () => {
 
   const smokeScript = readFileSync(join(repoRoot, "scripts", "check-release-artifacts.mjs"), "utf8");
   assert.match(smokeScript, /"dist\/index\.js"/);
-  assert.match(smokeScript, /"dist\/connectors\/codex-materialize-runner\.js"/);
+  assert.match(smokeScript, /"packages\/remnic-core\/dist\/connectors\/codex-materialize-runner\.js"/);
   assert.match(smokeScript, /"dist\/admin-console\/public\/index\.html"/);
   assert.match(smokeScript, /"dist\/admin-console\/public\/app\.js"/);
   assert.match(smokeScript, /"openclaw\.plugin\.json"/);

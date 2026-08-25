@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import {
   computeCompressionGuidelineCandidate,
   refineCompressionGuidelineCandidateSemantically,
-} from "../src/compression-optimizer.ts";
-import type { MemoryActionEvent } from "../src/types.ts";
+} from "@remnic/core/compression-optimizer";
+import type { MemoryActionEvent } from "@remnic/core/types";
 
 function baselineCandidate() {
   const events: MemoryActionEvent[] = [

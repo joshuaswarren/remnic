@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import { parseConfig } from "../src/config.ts";
-import { planRecallMode } from "../src/intent.ts";
-import { PolicyRuntimeManager } from "../src/policy-runtime.ts";
+import { parseConfig } from "@remnic/core/config";
+import { planRecallMode } from "@remnic/core/intent";
+import { PolicyRuntimeManager } from "@remnic/core/policy-runtime";
 
 test("policy runtime applies and loads bounded values", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "openclaw-engram-policy-runtime-"));

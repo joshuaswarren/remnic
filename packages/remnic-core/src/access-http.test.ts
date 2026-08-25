@@ -861,6 +861,7 @@ test("HTTP briefing endpoint dispatches through the briefing operation", async (
       {
         since: "24h",
         focus: undefined,
+        includeLocation: undefined,
         namespace: "team",
         format: "markdown",
         maxFollowups: 5,

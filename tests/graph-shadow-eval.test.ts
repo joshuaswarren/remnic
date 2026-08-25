@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, readFile } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import type { EngramTraceEvent } from "../src/types.js";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import type { EngramTraceEvent } from "@remnic/core/types";
 
 test("full-mode graph shadow eval keeps injected recall baseline-identical", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-graph-shadow-"));

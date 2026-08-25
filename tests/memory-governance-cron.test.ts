@@ -10,7 +10,7 @@ import {
   ensureNightlyGovernanceCron,
   ensureProceduralMiningCron,
   ensurePatternReinforcementCron,
-} from "../src/maintenance/memory-governance-cron.ts";
+} from "@remnic/core/maintenance/memory-governance-cron";
 
 test("nightly governance cron auto-registers a bounded job once", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-governance-cron-"));

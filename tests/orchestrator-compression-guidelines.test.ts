@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { buildCompressionGuidelinesMarkdown, Orchestrator } from "../src/orchestrator.ts";
-import { CompressionGuidelineCoordinator } from "../src/orchestration/compression-guideline-coordinator.js";
-import type { MemoryActionEvent } from "../src/types.ts";
+import { parseConfig } from "@remnic/core/config";
+import { buildCompressionGuidelinesMarkdown, Orchestrator } from "@remnic/core/orchestrator";
+import { CompressionGuidelineCoordinator } from "@remnic/core/orchestration/compression-guideline-coordinator";
+import type { MemoryActionEvent } from "@remnic/core/types";
 /** Build a CompressionGuidelineCoordinator from a fake ctx (config + storage),
  *  mirroring the old Orchestrator.prototype-based unit tests. The logic now
  *  lives on the coordinator (#1526 seam 4). */

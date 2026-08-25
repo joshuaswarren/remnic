@@ -9,18 +9,18 @@ import {
   recordResumeBundle,
   resolveResumeBundleDir,
   validateResumeBundle,
-} from "../src/resume-bundles.js";
+} from "@remnic/core/resume-bundles";
 import {
   registerCli,
   runResumeBundleBuildCliCommand,
   runResumeBundleRecordCliCommand,
   runResumeBundleStatusCliCommand,
-} from "../src/cli.js";
-import { recordObjectiveStateSnapshot } from "../src/objective-state.js";
-import { recordWorkProductLedgerEntry } from "../src/work-product-ledger.js";
-import { recordCommitmentLedgerEntry } from "../src/commitment-ledger.js";
-import { parseConfig } from "../src/config.js";
-import { TranscriptManager } from "../src/transcript.js";
+} from "@remnic/core/cli";
+import { recordObjectiveStateSnapshot } from "@remnic/core/objective-state";
+import { recordWorkProductLedgerEntry } from "@remnic/core/work-product-ledger";
+import { recordCommitmentLedgerEntry } from "@remnic/core/commitment-ledger";
+import { parseConfig } from "@remnic/core/config";
+import { TranscriptManager } from "@remnic/core/transcript";
 
 test("resume bundle path resolves under memoryDir by default", () => {
   assert.equal(

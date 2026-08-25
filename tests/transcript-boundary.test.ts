@@ -4,8 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
-import { parseConfig } from "../src/config.js";
-import { TranscriptManager } from "../src/transcript.js";
+import { parseConfig } from "@remnic/core/config";
+import { TranscriptManager } from "@remnic/core/transcript";
 
 test("transcript range reads use an exclusive end timestamp", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-transcript-boundary-"));

@@ -19,7 +19,7 @@ import {
   isoWeekKey,
   capTmtSummaryInputs,
   type TmtNodeFrontmatter,
-} from "../src/tmt.js";
+} from "@remnic/core/tmt";
 
 async function makeTmp(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "engram-tmt-"));
@@ -100,17 +100,17 @@ test("serialiseTmtNode produces valid markdown with YAML frontmatter", () => {
 
 // ── TmtBuilder integration ────────────────────────────────────────────────────
 
-const mockSummarize: import("../src/tmt.js").SummarizeFn = async (memories, _level) => {
+const mockSummarize: import("@remnic/core/tmt").SummarizeFn = async (memories, _level) => {
   return `Summary of ${memories.length} memories.`;
 };
 
-const defaultCfg: import("../src/tmt.js").TmtConfig = {
+const defaultCfg: import("@remnic/core/tmt").TmtConfig = {
   temporalMemoryTreeEnabled: true,
   tmtHourlyMinMemories: 2,
   tmtSummaryMaxTokens: 300,
 };
 
-function makeEntries(n: number, date = "2026-02-22", hourOffset = 0): import("../src/tmt.js").MemoryEntry[] {
+function makeEntries(n: number, date = "2026-02-22", hourOffset = 0): import("@remnic/core/tmt").MemoryEntry[] {
   return Array.from({ length: n }, (_, i) => ({
     path: `/mem/facts/${date}/fact-${i}.md`,
     id: `fact-${i}`,
@@ -122,7 +122,7 @@ function makeEntries(n: number, date = "2026-02-22", hourOffset = 0): import("..
 test("TmtBuilder: disabled flag → no files written", async () => {
   const dir = await makeTmp();
   try {
-    const builder = new (await import("../src/tmt.js")).TmtBuilder(dir, {
+    const builder = new (await import("@remnic/core/tmt")).TmtBuilder(dir, {
       ...defaultCfg,
       temporalMemoryTreeEnabled: false,
     });
@@ -135,7 +135,7 @@ test("TmtBuilder: disabled flag → no files written", async () => {
 test("TmtBuilder: builds hour node when min memories threshold met", async () => {
   const dir = await makeTmp();
   try {
-    const { TmtBuilder } = await import("../src/tmt.js");
+    const { TmtBuilder } = await import("@remnic/core/tmt");
     const builder = new TmtBuilder(dir, defaultCfg);
     const entries = makeEntries(3, "2026-02-22", 14); // 3 memories in hour 14
     await builder.maybeRebuildNodes(entries, mockSummarize);
@@ -152,7 +152,7 @@ test("TmtBuilder: builds hour node when min memories threshold met", async () =>
 test("TmtBuilder: skips hour node when below min memories threshold", async () => {
   const dir = await makeTmp();
   try {
-    const { TmtBuilder } = await import("../src/tmt.js");
+    const { TmtBuilder } = await import("@remnic/core/tmt");
     const builder = new TmtBuilder(dir, defaultCfg); // threshold = 2
     const entries = makeEntries(1, "2026-02-22", 10); // only 1 memory
     await builder.maybeRebuildNodes(entries, mockSummarize);
@@ -164,7 +164,7 @@ test("TmtBuilder: skips hour node when below min memories threshold", async () =
 test("TmtBuilder: builds day node", async () => {
   const dir = await makeTmp();
   try {
-    const { TmtBuilder } = await import("../src/tmt.js");
+    const { TmtBuilder } = await import("@remnic/core/tmt");
     const builder = new TmtBuilder(dir, defaultCfg);
     const entries = makeEntries(5, "2026-02-22", 9);
     await builder.maybeRebuildNodes(entries, mockSummarize);
@@ -180,7 +180,7 @@ test("TmtBuilder: builds day node", async () => {
 test("TmtBuilder: getMostRelevantNode returns null when no nodes exist", async () => {
   const dir = await makeTmp();
   try {
-    const { TmtBuilder } = await import("../src/tmt.js");
+    const { TmtBuilder } = await import("@remnic/core/tmt");
     const builder = new TmtBuilder(dir, defaultCfg);
     const node = await builder.getMostRelevantNode();
     assert.equal(node, null);
@@ -190,7 +190,7 @@ test("TmtBuilder: getMostRelevantNode returns null when no nodes exist", async (
 test("TmtBuilder: getMostRelevantNode returns day node content after build", async () => {
   const dir = await makeTmp();
   try {
-    const { TmtBuilder } = await import("../src/tmt.js");
+    const { TmtBuilder } = await import("@remnic/core/tmt");
     const builder = new TmtBuilder(dir, defaultCfg);
     const today = new Date().toISOString().slice(0, 10);
     const entries = makeEntries(5, today, 9);
@@ -205,7 +205,7 @@ test("TmtBuilder: getMostRelevantNode returns day node content after build", asy
 test("TmtBuilder: disabled → getMostRelevantNode returns null", async () => {
   const dir = await makeTmp();
   try {
-    const { TmtBuilder } = await import("../src/tmt.js");
+    const { TmtBuilder } = await import("@remnic/core/tmt");
     const builder = new TmtBuilder(dir, { ...defaultCfg, temporalMemoryTreeEnabled: false });
     const node = await builder.getMostRelevantNode();
     assert.equal(node, null);
@@ -217,7 +217,7 @@ test("TmtBuilder: disabled → getMostRelevantNode returns null", async () => {
 test("TmtBuilder: builds week node when memories share an ISO week", async () => {
   const dir = await makeTmp();
   try {
-    const { TmtBuilder, weekNodePath, isoWeekKey } = await import("../src/tmt.js");
+    const { TmtBuilder, weekNodePath, isoWeekKey } = await import("@remnic/core/tmt");
     const builder = new TmtBuilder(dir, defaultCfg);
     // Use a fixed past date so the week key is stable
     const date = "2026-02-22";
@@ -237,7 +237,7 @@ test("TmtBuilder: builds week node when memories share an ISO week", async () =>
 test("TmtBuilder: week node is rebuilt when memory count increases", async () => {
   const dir = await makeTmp();
   try {
-    const { TmtBuilder, weekNodePath, isoWeekKey } = await import("../src/tmt.js");
+    const { TmtBuilder, weekNodePath, isoWeekKey } = await import("@remnic/core/tmt");
     const date = "2026-02-22";
     const week = isoWeekKey(new Date(date));
 
@@ -258,7 +258,7 @@ test("TmtBuilder: week node is rebuilt when memory count increases", async () =>
 test("TmtBuilder: builds persona node when week nodes exist", async () => {
   const dir = await makeTmp();
   try {
-    const { TmtBuilder, personaNodePath } = await import("../src/tmt.js");
+    const { TmtBuilder, personaNodePath } = await import("@remnic/core/tmt");
     const builder = new TmtBuilder(dir, defaultCfg);
     const date = "2026-02-22";
     const entries = makeEntries(5, date, 9);

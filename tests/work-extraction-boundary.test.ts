@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseConfig } from "../src/config.ts";
-import { ExtractionEngine } from "../src/extraction.ts";
-import { applyWorkExtractionBoundary, wrapWorkLayerContext } from "../src/work/boundary.js";
+import { parseConfig } from "@remnic/core/config";
+import { ExtractionEngine } from "@remnic/core/extraction";
+import { applyWorkExtractionBoundary, wrapWorkLayerContext } from "@remnic/core/work/boundary";
 
 test("applyWorkExtractionBoundary strips default work-layer blocks", () => {
   const conversation = [

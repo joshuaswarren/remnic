@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { importMarkdownBundle } from "../src/transfer/import-md.js";
-import { sha256Bytes, sha256String, writeJsonFile } from "../src/transfer/fs-utils.js";
+import { importMarkdownBundle } from "@remnic/core/transfer/import-md";
+import { sha256Bytes, sha256String, writeJsonFile } from "@remnic/core/transfer/fs-utils";
 
 async function writeManifest(
   fromDir: string,

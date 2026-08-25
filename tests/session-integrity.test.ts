@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, readFile, writeFile, access } from "node:fs/promises";
-import { analyzeSessionIntegrity, applySessionRepair, planSessionRepair } from "../src/session-integrity.js";
+import { analyzeSessionIntegrity, applySessionRepair, planSessionRepair } from "@remnic/core/session-integrity";
 
 async function buildMemoryDir(prefix: string): Promise<string> {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), prefix));

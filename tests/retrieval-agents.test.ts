@@ -13,9 +13,9 @@ import {
   shouldRunAgent,
   PARALLEL_AGENT_WEIGHTS,
   type SearchAgentSource,
-} from "../src/retrieval-agents.js";
-import type { QmdClient } from "../src/qmd.js";
-import type { QmdSearchResult } from "../src/types.js";
+} from "@remnic/core/retrieval-agents";
+import type { QmdClient } from "@remnic/core/qmd";
+import type { QmdSearchResult } from "@remnic/core/types";
 
 // ─── shouldRunAgent ───────────────────────────────────────────────────────────
 

@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { parseConfig } from "../src/config.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import { recordObjectiveStateSnapshot } from "../src/objective-state.js";
+import { parseConfig } from "@remnic/core/config";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import { recordObjectiveStateSnapshot } from "@remnic/core/objective-state";
 
 async function removeTempDir(dir: string): Promise<void> {
   await rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });

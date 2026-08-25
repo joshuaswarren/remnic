@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
-import { runRouteCliCommand } from "../src/cli.js";
+import { runRouteCliCommand } from "@remnic/core/cli";
 
 test("route CLI wrapper supports add/list/test/remove", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-route-"));

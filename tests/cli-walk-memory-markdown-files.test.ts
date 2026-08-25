@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
-import { listMemoryMarkdownFilePaths } from "../src/cli.js";
+import { listMemoryMarkdownFilePaths } from "@remnic/core/cli";
 
 // The shared CLI memory walker (walkMemoryMarkdownFiles, exposed here via
 // listMemoryMarkdownFilePaths) must cover every recall category directory, not

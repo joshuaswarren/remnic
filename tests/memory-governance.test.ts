@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
-import { RULE_VERSION, runMemoryGovernance, restoreMemoryGovernanceRun } from "../src/maintenance/memory-governance.ts";
-import { StorageManager } from "../src/storage.ts";
-import type { MemoryFile } from "../src/types.ts";
+import { RULE_VERSION, runMemoryGovernance, restoreMemoryGovernanceRun } from "@remnic/core/maintenance/memory-governance";
+import { StorageManager } from "@remnic/core/storage";
+import type { MemoryFile } from "@remnic/core/types";
 
 interface SpyableStorage {
   readMemoriesWindow: StorageManager["readMemoriesWindow"];

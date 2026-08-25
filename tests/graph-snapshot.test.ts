@@ -15,7 +15,7 @@ import os from "node:os";
 import * as path from "node:path";
 import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 
-import { EngramAccessHttpServer } from "../src/access-http.js";
+import { EngramAccessHttpServer } from "@remnic/core/access-http";
 import {
   buildGraphSnapshot,
   GRAPH_SNAPSHOT_DEFAULT_LIMIT,
@@ -23,9 +23,9 @@ import {
   normalizeGraphSnapshotLimit,
   parseGraphSnapshotSince,
   type GraphSnapshotResponse,
-} from "../src/graph-snapshot.js";
-import { appendEdge } from "../src/graph.js";
-import { EngramMcpServer } from "../src/access-mcp.js";
+} from "@remnic/core/graph-snapshot";
+import { appendEdge } from "@remnic/core/graph";
+import { EngramMcpServer } from "@remnic/core/access-mcp";
 
 async function makeFixtureDir(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), "engram-graph-snapshot-test-"));

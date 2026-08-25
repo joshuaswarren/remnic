@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import os from "node:os";
 import { mkdir, writeFile } from "node:fs/promises";
-import { runGraphHealthCliCommand } from "../src/cli.js";
-import { analyzeGraphHealth } from "../src/graph.js";
+import { runGraphHealthCliCommand } from "@remnic/core/cli";
+import { analyzeGraphHealth } from "@remnic/core/graph";
 
 function tmpDir(prefix: string): string {
   return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);

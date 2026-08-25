@@ -20,11 +20,11 @@ import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 
-import { parseConfig } from "../src/config.js";
-import { buildEntityRecallSection } from "../src/entity-retrieval.js";
-import { StorageManager, normalizeEntityName } from "../src/storage.js";
-import { focusMatchesMemory, parseBriefingFocus } from "../src/briefing.js";
-import { readCalibrationCorrections } from "../src/calibration.js";
+import { parseConfig } from "@remnic/core/config";
+import { buildEntityRecallSection } from "@remnic/core/entity-retrieval";
+import { StorageManager, normalizeEntityName } from "@remnic/core/storage";
+import { focusMatchesMemory, parseBriefingFocus } from "@remnic/core/briefing";
+import { readCalibrationCorrections } from "@remnic/core/calibration";
 import {
   DIRECT_ANSWER_FILTER_LABELS as FILTER_LABELS,
   isDirectAnswerEligible,
@@ -35,7 +35,7 @@ import {
   type DirectAnswerConfig,
   type MemoryEdgeSource,
 } from "@remnic/core";
-import type { MemoryFile, PluginConfig, TranscriptEntry } from "../src/types.js";
+import type { MemoryFile, PluginConfig, TranscriptEntry } from "@remnic/core/types";
 
 // ── Harness ────────────────────────────────────────────────────────────
 

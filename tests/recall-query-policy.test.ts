@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildRecallQueryPolicy, classifyRecallPromptShape } from "../src/recall-query-policy.js";
+import { buildRecallQueryPolicy, classifyRecallPromptShape } from "@remnic/core/recall-query-policy";
 
 const baseConfig = {
   cronRecallPolicyEnabled: true,

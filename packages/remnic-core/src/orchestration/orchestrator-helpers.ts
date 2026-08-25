@@ -325,6 +325,8 @@ export const DEFAULT_QMD_STARTUP_COLLECTION_CHECK_TIMEOUT_MS = 10_000;
 export type DaySummaryGatherOptions = {
   timeZone?: string;
   now?: Date;
+  /** Opt-in location context (issue #2925); false/absent keeps output byte-identical. */
+  includeLocation?: boolean;
 };
 
 export function normalizeIanaTimeZone(value: unknown): string | undefined {

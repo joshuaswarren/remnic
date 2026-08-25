@@ -5,7 +5,7 @@ import type {
   MemoryActionEligibilitySource,
   MemoryActionType,
   MemoryFile,
-} from "./types.js";
+} from "@remnic/core/types";
 
 function clampUnitInterval(value: unknown, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;

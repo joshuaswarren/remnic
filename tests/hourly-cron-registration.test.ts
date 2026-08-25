@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { parseConfig } from "../src/config.js";
+import { parseConfig } from "@remnic/core/config";
 import {
   buildHourlySummaryCronJob,
   loadHourlySummaryCronJobsData,

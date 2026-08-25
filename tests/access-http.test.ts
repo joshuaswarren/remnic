@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import { EngramAccessHttpServer } from "../src/access-http.js";
+import { EngramAccessHttpServer } from "@remnic/core/access-http";
 import { EngramAccessInputError, EngramAccessService } from "../src/access-service.js";
-import { StorageManager } from "../src/storage.js";
+import { StorageManager } from "@remnic/core/storage";
 
 function createFakeService(): EngramAccessService {
   return {

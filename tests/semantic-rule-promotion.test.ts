@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
-import { StorageManager } from "../src/storage.js";
+import { StorageManager } from "@remnic/core/storage";
 import {
   promoteSemanticRuleFromMemory,
   type SemanticRulePromotionReport,
-} from "../src/semantic-rule-promotion.js";
-import { runSemanticRulePromoteCliCommand } from "../src/cli.js";
+} from "@remnic/core/semantic-rule-promotion";
+import { runSemanticRulePromoteCliCommand } from "@remnic/core/cli";
 
 async function createStore() {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-semantic-rule-"));
