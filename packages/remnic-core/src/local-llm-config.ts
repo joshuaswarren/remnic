@@ -56,8 +56,7 @@ function parseLocalLlmMaxContext(value: unknown): number | undefined {
 function copyStringRecord(value: unknown): Record<string, string> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const headers: Record<string, string> = {};
-  for (const key of Object.getOwnPropertyNames(value)) {
-    const headerValue = Reflect.get(value, key);
+  for (const [key, headerValue] of Object.entries(value)) {
     if (typeof headerValue === "string") headers[key] = headerValue;
   }
   return headers;
