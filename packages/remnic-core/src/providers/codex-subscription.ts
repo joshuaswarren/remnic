@@ -284,7 +284,6 @@ export function isDefaultRegisteredCodexSubscriptionRunner(): boolean {
   return defaultRegisteredRunner !== undefined
     && getCodexCliFallbackRunnerForProcess() === defaultRegisteredRunner;
 }
-
 /** Host shutdown hook: terminate this runtime's detached Codex children. Does not exit. */
 export function terminateActiveCodexSubscriptionChildren(
   signal: NodeJS.Signals = "SIGTERM",
@@ -491,6 +490,7 @@ async function assertSubscriptionLogin(
       await waitForLoginEntry(cached, cacheKey, ctx, now);
       return;
     }
+
   }
   loginStatusCache.delete(cacheKey);
   if (ctx.signal?.aborted) {

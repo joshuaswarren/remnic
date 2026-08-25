@@ -18,6 +18,7 @@ import { loadModelsJsonProviders } from "./models-json.js";
 import {
   abortReason,
   classifyThrownProviderError,
+  codexDeadlineHeadroomMs,
   defaultOpenClawWorkspaceDir,
   extractResponsesOutputText,
   fallbackLlmRuntimeContextFromConfig,
@@ -379,29 +380,29 @@ export class FallbackLlmClient {
         controller.abort(abortReason(options.signal));
       };
       options.signal?.addEventListener("abort", onCallerAbort, { once: true });
-      if (options.signal?.aborted) {
-        onCallerAbort();
-      }
+      if (options.signal?.aborted) onCallerAbort();
       const timedOptions = { ...options, signal: controller.signal };
       const chain = runChain(timedOptions);
-      const guarded = chain.then(
-        (value) => value,
-        (err) => {
-          if (isTerminalCodexSubscriptionError(err)) throw err;
-          return null;
-        },
-      );
+      const guarded = chain.catch((err) => {
+        if (isTerminalCodexSubscriptionError(err)) throw err;
+        return null;
+      });
       try {
         const timeoutError = Object.assign(
           new Error(`task LLM timed out after ${options.timeoutMs}ms`),
           { name: "TimeoutError" },
         );
-        const outcome = await raceFallbackLlmDeadline(guarded, options.timeoutMs, () => {
-          log.warn(`task LLM: timed out after ${options.timeoutMs}ms`);
-          recordFailure({ failureReason: "timeout", errorClass: "timeout" });
-          controller.abort(timeoutError);
-          if (options.failureDiag) options.failureDiag.lastError = timeoutError;
-        });
+        const outcome = await raceFallbackLlmDeadline(
+          guarded,
+          options.timeoutMs,
+          () => {
+            log.warn(`task LLM: timed out after ${options.timeoutMs}ms`);
+            recordFailure({ failureReason: "timeout", errorClass: "timeout" });
+            controller.abort(timeoutError);
+            if (options.failureDiag) options.failureDiag.lastError = timeoutError;
+          },
+          models.some((m) => m.providerConfig.api === "codex-cli") ? codexDeadlineHeadroomMs(options.timeoutMs) : 0,
+        );
         if (outcome.timedOut) {
           return { ok: false, failure: { failureReason: "timeout", errorClass: "timeout" } };
         }

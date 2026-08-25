@@ -193,3 +193,80 @@ test("explicit shared context directory overrides workspace fallback", async () 
     await rm(sharedDir, { recursive: true, force: true });
   }
 });
+
+test("shared_context_write_output stamps governed envelope controls and rejects overrides (issue #2920)", async () => {
+  const { manager, memoryDir, sharedDir } = await buildManager("remnic-shared-controls");
+  try {
+    const tools = new Map<string, RegisteredTool>();
+    const api = {
+      registerTool(spec: RegisteredTool) {
+        tools.set(spec.name, spec);
+      },
+    };
+    const orchestrator = {
+      config: {
+        defaultNamespace: "default",
+        feedbackEnabled: false,
+        negativeExamplesEnabled: false,
+        conversationIndexEnabled: false,
+        sharedContextEnabled: true,
+        compoundingEnabled: false,
+      },
+      qmd: { search: async () => [], searchGlobal: async () => [] },
+      lastRecall: { get: () => null, getMostRecent: () => null },
+      storage: {
+        readIdentity: async () => null,
+        readProfile: async () => null,
+        readAllEntities: async () => [],
+      },
+      summarizer: { runHourly: async () => {} },
+      transcript: { listSessionKeys: async () => [] },
+      sharedContext: manager,
+      compounding: null,
+      recordMemoryFeedback: async () => {},
+      recordNotUsefulMemories: async () => {},
+      requestQmdMaintenanceForTool: () => {},
+    };
+
+    registerTools(api as any, orchestrator as any);
+    const tool = tools.get("shared_context_write_output");
+    assert.ok(tool);
+
+    // Controls reach the envelope (no runtime agent id: unattributed origin,
+    // caller agentId stays the producer).
+    const expiresAt = new Date(Date.now() + 45 * 24 * 60 * 60 * 1000).toISOString();
+    const result = await tool.execute("tc-controls", {
+      agentId: "agent-alpha",
+      title: "Governed output",
+      content: "content",
+      authority: "advisory",
+      expiresAt,
+      supersedes: "out-0001",
+    });
+    const writtenPath = toolText(result).match(/Wrote shared agent output: (.+)/)?.[1];
+    assert.ok(writtenPath);
+    const raw = await readFile(writtenPath!, "utf-8");
+    assert.match(raw, /^sharedBy: "unattributed:openclaw-host"$/m);
+    assert.match(raw, /^agent: "agent-alpha"$/m);
+    assert.match(raw, /^authority: "advisory"$/m);
+    assert.ok(raw.includes(`expiresAt: ${JSON.stringify(expiresAt)}`));
+    assert.match(raw, /^supersedes: "out-0001"$/m);
+
+    // Cross-surface policy: client identity/scope overrides reject, an
+    // un-flagged binding rejects, and a past expiry rejects — as tool error
+    // text, never a silent default.
+    for (const [label, params] of [
+      ["principal override", { agentId: "a", title: "t", content: "c", principal: "spoofed" }],
+      ["namespace override", { agentId: "a", title: "t", content: "c", namespace: "other" }],
+      ["binding without opt-in", { agentId: "a", title: "t", content: "c", authority: "binding" }],
+      ["past expiry", { agentId: "a", title: "t", content: "c", expiresAt: "2020-01-01T00:00:00Z" }],
+    ] as Array<[string, Record<string, unknown>]>) {
+      const text = toolText(await tool.execute("tc-reject", params));
+      assert.match(text, /shared_context_write_output error:/, `${label} must return an error`);
+      assert.ok(!text.includes("Wrote shared agent output"), `${label} must not write`);
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(sharedDir, { recursive: true, force: true });
+  }
+});

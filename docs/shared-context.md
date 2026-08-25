@@ -41,23 +41,37 @@ Rules:
 - Default authority is `informational`. A missing, unrecognized, or malformed value never resolves above `informational` (least privilege).
 - `binding` requires two things: the writer explicitly requests it, and the operator sets `sharedContextAllowBindingAuthority: true` (default `false`). A binding write without the flag is rejected; a stored `binding` item read without the flag downgrades to `advisory`.
 - Legacy items without an envelope keep working unchanged: they read as `informational` with origin falling back to the frontmatter `agent` field.
+- A write-time `expiresAt` must be a strict ISO-8601 instant strictly after the write time and at most 10 years out; past, invalid, or over-bound values are rejected (issue #2920 TTL policy).
 - Cross-signals reports (JSON and markdown) and the daily roundtable annotate every source with its resolved authority and origin, so consumers can weigh items accordingly.
 - Origin (`sharedBy`) is server-derived, never caller-chosen; producer (`agent`) and origin are distinct fields. Each surface uses its own authoritative identity: an Access-API write uses the authenticated principal it resolved, and the OpenClaw `shared_context_write_output` tool uses the host's registration-scoped runtime agent id (never `agentAccessHttp.principal`, which belongs to the separate external HTTP bridge). That identity is stamped as both `agent` and `sharedBy`, and an `agentId` parameter naming a different agent is rejected. When a surface resolved no identity — a host that exposes no runtime agent id (`api.runtime` is optional in the SDK and absent on older hosts inside the supported compatibility window), or an authenticated access write with no configured principal and no adapter identity — the origin is a reserved server-owned token (`unattributed:openclaw-host` / `unattributed:access-surface`): the token names no agent, carries no privilege (authority resolution reads only the `authority` field), and cannot be claimed by a caller — on a surface that does expose an identity, a caller passing the token is a mismatch and is rejected. On those identity-less surfaces the caller-supplied `agentId` survives as the producer label only (`agent` frontmatter, on-disk segment, cross-signals grouping key): it feeds grouping and display, never audit or authority, and keeping it distinct is what preserves multi-agent overlaps in cross-signals. Only trusted in-process surfaces with no identity concept (an in-process caller, an unauthenticated local CLI) fall back to stamping the supplied `agentId` as the origin.
 
-### What the tool surfaces can set today
+### What the tool surfaces can set
 
-In this slice, `authority`, `expiresAt`, and `supersedes` are settable only by
-in-process callers of `SharedContextManager.writeAgentOutput` (for example the
-curator and other core code paths). Both documented tool surfaces — the MCP
-`engram.shared_context_write_output` operation and the OpenClaw
-`shared_context_write_output` tool — accept only `agentId`, `title`, and
-`content`, reject extra properties, and therefore always write
-`authority: informational` with no expiry and no supersession. Exposing the
-envelope fields on those surfaces (with the authority allow-list and the
-`sharedContextAllowBindingAuthority` gate enforced at the boundary) is
-deliberate follow-up work, not a capability you can reach from a tool call
-today. The read side is already live everywhere: stored `advisory`/`binding`
-items written in-process resolve and annotate exactly as described above.
+Both documented tool surfaces — the Access MCP `engram.shared_context_write_output`
+operation (MCP, HTTP tools route, CLI) and the OpenClaw `shared_context_write_output`
+tool — accept the three envelope controls alongside `agentId`, `title`, and
+`content` (issue #2920):
+
+- `authority` — one of `informational`, `advisory`, `binding`. `binding`
+  additionally requires the operator config `sharedContextAllowBindingAuthority: true`;
+  the write is rejected without it.
+- `expiresAt` — a strict ISO-8601 instant. It must land strictly after the
+  write time and at most 10 years out; past, invalid, or over-bound values
+  are rejected as client input errors.
+- `supersedes` — the id of the shared item this output supersedes
+  (non-empty, single line).
+
+Both surfaces parse these through one canonical module
+(`shared-context/write-output-controls.ts`), and semantics are enforced by
+`composeWriteEnvelope` — the same single write-side gate in-process callers
+route through, so no surface can be looser than another. A client-supplied
+`principal` or `namespace` is rejected on both surfaces: identity is resolved
+by the surface (the authenticated principal on the Access surface, the host's
+runtime agent id on OpenClaw), never accepted from the caller. Invalid
+controls are rejected, never silently defaulted. Access HTTP maps those
+input errors to HTTP 400. The OpenClaw `shared_context_write_output` handler
+reports the same failures as tool-result error text
+(`shared_context_write_output error: ...`), not as an HTTP response.
 
 ## Tools
 
