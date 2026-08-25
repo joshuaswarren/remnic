@@ -997,6 +997,10 @@ export interface PluginConfig
   standingBlockFreshDays: number;
   /** Hard character budget for the standing memory block. Default 2048. */
   standingBlockMaxChars: number;
+  /** Full-index recognition tier (issue #2975): small namespaces recall by recognizing against the whole compact index instead of vector search; parsed now, wiring lands in a later slice. Default false. */
+  recallRecognitionTier: boolean;
+  /** Max entries a namespace's recognition index may carry for the full-index tier to engage (inclusive). Default 500. */
+  recognitionIndexMaxEntries: number;
   /**
    * Disclosure auto-escalation policy (issue #677 PR 4/4).  `"auto"`
    * escalates chunk → section when top-K confidence falls below
