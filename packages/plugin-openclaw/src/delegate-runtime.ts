@@ -26,6 +26,7 @@
 import path from "node:path";
 import {
   type RecallContextComposition,
+  type RecallContextDegradation,
   renderMemoryContextPrompt,
 } from "@remnic/core";
 import { log } from "@remnic/core/logger";
@@ -221,6 +222,15 @@ function cwdFrom(
   return fallback;
 }
 
+function readRecallDegradation(candidate: object): RecallContextDegradation | undefined {
+  if (!("degradation" in candidate)) return undefined;
+  const value = candidate.degradation;
+  if (typeof value !== "object" || value === null) return undefined;
+  const rec = value as Record<string, unknown>;
+  if (typeof rec.state !== "string" || typeof rec.reason !== "string") return undefined;
+  return value as RecallContextDegradation;
+}
+
 function readContextComposition(
   response: Record<string, unknown>,
   fallbackContext: string,
@@ -234,10 +244,13 @@ function readContextComposition(
   ) {
     return { context: fallbackContext };
   }
+  const composition: RecallContextComposition = { context: candidate.context };
   if ("footer" in candidate && typeof candidate.footer === "string") {
-    return { context: candidate.context, footer: candidate.footer };
+    composition.footer = candidate.footer;
   }
-  return { context: candidate.context };
+  const degradation = readRecallDegradation(candidate);
+  if (degradation) composition.degradation = degradation;
+  return composition;
 }
 
 /**
@@ -426,8 +439,9 @@ export function registerDelegateRuntime(
         if (typeof rawContext !== "string" || rawContext.trim().length === 0) {
           return undefined;
         }
+        const composition = readContextComposition(response ?? {}, rawContext);
         const rendered = renderMemoryContextPrompt({
-          ...readContextComposition(response ?? {}, rawContext),
+          ...composition,
           maxChars: options.recallBudgetChars,
         });
         if (!rendered) return undefined;
@@ -438,7 +452,10 @@ export function registerDelegateRuntime(
           promptLinesBySession.set(sessionKey, rendered.lines);
           return undefined;
         }
-        return { prependSystemContext: prompt };
+        return {
+          prependSystemContext: prompt,
+          ...(composition.degradation ? { degradation: composition.degradation } : {}),
+        };
       } catch (err) {
         log.warn(`delegate recall failed: ${String(err)}`);
         return undefined;
