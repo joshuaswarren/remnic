@@ -49,3 +49,37 @@ test("pruneRecallAuditEntries removes day directories older than retention", asy
   assert.equal((await stat(keepDir)).isDirectory(), true);
   await assert.rejects(stat(deleteDir));
 });
+
+test("#2972 audit entry persists degradation when present and omits it otherwise", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-recall-audit-deg-"));
+  const healthy = {
+    ts: "2026-04-12T14:30:12.445Z",
+    sessionKey: "agent/main:session/healthy",
+    agentId: "main",
+    trigger: "access-surface",
+    queryText: "How did the CI outage resolve?",
+    candidateMemoryIds: ["mem_1"],
+    summary: "CI recovered.",
+    injectedChars: 12,
+    toggleState: "enabled" as const,
+  };
+  const degraded = {
+    ...healthy,
+    sessionKey: "agent/main:session/degraded",
+    degradation: {
+      state: "degraded" as const,
+      reason: "budget-compacted" as const,
+      budget: { contextBudget: 80, fullChars: 200, deliveredChars: 80 },
+    },
+  };
+
+  await appendRecallAuditEntry(root, healthy);
+  await appendRecallAuditEntry(root, degraded);
+
+  const healthyPath = buildRecallAuditPath(root, healthy.ts, healthy.sessionKey);
+  const degradedPath = buildRecallAuditPath(root, degraded.ts, degraded.sessionKey);
+  assert.deepEqual(JSON.parse((await readFile(healthyPath, "utf8")).trim()), healthy);
+  assert.equal("degradation" in JSON.parse((await readFile(healthyPath, "utf8")).trim()), false);
+  assert.deepEqual(JSON.parse((await readFile(degradedPath, "utf8")).trim()), degraded);
+});
+

@@ -276,6 +276,9 @@ export async function assembleRecallResponse(
         plannerMode: snapshot?.plannerMode ?? mode,
         requestedMode: mode,
         fallbackUsed: snapshot?.fallbackUsed ?? false,
+        ...(effectiveComposition.degradation
+          ? { degradation: effectiveComposition.degradation }
+          : {}),
       };
       const auditResult = await deps.auditAdapter.record(
         resolvedAgentId || "__anonymous__",

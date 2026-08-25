@@ -615,3 +615,20 @@ test("renderXrayText tier-explain block matches shared helper output", async () 
     assert.ok(nullText.includes(line));
   }
 });
+
+test("#2972 xray text and markdown surface degradation only when present", () => {
+  const healthy = minimalSnapshot();
+  const degraded = {
+    ...minimalSnapshot(),
+    degradation: {
+      state: "degraded" as const,
+      reason: "budget-clipped" as const,
+    },
+  };
+  const healthyText = renderXrayText(healthy);
+  assert.equal(healthyText.includes("degradation:"), false);
+  assert.match(renderXrayText(degraded), /degradation: degraded\/budget-clipped/);
+  assert.equal(renderXrayMarkdown(healthy).includes("| Degradation |"), false);
+  assert.match(renderXrayMarkdown(degraded), /\| Degradation \| degraded\/budget-clipped \|/);
+});
+
