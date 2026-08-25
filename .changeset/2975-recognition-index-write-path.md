@@ -16,6 +16,10 @@ discriminability tidy pass is a later layer.
   temporal/tag indexes stay independent).
 - No new config keys. `saveRecognitionIndex` remains single-writer; this
   slice serializes with an op chain plus directory lock.
+- A missing index is bootstrapped from the active corpus so the first
+  post-enable write cannot publish a 1-id index that recall would treat
+  as the full working set. Abandoned directory locks older than 60s are
+  reclaimed.
 
 Not in this layer (follow-ups on #2975): storage.ts direct-write hook,
 RetrievalTier += recognition + xray labels, discriminability tidy pass,

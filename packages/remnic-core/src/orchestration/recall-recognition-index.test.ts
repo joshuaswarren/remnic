@@ -196,3 +196,54 @@ test("persist-path: enabled writes update the namespace index; disabled stays qu
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("persist-path: first post-enable persist bootstraps the active corpus, not just the write", async () => {
+  const dir = await tmpNamespace();
+  const memories = new Map<string, MemoryFile>([
+    ["fact-old", memory("fact-old", "Existing SSD rack layout.\nOlder note.")],
+    ["fact-ssd", memory("fact-ssd", "Running the model off an SSD tier.\nDetails.")],
+  ]);
+  const storage = {
+    dir,
+    getMemoryById: async (id: string) => memories.get(id) ?? null,
+    getMemoryByIdIncludingArchived: async (id: string) => memories.get(id) ?? null,
+    readAllMemories: async () => [...memories.values()],
+    readAllColdMemories: async () => [],
+  };
+  try {
+    const on = stubCoordinator(parseConfig({ recallRecognitionTier: true }));
+    await on.updateTemporalTagIndexes(storage as never, ["fact-ssd"]);
+    const index = await loadRecognitionIndex(dir);
+    assert.deepEqual(
+      index?.entries.map((entry) => entry.id).sort(),
+      ["fact-old", "fact-ssd"],
+    );
+    assert.deepEqual(
+      index?.entries.find((entry) => entry.id === "fact-old"),
+      { id: "fact-old", description: "Existing SSD rack layout." },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("stale recognition-index lock is broken so a later write can publish", async () => {
+  const dir = await tmpNamespace();
+  const lockDir = `${recognitionIndexPath(dir)}.lock.d`;
+  try {
+    await fsp.mkdir(lockDir, { recursive: true });
+    const stale = new Date(Date.now() - 120_000);
+    await fsp.utimes(lockDir, stale, stale);
+    await maintainRecognitionIndexAfterWrite({
+      memoryDir: dir,
+      enabled: true,
+      changes: [{ action: "upsert", id: "fact-001", content: "SSD inference chips in the lab rack." }],
+    });
+    const index = await loadRecognitionIndex(dir);
+    assert.deepEqual(index?.entries, [
+      { id: "fact-001", description: "SSD inference chips in the lab rack." },
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

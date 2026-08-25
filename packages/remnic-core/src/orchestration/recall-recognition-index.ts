@@ -35,6 +35,7 @@ export type RecognitionIndexChange =
 const writeChains = new Map<string, Promise<void>>();
 const LOCK_POLL_MS = 10;
 const LOCK_ATTEMPTS = 50;
+const LOCK_STALE_MS = 60_000;
 
 /**
  * First non-empty line of a memory body. Layer 1 has no description
@@ -58,6 +59,25 @@ function withIndexChain<T>(indexPath: string, op: () => Promise<T>): Promise<T> 
   return run;
 }
 
+async function removeAbandonedRecognitionLock(
+  lockDir: string,
+): Promise<"removed" | "wait" | "blocked"> {
+  try {
+    const info = await fsp.lstat(lockDir);
+    if (info.isSymbolicLink()) return "blocked";
+    if (!info.isDirectory()) {
+      await fsp.rm(lockDir, { force: true });
+      return "removed";
+    }
+    if (Date.now() - info.mtimeMs < LOCK_STALE_MS) return "wait";
+    await fsp.rm(lockDir, { recursive: true, force: true });
+    return "removed";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return "removed";
+    return "blocked";
+  }
+}
+
 async function withRecognitionIndexLock<T>(memoryDir: string, op: () => Promise<T>): Promise<T> {
   const lockDir = `${recognitionIndexPath(memoryDir)}.lock.d`;
   for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt++) {
@@ -75,6 +95,11 @@ async function withRecognitionIndexLock<T>(memoryDir: string, op: () => Promise<
         continue;
       }
       if (code !== "EEXIST") throw error;
+      const cleanup = await removeAbandonedRecognitionLock(lockDir);
+      if (cleanup === "blocked") {
+        throw new Error(`recognition index lock blocked at ${lockDir}`);
+      }
+      if (cleanup === "removed") continue;
       await delay(LOCK_POLL_MS);
     }
   }
@@ -133,6 +158,10 @@ export async function maintainRecognitionIndexAfterWrite(args: {
   await withIndexChain(indexPath, () =>
     withRecognitionIndexLock(args.memoryDir, async () => {
       const loaded = await loadRecognitionIndex(args.memoryDir);
+      // `changes` is the full set the caller wants published. Persist-path
+      // bootstraps from the active corpus when the file is absent so a
+      // first post-enable write cannot mint a 1-id index that recall would
+      // treat as authoritative.
       const entries = applyChanges(loaded?.entries ?? [], changes);
       await saveRecognitionIndex(args.memoryDir, buildRecognitionIndex(entries));
     }),
