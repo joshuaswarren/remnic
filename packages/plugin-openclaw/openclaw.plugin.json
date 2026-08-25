@@ -4434,6 +4434,19 @@
           }
         }
       },
+      "sessionExperience": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Session-end agent-experience episode extraction (issue #2979).",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master switch. Default off; conservative pins off."
+          }
+        }
+      },
       "extractionLiveness": {
         "type": "object",
         "additionalProperties": false,
