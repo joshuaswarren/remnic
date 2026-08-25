@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -459,5 +459,48 @@ test("legacy landed pending whose file no longer matches expectedDigest is ambig
       /ambiguous[\s\S]{0,512}Refusing to guess/,
     );
     assert.equal((await store.readRevisionStatus(target)).status, "unavailable");
+  });
+});
+
+test("removeRevisionShard sweeps a committed shard, keeps pending evidence, never touches a foreign shard (#2837)", async () => {
+  await withStore(async (store, root) => {
+    const target = path.join(root, "memories", "fact-deleted.md");
+    const shard = shardPathFor(root, target);
+    const shardExists = async () =>
+      stat(shard).then(
+        () => true,
+        () => false,
+      );
+
+    // No receipt was ever minted: the sweep reports absence, not an error.
+    assert.equal(await store.removeRevisionShard(target), "absent");
+
+    const a = await store.beginRevisionTransaction(target);
+    await a.commit();
+    assert.equal(await shardExists(), true);
+    assert.equal(await store.removeRevisionShard(target), "removed");
+    assert.equal(await shardExists(), false, "the committed shard is gone once its memory is deleted");
+    assert.equal((await store.readRevisionStatus(target)).status, "absent");
+
+    // A PENDING marker is crash-recovery evidence: the sweep must keep it.
+    const b = await store.beginRevisionTransaction(target);
+    assert.equal(await store.removeRevisionShard(target), "pending");
+    assert.equal(await shardExists(), true, "the pending marker survives the deletion sweep");
+    await b.abort();
+
+    // A shard naming another target is never destroyed by this target's sweep.
+    await mkdir(path.dirname(shard), { recursive: true });
+    await writeFile(
+      shard,
+      `${JSON.stringify({
+        version: 1,
+        path: "memories/someone-else.md",
+        revision: "2026-08-01T00:00:00.000Z",
+        state: "committed",
+      })}\n`,
+      "utf8",
+    );
+    assert.equal(await store.removeRevisionShard(target), "foreign");
+    assert.equal(await shardExists(), true, "a foreign shard is kept — it names another target");
   });
 });

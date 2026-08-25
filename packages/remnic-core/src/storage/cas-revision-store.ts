@@ -641,6 +641,29 @@ export class CasRevisionStore {
     });
   }
 
+  /** #2837: remove the target's receipt shard once its durable memory file
+   * has been deleted, so orphan shards cannot accumulate. Under the shard
+   * lock: a PENDING marker is crash-recovery evidence for
+   * {@link recoverPendingRevision} and is KEPT ("pending"); a shard naming
+   * another target is KEPT ("foreign") — never destroy a receipt you cannot
+   * attribute. Never touches the durable memory file or the legacy global
+   * metadata: a stale legacy entry keeps per-path monotonicity if the path
+   * is ever reused. */
+  async removeRevisionShard(
+    filePath: string,
+  ): Promise<"removed" | "absent" | "pending" | "foreign"> {
+    const relativePath = await this.resolveRelativePath(filePath);
+    return await this.withShardLock(relativePath, async () => {
+      const { shardPath } = await this.getSafeShardInfo(relativePath);
+      const view = await this.readShardView(shardPath, relativePath);
+      if (view.kind === "missing") return "absent";
+      if (view.kind === "pending") return view.foreign ? "foreign" : "pending";
+      if (view.kind === "foreign" || view.foreign) return "foreign";
+      await unlink(shardPath);
+      return "removed";
+    });
+  }
+
   /** #2813 (P1 C): recovery for a reservation left PENDING by a crash or a
    * failed publication. The caller supplies the KNOWN outcome of the
    * durable memory write: `fileWriteLanded` publishes the pending token as

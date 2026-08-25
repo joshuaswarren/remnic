@@ -13,6 +13,7 @@
  */
 
 import { GraphEdgeAppendError } from "../graph-append-error.js";
+import type { CasRevisionReadStatus } from "../storage/cas-revision-store.js";
 import type { GraphEdge, GraphType } from "../graph.js";
 import { readFile } from "node:fs/promises";
 import { removeNodeEdgesForRewrite, rollbackNodeEdgeRewrite } from "../graph-jsonl.js";
@@ -259,8 +260,8 @@ export async function persistMergedTargetThreadEpisode(
 }
 
 /**
- * Round N+12 (C) + N+14: replace a merged target's generated graph edges
- * with the rebuild's rows, revision-guarded end to end. The caller's
+ * Round N+12 (C) + N+14 + #2837: replace a merged target's generated graph
+ * edges with the rebuild's rows, revision-guarded end to end. The caller's
  * committed-body check can pass, writer B can then commit a NEWER merge and
  * finish rebuilding edges for it, and writer A would resume to remove B's
  * edges and install edges derived from A's older body. The revision observed
@@ -270,6 +271,15 @@ export async function persistMergedTargetThreadEpisode(
  * Returns whether the install finalized (the caller advances its adjacency
  * chain only then). A build failure rolls back the same way (round N+10 C)
  * and rethrows — fail-open stays the caller's decision.
+ *
+ * #2837: the post-build guard reads the truthful receipt STATUS, never the
+ * fail-open token. The old guard collapsed an unreadable sidecar into
+ * undefined on both reads, so an unavailable-vs-unavailable rewrite compared
+ * undefined against undefined, passed, and installed replacement edges no
+ * receipt ever verified. An `unavailable` post-build status now aborts the
+ * install (rollback, false) so the next merge retries; only a PROVEN match —
+ * present-and-equal, or absent-against-absent for a pre-sidecar target —
+ * may install.
  *
  * Round N+14 makes the ROLLBACK surgical: `build` returns the exact rows it
  * appended (by identity), and the rollback removes only those — never a
@@ -283,13 +293,14 @@ export async function rewriteMergedTargetGraphEdges(
   storage: {
     dir: string;
     getMemoryByIdIncludingArchived: (id: string) => Promise<MemoryFile | null>;
-    readCasRevision: (filePath: string) => Promise<string | undefined>;
+    readCasRevisionStatus: (filePath: string) => Promise<CasRevisionReadStatus>;
   },
   input: {
     targetId: string;
     memoryRelPath: string;
     mergedContent: string;
-    /** The CAS revision token the committed-body check observed. */
+    /** The CAS revision token the committed-body check observed (undefined
+     * only when the check PROVED the receipt absent — #2837). */
     revisionChecked: string | undefined;
     rewriteTypes: readonly GraphType[];
     build: () => Promise<GraphEdge[] | void>;
@@ -306,15 +317,26 @@ export async function rewriteMergedTargetGraphEdges(
   try {
     appended = (await input.build()) ?? undefined;
     const committedNow = await storage.getMemoryByIdIncludingArchived(input.targetId);
-    const committedRevision = committedNow === null ? undefined : await storage.readCasRevision(committedNow.path).catch((err) => {
-      log.warn(`rewriteMergedTargetGraphEdges: failed to read CAS revision for ${committedNow.path}: ${err}`);
-      return undefined;
-    });
+    let standing: CasRevisionReadStatus;
+    if (committedNow === null) {
+      standing = { status: "absent" };
+    } else {
+      standing = await storage.readCasRevisionStatus(committedNow.path).catch((err: unknown) => ({
+        status: "unavailable" as const,
+        reason: err instanceof Error ? err.message : String(err),
+      }));
+    }
     if (
       !committedNow ||
       committedNow.content !== input.mergedContent ||
-      committedRevision !== input.revisionChecked
+      standing.status === "unavailable" ||
+      (standing.status === "present" ? standing.revision : undefined) !== input.revisionChecked
     ) {
+      if (standing.status === "unavailable") {
+        log.warn(
+          `rewriteMergedTargetGraphEdges: CAS revision status for ${input.memoryRelPath} is unavailable (${standing.reason}); aborting the install — an unverified replacement must not install (#2837)`,
+        );
+      }
       await rollbackNodeEdgeRewrite(storage.dir, input.memoryRelPath, input.rewriteTypes, removedEdges, input.targetId, appended);
       return false;
     }

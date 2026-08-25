@@ -2732,7 +2732,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   protected async writeManagedStorageFile(filePath: string, write: () => Promise<void>): Promise<void> {
     return this.deletionRevisionStore.writeManagedStorageFile(filePath, write);
   }
-  protected async deleteManagedStorageFile(filePath: string, deletionMtimeMs?: number | null): Promise<boolean> {
+  protected async deleteManagedStorageFileDurable(filePath: string, deletionMtimeMs?: number | null): Promise<boolean> {
     return this.deletionRevisionStore.deleteManagedStorageFile(filePath, deletionMtimeMs);
   }
 
