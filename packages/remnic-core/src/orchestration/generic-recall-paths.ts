@@ -10,6 +10,7 @@ import {
   isMeetingRecordPath,
 } from "./orchestrator-helpers.js";
 import { isJournalDayPath } from "../activity/journal.js";
+import { DIRECTORY_SIDECAR_BASENAME } from "../directory-sidecars.js";
 import { OKF_RESERVED_BASENAMES } from "../okf/type-mapping.js";
 
 
@@ -244,7 +245,10 @@ export function isGenericRecallExcludedPath(
   return (
     isSearchExcludedPath(filePath, policy, source) ||
     isTopLevelArchivePath(filePath, policy, source) ||
-    OKF_RESERVED_BASENAMES[path.basename(filePath)] === true
+    OKF_RESERVED_BASENAMES[path.basename(filePath)] === true ||
+    // Derived per-directory sidecars (#2977): recall-excluded like OKF index
+    // files, still searchable. Basename-only, the same accepted tradeoff.
+    path.basename(filePath) === DIRECTORY_SIDECAR_BASENAME
   );
 }
 
