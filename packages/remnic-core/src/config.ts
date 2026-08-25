@@ -1968,9 +1968,8 @@ export function parseConfig(
     recallStandingBlock: parseRecallStandingBlock(cfg.recallStandingBlock),
     standingBlockFreshDays: parseStandingBlockFreshDays(cfg.standingBlockFreshDays),
     standingBlockMaxChars: parseStandingBlockMaxChars(cfg.standingBlockMaxChars),
-    // Full-index recognition tier (issue #2975). Default false, and
-    // nothing on the recall path reads these keys until the wiring slice
-    // lands — pre-wiring behavior is byte-identical.
+    // Full-index recognition tier (issue #2975). Default false; nothing on the
+    // recall path reads these keys until the wiring slice lands.
     recallRecognitionTier: parseRecallRecognitionTier(cfg.recallRecognitionTier),
     recognitionIndexMaxEntries: parseRecognitionIndexMaxEntries(cfg.recognitionIndexMaxEntries),
     // Disclosure auto-escalation (issue #677 PR 4/4).  Default `manual`

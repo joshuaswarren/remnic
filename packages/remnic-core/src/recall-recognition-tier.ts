@@ -73,6 +73,17 @@ export interface RecognitionIndex {
   entries: RecognitionIndexEntry[];
 }
 
+/**
+ * Config fields this tier owns, mixed into `PluginConfig` (issue #2975) so
+ * the keys live beside their parsers instead of growing `types.ts`.
+ */
+export interface RecognitionTierSettings {
+  /** Small namespaces recall by recognizing against the whole compact index instead of vector search; parsed now, wiring lands in a later slice. Default false. */
+  recallRecognitionTier: boolean;
+  /** Max entries a namespace's recognition index may carry for the tier to engage (inclusive). Default 500. */
+  recognitionIndexMaxEntries: number;
+}
+
 export function parseRecallRecognitionTier(raw: unknown): boolean {
   return coerceBooleanLike(raw, "recallRecognitionTier") === true;
 }
