@@ -378,6 +378,26 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
       }
     }
   }
+
+  // Memory-store browse routes (issue #2978): same seam — access-http.ts
+  // delegates to maybeRespondMemoryBrowse; the boundary dispatch markers
+  // live per-route in memory-browse-http-glue.ts.
+  if (/\bawait\s+maybeRespondMemoryBrowse\(/.test(source)) {
+    const browseSource = readFileSync(
+      new URL("./memory-browse-http-glue.ts", import.meta.url),
+      "utf-8",
+    );
+    const browseRoutes = [
+      ["POST", "/engram/v1/memory/ls", "memory_ls"],
+      ["POST", "/engram/v1/memory/tree", "memory_tree"],
+      ["POST", "/engram/v1/memory/find", "memory_find"],
+    ] as const;
+    for (const [method, pathname, operation] of browseRoutes) {
+      if (browseSource.includes(`"${pathname}"`) && browseSource.includes(`enforceTokenOp("${operation}")`)) {
+        routeOps.set(`${method} ${pathname}`, new Set([operation]));
+      }
+    }
+  }
   for (const [sourcePath, routes] of [
     ["./support-passport/access-http.ts", SUPPORT_PASSPORT_OWNER_HTTP_ROUTES],
     ["./support-passport/public-http.ts", SUPPORT_PASSPORT_PUBLIC_HTTP_ROUTES],
