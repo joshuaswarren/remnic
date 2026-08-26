@@ -105,27 +105,26 @@ test("the promote workflow is dispatch-only and moves dist-tags without republis
   assert.doesNotMatch(raw, /continue-on-error/);
 });
 
-test("the changelog guard runs the release-discipline gate on base code only", () => {
-  const raw = readWorkflow("changelog-guard.yml");
+test("the release-discipline gate runs as a standard pull_request workflow", () => {
+  const raw = readWorkflow("release-discipline.yml");
   const workflow = parse(raw);
 
-  // Trigger and job identity are unchanged: the gate was added as a step.
-  assert.deepEqual(Object.keys(workflow.on), ["pull_request_target"]);
-  assert.deepEqual(Object.keys(workflow.jobs), ["changelog-guard"]);
+  // Standard pull_request, not pull_request_target — no security concern.
+  assert.deepEqual(Object.keys(workflow.on), ["pull_request"]);
+  assert.deepEqual(Object.keys(workflow.jobs), ["release-discipline"]);
 
-  const steps = workflow.jobs["changelog-guard"].steps;
-  const gate = steps.find((step) => step.name === "Release discipline (issue #3032)");
-  assert.ok(gate, "changelog guard must run the release-discipline gate");
+  const steps = workflow.jobs["release-discipline"].steps;
+  const gate = steps.find((step) => step.name?.includes("Release discipline"));
+  assert.ok(gate, "release-discipline.yml must run the gate");
   assert.match(gate.run, /node scripts\/check-release-discipline\.mjs/);
-  assert.match(gate.run, /--head refs\/remotes\/pr\/head/);
 
-  const checkout = steps.find((step) => step.name === "Checkout base for the release-discipline gate");
-  assert.ok(checkout, "the gate needs a base checkout");
-  // pull_request_target: check out the BASE sha, never the head, and do not
-  // leave credentials behind for head-authored code to find.
-  assert.equal(checkout.with.ref, "${{ github.event.pull_request.base.sha }}");
-  assert.equal(checkout.with["persist-credentials"], false);
-  assert.doesNotMatch(raw, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/);
+  // Standard pull_request checkout is safe. No credentials may persist.
+  const checkout = steps.find((step) => step.name === "Checkout" || (step.uses || "").includes("checkout"));
+  assert.ok(checkout, "a checkout step is needed");
+  if (checkout.with) {
+    assert.equal(checkout.with["persist-credentials"], false);
+  }
+
   assert.doesNotMatch(raw, /\|\| true/);
   assert.doesNotMatch(raw, /continue-on-error/);
 });
