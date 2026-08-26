@@ -140,6 +140,8 @@ test("invalidArgsError: an example that cannot round-trip is withheld, not shown
     safeParse: () => ({ success: false }),
   };
   const parse = MEMORY_GET_SCHEMA.safeParse({});
+  assert.equal(parse.success, false);
+  if (parse.success) return;
   const msg = invalidArgsError("engram.memory_get", parse.error, alwaysFails);
   assert.doesNotMatch(msg, /Example arguments/, "a non-parsing example must be withheld");
 });
