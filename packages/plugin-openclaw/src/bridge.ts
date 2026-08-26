@@ -10,9 +10,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { isIPv4, isIPv6 } from "node:net";
+import { isIPv6 } from "node:net";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { configPathCandidates, readCompatEnv } from "@remnic/core";
+import { isLoopbackHost } from "@remnic/core/runtime/http-transport.js";
 
 import {
   HEALTH_WORKER_SOURCE,
@@ -268,36 +269,19 @@ function isDaemonRunning(): boolean {
 /**
  * Whether a daemon endpoint names THIS host.
  *
- * IPv6 literals have many valid spellings for the same address, so they are
- * CANONICALIZED before classifying: `0:0:0:0:0:0:0:1`, `::1`, and
- * `::ffff:127.0.0.1` are all loopback; `0:0:0:0:0:0:0:0` is the wildcard.
- * Comparing raw strings would leave `auto` embedded beside a reachable
- * same-host daemon just because its config spelled the address differently.
+ * Address classification is the shared core helper (`isLoopbackHost`), so
+ * `0:0:0:0:0:0:0:1`, `::1`, `::ffff:127.0.0.1`, and `127.x` all resolve
+ * alike here and everywhere else — comparing raw strings would leave `auto`
+ * embedded beside a reachable same-host daemon just because its config
+ * spelled the address differently.
  *
- * Names stay literal: a prefix test would accept a DNS name like
- * `127.daemon.example` that resolves anywhere. A wildcard bind names every
- * interface on this host, so it counts as local — `server.host: "0.0.0.0"` is
- * the documented daemon configuration.
+ * A wildcard bind names every interface on this host, so it counts as local —
+ * `server.host: "0.0.0.0"` is the documented daemon configuration.
  */
 export function isLoopbackDaemonHost(host: string): boolean {
   const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
-  if (normalized === "localhost") return true;
   if (loopbackForWildcardBind(normalized) !== undefined) return true;
-  const ipv6 = canonicalIPv6(normalized);
-  if (ipv6 !== undefined) {
-    if (ipv6 === "::1") return true;
-    // IPv4-mapped carries an IPv4 address; judge THAT. Canonicalization emits
-    // the hex form (`::ffff:7f00:1`), so read 127 out of the high group.
-    const mappedHex = /^::ffff:([0-9a-f]{1,4}):[0-9a-f]{1,4}$/.exec(ipv6);
-    if (mappedHex !== null) return Number.parseInt(mappedHex[1], 16) >> 8 === 0x7f;
-    const mappedDotted = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(ipv6);
-    return (
-      mappedDotted !== null &&
-      isIPv4(mappedDotted[1]) &&
-      mappedDotted[1].split(".")[0] === "127"
-    );
-  }
-  return isIPv4(normalized) && normalized.split(".")[0] === "127";
+  return isLoopbackHost(normalized);
 }
 
 /**

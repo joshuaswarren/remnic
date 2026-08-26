@@ -50,6 +50,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import express, { type Express, type Request, type Response } from "express";
 import { rateLimit } from "express-rate-limit";
 import { authorizationHandler } from "@modelcontextprotocol/sdk/server/auth/handlers/authorize.js";
+import { isLoopbackHost } from "@remnic/core/runtime/http-transport.js";
 import { tokenHandler } from "@modelcontextprotocol/sdk/server/auth/handlers/token.js";
 import { createOAuthMetadata, mcpAuthMetadataRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import {
@@ -168,13 +169,13 @@ function coerceAbsoluteHttpsUrl(
     throw new Error(`Invalid ${source}: URL must not include a query string or fragment`);
   }
   const isHttps = parsed.protocol === "https:";
-  const isLocalhostHttp =
+  const isLoopbackHttp =
     opts.allowHttpForLocalhost &&
     parsed.protocol === "http:" &&
-    (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost");
-  if (!isHttps && !isLocalhostHttp) {
+    isLoopbackHost(parsed.hostname);
+  if (!isHttps && !isLoopbackHttp) {
     throw new Error(
-      `Invalid ${source}: must be an absolute https:// URL (http:// allowed only for 127.0.0.1/localhost)`,
+      `Invalid ${source}: must be an absolute https:// URL (http:// allowed only for loopback hosts)`,
     );
   }
   return trimmed;

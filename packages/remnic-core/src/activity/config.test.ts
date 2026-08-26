@@ -137,6 +137,25 @@ test("parseActivityConfig accepts localhost and 127.x loopback hosts", () => {
   );
 });
 
+test("parseActivityConfig shares the core loopback classification (issue #3012)", () => {
+  // RFC 6761 loopback subdomain and the IPv4-mapped ::1 are loopback.
+  assert.equal(
+    parseActivityConfig({ enabled: true, sources: [{ machineLabel: "a", baseUrl: "http://daemon.localhost:4319" }] })
+      .sources.length,
+    1,
+  );
+  assert.equal(
+    parseActivityConfig({ enabled: true, sources: [{ machineLabel: "b", baseUrl: "http://[::ffff:127.0.0.1]:4319" }] })
+      .sources.length,
+    1,
+  );
+  // A loopback-shaped DNS name is still not loopback.
+  assert.throws(
+    () => parseActivityConfig({ enabled: true, sources: [{ machineLabel: "c", baseUrl: "http://127.0.0.1.evil.test:4319" }] }),
+    /must target a loopback host/,
+  );
+});
+
 test("parseActivityConfig parses and bounds autoSyncIntervalMinutes", () => {
   assert.equal(parseActivityConfig(undefined).autoSyncIntervalMinutes, 15);
   assert.equal(parseActivityConfig({ autoSyncIntervalMinutes: "30" }).autoSyncIntervalMinutes, 30);
