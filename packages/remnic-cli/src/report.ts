@@ -59,7 +59,7 @@ export interface ReportContent {
     totalMemories: number;
     sizeBucket: string;
   };
-  benchScorecard?: unknown;
+  benchScorecard?: BenchScorecardSummary;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -191,6 +191,67 @@ function runDoctorChecks(): DoctorCheckSummary[] {
 
 // ─── Report builders ──────────────────────────────────────────────────────
 
+/**
+ * Allow-listed scorecard fields. A raw benchmark report card can carry
+ * questions, answers, and recalled memory content, so nothing outside this
+ * shape ever reaches the report.
+ */
+export interface BenchScorecardSummary {
+  benchmarkId?: string;
+  taskCount?: number;
+  /** Per-metric mean, numbers only. */
+  scores?: Record<string, number>;
+}
+
+/** Frozen `as const` — do NOT annotate as readonly string[] (checklist 47). */
+const BENCH_SCORECARD_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/**
+ * Extract only numeric aggregates and a syntactically-constrained benchmark
+ * id from a scorecard. Every other field — including anything nested — is
+ * dropped by construction rather than redacted.
+ */
+export function summarizeBenchScorecard(raw: unknown): BenchScorecardSummary | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const summary: BenchScorecardSummary = {};
+
+  // Benchmark id: an identifier, never free text that could carry content.
+  if ("benchmark" in raw && typeof raw.benchmark === "object" && raw.benchmark !== null) {
+    const bench = raw.benchmark;
+    if ("id" in bench && typeof bench.id === "string" && BENCH_SCORECARD_ID_PATTERN.test(bench.id)) {
+      summary.benchmarkId = bench.id;
+    }
+  }
+
+  // Task count: a non-negative integer only.
+  if ("tasks" in raw && Array.isArray(raw.tasks)) {
+    summary.taskCount = raw.tasks.length;
+  }
+
+  // Scores: finite numbers under identifier-shaped keys. Any non-numeric
+  // value is dropped — a string score could carry arbitrary text.
+  if ("scores" in raw && typeof raw.scores === "object" && raw.scores !== null) {
+    const scores: Record<string, number> = {};
+    const rawScores = raw.scores;
+    for (const key of Object.getOwnPropertyNames(rawScores)) {
+      if (!Object.hasOwn(rawScores, key)) continue;
+      if (!BENCH_SCORECARD_ID_PATTERN.test(key)) continue;
+      const value: unknown = (rawScores as Record<string, unknown>)[key];
+      if (typeof value === "number" && Number.isFinite(value)) {
+        scores[key] = value;
+      } else if (
+        typeof value === "object" && value !== null && "mean" in value
+        && typeof value.mean === "number" && Number.isFinite(value.mean)
+      ) {
+        scores[key] = value.mean;
+      }
+    }
+    if (Object.keys(scores).length > 0) summary.scores = scores;
+  }
+
+  return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
 export async function buildReport(options: { includeBench?: boolean } = {}): Promise<ReportContent> {
   const generatedAt = new Date().toISOString();
   const platform = { os: os.platform(), arch: os.arch(), node: process.version };
@@ -226,15 +287,18 @@ export async function buildReport(options: { includeBench?: boolean } = {}): Pro
   const storeBytes = sizeOfStore(memoryDir);
   const sizeBucketLabel = sizeBucket(storeBytes);
 
-  // Optional bench scorecard
-  let benchScorecard: unknown;
+  // Optional bench scorecard — NEVER copied verbatim. A benchmark report card
+  // can contain questions, answers, and recalled memory content
+  // (docs/benchmarks.md), so the same allow-list discipline as the config
+  // applies: only these numeric/enum aggregates are extracted (#3037 review).
+  let benchScorecard: BenchScorecardSummary | undefined;
   if (options.includeBench) {
     const scorecardPath = path.join(os.homedir(), ".remnic", "reports", "bench-scorecard.json");
     try {
-      const data = await readFile(scorecardPath, "utf-8");
-      benchScorecard = JSON.parse(data);
+      const raw: unknown = JSON.parse(await readFile(scorecardPath, "utf-8"));
+      benchScorecard = summarizeBenchScorecard(raw);
     } catch {
-      // Scorecard absent — section will be omitted
+      // Scorecard absent or unparseable — section omitted, exit stays 0.
     }
   }
 

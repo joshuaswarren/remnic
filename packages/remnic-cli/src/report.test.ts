@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { REPORT_ALLOWED_CONFIG_FIELDS, buildReport, renderReportJson, renderReportMarkdown, sizeBucket } from "./report.js";
+import { REPORT_ALLOWED_CONFIG_FIELDS, buildReport, renderReportJson, renderReportMarkdown, sizeBucket, summarizeBenchScorecard } from "./report.js";
 
 // ─── Sentinel leak test ───────────────────────────────────────────────────
 
@@ -175,4 +175,64 @@ test("non-enumerable and inherited config keys are excluded from the report", ()
   // Allowed booleans should be present
   assert.equal(Object.hasOwn(result, "qmdEnabled"), true, "qmdEnabled should be present");
   assert.equal(Object.hasOwn(result, "debug"), true, "debug should be present");
+});
+
+// ─── Bench scorecard sanitization (#3037 review, P1) ──────────────────────
+
+test("summarizeBenchScorecard drops every field outside the allow-list", () => {
+  const sentinel = "SENTINEL_MEMORY_CONTENT_do_not_leak";
+  // Shaped like a real report card, which carries questions, answers, and
+  // recalled context alongside the aggregates.
+  const raw = {
+    benchmark: { id: "say-once", title: sentinel, citation: sentinel },
+    tasks: [
+      { taskId: "t1", question: sentinel, expected: sentinel, actual: sentinel },
+      { taskId: "t2", question: sentinel, details: { probes: [sentinel] } },
+    ],
+    scores: { recall: { mean: 0.5, median: 0.5 }, leaked: sentinel },
+    config: { memoryDir: "/some/private/path", openaiApiKey: sentinel },
+    meta: { invocation: { note: sentinel } },
+  };
+
+  const summary = summarizeBenchScorecard(raw);
+  assert.ok(summary, "a scorecard with aggregates should summarize");
+  const rendered = JSON.stringify(summary);
+
+  assert.doesNotMatch(rendered, new RegExp(sentinel), "no scorecard content may survive");
+  assert.doesNotMatch(rendered, /private\/path/, "no paths may survive");
+  assert.equal(summary.benchmarkId, "say-once");
+  assert.equal(summary.taskCount, 2);
+  assert.equal(summary.scores?.recall, 0.5);
+  // A string-valued score is dropped, not stringified.
+  assert.equal(Object.hasOwn(summary.scores ?? {}, "leaked"), false);
+});
+
+test("summarizeBenchScorecard rejects a non-identifier benchmark id", () => {
+  const summary = summarizeBenchScorecard({
+    benchmark: { id: "Not An Id: with content and /paths/" },
+    tasks: [],
+  });
+  assert.equal(summary?.benchmarkId, undefined, "free-text id must be dropped");
+});
+
+test("the rendered report never contains raw scorecard JSON", () => {
+  const sentinel = "SENTINEL_LEAK_CHECK";
+  const report = {
+    schemaVersion: "1" as const,
+    generatedAt: "2026-08-26T12:00:00.000Z",
+    platform: { os: "linux", arch: "x64", node: "v22.23.1" },
+    remnicVersion: "9.69.56",
+    doctor: [],
+    configShape: {},
+    storeScale: { totalMemories: 0, sizeBucket: "< 1 KB" },
+    benchScorecard: summarizeBenchScorecard({
+      benchmark: { id: "say-once", title: sentinel },
+      tasks: [{ taskId: "t1", question: sentinel }],
+      scores: { recall: 1 },
+    }),
+  };
+  const md = renderReportMarkdown(report);
+  const json = renderReportJson(report);
+  assert.doesNotMatch(md, new RegExp(sentinel));
+  assert.doesNotMatch(json, new RegExp(sentinel));
 });
