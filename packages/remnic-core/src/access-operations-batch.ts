@@ -152,6 +152,14 @@ defineOperation({ name: "recall_xray", description: "X-ray recall.", schema: str
     return { result: await ctx.service.recallXray({ query: defStr(input.query, ""), sessionKey: optStr(input.sessionKey), namespace: optStr(input.namespace), budget, authenticatedPrincipal: ctx.authenticatedPrincipal, sourceConnector: ctx.sourceConnector, ...(dr && dr !== "" ? { disclosure: dr as RecallDisclosure } : {}), ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) }) };
   },
 });
+defineOperation({ name: "recall_why", description: "Diagnose why a query did not recall an expected memory (#3033). Read-only.", schema: strictSchema({ query: S.str, expect: S.str, sessionKey: S.str, namespace: S.str }),
+  handler: async (input, ctx) => {
+    // A supplied-but-blank `expect` is a caller mistake: forward it so the
+    // service rejects it, matching the HTTP route's 400 (checklist #39).
+    const expect = optStr(input.expect);
+    return { result: await ctx.service.recallWhy({ query: defStr(input.query, ""), ...(expect !== undefined ? { expect } : {}), sessionKey: optStr(input.sessionKey), namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal, sourceConnector: ctx.sourceConnector, ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) }) };
+  },
+});
 defineOperation({ name: "who_knows", description: "Rank entities by demonstrated expertise for a topic (#2057).", schema: strictSchema({ topic: S.str, limit: S.flexNum, namespace: S.str }),
   handler: async (input, ctx) => {
     const topic = defStr(input.topic, "");

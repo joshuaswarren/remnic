@@ -9,7 +9,7 @@ import { cp, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const HEAP_DEFAULT = "--max-old-space-size=12288";
+const HEAP_DEFAULT = "--max-old-space-size=8192";
 const existing = process.env.NODE_OPTIONS?.trim();
 // Caller-supplied NODE_OPTIONS goes last so V8's last-wins parsing lets
 // callers override the default heap limit.

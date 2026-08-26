@@ -323,6 +323,7 @@ import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
 import { toRecallExplainJson } from "./recall-explain-renderer.js";
 import { type TagMatchMode, applyTagFilter, normalizeTags, parseTagMatch } from "./recall-tag-filter.js";
 import { type RecallXraySnapshot, estimateRecallTokens } from "./recall-xray.js";
+import { runRecallWhy, type RecallWhyRequest, type RecallWhyResponse } from "./recall-why-service.js";
 import {
   computeWhoKnows,
   loadWhoKnowsEntities,
@@ -2837,6 +2838,11 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   /** Memory-store browse verbs (issue #2978): ls/tree/find over ONE resolved namespace. */
   async memoryStoreBrowse(request: MemoryStoreBrowseRequest): Promise<MemoryStoreBrowseResult> {
     return runMemoryBrowse({ resolveReadableNamespace: (ns, p) => this.resolveReadableNamespace(ns, p), getStorage: (ns) => this.orchestrator.getStorage(ns) }, request);
+  }
+
+  /** Recall-miss diagnosis (issue #3033). Read-only; see recall-why.ts. */
+  async recallWhy(request: RecallWhyRequest): Promise<RecallWhyResponse> {
+    return runRecallWhy({ orchestrator: this.orchestrator, resolveNamespace: (ns) => this.resolveNamespace(ns) }, request);
   }
 
   async recallXray(request: {
