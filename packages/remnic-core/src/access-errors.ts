@@ -76,6 +76,14 @@ export function levenshtein(a: string, b: string): number {
 // ─── Similar-name helpers ─────────────────────────────────────────────────
 
 const SUGGESTION_DISTANCE_CAP = 3;
+/**
+ * Upper bound on the requested tool name. Anything longer is rejected before
+ * the O(n*m) Levenshtein pass (#3042 review, P2): a 128 KB request over ~30
+ * tools would otherwise run hundreds of millions of comparisons and block
+ * the server event loop. The repo documents 64 chars as the tool-name shape;
+ * this matches the limit enforced by every published surface.
+ */
+export const SUGGESTION_REQUEST_MAX_LEN = 64;
 
 export interface SuggestionCandidate {
   name: string;
@@ -92,6 +100,9 @@ export function nearestSuggestions(
   requested: string,
   registeredNames: readonly string[],
 ): SuggestionCandidate[] {
+  // Defense in depth: the entry point already caps; this guards any direct
+  // caller of the helper from an unbounded Levenshtein pass (issue #3042).
+  if (requested.length > SUGGESTION_REQUEST_MAX_LEN) return [];
   const candidates: SuggestionCandidate[] = [];
   for (const name of registeredNames) {
     const distance = levenshtein(requested.toLowerCase(), name.toLowerCase());
@@ -184,7 +195,6 @@ function exampleFromSchema(schema: unknown): unknown {
       return undefined;
   }
 }
-
 /**
  * Build an enriched "unknown tool" error message.
  *
@@ -195,6 +205,13 @@ export function unknownToolError(
   requested: string,
   registeredNames: readonly string[],
 ): string {
+  // Cap the request before the suggestion pass: a 128 KB name would otherwise
+  // pay O(n*m) per registered tool (issue #3042 review, P2). The cap matches
+  // the documented tool-name shape; an over-long request is rejected with a
+  // teaching message rather than a silent truncate.
+  if (requested.length > SUGGESTION_REQUEST_MAX_LEN) {
+    return `Unknown tool: name exceeds ${SUGGESTION_REQUEST_MAX_LEN} characters (got ${requested.length}).`;
+  }
   const suggestion = buildSuggestion(requested, registeredNames);
   return `Unknown tool: ${requested}. ${suggestion}`;
 }

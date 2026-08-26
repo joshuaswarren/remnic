@@ -164,3 +164,19 @@ test("unknownToolError: no sentinel secret values appear in the message", () => 
   assert.doesNotMatch(msg, /\/Users\//);
   assert.doesNotMatch(msg, /api_key|token|secret|password/i);
 });
+// ─── Cap on requested tool name (#3042 P2) ──────────────────────────────────
+
+test("nearestSuggestions: refuses overlong requests without running Levenshtein", () => {
+  const huge = "x".repeat(10_000);
+  // Direct helper: defense-in-depth. The size of the registered set does
+  // not matter; an overlong request returns empty.
+  assert.deepEqual(nearestSuggestions(huge, ["alpha", "beta", "gamma"]), []);
+});
+
+test("unknownToolError: rejects overlong names with a teaching message", () => {
+  const huge = "x".repeat(200);
+  const msg = unknownToolError(huge, ["alpha", "beta"]);
+  assert.match(msg, /exceeds 64 characters/);
+  // Should NOT run a suggestion pass over a 200-char name.
+  assert.doesNotMatch(msg, /Did you mean/);
+});
