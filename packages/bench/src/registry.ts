@@ -88,6 +88,10 @@ import {
   runProceduralRecallBenchmark,
 } from "./benchmarks/remnic/procedural-recall/runner.js";
 import {
+  sayOnceDefinition,
+  runSayOnceBenchmark,
+} from "./benchmarks/remnic/say-once/runner.js";
+import {
   ingestionEntityRecallDefinition,
   runIngestionEntityRecallBenchmark,
 } from "./benchmarks/remnic/ingestion-entity-recall/runner.js";
@@ -236,6 +240,10 @@ const REGISTERED_BENCHMARKS: RegisteredBenchmark[] = [
   {
     ...proceduralRecallDefinition,
     run: runProceduralRecallBenchmark,
+  },
+  {
+    ...sayOnceDefinition,
+    run: runSayOnceBenchmark,
   },
   {
     ...ingestionEntityRecallDefinition,
