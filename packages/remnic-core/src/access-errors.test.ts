@@ -107,13 +107,41 @@ test("invalidArgsError: names the failing field path", () => {
   assert.match(msg, /required/i);
 });
 
-test("invalidArgsError: the generated example round-trips through the schema", () => {
-  const msg = invalidArgsError("engram.memory_get", MEMORY_GET_SCHEMA.safeParse({}).error, MEMORY_GET_SCHEMA);
-  // The example should be mentioned in the message
-  assert.match(msg, /Example/);
-  // The example should contain the expected fields
-  assert.match(msg, /memory_id/);
-  assert.match(msg, /<string>/);
+test("invalidArgsError: the shown example actually parses against the schema", () => {
+  const parse = MEMORY_GET_SCHEMA.safeParse({});
+  assert.equal(parse.success, false);
+  const msg = invalidArgsError("engram.memory_get", parse.error, MEMORY_GET_SCHEMA);
+
+  // Anti-drift guarantee, asserted rather than asserted-about: extract the
+  // JSON the message advertises and feed it back through the SAME schema.
+  const match = msg.match(/Example arguments: (\{.*\})$/);
+  assert.ok(match, `message must carry an example object; got: ${msg}`);
+  const example: unknown = JSON.parse(match[1]);
+
+  const reparsed = MEMORY_GET_SCHEMA.safeParse(example);
+  assert.equal(
+    reparsed.success,
+    true,
+    `the advertised example must round-trip through its own schema; zod said: ${JSON.stringify(reparsed.error?.issues)}`,
+  );
+
+  // And it must not smuggle the tool name in as an unrecognized property.
+  assert.ok(
+    typeof example === "object" && example !== null && !("engram.memory_get" in example),
+    "the example must not contain the tool name as a property",
+  );
+});
+
+test("invalidArgsError: an example that cannot round-trip is withheld, not shown", () => {
+  // A schema whose safeParse always fails must produce no example section
+  // rather than an example the caller cannot use.
+  const alwaysFails = {
+    _def: { typeName: "ZodObject", shape: () => ({ field: { _def: { typeName: "ZodString" } } }) },
+    safeParse: () => ({ success: false }),
+  };
+  const parse = MEMORY_GET_SCHEMA.safeParse({});
+  const msg = invalidArgsError("engram.memory_get", parse.error, alwaysFails);
+  assert.doesNotMatch(msg, /Example arguments/, "a non-parsing example must be withheld");
 });
 
 // ─── Rejection semantics are unchanged ─────────────────────────────────────
