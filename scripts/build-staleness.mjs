@@ -32,6 +32,7 @@ export function runPnpm(repoRoot, args) {
     cwd: repoRoot,
     stdio: "inherit",
     env: process.env,
+    shell: process.platform === "win32",
   });
 
   if (result.error) {
