@@ -21,6 +21,7 @@ test("say-once: replay mode produces identical scorecards across two runs", asyn
     benchmark: sayOnceDefinition,
     mode: "quick" as const,
     seed: 0,
+    system: {} as never,
     onTaskComplete: () => {},
   };
   const result1 = await runSayOnceBenchmark(options);
@@ -44,6 +45,7 @@ test("say-once: no writes outside the temp directory", async () => {
     benchmark: sayOnceDefinition,
     mode: "quick" as const,
     seed: 0,
+    system: {} as never,
     onTaskComplete: () => {},
   };
   await runSayOnceBenchmark(options);
@@ -67,6 +69,7 @@ test("say-once: empty fixture produces zero tasks", async () => {
     mode: "full" as const,
     limit: 0, // zero budget = no tasks
     seed: 0,
+    system: {} as never,
     onTaskComplete: () => {},
   };
   const result = await runSayOnceBenchmark(options);
@@ -80,6 +83,7 @@ test("say-once: per-tier rates are computed correctly from synthetic fixture", a
     benchmark: sayOnceDefinition,
     mode: "full" as const,
     seed: 0,
+    system: {} as never,
     onTaskComplete: () => {},
   };
   const result = await runSayOnceBenchmark(options);
@@ -97,6 +101,7 @@ test("say-once: exit code 0 for a valid run (even with low scores)", async () =>
     benchmark: sayOnceDefinition,
     mode: "quick" as const,
     seed: 0,
+    system: {} as never,
     onTaskComplete: () => {},
   };
   // This should not throw — scores are data, not pass/fail.
