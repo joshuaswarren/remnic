@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.56] — 2026-08-26
+
 ### Added
 
 - `remnic-hermes` policy-bound LLM bridge supports the server-owned `active-hermes` provider sentinel. It resolves only Hermes' persisted main provider, model, and optional base URL per completion while retaining a stable `hermes-active` OpenAI-compatible alias; client request routing fields remain ignored.
