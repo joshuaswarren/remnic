@@ -138,5 +138,5 @@ export function summarizeRecallWhy(report: RecallWhyReport): string {
 function escapeCell(value: string | undefined): string {
   // A pipe inside a markdown table cell breaks the row; the filter ladder
   // joins with "; " and can legitimately contain one.
-  return value === undefined ? "" : value.replace(/\|/g, "\\|");
+  return value === undefined ? "" : value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
 }
