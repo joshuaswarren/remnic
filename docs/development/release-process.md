@@ -2,7 +2,13 @@
 
 How Remnic versions and publishes its packages. Releases are automated by
 `.github/workflows/release-and-publish.yml` and driven by merged pull-request
-labels, not by a manual version-bump file. There is no Changesets step.
+labels, not by a manual version-bump file. There is no Changesets step: a
+changeset records the change's stability level for review and promotion (see
+[../releases.md](../releases.md)), and never drives the version.
+
+Every merge publishes to the npm `alpha` dist-tag. `beta` and `latest` are
+dist-tag moves performed by `release-promote.yml` — see
+[../releases.md](../releases.md) for the channel model and cut rules.
 
 ## How a release happens
 
@@ -36,8 +42,9 @@ commit's source SHA is embedded in the git tag, so re-running against the same
    optionalDependencies, and required peerDependencies (optional peers are
    excluded). The order is written to a temp file the publish step reads.
 7. **Publish to npm.** Packages publish in that order with `pnpm publish`
-   (see below). npm 11.x is pinned so provenance / trusted-publishing behavior
-   only changes through review; all publishes carry provenance attestations.
+   (see below), onto the `alpha` dist-tag. npm 11.x is pinned so provenance /
+   trusted-publishing behavior only changes through review; all publishes carry
+   provenance attestations.
 8. **Rescan ClawHub.** After npm publishing, the workflow triggers a ClawHub
    package rescan for `@remnic/plugin-openclaw`.
 

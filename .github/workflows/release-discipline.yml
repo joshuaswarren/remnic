@@ -1,0 +1,42 @@
+# Release-discipline gate (issue #3032).
+#
+# Enforces changeset stability declarations and config-flag graduation
+# discipline on every PR. Runs as a standard pull_request workflow (not
+# pull_request_target), so it can safely check out the head branch.
+name: Release Discipline
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.changeset/**'
+      - 'packages/**/src/**'
+      - 'scripts/flag-graduation.json'
+      - 'scripts/check-release-discipline.mjs'
+      - 'scripts/changeset-stub.mjs'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  release-discipline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: node scripts/pnpm.mjs install --frozen-lockfile
+
+      - name: "Release discipline (issue #3032)"
+        run: node scripts/check-release-discipline.mjs

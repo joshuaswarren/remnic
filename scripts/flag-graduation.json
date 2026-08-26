@@ -1,0 +1,858 @@
+{
+  "version": 1,
+  "note": "Config-flag graduation registry (issue #3032). Every default-off boolean gate in parseConfig has an entry here until it graduates default-on (flip + entry deletion, one PR) or is deleted outright. See docs/releases.md. Enforced by scripts/check-release-discipline.mjs. Grandfather list: it only shrinks. `addedIn` is a release version for new flags; grandfathered entries carry `<=9.69.55`, the release in which the registry was created, because this repository's clone history does not reach their introducing commits. `issue` is the tracking issue that owns the flag's graduation; grandfathered entries carry the registry bootstrap issue for the same reason.",
+  "flags": [
+    {
+      "flag": "abstractionAnchorsEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "actionGraphRecallEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Graph-backed recall reaches parity with the non-graph default path in the published bench suites across 2 consecutive stable releases, and graph store growth stays bounded across a 7-day beta soak."
+    },
+    {
+      "flag": "activeRecallAllowChainedActiveMemory",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "activeRecallAttachRecallExplain",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "activeRecallEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "activeRecallIncludeCausalTrajectories",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "activeRecallIncludeDaySummary",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "activeRecallPersistTranscripts",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "autoPromoteEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "autoPromoteToSharedEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "behaviorLoopAutoTuneEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "benchmarkBaselineSnapshotsEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Developer/benchmark harness only: never graduates to default-on in a shipped default. The entry is deleted when the harness is removed."
+    },
+    {
+      "flag": "benchmarkDeltaReporterEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Developer/benchmark harness only: never graduates to default-on in a shipped default. The entry is deleted when the harness is removed."
+    },
+    {
+      "flag": "benchmarkStoredBaselineEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Developer/benchmark harness only: never graduates to default-on in a shipped default. The entry is deleted when the harness is removed."
+    },
+    {
+      "flag": "binaryLifecycleEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "calibrationEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "causalRuleExtractionEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "causalTrajectoryMemoryEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "causalTrajectoryRecallEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "citationsEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "cmcBehaviorLearningEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "cmcConsolidationEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "cmcEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "cmcRetrievalEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "collectJudgeTrainingPairs",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "commitmentLedgerEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "commitmentLifecycleEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "compactionResetEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The scheduled job completes unattended across a 7-day beta soak with no operator intervention, no unbounded growth in the store it writes, and no data-loss report."
+    },
+    {
+      "flag": "compoundingEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "compoundingSemanticEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "compoundingWeeklyCronEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The scheduled job completes unattended across a 7-day beta soak with no operator intervention, no unbounded growth in the store it writes, and no data-loss report."
+    },
+    {
+      "flag": "compressionGuidelineLearningEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "contextCompressionActionsEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "continuityAuditEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "conversationIndexEmbedOnUpdate",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The scheduled job completes unattended across a 7-day beta soak with no operator intervention, no unbounded growth in the store it writes, and no data-loss report."
+    },
+    {
+      "flag": "conversationIndexEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "creationMemoryEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "debug",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "enrichmentAutoOnCreate",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "enrichmentEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "episodeNoteModeEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "episodicContextEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "evalHarnessEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Developer/benchmark harness only: never graduates to default-on in a shipped default. The entry is deleted when the harness is removed."
+    },
+    {
+      "flag": "evalShadowModeEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "eventOrderRecallEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "explicitCueRecallEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "extractionJudgeEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "extractionJudgeShadow",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "factArchivalEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The scheduled job completes unattended across a 7-day beta soak with no operator intervention, no unbounded growth in the store it writes, and no data-loss report."
+    },
+    {
+      "flag": "feedbackEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "focusedListRecallEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "graphAssistShadowEvalEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "graphEdgeDecayEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Graph-backed recall reaches parity with the non-graph default path in the published bench suites across 2 consecutive stable releases, and graph store growth stays bounded across a 7-day beta soak."
+    },
+    {
+      "flag": "graphRecallEnableDebug",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "graphRecallEnableTrace",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "graphRecallEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Graph-backed recall reaches parity with the non-graph default path in the published bench suites across 2 consecutive stable releases, and graph store growth stays bounded across a 7-day beta soak."
+    },
+    {
+      "flag": "graphRecallEntityHintsEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Graph-backed recall reaches parity with the non-graph default path in the published bench suites across 2 consecutive stable releases, and graph store growth stays bounded across a 7-day beta soak."
+    },
+    {
+      "flag": "graphRecallExplainEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "graphRecallExplainToolEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "graphRecallPreferHubSeeds",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Graph-backed recall reaches parity with the non-graph default path in the published bench suites across 2 consecutive stable releases, and graph store growth stays bounded across a 7-day beta soak."
+    },
+    {
+      "flag": "graphRecallShadowEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "graphRecallSnapshotEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Graph-backed recall reaches parity with the non-graph default path in the published bench suites across 2 consecutive stable releases, and graph store growth stays bounded across a 7-day beta soak."
+    },
+    {
+      "flag": "graphRecallStoreColdMirror",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Graph-backed recall reaches parity with the non-graph default path in the published bench suites across 2 consecutive stable releases, and graph store growth stays bounded across a 7-day beta soak."
+    },
+    {
+      "flag": "graphRecallUseEntityPriors",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Graph-backed recall reaches parity with the non-graph default path in the published bench suites across 2 consecutive stable releases, and graph store growth stays bounded across a 7-day beta soak."
+    },
+    {
+      "flag": "harmonicRetrievalEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "hourlySummariesExtendedEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "hourlySummariesIncludeSystemMessages",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "hourlySummariesIncludeToolStats",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "hourlySummaryCronAutoRegister",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The scheduled job completes unattended across a 7-day beta soak with no operator intervention, no unbounded growth in the store it writes, and no data-loss report."
+    },
+    {
+      "flag": "injectQuestions",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "inlineSourceAttributionEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "intentRoutingEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "lancedbEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The backend runs green in the search-backend smoke matrix on BOTH the daemon and subprocess paths across 2 consecutive stable releases, with recall parity against qmd on the same corpus."
+    },
+    {
+      "flag": "lcmEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "localLlmFastEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "meilisearchAutoIndex",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The backend runs green in the search-backend smoke matrix on BOTH the daemon and subprocess paths across 2 consecutive stable releases, with recall parity against qmd on the same corpus."
+    },
+    {
+      "flag": "meilisearchEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The backend runs green in the search-backend smoke matrix on BOTH the daemon and subprocess paths across 2 consecutive stable releases, with recall parity against qmd on the same corpus."
+    },
+    {
+      "flag": "memoryBoxesEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "memoryPoisoningDefenseEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "memoryReconstructionEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "memoryRedTeamBenchEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Developer/benchmark harness only: never graduates to default-on in a shipped default. The entry is deleted when the harness is removed."
+    },
+    {
+      "flag": "memoryUtilityLearningEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "messagePartsEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "multiGraphMemoryEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Graph-backed recall reaches parity with the non-graph default path in the published bench suites across 2 consecutive stable releases, and graph store growth stays bounded across a 7-day beta soak."
+    },
+    {
+      "flag": "namespacesEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "negativeExamplesEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "objectiveStateMemoryEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "objectiveStateRecallEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "objectiveStateSnapshotWritesEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "oramaEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The backend runs green in the search-backend smoke matrix on BOTH the daemon and subprocess paths across 2 consecutive stable releases, with recall parity against qmd on the same corpus."
+    },
+    {
+      "flag": "parallelRetrievalEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "proactiveExtractionEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "proceduralMiningCronAutoRegister",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The scheduled job completes unattended across a 7-day beta soak with no operator intervention, no unbounded growth in the store it writes, and no data-loss report."
+    },
+    {
+      "flag": "profilingEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "promotionByOutcomeEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "qmdAutoEmbedEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The backend runs green in the search-backend smoke matrix on BOTH the daemon and subprocess paths across 2 consecutive stable releases, with recall parity against qmd on the same corpus."
+    },
+    {
+      "flag": "qmdAutoUpgradeEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The backend runs green in the search-backend smoke matrix on BOTH the daemon and subprocess paths across 2 consecutive stable releases, with recall parity against qmd on the same corpus."
+    },
+    {
+      "flag": "qmdColdTierEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The backend runs green in the search-backend smoke matrix on BOTH the daemon and subprocess paths across 2 consecutive stable releases, with recall parity against qmd on the same corpus."
+    },
+    {
+      "flag": "qmdExplainEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "qmdForceCpu",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The backend runs green in the search-backend smoke matrix on BOTH the daemon and subprocess paths across 2 consecutive stable releases, with recall parity against qmd on the same corpus."
+    },
+    {
+      "flag": "qmdIntentHintsEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The backend runs green in the search-backend smoke matrix on BOTH the daemon and subprocess paths across 2 consecutive stable releases, with recall parity against qmd on the same corpus."
+    },
+    {
+      "flag": "qmdTierAutoBackfillEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The backend runs green in the search-backend smoke matrix on BOTH the daemon and subprocess paths across 2 consecutive stable releases, with recall parity against qmd on the same corpus."
+    },
+    {
+      "flag": "quarantinePromotionEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "queryAwareIndexingEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "queryExpansionEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "recallConfidenceGateEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "recallMemoryHandles",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "recallPlannerLlmEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "recallPlannerShadowMode",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "recallTranscriptsEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "recordEmptyRecallImpressions",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "rerankEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "resumeBundlesEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "routingRulesEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "secureStoreEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "semanticChunkingEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "semanticRulePromotionEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "semanticRuleVerificationEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "sessionObserverEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "slowLogEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "tagMemoryEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "targetedFactRecallEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "taxonomyEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "temporalBiTemporal",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "temporalExpiredInInjection",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "temporalMemoryTreeEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Graph-backed recall reaches parity with the non-graph default path in the published bench suites across 2 consecutive stable releases, and graph store growth stays bounded across a 7-day beta soak."
+    },
+    {
+      "flag": "tombstonesSemanticMatch",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "traceRecallContent",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
+    },
+    {
+      "flag": "traceWeaverEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "trustScoreEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "trustScoreEpistemicRendering",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Write-path behavior runs clean in the extraction and lifecycle-matrix suites, and a 7-day beta soak shows no store-corruption, dedup, or reindex regression across 2 consecutive stable releases."
+    },
+    {
+      "flag": "trustZoneRecallEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "trustZonesEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "verbatimArtifactsEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "verifiedRecallEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "workIndexAutoRebuildEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "The scheduled job completes unattended across a 7-day beta soak with no operator intervention, no unbounded growth in the store it writes, and no data-loss report."
+    },
+    {
+      "flag": "workIndexEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "workProductRecallEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
+      "flag": "workProjectIndexEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "workProjectsEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "workTaskIndexEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    },
+    {
+      "flag": "workTasksEnabled",
+      "addedIn": "<=9.69.55",
+      "issue": 3032,
+      "graduationCriterion": "UNDECIDED: candidate for removal. No graduation criterion has been articulated for this flag; it must either get one or be deleted with its code."
+    }
+  ]
+}

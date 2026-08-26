@@ -1,0 +1,363 @@
+name: Release Promote
+
+# Channel promotion (issue #3032). A promotion is a dist-tag MOVE against an
+# already-published, byte-identical version: nothing is rebuilt, re-packed, or
+# republished here. `alpha` is produced by release-and-publish.yml on every
+# merge to main; this workflow moves `beta` and `latest` (stable) onto a version
+# that already soaked as alpha. See docs/releases.md for the cut rules.
+#
+# GitHub lookups use REST (`gh api repos/...`) only — the GraphQL points budget
+# is shared with interactive work and is not spent by release automation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Published version to promote, exactly X.Y.Z (no leading v).'
+        required: true
+        type: string
+      channel:
+        description: 'Channel to move onto that version.'
+        required: true
+        type: choice
+        options:
+          - beta
+          - stable
+      hotfix:
+        description: 'Fast-track a fix for a defect in current stable (waives the stable soak window). Recorded in the run.'
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: 'Verify every criterion and print the planned dist-tag moves without performing them.'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ inputs.version }}
+      CHANNEL: ${{ inputs.channel }}
+      HOTFIX: ${{ inputs.hotfix }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      # Minimum days a version must sit on `beta` before it may become stable.
+      STABLE_SOAK_DAYS: '7'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # Validate the exact strings the caller supplied. Nothing is trimmed,
+      # case-folded, or otherwise normalized before the check: a value that is
+      # not already exactly right is rejected rather than reinterpreted.
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          case "${VERSION}" in
+            *[!0-9.]*|*..*|.*|*.) echo "::error title=Invalid version::'${VERSION}' must be exactly X.Y.Z with no leading v."; exit 1 ;;
+          esac
+          if ! printf '%s' "${VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error title=Invalid version::'${VERSION}' must be exactly X.Y.Z with no leading v."
+            exit 1
+          fi
+          case "${CHANNEL}" in
+            beta) DIST_TAG=beta ;;
+            stable) DIST_TAG=latest ;;
+            *) echo "::error title=Invalid channel::'${CHANNEL}' must be beta or stable."; exit 1 ;;
+          esac
+          case "${HOTFIX}" in true|false) ;; *) echo "::error title=Invalid hotfix::'${HOTFIX}' must be true or false."; exit 1 ;; esac
+          case "${DRY_RUN}" in true|false) ;; *) echo "::error title=Invalid dry_run::'${DRY_RUN}' must be true or false."; exit 1 ;; esac
+          echo "DIST_TAG=${DIST_TAG}" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=v${VERSION}" >> "$GITHUB_ENV"
+          echo "Promoting ${VERSION} to ${CHANNEL} (dist-tag ${DIST_TAG}); hotfix=${HOTFIX}; dry_run=${DRY_RUN}"
+
+      - name: Checkout the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      # A dist-tag move is an authenticated registry write. npm trusted
+      # publishing mints credentials for `npm publish` only, so promotion needs
+      # a granular automation token with publish rights on the @remnic scope.
+      # Missing token = loud failure, never a silent no-op.
+      - name: Require an npm automation token
+        if: inputs.dry_run == false
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error title=Missing NPM_TOKEN::Set the NPM_TOKEN repository secret to an npm automation token with publish rights on the @remnic scope. Promotion moves dist-tags, which trusted publishing cannot authorize."
+            exit 1
+          fi
+
+      - name: Resolve the release commit
+        run: |
+          set -euo pipefail
+          REF_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          OBJECT_TYPE="$(printf '%s' "${REF_JSON}" | jq -r '.object.type')"
+          OBJECT_SHA="$(printf '%s' "${REF_JSON}" | jq -r '.object.sha')"
+          if [ "${OBJECT_TYPE}" = "tag" ]; then
+            OBJECT_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${OBJECT_SHA}" -q '.object.sha')"
+          fi
+          if ! printf '%s' "${OBJECT_SHA}" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error title=Unresolved release tag::${RELEASE_TAG} did not resolve to a commit SHA."
+            exit 1
+          fi
+          echo "RELEASE_SHA=${OBJECT_SHA}" >> "$GITHUB_ENV"
+          echo "${RELEASE_TAG} -> ${OBJECT_SHA}"
+
+      # Cut rule: the target version's CI must be green. Rulesets evaluate the
+      # LATEST check-run per context, so group by name and keep the newest
+      # completed_at (AGENTS.md, CI review-gate scheduling note 6). Zero
+      # check-runs is a failure, not a pass.
+      - name: Verify CI is green on the release commit
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/check-runs" \
+            --jq '.check_runs[] | {name, status, conclusion, completed_at}' > check-runs.jsonl
+          TOTAL="$(wc -l < check-runs.jsonl)"
+          if [ "${TOTAL}" -eq 0 ]; then
+            echo "::error title=No CI evidence::No check-runs exist for ${RELEASE_SHA}; refusing to promote."
+            exit 1
+          fi
+          jq -s '
+            group_by(.name)
+            | map(sort_by(.completed_at // "") | last)
+            | map(select((.conclusion // "pending") as $c
+                | ["failure","cancelled","timed_out","action_required","stale","pending"]
+                | index($c)))
+            | map(.name + ": " + (.conclusion // "pending"))
+          ' check-runs.jsonl > blocking.json
+          if [ "$(jq 'length' blocking.json)" -ne 0 ]; then
+            echo "::error title=CI not green::$(jq -r 'join("; ")' blocking.json)"
+            exit 1
+          fi
+          echo "CI green on ${RELEASE_SHA} (${TOTAL} check-run record(s), $(jq -s 'group_by(.name) | length' check-runs.jsonl) context(s))."
+
+      # Cut rule: a stable promotion requires the version to have soaked at
+      # least STABLE_SOAK_DAYS days since it was published as alpha. The clock
+      # comes from the registry's own publish timestamp, not from git.
+      - name: Verify soak age
+        run: |
+          set -euo pipefail
+          PUBLISHED_AT="$(npm view "@remnic/core" time --json | jq -r --arg v "${VERSION}" '.[$v] // empty')"
+          if [ -z "${PUBLISHED_AT}" ]; then
+            echo "::error title=Version not published::@remnic/core@${VERSION} is not on npm; only published versions can be promoted."
+            exit 1
+          fi
+          PUBLISHED_EPOCH="$(date -u -d "${PUBLISHED_AT}" +%s)"
+          case "${PUBLISHED_EPOCH}" in
+            ''|*[!0-9]*) echo "::error title=Unparseable publish time::'${PUBLISHED_AT}' did not parse to an epoch."; exit 1 ;;
+          esac
+          NOW_EPOCH="$(date -u +%s)"
+          AGE_DAYS=$(( (NOW_EPOCH - PUBLISHED_EPOCH) / 86400 ))
+          echo "PUBLISHED_AT=${PUBLISHED_AT}" >> "$GITHUB_ENV"
+          echo "AGE_DAYS=${AGE_DAYS}" >> "$GITHUB_ENV"
+          echo "@remnic/core@${VERSION} published ${PUBLISHED_AT} (${AGE_DAYS} day(s) ago)."
+          if [ "${CHANNEL}" != "stable" ]; then
+            exit 0
+          fi
+          if [ "${HOTFIX}" = "true" ]; then
+            echo "::warning title=Soak waived::hotfix=true fast-tracks ${VERSION} to stable after ${AGE_DAYS} day(s)."
+            exit 0
+          fi
+          if [ "${AGE_DAYS}" -lt "${STABLE_SOAK_DAYS}" ]; then
+            echo "::error title=Soak too short::${VERSION} has soaked ${AGE_DAYS} day(s); stable requires ${STABLE_SOAK_DAYS}. Re-run with hotfix=true only for a defect in current stable."
+            exit 1
+          fi
+
+      # Cut rule: no OPEN issue labeled `regression` filed against any release
+      # in the range (previous channel version, target]. With no previous
+      # channel version the range is unbounded, so every open regression issue
+      # blocks — the conservative direction.
+      - name: Verify no open regression issues in range
+        run: |
+          set -euo pipefail
+          # `dist-tags --json` exits 0 whether or not the tag exists, so an
+          # absent tag reads as empty while a real registry error still fails.
+          PREVIOUS="$(npm view "@remnic/core" dist-tags --json | jq -r --arg t "${DIST_TAG}" '.[$t] // empty')"
+          RANGE_START=''
+          if [ -n "${PREVIOUS}" ]; then
+            RANGE_START="$(npm view "@remnic/core" time --json | jq -r --arg v "${PREVIOUS}" '.[$v] // empty')"
+          fi
+          if [ -n "${RANGE_START}" ]; then
+            echo "Range: open regression issues filed after ${RANGE_START} (${DIST_TAG} currently at ${PREVIOUS})."
+          else
+            echo "::notice title=Unbounded range::No previous ${DIST_TAG} version resolved; every open regression issue blocks this promotion."
+          fi
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/issues?state=open&labels=regression&per_page=100" \
+            --jq '.[] | select(.pull_request == null) | {number, created_at, title}' > regressions.jsonl
+          if [ ! -s regressions.jsonl ]; then
+            echo "No open regression issues."
+            exit 0
+          fi
+          # No upper bound: a regression against a release in this range can be
+          # filed at any later time, and it must still block the promotion.
+          jq -s --arg start "${RANGE_START}" '
+            map(select($start == "" or .created_at >= $start))
+            | map("#" + (.number | tostring) + " " + .title)
+          ' regressions.jsonl > blocking-issues.json
+          COUNT="$(jq 'length' blocking-issues.json)"
+          if [ "${COUNT}" -ne 0 ]; then
+            echo "::error title=Open regression issues::${COUNT} open regression issue(s) in range: $(jq -r 'join("; ")' blocking-issues.json)"
+            exit 1
+          fi
+          echo "Open regression issues exist, but none in range."
+
+      - name: Generate workspace package publish order
+        run: node scripts/publish-order.mjs --repo-root "$PWD" --output "${RUNNER_TEMP}/remnic-publish-order.txt"
+
+      # All-or-nothing precheck: every public package in PUBLISH_ORDER must
+      # already exist on npm at this exact version before a single tag moves.
+      # A missing package is the same operator-actionable publish gap the
+      # release workflow already fails on, so it aborts here too.
+      - name: Plan the dist-tag moves
+        run: |
+          set -euo pipefail
+          mapfile -t PUBLISH_ORDER < "${RUNNER_TEMP}/remnic-publish-order.txt"
+          : > "${RUNNER_TEMP}/promote-plan.tsv"
+          MISSING=()
+          plan_package() {
+            local pkg_json="$1"
+            if [ ! -f "${pkg_json}" ]; then
+              return 0
+            fi
+            if [ "$(node -p "require('./${pkg_json}').private || false")" = "true" ]; then
+              return 0
+            fi
+            local name
+            local pkg_version
+            name="$(node -p "require('./${pkg_json}').name")"
+            pkg_version="$(node -p "require('./${pkg_json}').version")"
+            if [ "${pkg_version}" != "${VERSION}" ]; then
+              echo "::error title=Version mismatch::${name} at ${RELEASE_TAG} is ${pkg_version}, not ${VERSION}."
+              exit 1
+            fi
+            if ! npm view "${name}@${VERSION}" version >/dev/null 2>&1; then
+              MISSING+=("${name}@${VERSION}")
+              return 0
+            fi
+            local current
+            current="$(npm view "${name}" dist-tags --json | jq -r --arg t "${DIST_TAG}" '.[$t] // empty')"
+            printf '%s\t%s\n' "${name}" "${current:-<unset>}" >> "${RUNNER_TEMP}/promote-plan.tsv"
+          }
+
+          plan_package "package.json"
+          for pkg_dir in "${PUBLISH_ORDER[@]}"; do
+            plan_package "${pkg_dir}/package.json"
+          done
+
+          if [ "${#MISSING[@]}" -gt 0 ]; then
+            {
+              echo "## Promotion aborted: packages missing at ${VERSION}"
+              echo ""
+              for entry in "${MISSING[@]}"; do echo "- \`${entry}\`"; done
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Incomplete release::${#MISSING[@]} package(s) are not published at ${VERSION}; no dist-tag was moved."
+            exit 1
+          fi
+
+          PLANNED="$(wc -l < "${RUNNER_TEMP}/promote-plan.tsv")"
+          if [ "${PLANNED}" -eq 0 ]; then
+            echo "::error title=Nothing to promote::PUBLISH_ORDER produced no public packages."
+            exit 1
+          fi
+          {
+            echo "## Planned ${DIST_TAG} moves to ${VERSION}"
+            echo ""
+            echo "| Package | ${DIST_TAG} before |"
+            echo "|---|---|"
+            while IFS=$'\t' read -r name current; do
+              echo "| \`${name}\` | ${current} |"
+            done < "${RUNNER_TEMP}/promote-plan.tsv"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Planned ${PLANNED} dist-tag move(s)."
+
+      - name: Report dry run
+        if: inputs.dry_run == true
+        run: |
+          set -euo pipefail
+          echo "::notice title=Dry run::Every criterion passed. $(wc -l < "${RUNNER_TEMP}/promote-plan.tsv") dist-tag move(s) were planned and NOT performed."
+          {
+            echo ""
+            echo "**Dry run — no dist-tag was moved.**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Move every planned tag, then read the registry back for each one. A
+      # readback mismatch or a failed move aborts immediately and reports the
+      # exact restore commands for whatever already moved: the previous values
+      # were captured in the plan step.
+      - name: Move dist-tags
+        if: inputs.dry_run == false
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          MOVED=()
+          abort() {
+            {
+              echo ""
+              echo "### Promotion aborted after ${#MOVED[@]} move(s)"
+              echo ""
+              if [ "${#MOVED[@]}" -gt 0 ]; then
+                echo "Restore the previous ${DIST_TAG} tags with:"
+                echo ""
+                echo '```bash'
+                for entry in "${MOVED[@]}"; do
+                  name="${entry%%$'\t'*}"
+                  previous="${entry##*$'\t'}"
+                  if [ "${previous}" = "<unset>" ]; then
+                    echo "npm dist-tag rm ${name} ${DIST_TAG}"
+                  else
+                    echo "npm dist-tag add ${name}@${previous} ${DIST_TAG}"
+                  fi
+                done
+                echo '```'
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          # Read the plan on FD 3: npm consumes stdin, which would swallow the
+          # remaining lines and silently promote only the first package.
+          while IFS=$'\t' read -r -u 3 name previous; do
+            echo "Moving ${DIST_TAG} -> ${name}@${VERSION} (was ${previous})"
+            if ! npm dist-tag add "${name}@${VERSION}" "${DIST_TAG}"; then
+              echo "::error title=Dist-tag move failed::${name}@${VERSION} ${DIST_TAG}"
+              abort
+            fi
+            MOVED+=("${name}"$'\t'"${previous}")
+            READBACK="$(npm dist-tag ls "${name}")"
+            if ! printf '%s\n' "${READBACK}" | grep -Fxq "${DIST_TAG}: ${VERSION}"; then
+              echo "::error title=Readback mismatch::${name} does not report ${DIST_TAG}: ${VERSION}."
+              printf '%s\n' "${READBACK}"
+              abort
+            fi
+          done 3< "${RUNNER_TEMP}/promote-plan.tsv"
+
+          {
+            echo ""
+            echo "### Promoted ${#MOVED[@]} package(s) to ${DIST_TAG} at ${VERSION}"
+            echo ""
+            echo "- channel: ${CHANNEL}"
+            echo "- hotfix: ${HOTFIX}"
+            echo "- soak: ${AGE_DAYS} day(s) since ${PUBLISHED_AT}"
+            echo "- release commit: ${RELEASE_SHA}"
+            echo "- no tarball was rebuilt or republished"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Promotion complete: ${#MOVED[@]} package(s) now resolve ${DIST_TAG} to ${VERSION}."
