@@ -197,59 +197,128 @@ function runDoctorChecks(): DoctorCheckSummary[] {
  * shape ever reaches the report.
  */
 export interface BenchScorecardSummary {
+  /** A built-in benchmark id, or `"custom"`. Never a user-defined name. */
   benchmarkId?: string;
   taskCount?: number;
   /** Per-metric mean, numbers only. */
   scores?: Record<string, number>;
 }
 
-/** Frozen `as const` — do NOT annotate as readonly string[] (checklist 47). */
-const BENCH_SCORECARD_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+/**
+ * Built-in benchmark ids that are safe to name in a public report.
+ *
+ * A user-defined id can be a client, project, or person name, and syntax
+ * restrictions do not anonymize it (#3037 review, P1). Anything not on this
+ * list is reported as `"custom"` — the count and scores still convey the
+ * signal without disclosing what was benchmarked.
+ *
+ * Frozen `as const`; do NOT annotate as `readonly string[]` (checklist 47).
+ */
+const PUBLIC_BENCHMARK_IDS = Object.freeze([
+  "say-once",
+  "procedural-recall",
+  "retrieval-direct-answer",
+  "coding-recall",
+  "contradiction-detection",
+  "entity-consolidation",
+  "page-versioning",
+  "bounded-memory-contracts",
+  "memcorrect-v1",
+  "longmemeval",
+  "locomo",
+  "membench",
+  "memoryagentbench",
+  "personamem",
+  "ama-bench",
+  "beam",
+] as const);
+// @ts-expect-error "bogus" is not a public benchmark id — fails if the union widens
+const _benchIdPin: (typeof PUBLIC_BENCHMARK_IDS)[number] = "bogus";
+void _benchIdPin;
+
+/** Metric keys are identifier-shaped; a free-text key could carry content. */
+const METRIC_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 /**
- * Extract only numeric aggregates and a syntactically-constrained benchmark
- * id from a scorecard. Every other field — including anything nested — is
+ * Extract only numeric aggregates and a public benchmark id from a canonical
+ * `BenchmarkResult`.
+ *
+ * Reads the real on-disk shape — `meta.benchmark`, `results.tasks`,
+ * `results.aggregates` (packages/bench/src/types.ts) — with top-level
+ * fallbacks for a bare scorecard. Everything outside the allow-list is
  * dropped by construction rather than redacted.
  */
 export function summarizeBenchScorecard(raw: unknown): BenchScorecardSummary | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   const summary: BenchScorecardSummary = {};
 
-  // Benchmark id: an identifier, never free text that could carry content.
-  if ("benchmark" in raw && typeof raw.benchmark === "object" && raw.benchmark !== null) {
-    const bench = raw.benchmark;
-    if ("id" in bench && typeof bench.id === "string" && BENCH_SCORECARD_ID_PATTERN.test(bench.id)) {
-      summary.benchmarkId = bench.id;
-    }
+  // Benchmark id: canonical `meta.benchmark` is a string; a bare scorecard
+  // may carry `benchmark.id`. Either way it is mapped through the public
+  // allow-list, never copied verbatim.
+  const rawId = readBenchmarkId(raw);
+  if (rawId !== undefined) {
+    summary.benchmarkId = (PUBLIC_BENCHMARK_IDS as readonly string[]).includes(rawId)
+      ? rawId
+      : "custom";
   }
 
-  // Task count: a non-negative integer only.
-  if ("tasks" in raw && Array.isArray(raw.tasks)) {
-    summary.taskCount = raw.tasks.length;
-  }
+  // Task count from `results.tasks`, falling back to top-level `tasks`.
+  const tasks = readNested(raw, "results", "tasks") ?? readOwn(raw, "tasks");
+  if (Array.isArray(tasks)) summary.taskCount = tasks.length;
 
-  // Scores: finite numbers under identifier-shaped keys. Any non-numeric
-  // value is dropped — a string score could carry arbitrary text.
-  if ("scores" in raw && typeof raw.scores === "object" && raw.scores !== null) {
-    const scores: Record<string, number> = {};
-    const rawScores = raw.scores;
-    for (const key of Object.getOwnPropertyNames(rawScores)) {
-      if (!Object.hasOwn(rawScores, key)) continue;
-      if (!BENCH_SCORECARD_ID_PATTERN.test(key)) continue;
-      const value: unknown = (rawScores as Record<string, unknown>)[key];
-      if (typeof value === "number" && Number.isFinite(value)) {
-        scores[key] = value;
-      } else if (
-        typeof value === "object" && value !== null && "mean" in value
-        && typeof value.mean === "number" && Number.isFinite(value.mean)
-      ) {
-        scores[key] = value.mean;
-      }
-    }
-    if (Object.keys(scores).length > 0) summary.scores = scores;
-  }
+  // Scores from `results.aggregates`, falling back to top-level `scores`.
+  const aggregates = readNested(raw, "results", "aggregates") ?? readOwn(raw, "scores");
+  const scores = extractNumericScores(aggregates);
+  if (scores !== undefined) summary.scores = scores;
 
   return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
+/** Own-property read that never follows the prototype chain (checklist 46). */
+function readOwn(source: object, key: string): unknown {
+  return Object.hasOwn(source, key) ? (source as Record<string, unknown>)[key] : undefined;
+}
+
+function readNested(source: object, outer: string, inner: string): unknown {
+  const mid = readOwn(source, outer);
+  if (typeof mid !== "object" || mid === null) return undefined;
+  return readOwn(mid, inner);
+}
+
+function readBenchmarkId(raw: object): string | undefined {
+  // Canonical: meta.benchmark is the id string.
+  const metaId = readNested(raw, "meta", "benchmark");
+  if (typeof metaId === "string" && metaId.length > 0) return metaId;
+  // Bare scorecard: benchmark.id.
+  const bench = readOwn(raw, "benchmark");
+  if (typeof bench === "object" && bench !== null) {
+    const id = readOwn(bench, "id");
+    if (typeof id === "string" && id.length > 0) return id;
+  }
+  return undefined;
+}
+
+/**
+ * Keep finite numbers under identifier-shaped keys. A `MetricAggregate`
+ * contributes its `mean`; a string value is dropped, never stringified.
+ */
+function extractNumericScores(source: unknown): Record<string, number> | undefined {
+  if (typeof source !== "object" || source === null) return undefined;
+  const scores: Record<string, number> = {};
+  for (const key of Object.getOwnPropertyNames(source)) {
+    if (!Object.hasOwn(source, key)) continue;
+    if (!METRIC_KEY_PATTERN.test(key)) continue;
+    const value = readOwn(source, key);
+    if (typeof value === "number" && Number.isFinite(value)) {
+      scores[key] = value;
+      continue;
+    }
+    if (typeof value === "object" && value !== null) {
+      const mean = readOwn(value, "mean");
+      if (typeof mean === "number" && Number.isFinite(mean)) scores[key] = mean;
+    }
+  }
+  return Object.keys(scores).length > 0 ? scores : undefined;
 }
 
 export async function buildReport(options: { includeBench?: boolean } = {}): Promise<ReportContent> {

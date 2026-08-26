@@ -181,21 +181,22 @@ test("non-enumerable and inherited config keys are excluded from the report", ()
 
 test("summarizeBenchScorecard drops every field outside the allow-list", () => {
   const sentinel = "SENTINEL_MEMORY_CONTENT_do_not_leak";
-  // Shaped like a real report card, which carries questions, answers, and
-  // recalled context alongside the aggregates.
+  // Canonical BenchmarkResult shape: meta.benchmark, results.tasks,
+  // results.aggregates (packages/bench/src/types.ts).
   const raw = {
-    benchmark: { id: "say-once", title: sentinel, citation: sentinel },
-    tasks: [
-      { taskId: "t1", question: sentinel, expected: sentinel, actual: sentinel },
-      { taskId: "t2", question: sentinel, details: { probes: [sentinel] } },
-    ],
-    scores: { recall: { mean: 0.5, median: 0.5 }, leaked: sentinel },
+    meta: { benchmark: "say-once", invocation: { note: sentinel } },
+    results: {
+      tasks: [
+        { taskId: "t1", question: sentinel, expected: sentinel, actual: sentinel },
+        { taskId: "t2", question: sentinel, details: { probes: [sentinel] } },
+      ],
+      aggregates: { recall: { mean: 0.5, median: 0.5 }, leaked: sentinel },
+    },
     config: { memoryDir: "/some/private/path", openaiApiKey: sentinel },
-    meta: { invocation: { note: sentinel } },
   };
 
   const summary = summarizeBenchScorecard(raw);
-  assert.ok(summary, "a scorecard with aggregates should summarize");
+  assert.ok(summary, "a canonical result should summarize");
   const rendered = JSON.stringify(summary);
 
   assert.doesNotMatch(rendered, new RegExp(sentinel), "no scorecard content may survive");
@@ -203,16 +204,31 @@ test("summarizeBenchScorecard drops every field outside the allow-list", () => {
   assert.equal(summary.benchmarkId, "say-once");
   assert.equal(summary.taskCount, 2);
   assert.equal(summary.scores?.recall, 0.5);
-  // A string-valued score is dropped, not stringified.
   assert.equal(Object.hasOwn(summary.scores ?? {}, "leaked"), false);
 });
 
-test("summarizeBenchScorecard rejects a non-identifier benchmark id", () => {
+test("summarizeBenchScorecard reads the canonical result shape, not a bare one", () => {
+  // Regression for the review finding that the extractor read top-level
+  // `tasks`/`scores` and therefore silently produced nothing for real
+  // @remnic/bench artifacts.
   const summary = summarizeBenchScorecard({
-    benchmark: { id: "Not An Id: with content and /paths/" },
-    tasks: [],
+    meta: { benchmark: "locomo" },
+    results: { tasks: [{ taskId: "a" }, { taskId: "b" }, { taskId: "c" }], aggregates: { f1: { mean: 0.42 } } },
   });
-  assert.equal(summary?.benchmarkId, undefined, "free-text id must be dropped");
+  assert.equal(summary?.taskCount, 3, "must read results.tasks");
+  assert.equal(summary?.scores?.f1, 0.42, "must read results.aggregates");
+  assert.equal(summary?.benchmarkId, "locomo", "must read meta.benchmark");
+});
+
+test("summarizeBenchScorecard maps a user-defined benchmark id to \"custom\"", () => {
+  // A custom benchmark can be named after a client, project, or person.
+  // Syntax restrictions do not anonymize it, so it must not be echoed.
+  const summary = summarizeBenchScorecard({
+    meta: { benchmark: "client-alpha-migration" },
+    results: { tasks: [{ taskId: "t" }], aggregates: { score: 1 } },
+  });
+  assert.equal(summary?.benchmarkId, "custom", "a non-built-in id must not be echoed");
+  assert.equal(summary?.taskCount, 1, "the count still conveys signal");
 });
 
 test("the rendered report never contains raw scorecard JSON", () => {
@@ -226,9 +242,8 @@ test("the rendered report never contains raw scorecard JSON", () => {
     configShape: {},
     storeScale: { totalMemories: 0, sizeBucket: "< 1 KB" },
     benchScorecard: summarizeBenchScorecard({
-      benchmark: { id: "say-once", title: sentinel },
-      tasks: [{ taskId: "t1", question: sentinel }],
-      scores: { recall: 1 },
+      meta: { benchmark: "say-once", note: sentinel },
+      results: { tasks: [{ taskId: "t1", question: sentinel }], aggregates: { recall: 1 } },
     }),
   };
   const md = renderReportMarkdown(report);
