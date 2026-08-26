@@ -251,3 +251,53 @@ test("the rendered report never contains raw scorecard JSON", () => {
   assert.doesNotMatch(md, new RegExp(sentinel));
   assert.doesNotMatch(json, new RegExp(sentinel));
 });
+// ─── Metric name allow-list (#3042 P1) ─────────────────────────────────────
+
+test("summarizeBenchScorecard rejects user-defined metric keys like client_alpha", () => {
+  const raw = {
+    meta: { benchmark: "say-once" },
+    results: {
+      aggregates: {
+        recall: { mean: 0.5 },
+        client_alpha: { mean: 1.0 },
+        "some user note": { mean: 0.9 },
+      },
+    },
+  };
+  const summary = summarizeBenchScorecard(raw);
+  assert.ok(summary);
+  assert.equal(summary?.scores?.recall, 0.5);
+  assert.equal(summary?.scores?.client_alpha, undefined, "non-public key must not leak");
+  assert.equal(summary?.scores?.["some user note"], undefined, "free text key must not leak");
+});
+
+// ─── Public benchmark id list is exhaustive (#3042 P2) ──────────────────────
+
+test("summarizeBenchScorecard recognizes every registered benchmark id", () => {
+  // The fixture list covers phase-1 plus remnic-native; any id not on
+  // PUBLIC_BENCHMARK_IDS collapses to "custom".
+  for (const id of [
+    "memory-arena",
+    "amemgym",
+    "taxonomy-accuracy",
+    "retrieval-personalization",
+    "retrieval-temporal",
+    "retrieval-graph",
+    "retrieval-reasoning-trace",
+    "ingestion-entity-recall",
+    "ingestion-schema-completeness",
+    "ingestion-backlink-f1",
+    "ingestion-setup-friction",
+    "ingestion-citation-accuracy",
+    "assistant-morning-brief",
+    "assistant-meeting-prep",
+    "assistant-next-best-action",
+    "assistant-synthesis",
+    "buffer-surprise-trigger",
+    "retention-aged-dataset",
+    "staged-memory-synthetic-v1",
+  ]) {
+    const summary = summarizeBenchScorecard({ meta: { benchmark: id } });
+    assert.equal(summary?.benchmarkId, id, `${id} should be recognized as public`);
+  }
+});

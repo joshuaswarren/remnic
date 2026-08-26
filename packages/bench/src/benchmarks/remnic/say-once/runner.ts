@@ -7,9 +7,12 @@
  *
  * SCOPE: replay mode only.
  *
- * Replay writes each fixture's target preference into a fresh temp store
- * through the real sealed-envelope write path, then probes recall over that
- * store. It is deterministic, offline, and safe for CI.
+ * Each case runs through the bench adapter contract: the seed user/assistant
+ * turn is stored via `system.store`, then each probe's prompt is fed to
+ * `system.recall`. The harness never touches the filesystem directly; a
+ * benchmark that scores recall without going through recall is measuring
+ * disk, not retrieval, and ships misleading perfect-recall numbers (#3042
+ * review, P1).
  *
  * Live mode (drive the real LLM extraction pipeline, then probe) is NOT
  * implemented here. The Orchestrator exposes no programmatic turn-ingestion
@@ -17,16 +20,10 @@
  * harness needs a new seam in core rather than a call from this package.
  * Tracked separately; see the package README. Nothing here reports a live
  * result, because there is no live path: `runSayOnceBenchmark` has one code
- * path and it always writes to a fresh temp dir.
+ * path and it always goes through the adapter contract.
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { StorageManager, parseConfig } from "@remnic/core";
-import { composeMemoryEnvelope } from "@remnic/core/write-envelope";
 import type {
   BenchmarkDefinition,
   BenchmarkResult,
@@ -96,13 +93,12 @@ export function resolveSayOnceLimit(raw: unknown): number {
 
 // Signature is deliberately the registry's one-arg `run` contract
 // (`registry.ts`: `run?: (options: ResolvedRunBenchmarkOptions) => ...`).
-// There is no mode parameter because there is only one mode: every case runs
-// against a fresh `mkdtemp` store, and this module imports nothing that could
-// reach the operator's live memory dir.
+// There is no mode parameter because there is only one mode: every case goes
+// through the adapter contract, and this module never reaches into a file
+// system that could carry operator memory content.
 export async function runSayOnceBenchmark(
   options: ResolvedRunBenchmarkOptions,
 ): Promise<BenchmarkResult> {
-
   const source = options.mode === "quick" ? SAY_ONCE_SMOKE_FIXTURE : SAY_ONCE_CASES;
   if (source.length === 0) {
     throw new SayOnceHarnessError("say-once: fixture set is empty");
@@ -111,22 +107,36 @@ export async function runSayOnceBenchmark(
   const cases = takeWithinBudget(source, resolveSayOnceLimit(options.limit));
   const tasks: TaskResult[] = [];
 
+  const system = options.system;
+  // The benchmark contract REQUIRES a memory adapter -- without one there is
+  // no recall path to score against (checklist 39: missing required input
+  // rejects, not silently defaults).
+  if (!system) {
+    throw new SayOnceHarnessError(
+      "say-once: a BenchMemoryAdapter is required (pass --adapter or wire one through the bench runner)",
+    );
+  }
+
+  let caseIndex = 0;
   for (const sample of cases) {
+    caseIndex += 1;
     const startedAt = performance.now();
-    // Store safety: a fresh temp dir per case. The operator's live store is
-    // never opened — this harness has no path to it.
-    const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-say-once-"));
+    // A fresh session id per case so each task has an isolated namespace and
+    // no cross-task recall bleed.
+    const sessionId = `say-once-${sample.id}-${randomUUID()}`;
     try {
-      const result = await runSingleCase(sample, dir);
+      const result = await runSingleCase(sample, sessionId, system);
       tasks.push({
         ...result,
         latencyMs: Math.round(performance.now() - startedAt),
         tokens: { input: 0, output: 0 },
       });
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      // The adapter's reset/destroy handle the underlying storage; we don't
+      // fabricate a per-session API that the contract doesn't expose.
+      await system.reset(sessionId).catch(() => {});
     }
-    options.onTaskComplete?.(tasks[tasks.length - 1]!, tasks.length, cases.length);
+    options.onTaskComplete?.(tasks[tasks.length - 1]!, caseIndex, cases.length);
   }
 
   const remnicVersion = await getRemnicVersion();
@@ -171,29 +181,27 @@ export async function runSayOnceBenchmark(
   };
 }
 
-async function runSingleCase(sample: SayOnceCase, dir: string): Promise<Omit<TaskResult, "latencyMs" | "tokens">> {
-  // Real parsed config, memory dir forced to the temp dir.
-  parseConfig({ memoryDir: dir, workspaceDir: path.join(dir, "ws"), qmdEnabled: false });
-
-  const storage = new StorageManager(dir);
-  await storage.ensureDirectories();
-
-  // Replay: persist the target preference through the real sealed-envelope
-  // write path, standing in for what extraction would have produced.
-  await storage.writeSealedMemory(
-    composeMemoryEnvelope(
-      { content: sample.preference, category: "preference" },
-      { source: "bench" },
-    ),
-    {},
-  );
+async function runSingleCase(
+  sample: SayOnceCase,
+  sessionId: string,
+  system: ResolvedRunBenchmarkOptions["system"],
+): Promise<Omit<TaskResult, "latencyMs" | "tokens">> {
+  // Store through the real adapter ingest path -- same surface a live turn
+  // would take through extraction. We do NOT bypass into raw .md files; a
+  // benchmark that scores recall without going through recall is measuring
+  // disk, not retrieval, and ships misleading perfect-recall numbers.
+  const now = new Date().toISOString();
+  await system.store(sessionId, [
+    { role: "user", content: sample.seedUserMessage, timestamp: now },
+    { role: "assistant", content: sample.seedAssistantMessage, timestamp: now },
+  ]);
 
   let recalled = 0;
   const probeNotes: string[] = [];
-  const storeText = readStoreText(dir);
 
   for (const probe of sample.probes) {
-    const hit = storeText.includes(probe.expectInRecall);
+    const recalledContext = await system.recall(sessionId, probe.prompt, 2000);
+    const hit = recalledContext.toLowerCase().includes(probe.expectInRecall.toLowerCase());
     if (hit) recalled += 1;
     probeNotes.push(
       `${probe.prompt} -> ${hit ? "recalled" : "missed"} (expected "${probe.expectInRecall}")`,
@@ -210,30 +218,4 @@ async function runSingleCase(sample: SayOnceCase, dir: string): Promise<Omit<Tas
     scores: { recall: rate },
     details: { tier: sample.tier, probes: probeNotes },
   };
-}
-
-/** Concatenate every stored memory under `dir`. Confined to the temp store. */
-function readStoreText(dir: string): string {
-  const chunks: string[] = [];
-  const walk = (current: string): void => {
-    let entries: string[];
-    try {
-      entries = readdirSync(current);
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const full = path.join(current, entry);
-      let stat;
-      try {
-        stat = statSync(full);
-      } catch {
-        continue;
-      }
-      if (stat.isDirectory()) walk(full);
-      else if (entry.endsWith(".md")) chunks.push(readFileSync(full, "utf-8"));
-    }
-  };
-  walk(dir);
-  return chunks.join("\n");
 }

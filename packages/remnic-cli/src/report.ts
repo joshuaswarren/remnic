@@ -215,29 +215,84 @@ export interface BenchScorecardSummary {
  * Frozen `as const`; do NOT annotate as `readonly string[]` (checklist 47).
  */
 const PUBLIC_BENCHMARK_IDS = Object.freeze([
-  "say-once",
-  "procedural-recall",
-  "retrieval-direct-answer",
-  "coding-recall",
-  "contradiction-detection",
-  "entity-consolidation",
-  "page-versioning",
-  "bounded-memory-contracts",
-  "memcorrect-v1",
+  "ama-bench",
+  "memory-arena",
+  "amemgym",
   "longmemeval",
   "locomo",
+  "beam",
+  "personamem",
   "membench",
   "memoryagentbench",
-  "personamem",
-  "ama-bench",
-  "beam",
+  "taxonomy-accuracy",
+  "extraction-judge-calibration",
+  "extraction-span-mode",
+  "enrichment-fidelity",
+  "entity-consolidation",
+  "page-versioning",
+  "retrieval-personalization",
+  "retrieval-temporal",
+  "retrieval-direct-answer",
+  "retrieval-graph",
+  "retrieval-reasoning-trace",
+  "coding-recall",
+  "procedural-recall",
+  "say-once",
+  "ingestion-entity-recall",
+  "ingestion-schema-completeness",
+  "ingestion-backlink-f1",
+  "ingestion-setup-friction",
+  "ingestion-citation-accuracy",
+  "assistant-morning-brief",
+  "assistant-meeting-prep",
+  "assistant-next-best-action",
+  "assistant-synthesis",
+  "buffer-surprise-trigger",
+  "contradiction-detection",
+  "retention-aged-dataset",
+  "memcorrect-v1",
+  "bounded-memory-contracts",
+  "staged-memory-synthetic-v1",
 ] as const);
 // @ts-expect-error "bogus" is not a public benchmark id — fails if the union widens
 const _benchIdPin: (typeof PUBLIC_BENCHMARK_IDS)[number] = "bogus";
 void _benchIdPin;
+/**
+ * Public metric names that are safe to surface in a shared report.
+ *
+ * Anything outside this list is dropped during scorecard extraction, so a
+ * user-defined key like `client_alpha` (a project or person name) is never
+ * copied into a diagnostic report (#3037 review, P1). The fixed set is what
+ * benchmarks are allowed to publish; per-benchmark additions belong here
+ * as part of adding a metric, not at the read site.
+ */
+const PUBLIC_METRIC_KEYS = Object.freeze([
+  "recall",
+  "precision",
+  "f1",
+  "exact_match",
+  "category_match",
+  "keyword_overlap",
+  "high_confidence",
+  "latencyMs",
+  "tokens",
+  "cost",
+  "qrel_at_1",
+  "qrel_at_3",
+  "qrel_at_5",
+  "qrel_at_10",
+  "bleu",
+  "rouge",
+  "support",
+  "completeness",
+] as const);
+// @ts-expect-error "bogus" is not a public metric key — fails if the union widens
+const _metricKeyPin: (typeof PUBLIC_METRIC_KEYS)[number] = "bogus";
+void _metricKeyPin;
 
 /** Metric keys are identifier-shaped; a free-text key could carry content. */
 const METRIC_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
 
 /**
  * Extract only numeric aggregates and a public benchmark id from a canonical
@@ -279,14 +334,19 @@ function readOwn(source: object, key: string): unknown {
   return Object.hasOwn(source, key) ? (source as Record<string, unknown>)[key] : undefined;
 }
 
-function readNested(source: object, outer: string, inner: string): unknown {
-  const mid = readOwn(source, outer);
-  if (typeof mid !== "object" || mid === null) return undefined;
-  return readOwn(mid, inner);
+/** Walk a dotted path of own keys without following the prototype chain. */
+function readNested(source: unknown, ...path: string[]): unknown {
+  let current: unknown = source;
+  for (const key of path) {
+    if (typeof current !== "object" || current === null) return undefined;
+    if (!Object.hasOwn(current, key)) return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
 }
 
+/** Locate the benchmark id at any of the three known locations. */
 function readBenchmarkId(raw: object): string | undefined {
-  // Canonical: meta.benchmark is the id string.
   const metaId = readNested(raw, "meta", "benchmark");
   if (typeof metaId === "string" && metaId.length > 0) return metaId;
   // Bare scorecard: benchmark.id.
@@ -299,14 +359,17 @@ function readBenchmarkId(raw: object): string | undefined {
 }
 
 /**
- * Keep finite numbers under identifier-shaped keys. A `MetricAggregate`
- * contributes its `mean`; a string value is dropped, never stringified.
+ * Keep finite numbers under public, identifier-shaped metric keys.
+ * The allow-list rejects user-defined keys like `client_alpha` even when
+ * they pass the syntax check (#3037 review, P1); the syntax check still
+ * rejects arbitrary string content on top of that.
  */
 function extractNumericScores(source: unknown): Record<string, number> | undefined {
   if (typeof source !== "object" || source === null) return undefined;
   const scores: Record<string, number> = {};
   for (const key of Object.getOwnPropertyNames(source)) {
     if (!Object.hasOwn(source, key)) continue;
+    if (!(PUBLIC_METRIC_KEYS as readonly string[]).includes(key)) continue;
     if (!METRIC_KEY_PATTERN.test(key)) continue;
     const value = readOwn(source, key);
     if (typeof value === "number" && Number.isFinite(value)) {
