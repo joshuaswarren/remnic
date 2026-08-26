@@ -23,13 +23,13 @@ test("say-once: replay mode produces identical scorecards across two runs", asyn
     seed: 0,
     onTaskComplete: () => {},
   };
-  const result1 = await runSayOnceBenchmark(options, { replay: true });
-  const result2 = await runSayOnceBenchmark(options, { replay: true });
+  const result1 = await runSayOnceBenchmark(options);
+  const result2 = await runSayOnceBenchmark(options);
 
-  assert.equal(result1.tasks.length, result2.tasks.length);
-  for (let i = 0; i < result1.tasks.length; i++) {
-    assert.equal(result1.tasks[i].scores.recall, result2.tasks[i].scores.recall);
-    assert.equal(result1.tasks[i].taskId, result2.tasks[i].taskId);
+  assert.equal(result1.results.tasks.length, result2.results.tasks.length);
+  for (let i = 0; i < result1.results.tasks.length; i++) {
+    assert.equal(result1.results.tasks[i].scores.recall, result2.results.tasks[i].scores.recall);
+    assert.equal(result1.results.tasks[i].taskId, result2.results.tasks[i].taskId);
   }
 });
 
@@ -46,7 +46,7 @@ test("say-once: no writes outside the temp directory", async () => {
     seed: 0,
     onTaskComplete: () => {},
   };
-  await runSayOnceBenchmark(options, { replay: true });
+  await runSayOnceBenchmark(options);
 
   const after = new Set(readdirSync(tmpDir));
   // Only the temp memory dir should have been created inside tmpDir.
@@ -69,8 +69,8 @@ test("say-once: empty fixture produces zero tasks", async () => {
     seed: 0,
     onTaskComplete: () => {},
   };
-  const result = await runSayOnceBenchmark(options, { replay: true });
-  assert.equal(result.tasks.length, 0);
+  const result = await runSayOnceBenchmark(options);
+  assert.equal(result.results.tasks.length, 0);
 });
 
 // ─── Per-tier rates from known fixture ────────────────────────────────────
@@ -82,10 +82,10 @@ test("say-once: per-tier rates are computed correctly from synthetic fixture", a
     seed: 0,
     onTaskComplete: () => {},
   };
-  const result = await runSayOnceBenchmark(options, { replay: true });
+  const result = await runSayOnceBenchmark(options);
 
   // Replay mode writes the preference directly, so recall should be 1.0
-  for (const task of result.tasks) {
+  for (const task of result.results.tasks) {
     assert.equal(task.scores.recall, 1, `task ${task.taskId} should have perfect recall in replay mode`);
   }
 });
@@ -100,8 +100,8 @@ test("say-once: exit code 0 for a valid run (even with low scores)", async () =>
     onTaskComplete: () => {},
   };
   // This should not throw — scores are data, not pass/fail.
-  const result = await runSayOnceBenchmark(options, { replay: true });
-  assert.ok(result.tasks.length > 0, "should have produced tasks");
+  const result = await runSayOnceBenchmark(options);
+  assert.ok(result.results.tasks.length > 0, "should have produced tasks");
 });
 
 // ─── Fixture verification ────────────────────────────────────────────────
