@@ -490,6 +490,15 @@ export {
 export type {
   RecallXraySnapshot, RecallXrayResult, RecallXrayScoreDecomposition, RecallXrayServedBy, RecallFilterTrace,
 } from "./recall-xray.js";
+// Recall-miss diagnosis (issue #3033). Same rationale as the X-ray exports
+// above: the standalone `@remnic/cli` binary wires `remnic why` through the
+// package entry point, never by relative path (rule 26).
+export { explainRecallMiss, RECALL_WHY_STAGES, RECALL_WHY_DROP_REASONS, RecallWhyInputError } from "./recall-why.js";
+export type { RecallWhyReport, RecallWhyStage, RecallWhyStageRecord, RecallWhyDrop, RecallWhyDropReason, RecallWhyExpectation, RecallWhyDeps, RecallWhyOptions, RecallWhyMemoryRef, RecallWhyRecallOutcome } from "./recall-why.js";
+export { renderRecallWhy, renderRecallWhyJson, renderRecallWhyMarkdown, parseRecallWhyFormat, summarizeRecallWhy, RECALL_WHY_FORMATS, type RecallWhyFormat } from "./recall-why-renderer.js";
+export { parseWhyCliOptions, type ParsedWhyCliOptions } from "./recall-why-cli.js";
+export { runRecallWhy, type RecallWhyRequest, type RecallWhyResponse } from "./recall-why-service.js";
+export { RECALL_WHY_MCP_TOOLS, handleRecallWhyHttpQuery, handleRecallXrayHttpQuery, type RecallDiagnosticsHttpOutcome } from "./access-recall-diagnostics.js";
 export * from "./who-knows.js";
 export * from "./who-knows-cli.js";
 export * from "./memory-subject.js";

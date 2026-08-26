@@ -26,6 +26,7 @@ import { log } from "../logger.js";
 import type { GraphRecallRankedResult, GraphRecallShadowComparison } from "./graph-recall-coordinator.js";
 import { parseQmdExplain } from "../qmd.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
+import type { SearchDegradation } from "../search/port.js";
 import type { RecallXrayServedBy } from "../recall-xray.js";
 import type { RecallContextComposition } from "../recall-context-composition.js";
 import { type BufferTurn, type MemoryActionEvent, type MemoryFile, type MemoryFrontmatter, type MemoryIntent, type PluginConfig, type QmdSearchResult, type RecallPlanMode, confidenceTier } from "../types.js";
@@ -209,6 +210,12 @@ export interface RecallInvocationOptions {
    * captured and recall behavior is unchanged (schema-only slice).
    */
   xrayCapture?: boolean;
+  /**
+   * Out-parameter receiving the backend degradations this recall observes
+   * (#3033). Absent by default — behavior and allocations unchanged; the
+   * diagnosis passes a sink to tell an outage from "no matches".
+   */
+  degradationSink?: SearchDegradation[];
   /**
    * Per-invocation override for `recallBudgetChars` (issue #570 PR 3/4).
    * Flows through `getRecallBudgetChars()` for this recall only — no

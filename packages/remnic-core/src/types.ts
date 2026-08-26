@@ -3887,3 +3887,4 @@ export type {
   DreamsStatusResult,
   DreamsRunResult,
 } from "./maintenance/dreams-ledger.js";
+export type { RecallWhyExpectation, RecallWhyReport, RecallWhyStageRecord } from "./recall-why.js";

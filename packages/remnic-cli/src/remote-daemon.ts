@@ -30,7 +30,7 @@
  * rewritten to plain http — that downgrade is a loud error.
  */
 import fs from "node:fs";
-import { readCompatEnv, type RecallXraySnapshot } from "@remnic/core";
+import { readCompatEnv, type RecallWhyReport, type RecallXraySnapshot } from "@remnic/core";
 import { isLoopbackHost } from "@remnic/core/runtime/http-transport.js";
 import type { QueryRenderableResult } from "./index.js";
 
@@ -464,4 +464,61 @@ export async function remoteRecallXray(
     }
   }
   return { snapshotFound: false };
+}
+
+/**
+ * Run a recall-miss diagnosis against the remote daemon's
+ * `GET /engram/v1/recall/why` (issue #3033). Returns the same
+ * `{ reportFound, report? }` shape `runWhyCommand`'s IO contract expects, so
+ * remote and local `remnic why` share all rendering.
+ */
+export async function remoteRecallWhy(
+  daemon: RemoteDaemon,
+  request: { query: string; expect?: string; sessionKey?: string; namespace?: string },
+): Promise<{ reportFound: boolean; report?: RecallWhyReport }> {
+  const params = new URLSearchParams({ q: request.query });
+  if (request.expect !== undefined && request.expect.length > 0) {
+    params.set("expect", request.expect);
+  }
+  if (request.namespace !== undefined && request.namespace.length > 0) {
+    params.set("namespace", request.namespace);
+  }
+  // `--session` must reach the daemon: dropping it here would diagnose a
+  // different session scope than the caller asked about, silently.
+  if (request.sessionKey !== undefined && request.sessionKey.length > 0) {
+    params.set("session", request.sessionKey);
+  }
+  let response: Response;
+  try {
+    response = await daemonFetch(
+      daemon.baseUrl,
+      `engram/v1/recall/why?${params.toString()}`,
+      daemon.token,
+      10_000,
+    );
+  } catch (err) {
+    if (isTransportError(err)) throw unreachableError(daemon.baseUrl);
+    throw err;
+  }
+  if (response.status === 401) {
+    throw new Error(
+      `token rejected by remnic-server at ${daemon.baseUrl} (HTTP 401). Update server.authToken or REMNIC_AUTH_TOKEN to match the remote daemon.`,
+    );
+  }
+  if (!response.ok) {
+    throw new Error(`remnic-server returned HTTP ${response.status} ${response.statusText}`);
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error("remnic-server returned a non-JSON response");
+  }
+  if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+    const record = payload as Record<string, unknown>;
+    if (record.reportFound === true && record.report !== null && typeof record.report === "object") {
+      return { reportFound: true, report: record.report as RecallWhyReport };
+    }
+  }
+  return { reportFound: false };
 }

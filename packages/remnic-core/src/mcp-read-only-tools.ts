@@ -16,6 +16,7 @@ export const MCP_READ_ONLY_TOOL_SUFFIXES: Readonly<Record<string, true>> = {
   recall_explain: true,
   recall_tier_explain: true,
   recall_xray: true,
+  recall_why: true,
   who_knows: true,
   promotion_candidates: true,
   briefing: true,

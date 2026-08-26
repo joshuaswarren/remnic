@@ -111,6 +111,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   }),
   recall_tier_explain: objectSchema({ snapshotFound: T_BOOLEAN, tierExplain: T_NULLABLE_OBJECT }),
   recall_xray: objectSchema({ snapshotFound: T_BOOLEAN, snapshot: T_OBJECT }),
+  recall_why: objectSchema({ reportFound: T_BOOLEAN, report: T_OBJECT, summary: T_STRING }),
   who_knows: objectSchema({ topic: T_STRING, results: T_ARRAY }),
   promotion_candidates: objectSchema({ namespace: T_STRING, targetNamespace: T_STRING, candidates: T_ARRAY }),
   set_coding_context: objectSchema({ ok: T_BOOLEAN }),
