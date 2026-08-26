@@ -517,6 +517,20 @@ kin — also semantic, not stream-rule-able):
 - deadline is shared across retries (elapsed time subtracted, not reset)
 - `session_end` drains the same way as `before_reset`
 
+
+## Tooling & Automation Guidance (Fleet Learnings)
+
+Established from multi-issue batch runs. Each row documents a repeatable friction with the preferred resolution.
+
+| Friction | Resolution |
+|---|---|
+| `omp` hangs at startup blocking on stdin | Route input from `/dev/null` — `omp --mode text < /dev/null`. The CLI's `readPipedInput` blocks on piped stdin indefinitely |
+| `task` subagents fail with `403 Access denied` for the model | The default subagent model may not have quota; override via explicit model selection in the spawner |
+| Background omp processes killed by shell job control | Use `setsid` + `disown` (or `nohup setsid`) to detach from the shell process group. Bare `&` does not survive the bash tool's job-reaping |
+| GraphQL rate limit exhausted by `gh issue edit` / `gh issue view --json` / `gh pr view --json` | Prefer REST: `gh api repos/.../issues/<n>`, `gh api repos/.../pulls/<n>/reviews`, `gh api repos/.../pulls/<n>/comments`. REST has a separate 5000-requests/hour budget |
+| `scripts/dev-worktree.sh` is a shell script | Invoke as `bash scripts/dev-worktree.sh`, never `node scripts/dev-worktree.sh` |
+
+
 ## Mechanical Stream Rules (`.omp/rules/`)
 
 The most-recurring, textually-detectable mistakes from AI review feedback are
