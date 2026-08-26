@@ -504,7 +504,7 @@ export function usage() {
 }
 
 function resolveBaseRef(git, headRef) {
-  for (const candidate of ["origin/main", "github/main", "main"]) {
+  for (const candidate of ["github/main", "origin/main", "main"]) {
     try {
       return git(["merge-base", headRef, candidate]).trim();
     } catch {
