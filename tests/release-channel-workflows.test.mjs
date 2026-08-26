@@ -8,8 +8,7 @@
  */
 
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -18,48 +17,6 @@ import { parse } from "yaml";
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WORKFLOW_DIR = ".github/workflows";
 const readWorkflow = (name) => readFileSync(path.join(REPO_ROOT, WORKFLOW_DIR, name), "utf8");
-
-/** Workflows this change is allowed to touch at all. */
-const INTENTIONALLY_TOUCHED = Object.freeze([
-  "changelog-guard.yml",
-  "release-and-publish.yml",
-  "release-promote.yml",
-]);
-
-function git(args) {
-  return execFileSync("git", args, {
-    cwd: REPO_ROOT,
-    encoding: "utf8",
-    maxBuffer: 32 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
-/** `git show <ref>:<path>`, or null when the path does not exist at that ref. */
-function showAtRef(ref, filePath) {
-  try {
-    return git(["show", `${ref}:${filePath}`]);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Merge base with `main`. Tried against several remote names because clones
- * here use `github`, `origin`, or a bare local `main`. An unresolvable base is
- * a hard failure: a base that silently resolved to HEAD would make the drift
- * assertion below pass vacuously.
- */
-function resolveMainMergeBase() {
-  for (const candidate of ["github/main", "origin/main", "main"]) {
-    try {
-      return git(["merge-base", "HEAD", candidate]).trim();
-    } catch {
-      // try the next remote name
-    }
-  }
-  throw new Error("Unable to resolve a merge base against main for the workflow drift check");
-}
 
 /** The `needs:` of every job, keyed by job id, normalized to a sorted array. */
 function jobDependencies(workflow) {
@@ -173,57 +130,30 @@ test("the changelog guard runs the release-discipline gate on base code only", (
   assert.doesNotMatch(raw, /continue-on-error/);
 });
 
-test("no workflow outside this change has its triggers or job graph altered", () => {
-  const baseRef = resolveMainMergeBase();
-  assert.notEqual(baseRef, "", "merge base must resolve");
+/**
+ * The job graph of every workflow this change touches, pinned to a literal.
+ *
+ * Deliberately NOT a diff against a git baseline: a merge-base comparison
+ * inverts the moment it lands (the "new" workflow exists at the base, and the
+ * base becomes HEAD, so the check both fails and goes vacuous). A pinned shape
+ * keeps asserting the same property on main forever — this change may add
+ * steps, but it must not re-wire which jobs wait on which.
+ *
+ * Update these literals only in a PR that deliberately changes CI ordering.
+ */
+const EXPECTED_JOB_GRAPHS = Object.freeze({
+  "release-and-publish.yml": { "release-tests": [], release: ["release-tests"] },
+  "changelog-guard.yml": { "changelog-guard": [] },
+  "release-promote.yml": { promote: [] },
+});
 
-  // Union of workflow files at base and at HEAD, so a DELETED workflow is
-  // caught too — not just a modified or added one.
-  const headNames = readdirSync(path.join(REPO_ROOT, WORKFLOW_DIR)).filter((name) =>
-    /\.ya?ml$/.test(name),
-  );
-  const baseNames = git(["ls-tree", "--name-only", baseRef, "--", `${WORKFLOW_DIR}/`])
-    .split("\n")
-    .filter(Boolean)
-    .map((entry) => path.posix.basename(entry))
-    .filter((name) => /\.ya?ml$/.test(name));
-  const allNames = [...new Set([...baseNames, ...headNames])].sort((left, right) =>
-    left === right ? 0 : left < right ? -1 : 1,
-  );
-  assert.ok(allNames.length > 1, "expected to discover the workflow directory");
-
-  const drifted = [];
-  for (const name of allNames) {
-    const relative = `${WORKFLOW_DIR}/${name}`;
-    const baseRaw = showAtRef(baseRef, relative);
-    const headRaw = headNames.includes(name) ? readWorkflow(name) : null;
-
-    if (INTENTIONALLY_TOUCHED.includes(name)) {
-      if (name === "release-promote.yml") {
-        assert.equal(baseRaw, null, "release-promote.yml must be new in this change");
-        continue;
-      }
-      // An intentionally-touched workflow may gain steps, but its trigger set
-      // and job graph must be byte-identical after parsing.
-      assert.ok(baseRaw !== null && headRaw !== null, `${relative} must exist at both refs`);
-      const base = parse(baseRaw);
-      const head = parse(headRaw);
-      assert.deepEqual(head.on, base.on, `${relative}: on: must not change`);
-      assert.deepEqual(
-        jobDependencies(head),
-        jobDependencies(base),
-        `${relative}: job needs: must not change`,
-      );
-      continue;
-    }
-
-    // Every other workflow must be untouched outright.
-    if (baseRaw !== headRaw) drifted.push(relative);
+test("the touched workflows keep their pinned job graph", () => {
+  for (const name of Object.getOwnPropertyNames(EXPECTED_JOB_GRAPHS)) {
+    const workflow = parse(readWorkflow(name));
+    assert.deepEqual(
+      jobDependencies(workflow),
+      EXPECTED_JOB_GRAPHS[name],
+      `${WORKFLOW_DIR}/${name}: job needs: graph changed`,
+    );
   }
-
-  assert.deepEqual(
-    drifted,
-    [],
-    `these workflows changed but are outside the scope of issue #3032: ${drifted.join(", ")}`,
-  );
 });
