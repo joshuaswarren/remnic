@@ -140,15 +140,20 @@ def _resolve_runtime(policy: BridgePolicy) -> tuple[str, str, str | None]:
 
 
 def _is_absolute_http_url(value: str) -> bool:
-    """Accept only an absolute http(s) URL that carries a non-empty authority.
+    """Accept only an absolute http(s) URL that carries a usable authority.
 
     A prefix test alone admits values such as "https://", which carry no host and
     would otherwise reach the provider as a malformed endpoint instead of failing
-    closed as invalid persisted routing.
+    closed as invalid persisted routing. The port is read inside the guard because
+    urlsplit defers port parsing: an out-of-range or non-numeric port raises only
+    on attribute access, and port 0 parses cleanly while being unusable.
     """
     try:
         parsed = urlsplit(value)
+        port = parsed.port
     except ValueError:
+        return False
+    if port == 0:
         return False
     return parsed.scheme in ("http", "https") and bool(parsed.hostname)
 

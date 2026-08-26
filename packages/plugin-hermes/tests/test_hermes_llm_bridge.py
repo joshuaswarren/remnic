@@ -489,6 +489,9 @@ def test_active_hermes_policy_rejects_an_unstable_public_alias():
         "https://:8080/v1",
         "ftp://example.invalid/v1",
         "example.invalid/v1",
+        "https://example.invalid:99999/v1",
+        "https://example.invalid:notaport/v1",
+        "https://example.invalid:0/v1",
     ],
 )
 def test_active_hermes_rejects_a_base_url_without_a_usable_http_authority(monkeypatch, base_url):
