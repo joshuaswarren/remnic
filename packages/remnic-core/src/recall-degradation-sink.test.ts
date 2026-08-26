@@ -78,25 +78,38 @@ function degradingBackend(observed: { calls: number }): SearchBackend {
   return backend as SearchBackend;
 }
 
-test("a caller-supplied degradationSink receives the real recall's backend degradations", async () => {
-  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-degradation-sink-"));
+/**
+ * Both cases boot a real orchestrator, so both must settle deferred init and
+ * `destroy()` it before the temp store is removed: background QMD/warmup
+ * writes otherwise race the teardown and `rm` fails with ENOTEMPTY under
+ * load (the orchestrator's documented shutdown contract).
+ */
+async function withOrchestrator(
+  prefix: string,
+  run: (orchestrator: Orchestrator, observed: { calls: number }) => Promise<void>,
+): Promise<void> {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), prefix));
+  const orchestrator = new Orchestrator(
+    parseConfig({ memoryDir, workspaceDir: memoryDir, qmdEnabled: true, embeddingFallbackEnabled: false }),
+  );
+  const observed = { calls: 0 };
+  // Unchecked cast with reason: `qmd` is assigned post-construction because the
+  // backend is built by the search factory, which would reach for a real
+  // daemon. Same seam orchestrator-xray-capture.test.ts uses.
+  const withBackend = orchestrator as unknown as { qmd: SearchBackend };
+  withBackend.qmd = degradingBackend(observed);
   try {
-    const orchestrator = new Orchestrator(
-      parseConfig({
-        memoryDir,
-        workspaceDir: memoryDir,
-        qmdEnabled: true,
-        embeddingFallbackEnabled: false,
-      }),
-    );
-    const observed = { calls: 0 };
-    // Unchecked cast with reason: `qmd` is assigned post-construction because
-    // the backend is built by the search factory, which would reach for a
-    // real daemon. Same seam orchestrator-xray-capture.test.ts uses.
-    const withBackend = orchestrator as unknown as { qmd: SearchBackend };
-    withBackend.qmd = degradingBackend(observed);
     await orchestrator.initialize();
+    await orchestrator.deferredReady;
+    await run(orchestrator, observed);
+  } finally {
+    await orchestrator.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+}
 
+test("a caller-supplied degradationSink receives the real recall's backend degradations", async () => {
+  await withOrchestrator("remnic-degradation-sink-", async (orchestrator, observed) => {
     const degradationSink: SearchDegradation[] = [];
     const context = await orchestrator.recall(
       "what did we decide about the retention window?",
@@ -118,31 +131,14 @@ test("a caller-supplied degradationSink receives the real recall's backend degra
     // The recall itself still returns an ordinary (here empty) context: the
     // sink observes, it never alters recall behavior.
     assert.equal(typeof context, "string");
-  } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-  }
+  });
 });
 
 test("recall works unchanged when no sink is supplied", async () => {
-  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-degradation-nosink-"));
-  try {
-    const orchestrator = new Orchestrator(
-      parseConfig({
-        memoryDir,
-        workspaceDir: memoryDir,
-        qmdEnabled: true,
-        embeddingFallbackEnabled: false,
-      }),
-    );
-    const observed = { calls: 0 };
-    const withBackend = orchestrator as unknown as { qmd: SearchBackend };
-    withBackend.qmd = degradingBackend(observed);
-    await orchestrator.initialize();
+  await withOrchestrator("remnic-degradation-nosink-", async (orchestrator, observed) => {
     // No `degradationSink`: the pipeline allocates its own array as before.
     const context = await orchestrator.recall("what did we decide about retention?", "no-sink");
     assert.equal(typeof context, "string");
-    assert.ok(observed.calls > 0);
-  } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-  }
+    assert.ok(observed.calls > 0, "the recall must still consult the backend");
+  });
 });
