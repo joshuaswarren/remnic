@@ -170,9 +170,14 @@ export function unknownToolError(
 /**
  * Build an enriched "invalid arguments" error message.
  *
+ * The example is generated from the schema (never hand-written, so it cannot
+ * drift) and is shown ONLY when it round-trips through that same schema. It
+ * carries schema-derived fields only: injecting the tool name would add an
+ * unrecognized property and fail a `.strict()` object (#3035 review finding).
+ *
  * @param tool - the tool name that received the invalid args
  * @param zodError - the ZodError from parse()
- * @param schema - the original Zod schema, used to generate example calls
+ * @param schema - the original Zod schema, used to generate the example
  */
 export function invalidArgsError(
   tool: string,
@@ -184,11 +189,32 @@ export function invalidArgsError(
     return `${path}: ${issue.message} (expected ${issue.expected ?? typeof issue})`;
   });
   let message = `Invalid arguments for "${tool}": ${issues.join("; ")}`;
-  if (schema) {
-    const example = exampleFromSchema(schema);
-    if (example && typeof example === "object" && Object.keys(example).length > 0) {
-      message += `. Example: ${JSON.stringify({ ...example, [tool]: "..." }, null, 0)}`;
+  if (!schema) return message;
+
+  const example = exampleFromSchema(schema);
+  if (!example || typeof example !== "object" || Object.keys(example).length === 0) {
+    return message;
+  }
+
+  // Withhold an example that cannot parse against its own schema: a
+  // non-round-tripping example is misinformation, worse than none. Narrowed
+  // with `in`/`typeof` rather than an inline cast so the shape is checked.
+  let roundTrips = false;
+  if (typeof schema === "object" && "safeParse" in schema) {
+    const parser = schema.safeParse;
+    if (typeof parser === "function") {
+      try {
+        const parsed: unknown = parser.call(schema, example);
+        roundTrips =
+          typeof parsed === "object"
+          && parsed !== null
+          && "success" in parsed
+          && parsed.success === true;
+      } catch {
+        roundTrips = false;
+      }
     }
   }
-  return message;
+
+  return roundTrips ? `${message}. Example arguments: ${JSON.stringify(example)}` : message;
 }

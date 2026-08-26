@@ -23,6 +23,7 @@ import {
   validateRequest,
 } from "./access-schema.js";
 import { EngramAccessInputError, type EngramAccessRecallResponse, type EngramAccessService } from "./access-service.js";
+import { unknownToolError } from "./access-errors.js";
 import "./access-operations.js";
 import { validateBriefingFormat } from "./briefing.js";
 import { processChatMessage } from "./chat/chat-factory.js";
@@ -2591,7 +2592,12 @@ export class EngramMcpServer {
   ): Promise<unknown> {
     const migrated = MCP_MIGRATED_OPERATIONS[toLegacyToolName(name)];
     if (!migrated) {
-      throw new Error(`unknown tool: ${name}`);
+      // Teaching rejection (#3035): name the nearest registered tool instead
+      // of a bare "unknown tool". Semantics are unchanged — this still
+      // throws and never executes a guessed correction.
+      throw new Error(
+        unknownToolError(name, Object.getOwnPropertyNames(MCP_MIGRATED_OPERATIONS)),
+      );
     }
     const op = getOperation(migrated);
     if (!op) {
