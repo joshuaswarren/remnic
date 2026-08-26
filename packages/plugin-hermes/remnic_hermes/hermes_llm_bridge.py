@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import re
 from typing import Any, Callable, Type, cast
+from urllib.parse import urlsplit
 
 
 class PolicyError(ValueError):
@@ -133,9 +134,23 @@ def _resolve_runtime(policy: BridgePolicy) -> tuple[str, str, str | None]:
         raise RuntimeConfigurationError("active Hermes model identifier is invalid")
     if base_url in (None, ""):
         return provider, model, None
-    if not isinstance(base_url, str) or not base_url.startswith(("https://", "http://")):
+    if not isinstance(base_url, str) or not _is_absolute_http_url(base_url):
         raise RuntimeConfigurationError("active Hermes model base URL is invalid")
     return provider, model, base_url.rstrip("/")
+
+
+def _is_absolute_http_url(value: str) -> bool:
+    """Accept only an absolute http(s) URL that carries a non-empty authority.
+
+    A prefix test alone admits values such as "https://", which carry no host and
+    would otherwise reach the provider as a malformed endpoint instead of failing
+    closed as invalid persisted routing.
+    """
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
 
 
 def invoke_completion(

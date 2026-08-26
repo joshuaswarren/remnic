@@ -478,3 +478,49 @@ def test_active_hermes_policy_rejects_an_unstable_public_alias():
                 "timeout_seconds": 90,
             }
         )
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://",
+        "http://",
+        "https:///v1",
+        "https://:8080/v1",
+        "ftp://example.invalid/v1",
+        "example.invalid/v1",
+    ],
+)
+def test_active_hermes_rejects_a_base_url_without_a_usable_http_authority(monkeypatch, base_url):
+    """A prefix-shaped but hostless persisted route fails closed instead of reaching the provider."""
+    import importlib
+
+    from remnic_hermes.hermes_llm_bridge import BridgePolicy, RuntimeConfigurationError, invoke_completion
+
+    config_module = SimpleNamespace(
+        load_config_readonly=lambda: {
+            "model": {
+                "provider": "anthropic",
+                "default": "claude-sonnet-5",
+                "base_url": base_url,
+            }
+        }
+    )
+    original_import = importlib.import_module
+
+    def import_module(name, package=None):
+        if name == "hermes_cli.config":
+            return config_module
+        return original_import(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", import_module)
+    calls: list[dict[str, object]] = []
+
+    with pytest.raises(RuntimeConfigurationError, match="base URL is invalid"):
+        invoke_completion(
+            {"messages": [{"role": "user", "content": "extract"}], "max_tokens": 8},
+            BridgePolicy(provider="active-hermes", model="hermes-active", timeout_seconds=90),
+            call_llm=lambda **kwargs: calls.append(kwargs) or SimpleNamespace(choices=[]),
+        )
+
+    assert calls == []
