@@ -1,3 +1,16 @@
+/**
+ * Tool-surface error enrichment: nearest-tool suggestions and arg-shape hints.
+ *
+ * Each function is a pure message builder — it returns a better error string
+ * without changing semantics, status codes, or rejection behavior.
+ *
+ * @module access-errors
+ */
+
+import type { ZodError } from "zod";
+
+// ─── Existing error classes (restored from pre-#3042) ─────────────────────
+
 /** Authenticated caller lacks the required authorization (HTTP 403). */
 export class EngramAccessForbiddenError extends Error {}
 
@@ -15,9 +28,147 @@ export class NamespaceNotWritableError extends EngramAccessInputError {
   constructor(
     readonly attemptedNamespace: string,
     readonly principal: string | undefined,
-    message?: string
+    message?: string,
   ) {
     super(message ?? `namespace is not writable: ${attemptedNamespace}`);
     this.name = "NamespaceNotWritableError";
   }
+}
+
+// ─── Levenshtein distance ─────────────────────────────────────────────────
+
+/**
+ * Standard Levenshtein edit distance. O(n*m) over bounded inputs.
+ */
+export function levenshtein(a: string, b: string): number {
+  const an = a.length;
+  const bn = b.length;
+  if (an === 0) return bn;
+  if (bn === 0) return an;
+
+  let prev: number[] = [];
+  let curr: number[] = [];
+
+  const [shorter, longer, sn, ln] =
+    an < bn ? [a, b, an, bn] : [b, a, bn, an];
+
+  for (let i = 0; i <= sn; i++) prev[i] = i;
+
+  for (let j = 1; j <= ln; j++) {
+    curr[0] = j;
+    for (let i = 1; i <= sn; i++) {
+      const cost = shorter[i - 1] === longer[j - 1] ? 0 : 1;
+      curr[i] = Math.min(
+        prev[i] + 1,
+        curr[i - 1] + 1,
+        prev[i - 1] + cost,
+      );
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[sn];
+}
+
+// ─── Similar-name helpers ─────────────────────────────────────────────────
+
+const SUGGESTION_DISTANCE_CAP = 3;
+
+export interface SuggestionCandidate {
+  name: string;
+  distance: number;
+}
+
+/**
+ * Find the nearest registered tool names by Levenshtein distance.
+ * Only names with distance <= {@link SUGGESTION_DISTANCE_CAP} are returned.
+ */
+export function nearestSuggestions(
+  requested: string,
+  registeredNames: readonly string[],
+): SuggestionCandidate[] {
+  const candidates: SuggestionCandidate[] = [];
+  for (const name of registeredNames) {
+    const distance = levenshtein(requested.toLowerCase(), name.toLowerCase());
+    if (distance <= SUGGESTION_DISTANCE_CAP) {
+      candidates.push({ name, distance });
+    }
+  }
+  candidates.sort((a, b) => {
+    if (a.distance !== b.distance) return a.distance < b.distance ? -1 : 1;
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  });
+  return candidates;
+}
+
+function buildSuggestion(
+  requested: string,
+  registeredNames: readonly string[],
+): string {
+  const suggestions = nearestSuggestions(requested, registeredNames);
+  if (suggestions.length === 0) {
+    return `Registered tools: ${registeredNames.join(", ")}`;
+  }
+  return `Did you mean ${suggestions.map((s) => s.name).join(", ")}?`;
+}
+
+function exampleFromSchema(schema: unknown): unknown {
+  if (!schema || typeof schema !== "object") return undefined;
+  const obj = schema as Record<string, unknown>;
+  if (obj._def?.typeName === "ZodString") return "<string>";
+  if (obj._def?.typeName === "ZodNumber") return 42;
+  if (obj._def?.typeName === "ZodBoolean") return true;
+  if (obj._def?.typeName === "ZodNullable") return null;
+  if (obj._def?.typeName === "ZodOptional") return undefined;
+  if (obj._def?.typeName === "ZodArray") return [];
+  if (obj._def?.typeName === "ZodObject") {
+    const shape = obj._def.shape?.();
+    if (!shape || typeof shape !== "object") return {};
+    const result: Record<string, unknown> = {};
+    for (const key of Object.getOwnPropertyNames(shape)) {
+      const val = exampleFromSchema(shape[key]);
+      if (val !== undefined) result[key] = val;
+    }
+    return result;
+  }
+  if (obj._def?.typeName === "ZodEnum") {
+    const values = obj._def.values;
+    if (Array.isArray(values) && values.length > 0) return values[0];
+    return "<value>";
+  }
+  return undefined;
+}
+
+/**
+ * Build an enriched "unknown tool" error message.
+ */
+export function unknownToolError(
+  requested: string,
+  registeredNames: readonly string[],
+): string {
+  const suggestion = buildSuggestion(requested, registeredNames);
+  return `Unknown tool: ${requested}. ${suggestion}`;
+}
+
+/**
+ * Build an enriched "invalid arguments" error message.
+ * The example call is generated from the schema (never hand-written), and
+ * the tool name is kept outside the generated argument object.
+ */
+export function invalidArgsError(
+  tool: string,
+  zodError: ZodError,
+  schema?: unknown,
+): string {
+  const issues = zodError.issues.map((issue) => {
+    const path = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+    return `${path}: ${issue.message} (expected ${issue.expected ?? typeof issue})`;
+  });
+  let message = `Invalid arguments for "${tool}": ${issues.join("; ")}`;
+  if (schema) {
+    const example = exampleFromSchema(schema);
+    if (example && typeof example === "object" && Object.keys(example).length > 0) {
+      message += `. Example: ${JSON.stringify(example)}`;
+    }
+  }
+  return message;
 }
