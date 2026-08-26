@@ -356,6 +356,76 @@ jobs:
       - name: Lifecycle-matrix coverage self-test
         run: node --test tests/lifecycle-matrix-coverage.test.mjs
 
+  # Windows regression gate (issue #3034). Windows deployments exist and file
+  # PRs, but every other job here is Linux, so path-separator, tilde-expansion
+  # and spawn regressions were only caught by users after release.
+  #
+  # Standard `windows-latest` ONLY: standard GitHub-hosted runners are free and
+  # unmetered for public repositories, while "larger runner" labels are BILLED
+  # even on public repos. Never swap this label for a larger runner.
+  #
+  # A separate job, not a `tests` matrix row: that job's runs-on expression
+  # selects the self-hosted Linux pool on trusted main pushes, and entangling
+  # Windows with it would break that selection.
+  #
+  # Deliberately NOT in the `quality` aggregator's `needs`: this job stays
+  # non-required until a green streak is observed (issue #3034 decision 3).
+  # Promotion is a one-line follow-up PR.
+  windows-smoke:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        # git-bash ships on the windows-latest image. Bash keeps `set -euo
+        # pipefail` and non-zero exit propagation identical to every other job
+        # in this file; PowerShell's $ErrorActionPreference and native
+        # exit-code handling differ and can leave a failing command passing.
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: pnpm
+
+      # Pinned wrapper: prefers the pinned pnpm installed above and otherwise
+      # routes through `npm exec --yes pnpm@10.32.1` (scripts/pnpm.mjs).
+      - name: Install dependencies
+        run: node scripts/pnpm.mjs install --frozen-lockfile
+
+      - name: Build core
+        run: node scripts/pnpm.mjs --filter @remnic/core build
+
+      # A published install ships dist/index.js, and bin/remnic.cjs runs it with
+      # the node executable. Without this build the wrapper falls back to the
+      # tsx source entry — a dev-only path with its own Windows problems — so
+      # the smoke below would test something users never hit.
+      - name: Build CLI
+        run: node scripts/pnpm.mjs --filter @remnic/cli build
+
+      # Acceptance criterion (#3034): `remnic --help` and `remnic doctor` exit 0
+      # from an empty directory. The script creates that directory under
+      # RUNNER_TEMP itself — git-bash mishandles the backslash path, so a shell
+      # `mktemp -d "$RUNNER_TEMP/..."` would silently run in the repo root.
+      #
+      # Ordered before the core suite on purpose: it is seconds of work, and the
+      # suite is the step that can exhaust the 25-minute budget.
+      - name: CLI smoke
+        run: node scripts/windows-cli-smoke.mjs
+
+      # Runs the @remnic/core suite minus scripts/windows-skip-list.json, and
+      # prints every skip by name. No inline suppression: a Windows failure is
+      # either fixed forward or named in that list with an issue link.
+      - name: Core unit tests
+        run: node scripts/windows-test-runner.mjs
+
   # Aggregator that preserves the required status-check context `quality`
   # (branch ruleset) while the real work runs in parallel jobs above. Fails
   # unless every dependency succeeded — skipped/cancelled deps are failures,
