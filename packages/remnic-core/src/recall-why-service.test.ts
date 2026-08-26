@@ -86,7 +86,7 @@ function makeStub(options: StubOptions): Stub {
     async recallWithXrayCapture(
       prompt: string,
       _sessionKey?: string,
-      invocation?: { degradationSink?: SearchDegradation[] },
+      invocation?: { degradationSink?: SearchDegradation[] }
     ) {
       stub.recallCalls += 1;
       stub.sinkSupplied = Array.isArray(invocation?.degradationSink);
@@ -101,16 +101,17 @@ function makeStub(options: StubOptions): Stub {
     },
     async getStorageForNamespace(namespace: string) {
       stub.readNamespaces.push(namespace);
-      return { async readAllMemories() { return options.memories ?? []; } };
+      return {
+        async readAllMemories() {
+          return options.memories ?? [];
+        },
+      };
     },
   } as unknown as Orchestrator;
   return stub;
 }
 
-async function withConfig<T>(
-  raw: Record<string, unknown>,
-  run: (config: PluginConfig) => Promise<T>,
-): Promise<T> {
+async function withConfig<T>(raw: Record<string, unknown>, run: (config: PluginConfig) => Promise<T>): Promise<T> {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-why-svc-"));
   try {
     return await run(parseConfig({ memoryDir, ...raw }));
@@ -131,10 +132,7 @@ test("a degradation raised mid-recall reports backend_unavailable, not zero cand
       qmdAvailable: true,
       degradations: [{ backend: "qmd", code: "daemon_timeout", detail: "no response in 5000ms" }],
     });
-    const response = await runRecallWhy(
-      { orchestrator: stub.orchestrator, ...identityResolver },
-      { query: QUERY },
-    );
+    const response = await runRecallWhy({ orchestrator: stub.orchestrator, ...identityResolver }, { query: QUERY });
     assert.equal(stub.sinkSupplied, true, "the service must hand the pipeline a degradation sink");
     assert.equal(response.reportFound, true);
     assert.equal(response.report?.ok, false);
@@ -143,7 +141,10 @@ test("a degradation raised mid-recall reports backend_unavailable, not zero cand
     assert.match(response.report?.failure?.detail ?? "", /no response in 5000ms/);
     // Only the retrieval stage is reported: no downstream stage ran, so none
     // may claim it "considered 0".
-    assert.deepEqual(response.report?.stages.map((s) => s.stage), ["retrieval"]);
+    assert.deepEqual(
+      response.report?.stages.map((s) => s.stage),
+      ["retrieval"]
+    );
     assert.match(response.summary ?? "", /backend_unavailable/);
   });
 });
@@ -154,10 +155,7 @@ test("a partial vector-tier degradation is not an outage — lexical still answe
       config,
       degradations: [{ backend: "qmd", code: "vector_tier_unavailable" }],
     });
-    const response = await runRecallWhy(
-      { orchestrator: stub.orchestrator, ...identityResolver },
-      { query: QUERY },
-    );
+    const response = await runRecallWhy({ orchestrator: stub.orchestrator, ...identityResolver }, { query: QUERY });
     assert.equal(response.report?.ok, true, "a degraded-but-real result set is not a failure");
     assert.equal(response.report?.failure, undefined);
   });
@@ -170,10 +168,7 @@ test("a recall that throws reports the fault as an outage, carrying what it obse
       degradations: [{ backend: "qmd", code: "subprocess_error" }],
       recallError: new Error("search subprocess exited with code 1"),
     });
-    const response = await runRecallWhy(
-      { orchestrator: stub.orchestrator, ...identityResolver },
-      { query: QUERY },
-    );
+    const response = await runRecallWhy({ orchestrator: stub.orchestrator, ...identityResolver }, { query: QUERY });
     assert.equal(response.report?.ok, false);
     assert.match(response.report?.failure?.detail ?? "", /qmd:subprocess_error/);
     assert.match(response.report?.failure?.detail ?? "", /subprocess exited with code 1/);
@@ -183,10 +178,7 @@ test("a recall that throws reports the fault as an outage, carrying what it obse
 test("an unavailable backend is refused before the recall runs", async () => {
   await withConfig({ qmdEnabled: true }, async (config) => {
     const stub = makeStub({ config, qmdAvailable: false });
-    const response = await runRecallWhy(
-      { orchestrator: stub.orchestrator, ...identityResolver },
-      { query: QUERY },
-    );
+    const response = await runRecallWhy({ orchestrator: stub.orchestrator, ...identityResolver }, { query: QUERY });
     assert.equal(response.report?.ok, false);
     assert.equal(response.report?.failure?.reason, "backend_unavailable");
     assert.equal(stub.recallCalls, 0, "no point paying for a recall against a dead backend");
@@ -196,10 +188,7 @@ test("an unavailable backend is refused before the recall runs", async () => {
 test("an honest empty recall stays ok:true", async () => {
   await withConfig({ qmdEnabled: true }, async (config) => {
     const stub = makeStub({ config });
-    const response = await runRecallWhy(
-      { orchestrator: stub.orchestrator, ...identityResolver },
-      { query: QUERY },
-    );
+    const response = await runRecallWhy({ orchestrator: stub.orchestrator, ...identityResolver }, { query: QUERY });
     assert.equal(response.report?.ok, true);
     assert.equal(response.report?.failure, undefined);
     assert.equal(stub.recallCalls, 1, "one diagnosis costs exactly one recall");
@@ -212,14 +201,11 @@ test("--expect resolves an exact id and reports the stage that dropped it", asyn
   await withConfig({ qmdEnabled: true }, async (config) => {
     const stub = makeStub({
       config,
-      memories: [
-        memoryFile({ id: "fact-kept-0001" }),
-        memoryFile({ id: "fact-gone-0002", status: "superseded" }),
-      ],
+      memories: [memoryFile({ id: "fact-kept-0001" }), memoryFile({ id: "fact-gone-0002", status: "superseded" })],
     });
     const response = await runRecallWhy(
       { orchestrator: stub.orchestrator, ...identityResolver },
-      { query: QUERY, expect: "fact-gone-0002" },
+      { query: QUERY, expect: "fact-gone-0002" }
     );
     assert.equal(response.report?.expectation?.matched, true);
     assert.equal(response.report?.expectation?.memoryId, "fact-gone-0002");
@@ -234,7 +220,7 @@ test("a memory with no frontmatter status is treated as active, not status-filte
     const stub = makeStub({ config, memories: [memoryFile({ id: "fact-untagged-0003" })] });
     const response = await runRecallWhy(
       { orchestrator: stub.orchestrator, ...identityResolver },
-      { query: QUERY, expect: "fact-untagged-0003" },
+      { query: QUERY, expect: "fact-untagged-0003" }
     );
     assert.equal(response.report?.expectation?.matched, true);
     assert.notEqual(response.report?.expectation?.reason, "status-filter");
@@ -247,7 +233,7 @@ test("an unmatched --expect says nothing matched rather than naming a stage fals
     const stub = makeStub({ config, memories: [memoryFile({ id: "fact-kept-0001" })] });
     const response = await runRecallWhy(
       { orchestrator: stub.orchestrator, ...identityResolver },
-      { query: QUERY, expect: "fact-absent-9999" },
+      { query: QUERY, expect: "fact-absent-9999" }
     );
     assert.equal(response.report?.expectation?.matched, false);
     assert.match(response.report?.expectation?.detail ?? "", /no stored memory matches/);
@@ -266,23 +252,20 @@ test("a namespace the principal cannot read is refused without running a recall"
       const stub = makeStub({ config, memories: [memoryFile({ id: "fact-secret-0001" })] });
       const response = await runRecallWhy(
         { orchestrator: stub.orchestrator, ...identityResolver },
-        { query: QUERY, namespace: "team-beta", authenticatedPrincipal: "someone-else" },
+        { query: QUERY, namespace: "team-beta", authenticatedPrincipal: "someone-else" }
       );
       assert.equal(response.reportFound, false, "an unreadable namespace yields no report");
       assert.equal(response.report, undefined);
       assert.equal(stub.recallCalls, 0);
       assert.deepEqual(stub.readNamespaces, [], "and no store in it may be read");
-    },
+    }
   );
 });
 
 test("with namespaces on and no identity supplied the diagnosis refuses", async () => {
   await withConfig({ namespacesEnabled: true }, async (config) => {
     const stub = makeStub({ config });
-    const response = await runRecallWhy(
-      { orchestrator: stub.orchestrator, ...identityResolver },
-      { query: QUERY },
-    );
+    const response = await runRecallWhy({ orchestrator: stub.orchestrator, ...identityResolver }, { query: QUERY });
     assert.equal(response.reportFound, false);
     assert.equal(stub.recallCalls, 0);
   });
@@ -293,12 +276,15 @@ test("the expected-memory lookup reads only the namespaces the recall is scoped 
     const stub = makeStub({ config, memories: [memoryFile({ id: "fact-kept-0001" })] });
     await runRecallWhy(
       { orchestrator: stub.orchestrator, ...identityResolver },
-      { query: QUERY, namespace: "team-alpha", expect: "fact-kept-0001" },
+      // `expect` deliberately matches NOTHING: an early exact-id hit would
+      // stop the scan after the first namespace and hide a widened scope,
+      // so the lookup is forced to exhaust every namespace it is given.
+      { query: QUERY, namespace: "team-alpha", expect: "fact-absent-9999" }
     );
     assert.deepEqual(
       stub.readNamespaces,
       ["team-alpha"],
-      "an explicitly scoped request must not scan any other namespace",
+      "an explicitly scoped request must not scan any other namespace"
     );
   });
 });
@@ -310,13 +296,9 @@ test("an empty or whitespace-only query is rejected before namespace resolution"
     const stub = makeStub({ config });
     for (const bad of ["", "   ", "\t"]) {
       await assert.rejects(
-        () =>
-          runRecallWhy(
-            { orchestrator: stub.orchestrator, ...identityResolver },
-            { query: bad },
-          ),
+        () => runRecallWhy({ orchestrator: stub.orchestrator, ...identityResolver }, { query: bad }),
         /query is required and must be non-empty/,
-        `query ${JSON.stringify(bad)} must be rejected`,
+        `query ${JSON.stringify(bad)} must be rejected`
       );
     }
     assert.equal(stub.recallCalls, 0);

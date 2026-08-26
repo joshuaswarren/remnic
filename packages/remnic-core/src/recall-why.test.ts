@@ -109,9 +109,7 @@ function xrayResult(memory: FixtureMemory): RecallXrayResult {
  * policy filters, `appliedResults` is what survived the final cap.
  */
 function fixtureSnapshot(): RecallXraySnapshot {
-  const captured = FIXTURES.filter(
-    (m) => m.recalled === true || m.capEvicted === true || m.rejectedBy !== undefined,
-  );
+  const captured = FIXTURES.filter((m) => m.recalled === true || m.capEvicted === true || m.rejectedBy !== undefined);
   const survived = captured.filter((m) => m.rejectedBy === undefined);
   return buildXraySnapshot({
     query: "what did we decide about the database?",
@@ -149,19 +147,15 @@ function makeDeps(overrides: DepsOverrides = {}): RecallWhyDeps {
     // The real predicate, bound with no policy — `artifacts/` is excluded.
     isExcludedPath: (memoryPath) => memoryPath.startsWith("artifacts/"),
     findExpected: async (expect) =>
-      FIXTURES.find((m) => m.memoryId === expect)
-      ?? FIXTURES.find((m) => m.memoryId.includes(expect) || m.path.includes(expect))
-      ?? null,
+      FIXTURES.find((m) => m.memoryId === expect) ??
+      FIXTURES.find((m) => m.memoryId.includes(expect) || m.path.includes(expect)) ??
+      null,
   };
 }
 
 const FULL_QUERY = "what did we decide about the database?";
 
-async function expectVerdict(
-  expect: string,
-  overrides: DepsOverrides = {},
-  query = FULL_QUERY,
-) {
+async function expectVerdict(expect: string, overrides: DepsOverrides = {}, query = FULL_QUERY) {
   const report = await explainRecallMiss(query, { deps: makeDeps(overrides), expect });
   assert.ok(report.expectation !== undefined, "an --expect trace must be produced");
   return report;
@@ -326,7 +320,7 @@ test("a backend outage reports backend_unavailable, not zero candidates", async 
   // conflation this asserts against.
   assert.deepEqual(
     report.stages.map((s) => s.stage),
-    ["retrieval"],
+    ["retrieval"]
   );
   assert.match(report.stages[0]?.reason ?? "", /backend_unavailable/);
   assert.match(summarizeRecallWhy(report), /backend_unavailable/);
@@ -345,7 +339,10 @@ test("an honest empty recall stays ok:true and is not reported as an outage", as
 
 test("stages are reported in contract order with real per-stage counts", async () => {
   const report = await explainRecallMiss(FULL_QUERY, { deps: makeDeps() });
-  assert.deepEqual(report.stages.map((s) => s.stage), [...RECALL_WHY_STAGES]);
+  assert.deepEqual(
+    report.stages.map((s) => s.stage),
+    [...RECALL_WHY_STAGES]
+  );
   const byStage = new Map(report.stages.map((s) => [s.stage, s]));
   // 3 captured (recalled + cap-evicted + rejected), 1 rejected by policy.
   assert.equal(byStage.get("retrieval")?.considered, 3);
@@ -361,11 +358,11 @@ test("drops are attributed to the stage that dropped them", async () => {
   const byStage = new Map(report.stages.map((s) => [s.stage, s]));
   assert.deepEqual(
     byStage.get("policy-filter")?.drops.map((d) => d.memoryId),
-    ["fact-rejected-0007"],
+    ["fact-rejected-0007"]
   );
   assert.deepEqual(
     byStage.get("cap")?.drops.map((d) => d.memoryId),
-    ["fact-capped-0006"],
+    ["fact-capped-0006"]
   );
   assert.equal(byStage.get("cap")?.drops[0]?.reason, "cap-eviction");
 });
@@ -394,7 +391,7 @@ test("cap drops are sorted by (memoryId, path), not by capture order", async () 
   const capDrops = first.stages.find((s) => s.stage === "cap")?.drops ?? [];
   assert.deepEqual(
     capDrops.map((d) => d.memoryId),
-    ["fact-aaa-0001", "fact-mmm-0002", "fact-zzz-0003"],
+    ["fact-aaa-0001", "fact-mmm-0002", "fact-zzz-0003"]
   );
   assert.deepEqual(first.stages, second.stages);
 });
@@ -406,16 +403,13 @@ test("an empty or whitespace-only query is rejected, never silently defaulted", 
     await assert.rejects(
       () => explainRecallMiss(bad, { deps: makeDeps() }),
       RecallWhyInputError,
-      `query ${JSON.stringify(bad)} must be rejected`,
+      `query ${JSON.stringify(bad)} must be rejected`
     );
   }
 });
 
 test("a whitespace-only --expect is rejected rather than treated as absent", async () => {
-  await assert.rejects(
-    () => explainRecallMiss(FULL_QUERY, { deps: makeDeps(), expect: "   " }),
-    RecallWhyInputError,
-  );
+  await assert.rejects(() => explainRecallMiss(FULL_QUERY, { deps: makeDeps(), expect: "   " }), RecallWhyInputError);
 });
 
 test("a non-finite appliedResultLimit cannot leak into the report", async () => {
@@ -474,16 +468,13 @@ test("the CLI parser rejects a flag supplied without a value", () => {
     query: "why did that miss?",
     format: "markdown",
   });
-  assert.deepEqual(
-    parseWhyCliOptions("q", { expect: " fact-1 ", namespace: "team-alpha", out: "report.md" }),
-    {
-      query: "q",
-      format: "markdown",
-      expect: "fact-1",
-      namespace: "team-alpha",
-      outPath: "report.md",
-    },
-  );
+  assert.deepEqual(parseWhyCliOptions("q", { expect: " fact-1 ", namespace: "team-alpha", out: "report.md" }), {
+    query: "q",
+    format: "markdown",
+    expect: "fact-1",
+    namespace: "team-alpha",
+    outPath: "report.md",
+  });
   // Commander hands a valueless `--expect` through as `true`.
   assert.throws(() => parseWhyCliOptions("q", { expect: true }), /--expect expects/);
   assert.throws(() => parseWhyCliOptions("q", { namespace: "  " }), /--namespace expects/);
@@ -498,13 +489,7 @@ test("an inherited option is never read as a supplied flag", () => {
 // ─── status coverage is exhaustive (checklist #41) ─────────────────────────
 
 test("only the active status survives the status gate", async () => {
-  const statuses: MemoryStatus[] = [
-    "pending_review",
-    "rejected",
-    "quarantined",
-    "superseded",
-    "archived",
-  ];
+  const statuses: MemoryStatus[] = ["pending_review", "rejected", "quarantined", "superseded", "archived"];
   for (const status of statuses) {
     const deps: RecallWhyDeps = {
       ...makeDeps({ outcome: { ok: true, snapshot: null } }),
@@ -519,7 +504,7 @@ test("only the active status survives the status gate", async () => {
     assert.equal(
       report.expectation?.reason,
       "status-filter",
-      `status ${status} must be reported as a status-filter drop`,
+      `status ${status} must be reported as a status-filter drop`
     );
     assert.equal(report.expectation?.detail, `status=${status}`);
   }

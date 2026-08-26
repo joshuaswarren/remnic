@@ -47,9 +47,7 @@ const FATAL_DEGRADATION_CODES: Partial<Record<SearchDegradation["code"], true>> 
 };
 
 function describeDegradations(degradations: readonly SearchDegradation[]): string {
-  return degradations
-    .map((d) => `${d.backend}:${d.code}${d.detail !== undefined ? ` (${d.detail})` : ""}`)
-    .join("; ");
+  return degradations.map((d) => `${d.backend}:${d.code}${d.detail !== undefined ? ` (${d.detail})` : ""}`).join("; ");
 }
 
 export interface RecallWhyRequest {
@@ -85,10 +83,7 @@ export interface RecallWhyServiceDeps {
  * `backend_unavailable` rather than thrown, because an outage is a diagnosis
  * result, not a diagnosis failure.
  */
-export async function runRecallWhy(
-  deps: RecallWhyServiceDeps,
-  request: RecallWhyRequest,
-): Promise<RecallWhyResponse> {
+export async function runRecallWhy(deps: RecallWhyServiceDeps, request: RecallWhyRequest): Promise<RecallWhyResponse> {
   const query = typeof request.query === "string" ? request.query : "";
   if (query.trim().length === 0) {
     throw new RecallWhyInputError("recallWhy: query is required and must be non-empty");
@@ -96,9 +91,7 @@ export async function runRecallWhy(
   const orchestrator = deps.orchestrator;
   const config = orchestrator.config;
   const namespacesEnabled = resolveNamespaceCapabilities(config).namespaces;
-  const requestedNamespace = request.namespace?.trim()
-    ? deps.resolveNamespace(request.namespace)
-    : undefined;
+  const requestedNamespace = request.namespace?.trim() ? deps.resolveNamespace(request.namespace) : undefined;
   const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
   const principal = authenticatedPrincipal || resolvePrincipal(request.sessionKey, config);
 
@@ -112,9 +105,8 @@ export async function runRecallWhy(
     return { reportFound: false };
   }
 
-  const readableNamespaces = requestedNamespace !== undefined
-    ? [requestedNamespace]
-    : [...recallNamespacesForPrincipal(principal, config)];
+  const readableNamespaces =
+    requestedNamespace !== undefined ? [requestedNamespace] : [...recallNamespacesForPrincipal(principal, config)];
   const recallSessionKey = request.sessionKey?.trim() || undefined;
 
   const whyDeps: RecallWhyDeps = {
@@ -155,8 +147,7 @@ export async function runRecallWhy(
       } catch (err) {
         // Cancellation is the caller's decision, not a backend outage.
         if (err instanceof Error && err.name === "AbortError") throw err;
-        const observed =
-          degradations.length > 0 ? `${describeDegradations(degradations)}; ` : "";
+        const observed = degradations.length > 0 ? `${describeDegradations(degradations)}; ` : "";
         return {
           ok: false,
           reason: "backend_unavailable",
@@ -187,7 +178,7 @@ export async function runRecallWhy(
 async function findExpectedMemory(
   orchestrator: Orchestrator,
   namespaces: readonly string[],
-  expect: string,
+  expect: string
 ): Promise<RecallWhyMemoryRef | null> {
   const substringMatches: RecallWhyMemoryRef[] = [];
   const seenNamespaces = new Set<string>();

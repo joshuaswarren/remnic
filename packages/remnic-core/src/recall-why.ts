@@ -45,13 +45,7 @@ import type { MemoryStatus, RecallPlanMode } from "./types.js";
  * `readonly RecallWhyStage[]` annotation so the derived union below stays
  * narrow (Review Prevention Checklist #47).
  */
-export const RECALL_WHY_STAGES = Object.freeze([
-  "retrieval",
-  "policy-filter",
-  "rerank",
-  "cap",
-  "format",
-] as const);
+export const RECALL_WHY_STAGES = Object.freeze(["retrieval", "policy-filter", "rerank", "cap", "format"] as const);
 
 export type RecallWhyStage = (typeof RECALL_WHY_STAGES)[number];
 
@@ -165,7 +159,7 @@ export interface RecallWhyDeps {
   /** Runs the REAL recall with X-ray capture and reports backend faults. */
   runRecall(
     query: string,
-    options: { sessionKey?: string; namespace?: string; abortSignal?: AbortSignal },
+    options: { sessionKey?: string; namespace?: string; abortSignal?: AbortSignal }
   ): Promise<RecallWhyRecallOutcome>;
   /** `planRecallMode` from `intent.ts` — the planner the pipeline uses. */
   plannerMode(query: string): RecallPlanMode;
@@ -225,20 +219,14 @@ const REMEDIATION: Record<RecallWhyDropReason, string> = {
  * `expect` is supplied, traces that one memory and names the exact stage
  * that dropped it plus a remediation hint.
  */
-export async function explainRecallMiss(
-  query: string,
-  opts: RecallWhyOptions,
-): Promise<RecallWhyReport> {
+export async function explainRecallMiss(query: string, opts: RecallWhyOptions): Promise<RecallWhyReport> {
   // Validate the EXACT value — never normalize first (checklist #45). A
   // whitespace-only query is a caller fault, not an empty query.
   if (typeof query !== "string" || query.length === 0 || query.trim().length === 0) {
     throw new RecallWhyInputError("recallWhy: query is required and must be non-empty");
   }
   const expect = opts.expect;
-  if (
-    expect !== undefined &&
-    (typeof expect !== "string" || expect.length === 0 || expect.trim().length === 0)
-  ) {
+  if (expect !== undefined && (typeof expect !== "string" || expect.length === 0 || expect.trim().length === 0)) {
     throw new RecallWhyInputError("recallWhy: expect must be a non-empty string when supplied");
   }
   const deps = opts.deps;
@@ -293,9 +281,7 @@ export async function explainRecallMiss(
   const stages = buildStages(snapshot, plannerMode);
   const recalledMemoryIds = (snapshot?.appliedResults ?? []).map((r) => r.memoryId);
   const expectation =
-    expect === undefined
-      ? undefined
-      : await traceExpectation(expect, snapshot, plannerMode, deps, scopedNamespaces);
+    expect === undefined ? undefined : await traceExpectation(expect, snapshot, plannerMode, deps, scopedNamespaces);
 
   return {
     schemaVersion: "1",
@@ -326,10 +312,7 @@ const PLANNER_MODE_NOTE: Partial<Record<RecallPlanMode, string>> = {
   minimal: "planner mode minimal: retrieval headroom is capped",
 };
 
-function buildStages(
-  snapshot: RecallXraySnapshot | null,
-  plannerMode: RecallPlanMode,
-): RecallWhyStageRecord[] {
+function buildStages(snapshot: RecallXraySnapshot | null, plannerMode: RecallPlanMode): RecallWhyStageRecord[] {
   if (snapshot === null) {
     // No snapshot published: either the planner short-circuited recall or
     // retrieval produced nothing to capture. Both are honest zero-candidate
@@ -339,8 +322,7 @@ function buildStages(
         stage: "retrieval",
         considered: 0,
         admitted: 0,
-        reason: PLANNER_MODE_NOTE[plannerMode]
-          ?? "no candidates were captured for this query",
+        reason: PLANNER_MODE_NOTE[plannerMode] ?? "no candidates were captured for this query",
         drops: [],
       },
     ];
@@ -367,9 +349,7 @@ function buildStages(
       // a planner mode can never be reported on one path and dropped on the
       // other. Modes with no note omit the key rather than setting it to
       // undefined, keeping the JSON shape byte-stable.
-      ...(PLANNER_MODE_NOTE[plannerMode] !== undefined
-        ? { reason: PLANNER_MODE_NOTE[plannerMode] }
-        : {}),
+      ...(PLANNER_MODE_NOTE[plannerMode] !== undefined ? { reason: PLANNER_MODE_NOTE[plannerMode] } : {}),
       drops: [],
     },
     {
@@ -383,7 +363,7 @@ function buildStages(
           path: r.path,
           reason: policyReasonFor(nonEmpty(r.rejectedBy) ?? ""),
           detail: `rejectedBy=${nonEmpty(r.rejectedBy) ?? "unknown"}`,
-        })),
+        }))
       ),
     },
     {
@@ -403,7 +383,7 @@ function buildStages(
           path: r.path,
           reason: "cap-eviction" as const,
           detail: `cut by appliedResultLimit=${nonNegativeInt(snapshot.appliedResultLimit)}`,
-        })),
+        }))
       ),
     },
     {
@@ -446,7 +426,7 @@ async function traceExpectation(
   plannerMode: RecallPlanMode,
   deps: RecallWhyDeps,
   /** Effective recall scope: what the pipeline recorded, else the caller's. */
-  recallNamespaces: readonly string[],
+  recallNamespaces: readonly string[]
 ): Promise<RecallWhyExpectation> {
   const ref = await deps.findExpected(expect);
   if (ref === null) {
@@ -457,8 +437,7 @@ async function traceExpectation(
       stage: "retrieval",
       reason: "not-a-candidate",
       detail: "no stored memory matches this id or substring",
-      remediation:
-        "Nothing on disk matches. Check the id or substring; the memory may never have been written.",
+      remediation: "Nothing on disk matches. Check the id or substring; the memory may never have been written.",
     };
   }
 
@@ -470,9 +449,7 @@ async function traceExpectation(
     if (snapshot.appliedResults.some((r) => matchesRef(r, ref))) {
       return { ...base, recalled: true };
     }
-    const rejectedRow = snapshot.results.find(
-      (r) => matchesRef(r, ref) && nonEmpty(r.rejectedBy) !== undefined,
-    );
+    const rejectedRow = snapshot.results.find((r) => matchesRef(r, ref) && nonEmpty(r.rejectedBy) !== undefined);
     if (rejectedRow !== undefined) {
       const rejectedBy = nonEmpty(rejectedRow.rejectedBy) ?? "unknown";
       const reason = policyReasonFor(rejectedBy);
@@ -485,10 +462,7 @@ async function traceExpectation(
         remediation: REMEDIATION[reason],
       };
     }
-    if (
-      snapshot.headroomResults.some((r) => matchesRef(r, ref)) ||
-      snapshot.results.some((r) => matchesRef(r, ref))
-    ) {
+    if (snapshot.headroomResults.some((r) => matchesRef(r, ref)) || snapshot.results.some((r) => matchesRef(r, ref))) {
       return {
         ...base,
         recalled: false,
@@ -579,8 +553,7 @@ function nonEmpty(value: string | undefined): string | undefined {
 function nonNegativeInt(value: unknown): number {
   // Reject non-finite explicitly rather than letting NaN fall through a
   // comparison (checklist #45).
-  if (typeof value !== "number") return 0;
-  if (!Number.isFinite(value)) return 0;
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
   const floored = Math.floor(value);
   return floored > 0 ? floored : 0;
 }

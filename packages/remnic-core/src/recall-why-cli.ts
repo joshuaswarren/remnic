@@ -24,14 +24,12 @@ export interface ParsedWhyCliOptions {
 
 export function parseWhyCliOptions(
   rawQuery: unknown,
-  options: Record<string, unknown>,
+  options: Record<string, unknown>
 ): { query: string } & ParsedWhyCliOptions {
   if (typeof rawQuery !== "string" || rawQuery.trim().length === 0) {
     throw new Error("why expects a non-empty query argument");
   }
-  const format = parseRecallWhyFormat(
-    Object.hasOwn(options, "format") ? options.format : undefined,
-  );
+  const format = parseRecallWhyFormat(Object.hasOwn(options, "format") ? options.format : undefined);
   return {
     query: rawQuery,
     format,
@@ -48,11 +46,7 @@ export function parseWhyCliOptions(
  * supplied"; a whitespace-only value is likewise a caller mistake, not a
  * request for the default.
  */
-function maybeStringFlag(
-  options: Record<string, unknown>,
-  flag: string,
-  key = flag,
-): Record<string, string> {
+function maybeStringFlag(options: Record<string, unknown>, flag: string, key = flag): Record<string, string> {
   // `Object.hasOwn` + own-property enumeration: a value inherited from a
   // doctored prototype must never enable a flag (checklist #46).
   if (!Object.hasOwn(options, flag)) return {};

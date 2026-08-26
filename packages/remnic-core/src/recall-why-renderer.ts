@@ -22,15 +22,11 @@ export const RECALL_WHY_FORMATS: readonly RecallWhyFormat[] = ["json", "markdown
 export function parseRecallWhyFormat(value: unknown): RecallWhyFormat {
   if (value === undefined || value === null) return "markdown";
   if (typeof value !== "string") {
-    throw new Error(
-      `--format expects one of ${RECALL_WHY_FORMATS.join(", ")}; got ${typeof value}`,
-    );
+    throw new Error(`--format expects one of ${RECALL_WHY_FORMATS.join(", ")}; got ${typeof value}`);
   }
   const normalized = value.trim().toLowerCase();
   if (normalized === "json" || normalized === "markdown") return normalized;
-  throw new Error(
-    `--format expects one of ${RECALL_WHY_FORMATS.join(", ")}; got ${JSON.stringify(value)}`,
-  );
+  throw new Error(`--format expects one of ${RECALL_WHY_FORMATS.join(", ")}; got ${JSON.stringify(value)}`);
 }
 
 export function renderRecallWhy(report: RecallWhyReport, format: RecallWhyFormat): string {
@@ -49,27 +45,21 @@ export function renderRecallWhyMarkdown(report: RecallWhyReport): string {
   if (report.namespace !== undefined) lines.push(`- namespace: \`${report.namespace}\``);
   lines.push(
     `- recall namespaces: ${
-      report.recallNamespaces.length > 0
-        ? report.recallNamespaces.map((ns) => `\`${ns}\``).join(", ")
-        : "_none_"
-    }`,
+      report.recallNamespaces.length > 0 ? report.recallNamespaces.map((ns) => `\`${ns}\``).join(", ") : "_none_"
+    }`
   );
   lines.push(`- applied result limit: ${report.appliedResultLimit}`);
   lines.push(
     `- recalled: ${
-      report.recalledMemoryIds.length > 0
-        ? report.recalledMemoryIds.map((id) => `\`${id}\``).join(", ")
-        : "_nothing_"
-    }`,
+      report.recalledMemoryIds.length > 0 ? report.recalledMemoryIds.map((id) => `\`${id}\``).join(", ") : "_nothing_"
+    }`
   );
   lines.push("");
 
   if (report.failure !== undefined) {
     // An outage is never rendered as an empty pipeline (checklist #22).
     lines.push("## Backend unavailable", "");
-    lines.push(
-      `The diagnosis could not run: \`${report.failure.reason}\` — ${report.failure.detail}`,
-    );
+    lines.push(`The diagnosis could not run: \`${report.failure.reason}\` — ${report.failure.detail}`);
     lines.push("");
     lines.push("This is a backend outage, not a zero-candidate recall.");
     lines.push("");
@@ -79,9 +69,7 @@ export function renderRecallWhyMarkdown(report: RecallWhyReport): string {
   lines.push("| stage | considered | admitted | detail |");
   lines.push("| --- | --- | --- | --- |");
   for (const stage of report.stages) {
-    lines.push(
-      `| ${stage.stage} | ${stage.considered} | ${stage.admitted} | ${escapeCell(stage.reason)} |`,
-    );
+    lines.push(`| ${stage.stage} | ${stage.considered} | ${stage.admitted} | ${escapeCell(stage.reason)} |`);
   }
   lines.push("");
 
@@ -114,7 +102,7 @@ export function renderRecallWhyMarkdown(report: RecallWhyReport): string {
       lines.push(
         `**Dropped at ${expectation.stage ?? "unknown"}: ${expectation.reason ?? "unknown"}** — ${
           expectation.detail ?? "no detail recorded"
-        }`,
+        }`
       );
       if (expectation.remediation !== undefined) {
         lines.push("");

@@ -106,7 +106,7 @@ export async function handleRecallWhyHttpQuery(deps: {
   // the param is omitted — the implicit default namespace is still a
   // namespace every other GET route gates the same way.
   const namespace = deps.resolveNamespace(
-    namespaceParam !== null && namespaceParam.length > 0 ? namespaceParam : undefined,
+    namespaceParam !== null && namespaceParam.length > 0 ? namespaceParam : undefined
   );
   try {
     return {
@@ -167,7 +167,7 @@ export async function handleRecallXrayHttpQuery<TResponse>(deps: {
   const sessionParam = deps.getParam("session");
   const namespaceParam = deps.getParam("namespace");
   const namespace = deps.resolveNamespace(
-    namespaceParam !== null && namespaceParam.length > 0 ? namespaceParam : undefined,
+    namespaceParam !== null && namespaceParam.length > 0 ? namespaceParam : undefined
   );
   // Reject an invalid `budget` with 400 rather than silently defaulting.
   const budgetParam = deps.getParam("budget");
