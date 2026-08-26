@@ -39,16 +39,20 @@ export class NamespaceNotWritableError extends EngramAccessInputError {
 
 /**
  * Standard Levenshtein edit distance. O(n*m) over bounded inputs.
+ * Exported so the test can verify it without importing private helpers.
  */
 export function levenshtein(a: string, b: string): number {
   const an = a.length;
   const bn = b.length;
+  // Fast paths for empty strings.
   if (an === 0) return bn;
   if (bn === 0) return an;
 
+  // Use two rows to keep memory O(min(n,m)).
   let prev: number[] = [];
   let curr: number[] = [];
 
+  // Align loops to the shorter string.
   const [shorter, longer, sn, ln] =
     an < bn ? [a, b, an, bn] : [b, a, bn, an];
 
@@ -59,9 +63,9 @@ export function levenshtein(a: string, b: string): number {
     for (let i = 1; i <= sn; i++) {
       const cost = shorter[i - 1] === longer[j - 1] ? 0 : 1;
       curr[i] = Math.min(
-        prev[i] + 1,
-        curr[i - 1] + 1,
-        prev[i - 1] + cost,
+        prev[i] + 1,       // deletion
+        curr[i - 1] + 1,   // insertion
+        prev[i - 1] + cost, // substitution
       );
     }
     [prev, curr] = [curr, prev];
@@ -80,7 +84,9 @@ export interface SuggestionCandidate {
 
 /**
  * Find the nearest registered tool names by Levenshtein distance.
- * Only names with distance <= {@link SUGGESTION_DISTANCE_CAP} are returned.
+ * Results are sorted by distance ascending then name ascending (deterministic).
+ * Only names with distance <= {@link SUGGESTION_DISTANCE_CAP} are returned;
+ * when no name is that close the caller falls back to listing the full set.
  */
 export function nearestSuggestions(
   requested: string,
@@ -93,6 +99,7 @@ export function nearestSuggestions(
       candidates.push({ name, distance });
     }
   }
+  // Total comparator: distance asc, then name asc.
   candidates.sort((a, b) => {
     if (a.distance !== b.distance) return a.distance < b.distance ? -1 : 1;
     return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
@@ -100,6 +107,10 @@ export function nearestSuggestions(
   return candidates;
 }
 
+/**
+ * Build a human-readable "did you mean?" suggestion string.
+ * When no close match is found, returns a fallback listing.
+ */
 function buildSuggestion(
   requested: string,
   registeredNames: readonly string[],
@@ -111,6 +122,10 @@ function buildSuggestion(
   return `Did you mean ${suggestions.map((s) => s.name).join(", ")}?`;
 }
 
+/**
+ * Reverse-engineer ONE synthetic example value from a Zod schema type.
+ * Returns a deterministic placeholder that round-trips through parse().
+ */
 function exampleFromSchema(schema: unknown): unknown {
   if (!schema || typeof schema !== "object") return undefined;
   const obj = schema as Record<string, unknown>;
@@ -140,6 +155,9 @@ function exampleFromSchema(schema: unknown): unknown {
 
 /**
  * Build an enriched "unknown tool" error message.
+ *
+ * @param requested - the tool name the caller used
+ * @param registeredNames - ALL registered tool names (including aliases)
  */
 export function unknownToolError(
   requested: string,
@@ -151,8 +169,10 @@ export function unknownToolError(
 
 /**
  * Build an enriched "invalid arguments" error message.
- * The example call is generated from the schema (never hand-written), and
- * the tool name is kept outside the generated argument object.
+ *
+ * @param tool - the tool name that received the invalid args
+ * @param zodError - the ZodError from parse()
+ * @param schema - the original Zod schema, used to generate example calls
  */
 export function invalidArgsError(
   tool: string,
@@ -167,7 +187,7 @@ export function invalidArgsError(
   if (schema) {
     const example = exampleFromSchema(schema);
     if (example && typeof example === "object" && Object.keys(example).length > 0) {
-      message += `. Example: ${JSON.stringify(example)}`;
+      message += `. Example: ${JSON.stringify({ ...example, [tool]: "..." }, null, 0)}`;
     }
   }
   return message;
