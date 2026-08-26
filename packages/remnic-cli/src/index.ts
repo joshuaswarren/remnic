@@ -74,7 +74,6 @@ import {
   createSpace,
   deleteSpace,
   switchSpace,
-import { cmdReport } from "./report.js";
   pushToSpace,
   pullFromSpace,
   shareSpace,
@@ -301,6 +300,7 @@ import {
 } from "./openclaw-managed-upgrade-loader.js";
 import { expandTilde, resolveHomeDir } from "./path-utils.js";
 import { resolveConfigPath } from "./config-path.js";
+import { cmdReport } from "./report.js";
 export { resolveConfigPath };
 import {
   hostedOnlyDaemonRefusalMessage,

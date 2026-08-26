@@ -1,33 +1,42 @@
 /**
- * Say-Once benchmark: round-trip extraction -> recall reliability (issue #3036).
+ * Say-Once benchmark: extraction -> recall round-trip reliability (issue #3036).
  *
- * For each fixture case: seed a preference at a vagueness tier, process it
- * through the real extraction pipeline, then probe with related prompts and
- * check if the preference appears in the injected recall context.
+ * The product promise is that a preference mentioned ONCE — even vaguely — is
+ * stored and resurfaces in a later relevant context. This scores that promise
+ * per vagueness tier (explicit / casual / buried-mid-task).
  *
- * Two modes:
- *   - live: drives the real orchestrator (needs LLM keys for extraction)
- *   - replay: mocks extraction by writing the preference directly, checks
- *     recall deterministically. CI-safe.
+ * SCOPE: replay mode only.
+ *
+ * Each case runs through the bench adapter contract: the seed user/assistant
+ * turn is stored via `system.store`, then each probe's prompt is fed to
+ * `system.recall`. The harness never touches the filesystem directly; a
+ * benchmark that scores recall without going through recall is measuring
+ * disk, not retrieval, and ships misleading perfect-recall numbers (#3042
+ * review, P1).
+ *
+ * Live mode (drive the real LLM extraction pipeline, then probe) is NOT
+ * implemented here. The Orchestrator exposes no programmatic turn-ingestion
+ * seam — buffering happens through the host's `agent_end` hook — so a live
+ * harness needs a new seam in core rather than a call from this package.
+ * Tracked separately; see the package README. Nothing here reports a live
+ * result, because there is no live path: `runSayOnceBenchmark` has one code
+ * path and it always goes through the adapter contract.
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { parseConfig, StorageManager, Orchestrator } from "@remnic/core";
-import { composeMemoryEnvelope } from "@remnic/core/write-envelope";
-import type { BenchmarkDefinition, BenchmarkResult, ResolvedRunBenchmarkOptions, TaskResult } from "../../../types.js";
-import { aggregateTaskScores, exactMatch } from "../../../scorer.js";
+import type {
+  BenchmarkDefinition,
+  BenchmarkResult,
+  ResolvedRunBenchmarkOptions,
+  TaskResult,
+} from "../../../types.js";
+import { aggregateTaskScores } from "../../../scorer.js";
 import { getGitSha, getRemnicVersion } from "../../../reporter.js";
 import { SAY_ONCE_CASES, SAY_ONCE_SMOKE_FIXTURE } from "./fixture.js";
 import type { SayOnceCase } from "./fixture.js";
 
-export interface SayOnceRunOptions {
-  /** When true, avoid LLM calls by writing fixture preference directly. */
-  replay?: boolean;
-}
+/** Scorecard schema tag. Consumed by `remnic report --include-bench`. */
+export const SAY_ONCE_SCORECARD_VERSION = "1";
 
 export const sayOnceDefinition: BenchmarkDefinition = {
   id: "say-once",
@@ -39,157 +48,174 @@ export const sayOnceDefinition: BenchmarkDefinition = {
     name: "say-once",
     version: "1.0.0",
     description:
-      "Round-trip extraction -> recall reliability: seeds a preference, extracts it, then checks if it surfaces in later recall (issue #3036).",
+      "Scores whether a preference stated once at a given vagueness tier resurfaces in later recall (issue #3036). Replay mode only.",
     category: "retrieval",
     citation: "Remnic internal synthetic benchmark for issue #3036",
   },
 };
 
-function sliceWithBudget<T>(cases: T[], budget: number): { picked: T[]; remaining: number } {
-  if (!Number.isFinite(budget)) {
-    return { picked: cases, remaining: Number.POSITIVE_INFINITY };
+/** Thrown for harness faults. Scores are DATA; only harness errors are fatal. */
+export class SayOnceHarnessError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SayOnceHarnessError";
   }
-  if (budget <= 0) {
-    return { picked: [], remaining: 0 };
-  }
-  const n = Math.min(cases.length, Math.floor(budget));
-  return { picked: cases.slice(0, n), remaining: budget - n };
 }
 
 /**
- * Run the say-once benchmark.
- *
- * @param options - Standard benchmark options.
- * @param runOptions.replay - When true, avoids LLM calls by writing
- *   fixture preference directly to the store. Deterministic and CI-safe.
+ * Take at most `budget` cases. A budget of exactly 0 means zero, never "all"
+ * (checklist 17: `slice(-0)` silently returns everything).
  */
+function takeWithinBudget<T>(cases: readonly T[], budget: number): T[] {
+  if (!Number.isFinite(budget)) return [...cases];
+  if (budget <= 0) return [];
+  return cases.slice(0, Math.floor(budget));
+}
+
+/**
+ * Resolve `--limit`, which arrives as a string from the CLI. Rejects a
+ * non-integer or non-finite value rather than silently defaulting
+ * (checklist 1 / 17 / 39).
+ */
+export function resolveSayOnceLimit(raw: unknown): number {
+  if (raw === undefined || raw === null) return Number.POSITIVE_INFINITY;
+  const value = typeof raw === "string" ? Number(raw) : raw;
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new SayOnceHarnessError(
+      `say-once: --limit must be a finite integer; got ${JSON.stringify(raw)}`,
+    );
+  }
+  if (value < 0) {
+    throw new SayOnceHarnessError(`say-once: --limit must not be negative; got ${value}`);
+  }
+  return value;
+}
+
+// Signature is deliberately the registry's one-arg `run` contract
+// (`registry.ts`: `run?: (options: ResolvedRunBenchmarkOptions) => ...`).
+// There is no mode parameter because there is only one mode: every case goes
+// through the adapter contract, and this module never reaches into a file
+// system that could carry operator memory content.
 export async function runSayOnceBenchmark(
   options: ResolvedRunBenchmarkOptions,
-  runOptions: SayOnceRunOptions = {},
 ): Promise<BenchmarkResult> {
-  const tasks: TaskResult[] = [];
   const source = options.mode === "quick" ? SAY_ONCE_SMOKE_FIXTURE : SAY_ONCE_CASES;
-
-  const taskBudget =
-    typeof options.limit === "number" && options.limit >= 0 && Number.isFinite(options.limit)
-      ? Math.floor(options.limit)
-      : Number.POSITIVE_INFINITY;
-  const picked = sliceWithBudget(source, taskBudget);
-  const cases = picked.picked;
-  const totalTasks = cases.length;
-
-  for (const sample of cases) {
-    const startedAt = performance.now();
-    const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-say-once-"));
-    try {
-      const result = await runSingleCase(sample, dir, runOptions.replay ?? false);
-      const latencyMs = Math.round(performance.now() - startedAt);
-      tasks.push({ ...result, latencyMs, tokens: { input: 0, output: 0 } });
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-    options.onTaskComplete?.(tasks[tasks.length - 1]!, tasks.length, totalTasks);
+  if (source.length === 0) {
+    throw new SayOnceHarnessError("say-once: fixture set is empty");
   }
 
-  const scores = aggregateTaskScores(tasks, ["recall"]);
+  const cases = takeWithinBudget(source, resolveSayOnceLimit(options.limit));
+  const tasks: TaskResult[] = [];
+
+  const system = options.system;
+  // The benchmark contract REQUIRES a memory adapter -- without one there is
+  // no recall path to score against (checklist 39: missing required input
+  // rejects, not silently defaults).
+  if (!system) {
+    throw new SayOnceHarnessError(
+      "say-once: a BenchMemoryAdapter is required (pass --adapter or wire one through the bench runner)",
+    );
+  }
+
+  let caseIndex = 0;
+  for (const sample of cases) {
+    caseIndex += 1;
+    const startedAt = performance.now();
+    // A fresh session id per case so each task has an isolated namespace and
+    // no cross-task recall bleed.
+    const sessionId = `say-once-${sample.id}-${randomUUID()}`;
+    try {
+      const result = await runSingleCase(sample, sessionId, system);
+      tasks.push({
+        ...result,
+        latencyMs: Math.round(performance.now() - startedAt),
+        tokens: { input: 0, output: 0 },
+      });
+    } finally {
+      // The adapter's reset/destroy handle the underlying storage; we don't
+      // fabricate a per-session API that the contract doesn't expose.
+      await system.reset(sessionId).catch(() => {});
+    }
+    options.onTaskComplete?.(tasks[tasks.length - 1]!, caseIndex, cases.length);
+  }
+
+  const remnicVersion = await getRemnicVersion();
+  const totalLatencyMs = tasks.reduce((sum, task) => sum + task.latencyMs, 0);
+
   return {
-    benchmark: sayOnceDefinition,
-    gitSha: getGitSha(),
-    remnicVersion: getRemnicVersion(),
-    config: options,
-    startedAt: new Date().toISOString(),
-    tasks,
-    scores,
-    aggregates: { scores },
-    meta: { invocation: options },
+    meta: {
+      id: randomUUID(),
+      benchmark: options.benchmark.id,
+      benchmarkTier: options.benchmark.tier,
+      version: options.benchmark.meta.version,
+      remnicVersion,
+      gitSha: getGitSha(),
+      timestamp: new Date().toISOString(),
+      mode: options.mode,
+      runCount: 1,
+      seeds: [options.seed ?? 0],
+    },
+    config: {
+      systemProvider: options.systemProvider ?? null,
+      judgeProvider: options.judgeProvider ?? null,
+      adapterMode: options.adapterMode ?? "direct",
+      remnicConfig: options.remnicConfig ?? {},
+    },
+    cost: {
+      totalTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      estimatedCostUsd: 0,
+      totalLatencyMs,
+      meanQueryLatencyMs: tasks.length > 0 ? totalLatencyMs / tasks.length : 0,
+    },
+    results: {
+      tasks,
+      aggregates: aggregateTaskScores(tasks.map((task) => task.scores)),
+    },
+    environment: {
+      os: process.platform,
+      nodeVersion: process.version,
+      hardware: process.arch,
+    },
   };
 }
 
 async function runSingleCase(
   sample: SayOnceCase,
-  dir: string,
-  replay: boolean,
-): Promise<TaskResult> {
-  const config = parseConfig({
-    memoryDir: dir,
-    workspaceDir: path.join(dir, "ws"),
-    openaiApiKey: replay ? "bench-replay-key" : undefined,
-    qmdEnabled: false,
-  });
+  sessionId: string,
+  system: ResolvedRunBenchmarkOptions["system"],
+): Promise<Omit<TaskResult, "latencyMs" | "tokens">> {
+  // Store through the real adapter ingest path -- same surface a live turn
+  // would take through extraction. We do NOT bypass into raw .md files; a
+  // benchmark that scores recall without going through recall is measuring
+  // disk, not retrieval, and ships misleading perfect-recall numbers.
+  const now = new Date().toISOString();
+  await system.store(sessionId, [
+    { role: "user", content: sample.seedUserMessage, timestamp: now },
+    { role: "assistant", content: sample.seedAssistantMessage, timestamp: now },
+  ]);
 
-  const storage = new StorageManager(dir);
-  await storage.ensureDirectories();
-
-  if (replay) {
-    // Replay mode: write the preference directly as a fact, bypassing the
-    // LLM extraction pipeline. This is deterministic and CI-safe.
-    await storage.writeSealedMemory(
-      composeMemoryEnvelope(
-        {
-          content: sample.preference,
-          category: "preference",
-        },
-        { source: "bench" },
-      ),
-      {},
-    );
-  } else {
-    // Live mode: drive the real extraction pipeline.
-    // Boot the orchestrator, process the seed conversation, force flush.
-    const orchestrator = new Orchestrator({ config, storage });
-    await orchestrator.initialize();
-    await orchestrator.processTurn("user", sample.seedUserMessage, "seed-session");
-    await orchestrator.processTurn("assistant", sample.seedAssistantMessage, "seed-session");
-    await orchestrator.runExtraction(orchestrator.getBufferedTurns("seed-session"));
-  }
-
-  // Probe: run the recall pipeline for each probe prompt.
-  let probesPassed = 0;
-  const probeDetails: string[] = [];
+  let recalled = 0;
+  const probeNotes: string[] = [];
 
   for (const probe of sample.probes) {
-    const recallResult = await runProbeRecall(storage, probe.prompt, dir);
-    const found = recallResult.includes(probe.expectInRecall);
-    if (found) probesPassed++;
-    probeDetails.push(
-      `${probe.prompt}: ${found ? "recalled" : "missed"} (expected "${probe.expectInRecall}")`,
+    const recalledContext = await system.recall(sessionId, probe.prompt, 2000);
+    const hit = recalledContext.toLowerCase().includes(probe.expectInRecall.toLowerCase());
+    if (hit) recalled += 1;
+    probeNotes.push(
+      `${probe.prompt} -> ${hit ? "recalled" : "missed"} (expected "${probe.expectInRecall}")`,
     );
   }
 
-  const recallRate = sample.probes.length > 0 ? probesPassed / sample.probes.length : 0;
+  const rate = sample.probes.length > 0 ? recalled / sample.probes.length : 0;
 
   return {
     taskId: sample.id,
     question: sample.seedUserMessage,
-    expected: `recall rate 1.0 (${sample.probes.length} probe(s))`,
-    actual: `recall rate ${recallRate} (${probesPassed}/${sample.probes.length})`,
-    scores: { recall: recallRate },
-    details: { tier: sample.tier, probes: probeDetails },
+    expected: `all ${sample.probes.length} probe(s) recall the preference`,
+    actual: `${recalled}/${sample.probes.length} recalled`,
+    scores: { recall: rate },
+    details: { tier: sample.tier, probes: probeNotes },
   };
-}
-
-async function runProbeRecall(
-  storage: StorageManager,
-  prompt: string,
-  memoryDir: string,
-): Promise<string> {
-  // Read all stored facts. Uses static imports (rule: ts-no-dynamic-import).
-  const results: string[] = [];
-  const walk = (dir: string): void => {
-    try {
-      for (const entry of readdirSync(dir)) {
-        const full = path.join(dir, entry);
-        const st = statSync(full);
-        if (st.isDirectory()) walk(full);
-        else if (entry.endsWith(".md")) {
-          const content = readFileSync(full, "utf-8");
-          results.push(content);
-        }
-      }
-    } catch {
-      // directory may not exist yet
-    }
-  };
-  walk(memoryDir);
-  return results.join("\n");
 }
