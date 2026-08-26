@@ -48,7 +48,10 @@ export default defineConfig({
   outDir: "dist",
   clean: true,
   sourcemap: true,
-  dts: process.env.REMNIC_DOCKER_RUNTIME_BUILD === "1" ? false : true,
+  // Declarations come from `tsc -p tsconfig.dts.json` in scripts/build-with-heap.mjs.
+  // rollup-plugin-dts does one type rollup per entry (438 here) and cannot
+  // complete on this type graph at any heap size; tsc builds the program once.
+  dts: false,
   external: [
     "openclaw",
     "@node-rs/argon2",
