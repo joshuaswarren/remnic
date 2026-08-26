@@ -274,9 +274,11 @@ rules that bind every PR:
    through `release-and-publish.yml` (alpha) and `release-promote.yml`
    (beta/stable).
 
-Rules 1-3 and registry/code symmetry are enforced by
-`scripts/check-release-discipline.mjs`, a step of the `changelog-guard`
-workflow. Run it locally with
+Enforced by `scripts/check-release-discipline.mjs`, a step of the
+`changelog-guard` workflow: rules 1 and 2, the flip-plus-registry-deletion
+symmetry in rule 3, and the requirement that the registry never outlives the
+code. The evidence link in rule 3 and the whole of rule 4 are review
+conventions — no check reads an agent's shell. Run the gate locally with
 `node scripts/check-release-discipline.mjs --base "$(git merge-base HEAD github/main)"`.
 
 ## Agent / automation contributors
