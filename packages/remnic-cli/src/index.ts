@@ -133,6 +133,9 @@ import {
   StorageManager,
   parseXrayCliOptions,
   renderXray,
+  parseWhyCliOptions,
+  renderRecallWhy,
+  type RecallWhyReport,
   extractWhoKnowsRawArgs,
   parseWhoKnowsCliOptions,
   renderWhoKnows,
@@ -304,6 +307,7 @@ import {
   printHealthCheck,
   remoteRecall,
   remoteRecallXray,
+  remoteRecallWhy,
   resolveDaemonBaseUrl,
   resolveHostedOnlyDaemonRefusal,
   resolveOperatorToken,
@@ -449,6 +453,7 @@ type CommandName =
   | "import-lossless-claw"
   | "action-confidence"
   | "xray"
+  | "why"
   | "who-knows"
   | "promotion-candidates"
   | "security"
@@ -5047,6 +5052,126 @@ function xrayCliIo(
 ): Parameters<typeof runXrayCommand>[1] {
   return {
     recallXray,
+    writeFile: (filePath, data) => fsWriteFile(filePath, data, "utf8"),
+    stdout: (line) => console.log(line),
+  };
+}
+
+/**
+ * Extract the `parseWhyCliOptions` option bag from CLI `rest` tokens.
+ *
+ * Same thin-tokenizer contract as {@link extractXrayRawArgs}: every
+ * value-taking flag must be followed by a value, and an unknown flag is an
+ * error rather than a silently ignored token. Downstream enum/emptiness
+ * validation is delegated to `parseWhyCliOptions`.
+ */
+export function extractWhyRawArgs(rest: string[]): {
+  rawQuery: string;
+  options: Record<string, unknown>;
+} {
+  const VALUE_FLAGS = new Set(["--format", "--expect", "--namespace", "--session", "--out"]);
+  const positional: string[] = [];
+  const options: Record<string, unknown> = {};
+  for (let i = 0; i < rest.length; i++) {
+    const token = rest[i];
+    if (token.startsWith("--")) {
+      if (!VALUE_FLAGS.has(token)) {
+        throw new Error(
+          `Unknown flag ${JSON.stringify(token)}. Supported flags: --format, --expect, --namespace, --session, --out.`,
+        );
+      }
+      const next = rest[i + 1];
+      if (next === undefined || next.startsWith("--")) {
+        throw new Error(
+          `${token} requires a value. Provide it as \`${token} <value>\`, not as a bare flag.`,
+        );
+      }
+      options[token.slice(2)] = next;
+      i++;
+      continue;
+    }
+    positional.push(token);
+  }
+  return { rawQuery: positional.join(" "), options };
+}
+
+/**
+ * Dependency-injected runner for `remnic why`. Renders through the shared
+ * `renderRecallWhy` formatter so remote and local invocations, and the HTTP
+ * and MCP surfaces, all emit the same document (rule 22).
+ */
+export async function runWhyCommand(
+  rest: string[],
+  io: {
+    recallWhy: (request: {
+      query: string;
+      expect?: string;
+      sessionKey?: string;
+      namespace?: string;
+    }) => Promise<{ reportFound: boolean; report?: RecallWhyReport }>;
+    writeFile: (filePath: string, data: string) => Promise<void>;
+    stdout: (line: string) => void;
+  },
+): Promise<void> {
+  const { rawQuery, options } = extractWhyRawArgs(rest);
+  const parsed = parseWhyCliOptions(rawQuery, options);
+  const response = await io.recallWhy({
+    query: parsed.query,
+    ...(parsed.expect !== undefined ? { expect: parsed.expect } : {}),
+    ...(parsed.session !== undefined ? { sessionKey: parsed.session } : {}),
+    ...(parsed.namespace !== undefined ? { namespace: parsed.namespace } : {}),
+  });
+  if (!response.reportFound || response.report === undefined) {
+    // A denied namespace is not an empty diagnosis: say which happened.
+    throw new Error(
+      "recall diagnosis unavailable: the requested namespace is not readable by this caller",
+    );
+  }
+  const rendered = renderRecallWhy(response.report, parsed.format);
+  if (parsed.outPath !== undefined) {
+    await io.writeFile(expandTildePath(parsed.outPath), rendered);
+  } else {
+    io.stdout(rendered);
+  }
+}
+
+/**
+ * `remnic why <query> [--expect <id|substring>]` handler. Flags are validated
+ * BEFORE any orchestrator boot so a bad invocation fails fast with the CLI
+ * error rather than an unrelated initialization error.
+ */
+async function cmdWhy(rest: string[]): Promise<void> {
+  const { rawQuery, options } = extractWhyRawArgs(rest);
+  parseWhyCliOptions(rawQuery, options);
+
+  const remote = resolveRemoteDaemon(resolveConfigPath());
+  if (remote) {
+    await runWhyCommand(rest, whyCliIo((request) => remoteRecallWhy(remote, request)));
+    return;
+  }
+
+  initLogger();
+  const configPath = resolveConfigPath();
+  const raw = fs.existsSync(configPath)
+    ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+    : {};
+  const config = parseConfig(resolveRemnicConfigRecord(raw));
+  const orchestrator = new Orchestrator(config);
+  await orchestrator.initialize();
+  await orchestrator.deferredReady;
+  const service = new EngramAccessService(orchestrator);
+  try {
+    await runWhyCommand(rest, whyCliIo((request) => service.recallWhy(request)));
+  } finally {
+    orchestrator.abortDeferredInit();
+  }
+}
+
+function whyCliIo(
+  recallWhy: Parameters<typeof runWhyCommand>[1]["recallWhy"],
+): Parameters<typeof runWhyCommand>[1] {
+  return {
+    recallWhy,
     writeFile: (filePath, data) => fsWriteFile(filePath, data, "utf8"),
     stdout: (line) => console.log(line),
   };
@@ -12322,6 +12447,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     case "xray":
       await cmdXray(rest);
       break;
+    case "why":
+      await cmdWhy(rest);
+      break;
     case "who-knows":
       await cmdWhoKnows(rest); // `remnic who-knows "<topic>"` — expertise ranking (#2057).
       break;
@@ -12979,6 +13107,10 @@ Usage:
   remnic xray <query> [--format text|markdown|json] [--budget <chars>] [--namespace <ns>] [--out <path>]
     Run a recall with X-ray capture and print the unified snapshot
     (tier + audit + MMR + filters). Part of #570. Text output by default.
+  remnic why <query> [--expect <id|substring>] [--format markdown|json] [--namespace <ns>] [--session <key>] [--out <path>]
+    Diagnose why a query did NOT recall what you expected (#3033). Prints
+    per-stage candidate counts and drop reasons; with --expect, names the
+    exact stage that dropped that memory plus a remediation hint.
   remnic who-knows <topic> [--limit N] [--json] [--namespace <ns>]  Rank entities by topic expertise
   remnic wearables <status|check|sync|transcript|search|memories|speakers|corrections>
     Wearable transcript sources (Limitless / Bee / Omi): pull + clean +

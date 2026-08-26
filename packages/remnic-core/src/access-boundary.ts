@@ -67,6 +67,7 @@ export const OPERATION_NAMES = [
   "set_coding_context",
   "recall_tier_explain",
   "recall_xray",
+  "recall_why",
   "who_knows",
   "promotion_candidates",
   "namespace_writable",

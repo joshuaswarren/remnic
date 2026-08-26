@@ -53,6 +53,10 @@ import { respondAccessCapabilitiesHttp } from "./access-http-lcm-compaction.js";
 import { respondBriefingHttp } from "./access-http-briefing.js";
 import { handleWhoKnowsHttpQuery } from "./who-knows.js";
 import {
+  handleRecallWhyHttpQuery,
+  handleRecallXrayHttpQuery,
+} from "./access-recall-diagnostics.js";
+import {
   assertOperationAllowed,
   capabilityAllowsOp,
   enforceNamespaceAllowList,
@@ -1503,111 +1507,40 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
-    // Recall X-ray (issue #570 PR 4): unified per-result attribution
-    // snapshot.  Requires bearer auth (same as every other endpoint
-    // here) and enforces namespace scope before the recall fires
-    // (CLAUDE.md rule 42).  Query comes from the `q` search param so
-    // GET stays cacheable; `namespace` / `session` / `budget` are
-    // optional.
+    // Recall diagnostics (issues #570, #3033). Bearer auth is enforced by
+    // the surrounding handler and namespace scope is enforced inside the
+    // service before the recall fires (rule 42). Both routes are thin: param
+    // parsing and 400 mapping live in access-recall-diagnostics.ts, which
+    // keeps them unit-testable without booting an HTTP server.
+    //
+    // `xray` explains the results a recall DID return; `why` explains the
+    // ones it did not. Query comes from `q` so GET stays cacheable.
     if (req.method === "GET" && pathname === "/engram/v1/recall/xray") {
       this.enforceTokenOp("recall_xray"); // boundary dispatch (issue #1525)
-      const queryParam = parsed.searchParams.get("q");
-      if (!queryParam || queryParam.trim().length === 0) {
-        this.respondJson(res, 400, {
-          error: "missing_query",
-          code: "missing_query",
-          message: "q search parameter is required and must be non-empty",
-        });
-        return;
-      }
-      const sessionParam = parsed.searchParams.get("session");
-      const sessionKey = sessionParam && sessionParam.length > 0
-        ? sessionParam
-        : undefined;
-      const namespaceParam = parsed.searchParams.get("namespace");
-      const namespace = this.resolveNamespace(
-        req,
-        namespaceParam && namespaceParam.length > 0
-          ? namespaceParam
-          : undefined,
-      );
-      const budgetParam = parsed.searchParams.get("budget");
-      // Reject invalid `budget` with 400 rather than silently
-      // defaulting (CLAUDE.md rules 14 + 51).
-      let budget: number | undefined;
-      if (budgetParam !== null && budgetParam !== "") {
-        const parsedBudget = Number(budgetParam);
-        if (
-          !Number.isFinite(parsedBudget)
-          || parsedBudget <= 0
-          || !Number.isInteger(parsedBudget)
-        ) {
-          this.respondJson(res, 400, {
-            error: "invalid_budget",
-            code: "invalid_budget",
-            message:
-              "budget expects a positive integer",
-          });
-          return;
-        }
-        budget = parsedBudget;
-      }
-      // Disclosure depth (issue #677 PR 3/4 telemetry plumbing).  When
-      // present, must match the chunk|section|raw allow-list; invalid
-      // values surface as a 400 (CLAUDE.md rule 51 — no silent
-      // fallback) rather than silently disabling the per-disclosure
-      // summary table.
-      const disclosureParam = parsed.searchParams.get("disclosure");
-      let disclosure: RecallDisclosure | undefined;
-      if (disclosureParam !== null && disclosureParam.length > 0) {
-        if (!isRecallDisclosure(disclosureParam)) {
-          this.respondJson(res, 400, {
-            error: "invalid_disclosure",
-            code: "invalid_disclosure",
-            message:
-              "disclosure must be one of: chunk, section, raw",
-          });
-          return;
-        }
-        disclosure = disclosureParam;
-      }
-      // Only translate validation errors (empty query, bad budget)
-      // into 400s.  Backend faults (timeouts, storage errors,
-      // unexpected orchestrator failures) must bubble to the global
-      // `handle()` error handler so they return 500 and get logged
-      // properly.  `service.recallXray` prefixes its validation
-      // errors with "recallXray:" so we key off that prefix rather
-      // than catching everything.
-      let payload: Awaited<ReturnType<typeof this.service.recallXray>>;
-      try {
-        payload = await this.service.recallXray({
-          query: queryParam,
-          sessionKey,
-          namespace,
-          budget,
-          authenticatedPrincipal: this.resolveRequestPrincipal(req),
-          sourceConnector: this.resolveConnector(req),
-          ...(disclosure !== undefined ? { disclosure } : {}),
-        });
-      } catch (err) {
-        // Only surface the message for the deliberately-prefixed recallXray
-        // input-validation errors, and only when it is a real Error.message —
-        // never String(err) of an arbitrary throw, which CodeQL flags as
-        // stack-trace exposure (js/stack-trace-exposure). Validation errors are
-        // always thrown as Error instances (see access-service.ts), so this is
-        // behavior-preserving; anything else is a server-side fault and is
-        // rethrown so the outer `handle()` catch returns 500 + logs it.
-        if (err instanceof Error && err.message.startsWith("recallXray:")) {
-          this.respondJson(res, 400, {
-            error: "invalid_request",
-            code: "invalid_request",
-            message: err.message,
-          });
-          return;
-        }
-        throw err;
-      }
-      this.respondJson(res, 200, payload);
+      const outcome = await handleRecallXrayHttpQuery({
+        getParam: (name) => parsed.searchParams.get(name),
+        resolveNamespace: (namespace) => this.resolveNamespace(req, namespace),
+        principal: this.resolveRequestPrincipal(req),
+        connector: this.resolveConnector(req),
+        run: (request) => this.service.recallXray(request),
+      });
+      this.respondJson(res, outcome.status, outcome.body);
+      return;
+    }
+
+    if (
+      req.method === "GET"
+      && (pathname === "/engram/v1/recall/why" || pathname === "/remnic/v1/recall/why")
+    ) {
+      this.enforceTokenOp("recall_why"); // boundary dispatch (issue #1525)
+      const outcome = await handleRecallWhyHttpQuery({
+        getParam: (name) => parsed.searchParams.get(name),
+        resolveNamespace: (namespace) => this.resolveNamespace(req, namespace),
+        principal: this.resolveRequestPrincipal(req),
+        connector: this.resolveConnector(req),
+        run: (request) => this.service.recallWhy(request),
+      });
+      this.respondJson(res, outcome.status, outcome.body);
       return;
     }
 

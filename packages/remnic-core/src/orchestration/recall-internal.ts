@@ -134,7 +134,7 @@ export class RecallInternalCoordinator {
     // collected via the execution-options observer and attached to the
     // LastRecallSnapshot after it is recorded, so surfaces can distinguish
     // "no matches" from "backend could not answer" (CLAUDE.md rule 34).
-    const backendDegradations: SearchDegradation[] = [];
+    const backendDegradations: SearchDegradation[] = options.degradationSink ?? [];
     // Issue #680 — historical recall.  Parse `options.asOf` once at the
     // top of the recall so each boost-pass uses identical filter logic.
     // Invalid values are rejected at input boundaries (CLI / HTTP / MCP)
