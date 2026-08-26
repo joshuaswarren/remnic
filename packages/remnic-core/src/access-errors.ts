@@ -123,34 +123,66 @@ function buildSuggestion(
 }
 
 /**
+ * Read a Zod type tag without asserting a shape.
+ *
+ * Zod keeps its discriminant at `_def.typeName`. Both hops are narrowed with
+ * `in`/`typeof` rather than an inline cast, so a non-Zod object yields
+ * `undefined` instead of a fabricated read.
+ */
+function zodTypeName(schema: unknown): string | undefined {
+  if (typeof schema !== "object" || schema === null || !("_def" in schema)) return undefined;
+  const def = schema._def;
+  if (typeof def !== "object" || def === null || !("typeName" in def)) return undefined;
+  return typeof def.typeName === "string" ? def.typeName : undefined;
+}
+
+/** Read `_def.<key>` with the same narrowing discipline. */
+function zodDefField(schema: unknown, key: string): unknown {
+  if (typeof schema !== "object" || schema === null || !("_def" in schema)) return undefined;
+  const def = schema._def;
+  if (typeof def !== "object" || def === null) return undefined;
+  return Object.hasOwn(def, key) ? (def as Record<string, unknown>)[key] : undefined;
+}
+
+/**
  * Reverse-engineer ONE synthetic example value from a Zod schema type.
- * Returns a deterministic placeholder that round-trips through parse().
+ * Returns a deterministic placeholder intended to round-trip through parse().
  */
 function exampleFromSchema(schema: unknown): unknown {
-  if (!schema || typeof schema !== "object") return undefined;
-  const obj = schema as Record<string, unknown>;
-  if (obj._def?.typeName === "ZodString") return "<string>";
-  if (obj._def?.typeName === "ZodNumber") return 42;
-  if (obj._def?.typeName === "ZodBoolean") return true;
-  if (obj._def?.typeName === "ZodNullable") return null;
-  if (obj._def?.typeName === "ZodOptional") return undefined;
-  if (obj._def?.typeName === "ZodArray") return [];
-  if (obj._def?.typeName === "ZodObject") {
-    const shape = obj._def.shape?.();
-    if (!shape || typeof shape !== "object") return {};
-    const result: Record<string, unknown> = {};
-    for (const key of Object.getOwnPropertyNames(shape)) {
-      const val = exampleFromSchema(shape[key]);
-      if (val !== undefined) result[key] = val;
+  switch (zodTypeName(schema)) {
+    case "ZodString":
+      return "<string>";
+    case "ZodNumber":
+      return 42;
+    case "ZodBoolean":
+      return true;
+    case "ZodNullable":
+      return null;
+    case "ZodArray":
+      return [];
+    case "ZodOptional":
+      // Optional fields are omitted from the example rather than sent as null.
+      return undefined;
+    case "ZodEnum": {
+      const values = zodDefField(schema, "values");
+      return Array.isArray(values) && values.length > 0 ? values[0] : "<value>";
     }
-    return result;
+    case "ZodObject": {
+      const shapeFn = zodDefField(schema, "shape");
+      const shape = typeof shapeFn === "function" ? shapeFn() : undefined;
+      if (typeof shape !== "object" || shape === null) return {};
+      const result: Record<string, unknown> = {};
+      for (const key of Object.getOwnPropertyNames(shape)) {
+        if (!Object.hasOwn(shape, key)) continue;
+        const field = (shape as Record<string, unknown>)[key];
+        const value = exampleFromSchema(field);
+        if (value !== undefined) result[key] = value;
+      }
+      return result;
+    }
+    default:
+      return undefined;
   }
-  if (obj._def?.typeName === "ZodEnum") {
-    const values = obj._def.values;
-    if (Array.isArray(values) && values.length > 0) return values[0];
-    return "<value>";
-  }
-  return undefined;
 }
 
 /**
@@ -186,7 +218,12 @@ export function invalidArgsError(
 ): string {
   const issues = zodError.issues.map((issue) => {
     const path = issue.path.length > 0 ? issue.path.join(".") : "(root)";
-    return `${path}: ${issue.message} (expected ${issue.expected ?? typeof issue})`;
+    // `expected` exists only on the invalid_type / invalid_literal variants of
+    // ZodIssue, so it is read through a presence check rather than assumed.
+    const expected = "expected" in issue ? issue.expected : undefined;
+    return expected === undefined
+      ? `${path}: ${issue.message}`
+      : `${path}: ${issue.message} (expected ${String(expected)})`;
   });
   let message = `Invalid arguments for "${tool}": ${issues.join("; ")}`;
   if (!schema) return message;
