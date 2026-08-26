@@ -25,6 +25,10 @@ class PolicyError(ValueError):
     """A bridge request or policy exceeds the documented contract."""
 
 
+class RuntimeConfigurationError(PolicyError):
+    """Persisted Hermes routing is unavailable or invalid for a dynamic policy."""
+
+
 class ProviderResponseError(RuntimeError):
     """Hermes returned a response that cannot satisfy the OpenAI-compatible contract."""
 
@@ -35,6 +39,7 @@ _ALLOWED_POLICY_KEYS = frozenset({"provider", "model", "timeout_seconds"})
 _ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 _MAX_REQUEST_BYTES = 1_000_000
 _MAX_COMPLETION_TOKENS = 16_384
+_ACTIVE_HERMES_MODEL = "hermes-active"
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,8 @@ class BridgePolicy:
             raise PolicyError("provider must be a normalized provider identifier")
         if not isinstance(model, str) or not _MODEL_RE.fullmatch(model):
             raise PolicyError("model must be a normalized model identifier")
+        if provider == "active-hermes" and model != _ACTIVE_HERMES_MODEL:
+            raise PolicyError(f"active-hermes policy model must be {_ACTIVE_HERMES_MODEL}")
         if isinstance(timeout, bool) or not isinstance(timeout, int) or not 5 <= timeout <= 300:
             raise PolicyError("timeout_seconds must be an integer from 5 through 300")
         return cls(provider=provider, model=model, timeout_seconds=timeout)
@@ -98,6 +105,39 @@ def _content_from_response(response: Any) -> str:
     raise ProviderResponseError("Hermes provider returned empty completion content")
 
 
+def _resolve_runtime(policy: BridgePolicy) -> tuple[str, str, str | None]:
+    """Resolve a fixed policy or the persisted main Hermes model safely."""
+    if policy.provider != "active-hermes":
+        return policy.provider, policy.model, None
+
+    try:
+        import importlib
+
+        config_module = importlib.import_module("hermes_cli.config")
+        loader = getattr(config_module, "load_config_readonly", None) or getattr(config_module, "load_config", None)
+        if not callable(loader):
+            raise TypeError("Hermes config loader is unavailable")
+        config = loader()
+        model_config = config.get("model") if isinstance(config, dict) else None
+        if not isinstance(model_config, dict):
+            raise TypeError("Hermes model configuration is unavailable")
+        provider = model_config.get("provider")
+        model = model_config.get("default")
+        base_url = model_config.get("base_url")
+    except Exception as exc:
+        raise RuntimeConfigurationError("active Hermes model configuration is unavailable") from exc
+
+    if not isinstance(provider, str) or not _PROVIDER_RE.fullmatch(provider):
+        raise RuntimeConfigurationError("active Hermes model provider is invalid")
+    if not isinstance(model, str) or not _MODEL_RE.fullmatch(model):
+        raise RuntimeConfigurationError("active Hermes model identifier is invalid")
+    if base_url in (None, ""):
+        return provider, model, None
+    if not isinstance(base_url, str) or not base_url.startswith(("https://", "http://")):
+        raise RuntimeConfigurationError("active Hermes model base URL is invalid")
+    return provider, model, base_url.rstrip("/")
+
+
 def invoke_completion(
     body: dict[str, Any],
     policy: BridgePolicy,
@@ -121,14 +161,18 @@ def invoke_completion(
     ):
         raise PolicyError(f"max_tokens must be an integer from 1 through {_MAX_COMPLETION_TOKENS}")
 
-    response = call_llm(
-        provider=policy.provider,
-        model=policy.model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        timeout=policy.timeout_seconds,
-    )
+    provider, model, base_url = _resolve_runtime(policy)
+    call_kwargs: dict[str, object] = {
+        "provider": provider,
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "timeout": policy.timeout_seconds,
+    }
+    if base_url is not None:
+        call_kwargs["base_url"] = base_url
+    response = call_llm(**call_kwargs)
     return {
         "id": "chatcmpl-remnic-hermes",
         "object": "chat.completion",
@@ -257,6 +301,8 @@ def make_handler(
                 self._send_json(HTTPStatus.OK, invoke_completion(body, load_policy(policy_path), call_llm=call_llm))
             except ProviderResponseError:
                 self._send_json(HTTPStatus.BAD_GATEWAY, {"error": {"message": "Hermes provider call failed"}})
+            except RuntimeConfigurationError as exc:
+                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": {"message": str(exc)}})
             except (PolicyError, ValueError, json.JSONDecodeError) as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": {"message": str(exc)}})
             except Exception:

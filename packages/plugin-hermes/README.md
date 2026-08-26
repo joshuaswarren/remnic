@@ -93,7 +93,7 @@ For deferred Remnic LLM work, `remnic-hermes` also provides two opt-in commands:
 - `remnic-hermes-bridge` exposes one policy-selected Hermes provider as a **loopback-only** OpenAI-compatible endpoint.
 - `remnic-hermes-supervisor` starts that bridge, authenticates the supervised Remnic daemon with a launch-scoped request token, proves the exact bridge instance is ready with a separate per-launch secret, gives the daemon no provider environment variables, and stops the peer if either child exits.
 
-The policy has exactly three fields — `provider`, `model`, and `timeout_seconds`. It must not contain a provider API key or OAuth token: each request is resolved by Hermes' own `agent.auxiliary_client.call_llm()` routing and auth machinery.
+The policy has exactly three fields — `provider`, `model`, and `timeout_seconds`. It must not contain a provider API key or OAuth token: each request is resolved by Hermes' own `agent.auxiliary_client.call_llm()` routing and auth machinery. Use `provider: "active-hermes"` with the required `model: "hermes-active"` when Remnic should follow Hermes' persisted main provider/model/base URL; `/v1/models` and completion responses retain that public alias while client requests cannot choose an alternate route. Fixed provider/model policies remain supported.
 
 Use this only with Remnic's deferred extraction/consolidation paths. Keep recall-critical reranking and planner LLM calls disabled when their latency budget cannot accommodate a routed provider. Full configuration and lifecycle guidance is in [docs/plugins/hermes.md](../../docs/plugins/hermes.md).
 

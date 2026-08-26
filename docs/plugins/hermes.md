@@ -195,13 +195,15 @@ Create a local policy file, for example `~/.remnic/hermes-llm-bridge/policy.json
 
 ```json
 {
-  "provider": "openai-codex",
-  "model": "gpt-5.6-terra",
+  "provider": "active-hermes",
+  "model": "hermes-active",
   "timeout_seconds": 90
 }
 ```
 
-These are the only accepted policy keys. The bridge rejects policy files containing credential-bearing or unrecognized fields, exposes only the policy model from `GET /v1/models`, ignores a client-supplied model selector, requires the launch-scoped bearer token on all provider-facing endpoints, and binds only `127.0.0.1`.
+These are the only accepted policy keys. `provider: "active-hermes"` is a server-owned sentinel: for each completion the bridge loads Hermes' persisted `model.provider`, `model.default`, and optional `model.base_url`, then sends the request through Hermes' normal provider authentication and routing. `model: "hermes-active"` is the required stable OpenAI-compatible name advertised by `/v1/models` and returned by completion responses; a request cannot select another provider or model. An unavailable or invalid persisted route returns a retryable `503` without routing the request. Session-only model switches are intentionally out of scope because the bridge is a separate process; persist the intended Hermes main model first.
+
+Static policies such as `openai-codex` plus `gpt-5.6-terra` remain supported. Both modes reject credential-bearing or unrecognized policy fields, require the launch-scoped bearer token on all provider-facing endpoints, and bind only `127.0.0.1`.
 
 ### Remnic daemon configuration
 
@@ -212,7 +214,7 @@ In the **Remnic daemon configuration** (not the `remnic:` block in Hermes' `conf
   "remnic": {
     "localLlmEnabled": true,
     "localLlmUrl": "http://127.0.0.1:4329/v1",
-    "localLlmModel": "gpt-5.6-terra",
+    "localLlmModel": "hermes-active",
     "localLlmApiKeyEnv": "REMNIC_HERMES_BRIDGE_TOKEN",
     "localLlmAuthHeader": true,
     "localLlmFallback": false,
