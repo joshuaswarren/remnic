@@ -59,7 +59,7 @@ export interface ReportContent {
     totalMemories: number;
     sizeBucket: string;
   };
-  benchScorecard?: unknown;
+  benchScorecard?: BenchScorecardSummary;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -191,6 +191,199 @@ function runDoctorChecks(): DoctorCheckSummary[] {
 
 // ─── Report builders ──────────────────────────────────────────────────────
 
+/**
+ * Allow-listed scorecard fields. A raw benchmark report card can carry
+ * questions, answers, and recalled memory content, so nothing outside this
+ * shape ever reaches the report.
+ */
+export interface BenchScorecardSummary {
+  /** A built-in benchmark id, or `"custom"`. Never a user-defined name. */
+  benchmarkId?: string;
+  taskCount?: number;
+  /** Per-metric mean, numbers only. */
+  scores?: Record<string, number>;
+}
+
+/**
+ * Built-in benchmark ids that are safe to name in a public report.
+ *
+ * A user-defined id can be a client, project, or person name, and syntax
+ * restrictions do not anonymize it (#3037 review, P1). Anything not on this
+ * list is reported as `"custom"` — the count and scores still convey the
+ * signal without disclosing what was benchmarked.
+ *
+ * Frozen `as const`; do NOT annotate as `readonly string[]` (checklist 47).
+ */
+const PUBLIC_BENCHMARK_IDS = Object.freeze([
+  "ama-bench",
+  "memory-arena",
+  "amemgym",
+  "longmemeval",
+  "locomo",
+  "beam",
+  "personamem",
+  "membench",
+  "memoryagentbench",
+  "taxonomy-accuracy",
+  "extraction-judge-calibration",
+  "extraction-span-mode",
+  "enrichment-fidelity",
+  "entity-consolidation",
+  "page-versioning",
+  "retrieval-personalization",
+  "retrieval-temporal",
+  "retrieval-direct-answer",
+  "retrieval-graph",
+  "retrieval-reasoning-trace",
+  "coding-recall",
+  "procedural-recall",
+  "say-once",
+  "ingestion-entity-recall",
+  "ingestion-schema-completeness",
+  "ingestion-backlink-f1",
+  "ingestion-setup-friction",
+  "ingestion-citation-accuracy",
+  "assistant-morning-brief",
+  "assistant-meeting-prep",
+  "assistant-next-best-action",
+  "assistant-synthesis",
+  "buffer-surprise-trigger",
+  "contradiction-detection",
+  "retention-aged-dataset",
+  "memcorrect-v1",
+  "bounded-memory-contracts",
+  "staged-memory-synthetic-v1",
+] as const);
+// @ts-expect-error "bogus" is not a public benchmark id — fails if the union widens
+const _benchIdPin: (typeof PUBLIC_BENCHMARK_IDS)[number] = "bogus";
+void _benchIdPin;
+/**
+ * Public metric names that are safe to surface in a shared report.
+ *
+ * Anything outside this list is dropped during scorecard extraction, so a
+ * user-defined key like `client_alpha` (a project or person name) is never
+ * copied into a diagnostic report (#3037 review, P1). The fixed set is what
+ * benchmarks are allowed to publish; per-benchmark additions belong here
+ * as part of adding a metric, not at the read site.
+ */
+const PUBLIC_METRIC_KEYS = Object.freeze([
+  "recall",
+  "precision",
+  "f1",
+  "exact_match",
+  "category_match",
+  "keyword_overlap",
+  "high_confidence",
+  "latencyMs",
+  "tokens",
+  "cost",
+  "qrel_at_1",
+  "qrel_at_3",
+  "qrel_at_5",
+  "qrel_at_10",
+  "bleu",
+  "rouge",
+  "support",
+  "completeness",
+] as const);
+// @ts-expect-error "bogus" is not a public metric key — fails if the union widens
+const _metricKeyPin: (typeof PUBLIC_METRIC_KEYS)[number] = "bogus";
+void _metricKeyPin;
+
+/** Metric keys are identifier-shaped; a free-text key could carry content. */
+const METRIC_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+
+/**
+ * Extract only numeric aggregates and a public benchmark id from a canonical
+ * `BenchmarkResult`.
+ *
+ * Reads the real on-disk shape — `meta.benchmark`, `results.tasks`,
+ * `results.aggregates` (packages/bench/src/types.ts) — with top-level
+ * fallbacks for a bare scorecard. Everything outside the allow-list is
+ * dropped by construction rather than redacted.
+ */
+export function summarizeBenchScorecard(raw: unknown): BenchScorecardSummary | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const summary: BenchScorecardSummary = {};
+
+  // Benchmark id: canonical `meta.benchmark` is a string; a bare scorecard
+  // may carry `benchmark.id`. Either way it is mapped through the public
+  // allow-list, never copied verbatim.
+  const rawId = readBenchmarkId(raw);
+  if (rawId !== undefined) {
+    summary.benchmarkId = (PUBLIC_BENCHMARK_IDS as readonly string[]).includes(rawId)
+      ? rawId
+      : "custom";
+  }
+
+  // Task count from `results.tasks`, falling back to top-level `tasks`.
+  const tasks = readNested(raw, "results", "tasks") ?? readOwn(raw, "tasks");
+  if (Array.isArray(tasks)) summary.taskCount = tasks.length;
+
+  // Scores from `results.aggregates`, falling back to top-level `scores`.
+  const aggregates = readNested(raw, "results", "aggregates") ?? readOwn(raw, "scores");
+  const scores = extractNumericScores(aggregates);
+  if (scores !== undefined) summary.scores = scores;
+
+  return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
+/** Own-property read that never follows the prototype chain (checklist 46). */
+function readOwn(source: object, key: string): unknown {
+  return Object.hasOwn(source, key) ? (source as Record<string, unknown>)[key] : undefined;
+}
+
+/** Walk a dotted path of own keys without following the prototype chain. */
+function readNested(source: unknown, ...path: string[]): unknown {
+  let current: unknown = source;
+  for (const key of path) {
+    if (typeof current !== "object" || current === null) return undefined;
+    if (!Object.hasOwn(current, key)) return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
+
+/** Locate the benchmark id at any of the three known locations. */
+function readBenchmarkId(raw: object): string | undefined {
+  const metaId = readNested(raw, "meta", "benchmark");
+  if (typeof metaId === "string" && metaId.length > 0) return metaId;
+  // Bare scorecard: benchmark.id.
+  const bench = readOwn(raw, "benchmark");
+  if (typeof bench === "object" && bench !== null) {
+    const id = readOwn(bench, "id");
+    if (typeof id === "string" && id.length > 0) return id;
+  }
+  return undefined;
+}
+
+/**
+ * Keep finite numbers under public, identifier-shaped metric keys.
+ * The allow-list rejects user-defined keys like `client_alpha` even when
+ * they pass the syntax check (#3037 review, P1); the syntax check still
+ * rejects arbitrary string content on top of that.
+ */
+function extractNumericScores(source: unknown): Record<string, number> | undefined {
+  if (typeof source !== "object" || source === null) return undefined;
+  const scores: Record<string, number> = {};
+  for (const key of Object.getOwnPropertyNames(source)) {
+    if (!Object.hasOwn(source, key)) continue;
+    if (!(PUBLIC_METRIC_KEYS as readonly string[]).includes(key)) continue;
+    if (!METRIC_KEY_PATTERN.test(key)) continue;
+    const value = readOwn(source, key);
+    if (typeof value === "number" && Number.isFinite(value)) {
+      scores[key] = value;
+      continue;
+    }
+    if (typeof value === "object" && value !== null) {
+      const mean = readOwn(value, "mean");
+      if (typeof mean === "number" && Number.isFinite(mean)) scores[key] = mean;
+    }
+  }
+  return Object.keys(scores).length > 0 ? scores : undefined;
+}
+
 export async function buildReport(options: { includeBench?: boolean } = {}): Promise<ReportContent> {
   const generatedAt = new Date().toISOString();
   const platform = { os: os.platform(), arch: os.arch(), node: process.version };
@@ -226,15 +419,18 @@ export async function buildReport(options: { includeBench?: boolean } = {}): Pro
   const storeBytes = sizeOfStore(memoryDir);
   const sizeBucketLabel = sizeBucket(storeBytes);
 
-  // Optional bench scorecard
-  let benchScorecard: unknown;
+  // Optional bench scorecard — NEVER copied verbatim. A benchmark report card
+  // can contain questions, answers, and recalled memory content
+  // (docs/benchmarks.md), so the same allow-list discipline as the config
+  // applies: only these numeric/enum aggregates are extracted (#3037 review).
+  let benchScorecard: BenchScorecardSummary | undefined;
   if (options.includeBench) {
     const scorecardPath = path.join(os.homedir(), ".remnic", "reports", "bench-scorecard.json");
     try {
-      const data = await readFile(scorecardPath, "utf-8");
-      benchScorecard = JSON.parse(data);
+      const raw: unknown = JSON.parse(await readFile(scorecardPath, "utf-8"));
+      benchScorecard = summarizeBenchScorecard(raw);
     } catch {
-      // Scorecard absent — section will be omitted
+      // Scorecard absent or unparseable — section omitted, exit stays 0.
     }
   }
 

@@ -107,13 +107,43 @@ test("invalidArgsError: names the failing field path", () => {
   assert.match(msg, /required/i);
 });
 
-test("invalidArgsError: the generated example round-trips through the schema", () => {
-  const msg = invalidArgsError("engram.memory_get", MEMORY_GET_SCHEMA.safeParse({}).error, MEMORY_GET_SCHEMA);
-  // The example should be mentioned in the message
-  assert.match(msg, /Example/);
-  // The example should contain the expected fields
-  assert.match(msg, /memory_id/);
-  assert.match(msg, /<string>/);
+test("invalidArgsError: the shown example actually parses against the schema", () => {
+  const parse = MEMORY_GET_SCHEMA.safeParse({});
+  assert.equal(parse.success, false);
+  const msg = invalidArgsError("engram.memory_get", parse.error, MEMORY_GET_SCHEMA);
+
+  // Anti-drift guarantee, asserted rather than asserted-about: extract the
+  // JSON the message advertises and feed it back through the SAME schema.
+  const match = msg.match(/Example arguments: (\{.*\})$/);
+  assert.ok(match, `message must carry an example object; got: ${msg}`);
+  const example: unknown = JSON.parse(match[1]);
+
+  const reparsed = MEMORY_GET_SCHEMA.safeParse(example);
+  assert.equal(
+    reparsed.success,
+    true,
+    `the advertised example must round-trip through its own schema; zod said: ${JSON.stringify(reparsed.error?.issues)}`,
+  );
+
+  // And it must not smuggle the tool name in as an unrecognized property.
+  assert.ok(
+    typeof example === "object" && example !== null && !("engram.memory_get" in example),
+    "the example must not contain the tool name as a property",
+  );
+});
+
+test("invalidArgsError: an example that cannot round-trip is withheld, not shown", () => {
+  // A schema whose safeParse always fails must produce no example section
+  // rather than an example the caller cannot use.
+  const alwaysFails = {
+    _def: { typeName: "ZodObject", shape: () => ({ field: { _def: { typeName: "ZodString" } } }) },
+    safeParse: () => ({ success: false }),
+  };
+  const parse = MEMORY_GET_SCHEMA.safeParse({});
+  assert.equal(parse.success, false);
+  if (parse.success) return;
+  const msg = invalidArgsError("engram.memory_get", parse.error, alwaysFails);
+  assert.doesNotMatch(msg, /Example arguments/, "a non-parsing example must be withheld");
 });
 
 // ─── Rejection semantics are unchanged ─────────────────────────────────────
@@ -133,4 +163,20 @@ test("unknownToolError: no sentinel secret values appear in the message", () => 
   assert.doesNotMatch(msg, /\/home\//);
   assert.doesNotMatch(msg, /\/Users\//);
   assert.doesNotMatch(msg, /api_key|token|secret|password/i);
+});
+// ─── Cap on requested tool name (#3042 P2) ──────────────────────────────────
+
+test("nearestSuggestions: refuses overlong requests without running Levenshtein", () => {
+  const huge = "x".repeat(10_000);
+  // Direct helper: defense-in-depth. The size of the registered set does
+  // not matter; an overlong request returns empty.
+  assert.deepEqual(nearestSuggestions(huge, ["alpha", "beta", "gamma"]), []);
+});
+
+test("unknownToolError: rejects overlong names with a teaching message", () => {
+  const huge = "x".repeat(200);
+  const msg = unknownToolError(huge, ["alpha", "beta"]);
+  assert.match(msg, /exceeds 64 characters/);
+  // Should NOT run a suggestion pass over a 200-char name.
+  assert.doesNotMatch(msg, /Did you mean/);
 });

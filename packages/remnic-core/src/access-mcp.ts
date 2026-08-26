@@ -23,6 +23,7 @@ import {
   validateRequest,
 } from "./access-schema.js";
 import { EngramAccessInputError, type EngramAccessRecallResponse, type EngramAccessService } from "./access-service.js";
+import { unknownToolError } from "./access-errors.js";
 import "./access-operations.js";
 import { validateBriefingFormat } from "./briefing.js";
 import { processChatMessage } from "./chat/chat-factory.js";
@@ -2591,7 +2592,23 @@ export class EngramMcpServer {
   ): Promise<unknown> {
     const migrated = MCP_MIGRATED_OPERATIONS[toLegacyToolName(name)];
     if (!migrated) {
-      throw new Error(`unknown tool: ${name}`);
+      // Teaching rejection (#3035): name the nearest registered tool instead
+      // of a bare "unknown tool". Semantics are unchanged — this still throws
+      // and never executes a guessed correction.
+      //
+      // Candidates are the SAME capability-filtered set `tools/list` shows
+      // (issue #1850 finding 3). Enumerating the global map here would let a
+      // scoped or deny-all token recover the full tool surface through the
+      // error path, re-opening the leak that fix closed.
+      const caps = tokenCapabilityStore.getStore();
+      const visible = this.tools
+        .filter(
+          (t) =>
+            caps?.ops === undefined
+            || capabilityAllowsOp(caps, MCP_MIGRATED_OPERATIONS[toLegacyToolName(t.name)] ?? ""),
+        )
+        .map((t) => t.name);
+      throw new Error(unknownToolError(name, visible));
     }
     const op = getOperation(migrated);
     if (!op) {

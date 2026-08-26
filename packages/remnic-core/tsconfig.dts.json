@@ -1,0 +1,35 @@
+// Declaration-emit-only project (issue: core DTS build OOM).
+//
+// `tsup`'s dts step uses rollup-plugin-dts, which performs ONE type rollup per
+// entry point. This package declares 438 entries over a ~375k-line type graph,
+// so that is 438 rollups holding a shared program in a single worker thread —
+// it exhausts an 8 GB heap and does not complete at 12 GB either.
+//
+// `tsc --emitDeclarationOnly` builds the program once and writes one .d.ts per
+// source file. Measured on the same tree: 26.7s at the DEFAULT heap, versus an
+// OOM after ~170s for the rollup path. Per-file output is also the shape this
+// package's `exports` map already wants (`./foo` -> `./dist/foo.js`), so the
+// rollup was doing bundling work that is never consumed.
+//
+// Tests are excluded: they are not shipped, and they import `@remnic/core/*`
+// self-referentially, which cannot resolve until dist exists.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": false,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  // Only test FILES are excluded. Do NOT exclude `src/testing/**`: the package
+  // publishes `./testing/lifecycle-matrix` with an explicit `types` path, and
+  // plugin-openclaw imports it for the AGENTS.md-mandated lifecycle-matrix
+  // gate. Excluding the directory would leave that types path dangling.
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test-fixture.ts"
+  ]
+}

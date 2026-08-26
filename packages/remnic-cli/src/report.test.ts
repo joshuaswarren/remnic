@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { REPORT_ALLOWED_CONFIG_FIELDS, buildReport, renderReportJson, renderReportMarkdown, sizeBucket } from "./report.js";
+import { REPORT_ALLOWED_CONFIG_FIELDS, buildReport, renderReportJson, renderReportMarkdown, sizeBucket, summarizeBenchScorecard } from "./report.js";
 
 // ─── Sentinel leak test ───────────────────────────────────────────────────
 
@@ -175,4 +175,129 @@ test("non-enumerable and inherited config keys are excluded from the report", ()
   // Allowed booleans should be present
   assert.equal(Object.hasOwn(result, "qmdEnabled"), true, "qmdEnabled should be present");
   assert.equal(Object.hasOwn(result, "debug"), true, "debug should be present");
+});
+
+// ─── Bench scorecard sanitization (#3037 review, P1) ──────────────────────
+
+test("summarizeBenchScorecard drops every field outside the allow-list", () => {
+  const sentinel = "SENTINEL_MEMORY_CONTENT_do_not_leak";
+  // Canonical BenchmarkResult shape: meta.benchmark, results.tasks,
+  // results.aggregates (packages/bench/src/types.ts).
+  const raw = {
+    meta: { benchmark: "say-once", invocation: { note: sentinel } },
+    results: {
+      tasks: [
+        { taskId: "t1", question: sentinel, expected: sentinel, actual: sentinel },
+        { taskId: "t2", question: sentinel, details: { probes: [sentinel] } },
+      ],
+      aggregates: { recall: { mean: 0.5, median: 0.5 }, leaked: sentinel },
+    },
+    config: { memoryDir: "/some/private/path", openaiApiKey: sentinel },
+  };
+
+  const summary = summarizeBenchScorecard(raw);
+  assert.ok(summary, "a canonical result should summarize");
+  const rendered = JSON.stringify(summary);
+
+  assert.doesNotMatch(rendered, new RegExp(sentinel), "no scorecard content may survive");
+  assert.doesNotMatch(rendered, /private\/path/, "no paths may survive");
+  assert.equal(summary.benchmarkId, "say-once");
+  assert.equal(summary.taskCount, 2);
+  assert.equal(summary.scores?.recall, 0.5);
+  assert.equal(Object.hasOwn(summary.scores ?? {}, "leaked"), false);
+});
+
+test("summarizeBenchScorecard reads the canonical result shape, not a bare one", () => {
+  // Regression for the review finding that the extractor read top-level
+  // `tasks`/`scores` and therefore silently produced nothing for real
+  // @remnic/bench artifacts.
+  const summary = summarizeBenchScorecard({
+    meta: { benchmark: "locomo" },
+    results: { tasks: [{ taskId: "a" }, { taskId: "b" }, { taskId: "c" }], aggregates: { f1: { mean: 0.42 } } },
+  });
+  assert.equal(summary?.taskCount, 3, "must read results.tasks");
+  assert.equal(summary?.scores?.f1, 0.42, "must read results.aggregates");
+  assert.equal(summary?.benchmarkId, "locomo", "must read meta.benchmark");
+});
+
+test("summarizeBenchScorecard maps a user-defined benchmark id to \"custom\"", () => {
+  // A custom benchmark can be named after a client, project, or person.
+  // Syntax restrictions do not anonymize it, so it must not be echoed.
+  const summary = summarizeBenchScorecard({
+    meta: { benchmark: "client-alpha-migration" },
+    results: { tasks: [{ taskId: "t" }], aggregates: { score: 1 } },
+  });
+  assert.equal(summary?.benchmarkId, "custom", "a non-built-in id must not be echoed");
+  assert.equal(summary?.taskCount, 1, "the count still conveys signal");
+});
+
+test("the rendered report never contains raw scorecard JSON", () => {
+  const sentinel = "SENTINEL_LEAK_CHECK";
+  const report = {
+    schemaVersion: "1" as const,
+    generatedAt: "2026-08-26T12:00:00.000Z",
+    platform: { os: "linux", arch: "x64", node: "v22.23.1" },
+    remnicVersion: "9.69.56",
+    doctor: [],
+    configShape: {},
+    storeScale: { totalMemories: 0, sizeBucket: "< 1 KB" },
+    benchScorecard: summarizeBenchScorecard({
+      meta: { benchmark: "say-once", note: sentinel },
+      results: { tasks: [{ taskId: "t1", question: sentinel }], aggregates: { recall: 1 } },
+    }),
+  };
+  const md = renderReportMarkdown(report);
+  const json = renderReportJson(report);
+  assert.doesNotMatch(md, new RegExp(sentinel));
+  assert.doesNotMatch(json, new RegExp(sentinel));
+});
+// ─── Metric name allow-list (#3042 P1) ─────────────────────────────────────
+
+test("summarizeBenchScorecard rejects user-defined metric keys like client_alpha", () => {
+  const raw = {
+    meta: { benchmark: "say-once" },
+    results: {
+      aggregates: {
+        recall: { mean: 0.5 },
+        client_alpha: { mean: 1.0 },
+        "some user note": { mean: 0.9 },
+      },
+    },
+  };
+  const summary = summarizeBenchScorecard(raw);
+  assert.ok(summary);
+  assert.equal(summary?.scores?.recall, 0.5);
+  assert.equal(summary?.scores?.client_alpha, undefined, "non-public key must not leak");
+  assert.equal(summary?.scores?.["some user note"], undefined, "free text key must not leak");
+});
+
+// ─── Public benchmark id list is exhaustive (#3042 P2) ──────────────────────
+
+test("summarizeBenchScorecard recognizes every registered benchmark id", () => {
+  // The fixture list covers phase-1 plus remnic-native; any id not on
+  // PUBLIC_BENCHMARK_IDS collapses to "custom".
+  for (const id of [
+    "memory-arena",
+    "amemgym",
+    "taxonomy-accuracy",
+    "retrieval-personalization",
+    "retrieval-temporal",
+    "retrieval-graph",
+    "retrieval-reasoning-trace",
+    "ingestion-entity-recall",
+    "ingestion-schema-completeness",
+    "ingestion-backlink-f1",
+    "ingestion-setup-friction",
+    "ingestion-citation-accuracy",
+    "assistant-morning-brief",
+    "assistant-meeting-prep",
+    "assistant-next-best-action",
+    "assistant-synthesis",
+    "buffer-surprise-trigger",
+    "retention-aged-dataset",
+    "staged-memory-synthetic-v1",
+  ]) {
+    const summary = summarizeBenchScorecard({ meta: { benchmark: id } });
+    assert.equal(summary?.benchmarkId, id, `${id} should be recognized as public`);
+  }
 });
