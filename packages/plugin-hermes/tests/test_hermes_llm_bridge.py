@@ -318,3 +318,212 @@ def test_run_server_rejects_a_missing_hermes_runtime_before_opening_the_listener
                 run_server(_policy_path(tmp_path), request_token=BRIDGE_REQUEST_TOKEN)
 
     server.assert_not_called()
+
+
+def test_active_hermes_policy_routes_to_the_persisted_claude_runtime(monkeypatch):
+    """The stable public alias follows Hermes config, never a client model selector."""
+    import importlib
+
+    from remnic_hermes.hermes_llm_bridge import BridgePolicy, invoke_completion
+
+    config_module = SimpleNamespace(
+        load_config_readonly=lambda: {
+            "model": {
+                "provider": "anthropic",
+                "default": "claude-sonnet-5",
+                "base_url": "https://example.invalid/v1/",
+            }
+        }
+    )
+    original_import = importlib.import_module
+
+    def import_module(name, package=None):
+        if name == "hermes_cli.config":
+            return config_module
+        return original_import(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", import_module)
+    calls: list[dict[str, object]] = []
+
+    result = invoke_completion(
+        {"model": "attacker-selected-model", "messages": [{"role": "user", "content": "extract"}], "max_tokens": 8},
+        BridgePolicy(provider="active-hermes", model="hermes-active", timeout_seconds=90),
+        call_llm=lambda **kwargs: calls.append(kwargs)
+        or SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="dynamic response"))]),
+    )
+
+    assert calls[0]["provider"] == "anthropic"
+    assert calls[0]["model"] == "claude-sonnet-5"
+    assert calls[0]["base_url"] == "https://example.invalid/v1"
+    assert result["model"] == "hermes-active"
+
+
+def test_active_hermes_endpoint_advertises_a_stable_alias_across_runtime_changes(tmp_path, monkeypatch):
+    """Remnic sees one model while each completion re-reads the persisted Hermes route."""
+    import importlib
+
+    from remnic_hermes.hermes_llm_bridge import make_handler
+
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(
+        json.dumps(
+            {"provider": "active-hermes", "model": "hermes-active", "timeout_seconds": 90}
+        ),
+        encoding="utf-8",
+    )
+    runtime = {"model": {"provider": "anthropic", "default": "claude-sonnet-5"}}
+    original_import = importlib.import_module
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        lambda name, package=None: SimpleNamespace(load_config_readonly=lambda: runtime)
+        if name == "hermes_cli.config"
+        else original_import(name, package),
+    )
+    calls: list[dict[str, object]] = []
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        make_handler(
+            policy_path,
+            call_llm=lambda **kwargs: calls.append(kwargs)
+            or SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="dynamic response"))]),
+            request_token=BRIDGE_REQUEST_TOKEN,
+        ),
+    )
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        assert _request(server, "/v1/models")["data"] == [
+            {"id": "hermes-active", "object": "model", "owned_by": "hermes"}
+        ]
+        first = _request(
+            server,
+            "/v1/chat/completions",
+            body={"model": "client-selected", "messages": [{"role": "user", "content": "extract"}]},
+        )
+        runtime["model"] = {"provider": "openai-codex", "default": "gpt-5.6-terra-900k"}
+        second = _request(
+            server,
+            "/v1/chat/completions",
+            body={"model": "another-client-selection", "messages": [{"role": "user", "content": "extract"}]},
+        )
+        assert first["model"] == second["model"] == "hermes-active"
+        assert [(call["provider"], call["model"]) for call in calls] == [
+            ("anthropic", "claude-sonnet-5"),
+            ("openai-codex", "gpt-5.6-terra-900k"),
+        ]
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
+
+
+def test_active_hermes_runtime_misconfiguration_is_a_retryable_service_error(tmp_path, monkeypatch):
+    """A bad persisted Hermes route is server state, not a caller-owned 400."""
+    import importlib
+
+    from remnic_hermes.hermes_llm_bridge import make_handler
+
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(
+        json.dumps(
+            {"provider": "active-hermes", "model": "hermes-active", "timeout_seconds": 90}
+        ),
+        encoding="utf-8",
+    )
+    original_import = importlib.import_module
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        lambda name, package=None: SimpleNamespace(load_config_readonly=lambda: {})
+        if name == "hermes_cli.config"
+        else original_import(name, package),
+    )
+    calls: list[dict[str, object]] = []
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        make_handler(
+            policy_path,
+            call_llm=lambda **kwargs: calls.append(kwargs),
+            request_token=BRIDGE_REQUEST_TOKEN,
+        ),
+    )
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        with pytest.raises(HTTPError) as error:
+            _request(
+                server,
+                "/v1/chat/completions",
+                body={"messages": [{"role": "user", "content": "extract"}]},
+            )
+        assert error.value.code == 503
+        assert json.loads(error.value.read())["error"]["message"] == "active Hermes model configuration is unavailable"
+        assert calls == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
+
+
+def test_active_hermes_policy_rejects_an_unstable_public_alias():
+    """Dynamic routing has one explicit, stable OpenAI-compatible public model ID."""
+    from remnic_hermes.hermes_llm_bridge import BridgePolicy, PolicyError
+
+    with pytest.raises(PolicyError, match="hermes-active"):
+        BridgePolicy.from_mapping(
+            {
+                "provider": "active-hermes",
+                "model": "claude-sonnet-5",
+                "timeout_seconds": 90,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://",
+        "http://",
+        "https:///v1",
+        "https://:8080/v1",
+        "ftp://example.invalid/v1",
+        "example.invalid/v1",
+        "https://example.invalid:99999/v1",
+        "https://example.invalid:notaport/v1",
+        "https://example.invalid:0/v1",
+    ],
+)
+def test_active_hermes_rejects_a_base_url_without_a_usable_http_authority(monkeypatch, base_url):
+    """A prefix-shaped but hostless persisted route fails closed instead of reaching the provider."""
+    import importlib
+
+    from remnic_hermes.hermes_llm_bridge import BridgePolicy, RuntimeConfigurationError, invoke_completion
+
+    config_module = SimpleNamespace(
+        load_config_readonly=lambda: {
+            "model": {
+                "provider": "anthropic",
+                "default": "claude-sonnet-5",
+                "base_url": base_url,
+            }
+        }
+    )
+    original_import = importlib.import_module
+
+    def import_module(name, package=None):
+        if name == "hermes_cli.config":
+            return config_module
+        return original_import(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", import_module)
+    calls: list[dict[str, object]] = []
+
+    with pytest.raises(RuntimeConfigurationError, match="base URL is invalid"):
+        invoke_completion(
+            {"messages": [{"role": "user", "content": "extract"}], "max_tokens": 8},
+            BridgePolicy(provider="active-hermes", model="hermes-active", timeout_seconds=90),
+            call_llm=lambda **kwargs: calls.append(kwargs) or SimpleNamespace(choices=[]),
+        )
+
+    assert calls == []
