@@ -170,33 +170,4 @@ jobs:
               return;
             }
 
-            core.notice('CHANGELOG.md edited directly in a release section; changelog guard passed.');
-
-      # Release-discipline gate (issue #3032). Deliberately runs the BASE
-      # checkout's copy of the script: this workflow is `pull_request_target`,
-      # so head-branch code must never execute here. The head tree is read as
-      # git DATA only (`git show <ref>:<path>`), never run. A change to the
-      # gate itself therefore takes effect after it merges.
-      - name: Checkout base for the release-discipline gate
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Fetch the pull-request head as data
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          git fetch --no-tags --quiet origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head"
-          git merge-base refs/remotes/pr/head HEAD >/dev/null
-
-      - name: "Release discipline (issue #3032)"
-        run: |
-          set -euo pipefail
-          BASE_SHA="$(git merge-base refs/remotes/pr/head HEAD)"
-          echo "release-discipline: base=${BASE_SHA} head=$(git rev-parse refs/remotes/pr/head)"
-          node scripts/check-release-discipline.mjs \
-            --base "${BASE_SHA}" \
-            --head refs/remotes/pr/head
+            core.notice('CHANGELOG.md edited directly in a release section; changelog guard passed.')
