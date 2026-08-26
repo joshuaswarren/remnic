@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { coerceBooleanLike, coerceNumber } from "../connectors/coerce.js";
+import { isLoopbackHost } from "../runtime/http-transport.js";
 import { assertValidTimezone } from "./digest.js";
 import { applyLegacyJournalHeading, normalizeJournalHeading } from "./journal-heading.js";
 import { checkVaultJournalPrerequisites } from "./journal-vault-prereq.js";
@@ -25,7 +26,6 @@ import type { ImportanceLevel } from "../types.js";
 
 const EXTRACTION_MODES: readonly ActivityExtractionMode[] = ["off", "smart"];
 const IMPORTANCE_LEVELS: readonly ImportanceLevel[] = ["critical", "high", "normal", "low", "trivial"];
-const LOOPBACK_HOSTS: Record<string, true> = { localhost: true, "127.0.0.1": true, "::1": true };
 
 /** The inert default: disabled, search-only, no sources, no extraction. */
 export function defaultActivityConfig(): ActivityConfig {
@@ -91,9 +91,8 @@ export function validateActivityBaseUrl(baseUrl: string): URL {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new RangeError("activity source baseUrl must use HTTP or HTTPS");
   }
-  // URL keeps IPv6 hosts bracketed (e.g. "[::1]"); normalize before the lookup.
-  const host = parsed.hostname.replace(/^\[|\]$/g, "");
-  if (LOOPBACK_HOSTS[host] !== true && !/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) {
+  // Shared classification (brackets, 127.0.0.0/8, *.localhost, mapped v4).
+  if (!isLoopbackHost(parsed.hostname)) {
     throw new RangeError(`activity source baseUrl must target a loopback host (got ${parsed.hostname})`);
   }
   return parsed;

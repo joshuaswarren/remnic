@@ -693,6 +693,26 @@ test("oauth config parsing rejects invalid input and applies env overrides", asy
   );
   assert.throws(() => parseOAuthConfig({ enabled: "maybe" }), /boolean/);
 
+  // The http exception shares core's loopback classification (issue #3012):
+  // any loopback spelling may use http; a LAN address may not.
+  const loopbackIssuer = parseOAuthConfig({
+    enabled: true,
+    issuerUrl: "http://[::1]:4318",
+    clientId: "c",
+    clientSecret: "s",
+  });
+  assert.equal(loopbackIssuer.issuerUrl, "http://[::1]:4318");
+  assert.throws(
+    () =>
+      parseOAuthConfig({
+        enabled: true,
+        issuerUrl: "http://127.0.0.1.evil.example",
+        clientId: "c",
+        clientSecret: "s",
+      }),
+    /https/,
+  );
+
   // String booleans coerce ("false"/"0" are falsy — repo rule 24).
   assert.equal(parseOAuthConfig({ enabled: "false" }).enabled, false);
   assert.equal(parseOAuthConfig({ enabled: "0" }).enabled, false);
