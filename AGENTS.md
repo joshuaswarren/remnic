@@ -255,6 +255,32 @@ These rules are the default workflow for all agents and contributors.
 
 Reference workflow:
 `docs/ops/pr-review-hardening-playbook.md`
+
+## Release channels (issue #3032)
+
+`main` publishes to the npm `alpha` dist-tag on every merge; `beta` and
+`latest` are dist-tag moves onto an already-published version.
+[docs/releases.md](docs/releases.md) is the canonical process — read it before
+adding a config flag, writing a changeset, or promoting a release. The four
+rules that bind every PR:
+
+1. A diff that changes published-package behavior needs a changeset with a
+   `Stability: alpha|beta|stable` line. Doc-only and CI-only diffs are exempt.
+2. Alpha/beta behavior ships default-off behind a flag registered in
+   `scripts/flag-graduation.json`. Stable work adds no default-off gate.
+3. Graduation is its own PR: flip the default, delete the registry entry, carry
+   `Stability: stable`, link the evidence.
+4. Never run `npm publish` or `npm dist-tag` by hand. Releases happen only
+   through `release-and-publish.yml` (alpha) and `release-promote.yml`
+   (beta/stable).
+
+Enforced by `scripts/check-release-discipline.mjs`, a step of the
+`changelog-guard` workflow: rules 1 and 2, the flip-plus-registry-deletion
+symmetry in rule 3, and the requirement that the registry never outlives the
+code. The evidence link in rule 3 and the whole of rule 4 are review
+conventions — no check reads an agent's shell. Run the gate locally with
+`node scripts/check-release-discipline.mjs --base "$(git merge-base HEAD github/main)"`.
+
 ## Agent / automation contributors
 
 Use `scripts/dev-worktree.sh <worktree-path> <branch> [base]` to create an

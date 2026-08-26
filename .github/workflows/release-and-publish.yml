@@ -623,7 +623,11 @@ jobs:
             fi
             echo "Publishing ${pkg_name}@${pkg_version} from ${pkg_dir}..."
             publish_log="$(mktemp)"
-            if (cd "$pkg_dir" && pnpm publish --access public --provenance --no-git-checks) >"$publish_log" 2>&1; then
+            # Every merge to main publishes to the `alpha` dist-tag (issue
+            # #3032). `beta` and `latest` are dist-tag MOVES performed by
+            # release-promote.yml against this same byte-identical tarball —
+            # promotion never rebuilds or republishes. See docs/releases.md.
+            if (cd "$pkg_dir" && pnpm publish --access public --provenance --no-git-checks --tag alpha) >"$publish_log" 2>&1; then
               cat "$publish_log"
               rm -f "$publish_log"
               continue
@@ -667,7 +671,8 @@ jobs:
             echo "::notice title=NPM publish skipped::${PACKAGE_NAME}@${VERSION} is already published."
             exit 0
           fi
-          npm publish --access public --provenance
+          # Publish to the `alpha` channel; promotion moves the tag (issue #3032).
+          npm publish --access public --provenance --tag alpha
 
       # Publish the GitHub release BEFORE the best-effort ClawHub publish below.
       # ClawHub is a third-party host whose backend can fail transiently (e.g.
