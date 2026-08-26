@@ -74,6 +74,7 @@ import {
   createSpace,
   deleteSpace,
   switchSpace,
+import { cmdReport } from "./report.js";
   pushToSpace,
   pullFromSpace,
   shareSpace,
@@ -425,6 +426,7 @@ type CommandName =
   | "query"
   | "recall"
   | "doctor"
+  | "report"
   | "config"
   | "daemon"
   | "token"
@@ -12461,6 +12463,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       break;
     case "doctor":
       await cmdDoctor();
+      break;
+    case "report":
+      await cmdReport({ json: rest.includes("--json"), includeBench: rest.includes("--include-bench") });
       break;
 
     case "config":
