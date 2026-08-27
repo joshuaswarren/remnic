@@ -12,6 +12,8 @@ test("injection-suite parser requires --seeds and defaults outside the checkout"
   assert.equal(parsed.limit, 2);
   assert.equal(parsed.variantsPerFamily, 25);
   assert.equal(parsed.retryAmbiguous, false);
+  assert.equal(parsed.stage, "base");
+  assert.equal(parsed.runKind, "dev");
   assert.equal(
     parsed.outputDir,
     path.join(resolveHomeDir(), ".remnic", "bench", "results", "h5-injection-suite"),
@@ -65,6 +67,31 @@ test("injection-suite parses live executor flags", () => {
   assert.equal(parsed.executor, "ollama");
   assert.equal(parsed.model, "qwen3.8-27b-64k:latest");
   assert.equal(parsed.baseUrl, "http://127.0.0.1:11434");
+});
+
+test("injection-suite parses frozen stage and model profile controls", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--stage",
+    "adaptive-r1",
+    "--run-kind",
+    "main",
+    "--model-digest",
+    "a".repeat(64),
+    "--model-context-tokens",
+    "32768",
+    "--dataset-dir",
+    "/tmp/locomo",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.stage, "adaptive-r1");
+  assert.equal(parsed.runKind, "main");
+  assert.equal(parsed.modelDigest, "a".repeat(64));
+  assert.equal(parsed.modelContextTokens, 32768);
+  assert.equal(parsed.datasetDir, "/tmp/locomo");
 });
 
 test("unknown executor is rejected", () => {

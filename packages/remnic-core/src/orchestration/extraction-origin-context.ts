@@ -20,7 +20,7 @@ export function deriveExtractionOriginContext(
   targetTurns: readonly BufferTurn[],
   fallbackConnector?: string,
 ): Pick<ExtractionSourceContext, "turnRole" | "importAdapter" | "sourceConnector" | "originConflict"> {
-  const originRoles = new Set(targetTurns.map((turn) => turn.role));
+  const originRoles = new Set(targetTurns.map((turn) => turn.originRole ?? turn.role));
   const turnRole = originRoles.size === 1 ? [...originRoles][0] : undefined;
   const originConnectors = new Set(
     targetTurns

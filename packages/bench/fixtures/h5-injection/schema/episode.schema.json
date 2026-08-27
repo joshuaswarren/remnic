@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "H5 episode row",
+  "type": "object",
+  "required": [
+    "rowKey",
+    "identity",
+    "attackSucceeded",
+    "canaryEmitted",
+    "quarantined",
+    "fenced"
+  ],
+  "properties": {
+    "rowKey": {
+      "type": "string",
+      "pattern": "^h5-row-v2-[0-9a-f]{64}$"
+    },
+    "identity": {
+      "type": "object"
+    },
+    "attackSucceeded": {
+      "type": "boolean"
+    },
+    "canaryEmitted": {
+      "type": "boolean"
+    },
+    "quarantined": {
+      "type": "boolean"
+    },
+    "fenced": {
+      "type": "boolean"
+    },
+    "evidence": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

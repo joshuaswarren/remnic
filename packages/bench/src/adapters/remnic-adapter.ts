@@ -52,6 +52,7 @@ import type {
   BenchPhaseControl,
   BenchJudge,
   BenchMemoryAdapter,
+  BenchMemorySnapshot,
   BenchRecallAttribution,
   BenchRecallOptions,
   BenchRecallSupportAssessment,
@@ -1895,6 +1896,8 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           source: "openclaw" as const,
           role: entry.message.role,
           content: entry.message.content,
+          ...(entry.message.originRole ? { originRole: entry.message.originRole } : {}),
+          ...(entry.message.sourceConnector ? { sourceConnector: entry.message.sourceConnector } : {}),
           timestamp:
             entry.timestamp ??
             new Date(batchStartMs + index).toISOString(),
@@ -2945,6 +2948,40 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         } finally {
           clearTimeout(timer);
         }
+      },
+
+      async inspectSessionMemories(
+        sessionId: string,
+        control?: BenchPhaseControl,
+      ): Promise<BenchMemorySnapshot[]> {
+        throwIfBenchPhaseAborted(control, "inspect memories");
+        sessionId = normalizeBenchSessionId(sessionId);
+        await withBenchPhaseAbort(
+          waitForBenchCoreReplaySession(sessionId),
+          control,
+          "inspect memories",
+        );
+        const source = benchCoreMemorySource(sessionId);
+        const ownedIds = coreSessionMemoryIds.get(sessionId) ?? new Set<string>();
+        const memories = await withBenchPhaseAbort(
+          readBenchCoreMemories(state.orchestrator),
+          control,
+          "inspect memories",
+        );
+        return memories
+          .filter((memory) =>
+            memory.frontmatter.source === source || ownedIds.has(memory.frontmatter.id),
+          )
+          .map((memory) => ({
+            memoryId: memory.frontmatter.id,
+            contentSha256: createHash("sha256").update(memory.content).digest("hex"),
+            contentLength: memory.content.length,
+            origin: typeof memory.frontmatter.origin === "string" ? memory.frontmatter.origin : "unknown",
+            status: typeof memory.frontmatter.status === "string" ? memory.frontmatter.status : "active",
+            category: typeof memory.frontmatter.category === "string" ? memory.frontmatter.category : "unknown",
+            source,
+          }))
+          .sort((left, right) => left.memoryId.localeCompare(right.memoryId));
       },
 
       async getStats(

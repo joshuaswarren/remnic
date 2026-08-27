@@ -1,6 +1,10 @@
 import { coerceBool } from "./connectors/coerce.js";
 import { readEnvVar } from "./runtime/env.js";
-import { DEFAULT_UNTRUSTED_ORIGINS } from "./security/origin-authority.js";
+import {
+  DEFAULT_UNTRUSTED_ORIGINS,
+  HARDENED_UNTRUSTED_ORIGINS,
+} from "./security/origin-authority.js";
+import type { MemoryInjectionDefenseMode } from "./security/types.js";
 
 // Memory-poisoning hardening (#1955): preserve explicit config, but let env
 // values replace schema-materialized defaults from the host config loader.
@@ -103,29 +107,77 @@ function resolveUntrustedOrigins(
   return normalized.length > 0 ? normalized : [...DEFAULT_UNTRUSTED_ORIGINS];
 }
 
+function resolveMemoryInjectionDefenseMode(value: unknown): MemoryInjectionDefenseMode {
+  const source = value ?? readEnvVar("REMNIC_MEMORY_INJECTION_DEFENSE_MODE") ?? "custom";
+  if (
+    source === "custom"
+    || source === "off"
+    || source === "fencing"
+    || source === "quarantine"
+    || source === "layered"
+  ) {
+    return source;
+  }
+  throw new Error(
+    `memoryInjectionDefenseMode must be custom|off|fencing|quarantine|layered; got ${JSON.stringify(source)}`,
+  );
+}
+
+function hasExplicitUntrustedOrigins(
+  cfg: Record<string, unknown>,
+  rawOperatorConfig: Record<string, unknown> | null | undefined,
+): boolean {
+  const configAuthored = rawOperatorConfig === undefined
+    ? Object.prototype.hasOwnProperty.call(cfg, "untrustedOrigins")
+    : rawOperatorConfig !== null
+      && Object.prototype.hasOwnProperty.call(rawOperatorConfig, "untrustedOrigins");
+  return configAuthored || readEnvVar("REMNIC_UNTRUSTED_ORIGINS") !== undefined;
+}
+
 export function parseSecurityConfig(
   cfg: Record<string, unknown>,
   rawOperatorConfig: Record<string, unknown> | null | undefined,
 ): {
+  memoryInjectionDefenseMode: MemoryInjectionDefenseMode;
   originAuthorityEnabled: boolean;
   injectionScreenEnabled: boolean;
   untrustedOrigins: string[];
 } {
+  const memoryInjectionDefenseMode = resolveMemoryInjectionDefenseMode(
+    cfg.memoryInjectionDefenseMode,
+  );
+  const customOriginAuthority = resolveSecurityBooleanConfig(
+    cfg.originAuthorityEnabled,
+    rawOperatorConfig,
+    "originAuthorityEnabled",
+    "REMNIC_ORIGIN_AUTHORITY_ENABLED",
+    false,
+  );
+  const customInjectionScreen = resolveSecurityBooleanConfig(
+    cfg.injectionScreenEnabled,
+    rawOperatorConfig,
+    "injectionScreenEnabled",
+    "REMNIC_INJECTION_SCREEN_ENABLED",
+    true,
+  );
+  const flags = {
+    custom: [customOriginAuthority, customInjectionScreen],
+    off: [false, false],
+    fencing: [true, false],
+    quarantine: [false, true],
+    layered: [true, true],
+  } satisfies Record<MemoryInjectionDefenseMode, readonly [boolean, boolean]>;
+  const [originAuthorityEnabled, injectionScreenEnabled] = flags[memoryInjectionDefenseMode];
+  const configuredOrigins = resolveUntrustedOrigins(cfg.untrustedOrigins, rawOperatorConfig);
+  const untrustedOrigins =
+    memoryInjectionDefenseMode !== "custom"
+      && !hasExplicitUntrustedOrigins(cfg, rawOperatorConfig)
+      ? [...HARDENED_UNTRUSTED_ORIGINS]
+      : configuredOrigins;
   return {
-    originAuthorityEnabled: resolveSecurityBooleanConfig(
-      cfg.originAuthorityEnabled,
-      rawOperatorConfig,
-      "originAuthorityEnabled",
-      "REMNIC_ORIGIN_AUTHORITY_ENABLED",
-      false,
-    ),
-    injectionScreenEnabled: resolveSecurityBooleanConfig(
-      cfg.injectionScreenEnabled,
-      rawOperatorConfig,
-      "injectionScreenEnabled",
-      "REMNIC_INJECTION_SCREEN_ENABLED",
-      true,
-    ),
-    untrustedOrigins: resolveUntrustedOrigins(cfg.untrustedOrigins, rawOperatorConfig),
+    memoryInjectionDefenseMode,
+    originAuthorityEnabled,
+    injectionScreenEnabled,
+    untrustedOrigins,
   };
 }

@@ -1,8 +1,11 @@
 ---
-"@remnic/bench": patch
-"@remnic/cli": patch
+"@remnic/core": minor
+"@remnic/bench": minor
+"@remnic/cli": minor
+"@remnic/plugin-openclaw": patch
+"@joshuaswarren/openclaw-engram": patch
 ---
 
 Stability: alpha
 
-Add exact-host Hugging Face credentials for H5 and harden long runs with synced atomic checkpoints, pre-call paid-request markers, and a versioned resume contract that binds the frozen row limit and request timeout.
+Implement H5 as a product-backed, crash-safe experiment: real Remnic extraction/persistence/recall/rendering, frozen attack/benign/adaptive corpora, liveness controls, two-model decisions, utility equivalence, resumable paid calls, and exact-host cloud credentials. Add core `memoryInjectionDefenseMode` so the measured `off`, `fencing`, `quarantine`, or `layered` treatment runs in normal Remnic without the bench package.

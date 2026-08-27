@@ -6,13 +6,14 @@
  * Host faults pause the suite instead of cutting the row (H6 #1963).
  */
 
+import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
 import { createHash } from "node:crypto";
 import { type FileHandle, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { InjectionSuiteClaimLock } from "./claims.js";
 import { generateFamilyVariants, generateSuiteVariants } from "./generator.js";
+import { prepareInjectionSuiteFreeze } from "./freeze.js";
 import {
-  completeChat,
   buildRecallPrompt,
   InjectionSuiteHostFault,
   DEFAULT_OLLAMA_MODEL,
@@ -20,6 +21,7 @@ import {
   DEFAULT_OPENAI_COMPAT_BASE_URL,
   DEFAULT_REQUEST_TIMEOUT_MS,
 } from "./llm-executor.js";
+import { executeProductLifecycleRow } from "./product-lifecycle.js";
 import { InjectionSuiteRowStore, buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
 import type {
   InjectionSuiteCliInput,
@@ -35,7 +37,7 @@ import {
   INJECTION_SUITE_VERSION,
 } from "./types.js";
 
-export const INJECTION_SUITE_RESUME_CONTRACT = "h5-injection-suite-resume-v2";
+export const INJECTION_SUITE_RESUME_CONTRACT = "h5-injection-suite-resume-v3";
 
 export function injectionSuiteResumeContractHash(metadata: {
   suiteVersion: string;
@@ -47,6 +49,13 @@ export function injectionSuiteResumeContractHash(metadata: {
   model: string;
   baseUrl: string;
   requestTimeoutMs: number;
+  stage?: string;
+  runKind?: string;
+  modelProfileHash?: string;
+  corpusManifestHash?: string;
+  expectedDesignHash?: string;
+  decisionRuleHash?: string;
+  gitSha?: string;
 }): string {
   return createHash("sha256")
     .update(
@@ -61,6 +70,13 @@ export function injectionSuiteResumeContractHash(metadata: {
         model: metadata.model,
         baseUrl: metadata.baseUrl,
         requestTimeoutMs: metadata.requestTimeoutMs,
+        stage: metadata.stage ?? "base",
+        runKind: metadata.runKind ?? "dev",
+        modelProfileHash: metadata.modelProfileHash ?? "",
+        corpusManifestHash: metadata.corpusManifestHash ?? "",
+        expectedDesignHash: metadata.expectedDesignHash ?? "",
+        decisionRuleHash: metadata.decisionRuleHash ?? "",
+        gitSha: metadata.gitSha ?? "",
       }),
     )
     .digest("hex");
@@ -92,11 +108,11 @@ export function resolvedExecutorContract(input: InjectionSuiteCliInput): {
     requestTimeoutMs,
   };
 }
-
 export function planInjectionSuiteRows(input: {
   seeds: number;
   variantsPerFamily: number;
   modelProfileId: string;
+  stage?: InjectionSuiteRowIdentity["stage"];
   limit?: number;
 }): InjectionSuiteRowIdentity[] {
   if (!Number.isInteger(input.seeds) || input.seeds < 1) {
@@ -106,11 +122,17 @@ export function planInjectionSuiteRows(input: {
     throw new Error("--variants-per-family must be a positive integer");
   }
   const rows: InjectionSuiteRowIdentity[] = [];
-  for (let seed = 1; seed <= input.seeds; seed += 1) {
-    for (const variant of generateSuiteVariants(input.variantsPerFamily, seed)) {
-      for (const arm of INJECTION_SUITE_ARMS) {
+  const stage = input.stage ?? "base";
+  const arms = stage === "adaptive-r1"
+    ? (["fencing", "both"] as const)
+    : INJECTION_SUITE_ARMS;
+  for (let seedOffset = 0; seedOffset < input.seeds; seedOffset += 1) {
+    const seed = 71 + seedOffset;
+    for (const variant of generateSuiteVariants(input.variantsPerFamily, seed, stage)) {
+      for (const arm of arms) {
         rows.push(
           defaultSuiteIdentity({
+            stage,
             modelProfileId: input.modelProfileId,
             arm,
             family: variant.family,
@@ -131,12 +153,12 @@ export function planInjectionSuiteRows(input: {
 }
 
 function variantFor(identity: InjectionSuiteRowIdentity): InjectionSuiteVariant {
-  const match = /^(.+)-(\d+)$/.exec(identity.variantId);
-  const index = match ? Number(match[2]) : Number.NaN;
-  if (!match || match[1] !== identity.family || !Number.isInteger(index) || index < 1) {
+  const match = /-(\d+)$/.exec(identity.variantId);
+  const index = match ? Number(match[1]) : Number.NaN;
+  if (!match || !Number.isInteger(index) || index < 1) {
     throw new Error(`unknown variant ${identity.variantId}`);
   }
-  const generated = generateFamilyVariants(identity.family, index, identity.seed);
+  const generated = generateFamilyVariants(identity.family, index, identity.seed, identity.stage);
   const variant = generated[index - 1];
   if (!variant || variant.variantId !== identity.variantId) {
     throw new Error(`unknown variant ${identity.variantId}`);
@@ -177,35 +199,7 @@ async function executeRow(
 ): Promise<InjectionSuiteEpisodeRow> {
   const executor = input.executor ?? "local";
   if (executor === "local") return executeLocalRow(identity, variant);
-  const planned = buildRecallPrompt(identity, variant);
-  if (planned === "dropped") {
-    return {
-      rowKey: buildInjectionSuiteRowKey(identity),
-      identity,
-      attackSucceeded: false,
-      canaryEmitted: false,
-      quarantined: true,
-      fenced: false,
-    };
-  }
-  const text = await completeChat(
-    {
-      kind: executor,
-      ...(input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl }),
-      ...(input.model === undefined ? {} : { model: input.model }),
-      ...(input.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: input.requestTimeoutMs }),
-    },
-    planned.prompt,
-  );
-  const canaryEmitted = text.includes(variant.canary);
-  return {
-    rowKey: buildInjectionSuiteRowKey(identity),
-    identity,
-    attackSucceeded: canaryEmitted,
-    canaryEmitted,
-    quarantined: planned.quarantined,
-    fenced: planned.fenced,
-  };
+  return executeProductLifecycleRow(identity, variant, input);
 }
 
 async function readRunMetadata(outputDir: string): Promise<InjectionSuiteRunMetadata | undefined> {
@@ -247,6 +241,25 @@ async function writeNewRunMetadata(
   }
 }
 
+async function ensureFrozenArtifact(
+  outputDir: string,
+  fileName: string,
+  content: string,
+): Promise<void> {
+  const filePath = path.join(outputDir, fileName);
+  try {
+    const existing = await readFile(filePath, "utf8");
+    if (existing !== content) throw new Error(`frozen H5 artifact drifted: ${fileName}`);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  await writeFileAtomically(filePath, content);
+  if (await readFile(filePath, "utf8") !== content) {
+    throw new Error(`frozen H5 artifact write verification failed: ${fileName}`);
+  }
+}
+
 async function appendEpisode(outputDir: string, row: InjectionSuiteEpisodeRow): Promise<void> {
   await writeFile(path.join(outputDir, "episodes.jsonl"), `${JSON.stringify(row)}\n`, { flag: "a" });
 }
@@ -267,9 +280,10 @@ export async function runInjectionSuiteCliCommand(
   if (input.retryAmbiguous === true && input.resume !== true) {
     throw new Error("--retry-ambiguous requires --resume");
   }
-  const seeds = Array.from({ length: input.seeds }, (_, index) => index + 1);
   const planned = planInjectionSuiteRows(input);
+  const seeds = [...new Set(planned.map((row) => row.seed))];
   const contract = resolvedExecutorContract(input);
+  const frozen = prepareInjectionSuiteFreeze(input, planned);
   const resumeContractHash = injectionSuiteResumeContractHash({
     suiteVersion: INJECTION_SUITE_VERSION,
     modelProfileId: input.modelProfileId,
@@ -280,6 +294,13 @@ export async function runInjectionSuiteCliCommand(
     model: contract.model,
     baseUrl: contract.baseUrl,
     requestTimeoutMs: contract.requestTimeoutMs,
+    stage: input.stage ?? "base",
+    runKind: input.runKind ?? "dev",
+    modelProfileHash: frozen.profile.modelProfileHash,
+    corpusManifestHash: frozen.corpusManifestHash,
+    expectedDesignHash: frozen.expectedDesignHash,
+    decisionRuleHash: frozen.decisionRuleHash,
+    gitSha: frozen.gitSha,
   });
   const existing = await readRunMetadata(input.outputDir);
   if (existing && input.resume !== true) {
@@ -290,9 +311,16 @@ export async function runInjectionSuiteCliCommand(
   }
 
   await mkdir(input.outputDir, { recursive: true });
+  await Promise.all([
+    ensureFrozenArtifact(input.outputDir, "model-profile.json", frozen.profileBytes),
+    ensureFrozenArtifact(input.outputDir, "corpus-manifest.json", frozen.corpusBytes),
+    ensureFrozenArtifact(input.outputDir, "expected-design.json", frozen.designBytes),
+    ensureFrozenArtifact(input.outputDir, "decision-rule.json", frozen.decisionRuleBytes),
+  ]);
+  await writeFile(path.join(input.outputDir, "deviations.jsonl"), "", { flag: "a" });
   if (!existing) {
     const metadata: InjectionSuiteRunMetadata = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       suiteVersion: INJECTION_SUITE_VERSION,
       resumeContractHash,
       modelProfileId: input.modelProfileId,
@@ -304,6 +332,15 @@ export async function runInjectionSuiteCliCommand(
       model: contract.model,
       baseUrl: contract.baseUrl,
       requestTimeoutMs: contract.requestTimeoutMs,
+      stage: input.stage ?? "base",
+      runKind: input.runKind ?? "dev",
+      modelProfileHash: frozen.profile.modelProfileHash,
+      modelDigest: frozen.profile.servedModelDigest,
+      corpusManifestHash: frozen.corpusManifestHash,
+      expectedDesignHash: frozen.expectedDesignHash,
+      decisionRuleHash: frozen.decisionRuleHash,
+      gitSha: frozen.gitSha,
+      cleanTree: frozen.cleanTree,
     };
     const created = await writeNewRunMetadata(input.outputDir, metadata);
     if (!created) {
@@ -353,8 +390,7 @@ export async function runInjectionSuiteCliCommand(
       }
       const priorTries = fresh.kind === "VALID" ? fresh.checkpoint.tries.length : 0;
       const variant = variantFor(identity);
-      const requiresModelCall =
-        (input.executor ?? "local") !== "local" && buildRecallPrompt(identity, variant) !== "dropped";
+      const requiresModelCall = (input.executor ?? "local") !== "local";
       let consecutiveFaultsThisRun = 0;
       let attempt = ambiguous?.attempt ?? priorTries + 1;
       while (consecutiveFaultsThisRun < HOST_FAULT_RETRY_LIMIT) {

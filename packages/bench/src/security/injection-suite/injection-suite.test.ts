@@ -114,7 +114,7 @@ test("resume skips terminal rows and refuses a drifted contract", async () => {
       expectedRows: number;
       requestTimeoutMs: number;
     };
-    assert.equal(metadata.schemaVersion, 2);
+    assert.equal(metadata.schemaVersion, 3);
     assert.equal(metadata.expectedRows, 2);
     assert.equal(metadata.requestTimeoutMs, 0);
     metadata.resumeContractHash = "0".repeat(64);

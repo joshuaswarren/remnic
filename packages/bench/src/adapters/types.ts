@@ -7,6 +7,10 @@ import type { TaskAttributionWitness } from "../types.js";
 export interface Message {
   role: "user" | "assistant" | "system";
   content: string;
+  /** Trusted source role for product origin classification; never model-authored. */
+  originRole?: "user" | "assistant" | "tool";
+  /** Trusted connector identity supplied by the harness boundary. */
+  sourceConnector?: string;
   /** Optional source timestamp for benchmarks with historical query times. */
   timestamp?: string;
 }
@@ -24,6 +28,16 @@ export interface MemoryStats {
   totalSummaryNodes: number;
   maxDepth: number;
   maxTurnIndex?: number;
+}
+
+export interface BenchMemorySnapshot {
+  memoryId: string;
+  contentSha256: string;
+  contentLength: number;
+  origin: string;
+  status: string;
+  category: string;
+  source: string;
 }
 
 export interface BenchResponse {
@@ -202,6 +216,11 @@ export interface BenchMemoryAdapter {
   ): Promise<{ applied: boolean }>;
   reset(sessionId?: string, control?: BenchPhaseControl): Promise<void>;
   getStats(sessionId?: string, control?: BenchPhaseControl): Promise<MemoryStats>;
+  /** Content-free product-memory evidence for isolation and parity audits. */
+  inspectSessionMemories?(
+    sessionId: string,
+    control?: BenchPhaseControl,
+  ): Promise<BenchMemorySnapshot[]>;
   /** Wait for background summarization (e.g. LCM) to finish after store(). */
   drain?(control?: BenchPhaseControl): Promise<void>;
   destroy(): Promise<void>;

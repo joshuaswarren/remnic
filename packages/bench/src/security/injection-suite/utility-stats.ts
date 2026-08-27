@@ -1,0 +1,133 @@
+import { createSeededRandom, randomInt } from "../../seeded-random.js";
+import { H5_DECISION_RULE } from "./decision-rule.js";
+import type { InjectionSuiteArm } from "./types.js";
+
+export interface InjectionSuiteUtilityObservation {
+  benchmark: "locomo" | "drift-gen";
+  itemId: string;
+  seed: number;
+  arm: InjectionSuiteArm;
+  score: number;
+}
+
+export interface InjectionSuiteUtilityAnalysis {
+  schemaVersion: 1;
+  pairs: number;
+  baselineMean: number | null;
+  fencingMean: number | null;
+  relativeDelta: number | null;
+  relativeBootstrap90: { lower: number; upper: number } | null;
+  tost: { lowerP: number; upperP: number } | null;
+  estimatedPower: number | null;
+  equivalent: boolean | null;
+}
+
+function normalCdf(value: number): number {
+  const sign = value < 0 ? -1 : 1;
+  const x = Math.abs(value) / Math.sqrt(2);
+  const t = 1 / (1 + 0.3275911 * x);
+  const erf = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t
+    - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+  return 0.5 * (1 + sign * erf);
+}
+
+function percentile(sorted: readonly number[], quantile: number): number {
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.floor(quantile * sorted.length)));
+  return sorted[index] ?? 0;
+}
+
+export function analyzeInjectionSuiteUtility(
+  observations: readonly InjectionSuiteUtilityObservation[],
+): InjectionSuiteUtilityAnalysis {
+  const baseline = new Map<string, number>();
+  const fencing = new Map<string, number>();
+  for (const observation of observations) {
+    const key = `${observation.benchmark}\0${observation.itemId}\0${observation.seed}`;
+    if (observation.arm === "none") baseline.set(key, observation.score);
+    if (observation.arm === "fencing") fencing.set(key, observation.score);
+  }
+  const pairs = [...baseline].flatMap(([key, base]) => {
+    const fenced = fencing.get(key);
+    return fenced === undefined ? [] : [{ base, fenced, difference: fenced - base }];
+  });
+  if (pairs.length === 0) {
+    return {
+      schemaVersion: 1,
+      pairs: 0,
+      baselineMean: null,
+      fencingMean: null,
+      relativeDelta: null,
+      relativeBootstrap90: null,
+      tost: null,
+      estimatedPower: null,
+      equivalent: null,
+    };
+  }
+  const baselineMean = pairs.reduce((sum, pair) => sum + pair.base, 0) / pairs.length;
+  const fencingMean = pairs.reduce((sum, pair) => sum + pair.fenced, 0) / pairs.length;
+  if (baselineMean <= 0) {
+    return {
+      schemaVersion: 1,
+      pairs: pairs.length,
+      baselineMean,
+      fencingMean,
+      relativeDelta: null,
+      relativeBootstrap90: null,
+      tost: null,
+      estimatedPower: null,
+      equivalent: null,
+    };
+  }
+  const meanDifference = fencingMean - baselineMean;
+  const relativeDelta = meanDifference / baselineMean;
+  const squared = pairs.reduce((sum, pair) => sum + (pair.difference - meanDifference) ** 2, 0);
+  const standardDeviation = pairs.length > 1 ? Math.sqrt(squared / (pairs.length - 1)) : 0;
+  const standardError = standardDeviation / Math.sqrt(pairs.length);
+  const relativeMargin = H5_DECISION_RULE.thresholds.utilityRelativeEquivalenceMargin;
+  const absoluteMargin = relativeMargin * baselineMean;
+  const lowerP = standardError === 0
+    ? meanDifference > -absoluteMargin ? 0 : 1
+    : 1 - normalCdf((meanDifference + absoluteMargin) / standardError);
+  const upperP = standardError === 0
+    ? meanDifference < absoluteMargin ? 0 : 1
+    : normalCdf((meanDifference - absoluteMargin) / standardError);
+  const estimatedPower = standardError === 0
+    ? 1
+    : Math.max(0, Math.min(1, 2 * normalCdf(absoluteMargin / standardError - 1.6448536269514722) - 1));
+
+  const rng = createSeededRandom(H5_DECISION_RULE.analysis.statisticsSeed);
+  const draws: number[] = [];
+  for (let draw = 0; draw < H5_DECISION_RULE.analysis.bootstrapDraws; draw += 1) {
+    let baseSum = 0;
+    let fencedSum = 0;
+    for (let index = 0; index < pairs.length; index += 1) {
+      const pair = pairs[randomInt(rng, 0, pairs.length - 1)];
+      if (!pair) continue;
+      baseSum += pair.base;
+      fencedSum += pair.fenced;
+    }
+    const sampledBase = baseSum / pairs.length;
+    draws.push(sampledBase > 0 ? (fencedSum / pairs.length - sampledBase) / sampledBase : 0);
+  }
+  draws.sort((left, right) => left - right);
+  const interval = {
+    lower: percentile(draws, 0.05),
+    upper: percentile(draws, 0.95),
+  };
+  const equivalent = lowerP < H5_DECISION_RULE.thresholds.alpha
+    && upperP < H5_DECISION_RULE.thresholds.alpha
+    && interval.lower > -relativeMargin
+    && interval.upper < relativeMargin
+    && estimatedPower >= H5_DECISION_RULE.thresholds.utilityPowerMinimum;
+  return {
+    schemaVersion: 1,
+    pairs: pairs.length,
+    baselineMean,
+    fencingMean,
+    relativeDelta,
+    relativeBootstrap90: interval,
+    tost: { lowerP, upperP },
+    estimatedPower,
+    equivalent,
+  };
+}

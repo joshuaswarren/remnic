@@ -51,3 +51,28 @@ test("run artifacts cannot be written inside the public checkout", () => {
     /outside the checkout/,
   );
 });
+
+test("main builds the frozen 100-case command and requires model identity", () => {
+  const base = environment("https://compat.example/v1", {
+    REMNIC_OPENAI_COMPAT_API_KEY: "secret",
+    H5_STAGE: "base",
+  });
+  assert.throws(() => buildH5SmokeCommand("main", base), /H5_MODEL_DIGEST/);
+  const command = buildH5SmokeCommand("main", {
+    ...base,
+    H5_MODEL_DIGEST: "a".repeat(64),
+    H5_MODEL_CONTEXT_TOKENS: "32768",
+  });
+  assert.ok(command.args.includes("100"));
+  assert.ok(command.args.includes("--model-digest"));
+  assert.ok(!command.args.includes("--limit"));
+});
+
+test("analysis and replay need only the external run directory", () => {
+  const env = { H5_RUN_DIR: path.join(os.tmpdir(), "h5-run-test") };
+  const analyze = buildH5SmokeCommand("analyze", env);
+  const replay = buildH5SmokeCommand("replay", env);
+  assert.equal(analyze.tokenName, null);
+  assert.ok(analyze.args.includes("injection-suite-analyze"));
+  assert.ok(replay.args.includes("injection-suite-replay"));
+});

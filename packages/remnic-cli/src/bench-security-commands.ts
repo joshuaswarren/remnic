@@ -22,10 +22,19 @@ export const BENCH_SECURITY_USAGE = `Usage: remnic bench security injection-suit
 H5 injection-suite runner. Resume, host-fault pause, multi-host claim
 leases, and --limit follow the H6 contract (issue #1963 / PR #2312).
 
+Additional commands:
+  remnic bench security injection-suite-analyze --run DIR
+  remnic bench security injection-suite-replay --run DIR
+  remnic bench security injection-suite-utility [injection-suite options] [--dataset-dir DIR]
+  remnic bench security injection-suite-decide --base DIR --base DIR --utility FILE --utility FILE [--adaptive DIR --adaptive DIR] --out DIR
+
 Options:
   --seeds N                 Positive seed count (required)
   --variants-per-family N   Variants per attack family (default: 25)
   --model-profile ID        Profile label recorded on each row (default: local-dry)
+  --stage base|adaptive-r1|benign
+                            Frozen corpus stage (default: base)
+  --run-kind dev|pilot|main Run gate to enforce (default: dev)
   --executor local|ollama|openai-compat
                             local = deterministic screen/fence (default)
                             ollama = native /api/chat
@@ -36,6 +45,8 @@ Options:
                             and https, except loopback HTTP)
   --base-url URL            Endpoint (default: http://127.0.0.1:11434)
   --model NAME              Model id (default: qwen3.8-27b-64k:latest)
+  --model-digest SHA256     Immutable served-model digest (required for main)
+  --model-context-tokens N  Native context length (required for main)
   --request-timeout-ms N    Per-call timeout (default: 300000)
   --out DIR                 New run directory (default: ~/.remnic/bench/results/h5-injection-suite)
   --run DIR                 Existing run directory; implies --resume
@@ -48,13 +59,18 @@ interface InjectionSuiteCommand {
   seeds: number;
   variantsPerFamily: number;
   modelProfileId: string;
+  stage: "base" | "adaptive-r1" | "benign";
+  runKind: "dev" | "pilot" | "main";
   outputDir: string;
   resume: boolean;
   retryAmbiguous: boolean;
   limit?: number;
   executor: "local" | "ollama" | "openai-compat";
+  datasetDir?: string;
   baseUrl?: string;
   model?: string;
+  modelDigest?: string;
+  modelContextTokens?: number;
   requestTimeoutMs?: number;
 }
 
@@ -75,13 +91,18 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
   let seeds: number | undefined;
   let variantsPerFamily = 25;
   let modelProfileId = "local-dry";
+  let stage: InjectionSuiteCommand["stage"] = "base";
+  let runKind: InjectionSuiteCommand["runKind"] = "dev";
   let outputDir = DEFAULT_OUTPUT_DIR;
   let resume = false;
   let retryAmbiguous = false;
   let limit: number | undefined;
   let executor: InjectionSuiteCommand["executor"] = "local";
+  let datasetDir: string | undefined;
   let baseUrl: string | undefined;
   let model: string | undefined;
+  let modelDigest: string | undefined;
+  let modelContextTokens: number | undefined;
   let requestTimeoutMs: number | undefined;
 
   for (let index = 1; index < args.length; index += 1) {
@@ -97,6 +118,18 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
       if (next === undefined || next.startsWith("-")) throw new Error("missing value for --model-profile");
       modelProfileId = next;
       index += 1;
+    } else if (flag === "--stage") {
+      if (next !== "base" && next !== "adaptive-r1" && next !== "benign") {
+        throw new Error("--stage must be base, adaptive-r1, or benign");
+      }
+      stage = next;
+      index += 1;
+    } else if (flag === "--run-kind") {
+      if (next !== "dev" && next !== "pilot" && next !== "main") {
+        throw new Error("--run-kind must be dev, pilot, or main");
+      }
+      runKind = next;
+      index += 1;
     } else if (flag === "--executor") {
       if (next !== "local" && next !== "ollama" && next !== "openai-compat") {
         throw new Error("--executor must be local, ollama, or openai-compat");
@@ -110,6 +143,17 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
     } else if (flag === "--model") {
       if (next === undefined || next.startsWith("-")) throw new Error("missing value for --model");
       model = next;
+      index += 1;
+    } else if (flag === "--model-digest") {
+      if (next === undefined || next.startsWith("-")) throw new Error("missing value for --model-digest");
+      modelDigest = next;
+      index += 1;
+    } else if (flag === "--dataset-dir") {
+      if (next === undefined || next.startsWith("-")) throw new Error("missing value for --dataset-dir");
+      datasetDir = expandTilde(next);
+      index += 1;
+    } else if (flag === "--model-context-tokens") {
+      modelContextTokens = parsePositiveInteger(next, "--model-context-tokens");
       index += 1;
     } else if (flag === "--request-timeout-ms") {
       requestTimeoutMs = parsePositiveInteger(next, "--request-timeout-ms");
@@ -141,6 +185,8 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
     seeds,
     variantsPerFamily,
     modelProfileId,
+    stage,
+    runKind,
     outputDir,
     resume,
     executor,
@@ -148,18 +194,94 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
     ...(limit === undefined ? {} : { limit }),
     ...(baseUrl === undefined ? {} : { baseUrl }),
     ...(model === undefined ? {} : { model }),
+    ...(modelDigest === undefined ? {} : { modelDigest }),
+    ...(modelContextTokens === undefined ? {} : { modelContextTokens }),
+    ...(datasetDir === undefined ? {} : { datasetDir }),
     ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
   };
 }
 
 export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
   try {
-    const parsed = parseBenchSecurityArgs(args);
+    if (args[0] === "injection-suite-decide") {
+      const baseRunDirs: string[] = [];
+      const utilityStatisticsPaths: string[] = [];
+      const adaptiveRunDirs: string[] = [];
+      let outputDir: string | undefined;
+      for (let index = 1; index < args.length; index += 2) {
+        const flag = args[index];
+        const value = args[index + 1];
+        if (!value) throw new Error(`missing value for ${flag ?? "campaign flag"}`);
+        if (flag === "--base") baseRunDirs.push(expandTilde(value));
+        else if (flag === "--utility") utilityStatisticsPaths.push(expandTilde(value));
+        else if (flag === "--adaptive") adaptiveRunDirs.push(expandTilde(value));
+        else if (flag === "--out") outputDir = expandTilde(value);
+        else throw new Error(`unknown campaign option ${flag}`);
+      }
+      if (!outputDir) throw new Error("injection-suite-decide requires --out DIR");
+      const campaignBench = await loadBenchModule();
+      const decide = campaignBench.decideInjectionSuiteCampaign;
+      if (typeof decide !== "function") throw new Error("Installed @remnic/bench lacks H5 campaign decision");
+      const decision = await decide({
+        baseRunDirs,
+        utilityStatisticsPaths,
+        ...(adaptiveRunDirs.length > 0 ? { adaptiveRunDirs } : {}),
+        outputDir,
+      });
+      console.log(JSON.stringify(decision, null, 2));
+      return;
+    }
+    if (args[0] === "injection-suite-analyze" || args[0] === "injection-suite-replay") {
+      if (args.length !== 3 || args[1] !== "--run" || !args[2]) {
+        throw new Error(`${args[0]} requires --run DIR`);
+      }
+      const analysisBench = await loadBenchModule();
+      const runDir = expandTilde(args[2]);
+      if (args[0] === "injection-suite-analyze") {
+        const analyze = analysisBench.analyzeInjectionSuiteRun;
+        if (typeof analyze !== "function") throw new Error("Installed @remnic/bench lacks H5 analysis");
+        const analysis = await analyze(runDir);
+        console.log(JSON.stringify(analysis, null, 2));
+      } else {
+        const replay = analysisBench.replayInjectionSuiteStatistics;
+        if (typeof replay !== "function") throw new Error("Installed @remnic/bench lacks H5 replay");
+        await replay(runDir);
+        console.log(JSON.stringify({ replay: "ok", runDir }));
+      }
+      return;
+    }
+    const utilityMode = args[0] === "injection-suite-utility";
+    const parsed = parseBenchSecurityArgs(
+      utilityMode ? ["injection-suite", ...args.slice(1)] : args,
+    );
     if ("help" in parsed) {
       console.log(BENCH_SECURITY_USAGE);
       return;
     }
     const bench = await loadBenchModule();
+    if (utilityMode) {
+      const utility = bench.runInjectionSuiteUtility;
+      if (typeof utility !== "function") throw new Error("Installed @remnic/bench lacks H5 utility runner");
+      const analysis = await utility({
+        seeds: parsed.seeds,
+        variantsPerFamily: parsed.variantsPerFamily,
+        modelProfileId: parsed.modelProfileId,
+        outputDir: parsed.outputDir,
+        executor: parsed.executor,
+        stage: parsed.stage,
+        runKind: parsed.runKind,
+        ...(parsed.resume ? { resume: true } : {}),
+        ...(parsed.retryAmbiguous ? { retryAmbiguous: true } : {}),
+        ...(parsed.baseUrl === undefined ? {} : { baseUrl: parsed.baseUrl }),
+        ...(parsed.model === undefined ? {} : { model: parsed.model }),
+        ...(parsed.modelDigest === undefined ? {} : { modelDigest: parsed.modelDigest }),
+        ...(parsed.modelContextTokens === undefined ? {} : { modelContextTokens: parsed.modelContextTokens }),
+        ...(parsed.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: parsed.requestTimeoutMs }),
+        ...(parsed.datasetDir === undefined ? {} : { locomoDatasetDir: parsed.datasetDir }),
+      });
+      console.log(JSON.stringify(analysis, null, 2));
+      return;
+    }
     const run = bench.runInjectionSuiteCliCommand;
     if (typeof run !== "function") {
       throw new Error("Installed @remnic/bench is missing runInjectionSuiteCliCommand");
@@ -170,11 +292,15 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
       modelProfileId: parsed.modelProfileId,
       outputDir: parsed.outputDir,
       executor: parsed.executor,
+      stage: parsed.stage,
+      runKind: parsed.runKind,
       ...(parsed.resume ? { resume: true } : {}),
       ...(parsed.retryAmbiguous ? { retryAmbiguous: true } : {}),
       ...(parsed.limit === undefined ? {} : { limit: parsed.limit }),
       ...(parsed.baseUrl === undefined ? {} : { baseUrl: parsed.baseUrl }),
       ...(parsed.model === undefined ? {} : { model: parsed.model }),
+      ...(parsed.modelDigest === undefined ? {} : { modelDigest: parsed.modelDigest }),
+      ...(parsed.modelContextTokens === undefined ? {} : { modelContextTokens: parsed.modelContextTokens }),
       ...(parsed.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: parsed.requestTimeoutMs }),
     });
     if (result.exitCode === 0) console.log(result.output);

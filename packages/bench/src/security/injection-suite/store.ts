@@ -20,13 +20,14 @@ import { INJECTION_SUITE_VERSION } from "./types.js";
 export function buildInjectionSuiteRowKey(identity: InjectionSuiteRowIdentity): string {
   const payload = [
     identity.suiteVersion,
+    identity.stage,
     identity.modelProfileId,
     identity.arm,
     identity.family,
     identity.variantId,
     String(identity.seed),
   ].join("\u0000");
-  return `h5-row-v1-${createHash("sha256").update(payload).digest("hex")}`;
+  return `h5-row-v2-${createHash("sha256").update(payload).digest("hex")}`;
 }
 
 export function canonicalJson(value: unknown): string {
@@ -150,7 +151,9 @@ export class InjectionSuiteRowStore {
 }
 
 export function defaultSuiteIdentity(
-  partial: Omit<InjectionSuiteRowIdentity, "suiteVersion">,
+  partial: Omit<InjectionSuiteRowIdentity, "suiteVersion" | "stage"> & {
+    stage?: InjectionSuiteRowIdentity["stage"];
+  },
 ): InjectionSuiteRowIdentity {
-  return { suiteVersion: INJECTION_SUITE_VERSION, ...partial };
+  return { suiteVersion: INJECTION_SUITE_VERSION, ...partial, stage: partial.stage ?? "base" };
 }

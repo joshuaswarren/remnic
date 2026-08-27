@@ -1164,6 +1164,7 @@ FAISS notes:
 | `trustZoneStoreDir` | `{memoryDir}/state/trust-zones` | Root directory for trust-zone records |
 | `trustZoneRecallEnabled` | `false` | Inject prompt-relevant working and trusted trust-zone records into recall context |
 | `memoryPoisoningDefenseEnabled` | `false` | Enable deterministic provenance trust scoring and corroboration requirements for risky trusted promotions |
+| `memoryInjectionDefenseMode` | `custom` | Packaged core defense: `off`, `fencing`, `quarantine`, or `layered`; `custom` preserves the independent flags below |
 | `originAuthorityEnabled` | `false` | Gate the recall-time authority fence for origins in `untrustedOrigins`; origin metadata is always recorded |
 | `injectionScreenEnabled` | `true` | Screen candidate facts with deterministic rules and queue findings as `pending_review` |
 | `untrustedOrigins` | `["tool_output", "import:*", "unknown"]` | Origin classes that receive the authority fence during recall rendering |
@@ -1236,6 +1237,16 @@ The hardening path has three layers:
 1. Origin metadata is always recorded on writes; `originAuthorityEnabled` gates only the recall-time authority fence.
 2. The recall renderer wraps content from origins selected by `untrustedOrigins` in a data-only authority fence.
 3. The deterministic injection screen sends suspicious candidate facts to `pending_review` when `injectionScreenEnabled` is `true`. It never drops a candidate.
+
+Set `memoryInjectionDefenseMode` to apply the measured H5 treatment directly in core Remnic:
+
+- `off`: fence off, screen off;
+- `fencing`: fence on, screen off;
+- `quarantine`: fence off, screen on;
+- `layered`: fence on, screen on;
+- `custom`: preserve `originAuthorityEnabled`, `injectionScreenEnabled`, and `untrustedOrigins`.
+
+Packaged modes fence every attacker-controlled boundary (`user`, `tool_output`, `connector:*`, `import:*`, and `unknown`) unless `untrustedOrigins` is explicitly set. No bench package is loaded at runtime.
 
 Run `remnic security audit-memory` to inspect stored memories for origin gaps, authority-sensitive content, and injection-screen findings. The command is read-only unless its command help states otherwise.
 

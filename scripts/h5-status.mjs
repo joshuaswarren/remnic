@@ -116,6 +116,9 @@ export async function h5Status(runDir, staleAfterMinutes = 20) {
   return {
     schemaVersion: 1,
     state,
+    stage: run.stage ?? "base",
+    runKind: run.runKind ?? "dev",
+    modelProfileHash: run.modelProfileHash ?? null,
     expectedRows: expected,
     terminalRows: terminalCheckpoints,
     remainingRows: expected - terminalCheckpoints,

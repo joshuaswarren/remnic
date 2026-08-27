@@ -7,8 +7,9 @@
  * hash refuses to continue a drifted run.
  */
 
-export const INJECTION_SUITE_VERSION = "h5-injection-suite-v1";
+export const INJECTION_SUITE_VERSION = "h5-injection-suite-v2";
 export const HOST_FAULT_RETRY_LIMIT = 6;
+export const INJECTION_SUITE_STAGES = ["base", "adaptive-r1", "benign"] as const;
 export const INJECTION_SUITE_ARMS = ["none", "fencing", "quarantine", "both"] as const;
 export const INJECTION_SUITE_FAMILIES = [
   "minja",
@@ -19,9 +20,22 @@ export const INJECTION_SUITE_FAMILIES = [
 
 export type InjectionSuiteArm = (typeof INJECTION_SUITE_ARMS)[number];
 export type InjectionSuiteFamily = (typeof INJECTION_SUITE_FAMILIES)[number];
+export type InjectionSuiteStage = (typeof INJECTION_SUITE_STAGES)[number];
+
+export interface InjectionSuitePlantTurn {
+  role: "user" | "assistant";
+  originRole: "user" | "assistant" | "tool";
+  content: string;
+}
+
+export interface InjectionSuiteCanary {
+  type: "string" | "tool" | "url";
+  value: string;
+}
 
 export interface InjectionSuiteRowIdentity {
   suiteVersion: string;
+  stage: InjectionSuiteStage;
   modelProfileId: string;
   arm: InjectionSuiteArm;
   family: InjectionSuiteFamily;
@@ -30,10 +44,57 @@ export interface InjectionSuiteRowIdentity {
 }
 
 export interface InjectionSuiteVariant {
+  stage: InjectionSuiteStage;
   family: InjectionSuiteFamily;
+  templateId: string;
   variantId: string;
   payload: string;
+  plantTurns: InjectionSuitePlantTurn[];
+  triggerPrompt: string;
   canary: string;
+  canarySpec: InjectionSuiteCanary;
+  livenessCanary: string;
+  livenessPrompt: string;
+  benign: boolean;
+}
+
+export type InjectionSuiteTrialOutcome = "ATTACK_SUCCEEDED" | "BLOCKED" | "VOID";
+export type InjectionSuiteStopStage = "write" | "recall" | "render" | "behavior" | "complete";
+
+export interface InjectionSuiteTraceEvent {
+  stage: InjectionSuiteStopStage;
+  status: "ok" | "blocked" | "void";
+  sha256?: string;
+  count?: number;
+}
+
+export interface InjectionSuiteMemoryEvidence {
+  memoryId: string;
+  contentSha256: string;
+  contentLength: number;
+  origin: string;
+  status: string;
+  category: string;
+}
+
+export interface InjectionSuiteProductEvidence {
+  viable: boolean;
+  outcome: InjectionSuiteTrialOutcome;
+  stoppedAt: InjectionSuiteStopStage;
+  livenessCanaryEmitted: boolean;
+  memories: InjectionSuiteMemoryEvidence[];
+  preRenderSha256: string;
+  renderedRecallSha256: string;
+  recallTraceSha256: string | null;
+  recalledChars: number;
+  responseSha256: string;
+  responseChars: number;
+  toolCalls: string[];
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+  model: string;
+  trace: InjectionSuiteTraceEvent[];
 }
 
 export type InjectionSuiteTryOutcome =
@@ -59,6 +120,7 @@ export interface InjectionSuiteEpisodeRow {
   canaryEmitted: boolean;
   quarantined: boolean;
   fenced: boolean;
+  evidence?: InjectionSuiteProductEvidence;
 }
 
 export interface InjectionSuiteCheckpoint {
@@ -70,7 +132,7 @@ export interface InjectionSuiteCheckpoint {
 }
 
 export interface InjectionSuiteRunMetadata {
-  schemaVersion: 2;
+  schemaVersion: 3;
   suiteVersion: string;
   resumeContractHash: string;
   modelProfileId: string;
@@ -82,6 +144,15 @@ export interface InjectionSuiteRunMetadata {
   model: string;
   baseUrl: string;
   requestTimeoutMs: number;
+  stage: InjectionSuiteStage;
+  runKind: "dev" | "pilot" | "main";
+  modelProfileHash: string;
+  modelDigest: string;
+  corpusManifestHash: string;
+  expectedDesignHash: string;
+  decisionRuleHash: string;
+  gitSha: string;
+  cleanTree: boolean;
 }
 
 export interface InjectionSuiteCliInput {
@@ -93,6 +164,10 @@ export interface InjectionSuiteCliInput {
   limit?: number;
   /** Explicit operator override after an ambiguous paid request is investigated. */
   retryAmbiguous?: boolean;
+  stage?: InjectionSuiteStage;
+  runKind?: "dev" | "pilot" | "main";
+  modelDigest?: string;
+  modelContextTokens?: number;
   /** Test-only: inject host faults for the first N attempts of every row. */
   faultFirstAttempts?: number;
   executor?: "local" | "ollama" | "openai-compat";

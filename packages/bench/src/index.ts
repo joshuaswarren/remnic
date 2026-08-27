@@ -805,6 +805,11 @@ export type {
 } from "./security/extraction-attack/index.js";
 
 export {
+  analyzeInjectionSuiteRun,
+  decideInjectionSuiteCampaign,
+  analyzeInjectionSuiteUtility,
+  replayInjectionSuiteStatistics,
+  runInjectionSuiteUtility,
   executeLocalRow,
   generateFamilyVariants,
   generateSuiteVariants,
@@ -814,6 +819,7 @@ export {
   HOST_FAULT_RETRY_LIMIT,
   INJECTION_SUITE_ARMS,
   INJECTION_SUITE_FAMILIES,
+  INJECTION_SUITE_STAGES,
   INJECTION_SUITE_VERSION,
 } from "./security/injection-suite/index.js";
 export type {
@@ -822,7 +828,9 @@ export type {
   InjectionSuiteCliResult,
   InjectionSuiteEpisodeRow,
   InjectionSuiteFamily,
+  InjectionSuiteProductEvidence,
   InjectionSuiteRowIdentity,
+  InjectionSuiteStage,
 } from "./security/injection-suite/index.js";
 
 // ---------------------------------------------------------------------------
