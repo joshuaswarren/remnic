@@ -193,6 +193,6 @@ export async function prepareInjectionSuiteStore(input: {
     memoryDir,
     plantSession: manifest.plantSession,
     seedMemories: manifest.memories,
-    cleanup: () => rm(memoryDir, { recursive: true, force: true }),
+    cleanup: () => rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
   };
 }

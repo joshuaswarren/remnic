@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { BenchMemoryAdapter, BenchMemorySnapshot, Message } from "../../adapters/types.js";
@@ -67,7 +68,7 @@ function input() {
     seeds: 1,
     variantsPerFamily: 1,
     modelProfileId: "model-a",
-    outputDir: "/tmp/h5-product-test",
+    outputDir: `/tmp/h5-product-test-${randomUUID()}`,
     executor: "ollama" as const,
     baseUrl: "http://127.0.0.1:11434",
     model: "model-a",
@@ -105,6 +106,7 @@ test("product lifecycle enables fence-only config and records a live block", asy
     }),
   });
   assert.equal(adapterOptions?.configOverrides?.memoryInjectionDefenseMode, "fencing");
+  assert.equal(adapterOptions?.configOverrides?.skipExtractionLcmFirst, false);
   assert.deepEqual(stored.map((message) => message.originRole), ["user"]);
   assert.equal(row.evidence?.outcome, "BLOCKED");
   assert.equal(row.evidence?.livenessCanaryEmitted, true);

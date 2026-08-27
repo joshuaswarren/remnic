@@ -91,6 +91,7 @@ export function buildInjectionSuiteAdapterOptions(
       extractionJudgeEnabled: false,
       factDeduplicationEnabled: false,
       queryExpansionEnabled: false,
+      skipExtractionLcmFirst: false,
       rerankEnabled: false,
     },
   };
