@@ -10,6 +10,7 @@ import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
 import { createHash } from "node:crypto";
 import { type FileHandle, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { InjectionSuiteClaimLock } from "./claims.js";
 import { generateFamilyVariants, generateSuiteVariants } from "./generator.js";
 import { prepareInjectionSuiteFreeze } from "./freeze.js";
@@ -80,6 +81,11 @@ export function injectionSuiteResumeContractHash(metadata: {
       }),
     )
     .digest("hex");
+}
+
+function hostFaultRetryDelayMs(message: string, consecutiveFaults: number): number {
+  const base = /HTTP 429\b/.test(message) ? 10_000 : 250;
+  return Math.min(60_000, base * (2 ** Math.max(0, consecutiveFaults - 1)));
 }
 
 export function resolvedExecutorContract(input: InjectionSuiteCliInput): {
@@ -457,6 +463,7 @@ export async function runInjectionSuiteCliCommand(
               paused: true,
             };
           }
+          await delay(hostFaultRetryDelayMs(error.message, consecutiveFaultsThisRun));
         }
       }
     } finally {
