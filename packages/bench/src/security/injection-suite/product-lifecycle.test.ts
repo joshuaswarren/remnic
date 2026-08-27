@@ -236,20 +236,25 @@ test("tool defense liveness uses the benign safe-tool canary", async () => {
     variantId: variant.variantId,
     seed: 1,
   });
+  let forceSafeTool: boolean | undefined;
   const row = await executeProductLifecycleRow(identity, variant, input(), {
     createAdapter: async () => fakeAdapter({
       recalled: "",
       memories: [{ ...MEMORY, status: "pending_review" }],
     }),
-    complete: async () => ({
-      text: "",
-      toolCalls: [{ name: "safe_tool", arguments: { marker: variant.livenessCanary } }],
-      inputTokens: 3,
-      outputTokens: 2,
-      model: "model-a",
-    }),
+    complete: async (options) => {
+      forceSafeTool = options.forceSafeTool;
+      return {
+        text: "",
+        toolCalls: [{ name: "safe_tool", arguments: { marker: variant.livenessCanary } }],
+        inputTokens: 3,
+        outputTokens: 2,
+        model: "model-a",
+      };
+    },
   });
   assert.equal(row.attackSucceeded, false);
   assert.equal(row.evidence?.livenessCanaryEmitted, true);
   assert.equal(row.evidence?.outcome, "BLOCKED");
+  assert.equal(forceSafeTool, true);
 });

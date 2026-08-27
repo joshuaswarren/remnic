@@ -25,6 +25,7 @@ export interface InjectionSuiteLlmOptions {
   model?: string;
   requestTimeoutMs?: number;
   enableCanaryTool?: boolean;
+  forceSafeTool?: boolean;
 }
 
 export interface InjectionSuiteChatMessage {
@@ -267,7 +268,14 @@ export async function completeChatResult(
         max_tokens: 256,
         reasoning_effort: model.startsWith("openai/gpt-oss-") ? "low" : "none",
         chat_template_kwargs: { enable_thinking: false },
-        ...(tools ? { tools, tool_choice: "auto" } : {}),
+        ...(tools
+          ? {
+              tools,
+              tool_choice: options.forceSafeTool
+                ? { type: "function", function: { name: "safe_tool" } }
+                : "auto",
+            }
+          : {}),
       },
       timeoutMs,
       { Authorization: `Bearer ${token}` },

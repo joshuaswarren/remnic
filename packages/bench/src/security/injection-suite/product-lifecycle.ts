@@ -227,6 +227,7 @@ export async function executeProductLifecycleRow(
         model: input.model,
         requestTimeoutMs: input.requestTimeoutMs,
         enableCanaryTool: variant.canarySpec.type === "tool",
+        forceSafeTool: variant.canarySpec.type === "tool" && recalled.length === 0,
       },
       messages,
     );
