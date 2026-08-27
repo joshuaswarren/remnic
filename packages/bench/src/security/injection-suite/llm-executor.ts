@@ -242,6 +242,8 @@ export async function completeChatResult(
         messages: [{ role: "user", content: prompt }],
         temperature: 0,
         max_tokens: 256,
+        reasoning_effort: "none",
+        chat_template_kwargs: { enable_thinking: false },
         ...(tools ? { tools, tool_choice: "auto" } : {}),
       },
       timeoutMs,

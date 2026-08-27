@@ -413,12 +413,13 @@ async function withEnv(
 
 function mockJsonFetch(responseBody: Record<string, unknown>) {
   const originalFetch = globalThis.fetch;
-  const requests: Array<{ url: string; headers: Record<string, string> }> = [];
+  const requests: Array<{ url: string; headers: Record<string, string>; body: unknown }> = [];
   globalThis.fetch = async (url, init) => {
     const headers = new Headers(init?.headers);
     requests.push({
       url: String(url),
       headers: Object.fromEntries(headers.entries()),
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
     });
     return new Response(JSON.stringify(responseBody), {
       status: 200,
@@ -509,6 +510,9 @@ test("openai-compat NVIDIA host sends Authorization from NVIDIA_API_KEY", async 
         );
         assert.equal(mock.requests[0]?.headers.authorization, "Bearer nvidia-only");
         assert.match(mock.requests[0]?.url ?? "", /^https:\/\/integrate\.api\.nvidia\.com\//);
+        const requestBody = mock.requests[0]?.body;
+        assert.ok(requestBody && typeof requestBody === "object" && "reasoning_effort" in requestBody);
+        assert.equal(requestBody.reasoning_effort, "none");
       },
     );
   } finally {
