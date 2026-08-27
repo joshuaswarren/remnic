@@ -263,70 +263,70 @@
       "family": "tool-hijack",
       "templateId": "tool-hijack-01",
       "canaryType": "tool",
-      "sha256": "6af9817d83d643be4cbc3250df6dc452ca431f81115265784e476bafd93f46fc"
+      "sha256": "bf4f121af395bc58c0b1c47d2c073e64649e70fa78655efd24350b01657073f2"
     },
     {
       "scenarioId": "benign-tool-hijack-002",
       "family": "tool-hijack",
       "templateId": "tool-hijack-02",
       "canaryType": "tool",
-      "sha256": "cded021532b43d9633de16827ea1c8f44773fcdbe3ab2cb08884b23b43930bc7"
+      "sha256": "cccba6a568f55c565a05bb1545932af8aeec40692e2fed3f3090d8d39c017606"
     },
     {
       "scenarioId": "benign-tool-hijack-003",
       "family": "tool-hijack",
       "templateId": "tool-hijack-03",
       "canaryType": "tool",
-      "sha256": "c02160b076b7e7e30f6a73816727d22f1382e07f0965f5cc51718eff0c58895f"
+      "sha256": "f1d6c5ab1c96340f14b7bfba112591500fa21aea4a2e47aa0c77ec1c51b06b60"
     },
     {
       "scenarioId": "benign-tool-hijack-004",
       "family": "tool-hijack",
       "templateId": "tool-hijack-04",
       "canaryType": "tool",
-      "sha256": "b157d7e3ce67dddb40ef76a72ea3c523f0274ad5e175709deab1b0d987be20da"
+      "sha256": "b1919b351ccf5ee77ac5f5ca18fb2563a8690b2ea495445b9bb7d8ad5434b7e1"
     },
     {
       "scenarioId": "benign-tool-hijack-005",
       "family": "tool-hijack",
       "templateId": "tool-hijack-05",
       "canaryType": "tool",
-      "sha256": "9cdacf793113fb1ebca63cc49aa6540f8ffb72d4cddb318c530de5851f2fc9e1"
+      "sha256": "4f1a5b556fe74288da1b451d9023a359ff6ba15b20621f758ae30a9fd4a461d0"
     },
     {
       "scenarioId": "benign-tool-hijack-006",
       "family": "tool-hijack",
       "templateId": "tool-hijack-06",
       "canaryType": "tool",
-      "sha256": "6dce2e7f7949eb6c565ecaad22d36d5331732eb10e34b4fcd33d5d2db27de2ba"
+      "sha256": "3f391f498eef8cc1fe66e05daf11cc4fce14d083b5929a692cb448ed85f8e431"
     },
     {
       "scenarioId": "benign-tool-hijack-007",
       "family": "tool-hijack",
       "templateId": "tool-hijack-07",
       "canaryType": "tool",
-      "sha256": "bef668c3795083dea0fec6c5fbe2200a66e984234c785ef770edee2dcf7d651d"
+      "sha256": "48cbfc00bf826ad99f6c80b6802443b0c954075620c27f6f63d0957b7bfe094d"
     },
     {
       "scenarioId": "benign-tool-hijack-008",
       "family": "tool-hijack",
       "templateId": "tool-hijack-08",
       "canaryType": "tool",
-      "sha256": "817a1720d5abcf0bba243552e8fb9ec30d8bde3d0a16390b8eedd4483cb973bf"
+      "sha256": "24ca1036d398ad72e086e5ac8f84da5f15bea1885352926c89b14f212015fdf4"
     },
     {
       "scenarioId": "benign-tool-hijack-009",
       "family": "tool-hijack",
       "templateId": "tool-hijack-09",
       "canaryType": "tool",
-      "sha256": "225366fbac1f6ee61a448d41c27fa1c6c6f7c37101641473ccb9859e7ecb5050"
+      "sha256": "92d6fa8223d05de7bdd87653d4fd55eb505617eefe5143cd7bc22143ce4cd85b"
     },
     {
       "scenarioId": "benign-tool-hijack-010",
       "family": "tool-hijack",
       "templateId": "tool-hijack-10",
       "canaryType": "tool",
-      "sha256": "52008a03a0f0ace39aae0654d3c31dd81d1a5d7d1c9d718218ec38ef2d7300a7"
+      "sha256": "c21a8f6cb8e24ddd7af4381f57c923722e1eb76f94216602b8fd405fbbd1ed7d"
     }
   ],
   "payloadRuleAudit": {
@@ -334,5 +334,5 @@
     "pass": 40,
     "date": "2026-08-27"
   },
-  "manifestSha256": "76dee768564abf5741e11ff036bb95a757cdc0f467aa1756127f3f0fb5b5b749"
+  "manifestSha256": "ecb1ec09461728a8afa31fdd0137c021760421bbc8cc890f4ed57d86fc1bd2b6"
 }
