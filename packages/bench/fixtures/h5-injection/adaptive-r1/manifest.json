@@ -2153,700 +2153,700 @@
       "family": "tool-hijack",
       "templateId": "tool-hijack-01",
       "canaryType": "tool",
-      "sha256": "5c665aeb201b3717c1c72f64944352ed9769224eb8db1ceb166fae2a0ab08cc5"
+      "sha256": "ac6ff7926dbbad8df25342b8e473666428e70e48dc21a7ac91a7d14d1aa0cb5e"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-002",
       "family": "tool-hijack",
       "templateId": "tool-hijack-02",
       "canaryType": "tool",
-      "sha256": "eccca90382dab70b1580462e228962e88ddafa54c5cfef9b8a44d20a572349bc"
+      "sha256": "59896cd68cf4f8222353180c1e9b891f15e6175bbfaa51bb8cf36ba03081604d"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-003",
       "family": "tool-hijack",
       "templateId": "tool-hijack-03",
       "canaryType": "tool",
-      "sha256": "15ae862e9f1e88764a334705806ad7f0d69db2151cc08a96939e52161a584672"
+      "sha256": "66bbb207a1731d6643e89d6d4a7e061bf892cd79f295647c818416ca58d73495"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-004",
       "family": "tool-hijack",
       "templateId": "tool-hijack-04",
       "canaryType": "tool",
-      "sha256": "2d398162edcf24d39afa8a801069564f8fb318bd0c6623fc210e5e2fe4a1f54f"
+      "sha256": "e47c3deb2976c932ce6b16a415d5ec8d6f72b6d329b600a85f83fd16c62aab80"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-005",
       "family": "tool-hijack",
       "templateId": "tool-hijack-05",
       "canaryType": "tool",
-      "sha256": "89132e76f59b201a985f7960aea3cd3a0a46ec6eb6a69c44bd602edc9e5963b6"
+      "sha256": "15fa82cd1a846f337ea8513b7f1b4a498fecd6a588ebeb533fdebf3aee47466f"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-006",
       "family": "tool-hijack",
       "templateId": "tool-hijack-06",
       "canaryType": "tool",
-      "sha256": "0a55afbde8abd00e5882cc67f98954303c6c2c311e097f9dc42c8f95374c977b"
+      "sha256": "93fc6ffa9ac0b4bdf134a2ad727a61ed4fb50004f0220a1e7590423fa06346e2"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-007",
       "family": "tool-hijack",
       "templateId": "tool-hijack-07",
       "canaryType": "tool",
-      "sha256": "ca00a8fc602e7a305540dae2c78347b2950cdbb7f3739b7d5f58f01471b5e04e"
+      "sha256": "8014824c05e3f7e0fde6857979443883651263cd94ded44a3c7ddd0563b614fd"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-008",
       "family": "tool-hijack",
       "templateId": "tool-hijack-08",
       "canaryType": "tool",
-      "sha256": "45d9ea9fa57113ca6070216c5f2d215ac40289efbda1d5091faa8b08a6c08f41"
+      "sha256": "8b9b473ad7d377343a7ae0128b866b3b886e8a43be215f9e5b36d62bedfd65af"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-009",
       "family": "tool-hijack",
       "templateId": "tool-hijack-09",
       "canaryType": "tool",
-      "sha256": "97869aaddc185dfe2d22746735cdc08bbd5bbd1ad900f7b5c8a865823997aae1"
+      "sha256": "305519e5e6b237092accdef854e78a262f95ac498667d8498fe71fbe84e4f1ef"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-010",
       "family": "tool-hijack",
       "templateId": "tool-hijack-10",
       "canaryType": "tool",
-      "sha256": "ccaeb7048d388dea06355fddd3e1ecea82fbbd966df2e69074f94aaef2013280"
+      "sha256": "bacbc4d7e13c0483275b9a2d905cb52b9ab17e6906b3205dcecd89b82a30c6fc"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-011",
       "family": "tool-hijack",
       "templateId": "tool-hijack-01",
       "canaryType": "tool",
-      "sha256": "a8cdce42c782d5560d7102b807bafcef853c99825663e4ea698eea7ee68af6db"
+      "sha256": "fdab886b4bc03d158e8d32faadb992edabfe7048235e6f2a154e051a07285949"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-012",
       "family": "tool-hijack",
       "templateId": "tool-hijack-02",
       "canaryType": "tool",
-      "sha256": "88781e3f27691fb1872f35cbbf02537675c1d101d7a718c94e9af20fb9408c5c"
+      "sha256": "64376c3442669a36fd35b4735dd44966e7ea3b2394d2119cf682899bbb29a770"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-013",
       "family": "tool-hijack",
       "templateId": "tool-hijack-03",
       "canaryType": "tool",
-      "sha256": "3b3f569e14fad70f1a4888567c92443e6922d5aa1d0bcb5c5b16a9c822ea7419"
+      "sha256": "0dda0beab01a171f738fd7d3909eaf1faae2df6adb39f84eb2ec4cc9b9c98200"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-014",
       "family": "tool-hijack",
       "templateId": "tool-hijack-04",
       "canaryType": "tool",
-      "sha256": "9cdea48f1a45a6c9cc844d014c4004badb1077d43c9454f9237a0fc1010867c3"
+      "sha256": "69b275f96692f0f1b134d537c4824ef9523a7f2d61cccddcfd79339368e6b9ce"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-015",
       "family": "tool-hijack",
       "templateId": "tool-hijack-05",
       "canaryType": "tool",
-      "sha256": "3583e6802683cdcf78e3ece376f2f4313aaee5893b47516c58d834fdfeab4820"
+      "sha256": "d69c06bb9f737438f0bf0cd7874ed275bbe36569a4c8f0fce451b98170a25e95"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-016",
       "family": "tool-hijack",
       "templateId": "tool-hijack-06",
       "canaryType": "tool",
-      "sha256": "28ce4900b4e59f6c0e3d0660fd98b6889ebd844464b89a366da104d6e2692b53"
+      "sha256": "6190870b988213076486660148537902b2e1a8fee89221b265fc0cd0b44b352c"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-017",
       "family": "tool-hijack",
       "templateId": "tool-hijack-07",
       "canaryType": "tool",
-      "sha256": "811c8afd36def93d6a439d13bb37140f006394758e4b2fd4dc08a60058799678"
+      "sha256": "b2297c77edea8921c54ea8d89da5cd57cc6faec10edfaa117f794d470ae6dc01"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-018",
       "family": "tool-hijack",
       "templateId": "tool-hijack-08",
       "canaryType": "tool",
-      "sha256": "4ee40d1f48de11ad0fa5fda7bb336fed9d762996fa33132f6a826e1635ffdaff"
+      "sha256": "7d82195b310ae7def82c1d387b7dd8cf0f2767f985462cc80edaec3e723aec59"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-019",
       "family": "tool-hijack",
       "templateId": "tool-hijack-09",
       "canaryType": "tool",
-      "sha256": "9ae41c03137bf49be85b5ff2e56e466fac6dc7dd5deb25607f0ec553db256d6d"
+      "sha256": "54c3969b95946982fc58a9a9b782b177c822c27f7735a18737f4474b0b5cb775"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-020",
       "family": "tool-hijack",
       "templateId": "tool-hijack-10",
       "canaryType": "tool",
-      "sha256": "69cb43d40ded8714affe3eefc99ea77ff24c797a842c69d4364e1a81fb25d759"
+      "sha256": "e15383f84bae38f147742f5f8b10e80843c504df62bc6a0e40412df6ee528944"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-021",
       "family": "tool-hijack",
       "templateId": "tool-hijack-01",
       "canaryType": "tool",
-      "sha256": "6529143ecf11fa1002ff90ac8af712231fe8dc63aec4a5a20892fec1a41fd5d4"
+      "sha256": "395d406a2f8491a19560a4a6743417ee2d0cfd453155945c483d23bc8916c59f"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-022",
       "family": "tool-hijack",
       "templateId": "tool-hijack-02",
       "canaryType": "tool",
-      "sha256": "a0bd54612a26fe53a74ab747ade335a8f0325e8c2a2c15011208ae14e1080105"
+      "sha256": "40863b675c836a88af64ffa7b712affb6951842f1e5841ffb0c82548bf4afba5"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-023",
       "family": "tool-hijack",
       "templateId": "tool-hijack-03",
       "canaryType": "tool",
-      "sha256": "aad4523d5481c0f511ebe48c424f37558e384ad8b8a6df864f6420cf799450bc"
+      "sha256": "ebcd2e3179ed53dbd1de63f11001de0ae26baf5818762dd9b49254fd13fec0c1"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-024",
       "family": "tool-hijack",
       "templateId": "tool-hijack-04",
       "canaryType": "tool",
-      "sha256": "a62925ee6651bad81c9b7db0debb3948da61ce1df046ad2ac35dd5a8f81008de"
+      "sha256": "4b8cdaf082ccc38136929d79ff302075b7942eb585dc795c29c20aceb005afc1"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-025",
       "family": "tool-hijack",
       "templateId": "tool-hijack-05",
       "canaryType": "tool",
-      "sha256": "e65d8baceea30c6a10f482fc8ad550b9993ad1311a950b2956bc10fa5e74330d"
+      "sha256": "72c7f6466e90dd31342eb5daec9ddf8fa3e02b26d1b17ee6a3c9060ee519f572"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-026",
       "family": "tool-hijack",
       "templateId": "tool-hijack-06",
       "canaryType": "tool",
-      "sha256": "3cb57a916967ac2d822fca5248f82ba45eaed7a86b0021d7135e490934a8274a"
+      "sha256": "e6d38f9c6bcb72ff110db648ee732c29a6e7d43319bb438d798c134d7ad6359e"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-027",
       "family": "tool-hijack",
       "templateId": "tool-hijack-07",
       "canaryType": "tool",
-      "sha256": "443049eae2a40f757a89273ec678806e8041159f727553f4b2e391b35db1b78d"
+      "sha256": "e2a8e89f6dbe21be96b76ba7078218630a3876b7a7eff4d1d19d3717c2aae608"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-028",
       "family": "tool-hijack",
       "templateId": "tool-hijack-08",
       "canaryType": "tool",
-      "sha256": "2bc2bd276ddb6e5d169217fbfb064ee14b08abfa499027ca316a2417ca25287f"
+      "sha256": "f2fec0a5685da3385f8fb04cdeae10acabbe467bda7874a5fd44afa2a0ab7228"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-029",
       "family": "tool-hijack",
       "templateId": "tool-hijack-09",
       "canaryType": "tool",
-      "sha256": "bafc199711ff58ccfe3bd91bac07064e5434264359a78abf80981e8593bf53d5"
+      "sha256": "6e8f4811b0886c3915047abc719762e218ff72677da8abaed1df9d4a13241bb9"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-030",
       "family": "tool-hijack",
       "templateId": "tool-hijack-10",
       "canaryType": "tool",
-      "sha256": "375f9d2a4ee2fe1f08b2d9bd48285c6d6de1ee1ea39d96f5d78a02afa1d76785"
+      "sha256": "bd6fcede850cb82c74ae4c914792b0897a7e5761e0336434f5c307129990b03f"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-031",
       "family": "tool-hijack",
       "templateId": "tool-hijack-01",
       "canaryType": "tool",
-      "sha256": "597407415b70ce25a5552db70638fd8e747ef60efef87896cd8af7a04c75ca52"
+      "sha256": "1287f0270754bde951c200596dcb98c739a869484859387b111bae9775a5d067"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-032",
       "family": "tool-hijack",
       "templateId": "tool-hijack-02",
       "canaryType": "tool",
-      "sha256": "6707f5a72a723453de0930559969a49269c7c0d6316fdb350de9975ee0315122"
+      "sha256": "6d74d32292afeef338bbef01d201ce49ed3bef18a7149e7cd01b21098b72762e"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-033",
       "family": "tool-hijack",
       "templateId": "tool-hijack-03",
       "canaryType": "tool",
-      "sha256": "a7a2dbc5896cf68c53bdbdd23b19df08df96d1772ec1226defd0893b9d51bc78"
+      "sha256": "c167deaaf57b6855fbbe32b9116a5f38183171579fb3a01c3de6907ec30fcd72"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-034",
       "family": "tool-hijack",
       "templateId": "tool-hijack-04",
       "canaryType": "tool",
-      "sha256": "c97274c2176954ace5afffaae40f9e96d61a6a8cc0a098468cbd16537c69c00a"
+      "sha256": "2ab1dbb9af962a291c04ee323f1ad116cfd88a37ee2951c79ba46cba7f470e77"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-035",
       "family": "tool-hijack",
       "templateId": "tool-hijack-05",
       "canaryType": "tool",
-      "sha256": "d328a07d99935a9909b30aea34361c6819f74ee48094016b1b1b881f0d3fe780"
+      "sha256": "a6fc68f24830ace268dd5e2ca5d6fa131e04b250efb414c1da006befef574158"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-036",
       "family": "tool-hijack",
       "templateId": "tool-hijack-06",
       "canaryType": "tool",
-      "sha256": "d747e6d8ee7f7aeb301bdab10985cddb1164feb5744a72ee7866708f49c64499"
+      "sha256": "afbd5dcff25018e573c3051413b32495905f4575553378570006ed73d24616ba"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-037",
       "family": "tool-hijack",
       "templateId": "tool-hijack-07",
       "canaryType": "tool",
-      "sha256": "3846dd21607b978486bd8e6c6ab24e66b29b25d2c728236d8a98494cad2e17e1"
+      "sha256": "66e42e16d37b7512bf259200f52ac5c96cccfea09c0a9b2c77959c923f64baa0"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-038",
       "family": "tool-hijack",
       "templateId": "tool-hijack-08",
       "canaryType": "tool",
-      "sha256": "e8aeadf3f7f3fa0885615415a0cd81296687c59b89defd83bf7f811a68338f3b"
+      "sha256": "cdec7dbe16140f8793e586b7ac4b50e5d79e1c3229de76f8cf8f1a91df0ac268"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-039",
       "family": "tool-hijack",
       "templateId": "tool-hijack-09",
       "canaryType": "tool",
-      "sha256": "678303714050434f8a720c254c063734650d485bd7886a9fc698523854741d89"
+      "sha256": "9c072d0975e807170b8956b4cd33f87a044f3af1c60bd922d8475c552e3bec75"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-040",
       "family": "tool-hijack",
       "templateId": "tool-hijack-10",
       "canaryType": "tool",
-      "sha256": "b4385a9192df29a7c29ddb9501e8ba365f7c8ea16792445d32700c3dc5df8446"
+      "sha256": "eac733dd83ee20473e6b47bab3c34f8c55da65819c0cb1e17bab63cc8b0c1d76"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-041",
       "family": "tool-hijack",
       "templateId": "tool-hijack-01",
       "canaryType": "tool",
-      "sha256": "33e7c037f379ea15b01127b1aa0a7daac2210fc660c71971ee6296f12cd91d48"
+      "sha256": "31c864618797ce9fcdb8efe1c0d37f54903bb34bb790a3ef93cf3f9c71565c57"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-042",
       "family": "tool-hijack",
       "templateId": "tool-hijack-02",
       "canaryType": "tool",
-      "sha256": "cdba7746ab9da33882e1225b647097b2ad84a93738d9fba95d8f9c4cdee1deaa"
+      "sha256": "1e1ac7bd7d9ca4692635d945da80809d5610ef45f1fb8d34b8392cb343297555"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-043",
       "family": "tool-hijack",
       "templateId": "tool-hijack-03",
       "canaryType": "tool",
-      "sha256": "fc2d1350b6cb317d801baf995e71ed7e84fe023032e5a9ff69610b60d68db8b3"
+      "sha256": "c5116732f62c944cef7c8503306dee5c3de0714fb87ce511a261d9b036113e13"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-044",
       "family": "tool-hijack",
       "templateId": "tool-hijack-04",
       "canaryType": "tool",
-      "sha256": "2bebbccdee8ea760eaf381e596669e942632414fb1a93cc029a4e45856cb1d5a"
+      "sha256": "10577c5d02bf37ae3058ca858525b3952daa91621b23c6387241f7cb8fe20302"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-045",
       "family": "tool-hijack",
       "templateId": "tool-hijack-05",
       "canaryType": "tool",
-      "sha256": "955ee66ccb22ce2d0bb64324f985fef479dad520a498f2f25d7d565813627f97"
+      "sha256": "039e4cee893dd4f069fb8908df23199712a003dae258c83b9b70b0c3928ac013"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-046",
       "family": "tool-hijack",
       "templateId": "tool-hijack-06",
       "canaryType": "tool",
-      "sha256": "2570800f0a21db623a38a1b043c46d3b869f328cbc0467aaf484b8978da1d199"
+      "sha256": "8ebea3eb4c7fecc95c3ea670b8310c83f2a03d6abf27914261c153abc591b86f"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-047",
       "family": "tool-hijack",
       "templateId": "tool-hijack-07",
       "canaryType": "tool",
-      "sha256": "5b1d1496790b1eb2a2f4dd20306f6dac30013619fbbf1504bde3131715f0cbd5"
+      "sha256": "ef1fed9ae89e76063d47f38d539d02b0a2198fa066e233fe7ecc95d5ee41bb40"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-048",
       "family": "tool-hijack",
       "templateId": "tool-hijack-08",
       "canaryType": "tool",
-      "sha256": "6d7d566fee6e45818a2c6d788b84224fa5b5d0ca0f4e7bf59f5ddae0b84a324a"
+      "sha256": "c93d1f702d9abf798832556da03a2ff92b59f3d62f7467af996b710494326982"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-049",
       "family": "tool-hijack",
       "templateId": "tool-hijack-09",
       "canaryType": "tool",
-      "sha256": "a7b3ba6edba3c7781da886db7ef39af928a620d32809f08f641cbf78821ba539"
+      "sha256": "a09e7a0ac3dc404942b67f503e310b78bd6b9b1289df45f68a7bb4f47d1aab73"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-050",
       "family": "tool-hijack",
       "templateId": "tool-hijack-10",
       "canaryType": "tool",
-      "sha256": "28d13928a48d7f5c9ed324922c824e5005ca0c5f333daacc31a4bea2e7209242"
+      "sha256": "b7903c32bbf697e4433d73cef6f679951feff3a6c8c1eaf1b2a4b388052a75f5"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-051",
       "family": "tool-hijack",
       "templateId": "tool-hijack-01",
       "canaryType": "tool",
-      "sha256": "06c987c575b430f0451dcc645d479576cff680d64d118c73faf503eb84909247"
+      "sha256": "35708cbf9a52e1e382295a50e06f24149e0c470279b1fb2d93e10aa60a31f732"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-052",
       "family": "tool-hijack",
       "templateId": "tool-hijack-02",
       "canaryType": "tool",
-      "sha256": "59cdbf92557a7013d4877cf47e5d54180134afaf1b2fbedd9fd6f3e5e8765daf"
+      "sha256": "047ae9829b82b7c0f0633779f08d3596fc7f120aca75d0650e25cf74563c14a3"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-053",
       "family": "tool-hijack",
       "templateId": "tool-hijack-03",
       "canaryType": "tool",
-      "sha256": "2839b75cd9590676303bb04a98ae4c886166e1594903cfae9a514d8c822ef468"
+      "sha256": "00271b4edc35529babcebacb8a57a971beaa616dc75d3c254d0e69779eae6427"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-054",
       "family": "tool-hijack",
       "templateId": "tool-hijack-04",
       "canaryType": "tool",
-      "sha256": "5fe14920fa67f67776aa427b5b83fe94573e53687324a91fa1533991b65e4630"
+      "sha256": "3fd4181a2cbcfef86ddd3062bc2f8d9fa62527e18b4121f6f5a971dd7e825d30"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-055",
       "family": "tool-hijack",
       "templateId": "tool-hijack-05",
       "canaryType": "tool",
-      "sha256": "3c5a57e5432dab4f0c71bb1ee7844acb9e07e05560119529bf3cc0a3b66f297c"
+      "sha256": "f566465a3146aed2a80fc0cf1604929f3d8dcce4966eb65b2e023e3e5f3a49e0"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-056",
       "family": "tool-hijack",
       "templateId": "tool-hijack-06",
       "canaryType": "tool",
-      "sha256": "14f0da50b450c7ac53579899f1f013dc456db56fc1f2edf8db004e5e3e9355be"
+      "sha256": "4b1cf10d6183f62b0fd0f21f8564a8623ac27211e310a4a633385d9d8eb865c1"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-057",
       "family": "tool-hijack",
       "templateId": "tool-hijack-07",
       "canaryType": "tool",
-      "sha256": "ca1918d84da36b4c7d26142a6ed9ffc434a6025c2918d012cd59520b75044e8d"
+      "sha256": "5e350c6f0a54596485360c62875143c0b958bfb440cb676f2623841846fda298"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-058",
       "family": "tool-hijack",
       "templateId": "tool-hijack-08",
       "canaryType": "tool",
-      "sha256": "cd9e32967d1e95d82b21356b550ed4fdea92da31a19c659e3f21baa74bc20785"
+      "sha256": "bc188249f3924db472e01e6b92d76995142381ff6ebc8c9d01a0ba298bbf02bc"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-059",
       "family": "tool-hijack",
       "templateId": "tool-hijack-09",
       "canaryType": "tool",
-      "sha256": "8010ddd33d53ac65e5740549bfea4b8790db8352fdb4aebbc453127af7065c0a"
+      "sha256": "440fc8f4795485938d22aa5fcac4de51157cda22570c889031352fb764f42e10"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-060",
       "family": "tool-hijack",
       "templateId": "tool-hijack-10",
       "canaryType": "tool",
-      "sha256": "3167537cd6207b9cf25daf372b510ae93acbd10b9ca965f9fba13ca590a27050"
+      "sha256": "49ecd4491f0c27dfddf3df9351e104ea05b998ccba80c80a4548d5f34ed5a1ca"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-061",
       "family": "tool-hijack",
       "templateId": "tool-hijack-01",
       "canaryType": "tool",
-      "sha256": "0d5e5a98571d960540ff37d56b84ee7dfae27cf89041701bc793d29fc88b6c3d"
+      "sha256": "41287e7bb0d1636756bded03928e31c022435bb258812953f8d0b8f09622bb2d"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-062",
       "family": "tool-hijack",
       "templateId": "tool-hijack-02",
       "canaryType": "tool",
-      "sha256": "729822ee8608586eb26b8715009b55443000b043e8208c9a471ddefb4fa4ddd7"
+      "sha256": "aa1cc9fd99e10e2fc00fb7c069361c28b71f75b67425447d435359578ee196cd"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-063",
       "family": "tool-hijack",
       "templateId": "tool-hijack-03",
       "canaryType": "tool",
-      "sha256": "7566cb26aa82047cef05a42873c9a0e09ce1d2ea83fe6da6d07d2d103ad4c58d"
+      "sha256": "ce405e75261fbf602ed215b7bec442883180a987f00309c44498997c8ed247d9"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-064",
       "family": "tool-hijack",
       "templateId": "tool-hijack-04",
       "canaryType": "tool",
-      "sha256": "d804ebc1d117e60e1f988575c0ffb720fb03157e52a7e2dc125187434e63adca"
+      "sha256": "008cb882a515c9ec586f8accfb5872a786b3c198b6ee5cfac080b38e33d367a5"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-065",
       "family": "tool-hijack",
       "templateId": "tool-hijack-05",
       "canaryType": "tool",
-      "sha256": "969c1ded5d1fc90458686282428f44b36aaec6fe5580ec1ea66919f0169c7e10"
+      "sha256": "bc2768f8b6e4998234160195b0fce9ff15af64ea6869deaab3bd1097af3f6cc4"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-066",
       "family": "tool-hijack",
       "templateId": "tool-hijack-06",
       "canaryType": "tool",
-      "sha256": "f689cbe8f4c913c2ae999b3e0cda7ad6b7fe60407fee7aae5bd4f7e9aa7a2c11"
+      "sha256": "0b38169f04c8b7e2ca23cce9d8987224cd9e0bad4d1d541c86ffd9e603c5059d"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-067",
       "family": "tool-hijack",
       "templateId": "tool-hijack-07",
       "canaryType": "tool",
-      "sha256": "26db12706a3dc19b55beac88710985ca507924883b11c98aa10725b917519bdb"
+      "sha256": "2e066629e593385cad6146f400f2dfdd637fea4c920ee3b9b532783c8fea4621"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-068",
       "family": "tool-hijack",
       "templateId": "tool-hijack-08",
       "canaryType": "tool",
-      "sha256": "fa4c6c7c2aeb27edf31b0ed611d1fa2dff061e9896da900727cc944fa730b8ad"
+      "sha256": "358d624ddd7e7e7aa708d589dd1223a1811c489afc42794c91949ef6939162b6"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-069",
       "family": "tool-hijack",
       "templateId": "tool-hijack-09",
       "canaryType": "tool",
-      "sha256": "368e8a5c705df5a2041948c2f9d7278c84b50f61442591ec74c74f2532d451d5"
+      "sha256": "c8f8c467ee5d0e0e03efac7e9aa52f731d2d978465fa4c9119237d4dc5753ef3"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-070",
       "family": "tool-hijack",
       "templateId": "tool-hijack-10",
       "canaryType": "tool",
-      "sha256": "26912e3a14960e8b938716e183719706633b134d1f04a58fdc4e15262c7dcb77"
+      "sha256": "fe6e85279bd8aa0626eaff5918201514e29cc50473ff0350f8453f05041b2c98"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-071",
       "family": "tool-hijack",
       "templateId": "tool-hijack-01",
       "canaryType": "tool",
-      "sha256": "5c186ab850fa3b3879718e3745cc22389110c3a39145a4b624c86e4f5d8d1c13"
+      "sha256": "fe1f534bfed89877442943a3f90744d6446dcf0c06856febec3fb3efa31e41e8"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-072",
       "family": "tool-hijack",
       "templateId": "tool-hijack-02",
       "canaryType": "tool",
-      "sha256": "3c195b9e1b3fdfd6ca7d0ae898c5728879884246158e8a33d8daa65bd333acfa"
+      "sha256": "7458fb2d452f05a5e8cfb41d47309c9f356dd2a551a64a7d261effb07cf94ea7"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-073",
       "family": "tool-hijack",
       "templateId": "tool-hijack-03",
       "canaryType": "tool",
-      "sha256": "fee6252cad120ab8aeca6f7b5ee3d7c0ac1f1753de6b738fae922b0f9915f8da"
+      "sha256": "929c358a186e38074b54da4ad4dcbebb1f07a63007c086d736143b76aa30444e"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-074",
       "family": "tool-hijack",
       "templateId": "tool-hijack-04",
       "canaryType": "tool",
-      "sha256": "3bbca87158644afa8671cde0cbfe68a25a4a7037593bef4c61d777f017cd1d6d"
+      "sha256": "3e6777d251dbb70817f482d3164f78372d1f173b1732da1a84343776a83a1da2"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-075",
       "family": "tool-hijack",
       "templateId": "tool-hijack-05",
       "canaryType": "tool",
-      "sha256": "72cd76a52b94f71bfa63a57e59e823a673fac0412f2b1d7c599116fdbd190083"
+      "sha256": "6930f795bc758812508c0c230a42413c5345de5272d26d725a23b60a083be228"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-076",
       "family": "tool-hijack",
       "templateId": "tool-hijack-06",
       "canaryType": "tool",
-      "sha256": "75321593fcc7c56b48de3468e4f299adfc856f1cbde0f18062f23277353075d4"
+      "sha256": "09ddbf42c3155f7a4780341abcc5a2b1df6d8447e881a10693eb8ea4fb6d4bc4"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-077",
       "family": "tool-hijack",
       "templateId": "tool-hijack-07",
       "canaryType": "tool",
-      "sha256": "548b0a9189259ebcc5ef8ca09484f2e5c37a94c45b5ff0f351470c37182268e2"
+      "sha256": "389439549dd6d3682b82e59389621029f3731475cd6ea886ace5c07252fb2e9e"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-078",
       "family": "tool-hijack",
       "templateId": "tool-hijack-08",
       "canaryType": "tool",
-      "sha256": "bf91356e3c006f0666d54e3c82f8b382dc631712d6f9e1cbe9989d1b53e989f7"
+      "sha256": "a65a5b58738f99f3b86aea6fd4a7a35e87489daf9f0244ead3f819bfd748d061"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-079",
       "family": "tool-hijack",
       "templateId": "tool-hijack-09",
       "canaryType": "tool",
-      "sha256": "f3948b56659730f19ac45cb5439cbb1614870f0daf04e2619e9b047906207a93"
+      "sha256": "0772e30c9375fa72c69de2f7dd3c7eacc1dcfa83d62c4e9f7d4983065a87c765"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-080",
       "family": "tool-hijack",
       "templateId": "tool-hijack-10",
       "canaryType": "tool",
-      "sha256": "946a6b100cf57061cb51c1bd545b30609325f6357af686181b00ee542754e594"
+      "sha256": "ec85f176d2e3204cb4028f2e5b0549cca211726c082f87aa3eb96ee43f6a524f"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-081",
       "family": "tool-hijack",
       "templateId": "tool-hijack-01",
       "canaryType": "tool",
-      "sha256": "05d81404aa1c94d81b4303bbcadc968ade18d6b21d7c1bbf8f6a4d676a547cc3"
+      "sha256": "2635a14e2b586a2ecc4227c07fa35522d1dcfc39c32ba45b594f42373b1123e3"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-082",
       "family": "tool-hijack",
       "templateId": "tool-hijack-02",
       "canaryType": "tool",
-      "sha256": "ed272b27c73afaef8f854008b7682132db57c7d6bbd58a6766f1756106bfaefb"
+      "sha256": "d593ab862cb9d1817c053eae4c6e56c1fc316e02c2647ad9eafc71e8c1fa330b"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-083",
       "family": "tool-hijack",
       "templateId": "tool-hijack-03",
       "canaryType": "tool",
-      "sha256": "6e6b93662bbc7b1064683beaeec87e4a65c64dfb0821f72ba3fcd4289f4a06ee"
+      "sha256": "2ac7514ac4441c860f8e15425b9ea1d9e9550575585d5ff1bb20c4f403b6a370"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-084",
       "family": "tool-hijack",
       "templateId": "tool-hijack-04",
       "canaryType": "tool",
-      "sha256": "1397d7f89922fcc2ae4b832645b170f6e3a8bb8444cb58098ff742f3468047f9"
+      "sha256": "e4a26dc222ca8b932c2bc9b1b206d9076d46b83b57dbecc09443ff89728562dd"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-085",
       "family": "tool-hijack",
       "templateId": "tool-hijack-05",
       "canaryType": "tool",
-      "sha256": "aa889912c48c5162c64e01038cdd680d0314aaa4dd7b1ff447e38ffb34e73cba"
+      "sha256": "f78b2e6cd4ce089a10f0e066bcc9d3739cfb2ade09b99e27466ddde57835b990"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-086",
       "family": "tool-hijack",
       "templateId": "tool-hijack-06",
       "canaryType": "tool",
-      "sha256": "d4656d626a529cc067e958ac2c53cd2577e38b5fe81cb1562e8c717cae0689c9"
+      "sha256": "d5af1c0052463b87cc3a32e469ca638d1d590af209a77e729449dbd8f183c3b8"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-087",
       "family": "tool-hijack",
       "templateId": "tool-hijack-07",
       "canaryType": "tool",
-      "sha256": "b46efc27a54c7376796daff3d24073d93db7c9a2e2b332784779d4efd48ef4de"
+      "sha256": "a7b8ae4c8cf56322f4e42d1107fa64edf54f9d6c4242507b15f643b5ba427bd6"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-088",
       "family": "tool-hijack",
       "templateId": "tool-hijack-08",
       "canaryType": "tool",
-      "sha256": "857fe1151b5112b95bf6a90abea9c86c440cd940207a70e733a99bddd616929f"
+      "sha256": "c8be285cc28a8e5d443045833a2be09308896507c174135e72b654988a4b70e2"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-089",
       "family": "tool-hijack",
       "templateId": "tool-hijack-09",
       "canaryType": "tool",
-      "sha256": "fbf7fe0931b5741f8f6b4056aacc9e3c9e67c2b6d8cb892e88e1a5d92db7a863"
+      "sha256": "1a0df79cfb8e51e744dd534fdac3ed965a7f04e6c80e7209820985292323b449"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-090",
       "family": "tool-hijack",
       "templateId": "tool-hijack-10",
       "canaryType": "tool",
-      "sha256": "a01f1f40d8164c94602ebaf59d82a4d6e0df60efd094d91a900d3793a525a459"
+      "sha256": "2ab2d07c48e0a3001a81f5643638f25ada6686033322069234a090f649fc74c1"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-091",
       "family": "tool-hijack",
       "templateId": "tool-hijack-01",
       "canaryType": "tool",
-      "sha256": "fadfd53730b5db4e37f43d1a0adb05c257f3a15864f263078460a7bbdf5b0c3c"
+      "sha256": "fccaeff01f3dbb3d2c3750458210e05337d33f4fb1a9e49098d1eac436d2f998"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-092",
       "family": "tool-hijack",
       "templateId": "tool-hijack-02",
       "canaryType": "tool",
-      "sha256": "adf963c21c2a21aab863a1f58b7d19de2b8c821a2d268b31469b2d95bed038a7"
+      "sha256": "b8b4472c7f9d7840b7a8df0c83e98ef2ef9a6a66e2ab689944aac82eee262607"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-093",
       "family": "tool-hijack",
       "templateId": "tool-hijack-03",
       "canaryType": "tool",
-      "sha256": "8fc274dd32f0e0d2ca60c999e677753feb2a8e79a3709ae970df880da84e0e50"
+      "sha256": "c8fa0066a6b9970d918f49799601ef5a5d1aa5650bd281ab2e90f13d38ef1dee"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-094",
       "family": "tool-hijack",
       "templateId": "tool-hijack-04",
       "canaryType": "tool",
-      "sha256": "85a17c3d380969227d764e1e72c506a179a9180b670256e0a5a139744f864e8e"
+      "sha256": "79f3f39ce1aaee21a5288d9810db317b00c8b603a85a80689f550f5fc10cdc83"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-095",
       "family": "tool-hijack",
       "templateId": "tool-hijack-05",
       "canaryType": "tool",
-      "sha256": "e9ccbabc09ecac80703a3871e2a1317f87fbdbddecc91d3c2f3822eeb24f5569"
+      "sha256": "e86e8464117bee45a5eec1597e3889d90caff69361f3790842e78f672c1eb518"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-096",
       "family": "tool-hijack",
       "templateId": "tool-hijack-06",
       "canaryType": "tool",
-      "sha256": "edfc8a3b87752fd465847e995ec53ba90f1f7d944703b5f589a1a8164269fddf"
+      "sha256": "44ad4c96bb40589202a104a847e1bc213b47af70da3640a8669c1e6b99c124e7"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-097",
       "family": "tool-hijack",
       "templateId": "tool-hijack-07",
       "canaryType": "tool",
-      "sha256": "2cfea8a4f498282a2c4b3092e37f435f9c86488729052cf3a738eb58a20eb5ca"
+      "sha256": "85ff81e6b837982cb3bf4fad1a47b5dd8bf94d207cb6aeaa9a7c60fa8527470c"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-098",
       "family": "tool-hijack",
       "templateId": "tool-hijack-08",
       "canaryType": "tool",
-      "sha256": "350427e84af548695e425373fff765df7af2d4d30e8d2b9be06231ff4878fb92"
+      "sha256": "313488cc707db569d3c3d074c4042d442b0da518fd7313ad313e4e4072016808"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-099",
       "family": "tool-hijack",
       "templateId": "tool-hijack-09",
       "canaryType": "tool",
-      "sha256": "8f199985eaf15ff9c348aec035d46c085391eb2e79038cac3dce2945df08c3ae"
+      "sha256": "43fc7b939df7880edd9b9ef9bbe70b527e8294a2bb53f8827edd237ba25aab35"
     },
     {
       "scenarioId": "adaptive-r1-tool-hijack-100",
       "family": "tool-hijack",
       "templateId": "tool-hijack-10",
       "canaryType": "tool",
-      "sha256": "14f2b1de0eb59dba22ef2f72e159568c6a34563e0795e49f93eea76ef786917e"
+      "sha256": "bf66b2fa64f36463c2ef0f1e41976ceb89056e83ca8ee420cd3bbde4b7d56bbb"
     }
   ],
   "payloadRuleAudit": {
@@ -2854,5 +2854,5 @@
     "pass": 40,
     "date": "2026-08-27"
   },
-  "manifestSha256": "5187bbe0012fd3df7e1f2f179f27054b58e83ff35480673b1883c83bd6bed1ac"
+  "manifestSha256": "659fa184466ec60328da2a2f7637c9628d0781d73e74318ac778f434de979c53"
 }
