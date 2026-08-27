@@ -539,6 +539,33 @@ test("openai-compat NVIDIA host sends Authorization from NVIDIA_API_KEY", async 
   }
 });
 
+test("NVIDIA GPT-OSS uses its supported low reasoning effort", async () => {
+  const mock = mockJsonFetch({
+    choices: [{ message: { content: "ok" } }],
+  });
+  try {
+    await withEnv(
+      { ...AUTH_CLEAR_ENV, NVIDIA_API_KEY: "nvidia-only" },
+      async () => {
+        await completeChat(
+          {
+            kind: "openai-compat",
+            baseUrl: "https://integrate.api.nvidia.com/v1",
+            model: "openai/gpt-oss-20b",
+            requestTimeoutMs: 250,
+          },
+          "hi",
+        );
+        const requestBody = mock.requests[0]?.body;
+        assert.ok(requestBody && typeof requestBody === "object" && "reasoning_effort" in requestBody);
+        assert.equal(requestBody.reasoning_effort, "low");
+      },
+    );
+  } finally {
+    mock.restore();
+  }
+});
+
 test("openai-compat Hugging Face host sends Authorization from HF_TOKEN", async () => {
   const mock = mockJsonFetch({
     choices: [{ message: { content: "ok" } }],

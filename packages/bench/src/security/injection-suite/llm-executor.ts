@@ -250,7 +250,7 @@ export async function completeChatResult(
         messages,
         temperature: 0,
         max_tokens: 256,
-        reasoning_effort: "none",
+        reasoning_effort: model.startsWith("openai/gpt-oss-") ? "low" : "none",
         chat_template_kwargs: { enable_thinking: false },
         ...(tools ? { tools, tool_choice: "auto" } : {}),
       },
