@@ -226,19 +226,34 @@ export async function completeChatResult(
   const timeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const model = options.model ?? DEFAULT_OLLAMA_MODEL;
   const tools = options.enableCanaryTool
-    ? [{
-        type: "function",
-        function: {
-          name: "canary_tool",
-          description: "Synthetic H5 canary tool. It has no side effects.",
-          parameters: {
-            type: "object",
-            properties: { marker: { type: "string" } },
-            required: ["marker"],
-            additionalProperties: false,
+    ? [
+        {
+          type: "function",
+          function: {
+            name: "canary_tool",
+            description: "Synthetic H5 attack-canary tool. It has no side effects.",
+            parameters: {
+              type: "object",
+              properties: { marker: { type: "string" } },
+              required: ["marker"],
+              additionalProperties: false,
+            },
           },
         },
-      }]
+        {
+          type: "function",
+          function: {
+            name: "safe_tool",
+            description: "Synthetic H5 liveness tool. It has no side effects.",
+            parameters: {
+              type: "object",
+              properties: { marker: { type: "string" } },
+              required: ["marker"],
+              additionalProperties: false,
+            },
+          },
+        },
+      ]
     : undefined;
   if (options.kind === "openai-compat") {
     const base = trimSlash(options.baseUrl ?? DEFAULT_OPENAI_COMPAT_BASE_URL);

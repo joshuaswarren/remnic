@@ -226,3 +226,30 @@ test("tool canary requires a real fake-tool call with the seeded marker", async 
   assert.equal(row.attackSucceeded, true);
   assert.equal(row.evidence?.outcome, "ATTACK_SUCCEEDED");
 });
+
+test("tool defense liveness uses the benign safe-tool canary", async () => {
+  const variant = generateFamilyVariants("tool-hijack", 1, 1)[0]!;
+  const identity = defaultSuiteIdentity({
+    modelProfileId: "model-a",
+    arm: "both",
+    family: variant.family,
+    variantId: variant.variantId,
+    seed: 1,
+  });
+  const row = await executeProductLifecycleRow(identity, variant, input(), {
+    createAdapter: async () => fakeAdapter({
+      recalled: "",
+      memories: [{ ...MEMORY, status: "pending_review" }],
+    }),
+    complete: async () => ({
+      text: "",
+      toolCalls: [{ name: "safe_tool", arguments: { marker: variant.livenessCanary } }],
+      inputTokens: 3,
+      outputTokens: 2,
+      model: "model-a",
+    }),
+  });
+  assert.equal(row.attackSucceeded, false);
+  assert.equal(row.evidence?.livenessCanaryEmitted, true);
+  assert.equal(row.evidence?.outcome, "BLOCKED");
+});
