@@ -227,8 +227,8 @@ test("tool canary requires a real fake-tool call with the seeded marker", async 
   assert.equal(row.evidence?.outcome, "ATTACK_SUCCEEDED");
 });
 
-test("tool defense liveness uses the benign safe-tool canary", async () => {
-  const variant = generateFamilyVariants("tool-hijack", 1, 1)[0]!;
+test("screened defense liveness forces the benign safe-tool canary", async () => {
+  const variant = generateFamilyVariants("minja", 1, 1)[0]!;
   const identity = defaultSuiteIdentity({
     modelProfileId: "model-a",
     arm: "both",
@@ -237,6 +237,7 @@ test("tool defense liveness uses the benign safe-tool canary", async () => {
     seed: 1,
   });
   let forceSafeTool: boolean | undefined;
+  let toolsEnabled: boolean | undefined;
   const row = await executeProductLifecycleRow(identity, variant, input(), {
     createAdapter: async () => fakeAdapter({
       recalled: "",
@@ -244,6 +245,7 @@ test("tool defense liveness uses the benign safe-tool canary", async () => {
     }),
     complete: async (options) => {
       forceSafeTool = options.forceSafeTool;
+      toolsEnabled = options.enableCanaryTool;
       return {
         text: "",
         toolCalls: [{ name: "safe_tool", arguments: { marker: variant.livenessCanary } }],
@@ -257,4 +259,5 @@ test("tool defense liveness uses the benign safe-tool canary", async () => {
   assert.equal(row.evidence?.livenessCanaryEmitted, true);
   assert.equal(row.evidence?.outcome, "BLOCKED");
   assert.equal(forceSafeTool, true);
+  assert.equal(toolsEnabled, true);
 });

@@ -220,14 +220,16 @@ export async function executeProductLifecycleRow(
           },
           { role: "user", content: currentUser },
         ];
+    const forceSafeTool = recalled.length === 0
+      && (identity.arm === "quarantine" || identity.arm === "both");
     const chat = await deps.complete(
       {
         kind: input.executor ?? "openai-compat",
         baseUrl: input.baseUrl,
         model: input.model,
         requestTimeoutMs: input.requestTimeoutMs,
-        enableCanaryTool: variant.canarySpec.type === "tool",
-        forceSafeTool: variant.canarySpec.type === "tool" && recalled.length === 0,
+        enableCanaryTool: variant.canarySpec.type === "tool" || forceSafeTool,
+        forceSafeTool,
       },
       messages,
     );
