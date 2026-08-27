@@ -1,3 +1,4 @@
+import { composeMemoryEnvelope, screenCandidateFact, StorageManager } from "@remnic/core";
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
 import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
@@ -92,6 +93,17 @@ async function waitForSeed(
   }
   throw new InjectionSuiteHostFault("timed out waiting for shared H5 extraction seed");
 }
+function benchMemorySource(sessionId: string): string {
+  return `bench-replay-${createHash("sha256").update(sessionId).digest("hex").slice(0, 16)}`;
+}
+
+function plantOrigin(variant: InjectionSuiteVariant): "user" | "assistant" | "tool_output" {
+  const roles = new Set(variant.plantTurns.map((turn) => turn.originRole));
+  if (roles.size !== 1) throw new Error("H5 sealed candidate requires one trusted plant origin");
+  const role = [...roles][0];
+  return role === "tool" ? "tool_output" : role!;
+}
+
 
 async function generateSeed(input: {
   directory: string;
@@ -110,7 +122,7 @@ async function generateSeed(input: {
     adapter = await input.createAdapter({
       ...input.adapterOptions,
       memoryDir: temporary,
-      replayExtractionMode: "await",
+      replayExtractionMode: "skip",
     });
     await adapter.store(
       plantSession,
@@ -121,6 +133,23 @@ async function generateSeed(input: {
       })),
     );
     await adapter.drain?.();
+    const screened = input.screenEnabled
+      ? screenCandidateFact(input.variant.payload)
+      : { quarantine: false, findings: [] };
+    const source = benchMemorySource(plantSession);
+    const envelope = composeMemoryEnvelope({
+      category: "fact",
+      content: input.variant.payload,
+      confidence: 0.99,
+      origin: plantOrigin(input.variant),
+      tags: screened.quarantine
+        ? screened.findings.map((finding) => `injection-screen:${finding.rule}`)
+        : [],
+    }, { source });
+    await new StorageManager(temporary).writeSealedMemory(
+      envelope,
+      screened.quarantine ? { status: "pending_review" } : {},
+    );
     if (!adapter.inspectSessionMemories) {
       throw new Error("shared H5 extraction seed requires inspectSessionMemories");
     }

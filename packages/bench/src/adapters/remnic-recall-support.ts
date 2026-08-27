@@ -1,3 +1,4 @@
+import { renderAuthorityFence, screenCandidateFact } from "@remnic/core";
 import type { BenchRecallSupportAssessment, BenchRecallSupportRequest } from "./types.js";
 
 export const DEFAULT_ANSWER_SUPPORT_MIN_COVERAGE = 0.34;
@@ -44,6 +45,16 @@ export function shouldIncludeCoreRecallForReplay(options: {
 }): boolean {
   return options.useCoreMemoryPipeline &&
     (options.replayExtractionMode !== "skip" || !options.skipExtractionLcmFirst);
+}
+
+export function secureBenchRecallSection(
+  content: string,
+  security: { originAuthorityEnabled: boolean; injectionScreenEnabled: boolean },
+  coreSection: boolean,
+): string {
+  if (coreSection) return content;
+  if (security.injectionScreenEnabled && screenCandidateFact(content).quarantine) return "";
+  return security.originAuthorityEnabled ? renderAuthorityFence(content, "unknown") : content;
 }
 
 function normalizeSupportToken(value: string): string {

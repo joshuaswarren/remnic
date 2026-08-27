@@ -73,6 +73,7 @@ import {
   resolveAnswerSupportMinCoverage,
   resolveSkipExtractionLcmFirst,
   shouldIncludeCoreRecallForReplay,
+  secureBenchRecallSection,
 } from "./remnic-recall-support.js";
 
 export {
@@ -209,6 +210,10 @@ type BenchOrchestratorState = {
   ownsTempDir: boolean;
   orchestrator: Orchestrator;
   qmdSandbox: BenchQmdSandbox;
+  recallSecurity: {
+    originAuthorityEnabled: boolean;
+    injectionScreenEnabled: boolean;
+  };
 };
 
 type BenchRecallEngine = {
@@ -423,20 +428,28 @@ async function createBenchOrchestrator(
     qmdPath: qmdSandbox.wrapperPath,
   };
 
-  const orchestrator = new Orchestrator(
-    parseConfig(
-      buildBenchAdapterConfig(mode, commonConfig, overrides, {
-        preserveRuntimeDefaults,
-      }),
-    ),
+  const config = parseConfig(
+    buildBenchAdapterConfig(mode, commonConfig, overrides, {
+      preserveRuntimeDefaults,
+    }),
   );
+  const orchestrator = new Orchestrator(config);
 
   await orchestrator.initialize();
   if (!orchestrator.lcmEngine) {
     throw new Error("Remnic benchmark adapter requires LCM to be enabled.");
   }
 
-  return { tempDir, ownsTempDir, orchestrator, qmdSandbox };
+  return {
+    tempDir,
+    ownsTempDir,
+    orchestrator,
+    qmdSandbox,
+    recallSecurity: {
+      originAuthorityEnabled: config.originAuthorityEnabled,
+      injectionScreenEnabled: config.injectionScreenEnabled,
+    },
+  };
 }
 
 async function createBenchQmdSandbox(
@@ -2029,15 +2042,22 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           );
         }
         const sections: string[] = [];
+        let usedChars = 0;
         const appendSection = (
           id: string,
           source: Parameters<BenchRecallTraceRecorder["appendSection"]>[1],
           rendered: string,
         ): void => {
-          traceRecorder?.appendSection(id, source, rendered.length);
-          sections.push(rendered);
+          const secured = secureBenchRecallSection(
+            rendered,
+            state.recallSecurity,
+            source === "core",
+          );
+          if (!secured) return;
+          traceRecorder?.appendSection(id, source, secured.length);
+          sections.push(secured);
+          usedChars += secured.length;
         };
-        let usedChars = 0;
         const explicitReferences = historicalRecall
           ? []
           : collectExplicitTurnReferences(query);
@@ -2076,7 +2096,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           if (temporalIntervalEvidence) {
             hasTemporalIntervalEvidence = true;
             appendSection("temporal-interval", "derived", temporalIntervalEvidence);
-            usedChars += temporalIntervalEvidence.length;
           }
         }
 
@@ -2090,7 +2109,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           if (dependencyVersionEvidence) {
             hasDependencyVersionEvidence = true;
             appendSection("dependency-version", "derived", dependencyVersionEvidence);
-            usedChars += dependencyVersionEvidence.length;
           }
         }
 
@@ -2104,7 +2122,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             }));
           if (latestQuantitativeEvidence) {
             appendSection("latest-quantitative", "derived", latestQuantitativeEvidence);
-            usedChars += latestQuantitativeEvidence.length;
           }
         }
 
@@ -2118,7 +2135,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           if (userImplementationTargetEvidence) {
             hasUserImplementationTargetEvidence = true;
             appendSection("implementation-targets", "derived", userImplementationTargetEvidence);
-            usedChars += userImplementationTargetEvidence.length;
           }
         }
 
@@ -2144,7 +2160,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         if (exactReferenceEvidence) {
           appendSection("explicit-cue", "explicit-cue", exactReferenceEvidence);
           traceRecorder?.recordEvidenceSelections("explicit-cue", explicitCueSelections);
-          usedChars += exactReferenceEvidence.length;
         }
 
         const trajectorySelections: TrajectoryAnalysisLineReceipt[] = [];
@@ -2170,7 +2185,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             "trajectory-analysis",
             trajectorySelections,
           );
-          usedChars += trajectoryAnalysisEvidence.length;
         }
 
         if (
@@ -2223,7 +2237,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           if (coreRecall.trim().length > 0) {
             const section = `## Remnic recall pipeline\n${coreRecall.trim()}`;
             appendSection("core", "core", section);
-            usedChars += section.length;
           }
         }
 
@@ -2235,7 +2248,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               `No historically valid Remnic memories matched this query as of ${recallAsOf}.`,
             ].join("\n");
             appendSection("historical-empty", "derived", section);
-            usedChars += section.length;
           }
         }
 
@@ -2496,7 +2508,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 "direct-temporal",
                 directTemporalSelections,
               );
-              usedChars += section.length;
               remainingSearchBudget = 0;
             }
 
@@ -2506,7 +2517,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             );
             if (contradictionGuidance) {
               appendSection("contradiction-guidance", "derived", contradictionGuidance);
-              usedChars += contradictionGuidance.length;
             }
 
             const searchSelections: EvidencePackSelectionReceipt[] = [];
@@ -2531,7 +2541,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 "search-evidence",
                 searchSelections,
               );
-              usedChars += searchEvidence.length;
             }
           }
         }
@@ -2544,7 +2553,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               "No direct evidence found for the requested personal background or previous development projects in this session.",
             ].join("\n");
             appendSection("personal-history-empty", "derived", section);
-            usedChars += section.length;
           }
         }
 

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
@@ -81,13 +82,14 @@ async function withDeterministicModel<T>(
     });
   }
 }
-test("H5 live product path records dead-at-write separately from a live block", async () => {
+test("H5 product path deterministically plants candidates before live behavior", async () => {
   const previous = process.env.REMNIC_OPENAI_COMPAT_API_KEY;
   process.env.REMNIC_OPENAI_COMPAT_API_KEY = "fixture-key";
   try {
     await withDeterministicModel(async (baseUrl, requests) => {
       const variant = generateFamilyVariants("minja", 1, 71)[0]!;
       const rows = new Map<InjectionSuiteArm, InjectionSuiteEpisodeRow>();
+      const outputDir = `/tmp/h5-fixture-output-${randomUUID()}`;
       for (const arm of ["none", "fencing", "quarantine", "both"] as const) {
         const identity = defaultSuiteIdentity({
           modelProfileId: "fixture-model",
@@ -100,20 +102,23 @@ test("H5 live product path records dead-at-write separately from a live block", 
           seeds: 1,
           variantsPerFamily: 1,
           modelProfileId: "fixture-model",
-          outputDir: "/tmp/h5-fixture-output",
+          outputDir,
           executor: "openai-compat",
           baseUrl,
           model: "h5-fixture-model",
           requestTimeoutMs: 10_000,
         }));
       }
-      assert.ok(requests.some((request) => request.includes("memory extraction system")));
+      assert.equal(requests.some((request) => request.includes("memory extraction system")), false);
       assert.ok(requests.some((request) => request.includes(variant.livenessCanary)));
-      for (const row of rows.values()) {
-        assert.equal(row.evidence?.viable, false);
-        assert.equal(row.evidence?.stoppedAt, "write");
-        assert.equal(row.evidence?.livenessCanaryEmitted, true);
-      }
+      assert.equal(rows.get("none")?.attackSucceeded, true);
+      assert.equal(rows.get("fencing")?.evidence?.outcome, "BLOCKED");
+      assert.equal(rows.get("fencing")?.fenced, true);
+      assert.equal(rows.get("quarantine")?.quarantined, true);
+      assert.equal(rows.get("quarantine")?.evidence?.outcome, "BLOCKED");
+      assert.equal(rows.get("both")?.quarantined, true);
+      assert.equal(rows.get("both")?.evidence?.outcome, "BLOCKED");
+      assert.ok([...rows.values()].every((row) => row.evidence?.viable === true));
     });
   } finally {
     if (previous === undefined) delete process.env.REMNIC_OPENAI_COMPAT_API_KEY;

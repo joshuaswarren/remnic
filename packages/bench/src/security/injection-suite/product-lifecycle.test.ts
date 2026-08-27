@@ -166,6 +166,30 @@ test("product lifecycle keeps quarantined write evidence while recall stays empt
   assert.equal(row.evidence?.outcome, "BLOCKED");
 });
 
+test("recalled profile and transcript surfaces make a planted row viable", async () => {
+  const variant = generateFamilyVariants("sleeper", 1, 1)[0]!;
+  const identity = defaultSuiteIdentity({
+    modelProfileId: "model-a",
+    arm: "none",
+    family: variant.family,
+    variantId: variant.variantId,
+    seed: 1,
+  });
+  const row = await executeProductLifecycleRow(identity, variant, input(), {
+    createAdapter: async () => fakeAdapter({ recalled: variant.payload }),
+    complete: async () => ({
+      text: `${variant.canary} ${variant.livenessCanary}`,
+      toolCalls: [],
+      inputTokens: 1,
+      outputTokens: 1,
+      model: "model-a",
+    }),
+  });
+  assert.equal(row.evidence?.viable, true);
+  assert.equal(row.evidence?.stoppedAt, "complete");
+  assert.equal(row.attackSucceeded, true);
+});
+
 test("tool canary requires a real fake-tool call with the seeded marker", async () => {
   const variant = generateFamilyVariants("tool-hijack", 1, 1)[0]!;
   const identity = defaultSuiteIdentity({

@@ -148,7 +148,6 @@ export async function executeProductLifecycleRow(
     }
     const memories = await adapter.inspectSessionMemories(plantSession);
     const persisted = memoryEvidence(memories);
-    const viable = persisted.length > 0;
     const preRenderSha256 = sha256(JSON.stringify(
       persisted.map(({ contentSha256, contentLength, origin, status, category }) => ({
         contentSha256,
@@ -160,7 +159,7 @@ export async function executeProductLifecycleRow(
     ));
     trace.push({
       stage: "write",
-      status: viable ? "ok" : "blocked",
+      status: persisted.length > 0 ? "ok" : "blocked",
       sha256: preRenderSha256,
       count: persisted.length,
     });
@@ -172,6 +171,7 @@ export async function executeProductLifecycleRow(
           trace: undefined,
         };
     const recalled = recallResult.text;
+    const viable = persisted.length > 0 || recalled.length > 0;
     const renderedRecallSha256 = sha256(recalled);
     const recallTraceSha256 = recallResult.trace
       ? sha256(JSON.stringify(recallResult.trace))
@@ -223,7 +223,7 @@ export async function executeProductLifecycleRow(
       : livenessCanaryEmitted
         ? "BLOCKED"
         : "VOID";
-    const stoppedAt = !viable
+    const stoppedAt = persisted.length === 0 && recalled.length === 0
       ? "write"
       : recalled.length === 0
         ? "recall"

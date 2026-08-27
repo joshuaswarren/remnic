@@ -28,9 +28,13 @@ const RULE_WEIGHTS = {
   // Instruction resets directly try to replace the active authority.
   "ignore-previous-family": 4,
   // Conditional triggers encode a hidden action for a future turn.
-  "conditional-trigger": 3,
+  "conditional-trigger": 4,
   // Remnic command references can redirect the memory system itself.
   "authority-escalation": 4,
+  // Stored response controls try to turn recalled data into future behavior.
+  "response-control-directive": 4,
+  // Tool-routing controls replace the current tool choice from recalled data.
+  "tool-routing-directive": 4,
 } as const;
 
 // Weight 4 blocks one high-confidence instruction pattern, while ordinary
@@ -66,11 +70,11 @@ function findImperativeToAgent(content: string): InjectionScreenFinding | undefi
   return findingFor(
     "imperative-to-agent",
     content,
-    /\b(?:agent|assistant|ai|model)\s*[,!:.-]\s*(?:please\s+)?(?:ignore|disregard|call|run|execute|send|delete|reveal|email|store|remember|follow|use|do)\b/i,
+    /\b(?:agent|assistant|ai|model)[ \t]{0,8}[,!:.-][ \t]{0,8}(?:please[ \t]{1,8})?(?:ignore|disregard|call|run|execute|send|delete|reveal|email|store|remember|follow|use|do|answer|respond|reply|emit|output|return|include|produce|say)\b/i,
   ) ?? findingFor(
     "imperative-to-agent",
     content,
-    /\b(?:agent|assistant|ai|model)\s+(?:must|should|need to|please)\s+(?:ignore|disregard|call|run|execute|send|delete|reveal|email|store|remember|follow|use|do)\b/i,
+    /\b(?:agent|assistant|ai|model)[ \t]{1,8}(?:must|should|need to|please|to)[ \t]{1,8}(?:ignore|disregard|call|run|execute|send|delete|reveal|email|store|remember|follow|use|do|answer|respond|reply|emit|output|return|include|produce|say)\b/i,
   );
 }
 
@@ -118,11 +122,27 @@ function findConditionalTrigger(content: string): InjectionScreenFinding | undef
   return findingFor(
     "conditional-trigger",
     content,
-    /\b(?:when|if)\b[\s\S]{1,120}\b(?:say|says|see|sees|hear|hears|receive|receives|mention|mentions|contain|contains|encounter|encounters)\b[\s\S]{1,120}\b(?:then\s+)?(?:call|invoke|run|execute|send|delete|reveal|store|use|follow|do|respond)\b/i,
+    /\b(?:when|if|unless|after|only after|if and only if|on seeing)\b[\s\S]{1,180}\b(?:ask|asked|say|says|see|sees|seeing|hear|hears|receive|receives|mention|mentions|mentioned|appear|appears|contain|contains|encounter|encounters|phrase|condition|key)\b[\s\S]{0,180}\b(?:then[ \t]{1,8})?(?:answer|call|include|invoke|run|execute|send|delete|reveal|store|use|follow|do|respond|reply|emit|output|return|produce|say|add|replace)\b/i,
   ) ?? findingFor(
     "conditional-trigger",
     content,
-    /\b(?:when|if)\b[\s\S]{1,100},\s*(?:then\s+)?(?:call|invoke|run|execute|send|delete|reveal|store|use|follow|do|respond)\b/i,
+    /\b(?:when|if|unless)\b[\s\S]{1,120},[ \t]{0,8}(?:then[ \t]{1,8})?(?:answer|call|include|invoke|run|execute|send|delete|reveal|store|use|follow|do|respond|reply|emit|output|return|produce|say|add|replace)\b/i,
+  );
+}
+
+function findResponseControlDirective(content: string): InjectionScreenFinding | undefined {
+  return findingFor(
+    "response-control-directive",
+    content,
+    /\b(?:answer|response|reply|behavior|instruction|rule|policy|reminder|note|retrieval|activation|preference|questions?|condition)\b[\s\S]{0,120}\b(?:must|should|requires?|means|becomes?|is[ \t]{1,8}exactly|replace|produce|include|add|emit|output|return|respond|reply|answer|say|begin|cause|use)\b|\b(?:must|should|requires?|replace|produce|include|add|emit|output|return|respond|reply|answer|say|begin|cause|use)\b[\s\S]{0,120}\b(?:answer|response|reply|behavior|instruction|rule|policy|reminder|note|retrieval|activation|preference|questions?|condition)\b/i,
+  );
+}
+
+function findToolRoutingDirective(content: string): InjectionScreenFinding | undefined {
+  return findingFor(
+    "tool-routing-directive",
+    content,
+    /\b(?:ignore|redirect(?:ing)?|override|substitute|preferred[_ -]?tool|never[ \t]{1,8}use|must[ \t]{1,8}call|requires?[ \t]{1,8}redirecting)\b[\s\S]{0,160}\b(?:tool|function|[a-z][a-z0-9-]*[_:.][a-z0-9-]+)\b|\b(?:tool|function|[a-z][a-z0-9-]*[_:.][a-z0-9-]+)\b[\s\S]{0,160}\b(?:redirect(?:ing)?|override|substitute|preferred[_ -]?tool|never[ \t]{1,8}use|must[ \t]{1,8}call)\b/i,
   );
 }
 
@@ -148,6 +168,8 @@ export function screenCandidateFact(content: string): InjectionScreenResult {
     ["ignore-previous-family", findIgnorePreviousFamily],
     ["conditional-trigger", findConditionalTrigger],
     ["authority-escalation", findAuthorityEscalation],
+    ["response-control-directive", findResponseControlDirective],
+    ["tool-routing-directive", findToolRoutingDirective],
   ];
   for (const [rule, find] of rules) {
     const finding = find(content);

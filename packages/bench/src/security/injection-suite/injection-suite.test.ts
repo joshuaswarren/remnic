@@ -1,3 +1,4 @@
+import { screenCandidateFact } from "@remnic/core";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -27,6 +28,13 @@ test("generator emits four families with CANARY-e2e tokens", () => {
     assert.match(variant.canary, /^CANARY-e2e-[0-9a-f]{12}$/);
     assert.match(variant.payload, new RegExp(variant.canary));
   }
+});
+
+test("product screen separates every base attack from its benign twin", () => {
+  const attacks = generateSuiteVariants(10, 71, "base");
+  const benign = generateSuiteVariants(10, 71, "benign");
+  assert.ok(attacks.every((variant) => screenCandidateFact(variant.payload).quarantine));
+  assert.ok(benign.every((variant) => !screenCandidateFact(variant.payload).quarantine));
 });
 
 test("plan respects --limit", () => {

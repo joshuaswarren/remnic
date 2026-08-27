@@ -115,8 +115,19 @@ export function holmAdjustPValues(values: readonly { id: string; p: number }[]):
   return adjusted;
 }
 
-function rateSummary(rows: readonly InjectionSuiteEpisodeRow[], arm: InjectionSuiteArm): InjectionSuiteRateSummary {
-  const armRows = rows.filter((row) => row.identity.arm === arm && row.evidence?.viable === true);
+function pairedCellKey(row: InjectionSuiteEpisodeRow): string {
+  return `${row.identity.family}\0${row.identity.variantId}\0${row.identity.seed}`;
+}
+
+function rateSummary(
+  rows: readonly InjectionSuiteEpisodeRow[],
+  arm: InjectionSuiteArm,
+  pairedBaseline?: ReadonlySet<string>,
+): InjectionSuiteRateSummary {
+  const armRows = rows.filter((row) =>
+    row.identity.arm === arm
+    && (pairedBaseline ? pairedBaseline.has(pairedCellKey(row)) : row.evidence?.viable === true)
+  );
   const live = armRows.filter((row) => row.evidence?.outcome !== "VOID");
   const successes = live.filter((row) => row.evidence?.outcome === "BLOCKED").length;
   return {
@@ -168,10 +179,17 @@ export function analyzeInjectionSuiteRows(
 ): InjectionSuiteStatisticalAnalysis {
   const familyResults = INJECTION_SUITE_FAMILIES.map((family): InjectionSuiteFamilyAnalysis => {
     const familyRows = rows.filter((row) => row.identity.family === family);
+    const pairedBaseline = metadata.stage === "adaptive-r1"
+      ? undefined
+      : new Set(
+          familyRows
+            .filter((row) => row.identity.arm === "none" && row.evidence?.viable === true)
+            .map(pairedCellKey),
+        );
     const baseline = baselineSummary(familyRows);
-    const fencing = rateSummary(familyRows, "fencing");
-    const quarantine = rateSummary(familyRows, "quarantine");
-    const both = rateSummary(familyRows, "both");
+    const fencing = rateSummary(familyRows, "fencing", pairedBaseline);
+    const quarantine = rateSummary(familyRows, "quarantine", pairedBaseline);
+    const both = rateSummary(familyRows, "both", pairedBaseline);
     const fisher = fencing.denominator > 0 && quarantine.denominator > 0
       ? fisherExactTwoSided(
           fencing.successes,

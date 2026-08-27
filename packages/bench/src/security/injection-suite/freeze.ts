@@ -16,7 +16,7 @@ import type {
 } from "./types.js";
 
 export interface InjectionSuiteModelProfile {
-  schemaVersion: 1;
+  schemaVersion: 2;
   modelProfileId: string;
   modelProfileHash: string;
   executor: string;
@@ -28,6 +28,7 @@ export interface InjectionSuiteModelProfile {
   temperature: 0;
   maxOutputTokens: 256;
   disableThinking: true;
+  plantMode: "sealed-candidate-v1";
   extractionModel: string;
   behaviorModel: string;
 }
@@ -91,7 +92,7 @@ function buildModelProfile(input: InjectionSuiteCliInput): InjectionSuiteModelPr
   const executor = input.executor ?? "local";
   const model = input.model ?? "local-dry";
   const withoutHash = {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     modelProfileId: input.modelProfileId,
     executor,
     model,
@@ -102,7 +103,8 @@ function buildModelProfile(input: InjectionSuiteCliInput): InjectionSuiteModelPr
     temperature: 0 as const,
     maxOutputTokens: 256 as const,
     disableThinking: true as const,
-    extractionModel: model,
+    plantMode: "sealed-candidate-v1" as const,
+    extractionModel: "deterministic-sealed-candidate-v1",
     behaviorModel: model,
   };
   return {
