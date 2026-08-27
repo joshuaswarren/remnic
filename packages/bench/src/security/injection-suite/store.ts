@@ -5,8 +5,9 @@
  * on every try. Multi-host exclusion lives in claims.ts (mkdir lease).
  */
 
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   InjectionSuiteCheckpoint,
@@ -98,11 +99,10 @@ export class InjectionSuiteRowStore {
       tries,
       ...(terminal ? { terminal } : {}),
     };
-    await mkdir(this.checkpointsDir, { recursive: true });
-    const destination = this.checkpointPath(identity);
-    const tempPath = `${destination}.tmp-${randomUUID()}`;
-    await writeFile(tempPath, `${JSON.stringify(checkpoint, null, 2)}\n`, "utf8");
-    await rename(tempPath, destination);
+    await writeFileAtomically(
+      this.checkpointPath(identity),
+      `${JSON.stringify(checkpoint, null, 2)}\n`,
+    );
     return checkpoint;
   }
 }

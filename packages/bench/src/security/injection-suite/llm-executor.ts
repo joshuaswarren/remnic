@@ -4,12 +4,12 @@
  * Talks native Ollama /api/chat by default or an OpenAI-compatible
  * /v1/chat/completions endpoint. openai-compat attaches Authorization
  * only for an exact allowlisted API host: integrate.api.nvidia.com uses
- * NVIDIA_API_KEY, api.openai.com uses OPENAI_API_KEY, and every other
- * host (including other *.openai.com / *.nvidia.com subdomains) requires
- * REMNIC_OPENAI_COMPAT_API_KEY. Provider and non-loopback custom hosts
- * require https before a credential is attached. Loopback HTTP
- * (127.0.0.1 / localhost) is the only plaintext exception, for local
- * openai-compat. Ambient keys are never reused across providers.
+ * NVIDIA_API_KEY, api.openai.com uses OPENAI_API_KEY, and
+ * router.huggingface.co uses HF_TOKEN. Every other host (including other
+ * provider subdomains) requires REMNIC_OPENAI_COMPAT_API_KEY. Provider and
+ * non-loopback custom hosts require https before a credential is attached.
+ * Loopback HTTP (127.0.0.1 / localhost) is the only plaintext exception, for
+ * local openai-compat. Ambient keys are never reused across providers.
  * ollama stays unauthenticated. Network/5xx/timeout become
  * HOST_API_FAULT so the suite pauses instead of cutting the row.
  */
@@ -87,6 +87,7 @@ function parseCompatUrl(baseUrl: string): { protocol: string; hostname: string }
 
 const OPENAI_API_HOSTS = Object.freeze(["api.openai.com"] as const);
 const NVIDIA_API_HOSTS = Object.freeze(["integrate.api.nvidia.com"] as const);
+const HUGGING_FACE_API_HOSTS = Object.freeze(["router.huggingface.co"] as const);
 
 function isExactAllowlistedHost(hostname: string, allowlist: readonly string[]): boolean {
   return (allowlist as readonly string[]).includes(hostname);
@@ -142,6 +143,13 @@ function resolveOpenAiCompatToken(baseUrl: string): string {
       "openai-compat OpenAI host requires OPENAI_API_KEY",
     );
   }
+  if (isExactAllowlistedHost(hostname, HUGGING_FACE_API_HOSTS)) {
+    requireHttps(protocol, "openai-compat Hugging Face host requires https");
+    return requireEnvToken(
+      "HF_TOKEN",
+      "openai-compat Hugging Face host requires HF_TOKEN",
+    );
+  }
   if (!isHttps(protocol) && !isLoopbackHttpHost(hostname)) {
     throw new InjectionSuiteHostFault(
       "openai-compat custom host requires https (loopback HTTP is allowed only for 127.0.0.1 or localhost)",
@@ -149,7 +157,7 @@ function resolveOpenAiCompatToken(baseUrl: string): string {
   }
   return requireEnvToken(
     "REMNIC_OPENAI_COMPAT_API_KEY",
-    "openai-compat unknown host requires REMNIC_OPENAI_COMPAT_API_KEY (or a known host: api.openai.com / integrate.api.nvidia.com); do not reuse OPENAI_API_KEY or NVIDIA_API_KEY",
+    "openai-compat unknown host requires REMNIC_OPENAI_COMPAT_API_KEY (or a known host: api.openai.com / integrate.api.nvidia.com / router.huggingface.co); do not reuse provider keys",
   );
 }
 

@@ -7,7 +7,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { type FileHandle, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { InjectionSuiteClaimLock } from "./claims.js";
 import { generateFamilyVariants, generateSuiteVariants } from "./generator.js";
@@ -18,6 +18,7 @@ import {
   DEFAULT_OLLAMA_MODEL,
   DEFAULT_OLLAMA_BASE_URL,
   DEFAULT_OPENAI_COMPAT_BASE_URL,
+  DEFAULT_REQUEST_TIMEOUT_MS,
 } from "./llm-executor.js";
 import { InjectionSuiteRowStore, buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
 import type {
@@ -34,16 +35,18 @@ import {
   INJECTION_SUITE_VERSION,
 } from "./types.js";
 
-export const INJECTION_SUITE_RESUME_CONTRACT = "h5-injection-suite-resume-v1";
+export const INJECTION_SUITE_RESUME_CONTRACT = "h5-injection-suite-resume-v2";
 
 export function injectionSuiteResumeContractHash(metadata: {
   suiteVersion: string;
   modelProfileId: string;
   seeds: readonly number[];
   variantsPerFamily: number;
+  limit: number | null;
   executor: string;
   model: string;
   baseUrl: string;
+  requestTimeoutMs: number;
 }): string {
   return createHash("sha256")
     .update(
@@ -53,9 +56,11 @@ export function injectionSuiteResumeContractHash(metadata: {
         modelProfileId: metadata.modelProfileId,
         seeds: metadata.seeds,
         variantsPerFamily: metadata.variantsPerFamily,
+        limit: metadata.limit,
         executor: metadata.executor,
         model: metadata.model,
         baseUrl: metadata.baseUrl,
+        requestTimeoutMs: metadata.requestTimeoutMs,
       }),
     )
     .digest("hex");
@@ -65,22 +70,26 @@ export function resolvedExecutorContract(input: InjectionSuiteCliInput): {
   executor: string;
   model: string;
   baseUrl: string;
+  requestTimeoutMs: number;
 } {
   const executor = input.executor ?? "local";
   if (executor === "local") {
-    return { executor, model: "", baseUrl: "" };
+    return { executor, model: "", baseUrl: "", requestTimeoutMs: 0 };
   }
+  const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   if (executor === "openai-compat") {
     return {
       executor,
       model: input.model ?? DEFAULT_OLLAMA_MODEL,
       baseUrl: input.baseUrl ?? DEFAULT_OPENAI_COMPAT_BASE_URL,
+      requestTimeoutMs,
     };
   }
   return {
     executor,
     model: input.model ?? DEFAULT_OLLAMA_MODEL,
     baseUrl: input.baseUrl ?? DEFAULT_OLLAMA_BASE_URL,
+    requestTimeoutMs,
   };
 }
 
@@ -208,6 +217,36 @@ async function readRunMetadata(outputDir: string): Promise<InjectionSuiteRunMeta
   }
 }
 
+async function writeNewRunMetadata(
+  outputDir: string,
+  metadata: InjectionSuiteRunMetadata,
+): Promise<boolean> {
+  const filePath = path.join(outputDir, "run.json");
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(filePath, "wx");
+    await handle.writeFile(`${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    try {
+      const directory = await open(outputDir, "r");
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    } catch {
+      // Directory fsync is best-effort across platforms and filesystems.
+    }
+    return true;
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  }
+}
+
 async function appendEpisode(outputDir: string, row: InjectionSuiteEpisodeRow): Promise<void> {
   await writeFile(path.join(outputDir, "episodes.jsonl"), `${JSON.stringify(row)}\n`, { flag: "a" });
 }
@@ -233,9 +272,11 @@ export async function runInjectionSuiteCliCommand(
     modelProfileId: input.modelProfileId,
     seeds,
     variantsPerFamily: input.variantsPerFamily,
+    limit: input.limit ?? null,
     executor: contract.executor,
     model: contract.model,
     baseUrl: contract.baseUrl,
+    requestTimeoutMs: contract.requestTimeoutMs,
   });
   const existing = await readRunMetadata(input.outputDir);
   if (existing && input.resume !== true) {
@@ -248,20 +289,21 @@ export async function runInjectionSuiteCliCommand(
   await mkdir(input.outputDir, { recursive: true });
   if (!existing) {
     const metadata: InjectionSuiteRunMetadata = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       suiteVersion: INJECTION_SUITE_VERSION,
       resumeContractHash,
       modelProfileId: input.modelProfileId,
       seeds,
       variantsPerFamily: input.variantsPerFamily,
       limit: input.limit ?? null,
+      expectedRows: planned.length,
+      executor: contract.executor,
+      model: contract.model,
+      baseUrl: contract.baseUrl,
+      requestTimeoutMs: contract.requestTimeoutMs,
     };
-    try {
-      await writeFile(path.join(input.outputDir, "run.json"), `${JSON.stringify(metadata, null, 2)}\n`, {
-        flag: "wx",
-      });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const created = await writeNewRunMetadata(input.outputDir, metadata);
+    if (!created) {
       const winner = await readRunMetadata(input.outputDir);
       if (!winner) throw new Error(`run.json appeared then vanished at ${input.outputDir}`);
       if (winner.resumeContractHash !== resumeContractHash) {

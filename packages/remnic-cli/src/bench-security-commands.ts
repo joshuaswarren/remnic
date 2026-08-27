@@ -30,10 +30,10 @@ Options:
                             local = deterministic screen/fence (default)
                             ollama = native /api/chat
                             openai-compat = /v1/chat/completions
-                            (api.openai.com / integrate.api.nvidia.com require
-                            https + provider key; other hosts require
-                            REMNIC_OPENAI_COMPAT_API_KEY and https, except
-                            loopback HTTP on 127.0.0.1 or localhost)
+                            (api.openai.com / integrate.api.nvidia.com /
+                            router.huggingface.co require https + provider key;
+                            other hosts require REMNIC_OPENAI_COMPAT_API_KEY
+                            and https, except loopback HTTP)
   --base-url URL            Endpoint (default: http://127.0.0.1:11434)
   --model NAME              Model id (default: qwen3.8-27b-64k:latest)
   --request-timeout-ms N    Per-call timeout (default: 300000)

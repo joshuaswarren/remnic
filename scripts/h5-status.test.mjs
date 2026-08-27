@@ -1,0 +1,90 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { h5Status } from "./h5-status.mjs";
+
+async function fixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h5-status-"));
+  await writeFile(path.join(root, "run.json"), `${JSON.stringify({ limit: 1 })}\n`);
+  return root;
+}
+
+async function checkpoint(root, value) {
+  const dir = path.join(root, "checkpoints");
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, "row.json"), `${JSON.stringify(value)}\n`);
+}
+
+test("reports fresh empty run as RUNNING", async () => {
+  const root = await fixture();
+  try {
+    assert.equal((await h5Status(root)).state, "RUNNING");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects expected-design drift in run metadata", async () => {
+  const root = await fixture();
+  try {
+    await writeFile(path.join(root, "run.json"), `${JSON.stringify({ limit: 1, expectedRows: 2 })}\n`);
+    await assert.rejects(() => h5Status(root), /expectedRows/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("reports matching terminal checkpoint and episode as COMPLETE", async () => {
+  const root = await fixture();
+  try {
+    await checkpoint(root, { tries: [], terminal: { rowKey: "row" } });
+    await writeFile(path.join(root, "episodes.jsonl"), '{"rowKey":"row"}\n');
+    const status = await h5Status(root);
+    assert.equal(status.state, "COMPLETE");
+    assert.equal(status.remainingRows, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("reports terminal checkpoint awaiting episode repair as PAUSED", async () => {
+  const root = await fixture();
+  try {
+    await checkpoint(root, { tries: [], terminal: { rowKey: "row" } });
+    const status = await h5Status(root);
+    assert.equal(status.state, "PAUSED");
+    assert.equal(status.recoveryRows, 1);
+    assert.deepEqual(status.errors, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("reports six trailing host faults as PAUSED", async () => {
+  const root = await fixture();
+  try {
+    await checkpoint(root, {
+      tries: Array.from({ length: 6 }, () => ({ outcome: { kind: "HOST_API_FAULT" } })),
+    });
+    const status = await h5Status(root);
+    assert.equal(status.state, "PAUSED");
+    assert.equal(status.hostFaultTries, 6);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects duplicate terminal episodes as MALFORMED", async () => {
+  const root = await fixture();
+  try {
+    await checkpoint(root, { tries: [], terminal: { rowKey: "row" } });
+    await writeFile(path.join(root, "episodes.jsonl"), '{"rowKey":"row"}\n{"rowKey":"row"}\n');
+    const status = await h5Status(root);
+    assert.equal(status.state, "MALFORMED");
+    assert.match(status.errors.join(" "), /duplicate/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

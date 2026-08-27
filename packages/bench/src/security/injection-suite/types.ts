@@ -69,13 +69,18 @@ export interface InjectionSuiteCheckpoint {
 }
 
 export interface InjectionSuiteRunMetadata {
-  schemaVersion: 1;
+  schemaVersion: 2;
   suiteVersion: string;
   resumeContractHash: string;
   modelProfileId: string;
   seeds: number[];
   variantsPerFamily: number;
   limit: number | null;
+  expectedRows: number;
+  executor: string;
+  model: string;
+  baseUrl: string;
+  requestTimeoutMs: number;
 }
 
 export interface InjectionSuiteCliInput {

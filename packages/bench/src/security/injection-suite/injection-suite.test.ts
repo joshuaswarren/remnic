@@ -7,6 +7,7 @@ import { InjectionSuiteClaimLock } from "./claims.js";
 import { generateSuiteVariants } from "./generator.js";
 import { buildRecallPrompt, completeChat, InjectionSuiteHostFault } from "./llm-executor.js";
 import {
+  injectionSuiteResumeContractHash,
   planInjectionSuiteRows,
   runInjectionSuiteCliCommand,
 } from "./runner.js";
@@ -68,21 +69,40 @@ test("resume skips terminal rows and refuses a drifted contract", async () => {
       variantsPerFamily: 1,
       modelProfileId: "local-dry",
       outputDir,
-      limit: 3,
+      limit: 2,
       resume: true,
     });
     assert.equal(resumed.exitCode, 0);
     assert.equal(resumed.resumed, 2);
-    assert.equal(resumed.completed, 1);
+    assert.equal(resumed.completed, 0);
+
+    await assert.rejects(
+      () =>
+        runInjectionSuiteCliCommand({
+          seeds: 1,
+          variantsPerFamily: 1,
+          modelProfileId: "local-dry",
+          outputDir,
+          limit: 3,
+          resume: true,
+        }),
+      /resume contract hash drifted/,
+    );
 
     const episodes = (await readFile(path.join(outputDir, "episodes.jsonl"), "utf8"))
       .trim()
       .split("\n");
-    assert.equal(episodes.length, 3);
+    assert.equal(episodes.length, 2);
 
     const metadata = JSON.parse(await readFile(path.join(outputDir, "run.json"), "utf8")) as {
+      schemaVersion: number;
       resumeContractHash: string;
+      expectedRows: number;
+      requestTimeoutMs: number;
     };
+    assert.equal(metadata.schemaVersion, 2);
+    assert.equal(metadata.expectedRows, 2);
+    assert.equal(metadata.requestTimeoutMs, 0);
     metadata.resumeContractHash = "0".repeat(64);
     await writeFile(path.join(outputDir, "run.json"), `${JSON.stringify(metadata, null, 2)}\n`);
     await assert.rejects(
@@ -92,7 +112,7 @@ test("resume skips terminal rows and refuses a drifted contract", async () => {
           variantsPerFamily: 1,
           modelProfileId: "local-dry",
           outputDir,
-          limit: 3,
+          limit: 2,
           resume: true,
         }),
       /resume contract hash drifted/,
@@ -266,6 +286,24 @@ test("resume contract includes executor and model", async () => {
   }
 });
 
+test("resume contract binds request timeout", () => {
+  const base = {
+    suiteVersion: "suite",
+    modelProfileId: "profile",
+    seeds: [1],
+    variantsPerFamily: 1,
+    limit: 4,
+    executor: "openai-compat",
+    model: "model",
+    baseUrl: "https://compat.example/v1",
+    requestTimeoutMs: 1000,
+  };
+  assert.notEqual(
+    injectionSuiteResumeContractHash(base),
+    injectionSuiteResumeContractHash({ ...base, requestTimeoutMs: 2000 }),
+  );
+});
+
 test("plan and execute accept variants-per-family above 64", async () => {
   const outputDir = await mkdtemp(path.join(tmpdir(), "h5-hi-"));
   try {
@@ -330,6 +368,7 @@ function mockJsonFetch(responseBody: Record<string, unknown>) {
 const AUTH_CLEAR_ENV = {
   OPENAI_API_KEY: undefined,
   NVIDIA_API_KEY: undefined,
+  HF_TOKEN: undefined,
   REMNIC_OPENAI_COMPAT_API_KEY: undefined,
 } as const;
 
@@ -409,6 +448,31 @@ test("openai-compat NVIDIA host sends Authorization from NVIDIA_API_KEY", async 
   }
 });
 
+test("openai-compat Hugging Face host sends Authorization from HF_TOKEN", async () => {
+  const mock = mockJsonFetch({
+    choices: [{ message: { content: "ok" } }],
+  });
+  try {
+    await withEnv(
+      { ...AUTH_CLEAR_ENV, HF_TOKEN: "hf-only", NVIDIA_API_KEY: "must-not-be-sent" },
+      async () => {
+        await completeChat(
+          {
+            kind: "openai-compat",
+            baseUrl: "https://router.huggingface.co/v1",
+            requestTimeoutMs: 250,
+          },
+          "hi",
+        );
+        assert.equal(mock.requests[0]?.headers.authorization, "Bearer hf-only");
+        assert.match(mock.requests[0]?.url ?? "", /^https:\/\/router\.huggingface\.co\//);
+      },
+    );
+  } finally {
+    mock.restore();
+  }
+});
+
 test("openai-compat unknown host sends only REMNIC_OPENAI_COMPAT_API_KEY", async () => {
   const mock = mockJsonFetch({
     choices: [{ message: { content: "ok" } }],
@@ -450,6 +514,14 @@ test("openai-compat OpenAI host with only NVIDIA_API_KEY fails before fetch", as
   );
 });
 
+test("openai-compat Hugging Face host with only NVIDIA_API_KEY fails before fetch", async () => {
+  await assertFailsBeforeFetch(
+    { NVIDIA_API_KEY: "must-not-be-sent" },
+    { kind: "openai-compat", baseUrl: "https://router.huggingface.co/v1", requestTimeoutMs: 250 },
+    /HF_TOKEN/,
+  );
+});
+
 test("openai-compat unknown host with OPENAI_API_KEY fails before fetch", async () => {
   await assertFailsBeforeFetch(
     { OPENAI_API_KEY: "must-not-be-sent" },
@@ -470,6 +542,14 @@ test("openai-compat unrelated nvidia.com subdomain does not receive NVIDIA_API_K
   await assertFailsBeforeFetch(
     { NVIDIA_API_KEY: "must-not-be-sent" },
     { kind: "openai-compat", baseUrl: "https://evil.nvidia.com/v1", requestTimeoutMs: 250 },
+    /REMNIC_OPENAI_COMPAT_API_KEY/,
+  );
+});
+
+test("openai-compat unrelated huggingface.co subdomain does not receive HF_TOKEN", async () => {
+  await assertFailsBeforeFetch(
+    { HF_TOKEN: "must-not-be-sent" },
+    { kind: "openai-compat", baseUrl: "https://evil.huggingface.co/v1", requestTimeoutMs: 250 },
     /REMNIC_OPENAI_COMPAT_API_KEY/,
   );
 });
@@ -506,6 +586,14 @@ test("openai-compat refuses HTTP NVIDIA hosts before fetch", async () => {
   await assertFailsBeforeFetch(
     { NVIDIA_API_KEY: "must-not-be-sent" },
     { kind: "openai-compat", baseUrl: "http://integrate.api.nvidia.com/v1", requestTimeoutMs: 250 },
+    /https/,
+  );
+});
+
+test("openai-compat refuses HTTP Hugging Face hosts before fetch", async () => {
+  await assertFailsBeforeFetch(
+    { HF_TOKEN: "must-not-be-sent" },
+    { kind: "openai-compat", baseUrl: "http://router.huggingface.co/v1", requestTimeoutMs: 250 },
     /https/,
   );
 });
