@@ -134,6 +134,7 @@ test("base H5 supports exact baseline, fence, non-inferiority, and parity gates"
 
 test("void rows leave the block denominator and missing cells make the run not estimable", () => {
   const rows = supportedBaseRows();
+  rows[0] = row("minja", "none", 1, "base", "VOID");
   rows[1] = row("minja", "fencing", 1, "base", "VOID");
   const descriptive = analyzeInjectionSuiteRows(
     rows,
@@ -141,6 +142,7 @@ test("void rows leave the block denominator and missing cells make the run not e
     { invalid: 0, duplicate: 0, missing: 0, unexpected: 0 },
   );
   assert.equal(descriptive.families[0]?.fencing.denominator, 99);
+  assert.equal(descriptive.families[0]?.baseline.denominator, 99);
   const incomplete = analyzeInjectionSuiteRows(
     rows,
     metadata("base", rows.length + 1),
