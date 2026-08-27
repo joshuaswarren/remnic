@@ -40,6 +40,7 @@ Options:
   --out DIR                 New run directory (default: ~/.remnic/bench/results/h5-injection-suite)
   --run DIR                 Existing run directory; implies --resume
   --resume                  Continue an existing run (required if DIR already has run.json)
+  --retry-ambiguous         Retry a persisted in-flight paid request after operator review
   --limit N                 Execute at most N planned rows (dry-run / smoke)
 `;
 
@@ -49,6 +50,7 @@ interface InjectionSuiteCommand {
   modelProfileId: string;
   outputDir: string;
   resume: boolean;
+  retryAmbiguous: boolean;
   limit?: number;
   executor: "local" | "ollama" | "openai-compat";
   baseUrl?: string;
@@ -75,6 +77,7 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
   let modelProfileId = "local-dry";
   let outputDir = DEFAULT_OUTPUT_DIR;
   let resume = false;
+  let retryAmbiguous = false;
   let limit: number | undefined;
   let executor: InjectionSuiteCommand["executor"] = "local";
   let baseUrl: string | undefined;
@@ -122,6 +125,8 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
       index += 1;
     } else if (flag === "--resume") {
       resume = true;
+    } else if (flag === "--retry-ambiguous") {
+      retryAmbiguous = true;
     } else if (flag === "--limit") {
       limit = parsePositiveInteger(next, "--limit");
       index += 1;
@@ -131,6 +136,7 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
   }
 
   if (seeds === undefined) throw new Error("injection-suite requires --seeds N");
+  if (retryAmbiguous && !resume) throw new Error("--retry-ambiguous requires --run or --resume");
   return {
     seeds,
     variantsPerFamily,
@@ -138,6 +144,7 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
     outputDir,
     resume,
     executor,
+    retryAmbiguous,
     ...(limit === undefined ? {} : { limit }),
     ...(baseUrl === undefined ? {} : { baseUrl }),
     ...(model === undefined ? {} : { model }),
@@ -164,6 +171,7 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
       outputDir: parsed.outputDir,
       executor: parsed.executor,
       ...(parsed.resume ? { resume: true } : {}),
+      ...(parsed.retryAmbiguous ? { retryAmbiguous: true } : {}),
       ...(parsed.limit === undefined ? {} : { limit: parsed.limit }),
       ...(parsed.baseUrl === undefined ? {} : { baseUrl: parsed.baseUrl }),
       ...(parsed.model === undefined ? {} : { model: parsed.model }),

@@ -62,6 +62,40 @@ test("reports terminal checkpoint awaiting episode repair as PAUSED", async () =
   }
 });
 
+test("reports an ambiguous paid request as PAUSED", async () => {
+  const root = await fixture();
+  try {
+    await checkpoint(root, {
+      tries: [],
+      inFlight: { attempt: 1, startedAt: "2026-08-27T00:00:00.000Z" },
+    });
+    const status = await h5Status(root);
+    assert.equal(status.state, "PAUSED");
+    assert.equal(status.ambiguousRows, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("keeps a freshly claimed in-flight request RUNNING", async () => {
+  const root = await fixture();
+  try {
+    await checkpoint(root, {
+      rowKey: "row",
+      tries: [],
+      inFlight: { attempt: 1, startedAt: "2026-08-27T00:00:00.000Z" },
+    });
+    await mkdir(path.join(root, "checkpoints", "row.lock"));
+    const status = await h5Status(root);
+    assert.equal(status.state, "RUNNING");
+    assert.equal(status.activeClaims, 1);
+    assert.equal(status.inFlightRows, 1);
+    assert.equal(status.ambiguousRows, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("reports six trailing host faults as PAUSED", async () => {
   const root = await fixture();
   try {

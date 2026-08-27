@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 const ARMS = 4;
 const FAMILIES = 4;
 const HOST_FAULT_LIMIT = 6;
+const CLAIM_LEASE_MS = 15 * 60_000;
 
 async function jsonFile(file) {
   return JSON.parse(await readFile(file, "utf8"));
@@ -61,11 +62,27 @@ export async function h5Status(runDir, staleAfterMinutes = 20) {
   }
 
   const checkpointFiles = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json"));
-  const activeClaims = entries.filter((entry) => entry.isDirectory() && entry.name.endsWith(".lock")).length;
+  const claimEntries = entries.filter((entry) => entry.isDirectory() && entry.name.endsWith(".lock"));
+  const nowMs = Date.now();
+  const activeClaimKeys = new Set();
+  let activeClaims = 0;
+  let staleClaims = 0;
+  let latestMs = (await stat(path.join(root, "run.json"))).mtimeMs;
+  for (const entry of claimEntries) {
+    const info = await stat(path.join(checkpointDir, entry.name));
+    latestMs = Math.max(latestMs, info.mtimeMs);
+    if (nowMs - info.mtimeMs <= CLAIM_LEASE_MS) {
+      activeClaims += 1;
+      activeClaimKeys.add(entry.name.slice(0, -".lock".length));
+    } else {
+      staleClaims += 1;
+    }
+  }
   let terminalCheckpoints = 0;
   let pausedRows = 0;
+  let inFlightRows = 0;
+  let ambiguousRows = 0;
   let hostFaultTries = 0;
-  let latestMs = (await stat(path.join(root, "run.json"))).mtimeMs;
 
   for (const entry of checkpointFiles) {
     const file = path.join(checkpointDir, entry.name);
@@ -73,6 +90,10 @@ export async function h5Status(runDir, staleAfterMinutes = 20) {
     latestMs = Math.max(latestMs, info.mtimeMs);
     if (!Array.isArray(checkpoint.tries)) throw new Error(`${entry.name} has no tries array`);
     hostFaultTries += checkpoint.tries.filter((item) => item?.outcome?.kind === "HOST_API_FAULT").length;
+    if (checkpoint.inFlight) {
+      inFlightRows += 1;
+      if (!activeClaimKeys.has(checkpoint.rowKey)) ambiguousRows += 1;
+    }
     if (checkpoint.terminal) terminalCheckpoints += 1;
     else if (trailingHostFaults(checkpoint.tries) >= HOST_FAULT_LIMIT) pausedRows += 1;
   }
@@ -84,11 +105,11 @@ export async function h5Status(runDir, staleAfterMinutes = 20) {
   if (uniqueEpisodeKeys.size > terminalCheckpoints) errors.push("episode has no terminal checkpoint");
   const recoveryRows = Math.max(0, terminalCheckpoints - uniqueEpisodeKeys.size);
 
-  const ageMinutes = Math.max(0, (Date.now() - latestMs) / 60_000);
+  const ageMinutes = Math.max(0, (nowMs - latestMs) / 60_000);
   let state;
   if (errors.length > 0) state = "MALFORMED";
   else if (terminalCheckpoints === expected && recoveryRows === 0) state = "COMPLETE";
-  else if ((pausedRows > 0 || recoveryRows > 0) && activeClaims === 0) state = "PAUSED";
+  else if (pausedRows > 0 || ambiguousRows > 0 || recoveryRows > 0) state = "PAUSED";
   else if (activeClaims > 0 || ageMinutes <= staleAfterMinutes) state = "RUNNING";
   else state = "STALLED";
 
@@ -99,7 +120,10 @@ export async function h5Status(runDir, staleAfterMinutes = 20) {
     terminalRows: terminalCheckpoints,
     remainingRows: expected - terminalCheckpoints,
     activeClaims,
+    staleClaims,
     pausedRows,
+    inFlightRows,
+    ambiguousRows,
     recoveryRows,
     hostFaultTries,
     ageMinutes: Number(ageMinutes.toFixed(1)),

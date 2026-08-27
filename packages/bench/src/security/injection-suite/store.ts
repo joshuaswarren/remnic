@@ -76,10 +76,45 @@ export class InjectionSuiteRowStore {
         throw new Error("checkpoint identity does not exactly match requested identity");
       }
       if (!Array.isArray(parsed.tries)) throw new Error("checkpoint tries must be an array");
+      if (
+        parsed.inFlight !== undefined
+        && (!Number.isInteger(parsed.inFlight.attempt)
+          || parsed.inFlight.attempt < 1
+          || typeof parsed.inFlight.startedAt !== "string")
+      ) {
+        throw new Error("checkpoint inFlight marker is malformed");
+      }
       return { kind: "VALID", checkpoint: parsed };
     } catch (error) {
       return { kind: "MALFORMED", error: error instanceof Error ? error : new Error(String(error)) };
     }
+  }
+
+  async markInFlight(
+    identity: InjectionSuiteRowIdentity,
+    attempt: number,
+    replaceAmbiguous = false,
+  ): Promise<InjectionSuiteCheckpoint> {
+    if (!Number.isInteger(attempt) || attempt < 1) throw new Error("in-flight attempt must be positive");
+    const existing = await this.load(identity);
+    if (existing.kind === "MALFORMED") throw existing.error;
+    if (existing.kind === "VALID" && existing.checkpoint.terminal) {
+      throw new Error(`Injection-suite row ${existing.checkpoint.rowKey} is terminal and immutable`);
+    }
+    if (existing.kind === "VALID" && existing.checkpoint.inFlight && !replaceAmbiguous) {
+      throw new Error(`Injection-suite row ${existing.checkpoint.rowKey} has an ambiguous in-flight request`);
+    }
+    const checkpoint: InjectionSuiteCheckpoint = {
+      rowKey: buildInjectionSuiteRowKey(identity),
+      identity,
+      tries: existing.kind === "VALID" ? existing.checkpoint.tries : [],
+      inFlight: { attempt, startedAt: new Date().toISOString() },
+    };
+    await writeFileAtomically(
+      this.checkpointPath(identity),
+      `${JSON.stringify(checkpoint, null, 2)}\n`,
+    );
+    return checkpoint;
   }
 
   async commitTry(
@@ -91,6 +126,13 @@ export class InjectionSuiteRowStore {
     if (existing.kind === "MALFORMED") throw existing.error;
     if (existing.kind === "VALID" && existing.checkpoint.terminal) {
       throw new Error(`Injection-suite row ${existing.checkpoint.rowKey} is terminal and immutable`);
+    }
+    if (
+      existing.kind === "VALID"
+      && existing.checkpoint.inFlight
+      && existing.checkpoint.inFlight.attempt !== entry.attempt
+    ) {
+      throw new Error("completed attempt does not match the in-flight marker");
     }
     const tries = existing.kind === "VALID" ? [...existing.checkpoint.tries, entry] : [entry];
     const checkpoint: InjectionSuiteCheckpoint = {

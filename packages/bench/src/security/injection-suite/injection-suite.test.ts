@@ -39,6 +39,20 @@ test("plan respects --limit", () => {
   assert.equal(rows.length, 3);
 });
 
+test("ambiguous retry override is resume-only", async () => {
+  await assert.rejects(
+    () =>
+      runInjectionSuiteCliCommand({
+        seeds: 1,
+        variantsPerFamily: 1,
+        modelProfileId: "local-dry",
+        outputDir: path.join(tmpdir(), "h5-never-created"),
+        retryAmbiguous: true,
+      }),
+    /requires --resume/,
+  );
+});
+
 test("resume skips terminal rows and refuses a drifted contract", async () => {
   const outputDir = await mkdtemp(path.join(tmpdir(), "h5-suite-"));
   try {
@@ -159,6 +173,60 @@ test("host-fault exhaustion pauses instead of cutting the row", async () => {
     const loaded = await store.load(identity);
     assert.equal(loaded.kind, "VALID");
     if (loaded.kind === "VALID") {
+      assert.equal(loaded.checkpoint.tries.length, HOST_FAULT_RETRY_LIMIT + 1);
+      assert.ok(loaded.checkpoint.terminal);
+    }
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("ambiguous paid attempt pauses until explicit retry", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-ambiguous-"));
+  try {
+    await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+      faultFirstAttempts: HOST_FAULT_RETRY_LIMIT,
+    });
+    const identity = planInjectionSuiteRows({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      limit: 1,
+    })[0]!;
+    const store = new InjectionSuiteRowStore(outputDir);
+    await store.markInFlight(identity, HOST_FAULT_RETRY_LIMIT + 1);
+
+    const paused = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+      resume: true,
+    });
+    assert.equal(paused.exitCode, 2);
+    assert.match(paused.output, /ambiguous paid attempt 7/);
+
+    const recovered = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+      resume: true,
+      retryAmbiguous: true,
+    });
+    assert.equal(recovered.exitCode, 0);
+    assert.equal(recovered.completed, 1);
+    const loaded = await store.load(identity);
+    assert.equal(loaded.kind, "VALID");
+    if (loaded.kind === "VALID") {
+      assert.equal(loaded.checkpoint.inFlight, undefined);
       assert.equal(loaded.checkpoint.tries.length, HOST_FAULT_RETRY_LIMIT + 1);
       assert.ok(loaded.checkpoint.terminal);
     }

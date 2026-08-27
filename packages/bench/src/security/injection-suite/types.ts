@@ -65,6 +65,7 @@ export interface InjectionSuiteCheckpoint {
   rowKey: string;
   identity: InjectionSuiteRowIdentity;
   tries: InjectionSuiteTry[];
+  inFlight?: { attempt: number; startedAt: string };
   terminal?: InjectionSuiteEpisodeRow;
 }
 
@@ -90,6 +91,8 @@ export interface InjectionSuiteCliInput {
   outputDir: string;
   resume?: boolean;
   limit?: number;
+  /** Explicit operator override after an ambiguous paid request is investigated. */
+  retryAmbiguous?: boolean;
   /** Test-only: inject host faults for the first N attempts of every row. */
   faultFirstAttempts?: number;
   executor?: "local" | "ollama" | "openai-compat";

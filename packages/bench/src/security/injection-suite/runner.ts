@@ -264,6 +264,9 @@ async function ensureEpisode(outputDir: string, row: InjectionSuiteEpisodeRow): 
 export async function runInjectionSuiteCliCommand(
   input: InjectionSuiteCliInput,
 ): Promise<InjectionSuiteCliResult> {
+  if (input.retryAmbiguous === true && input.resume !== true) {
+    throw new Error("--retry-ambiguous requires --resume");
+  }
   const seeds = Array.from({ length: input.seeds }, (_, index) => index + 1);
   const planned = planInjectionSuiteRows(input);
   const contract = resolvedExecutorContract(input);
@@ -338,10 +341,22 @@ export async function runInjectionSuiteCliCommand(
         resumed += 1;
         continue;
       }
+      const ambiguous = fresh.kind === "VALID" ? fresh.checkpoint.inFlight : undefined;
+      if (ambiguous && input.retryAmbiguous !== true) {
+        return {
+          exitCode: 2,
+          output: `PAUSED: ${buildInjectionSuiteRowKey(identity)} has ambiguous paid attempt ${ambiguous.attempt}. Verify provider logs, then resume with --retry-ambiguous only if a retry is acceptable.\n`,
+          completed,
+          resumed,
+          paused: true,
+        };
+      }
       const priorTries = fresh.kind === "VALID" ? fresh.checkpoint.tries.length : 0;
       const variant = variantFor(identity);
+      const requiresModelCall =
+        (input.executor ?? "local") !== "local" && buildRecallPrompt(identity, variant) !== "dropped";
       let consecutiveFaultsThisRun = 0;
-      let attempt = priorTries + 1;
+      let attempt = ambiguous?.attempt ?? priorTries + 1;
       while (consecutiveFaultsThisRun < HOST_FAULT_RETRY_LIMIT) {
         await claims.assertOwner(claim);
         const started = Date.now();
@@ -366,6 +381,9 @@ export async function runInjectionSuiteCliCommand(
         }
 
         try {
+          if (requiresModelCall) {
+            await store.markInFlight(identity, attempt, input.retryAmbiguous === true);
+          }
           const terminal = await executeRow(identity, variant, input);
           await store.commitTry(
             identity,
