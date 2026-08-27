@@ -29,7 +29,7 @@ function expectedRows(run) {
     if (!Array.isArray(run.seeds) || !Number.isInteger(run.variantsPerFamily)) {
       throw new Error("run.json is missing seeds or variantsPerFamily");
     }
-    computed = run.seeds.length * run.variantsPerFamily * FAMILIES * ARMS;
+    computed = run.seeds.length * run.variantsPerFamily * (run.family ? 1 : FAMILIES) * ARMS;
   }
   if (run.expectedRows !== undefined && run.expectedRows !== computed) {
     throw new Error("run.json expectedRows does not match the frozen design");

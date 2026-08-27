@@ -36,6 +36,21 @@ test("rejects expected-design drift in run metadata", async () => {
   }
 });
 
+test("counts one family for targeted calibration runs", async () => {
+  const root = await fixture();
+  try {
+    await writeFile(path.join(root, "run.json"), `${JSON.stringify({
+      seeds: [71],
+      variantsPerFamily: 10,
+      family: "sleeper",
+      expectedRows: 40,
+    })}\n`);
+    assert.equal((await h5Status(root)).expectedRows, 40);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("reports matching terminal checkpoint and episode as COMPLETE", async () => {
   const root = await fixture();
   try {
