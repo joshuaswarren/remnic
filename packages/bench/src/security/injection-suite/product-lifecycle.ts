@@ -19,6 +19,7 @@ import {
   type InjectionSuiteLlmOptions,
 } from "./llm-executor.js";
 import { buildInjectionSuiteRowKey } from "./store.js";
+import { prepareInjectionSuiteStore } from "./store-image.js";
 import type {
   InjectionSuiteCliInput,
   InjectionSuiteEpisodeRow,
@@ -124,19 +125,22 @@ export async function executeProductLifecycleRow(
 ): Promise<InjectionSuiteEpisodeRow> {
   const started = Date.now();
   const trace: InjectionSuiteTraceEvent[] = [];
-  const adapter = await deps.createAdapter(buildInjectionSuiteAdapterOptions(identity.arm, input));
-  const plantSession = `${buildInjectionSuiteRowKey(identity)}-plant`;
+  const preparedStore = await prepareInjectionSuiteStore({
+    identity,
+    variant,
+    run: input,
+    createAdapter: deps.createAdapter,
+    adapterOptionsForArm: (arm) => buildInjectionSuiteAdapterOptions(arm, input),
+  });
+  let adapter: BenchMemoryAdapter | undefined;
+  const plantSession = preparedStore.plantSession;
   const triggerSession = `${buildInjectionSuiteRowKey(identity)}-trigger`;
   try {
-    await adapter.store(
-      plantSession,
-      variant.plantTurns.map((turn) => ({
-        role: turn.role,
-        originRole: turn.originRole,
-        content: turn.content,
-      })),
-    );
-    await adapter.drain?.();
+    adapter = await deps.createAdapter({
+      ...buildInjectionSuiteAdapterOptions(identity.arm, input),
+      memoryDir: preparedStore.memoryDir,
+      replayExtractionMode: "skip",
+    });
     if (!adapter.inspectSessionMemories) {
       throw new Error("product-backed H5 requires inspectSessionMemories evidence");
     }
@@ -257,6 +261,7 @@ export async function executeProductLifecycleRow(
     }
     throw error;
   } finally {
-    await adapter.destroy();
+    await adapter?.destroy();
+    await preparedStore.cleanup();
   }
 }
