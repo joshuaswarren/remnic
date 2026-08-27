@@ -131,6 +131,7 @@ function enforceRunGate(input: InjectionSuiteCliInput, cleanTree: boolean): void
   if (input.variantsPerFamily < minimum) {
     throw new Error(`H5 main ${stage} run requires at least ${minimum} variants per family`);
   }
+  if (input.family !== undefined) throw new Error("H5 main forbids --family");
   if (input.limit !== undefined) throw new Error("H5 main forbids --limit");
 }
 

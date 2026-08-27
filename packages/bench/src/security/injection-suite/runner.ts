@@ -45,6 +45,7 @@ export function injectionSuiteResumeContractHash(metadata: {
   modelProfileId: string;
   seeds: readonly number[];
   variantsPerFamily: number;
+  family?: string | null;
   limit: number | null;
   executor: string;
   model: string;
@@ -66,6 +67,7 @@ export function injectionSuiteResumeContractHash(metadata: {
         modelProfileId: metadata.modelProfileId,
         seeds: metadata.seeds,
         variantsPerFamily: metadata.variantsPerFamily,
+        family: metadata.family ?? null,
         limit: metadata.limit,
         executor: metadata.executor,
         model: metadata.model,
@@ -118,6 +120,7 @@ export function planInjectionSuiteRows(input: {
   seeds: number;
   variantsPerFamily: number;
   modelProfileId: string;
+  family?: InjectionSuiteRowIdentity["family"];
   stage?: InjectionSuiteRowIdentity["stage"];
   limit?: number;
 }): InjectionSuiteRowIdentity[] {
@@ -134,7 +137,10 @@ export function planInjectionSuiteRows(input: {
     : INJECTION_SUITE_ARMS;
   for (let seedOffset = 0; seedOffset < input.seeds; seedOffset += 1) {
     const seed = 71 + seedOffset;
-    for (const variant of generateSuiteVariants(input.variantsPerFamily, seed, stage)) {
+    const variants = input.family
+      ? generateFamilyVariants(input.family, input.variantsPerFamily, seed, stage)
+      : generateSuiteVariants(input.variantsPerFamily, seed, stage);
+    for (const variant of variants) {
       for (const arm of arms) {
         rows.push(
           defaultSuiteIdentity({
@@ -295,6 +301,7 @@ export async function runInjectionSuiteCliCommand(
     modelProfileId: input.modelProfileId,
     seeds,
     variantsPerFamily: input.variantsPerFamily,
+    family: input.family ?? null,
     limit: input.limit ?? null,
     executor: contract.executor,
     model: contract.model,
@@ -332,6 +339,7 @@ export async function runInjectionSuiteCliCommand(
       modelProfileId: input.modelProfileId,
       seeds,
       variantsPerFamily: input.variantsPerFamily,
+      family: input.family ?? null,
       limit: input.limit ?? null,
       expectedRows: planned.length,
       executor: contract.executor,

@@ -27,6 +27,11 @@ export interface InjectionSuiteLlmOptions {
   enableCanaryTool?: boolean;
 }
 
+export interface InjectionSuiteChatMessage {
+  role: "system" | "user";
+  content: string;
+}
+
 export interface InjectionSuiteToolCall {
   name: string;
   arguments: unknown;
@@ -213,8 +218,11 @@ function readToolCalls(value: unknown): InjectionSuiteToolCall[] {
 
 export async function completeChatResult(
   options: InjectionSuiteLlmOptions,
-  prompt: string,
+  prompt: string | readonly InjectionSuiteChatMessage[],
 ): Promise<InjectionSuiteChatResult> {
+  const messages = typeof prompt === "string"
+    ? [{ role: "user" as const, content: prompt }]
+    : prompt;
   const timeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const model = options.model ?? DEFAULT_OLLAMA_MODEL;
   const tools = options.enableCanaryTool
@@ -239,7 +247,7 @@ export async function completeChatResult(
       `${base}/chat/completions`,
       {
         model,
-        messages: [{ role: "user", content: prompt }],
+        messages,
         temperature: 0,
         max_tokens: 256,
         reasoning_effort: "none",
@@ -277,7 +285,7 @@ export async function completeChatResult(
     model,
     stream: false,
     think: false,
-    messages: [{ role: "user", content: prompt }],
+    messages,
     options: { temperature: 0, num_predict: 256 },
     ...(tools ? { tools } : {}),
   }, timeoutMs) as {

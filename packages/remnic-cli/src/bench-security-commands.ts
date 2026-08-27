@@ -31,6 +31,7 @@ Additional commands:
 Options:
   --seeds N                 Positive seed count (required)
   --variants-per-family N   Variants per attack family (default: 25)
+  --family FAMILY           Target one dev/pilot attack family; forbidden for main
   --model-profile ID        Profile label recorded on each row (default: local-dry)
   --stage base|adaptive-r1|benign
                             Frozen corpus stage (default: base)
@@ -58,6 +59,7 @@ Options:
 interface InjectionSuiteCommand {
   seeds: number;
   variantsPerFamily: number;
+  family?: "minja" | "sleeper" | "cross-session" | "tool-hijack";
   modelProfileId: string;
   stage: "base" | "adaptive-r1" | "benign";
   runKind: "dev" | "pilot" | "main";
@@ -90,6 +92,7 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
 
   let seeds: number | undefined;
   let variantsPerFamily = 25;
+  let family: InjectionSuiteCommand["family"];
   let modelProfileId = "local-dry";
   let stage: InjectionSuiteCommand["stage"] = "base";
   let runKind: InjectionSuiteCommand["runKind"] = "dev";
@@ -113,6 +116,17 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
       index += 1;
     } else if (flag === "--variants-per-family") {
       variantsPerFamily = parsePositiveInteger(next, "--variants-per-family");
+      index += 1;
+    } else if (flag === "--family") {
+      if (
+        next !== "minja" &&
+        next !== "sleeper" &&
+        next !== "cross-session" &&
+        next !== "tool-hijack"
+      ) {
+        throw new Error("--family must be minja, sleeper, cross-session, or tool-hijack");
+      }
+      family = next;
       index += 1;
     } else if (flag === "--model-profile") {
       if (next === undefined || next.startsWith("-")) throw new Error("missing value for --model-profile");
@@ -184,6 +198,7 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
   return {
     seeds,
     variantsPerFamily,
+    ...(family === undefined ? {} : { family }),
     modelProfileId,
     stage,
     runKind,
@@ -294,6 +309,7 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
       executor: parsed.executor,
       stage: parsed.stage,
       runKind: parsed.runKind,
+      ...(parsed.family === undefined ? {} : { family: parsed.family }),
       ...(parsed.resume ? { resume: true } : {}),
       ...(parsed.retryAmbiguous ? { retryAmbiguous: true } : {}),
       ...(parsed.limit === undefined ? {} : { limit: parsed.limit }),

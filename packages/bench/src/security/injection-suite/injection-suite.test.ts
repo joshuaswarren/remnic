@@ -39,6 +39,17 @@ test("plan respects --limit", () => {
   assert.equal(rows.length, 3);
 });
 
+test("plan can target one attack family", () => {
+  const rows = planInjectionSuiteRows({
+    seeds: 1,
+    variantsPerFamily: 2,
+    modelProfileId: "local-dry",
+    family: "sleeper",
+  });
+  assert.equal(rows.length, 8);
+  assert.ok(rows.every((row) => row.family === "sleeper"));
+});
+
 test("ambiguous retry override is resume-only", async () => {
   await assert.rejects(
     () =>

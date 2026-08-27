@@ -20,6 +20,19 @@ test("injection-suite parser requires --seeds and defaults outside the checkout"
   );
 });
 
+test("injection-suite parses a targeted attack family", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--family",
+    "sleeper",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.family, "sleeper");
+});
+
 test("injection-suite --run implies resume", () => {
   const parsed = parseBenchSecurityArgs(["injection-suite", "--seeds", "1", "--run", "/tmp/h5-run"]);
   assert.ok(!("help" in parsed));

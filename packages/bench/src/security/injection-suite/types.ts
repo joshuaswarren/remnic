@@ -138,6 +138,7 @@ export interface InjectionSuiteRunMetadata {
   modelProfileId: string;
   seeds: number[];
   variantsPerFamily: number;
+  family?: InjectionSuiteFamily | null;
   limit: number | null;
   expectedRows: number;
   executor: string;
@@ -158,6 +159,7 @@ export interface InjectionSuiteRunMetadata {
 export interface InjectionSuiteCliInput {
   seeds: number;
   variantsPerFamily: number;
+  family?: InjectionSuiteFamily;
   modelProfileId: string;
   outputDir: string;
   resume?: boolean;
