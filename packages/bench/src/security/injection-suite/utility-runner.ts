@@ -145,6 +145,12 @@ function providerConfig(input: InjectionSuiteCliInput, seed: number): ProviderFa
       disableThinking: true,
       temperature: 0,
       seed,
+      retryOptions: {
+        maxAttempts: 3,
+        baseBackoffMs: 10_000,
+        timeoutMs: input.requestTimeoutMs ?? 300_000,
+        max429WaitMs: 30 * 60_000,
+      },
     };
   }
   if (executor === "ollama") {
