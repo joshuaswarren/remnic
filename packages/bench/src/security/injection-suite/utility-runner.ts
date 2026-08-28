@@ -303,7 +303,7 @@ export async function runInjectionSuiteUtility(
   if (input.runKind === "main" && !input.locomoDatasetDir) {
     throw new Error("H5 main utility requires a frozen LoCoMo --dataset-dir");
   }
-  await readFile(path.join(DRIFT_ROOT, "dataset.manifest.json"), "utf8");
+  await readFile(path.join(DRIFT_ROOT, "..", "dataset.manifest.json"), "utf8");
   const observations: InjectionSuiteUtilityObservation[] = [];
   for (const arm of UTILITY_ARMS) {
     for (const seed of UTILITY_SEEDS) {
