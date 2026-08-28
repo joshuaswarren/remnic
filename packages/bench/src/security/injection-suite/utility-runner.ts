@@ -306,14 +306,17 @@ export async function runInjectionSuiteUtility(
   await readFile(path.join(DRIFT_ROOT, "..", "dataset.manifest.json"), "utf8");
   const observations: InjectionSuiteUtilityObservation[] = [];
   for (const arm of UTILITY_ARMS) {
-    for (const seed of UTILITY_SEEDS) {
-      observations.push(...await runLocomoUtility(input, arm, seed));
-      observations.push(...await runDriftUtility(input, arm, seed));
-      await writeFileAtomically(
-        path.join(input.outputDir, "utility-observations.json"),
-        `${JSON.stringify(observations, null, 2)}\n`,
-      );
-    }
+    const bySeed = await Promise.all(
+      UTILITY_SEEDS.map(async (seed) => [
+        ...await runLocomoUtility(input, arm, seed),
+        ...await runDriftUtility(input, arm, seed),
+      ]),
+    );
+    observations.push(...bySeed.flat());
+    await writeFileAtomically(
+      path.join(input.outputDir, "utility-observations.json"),
+      `${JSON.stringify(observations, null, 2)}\n`,
+    );
   }
   const analysis = analyzeInjectionSuiteUtility(observations);
   await writeFileAtomically(
