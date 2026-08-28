@@ -35,6 +35,7 @@ import type { InjectionSuiteArm, InjectionSuiteCliInput } from "./types.js";
 
 const UTILITY_ARMS = ["none", "fencing"] as const;
 const UTILITY_SEEDS = [1, 2, 3, 4, 5] as const;
+const UTILITY_SEED_CONCURRENCY = 2;
 const DRIFT_ROOT = path.resolve(
   fileURLToPath(new URL("../../fixtures/drift-gen-core/11", import.meta.url)),
 );
@@ -312,17 +313,20 @@ export async function runInjectionSuiteUtility(
   await readFile(path.join(DRIFT_ROOT, "..", "dataset.manifest.json"), "utf8");
   const observations: InjectionSuiteUtilityObservation[] = [];
   for (const arm of UTILITY_ARMS) {
-    const bySeed = await Promise.all(
-      UTILITY_SEEDS.map(async (seed) => [
-        ...await runLocomoUtility(input, arm, seed),
-        ...await runDriftUtility(input, arm, seed),
-      ]),
-    );
-    observations.push(...bySeed.flat());
-    await writeFileAtomically(
-      path.join(input.outputDir, "utility-observations.json"),
-      `${JSON.stringify(observations, null, 2)}\n`,
-    );
+    for (let offset = 0; offset < UTILITY_SEEDS.length; offset += UTILITY_SEED_CONCURRENCY) {
+      const seeds = UTILITY_SEEDS.slice(offset, offset + UTILITY_SEED_CONCURRENCY);
+      const bySeed = await Promise.all(
+        seeds.map(async (seed) => [
+          ...await runLocomoUtility(input, arm, seed),
+          ...await runDriftUtility(input, arm, seed),
+        ]),
+      );
+      observations.push(...bySeed.flat());
+      await writeFileAtomically(
+        path.join(input.outputDir, "utility-observations.json"),
+        `${JSON.stringify(observations, null, 2)}\n`,
+      );
+    }
   }
   const analysis = analyzeInjectionSuiteUtility(observations);
   await writeFileAtomically(
