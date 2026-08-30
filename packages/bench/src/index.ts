@@ -805,9 +805,14 @@ export type {
 } from "./security/extraction-attack/index.js";
 
 export {
+  analyzeInjectionSuitePublicationRows,
+  analyzeInjectionSuitePublicationRun,
+  analyzeInjectionSuitePublicationUtility,
+  analyzeInjectionSuitePublicationUtilityFile,
   analyzeInjectionSuiteRun,
   decideInjectionSuiteCampaign,
   analyzeInjectionSuiteUtility,
+  H5_PUBLICATION_ANALYSIS_RULE,
   replayInjectionSuiteStatistics,
   runInjectionSuiteUtility,
   executeLocalRow,

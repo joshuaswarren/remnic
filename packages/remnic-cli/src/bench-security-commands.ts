@@ -24,6 +24,8 @@ leases, and --limit follow the H6 contract (issue #1963 / PR #2312).
 
 Additional commands:
   remnic bench security injection-suite-analyze --run DIR
+  remnic bench security injection-suite-publication-analyze --run DIR
+  remnic bench security injection-suite-publication-utility --observations FILE --out FILE
   remnic bench security injection-suite-replay --run DIR
   remnic bench security injection-suite-utility [injection-suite options] [--dataset-dir DIR]
   remnic bench security injection-suite-decide --base DIR --base DIR --utility FILE --utility FILE [--adaptive DIR --adaptive DIR] --out DIR
@@ -218,6 +220,17 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
 
 export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
   try {
+    if (args[0] === "injection-suite-publication-utility") {
+      if (args.length !== 5 || args[1] !== "--observations" || !args[2] || args[3] !== "--out" || !args[4]) {
+        throw new Error("injection-suite-publication-utility requires --observations FILE --out FILE");
+      }
+      const bench = await loadBenchModule();
+      const analyze = bench.analyzeInjectionSuitePublicationUtilityFile;
+      if (typeof analyze !== "function") throw new Error("Installed @remnic/bench lacks H5 publication utility analysis");
+      const analysis = await analyze(expandTilde(args[2]), expandTilde(args[4]));
+      console.log(JSON.stringify(analysis, null, 2));
+      return;
+    }
     if (args[0] === "injection-suite-decide") {
       const baseRunDirs: string[] = [];
       const utilityStatisticsPaths: string[] = [];
@@ -246,25 +259,30 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
       console.log(JSON.stringify(decision, null, 2));
       return;
     }
-    if (args[0] === "injection-suite-analyze" || args[0] === "injection-suite-replay") {
-      if (args.length !== 3 || args[1] !== "--run" || !args[2]) {
-        throw new Error(`${args[0]} requires --run DIR`);
-      }
-      const analysisBench = await loadBenchModule();
-      const runDir = expandTilde(args[2]);
-      if (args[0] === "injection-suite-analyze") {
-        const analyze = analysisBench.analyzeInjectionSuiteRun;
-        if (typeof analyze !== "function") throw new Error("Installed @remnic/bench lacks H5 analysis");
-        const analysis = await analyze(runDir);
-        console.log(JSON.stringify(analysis, null, 2));
-      } else {
-        const replay = analysisBench.replayInjectionSuiteStatistics;
-        if (typeof replay !== "function") throw new Error("Installed @remnic/bench lacks H5 replay");
-        await replay(runDir);
-        console.log(JSON.stringify({ replay: "ok", runDir }));
-      }
-      return;
-    }
+    if (args[0] === "injection-suite-analyze" || args[0] === "injection-suite-publication-analyze" || args[0] === "injection-suite-replay") {
+          if (args.length !== 3 || args[1] !== "--run" || !args[2]) {
+            throw new Error(`${args[0]} requires --run DIR`);
+          }
+          const analysisBench = await loadBenchModule();
+          const runDir = expandTilde(args[2]);
+          if (args[0] === "injection-suite-analyze") {
+            const analyze = analysisBench.analyzeInjectionSuiteRun;
+            if (typeof analyze !== "function") throw new Error("Installed @remnic/bench lacks H5 analysis");
+            const analysis = await analyze(runDir);
+            console.log(JSON.stringify(analysis, null, 2));
+          } else if (args[0] === "injection-suite-publication-analyze") {
+            const analyze = analysisBench.analyzeInjectionSuitePublicationRun;
+            if (typeof analyze !== "function") throw new Error("Installed @remnic/bench lacks H5 publication analysis");
+            const analysis = await analyze(runDir);
+            console.log(JSON.stringify(analysis, null, 2));
+          } else {
+            const replay = analysisBench.replayInjectionSuiteStatistics;
+            if (typeof replay !== "function") throw new Error("Installed @remnic/bench lacks H5 replay");
+            await replay(runDir);
+            console.log(JSON.stringify({ replay: "ok", runDir }));
+          }
+          return;
+        }
     const utilityMode = args[0] === "injection-suite-utility";
     const parsed = parseBenchSecurityArgs(
       utilityMode ? ["injection-suite", ...args.slice(1)] : args,

@@ -14,9 +14,18 @@ export {
   analyzeInjectionSuiteRows,
   replayInjectionSuiteStatistics,
 } from "./stats.js";
+export { analyzeInjectionSuiteUtility } from "./utility-stats.js";
 export {
-  analyzeInjectionSuiteUtility,
-} from "./utility-stats.js";
+  analyzeInjectionSuitePublicationRows,
+  analyzeInjectionSuitePublicationRun,
+  analyzeInjectionSuitePublicationUtility,
+  analyzeInjectionSuitePublicationUtilityFile,
+  H5_PUBLICATION_ANALYSIS_RULE,
+} from "./publication-stats.js";
+export type {
+  InjectionSuitePublicationAnalysis,
+  InjectionSuitePublicationUtilityAnalysis,
+} from "./publication-stats.js";
 export { runInjectionSuiteUtility } from "./utility-runner.js";
 export type { InjectionSuiteUtilityRunInput } from "./utility-runner.js";
 export {
