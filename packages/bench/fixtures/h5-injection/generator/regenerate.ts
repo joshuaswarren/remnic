@@ -14,19 +14,48 @@ const ARMS = {
     fencing: { memoryInjectionDefenseMode: "fencing" },
     quarantine: { memoryInjectionDefenseMode: "quarantine" },
     both: { memoryInjectionDefenseMode: "layered" },
+    "structured-boundary": {
+      memoryInjectionDefenseMode: "off",
+      implementation: "structured-prompt-local",
+    },
+    "spotlighting-marking": {
+      memoryInjectionDefenseMode: "off",
+      implementation: "marking-only-inspired",
+    },
+    "source-authenticated-fencing": { memoryInjectionDefenseMode: "fencing" },
+    "control-data-isolation": {
+      memoryInjectionDefenseMode: "off",
+      implementation: "deny-all-control-flow-approximation",
+    },
+    "layered-fence-quarantine": { memoryInjectionDefenseMode: "layered" },
   },
-  untrustedOrigins: ["user", "tool_output", "connector:*", "import:*", "unknown"],
+  untrustedOrigins: [
+    "user",
+    "tool_output",
+    "connector:*",
+    "import:*",
+    "unknown",
+  ],
 };
 
 const SCENARIO_SCHEMA = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   title: "H5 frozen scenario manifest",
   type: "object",
-  required: ["schemaVersion", "suiteVersion", "stage", "seed", "scenarios", "manifestSha256"],
+  required: [
+    "schemaVersion",
+    "suiteVersion",
+    "stage",
+    "seed",
+    "scenarios",
+    "manifestSha256",
+  ],
   properties: {
     schemaVersion: { const: 1 },
     suiteVersion: { type: "string" },
-    stage: { enum: ["base", "adaptive-r1", "benign"] },
+    stage: {
+      enum: ["base", "adaptive-r1", "adaptive-r2", "adaptive-r3", "benign"],
+    },
     seed: { type: "integer" },
     scenarios: { type: "array", minItems: 40 },
     manifestSha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
@@ -38,7 +67,14 @@ const EPISODE_SCHEMA = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   title: "H5 episode row",
   type: "object",
-  required: ["rowKey", "identity", "attackSucceeded", "canaryEmitted", "quarantined", "fenced"],
+  required: [
+    "rowKey",
+    "identity",
+    "attackSucceeded",
+    "canaryEmitted",
+    "quarantined",
+    "fenced",
+  ],
   properties: {
     rowKey: { type: "string", pattern: "^h5-row-v2-[0-9a-f]{64}$" },
     identity: { type: "object" },
@@ -58,11 +94,31 @@ async function writeJson(relative: string, value: unknown): Promise<void> {
 }
 
 await Promise.all([
-  writeJson("base/manifest.json", buildInjectionSuiteCorpusManifest("base", 100, 71)),
-  writeJson("benign-twins/manifest.json", buildInjectionSuiteCorpusManifest("benign", 10, 71)),
-  writeJson("adaptive-r1/manifest.json", buildInjectionSuiteCorpusManifest("adaptive-r1", 100, 71)),
+  writeJson(
+    "base/manifest.json",
+    buildInjectionSuiteCorpusManifest("base", 100, 71),
+  ),
+  writeJson(
+    "benign-twins/manifest.json",
+    buildInjectionSuiteCorpusManifest("benign", 10, 71),
+  ),
+  writeJson(
+    "adaptive-r1/manifest.json",
+    buildInjectionSuiteCorpusManifest("adaptive-r1", 100, 71),
+  ),
+  writeJson(
+    "adaptive-r2/manifest.json",
+    buildInjectionSuiteCorpusManifest("adaptive-r2", 100, 71),
+  ),
+  writeJson(
+    "adaptive-r3/manifest.json",
+    buildInjectionSuiteCorpusManifest("adaptive-r3", 100, 71),
+  ),
   writeJson("arms/arms.json", ARMS),
   writeJson("schema/scenario-manifest.schema.json", SCENARIO_SCHEMA),
   writeJson("schema/episode.schema.json", EPISODE_SCHEMA),
-  writeFileAtomically(path.join(ROOT, "decision-rule.json"), H5_DECISION_RULE_BYTES),
+  writeFileAtomically(
+    path.join(ROOT, "decision-rule.json"),
+    H5_DECISION_RULE_BYTES,
+  ),
 ]);

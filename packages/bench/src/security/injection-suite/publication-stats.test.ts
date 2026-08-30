@@ -83,12 +83,22 @@ function row(
   };
 }
 
-function fixture(): { rows: InjectionSuiteEpisodeRow[]; design: InjectionSuiteExpectedDesign } {
+function fixture(): {
+  rows: InjectionSuiteEpisodeRow[];
+  design: InjectionSuiteExpectedDesign;
+} {
   const rows: InjectionSuiteEpisodeRow[] = [];
   for (const family of INJECTION_SUITE_FAMILIES) {
     for (let index = 1; index <= 10; index += 1) {
       rows.push(row(family, "none", index, "ATTACK_SUCCEEDED"));
-      rows.push(row(family, "fencing", index, index <= 5 ? "BLOCKED" : "ATTACK_SUCCEEDED"));
+      rows.push(
+        row(
+          family,
+          "fencing",
+          index,
+          index <= 5 ? "BLOCKED" : "ATTACK_SUCCEEDED",
+        ),
+      );
       rows.push(row(family, "both", index, "BLOCKED"));
     }
   }
@@ -127,7 +137,10 @@ test("publication analysis falsifies fencing without relabeling the H5 claim par
 test("void-as-failure sensitivity can overturn an otherwise perfect layered rate", () => {
   const { rows, design } = fixture();
   for (const entry of rows) {
-    if (entry.identity.arm === "both" && Number(entry.identity.variantId.slice(-3)) <= 5) {
+    if (
+      entry.identity.arm === "both" &&
+      Number(entry.identity.variantId.slice(-3)) <= 5
+    ) {
       entry.evidence!.outcome = "VOID";
     }
   }
@@ -150,11 +163,86 @@ test("utility analysis clusters repeated seeds by item and reports benchmarks se
     ["a", "b"].flatMap((itemId) =>
       [1, 2].flatMap((seed) => [
         { benchmark, itemId, seed, arm: "none" as const, score: 1 },
-        { benchmark, itemId, seed, arm: "fencing" as const, score: benchmark === "locomo" ? 1 : 0 },
-      ])));
-  const analysis = analyzeInjectionSuitePublicationUtility(observations, { draws: 200 });
+        {
+          benchmark,
+          itemId,
+          seed,
+          arm: "fencing" as const,
+          score: benchmark === "locomo" ? 1 : 0,
+        },
+      ]),
+    ),
+  );
+  const analysis = analyzeInjectionSuitePublicationUtility(observations, {
+    draws: 200,
+  });
   assert.equal(analysis.benchmarks.length, 2);
   assert.ok(analysis.benchmarks.every((benchmark) => benchmark.clusters === 2));
-  assert.equal(analysis.benchmarks.find((benchmark) => benchmark.benchmark === "locomo")?.relativeDelta, 0);
-  assert.equal(analysis.benchmarks.find((benchmark) => benchmark.benchmark === "drift-gen")?.relativeDelta, -1);
+  assert.equal(
+    analysis.benchmarks.find((benchmark) => benchmark.benchmark === "locomo")
+      ?.relativeDelta,
+    0,
+  );
+  assert.equal(
+    analysis.benchmarks.find((benchmark) => benchmark.benchmark === "drift-gen")
+      ?.relativeDelta,
+    -1,
+  );
+});
+
+test("publication analysis reports every registered defense comparator", () => {
+  const { rows: legacyRows } = fixture();
+  const rows = legacyRows.flatMap((entry) => {
+    if (entry.identity.arm === "fencing") {
+      const copy = structuredClone(entry);
+      copy.identity.arm = "source-authenticated-fencing";
+      copy.rowKey = copy.rowKey.replace(
+        "-fencing-",
+        "-source-authenticated-fencing-",
+      );
+      return [copy];
+    }
+    if (entry.identity.arm === "both") {
+      const copy = structuredClone(entry);
+      copy.identity.arm = "layered-fence-quarantine";
+      copy.rowKey = copy.rowKey.replace("-both-", "-layered-fence-quarantine-");
+      return [copy];
+    }
+    const index = Number(entry.identity.variantId.slice(-3));
+    return [
+      entry,
+      row(entry.identity.family, "structured-boundary", index, "BLOCKED"),
+      row(entry.identity.family, "spotlighting-marking", index, "BLOCKED"),
+      row(entry.identity.family, "control-data-isolation", index, "BLOCKED"),
+    ];
+  });
+  const design: InjectionSuiteExpectedDesign = {
+    schemaVersion: 1,
+    stage: "base",
+    modelProfileHash: "b".repeat(64),
+    rows: rows.map((entry, order) => ({
+      order,
+      rowKey: entry.rowKey,
+      identity: entry.identity,
+      templateId: `${entry.identity.family}-${entry.identity.variantId.slice(-3)}`,
+      scenarioSha256: "0".repeat(64),
+    })),
+  };
+  const analysis = analyzeInjectionSuitePublicationRows(
+    rows,
+    metadata(rows.length),
+    design,
+    { invalid: 0, duplicate: 0, missing: 0, unexpected: 0 },
+    { draws: 100 },
+  );
+  assert.ok(
+    analysis.families.every((family) => family.defenseComparators.length === 5),
+  );
+  assert.ok(
+    analysis.families.every((family) =>
+      family.defenseComparators.every(
+        (comparator) => comparator.block.primary.rate !== null,
+      ),
+    ),
+  );
 });

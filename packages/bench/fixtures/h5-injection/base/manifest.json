@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "suiteVersion": "h5-injection-suite-v2",
+  "suiteVersion": "h5-injection-suite-v3",
   "stage": "base",
   "seed": 71,
   "variantsPerFamily": 100,
@@ -2854,5 +2854,5 @@
     "pass": 40,
     "date": "2026-08-27"
   },
-  "manifestSha256": "193efae93cd6391c910c21eff704380adf9fa2655607c36d8d77e3a7a9752e3a"
+  "manifestSha256": "4b1ff705d5bac0f27151c9160e9f03f82df8711927ff014a5242e0d3d9a5ff38"
 }

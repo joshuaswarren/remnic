@@ -7,10 +7,29 @@
  * hash refuses to continue a drifted run.
  */
 
-export const INJECTION_SUITE_VERSION = "h5-injection-suite-v2";
+export const INJECTION_SUITE_VERSION = "h5-injection-suite-v3";
 export const HOST_FAULT_RETRY_LIMIT = 6;
-export const INJECTION_SUITE_STAGES = ["base", "adaptive-r1", "benign"] as const;
-export const INJECTION_SUITE_ARMS = ["none", "fencing", "quarantine", "both"] as const;
+export const INJECTION_SUITE_STAGES = [
+  "base",
+  "adaptive-r1",
+  "adaptive-r2",
+  "adaptive-r3",
+  "benign",
+] as const;
+export const INJECTION_SUITE_ARMS = [
+  "none",
+  "fencing",
+  "quarantine",
+  "both",
+] as const;
+export const INJECTION_SUITE_PUBLICATION_ARMS = [
+  "none",
+  "structured-boundary",
+  "spotlighting-marking",
+  "source-authenticated-fencing",
+  "control-data-isolation",
+  "layered-fence-quarantine",
+] as const;
 export const INJECTION_SUITE_FAMILIES = [
   "minja",
   "sleeper",
@@ -18,9 +37,28 @@ export const INJECTION_SUITE_FAMILIES = [
   "tool-hijack",
 ] as const;
 
-export type InjectionSuiteArm = (typeof INJECTION_SUITE_ARMS)[number];
+export type InjectionSuiteArm =
+  | (typeof INJECTION_SUITE_ARMS)[number]
+  | (typeof INJECTION_SUITE_PUBLICATION_ARMS)[number];
 export type InjectionSuiteFamily = (typeof INJECTION_SUITE_FAMILIES)[number];
 export type InjectionSuiteStage = (typeof INJECTION_SUITE_STAGES)[number];
+
+export function injectionSuiteArmUsesFence(arm: InjectionSuiteArm): boolean {
+  return (
+    arm === "fencing" ||
+    arm === "both" ||
+    arm === "source-authenticated-fencing" ||
+    arm === "layered-fence-quarantine"
+  );
+}
+
+export function injectionSuiteArmUsesQuarantine(
+  arm: InjectionSuiteArm,
+): boolean {
+  return (
+    arm === "quarantine" || arm === "both" || arm === "layered-fence-quarantine"
+  );
+}
 
 export interface InjectionSuitePlantTurn {
   role: "user" | "assistant";
@@ -58,8 +96,10 @@ export interface InjectionSuiteVariant {
   benign: boolean;
 }
 
-export type InjectionSuiteTrialOutcome = "ATTACK_SUCCEEDED" | "BLOCKED" | "VOID";
-export type InjectionSuiteStopStage = "write" | "recall" | "render" | "behavior" | "complete";
+export type InjectionSuiteTrialOutcome =
+  "ATTACK_SUCCEEDED" | "BLOCKED" | "VOID";
+export type InjectionSuiteStopStage =
+  "write" | "recall" | "render" | "behavior" | "complete";
 
 export interface InjectionSuiteTraceEvent {
   stage: InjectionSuiteStopStage;
@@ -160,6 +200,7 @@ export interface InjectionSuiteCliInput {
   seeds: number;
   variantsPerFamily: number;
   family?: InjectionSuiteFamily;
+  arms?: InjectionSuiteArm[];
   modelProfileId: string;
   outputDir: string;
   resume?: boolean;

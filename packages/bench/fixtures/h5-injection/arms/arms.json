@@ -12,6 +12,24 @@
     },
     "both": {
       "memoryInjectionDefenseMode": "layered"
+    },
+    "structured-boundary": {
+      "memoryInjectionDefenseMode": "off",
+      "implementation": "structured-prompt-local"
+    },
+    "spotlighting-marking": {
+      "memoryInjectionDefenseMode": "off",
+      "implementation": "marking-only-inspired"
+    },
+    "source-authenticated-fencing": {
+      "memoryInjectionDefenseMode": "fencing"
+    },
+    "control-data-isolation": {
+      "memoryInjectionDefenseMode": "off",
+      "implementation": "deny-all-control-flow-approximation"
+    },
+    "layered-fence-quarantine": {
+      "memoryInjectionDefenseMode": "layered"
     }
   },
   "untrustedOrigins": [

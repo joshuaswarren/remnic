@@ -35,8 +35,9 @@ Options:
   --variants-per-family N   Variants per attack family (default: 25)
   --family FAMILY           Target one dev/pilot attack family; forbidden for main
   --model-profile ID        Profile label recorded on each row (default: local-dry)
-  --stage base|adaptive-r1|benign
+  --stage base|adaptive-r1|adaptive-r2|adaptive-r3|benign
                             Frozen corpus stage (default: base)
+  --arm ID                  Repeat to select frozen defense arms
   --run-kind dev|pilot|main Run gate to enforce (default: dev)
   --executor local|ollama|openai-compat
                             local = deterministic screen/fence (default)
@@ -66,7 +67,18 @@ interface InjectionSuiteCommand {
   variantsPerFamily: number;
   family?: "minja" | "sleeper" | "cross-session" | "tool-hijack";
   modelProfileId: string;
-  stage: "base" | "adaptive-r1" | "benign";
+  stage: "base" | "adaptive-r1" | "adaptive-r2" | "adaptive-r3" | "benign";
+  arms?: Array<
+    | "none"
+    | "fencing"
+    | "quarantine"
+    | "both"
+    | "structured-boundary"
+    | "spotlighting-marking"
+    | "source-authenticated-fencing"
+    | "control-data-isolation"
+    | "layered-fence-quarantine"
+  >;
   runKind: "dev" | "pilot" | "main";
   outputDir: string;
   resume: boolean;
@@ -91,8 +103,11 @@ function parsePositiveInteger(raw: string | undefined, flag: string): number {
   return value;
 }
 
-export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteCommand | { help: true } {
-  if (args.length === 0 || args[0] === "--help" || args[0] === "-h") return { help: true };
+export function parseBenchSecurityArgs(
+  args: readonly string[],
+): InjectionSuiteCommand | { help: true } {
+  if (args.length === 0 || args[0] === "--help" || args[0] === "-h")
+    return { help: true };
   if (args[0] !== "injection-suite") {
     throw new Error(`unknown bench security subcommand ${args[0]}`);
   }
@@ -102,6 +117,7 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
   let family: InjectionSuiteCommand["family"];
   let modelProfileId = "local-dry";
   let stage: InjectionSuiteCommand["stage"] = "base";
+  const arms: NonNullable<InjectionSuiteCommand["arms"]> = [];
   let runKind: InjectionSuiteCommand["runKind"] = "dev";
   let outputDir = DEFAULT_OUTPUT_DIR;
   let resume = false;
@@ -133,19 +149,47 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
         next !== "cross-session" &&
         next !== "tool-hijack"
       ) {
-        throw new Error("--family must be minja, sleeper, cross-session, or tool-hijack");
+        throw new Error(
+          "--family must be minja, sleeper, cross-session, or tool-hijack",
+        );
       }
       family = next;
       index += 1;
     } else if (flag === "--model-profile") {
-      if (next === undefined || next.startsWith("-")) throw new Error("missing value for --model-profile");
+      if (next === undefined || next.startsWith("-"))
+        throw new Error("missing value for --model-profile");
       modelProfileId = next;
       index += 1;
     } else if (flag === "--stage") {
-      if (next !== "base" && next !== "adaptive-r1" && next !== "benign") {
-        throw new Error("--stage must be base, adaptive-r1, or benign");
+      if (
+        next !== "base" &&
+        next !== "adaptive-r1" &&
+        next !== "adaptive-r2" &&
+        next !== "adaptive-r3" &&
+        next !== "benign"
+      ) {
+        throw new Error(
+          "--stage must be base, adaptive-r1, adaptive-r2, adaptive-r3, or benign",
+        );
       }
       stage = next;
+      index += 1;
+    } else if (flag === "--arm") {
+      if (
+        next !== "none" &&
+        next !== "fencing" &&
+        next !== "quarantine" &&
+        next !== "both" &&
+        next !== "structured-boundary" &&
+        next !== "spotlighting-marking" &&
+        next !== "source-authenticated-fencing" &&
+        next !== "control-data-isolation" &&
+        next !== "layered-fence-quarantine"
+      ) {
+        throw new Error("unknown --arm defense baseline");
+      }
+      if (arms.includes(next)) throw new Error(`duplicate --arm ${next}`);
+      arms.push(next);
       index += 1;
     } else if (flag === "--run-kind") {
       if (next !== "dev" && next !== "pilot" && next !== "main") {
@@ -160,28 +204,35 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
       executor = next;
       index += 1;
     } else if (flag === "--base-url") {
-      if (next === undefined || next.startsWith("-")) throw new Error("missing value for --base-url");
+      if (next === undefined || next.startsWith("-"))
+        throw new Error("missing value for --base-url");
       baseUrl = next;
       index += 1;
     } else if (flag === "--model") {
-      if (next === undefined || next.startsWith("-")) throw new Error("missing value for --model");
+      if (next === undefined || next.startsWith("-"))
+        throw new Error("missing value for --model");
       model = next;
       index += 1;
     } else if (flag === "--model-digest") {
-      if (next === undefined || next.startsWith("-")) throw new Error("missing value for --model-digest");
+      if (next === undefined || next.startsWith("-"))
+        throw new Error("missing value for --model-digest");
       modelDigest = next;
       index += 1;
     } else if (flag === "--dataset-dir") {
-      if (next === undefined || next.startsWith("-")) throw new Error("missing value for --dataset-dir");
+      if (next === undefined || next.startsWith("-"))
+        throw new Error("missing value for --dataset-dir");
       datasetDir = expandTilde(next);
       index += 1;
     } else if (flag === "--longmemeval-dataset-dir") {
-      if (next === undefined || next.startsWith("-")) throw new Error("missing value for --longmemeval-dataset-dir");
+      if (next === undefined || next.startsWith("-"))
+        throw new Error("missing value for --longmemeval-dataset-dir");
       longmemevalDatasetDir = expandTilde(next);
       index += 1;
     } else if (flag === "--utility-benchmark") {
       if (next !== "locomo" && next !== "longmemeval" && next !== "drift-gen") {
-        throw new Error("--utility-benchmark must be locomo, longmemeval, or drift-gen");
+        throw new Error(
+          "--utility-benchmark must be locomo, longmemeval, or drift-gen",
+        );
       }
       utilityBenchmarks.push(next);
       index += 1;
@@ -192,11 +243,13 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
       requestTimeoutMs = parsePositiveInteger(next, "--request-timeout-ms");
       index += 1;
     } else if (flag === "--out") {
-      if (next === undefined || next.startsWith("-")) throw new Error("missing value for --out");
+      if (next === undefined || next.startsWith("-"))
+        throw new Error("missing value for --out");
       outputDir = expandTilde(next);
       index += 1;
     } else if (flag === "--run") {
-      if (next === undefined || next.startsWith("-")) throw new Error("missing value for --run");
+      if (next === undefined || next.startsWith("-"))
+        throw new Error("missing value for --run");
       outputDir = expandTilde(next);
       resume = true;
       index += 1;
@@ -212,14 +265,17 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
     }
   }
 
-  if (seeds === undefined) throw new Error("injection-suite requires --seeds N");
-  if (retryAmbiguous && !resume) throw new Error("--retry-ambiguous requires --run or --resume");
+  if (seeds === undefined)
+    throw new Error("injection-suite requires --seeds N");
+  if (retryAmbiguous && !resume)
+    throw new Error("--retry-ambiguous requires --run or --resume");
   return {
     seeds,
     variantsPerFamily,
     ...(family === undefined ? {} : { family }),
     modelProfileId,
     stage,
+    ...(arms.length === 0 ? {} : { arms }),
     runKind,
     outputDir,
     resume,
@@ -240,13 +296,27 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
 export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
   try {
     if (args[0] === "injection-suite-publication-utility") {
-      if (args.length !== 5 || args[1] !== "--observations" || !args[2] || args[3] !== "--out" || !args[4]) {
-        throw new Error("injection-suite-publication-utility requires --observations FILE --out FILE");
+      if (
+        args.length !== 5 ||
+        args[1] !== "--observations" ||
+        !args[2] ||
+        args[3] !== "--out" ||
+        !args[4]
+      ) {
+        throw new Error(
+          "injection-suite-publication-utility requires --observations FILE --out FILE",
+        );
       }
       const bench = await loadBenchModule();
       const analyze = bench.analyzeInjectionSuitePublicationUtilityFile;
-      if (typeof analyze !== "function") throw new Error("Installed @remnic/bench lacks H5 publication utility analysis");
-      const analysis = await analyze(expandTilde(args[2]), expandTilde(args[4]));
+      if (typeof analyze !== "function")
+        throw new Error(
+          "Installed @remnic/bench lacks H5 publication utility analysis",
+        );
+      const analysis = await analyze(
+        expandTilde(args[2]),
+        expandTilde(args[4]),
+      );
       console.log(JSON.stringify(analysis, null, 2));
       return;
     }
@@ -258,17 +328,22 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
       for (let index = 1; index < args.length; index += 2) {
         const flag = args[index];
         const value = args[index + 1];
-        if (!value) throw new Error(`missing value for ${flag ?? "campaign flag"}`);
+        if (!value)
+          throw new Error(`missing value for ${flag ?? "campaign flag"}`);
         if (flag === "--base") baseRunDirs.push(expandTilde(value));
-        else if (flag === "--utility") utilityStatisticsPaths.push(expandTilde(value));
-        else if (flag === "--adaptive") adaptiveRunDirs.push(expandTilde(value));
+        else if (flag === "--utility")
+          utilityStatisticsPaths.push(expandTilde(value));
+        else if (flag === "--adaptive")
+          adaptiveRunDirs.push(expandTilde(value));
         else if (flag === "--out") outputDir = expandTilde(value);
         else throw new Error(`unknown campaign option ${flag}`);
       }
-      if (!outputDir) throw new Error("injection-suite-decide requires --out DIR");
+      if (!outputDir)
+        throw new Error("injection-suite-decide requires --out DIR");
       const campaignBench = await loadBenchModule();
       const decide = campaignBench.decideInjectionSuiteCampaign;
-      if (typeof decide !== "function") throw new Error("Installed @remnic/bench lacks H5 campaign decision");
+      if (typeof decide !== "function")
+        throw new Error("Installed @remnic/bench lacks H5 campaign decision");
       const decision = await decide({
         baseRunDirs,
         utilityStatisticsPaths,
@@ -278,30 +353,39 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
       console.log(JSON.stringify(decision, null, 2));
       return;
     }
-    if (args[0] === "injection-suite-analyze" || args[0] === "injection-suite-publication-analyze" || args[0] === "injection-suite-replay") {
-          if (args.length !== 3 || args[1] !== "--run" || !args[2]) {
-            throw new Error(`${args[0]} requires --run DIR`);
-          }
-          const analysisBench = await loadBenchModule();
-          const runDir = expandTilde(args[2]);
-          if (args[0] === "injection-suite-analyze") {
-            const analyze = analysisBench.analyzeInjectionSuiteRun;
-            if (typeof analyze !== "function") throw new Error("Installed @remnic/bench lacks H5 analysis");
-            const analysis = await analyze(runDir);
-            console.log(JSON.stringify(analysis, null, 2));
-          } else if (args[0] === "injection-suite-publication-analyze") {
-            const analyze = analysisBench.analyzeInjectionSuitePublicationRun;
-            if (typeof analyze !== "function") throw new Error("Installed @remnic/bench lacks H5 publication analysis");
-            const analysis = await analyze(runDir);
-            console.log(JSON.stringify(analysis, null, 2));
-          } else {
-            const replay = analysisBench.replayInjectionSuiteStatistics;
-            if (typeof replay !== "function") throw new Error("Installed @remnic/bench lacks H5 replay");
-            await replay(runDir);
-            console.log(JSON.stringify({ replay: "ok", runDir }));
-          }
-          return;
-        }
+    if (
+      args[0] === "injection-suite-analyze" ||
+      args[0] === "injection-suite-publication-analyze" ||
+      args[0] === "injection-suite-replay"
+    ) {
+      if (args.length !== 3 || args[1] !== "--run" || !args[2]) {
+        throw new Error(`${args[0]} requires --run DIR`);
+      }
+      const analysisBench = await loadBenchModule();
+      const runDir = expandTilde(args[2]);
+      if (args[0] === "injection-suite-analyze") {
+        const analyze = analysisBench.analyzeInjectionSuiteRun;
+        if (typeof analyze !== "function")
+          throw new Error("Installed @remnic/bench lacks H5 analysis");
+        const analysis = await analyze(runDir);
+        console.log(JSON.stringify(analysis, null, 2));
+      } else if (args[0] === "injection-suite-publication-analyze") {
+        const analyze = analysisBench.analyzeInjectionSuitePublicationRun;
+        if (typeof analyze !== "function")
+          throw new Error(
+            "Installed @remnic/bench lacks H5 publication analysis",
+          );
+        const analysis = await analyze(runDir);
+        console.log(JSON.stringify(analysis, null, 2));
+      } else {
+        const replay = analysisBench.replayInjectionSuiteStatistics;
+        if (typeof replay !== "function")
+          throw new Error("Installed @remnic/bench lacks H5 replay");
+        await replay(runDir);
+        console.log(JSON.stringify({ replay: "ok", runDir }));
+      }
+      return;
+    }
     const utilityMode = args[0] === "injection-suite-utility";
     const parsed = parseBenchSecurityArgs(
       utilityMode ? ["injection-suite", ...args.slice(1)] : args,
@@ -313,7 +397,8 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
     const bench = await loadBenchModule();
     if (utilityMode) {
       const utility = bench.runInjectionSuiteUtility;
-      if (typeof utility !== "function") throw new Error("Installed @remnic/bench lacks H5 utility runner");
+      if (typeof utility !== "function")
+        throw new Error("Installed @remnic/bench lacks H5 utility runner");
       const analysis = await utility({
         seeds: parsed.seeds,
         variantsPerFamily: parsed.variantsPerFamily,
@@ -327,19 +412,33 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
         ...(parsed.limit === undefined ? {} : { limit: parsed.limit }),
         ...(parsed.baseUrl === undefined ? {} : { baseUrl: parsed.baseUrl }),
         ...(parsed.model === undefined ? {} : { model: parsed.model }),
-        ...(parsed.modelDigest === undefined ? {} : { modelDigest: parsed.modelDigest }),
-        ...(parsed.modelContextTokens === undefined ? {} : { modelContextTokens: parsed.modelContextTokens }),
-        ...(parsed.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: parsed.requestTimeoutMs }),
-        ...(parsed.datasetDir === undefined ? {} : { locomoDatasetDir: parsed.datasetDir }),
-        ...(parsed.longmemevalDatasetDir === undefined ? {} : { longmemevalDatasetDir: parsed.longmemevalDatasetDir }),
-        ...(parsed.utilityBenchmarks === undefined ? {} : { utilityBenchmarks: parsed.utilityBenchmarks }),
+        ...(parsed.modelDigest === undefined
+          ? {}
+          : { modelDigest: parsed.modelDigest }),
+        ...(parsed.modelContextTokens === undefined
+          ? {}
+          : { modelContextTokens: parsed.modelContextTokens }),
+        ...(parsed.requestTimeoutMs === undefined
+          ? {}
+          : { requestTimeoutMs: parsed.requestTimeoutMs }),
+        ...(parsed.datasetDir === undefined
+          ? {}
+          : { locomoDatasetDir: parsed.datasetDir }),
+        ...(parsed.longmemevalDatasetDir === undefined
+          ? {}
+          : { longmemevalDatasetDir: parsed.longmemevalDatasetDir }),
+        ...(parsed.utilityBenchmarks === undefined
+          ? {}
+          : { utilityBenchmarks: parsed.utilityBenchmarks }),
       });
       console.log(JSON.stringify(analysis, null, 2));
       return;
     }
     const run = bench.runInjectionSuiteCliCommand;
     if (typeof run !== "function") {
-      throw new Error("Installed @remnic/bench is missing runInjectionSuiteCliCommand");
+      throw new Error(
+        "Installed @remnic/bench is missing runInjectionSuiteCliCommand",
+      );
     }
     const result = await run({
       seeds: parsed.seeds,
@@ -349,15 +448,22 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
       executor: parsed.executor,
       stage: parsed.stage,
       runKind: parsed.runKind,
+      ...(parsed.arms === undefined ? {} : { arms: parsed.arms }),
       ...(parsed.family === undefined ? {} : { family: parsed.family }),
       ...(parsed.resume ? { resume: true } : {}),
       ...(parsed.retryAmbiguous ? { retryAmbiguous: true } : {}),
       ...(parsed.limit === undefined ? {} : { limit: parsed.limit }),
       ...(parsed.baseUrl === undefined ? {} : { baseUrl: parsed.baseUrl }),
       ...(parsed.model === undefined ? {} : { model: parsed.model }),
-      ...(parsed.modelDigest === undefined ? {} : { modelDigest: parsed.modelDigest }),
-      ...(parsed.modelContextTokens === undefined ? {} : { modelContextTokens: parsed.modelContextTokens }),
-      ...(parsed.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: parsed.requestTimeoutMs }),
+      ...(parsed.modelDigest === undefined
+        ? {}
+        : { modelDigest: parsed.modelDigest }),
+      ...(parsed.modelContextTokens === undefined
+        ? {}
+        : { modelContextTokens: parsed.modelContextTokens }),
+      ...(parsed.requestTimeoutMs === undefined
+        ? {}
+        : { requestTimeoutMs: parsed.requestTimeoutMs }),
     });
     if (result.exitCode === 0) console.log(result.output);
     else console.error(result.output);
