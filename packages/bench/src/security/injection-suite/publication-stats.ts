@@ -572,12 +572,13 @@ export interface PublicationUtilityBenchmarkAnalysis {
   pairs: number;
   baselineMean: number | null;
   fencingMean: number | null;
+  absoluteDelta: number | null;
   relativeDelta: number | null;
   clusterBootstrap90: ClusterBootstrapInterval | null;
 }
 
 export interface InjectionSuitePublicationUtilityAnalysis {
-  schemaVersion: 1;
+  schemaVersion: 2;
   clusterUnit: "benchmark-item";
   benchmarks: PublicationUtilityBenchmarkAnalysis[];
 }
@@ -614,7 +615,7 @@ export function analyzeInjectionSuitePublicationUtility(
     ...new Set(observations.map((observation) => observation.benchmark)),
   ].sort();
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     clusterUnit: "benchmark-item",
     benchmarks: benchmarks.map((benchmark, benchmarkIndex) => {
       const prefix = `${benchmark}\0`;
@@ -629,9 +630,13 @@ export function analyzeInjectionSuitePublicationUtility(
           ? selected.reduce((sum, pair) => sum + pair.fenced, 0) /
             selected.length
           : null;
+      const absoluteDelta =
+        baselineMean !== null && fencingMean !== null
+          ? fencingMean - baselineMean
+          : null;
       const relativeDelta =
-        baselineMean && fencingMean !== null
-          ? (fencingMean - baselineMean) / baselineMean
+        baselineMean && absoluteDelta !== null
+          ? absoluteDelta / baselineMean
           : null;
       const byCluster = new Map(
         clusters.map((cluster) => [
@@ -660,8 +665,7 @@ export function analyzeInjectionSuitePublicationUtility(
             count += 1;
           }
         }
-        if (count > 0 && baseSum > 0)
-          draws.push((fencedSum - baseSum) / baseSum);
+        if (count > 0) draws.push((fencedSum - baseSum) / count);
       }
       return {
         benchmark,
@@ -669,6 +673,7 @@ export function analyzeInjectionSuitePublicationUtility(
         pairs: selected.length,
         baselineMean,
         fencingMean,
+        absoluteDelta,
         relativeDelta,
         clusterBootstrap90: interval(draws),
       };

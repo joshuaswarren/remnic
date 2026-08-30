@@ -182,8 +182,19 @@ test("utility analysis clusters repeated seeds by item and reports benchmarks se
   const analysis = analyzeInjectionSuitePublicationUtility(observations, {
     draws: 200,
   });
+  assert.equal(analysis.schemaVersion, 2);
   assert.equal(analysis.benchmarks.length, 2);
   assert.ok(analysis.benchmarks.every((benchmark) => benchmark.clusters === 2));
+  assert.equal(
+    analysis.benchmarks.find((benchmark) => benchmark.benchmark === "locomo")
+      ?.absoluteDelta,
+    0,
+  );
+  assert.equal(
+    analysis.benchmarks.find((benchmark) => benchmark.benchmark === "drift-gen")
+      ?.absoluteDelta,
+    -1,
+  );
   assert.equal(
     analysis.benchmarks.find((benchmark) => benchmark.benchmark === "locomo")
       ?.relativeDelta,
@@ -194,6 +205,17 @@ test("utility analysis clusters repeated seeds by item and reports benchmarks se
       ?.relativeDelta,
     -1,
   );
+});
+
+test("utility bootstrap keeps zero-baseline cluster draws", () => {
+  const observations = ["a", "b"].flatMap((itemId) => [
+    { benchmark: "longmemeval" as const, itemId, seed: 1, arm: "none" as const, score: 0 },
+    { benchmark: "longmemeval" as const, itemId, seed: 1, arm: "fencing" as const, score: 0 },
+  ]);
+  const benchmark = analyzeInjectionSuitePublicationUtility(observations, { draws: 100 })
+    .benchmarks[0]!;
+  assert.equal(benchmark.absoluteDelta, 0);
+  assert.deepEqual(benchmark.clusterBootstrap90, { lower: 0, upper: 0 });
 });
 
 test("publication analysis reports every registered defense comparator", () => {
