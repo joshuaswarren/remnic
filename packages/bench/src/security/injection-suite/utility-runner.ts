@@ -62,6 +62,10 @@ export interface InjectionSuiteUtilityRunInput extends InjectionSuiteCliInput {
   longmemevalDatasetDir?: string;
   utilityBenchmarks?: UtilityBenchmark[];
 }
+export function isRetryableUtilityFailure(task: { details?: unknown }): boolean {
+  const details = task.details as { benchmarkFailure?: { kind?: unknown } } | undefined;
+  return details?.benchmarkFailure?.kind === "trial_execution_failure";
+}
 
 class UtilityCheckpointStore {
   readonly directory: string;
@@ -93,7 +97,7 @@ class UtilityCheckpointStore {
     for (const entry of readdirSync(this.directory)) {
       if (!entry.endsWith(".json")) continue;
       const task = JSON.parse(readFileSync(path.join(this.directory, entry), "utf8")) as TaskResult;
-      tasks.set(task.taskId, task);
+      if (!isRetryableUtilityFailure(task)) tasks.set(task.taskId, task);
     }
     return tasks;
   }
@@ -112,9 +116,13 @@ class UtilityCheckpointStore {
     }
     this.writeAtomicSync(target, `${taskId}\n`);
   }
-
   commit(task: TaskResult): void {
-    this.writeAtomicSync(this.checkpointPath(task.taskId), `${JSON.stringify(task, null, 2)}\n`);
+    const target = this.checkpointPath(task.taskId);
+    if (existsSync(target)) {
+      const existing = JSON.parse(readFileSync(target, "utf8")) as TaskResult;
+      if (isRetryableUtilityFailure(existing)) renameSync(target, `${target}.failed-${randomUUID()}`);
+    }
+    this.writeAtomicSync(target, `${JSON.stringify(task, null, 2)}\n`);
     rmSync(this.inFlightPath(task.taskId), { force: true });
   }
 
