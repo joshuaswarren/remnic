@@ -1,8 +1,13 @@
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { createSeededRandom, randomInt } from "../../seeded-random.js";
-import type { InjectionSuiteExpectedDesign } from "./freeze.js";
+import {
+  stableInjectionSuiteJson,
+  type InjectionSuiteExpectedDesign,
+  type InjectionSuiteModelProfile,
+} from "./freeze.js";
 import type {
   InjectionSuiteArm,
   InjectionSuiteEpisodeRow,
@@ -473,18 +478,55 @@ export function analyzeInjectionSuitePublicationRows(
   };
 }
 
+function publicationSha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+export function verifyInjectionSuitePublicationFreeze(
+  metadata: InjectionSuiteRunMetadata,
+  design: InjectionSuiteExpectedDesign,
+  profile: InjectionSuiteModelProfile,
+  decisionRuleBytes: string,
+): void {
+  if (publicationSha256(stableInjectionSuiteJson(design)) !== metadata.expectedDesignHash) {
+    throw new Error("expected-design.json does not match run.json expectedDesignHash");
+  }
+  const { modelProfileHash, ...profileBody } = profile;
+  if (
+    modelProfileHash !== metadata.modelProfileHash ||
+    publicationSha256(stableInjectionSuiteJson(profileBody)) !== metadata.modelProfileHash ||
+    design.modelProfileHash !== metadata.modelProfileHash
+  ) {
+    throw new Error("model-profile.json does not match run.json modelProfileHash");
+  }
+  if (publicationSha256(decisionRuleBytes) !== metadata.decisionRuleHash) {
+    throw new Error("decision-rule.json does not match run.json decisionRuleHash");
+  }
+}
+
 export async function analyzeInjectionSuitePublicationRun(
   runDir: string,
 ): Promise<InjectionSuitePublicationAnalysis> {
-  const [metadata, design, episodeText] = await Promise.all([
-    readFile(path.join(runDir, "run.json"), "utf8").then(
-      (text) => JSON.parse(text) as InjectionSuiteRunMetadata,
-    ),
-    readFile(path.join(runDir, "expected-design.json"), "utf8").then(
-      (text) => JSON.parse(text) as InjectionSuiteExpectedDesign,
-    ),
-    readFile(path.join(runDir, "episodes.jsonl"), "utf8"),
-  ]);
+  const [metadata, design, profile, decisionRuleBytes, episodeText] =
+    await Promise.all([
+      readFile(path.join(runDir, "run.json"), "utf8").then(
+        (text) => JSON.parse(text) as InjectionSuiteRunMetadata,
+      ),
+      readFile(path.join(runDir, "expected-design.json"), "utf8").then(
+        (text) => JSON.parse(text) as InjectionSuiteExpectedDesign,
+      ),
+      readFile(path.join(runDir, "model-profile.json"), "utf8").then(
+        (text) => JSON.parse(text) as InjectionSuiteModelProfile,
+      ),
+      readFile(path.join(runDir, "decision-rule.json"), "utf8"),
+      readFile(path.join(runDir, "episodes.jsonl"), "utf8"),
+    ]);
+  verifyInjectionSuitePublicationFreeze(
+    metadata,
+    design,
+    profile,
+    decisionRuleBytes,
+  );
   const rows = episodeText
     .split("\n")
     .filter(Boolean)

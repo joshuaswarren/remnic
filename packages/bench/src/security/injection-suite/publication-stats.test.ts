@@ -1,9 +1,15 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { InjectionSuiteExpectedDesign } from "./freeze.js";
+import {
+  stableInjectionSuiteJson,
+  type InjectionSuiteExpectedDesign,
+  type InjectionSuiteModelProfile,
+} from "./freeze.js";
 import {
   analyzeInjectionSuitePublicationRows,
   analyzeInjectionSuitePublicationUtility,
+  verifyInjectionSuitePublicationFreeze,
 } from "./publication-stats.js";
 import { defaultSuiteIdentity } from "./store.js";
 import type {
@@ -244,5 +250,56 @@ test("publication analysis reports every registered defense comparator", () => {
         (comparator) => comparator.block.primary.rate !== null,
       ),
     ),
+  );
+});
+
+test("publication analysis fails closed on frozen artifact drift", () => {
+  const profileBody = {
+    schemaVersion: 2 as const,
+    modelProfileId: "model-a",
+    executor: "openai-compat",
+    model: "model-a",
+    servedModelDigest: "digest-a",
+    baseUrl: "https://example.test/v1",
+    requestTimeoutMs: 1_000,
+    contextTokens: 8_192,
+    temperature: 0 as const,
+    maxOutputTokens: 256 as const,
+    disableThinking: true as const,
+    plantMode: "sealed-candidate-v1" as const,
+    extractionModel: "model-a",
+    behaviorModel: "model-a",
+  };
+  const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+  const modelProfileHash = hash(stableInjectionSuiteJson(profileBody));
+  const profile: InjectionSuiteModelProfile = { ...profileBody, modelProfileHash };
+  const design: InjectionSuiteExpectedDesign = {
+    schemaVersion: 1,
+    stage: "base",
+    modelProfileHash,
+    rows: [],
+  };
+  const decisionRuleBytes = "{\"schemaVersion\":1}\n";
+  const run = {
+    ...metadata(0),
+    modelProfileHash,
+    expectedDesignHash: hash(stableInjectionSuiteJson(design)),
+    decisionRuleHash: hash(decisionRuleBytes),
+  };
+
+  assert.doesNotThrow(() =>
+    verifyInjectionSuitePublicationFreeze(run, design, profile, decisionRuleBytes)
+  );
+  assert.throws(
+    () => verifyInjectionSuitePublicationFreeze(run, { ...design, stage: "adaptive-r1" }, profile, decisionRuleBytes),
+    /expectedDesignHash/,
+  );
+  assert.throws(
+    () => verifyInjectionSuitePublicationFreeze(run, design, { ...profile, model: "tampered" }, decisionRuleBytes),
+    /modelProfileHash/,
+  );
+  assert.throws(
+    () => verifyInjectionSuitePublicationFreeze(run, design, profile, decisionRuleBytes + " "),
+    /decisionRuleHash/,
   );
 });

@@ -36,6 +36,18 @@ test("rejects expected-design drift in run metadata", async () => {
   }
 });
 
+test("uses the frozen six-arm expected design", async () => {
+  const root = await fixture();
+  try {
+    const rows = Array.from({ length: 240 }, (_, index) => ({ rowKey: String(index) }));
+    await writeFile(path.join(root, "expected-design.json"), JSON.stringify({ rows }) + "\n");
+    await writeFile(path.join(root, "run.json"), JSON.stringify({ expectedRows: 240 }) + "\n");
+    assert.equal((await h5Status(root)).expectedRows, 240);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("counts one family for targeted calibration runs", async () => {
   const root = await fixture();
   try {

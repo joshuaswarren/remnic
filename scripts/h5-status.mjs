@@ -22,14 +22,21 @@ async function rowsFromJsonl(file) {
   }
 }
 
-function expectedRows(run) {
+async function expectedRows(run, root) {
   let computed;
-  if (Number.isInteger(run.limit) && run.limit > 0) computed = run.limit;
-  else {
-    if (!Array.isArray(run.seeds) || !Number.isInteger(run.variantsPerFamily)) {
-      throw new Error("run.json is missing seeds or variantsPerFamily");
+  try {
+    const design = await jsonFile(path.join(root, "expected-design.json"));
+    if (!Array.isArray(design.rows)) throw new Error("expected-design.json has no rows array");
+    computed = design.rows.length;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    if (Number.isInteger(run.limit) && run.limit > 0) computed = run.limit;
+    else {
+      if (!Array.isArray(run.seeds) || !Number.isInteger(run.variantsPerFamily)) {
+        throw new Error("run.json is missing seeds or variantsPerFamily");
+      }
+      computed = run.seeds.length * run.variantsPerFamily * (run.family ? 1 : FAMILIES) * ARMS;
     }
-    computed = run.seeds.length * run.variantsPerFamily * (run.family ? 1 : FAMILIES) * ARMS;
   }
   if (run.expectedRows !== undefined && run.expectedRows !== computed) {
     throw new Error("run.json expectedRows does not match the frozen design");
@@ -49,7 +56,7 @@ function trailingHostFaults(tries) {
 export async function h5Status(runDir, staleAfterMinutes = 20) {
   const root = path.resolve(runDir);
   const run = await jsonFile(path.join(root, "run.json"));
-  const expected = expectedRows(run);
+  const expected = await expectedRows(run, root);
   const episodes = await rowsFromJsonl(path.join(root, "episodes.jsonl"));
   const episodeKeys = episodes.map((row) => row?.rowKey);
   const uniqueEpisodeKeys = new Set(episodeKeys);

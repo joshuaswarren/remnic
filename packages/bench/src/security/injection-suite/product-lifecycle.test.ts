@@ -5,6 +5,7 @@ import type { BenchMemoryAdapter, BenchMemorySnapshot, Message } from "../../ada
 import type { RemnicAdapterOptions } from "../../adapters/remnic-adapter.js";
 import { generateFamilyVariants } from "./generator.js";
 import { executeProductLifecycleRow } from "./product-lifecycle.js";
+import { InjectionSuiteHostFault } from "./llm-executor.js";
 import { defaultSuiteIdentity } from "./store.js";
 
 function fakeAdapter(options: {
@@ -260,4 +261,22 @@ test("screened defense liveness forces the benign safe-tool canary", async () =>
   assert.equal(row.evidence?.outcome, "BLOCKED");
   assert.equal(forceSafeTool, true);
   assert.equal(toolsEnabled, true);
+});
+
+test("transient executor errors are classified as host faults", async () => {
+  const variant = generateFamilyVariants("minja", 1, 1)[0]!;
+  const identity = defaultSuiteIdentity({
+    modelProfileId: "model-a",
+    arm: "none",
+    family: variant.family,
+    variantId: variant.variantId,
+    seed: 1,
+  });
+  await assert.rejects(
+    () => executeProductLifecycleRow(identity, variant, input(), {
+      createAdapter: async () => fakeAdapter({ recalled: variant.payload, memories: [MEMORY] }),
+      complete: async () => { throw new Error("fetch failed"); },
+    }),
+    (error) => error instanceof InjectionSuiteHostFault && error.message === "fetch failed",
+  );
 });
