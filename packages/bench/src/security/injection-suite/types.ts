@@ -198,6 +198,7 @@ export interface InjectionSuiteRunMetadata {
 
 export interface InjectionSuiteCliInput {
   seeds: number;
+  seedBase?: number;
   variantsPerFamily: number;
   family?: InjectionSuiteFamily;
   arms?: InjectionSuiteArm[];

@@ -65,7 +65,9 @@ function canonicalize(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   const record = value as Record<string, unknown>;
   return Object.fromEntries(
-    Object.keys(record).sort().map((key) => [key, canonicalize(record[key])]),
+    Object.keys(record)
+      .sort()
+      .map((key) => [key, canonicalize(record[key])]),
   );
 }
 
@@ -80,15 +82,23 @@ function sha256(value: string): string {
 function scenarioForIdentity(identity: InjectionSuiteRowIdentity) {
   const match = /-(\d+)$/.exec(identity.variantId);
   const index = match ? Number(match[1]) : Number.NaN;
-  if (!Number.isInteger(index) || index < 1) throw new Error(`invalid H5 variant id ${identity.variantId}`);
-  const variant = generateFamilyVariants(identity.family, index, identity.seed, identity.stage)[index - 1];
+  if (!Number.isInteger(index) || index < 1)
+    throw new Error(`invalid H5 variant id ${identity.variantId}`);
+  const variant = generateFamilyVariants(
+    identity.family,
+    index,
+    identity.seed,
+    identity.stage,
+  )[index - 1];
   if (!variant || variant.variantId !== identity.variantId) {
     throw new Error(`cannot regenerate H5 variant ${identity.variantId}`);
   }
   return variant;
 }
 
-function buildModelProfile(input: InjectionSuiteCliInput): InjectionSuiteModelProfile {
+function buildModelProfile(
+  input: InjectionSuiteCliInput,
+): InjectionSuiteModelProfile {
   const executor = input.executor ?? "local";
   const model = input.model ?? "local-dry";
   const withoutHash = {
@@ -113,25 +123,36 @@ function buildModelProfile(input: InjectionSuiteCliInput): InjectionSuiteModelPr
   };
 }
 
-function enforceRunGate(input: InjectionSuiteCliInput, cleanTree: boolean): void {
+function enforceRunGate(
+  input: InjectionSuiteCliInput,
+  cleanTree: boolean,
+): void {
   const runKind = input.runKind ?? "dev";
   const stage = input.stage ?? "base";
   if (runKind === "pilot" && input.variantsPerFamily < 25) {
     throw new Error("H5 pilot requires at least 25 variants per family");
   }
   if (runKind === "dev") return;
-  if (!input.modelDigest?.trim()) throw new Error(`H5 ${runKind} requires --model-digest`);
-  if (!Number.isInteger(input.modelContextTokens) || (input.modelContextTokens ?? 0) < 8_192) {
+  if (!input.modelDigest?.trim())
+    throw new Error(`H5 ${runKind} requires --model-digest`);
+  if (
+    !Number.isInteger(input.modelContextTokens) ||
+    (input.modelContextTokens ?? 0) < 8_192
+  ) {
     throw new Error(`H5 ${runKind} requires --model-context-tokens >= 8192`);
   }
   if (!cleanTree) throw new Error(`H5 ${runKind} requires a clean git tree`);
   if (runKind !== "main") return;
   if (input.seeds !== 1) {
-    throw new Error("H5 main injection runs use one frozen corpus seed; utility owns five paired seeds");
+    throw new Error(
+      "H5 main injection runs use one frozen corpus seed; utility owns five paired seeds",
+    );
   }
   const minimum = stage === "benign" ? 10 : 100;
   if (input.variantsPerFamily < minimum) {
-    throw new Error(`H5 main ${stage} run requires at least ${minimum} variants per family`);
+    throw new Error(
+      `H5 main ${stage} run requires at least ${minimum} variants per family`,
+    );
   }
   if (input.family !== undefined) throw new Error("H5 main forbids --family");
   if (input.limit !== undefined) throw new Error("H5 main forbids --limit");
@@ -145,7 +166,11 @@ export function prepareInjectionSuiteFreeze(
   enforceRunGate(input, !provenance.gitDirty);
   const profile = buildModelProfile(input);
   const stage = input.stage ?? "base";
-  const corpus = buildInjectionSuiteCorpusManifest(stage, input.variantsPerFamily, 71);
+  const corpus = buildInjectionSuiteCorpusManifest(
+    stage,
+    input.variantsPerFamily,
+    input.seedBase ?? 71,
+  );
   const design: InjectionSuiteExpectedDesign = {
     schemaVersion: 1,
     stage,

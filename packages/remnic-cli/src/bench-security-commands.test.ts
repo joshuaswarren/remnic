@@ -207,3 +207,16 @@ test("injection-suite parses frozen publication arms and later adaptive rounds",
     "layered-fence-quarantine",
   ]);
 });
+
+test("injection-suite parses an explicit reproduction seed base", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--seed-base",
+    "907",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.seedBase, 907);
+});

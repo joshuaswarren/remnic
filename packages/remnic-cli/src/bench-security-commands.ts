@@ -32,6 +32,7 @@ Additional commands:
 
 Options:
   --seeds N                 Positive seed count (required)
+  --seed-base N             First deterministic corpus seed (default: 71)
   --variants-per-family N   Variants per attack family (default: 25)
   --family FAMILY           Target one dev/pilot attack family; forbidden for main
   --model-profile ID        Profile label recorded on each row (default: local-dry)
@@ -64,6 +65,7 @@ Options:
 
 interface InjectionSuiteCommand {
   seeds: number;
+  seedBase?: number;
   variantsPerFamily: number;
   family?: "minja" | "sleeper" | "cross-session" | "tool-hijack";
   modelProfileId: string;
@@ -113,6 +115,7 @@ export function parseBenchSecurityArgs(
   }
 
   let seeds: number | undefined;
+  let seedBase: number | undefined;
   let variantsPerFamily = 25;
   let family: InjectionSuiteCommand["family"];
   let modelProfileId = "local-dry";
@@ -138,6 +141,9 @@ export function parseBenchSecurityArgs(
     const next = args[index + 1];
     if (flag === "--seeds") {
       seeds = parsePositiveInteger(next, "--seeds");
+      index += 1;
+    } else if (flag === "--seed-base") {
+      seedBase = parsePositiveInteger(next, "--seed-base");
       index += 1;
     } else if (flag === "--variants-per-family") {
       variantsPerFamily = parsePositiveInteger(next, "--variants-per-family");
@@ -271,6 +277,7 @@ export function parseBenchSecurityArgs(
     throw new Error("--retry-ambiguous requires --run or --resume");
   return {
     seeds,
+    ...(seedBase === undefined ? {} : { seedBase }),
     variantsPerFamily,
     ...(family === undefined ? {} : { family }),
     modelProfileId,
@@ -442,6 +449,7 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
     }
     const result = await run({
       seeds: parsed.seeds,
+      ...(parsed.seedBase === undefined ? {} : { seedBase: parsed.seedBase }),
       variantsPerFamily: parsed.variantsPerFamily,
       modelProfileId: parsed.modelProfileId,
       outputDir: parsed.outputDir,

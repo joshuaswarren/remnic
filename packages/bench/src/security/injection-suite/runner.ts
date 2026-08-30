@@ -132,6 +132,7 @@ export function resolvedExecutorContract(input: InjectionSuiteCliInput): {
 }
 export function planInjectionSuiteRows(input: {
   seeds: number;
+  seedBase?: number;
   variantsPerFamily: number;
   modelProfileId: string;
   family?: InjectionSuiteRowIdentity["family"];
@@ -155,8 +156,12 @@ export function planInjectionSuiteRows(input: {
     : stage.startsWith("adaptive-")
       ? (["fencing", "both"] as const)
       : INJECTION_SUITE_ARMS;
+  const seedBase = input.seedBase ?? 71;
+  if (!Number.isInteger(seedBase) || seedBase < 1) {
+    throw new Error("--seed-base must be a positive integer");
+  }
   for (let seedOffset = 0; seedOffset < input.seeds; seedOffset += 1) {
-    const seed = 71 + seedOffset;
+    const seed = seedBase + seedOffset;
     const variants = input.family
       ? generateFamilyVariants(
           input.family,
