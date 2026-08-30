@@ -56,6 +56,9 @@ Options:
   --resume                  Continue an existing run (required if DIR already has run.json)
   --retry-ambiguous         Retry a persisted in-flight paid request after operator review
   --limit N                 Execute at most N planned rows (dry-run / smoke)
+  --utility-benchmark ID    Repeat: locomo, longmemeval, or drift-gen
+  --longmemeval-dataset-dir DIR
+                            Frozen LongMemEval dataset for utility runs
 `;
 
 interface InjectionSuiteCommand {
@@ -71,6 +74,8 @@ interface InjectionSuiteCommand {
   limit?: number;
   executor: "local" | "ollama" | "openai-compat";
   datasetDir?: string;
+  longmemevalDatasetDir?: string;
+  utilityBenchmarks?: Array<"locomo" | "longmemeval" | "drift-gen">;
   baseUrl?: string;
   model?: string;
   modelDigest?: string;
@@ -104,6 +109,8 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
   let limit: number | undefined;
   let executor: InjectionSuiteCommand["executor"] = "local";
   let datasetDir: string | undefined;
+  let longmemevalDatasetDir: string | undefined;
+  const utilityBenchmarks: Array<"locomo" | "longmemeval" | "drift-gen"> = [];
   let baseUrl: string | undefined;
   let model: string | undefined;
   let modelDigest: string | undefined;
@@ -168,6 +175,16 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
       if (next === undefined || next.startsWith("-")) throw new Error("missing value for --dataset-dir");
       datasetDir = expandTilde(next);
       index += 1;
+    } else if (flag === "--longmemeval-dataset-dir") {
+      if (next === undefined || next.startsWith("-")) throw new Error("missing value for --longmemeval-dataset-dir");
+      longmemevalDatasetDir = expandTilde(next);
+      index += 1;
+    } else if (flag === "--utility-benchmark") {
+      if (next !== "locomo" && next !== "longmemeval" && next !== "drift-gen") {
+        throw new Error("--utility-benchmark must be locomo, longmemeval, or drift-gen");
+      }
+      utilityBenchmarks.push(next);
+      index += 1;
     } else if (flag === "--model-context-tokens") {
       modelContextTokens = parsePositiveInteger(next, "--model-context-tokens");
       index += 1;
@@ -214,6 +231,8 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
     ...(modelDigest === undefined ? {} : { modelDigest }),
     ...(modelContextTokens === undefined ? {} : { modelContextTokens }),
     ...(datasetDir === undefined ? {} : { datasetDir }),
+    ...(longmemevalDatasetDir === undefined ? {} : { longmemevalDatasetDir }),
+    ...(utilityBenchmarks.length === 0 ? {} : { utilityBenchmarks }),
     ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
   };
 }
@@ -305,12 +324,15 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
         runKind: parsed.runKind,
         ...(parsed.resume ? { resume: true } : {}),
         ...(parsed.retryAmbiguous ? { retryAmbiguous: true } : {}),
+        ...(parsed.limit === undefined ? {} : { limit: parsed.limit }),
         ...(parsed.baseUrl === undefined ? {} : { baseUrl: parsed.baseUrl }),
         ...(parsed.model === undefined ? {} : { model: parsed.model }),
         ...(parsed.modelDigest === undefined ? {} : { modelDigest: parsed.modelDigest }),
         ...(parsed.modelContextTokens === undefined ? {} : { modelContextTokens: parsed.modelContextTokens }),
         ...(parsed.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: parsed.requestTimeoutMs }),
         ...(parsed.datasetDir === undefined ? {} : { locomoDatasetDir: parsed.datasetDir }),
+        ...(parsed.longmemevalDatasetDir === undefined ? {} : { longmemevalDatasetDir: parsed.longmemevalDatasetDir }),
+        ...(parsed.utilityBenchmarks === undefined ? {} : { utilityBenchmarks: parsed.utilityBenchmarks }),
       });
       console.log(JSON.stringify(analysis, null, 2));
       return;

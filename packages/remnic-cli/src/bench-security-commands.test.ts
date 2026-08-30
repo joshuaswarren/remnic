@@ -124,3 +124,22 @@ test("openai-compat help names host-isolated credential env vars", () => {
   assert.match(BENCH_SECURITY_USAGE, /REMNIC_OPENAI_COMPAT_API_KEY/);
   assert.match(BENCH_SECURITY_USAGE, /loopback HTTP/);
 });
+
+test("injection-suite parses independent utility pilot controls", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--utility-benchmark",
+    "longmemeval",
+    "--longmemeval-dataset-dir",
+    "/tmp/longmemeval",
+    "--limit",
+    "100",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.deepEqual(parsed.utilityBenchmarks, ["longmemeval"]);
+  assert.equal(parsed.longmemevalDatasetDir, "/tmp/longmemeval");
+  assert.equal(parsed.limit, 100);
+});

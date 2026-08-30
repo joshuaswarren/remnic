@@ -3,7 +3,7 @@ import { H5_DECISION_RULE } from "./decision-rule.js";
 import type { InjectionSuiteArm } from "./types.js";
 
 export interface InjectionSuiteUtilityObservation {
-  benchmark: "locomo" | "drift-gen";
+  benchmark: "locomo" | "longmemeval" | "drift-gen";
   itemId: string;
   seed: number;
   arm: InjectionSuiteArm;

@@ -36,6 +36,7 @@ import type { InjectionSuiteArm, InjectionSuiteCliInput } from "./types.js";
 const UTILITY_ARMS = ["none", "fencing"] as const;
 const UTILITY_SEEDS = [1, 2, 3, 4, 5] as const;
 const UTILITY_SEED_CONCURRENCY = 2;
+type UtilityBenchmark = "locomo" | "longmemeval" | "drift-gen";
 const DRIFT_ROOT = path.resolve(
   fileURLToPath(new URL("../../fixtures/drift-gen-core/11", import.meta.url)),
 );
@@ -58,6 +59,8 @@ interface DriftProbe {
 
 export interface InjectionSuiteUtilityRunInput extends InjectionSuiteCliInput {
   locomoDatasetDir?: string;
+  longmemevalDatasetDir?: string;
+  utilityBenchmarks?: UtilityBenchmark[];
 }
 
 class UtilityCheckpointStore {
@@ -67,7 +70,7 @@ class UtilityCheckpointStore {
     root: string,
     arm: InjectionSuiteArm,
     seed: number,
-    benchmark: "locomo" | "drift-gen",
+    benchmark: UtilityBenchmark,
   ) {
     this.directory = path.join(root, "utility-checkpoints", arm, String(seed), benchmark);
     mkdirSync(this.directory, { recursive: true });
@@ -203,19 +206,22 @@ function assertNoAmbiguousUtilityTask(
   }
 }
 
-async function runLocomoUtility(
+async function runPublishedUtility(
   input: InjectionSuiteUtilityRunInput,
   arm: InjectionSuiteArm,
   seed: number,
+  benchmark: "locomo" | "longmemeval",
+  datasetDir: string | undefined,
 ): Promise<InjectionSuiteUtilityObservation[]> {
-  const store = new UtilityCheckpointStore(input.outputDir, arm, seed, "locomo");
+  const store = new UtilityCheckpointStore(input.outputDir, arm, seed, benchmark);
   assertNoAmbiguousUtilityTask(store, input.retryAmbiguous === true);
   const completed = store.loadTasks();
   const adapter = await createUtilityAdapter(input, arm, seed);
   try {
-    const result = await runBenchmark("locomo", {
-      mode: input.runKind === "main" ? "full" : "quick",
-      datasetDir: input.locomoDatasetDir,
+    const result = await runBenchmark(benchmark, {
+      mode: datasetDir ? "full" : "quick",
+      datasetDir,
+      limit: input.limit,
       system: adapter,
       seed,
       benchmarkOptions: { trialConcurrency: 1 },
@@ -225,7 +231,7 @@ async function runLocomoUtility(
       noJudgeCache: true,
     });
     return result.results.tasks.map((task) => ({
-      benchmark: "locomo",
+      benchmark,
       itemId: task.taskId,
       seed,
       arm,
@@ -307,20 +313,37 @@ async function runDriftUtility(
 export async function runInjectionSuiteUtility(
   input: InjectionSuiteUtilityRunInput,
 ): Promise<InjectionSuiteUtilityAnalysis> {
-  if (input.runKind === "main" && !input.locomoDatasetDir) {
+  const benchmarks = input.utilityBenchmarks ?? ["locomo", "drift-gen"];
+  if (new Set(benchmarks).size !== benchmarks.length) {
+    throw new Error("H5 utility benchmarks must be unique");
+  }
+  if (benchmarks.includes("locomo") && input.runKind === "main" && !input.locomoDatasetDir) {
     throw new Error("H5 main utility requires a frozen LoCoMo --dataset-dir");
   }
-  await readFile(path.join(DRIFT_ROOT, "..", "dataset.manifest.json"), "utf8");
+  if (benchmarks.includes("longmemeval") && !input.longmemevalDatasetDir) {
+    throw new Error("H5 LongMemEval utility requires --longmemeval-dataset-dir");
+  }
+  if (benchmarks.includes("drift-gen")) {
+    await readFile(path.join(DRIFT_ROOT, "..", "dataset.manifest.json"), "utf8");
+  }
+  mkdirSync(input.outputDir, { recursive: true });
   const observations: InjectionSuiteUtilityObservation[] = [];
   for (const arm of UTILITY_ARMS) {
     for (let offset = 0; offset < UTILITY_SEEDS.length; offset += UTILITY_SEED_CONCURRENCY) {
       const seeds = UTILITY_SEEDS.slice(offset, offset + UTILITY_SEED_CONCURRENCY);
-      const bySeed = await Promise.all(
-        seeds.map(async (seed) => [
-          ...await runLocomoUtility(input, arm, seed),
-          ...await runDriftUtility(input, arm, seed),
-        ]),
-      );
+      const bySeed = await Promise.all(seeds.map(async (seed) => {
+        const rows: InjectionSuiteUtilityObservation[] = [];
+        for (const benchmark of benchmarks) {
+          if (benchmark === "locomo") {
+            rows.push(...await runPublishedUtility(input, arm, seed, benchmark, input.locomoDatasetDir));
+          } else if (benchmark === "longmemeval") {
+            rows.push(...await runPublishedUtility(input, arm, seed, benchmark, input.longmemevalDatasetDir));
+          } else {
+            rows.push(...await runDriftUtility(input, arm, seed));
+          }
+        }
+        return rows;
+      }));
       observations.push(...bySeed.flat());
       await writeFileAtomically(
         path.join(input.outputDir, "utility-observations.json"),
