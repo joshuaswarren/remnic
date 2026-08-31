@@ -4,10 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.57] — 2026-08-31
+
 ### Fixed
 
 - `@remnic/belief-ledger` imports store helpers from `@remnic/core` instead of subpath exports, so tsup DTS emit does not need `dist/storage.d.ts` and friends to already exist.
-
 
 ## [v9.69.57] — 2026-08-31
 
