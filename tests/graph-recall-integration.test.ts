@@ -308,7 +308,7 @@ test("graph path scoring infers archived state for legacy intermediate nodes", a
     ],
     recallNamespaces: ["default"],
     recallResultLimit: 3,
-    asOf: "2026-08-30T00:00:00.000Z",
+    asOf: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   });
 
   const expectedPenaltyByPath = new Map(
