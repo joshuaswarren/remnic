@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `@remnic/belief-ledger` depends on `@remnic/core` as a workspace package so `pnpm -r run build` waits for core dist types before tsup DTS emit.
+
+
 ## [v9.69.57] — 2026-08-31
 
 ### Fixed
