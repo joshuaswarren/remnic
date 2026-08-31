@@ -747,3 +747,61 @@ test("addEntityRelationship falls back to the legacy file while its rename is in
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a persisted mapping whose both entity files are gone does not abort startup", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-both-missing-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const legacy = "task-inventory-mapping";
+    const canonical = normalizeEntityName("Task inventory mapping", "project");
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({ version: 1, complete: false, mappings: { [legacy]: canonical } }),
+      "utf8",
+    );
+
+    await new StorageManager(dir).ensureDirectories();
+
+    const journal = JSON.parse(
+      await readFile(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), "utf8"),
+    ) as { mappings?: Record<string, string> };
+    assert.equal(journal.mappings?.[legacy], undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a persisted mapping whose Type now normalizes to a new canonical id does not abort startup", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-retarget-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const name = "Task inventory mapping";
+    const legacy = normalizeEntityName(name, "task");
+    const staleCanonical = normalizeEntityName(name, "project");
+    const liveCanonical = normalizeEntityName(name, "automation");
+    assert.notEqual(staleCanonical, liveCanonical);
+    await writeFile(
+      path.join(dir, "entities", `${legacy}.md`),
+      `---\nid: ${legacy}\ncreated: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n---\n\n`
+      + `# ${name}\n\n**Type:** automation\n\nLive type.\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({ version: 1, complete: false, mappings: { [legacy]: staleCanonical } }),
+      "utf8",
+    );
+
+    await new StorageManager(dir).ensureDirectories();
+
+    const live = await readFile(path.join(dir, "entities", `${liveCanonical}.md`), "utf8").catch(() =>
+      readFile(path.join(dir, "entities", `${legacy}.md`), "utf8"),
+    );
+    assert.match(live, /Live type\./);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+

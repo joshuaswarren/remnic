@@ -695,18 +695,6 @@ function mergeDiscoveredMappings(
   for (const [legacyId, canonicalId] of Object.entries(discovered)) {
     const previousMapping = merged[legacyId];
     if (previousMapping !== undefined && previousMapping !== canonicalId) {
-      // A -> B collapses to A -> C once B -> C exists, so a rescan that still
-      // reads A -> B off disk is reporting the same chain, not a new target.
-      // Only a target the chain cannot reach is a real conflict.
-      let hop: string | undefined = canonicalId;
-      const seen = new Set<string>();
-      while (hop !== undefined && hop !== previousMapping && !seen.has(hop)) {
-        seen.add(hop);
-        hop = merged[hop];
-      }
-      if (hop !== previousMapping) {
-        throw new Error(`Legacy entity id ${legacyId} changed canonical target during migration.`);
-      }
       continue;
     }
     if (previousMapping === undefined && wouldCreateMappingCycle(merged, legacyId, canonicalId)) continue;
@@ -765,7 +753,7 @@ async function migrateEntityFilePair(
     await assertNotSymlink(canonicalPath, canonicalId);
     const legacyExists = await fileExists(legacyPath);
     const canonicalExists = await fileExists(canonicalPath);
-    if (!legacyExists && !canonicalExists) return { deferred: true, progressed: false };
+    if (!legacyExists && !canonicalExists) return { deferred: false, progressed: false, blocked: true };
     if (legacyExists && canonicalExists) {
       if (await sameFileIdentity(legacyPath, canonicalPath)) return { deferred: false, progressed: false };
       const [legacyContent, canonicalContent, legacyEncrypted, canonicalEncrypted] = await Promise.all([
@@ -944,9 +932,9 @@ export async function migrateLegacyEntityCanonicalIds(
           delete parked[legacyId];
           if (active[legacyId] !== undefined) continue;
           const legacyPath = deps.resolveEntityFilePath(legacyId);
+          const canonicalPath = deps.resolveEntityFilePath(canonicalId);
           if (legacyPath !== null && (await fileExists(legacyPath))) continue;
-          // Source gone: the rename is moot, but references still name it and
-          // this record is the only thing that can still rewrite them.
+          if (canonicalPath === null || !(await fileExists(canonicalPath))) continue;
           active[legacyId] = canonicalId;
           revived = true;
         }
@@ -1070,9 +1058,8 @@ export async function migrateLegacyEntityCanonicalIds(
           if (deferredMappings.length === 0) break;
           if (!progressed) {
             const [legacyId, canonicalId] = deferredMappings[0]!;
-            throw new Error(
-              `Cannot migrate legacy entity id ${legacyId}: both files are missing and no intermediate mapping can advance migration.`,
-            );
+            blocked.set(legacyId, canonicalId);
+            break;
           }
           pendingMappings = deferredMappings;
         }
