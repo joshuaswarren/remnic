@@ -4,17 +4,19 @@ import { ensurePackageBuild } from "./build-staleness.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-ensurePackageBuild(
-  repoRoot,
-  "@remnic/core",
-  path.join(repoRoot, "packages", "remnic-core", "dist", "index.js"),
-  [
-    path.join(repoRoot, "packages", "remnic-core", "src"),
-    path.join(repoRoot, "packages", "remnic-core", "package.json"),
-    path.join(repoRoot, "packages", "remnic-core", "tsup.config.ts"),
-    path.join(repoRoot, "packages", "remnic-core", "tsconfig.json"),
-  ],
-);
+if (process.env.REMNIC_SKIP_CORE_REBUILD !== "1") {
+  ensurePackageBuild(
+    repoRoot,
+    "@remnic/core",
+    path.join(repoRoot, "packages", "remnic-core", "dist", "index.js"),
+    [
+      path.join(repoRoot, "packages", "remnic-core", "src"),
+      path.join(repoRoot, "packages", "remnic-core", "package.json"),
+      path.join(repoRoot, "packages", "remnic-core", "tsup.config.ts"),
+      path.join(repoRoot, "packages", "remnic-core", "tsconfig.json"),
+    ],
+  );
+}
 
 // #1557: bench now depends on @remnic/coding-graph for the coding-graph
 // benchmark harness. Ensure its dist is built before bench's tsup DTS

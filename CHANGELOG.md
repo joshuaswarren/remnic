@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Release recursive build sets `REMNIC_SKIP_CORE_REBUILD=1` so staleness-triggered prebuilds cannot clean `@remnic/core` `dist` while dependents emit DTS.
+
+
 ## [v9.69.57] — 2026-08-31
 
 ### Fixed
