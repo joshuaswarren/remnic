@@ -9,9 +9,7 @@ import type {
   LedgerPredictionGrade,
 } from "./types.js";
 
-export interface FallbackLlmLedgerAdapterOptions extends FallbackLlmOptions {
-  agentId?: string;
-}
+export type FallbackLlmLedgerAdapterOptions = FallbackLlmOptions;
 
 export function createFallbackLlmLedgerAdapter(
   client: FallbackLlmClient,
