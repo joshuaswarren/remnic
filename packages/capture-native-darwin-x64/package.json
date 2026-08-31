@@ -1,6 +1,6 @@
 {
   "name": "@remnic/capture-native-darwin-x64",
-  "version": "9.69.57",
+  "version": "9.69.58",
   "description": "macOS Intel native capture helper for Remnic — audio, screen accessibility (AX), and window OCR",
   "type": "module",
   "os": [
