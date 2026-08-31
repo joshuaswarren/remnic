@@ -1,7 +1,8 @@
 ---
 "@remnic/belief-ledger": patch
+"@remnic/core": patch
 ---
 
 Stability: stable
 
-Declare `@remnic/core` as a workspace dependency so release `pnpm -r run build` emits core dist types before belief-ledger tsup DTS.
+Import belief-ledger store helpers from `@remnic/core` and re-export `composeSalvagedEnvelope` / `sanitizeMemoryContent` so tsup DTS does not resolve unpublished subpath declaration files.

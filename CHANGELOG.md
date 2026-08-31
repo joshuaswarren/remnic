@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- `@remnic/belief-ledger` depends on `@remnic/core` as a workspace package so `pnpm -r run build` waits for core dist types before tsup DTS emit.
+- `@remnic/belief-ledger` imports store helpers from `@remnic/core` instead of subpath exports, so tsup DTS emit does not need `dist/storage.d.ts` and friends to already exist.
 
 
 ## [v9.69.57] — 2026-08-31
