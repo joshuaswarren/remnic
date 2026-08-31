@@ -693,13 +693,16 @@ If hooks are not firing:
 1. Confirm the plugin is installed under `openclaw-remnic`.
 2. Confirm `plugins.slots.memory` points to `openclaw-remnic`.
 3. Check the gateway log for a slot-selection error or passive-mode warning.
-4. On OpenClaw 2026.8.1 (2.0) with plugin `9.69.56` or older in bridge/delegate
-   mode, hooks fire but the prompt has no memory: upgrade the plugin to
-   `9.69.57` or newer. See "Upgrading to OpenClaw 2.0" above and issue #3057.
 
 ```bash
 grep -i remnic ~/.openclaw/logs/gateway.log | tail -50
 ```
+
+If hooks fire but the prompt contains no memory on OpenClaw 2026.8.1 (2.0)
+with bridge/delegate mode:
+
+Plugin `9.69.56` or older cannot inject on a 2.0 host; upgrade the plugin to
+`9.69.57` or newer. See "Upgrading to OpenClaw 2.0" above and issue #3057.
 
 If you are migrating from the older `openclaw-engram` id, install the
 canonical package and keep the shim only as a temporary compatibility layer.
