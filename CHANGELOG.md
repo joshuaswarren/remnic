@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- `@remnic/belief-ledger` declares LLM call options locally instead of extending `FallbackLlmOptions`, so tsup DTS emit keeps `temperature`/`maxTokens` and the release `pnpm -r run build` step can finish.
+- `@remnic/belief-ledger` aliases `FallbackLlmLedgerAdapterOptions` to `FallbackLlmOptions` instead of `interface extends`, so tsup DTS keeps the `@remnic/core` import and the release build can finish.
 
 
 ## [v9.69.56] — 2026-08-26

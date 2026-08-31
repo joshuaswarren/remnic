@@ -1,4 +1,4 @@
-import type { FallbackLlmClient } from "@remnic/core";
+import type { FallbackLlmClient, FallbackLlmOptions } from "@remnic/core";
 import { normalizeChallenge, normalizeClaimDraft, normalizeJudgeResult, normalizePredictionGrade } from "./schema.js";
 import type {
   LedgerChallenge,
@@ -9,12 +9,7 @@ import type {
   LedgerPredictionGrade,
 } from "./types.js";
 
-export interface FallbackLlmLedgerAdapterOptions {
-  agentId?: string;
-  temperature?: number;
-  maxTokens?: number;
-  timeoutMs?: number;
-}
+export type FallbackLlmLedgerAdapterOptions = FallbackLlmOptions;
 
 export function createFallbackLlmLedgerAdapter(
   client: FallbackLlmClient,

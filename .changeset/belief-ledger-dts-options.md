@@ -4,4 +4,4 @@
 
 Stability: stable
 
-Declare belief-ledger LLM call options locally so tsup DTS emit no longer drops `temperature`/`maxTokens`.
+Alias `FallbackLlmLedgerAdapterOptions` to `FallbackLlmOptions` so tsup DTS keeps the full option surface and no longer drops `temperature`/`maxTokens`.
