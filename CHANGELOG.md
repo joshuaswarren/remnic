@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Release recursive package build excludes `@remnic/core` after the dedicated core build so tsup does not wipe core `dist` mid-flight.
+
+
 ## [v9.69.57] — 2026-08-31
 
 ### Fixed

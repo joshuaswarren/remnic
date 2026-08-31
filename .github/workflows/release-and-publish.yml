@@ -479,8 +479,9 @@ jobs:
       - name: Build all packages
         run: |
           pnpm --filter @remnic/core run build
-          pnpm -r run build
+          pnpm -r --filter '!@remnic/core' run build
           pnpm run build
+
 
 
       - name: Verify root release artifacts
