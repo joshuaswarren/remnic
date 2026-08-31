@@ -308,14 +308,14 @@ export function registerDelegateRuntime(
   // Embedded zero-limit contract: recallBudgetChars === 0 disables injection.
   const promptInjectionEnabled = options.allowPromptInjection && options.recallBudgetChars !== 0;
   const useSectionBuilder = typeof api.registerMemoryPromptSection === "function";
-  // A host with no section builder but a unified memory capability injects
-  // through the capability's promptBuilder, which reads the same cache. Only
-  // when NEITHER exists does the hook return the injection fields itself —
-  // otherwise the capability builder would always see an empty cache while the
-  // hook injected separately (or, worse, both would inject).
-  const useCapabilityBuilder =
-    !useSectionBuilder && typeof api.registerMemoryCapability === "function";
-  const cachePromptLines = useSectionBuilder || useCapabilityBuilder;
+  // Only a SECTION-builder host (registerMemoryPromptSection, OpenClaw 1.x)
+  // gets the pre-compute-then-consume contract: its builder runs after this
+  // hook and injects the cached lines. OpenClaw 2.0 removed that API — the
+  // capability's synchronous promptBuilder is read during host prompt
+  // assembly, which never runs this hook first (issue #3057), so cached lines
+  // would never be consumed and a void return would inject nothing. On such
+  // hosts the hook returns the injection itself.
+  const cachePromptLines = useSectionBuilder;
 
   const capability = registerDelegateMemoryCapability(api, {
     serviceId: options.serviceId,
@@ -356,14 +356,10 @@ export function registerDelegateRuntime(
     workspaceDir: options.capability.workspaceDir,
     agentIds: options.capability.agentIds,
     allowPromptInjection: promptInjectionEnabled,
-    // The section builder owns the destructive read when it exists; otherwise
-    // the capability builder IS the sole consumer and must evict, or a stale
-    // section would be re-injected on the next turn.
-    readPromptLines: (sessionKey) => {
-      const lines = promptLinesBySession.get(sessionKey) ?? null;
-      if (!useSectionBuilder) promptLinesBySession.delete(sessionKey);
-      return lines;
-    },
+    // Peek only. The section builder's own builder function owns eviction,
+    // and on hosts without one (OpenClaw 2.0) the hook never caches — it
+    // injects directly — so this can never double-inject behind the hook.
+    readPromptLines: (sessionKey) => promptLinesBySession.get(sessionKey) ?? null,
     extractionMaxTurnChars: options.capability.extractionMaxTurnChars,
     flushModel: options.capability.flushModel,
     configuredSearchBackend: options.capability.configuredSearchBackend,
@@ -447,7 +443,7 @@ export function registerDelegateRuntime(
         if (!rendered) return undefined;
         const prompt = rendered.prompt;
         if (cachePromptLines) {
-          // A registered builder injects; the hook only pre-computes.
+          // A registered section builder injects; the hook only pre-computes.
           // Returning injection fields here too would double-inject.
           promptLinesBySession.set(sessionKey, rendered.lines);
           return undefined;

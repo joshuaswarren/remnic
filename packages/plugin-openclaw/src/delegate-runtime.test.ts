@@ -2066,6 +2066,53 @@ test("delegate uses the section builder on hosts that expose it (no hook injecti
   }
 });
 
+test("an OpenClaw 2.0 host (capability, no section builder) gets the hook's own injection (#3057)", async () => {
+  // 2.0 removed registerMemoryPromptSection, and its synchronous capability
+  // promptBuilder is read during host prompt assembly — which never runs this
+  // hook. A void hook return therefore injected nothing: the hook must return
+  // the injection itself, and the capability builder must have no cached lines
+  // to double-inject behind it.
+  const stub = await startDaemonStub(() => ({ context: "bridge daemon context", count: 2 }));
+  try {
+    const api = recordingApi();
+    const capabilities: Array<{
+      promptBuilder?: (params: { sessionKey?: string }) => string[] | null;
+    }> = [];
+    const capabilityApi = Object.assign(api, {
+      registerMemoryCapability(capability: unknown): void {
+        capabilities.push(
+          capability as { promptBuilder?: (params: { sessionKey?: string }) => string[] | null },
+        );
+      },
+    });
+    registerDelegateRuntime(capabilityApi, optionsFor(stub.port));
+
+    const result = (await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "what did we decide about the rollout?" },
+      { sessionKey: "v2" },
+    )) as Record<string, unknown>;
+    assert.ok(result, "the hook injects on a capability-only host");
+    assert.match(String(result.prependSystemContext), /## Memory Context \(Remnic\)/);
+    assert.match(String(result.prependSystemContext), /bridge daemon context/);
+    assert.equal(
+      result.prependContext,
+      undefined,
+      "before_prompt_build returns only prependSystemContext",
+    );
+    const promptBuilder = capabilities[0]?.promptBuilder;
+    assert.equal(typeof promptBuilder, "function", "the capability exposed a promptBuilder");
+    assert.equal(
+      promptBuilder?.({ sessionKey: "v2" }) ?? null,
+      null,
+      "the capability builder has no cached lines to double-inject",
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
 test("maybeRegisterDelegateRuntime deduplicates hook binding per api object", async () => {
   const stub = await startDaemonStub(() => ({ context: "ctx" }));
   try {
