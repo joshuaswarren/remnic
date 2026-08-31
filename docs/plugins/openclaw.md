@@ -43,6 +43,37 @@ remnic openclaw migrate-engram --yes
 See [OpenClaw Engram to Remnic migration](../guides/openclaw-engram-to-remnic.md)
 for config-key behavior, backup behavior, and local patch preservation notes.
 
+## Upgrading to OpenClaw 2.0
+
+OpenClaw 2026.8.1 (2.0) removed `api.registerMemoryPromptSection`. Plugin
+releases up to and including `9.69.56` relied on that API in bridge/delegate
+mode: on a 2.0 host the plugin loads, reaches the daemon, and captures turns,
+but injects **no memory** into agent prompts. Upgrading the host to 2.0
+requires `@remnic/plugin-openclaw` `9.69.57` or newer. Install or update the
+plugin in the same change as the host upgrade:
+
+```bash
+openclaw plugins install clawhub:@remnic/plugin-openclaw
+```
+
+or through the Remnic installer:
+
+```bash
+remnic openclaw install
+```
+
+Scope of the old pairing:
+
+- OpenClaw 1.x hosts (2026.4 through 2026.7.x) work on every plugin version;
+  the section-builder injection path there is unchanged.
+- Embedded (non-delegate) memory mode was not affected; it injects through the
+  `before_prompt_build` hook result on 2.0.
+- Symptom of the stale pairing on 2.0: gateway logs show
+  `delegate: registered daemon-backed memory capability` and
+  `bridge mode delegate: memory loop backed by daemon`, the recall request
+  reaches the daemon, and the model prompt still contains no memory context.
+  See issue #3057.
+
 ## Publish to ClawHub
 
 Publish ClawHub releases from the built npm/ClawPack tarball, not from the raw
@@ -662,6 +693,9 @@ If hooks are not firing:
 1. Confirm the plugin is installed under `openclaw-remnic`.
 2. Confirm `plugins.slots.memory` points to `openclaw-remnic`.
 3. Check the gateway log for a slot-selection error or passive-mode warning.
+4. On OpenClaw 2026.8.1 (2.0) with plugin `9.69.56` or older in bridge/delegate
+   mode, hooks fire but the prompt has no memory: upgrade the plugin to
+   `9.69.57` or newer. See "Upgrading to OpenClaw 2.0" above and issue #3057.
 
 ```bash
 grep -i remnic ~/.openclaw/logs/gateway.log | tail -50
