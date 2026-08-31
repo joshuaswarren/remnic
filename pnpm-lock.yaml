@@ -162,9 +162,6 @@ importers:
         specifier: ^7.18.2
         version: 7.18.2(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
     devDependencies:
-      '@remnic/bench':
-        specifier: workspace:^
-        version: link:../bench
       '@types/react':
         specifier: ^19.2.14
         version: 19.2.17

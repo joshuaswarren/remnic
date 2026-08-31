@@ -1,8 +1,12 @@
-import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
-import type { MemoryFile, StorageManager } from "@remnic/core";
-import { sanitizeMemoryContent } from "@remnic/core/sanitize";
-import { STRUCTURED_ATTRIBUTE_LIMITS } from "@remnic/core/write-envelope";
-import { ContentHashIndex, normalizeAttributePairs } from "@remnic/core/storage";
+import {
+  composeSalvagedEnvelope,
+  ContentHashIndex,
+  normalizeAttributePairs,
+  sanitizeMemoryContent,
+  STRUCTURED_ATTRIBUTE_LIMITS,
+  type MemoryFile,
+  type StorageManager,
+} from "@remnic/core";
 import {
   claimFromMemory,
   claimTags,

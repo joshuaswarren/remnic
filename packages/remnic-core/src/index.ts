@@ -130,6 +130,8 @@ export {
   type ObserveFingerprintParts,
   type ComposeEnvelopeOptions,
 } from "./write-envelope.js";
+export { composeSalvagedEnvelope } from "./salvage-envelope.js";
+export { sanitizeMemoryContent } from "./sanitize.js";
 export {
   getHostEmbeddingProvider,
   normalizeHostEmbeddingVector,
