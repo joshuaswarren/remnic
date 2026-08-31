@@ -292,6 +292,14 @@ The August 14, 2026 Support Passport sweep starts at June 15, 2026. The
 existing `>=2026.4.1` installer floor remains more permissive and stays in
 place.
 
+Host-upgrade pairing: OpenClaw 2026.8.1 (2.0) removed the
+`registerMemoryPromptSection` SDK API. Plugin versions up to and including
+9.69.56 load on 2.0 and run the daemon loop, but bridge/delegate mode injects
+no memory into agent prompts. Upgrading the host to 2.0 requires
+@remnic/plugin-openclaw >= 9.69.57. OpenClaw 1.x hosts (2026.4 through
+2026.7.x) and embedded (non-delegate) memory mode are unaffected on every
+plugin version (issue #3057).
+
 `openclaw.compat.pluginApi` and `openclaw.install.minHostVersion` use one
 `>=2026.4.1` comparator, never a `||` list: OpenClaw's installer splits the
 range on whitespace and AND-evaluates every token (a `||` fails entirely) and
