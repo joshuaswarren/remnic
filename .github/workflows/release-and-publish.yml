@@ -478,8 +478,8 @@ jobs:
 
       - name: Build all packages
         run: |
-          pnpm --filter @remnic/core run build
-          pnpm -r --filter '!@remnic/core' run build
+          node scripts/ensure-core-build.mjs
+          pnpm -r --filter '!@remnic/core' --filter '!remnic-workspace' run build
           pnpm run build
 
 
