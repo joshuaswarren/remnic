@@ -4,10 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.57] — 2026-08-31
+
 ### Fixed
 
 - Release `pnpm -r run build` now builds `@remnic/core` first so tsup DTS in dependents can resolve `@remnic/core`.
-
 
 ## [v9.69.57] — 2026-08-31
 
