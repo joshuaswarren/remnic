@@ -1,6 +1,6 @@
 {
   "name": "@remnic/coding-graph",
-  "version": "9.69.57",
+  "version": "9.69.58",
   "description": "Web-tree-sitter powered symbol-extraction engine + SQLite knowledge-graph store for codebase memory (Tier 1: TypeScript, TSX, JavaScript, Python, Go, Rust, Java, C, C++, C#, Ruby, PHP, Kotlin, Swift, Bash). Optional companion of @remnic/core — install only when coding-graph features are needed.",
   "type": "module",
   "main": "dist/index.js",
@@ -49,7 +49,7 @@
     "web-tree-sitter": "^0.25.0"
   },
   "peerDependencies": {
-    "@remnic/core": "^9.69.57"
+    "@remnic/core": "^9.69.58"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",

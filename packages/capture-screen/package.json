@@ -1,6 +1,6 @@
 {
   "name": "@remnic/capture-screen",
-  "version": "9.69.57",
+  "version": "9.69.58",
   "description": "Desktop screen-activity capture daemon for Remnic — local spool, loopback HTTP API, and replay ingestion for the activity source `screen` (à-la-carte)",
   "type": "module",
   "main": "dist/index.js",
@@ -33,8 +33,8 @@
     "node": ">=22.13.0"
   },
   "peerDependencies": {
-    "@remnic/capture-native-darwin-arm64": "^9.69.57",
-    "@remnic/capture-native-darwin-x64": "^9.69.57"
+    "@remnic/capture-native-darwin-arm64": "^9.69.58",
+    "@remnic/capture-native-darwin-x64": "^9.69.58"
   },
   "peerDependenciesMeta": {
     "@remnic/capture-native-darwin-arm64": {

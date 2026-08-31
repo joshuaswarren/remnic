@@ -1,6 +1,6 @@
 {
   "name": "@remnic/connector-x",
-  "version": "9.69.57",
+  "version": "9.69.58",
   "description": "X (Twitter) connector for Remnic — remember the user's posts and bookmarks via the official X MCP, a local corpus, or a CLI",
   "type": "module",
   "main": "dist/index.js",
@@ -29,7 +29,7 @@
     "provenance": true
   },
   "peerDependencies": {
-    "@remnic/core": "^9.69.57"
+    "@remnic/core": "^9.69.58"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",
