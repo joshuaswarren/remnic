@@ -765,8 +765,9 @@ test("a persisted mapping whose both entity files are gone does not abort startu
 
     const journal = JSON.parse(
       await readFile(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), "utf8"),
-    ) as { mappings?: Record<string, string> };
+    ) as { mappings?: Record<string, string>; blocked?: Record<string, string> };
     assert.equal(journal.mappings?.[legacy], undefined);
+    assert.equal(journal.blocked?.[legacy], undefined, "a park whose files are gone is dropped, not sealed");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

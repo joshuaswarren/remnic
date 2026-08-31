@@ -753,7 +753,7 @@ async function migrateEntityFilePair(
     await assertNotSymlink(canonicalPath, canonicalId);
     const legacyExists = await fileExists(legacyPath);
     const canonicalExists = await fileExists(canonicalPath);
-    if (!legacyExists && !canonicalExists) return { deferred: false, progressed: false, blocked: true };
+    if (!legacyExists && !canonicalExists) return { deferred: true, progressed: false };
     if (legacyExists && canonicalExists) {
       if (await sameFileIdentity(legacyPath, canonicalPath)) return { deferred: false, progressed: false };
       const [legacyContent, canonicalContent, legacyEncrypted, canonicalEncrypted] = await Promise.all([
@@ -864,6 +864,11 @@ export async function migrateLegacyEntityCanonicalIds(
         };
       }
       const blocked: BlockedEntityPairs = new Map();
+      // Parks for pairs whose files are GONE, tracked separately from
+      // collision parks: pruneBlocked drops these (the canonical file is gone
+      // too), and the rescan's blocked.clear() would otherwise silence them
+      // before finish() reports anything.
+      const staleParked: BlockedEntityPairs = new Map();
       // ONE aggregated line per run, not one per pair per restart: this used to
       // abort the daemon, so the operator needs the whole list and the remedy.
       const finish = async (): Promise<string | undefined> => {
@@ -872,6 +877,13 @@ export async function migrateLegacyEntityCanonicalIds(
           log.warn(
             `entity canonical-id migration skipped ${blocked.size} unresolvable pair(s): ${pairs}. `
             + "Both files were kept and the legacy id still resolves; merge or delete one side to migrate it.",
+          );
+        }
+        if (staleParked.size > 0) {
+          const pairs = [...staleParked].map(([legacyId, canonicalId]) => `${legacyId} -> ${canonicalId}`).join(", ");
+          log.warn(
+            `entity canonical-id migration dropped ${staleParked.size} mapping(s) whose entity files are gone: ${pairs}. `
+            + "The stale journal entries were removed; references to those legacy ids do not resolve either way.",
           );
         }
         // Every finish() path either just rewrote references (main/reconcile
@@ -1057,8 +1069,12 @@ export async function migrateLegacyEntityCanonicalIds(
           }
           if (deferredMappings.length === 0) break;
           if (!progressed) {
-            const [legacyId, canonicalId] = deferredMappings[0]!;
-            blocked.set(legacyId, canonicalId);
+            // Deferred means both files are missing: no later pass can help
+            // these pairs, so park them all instead of Fatal-exiting.
+            for (const [legacyId, canonicalId] of deferredMappings) {
+              blocked.set(legacyId, canonicalId);
+              staleParked.set(legacyId, canonicalId);
+            }
             break;
           }
           pendingMappings = deferredMappings;
