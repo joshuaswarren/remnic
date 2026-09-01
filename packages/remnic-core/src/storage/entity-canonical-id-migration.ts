@@ -956,7 +956,10 @@ export async function migrateLegacyEntityCanonicalIds(
             target = active[target]!;
           }
           const targetPath = deps.resolveEntityFilePath(target);
-          if (targetPath === null || !(await fileExists(targetPath))) continue;
+          if (targetPath === null || !(await fileExists(targetPath))) {
+            staleParked.set(legacyId, canonicalId);
+            continue;
+          }
           active[legacyId] = target;
           revived = true;
         }

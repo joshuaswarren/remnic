@@ -825,6 +825,30 @@ test("a parked target is promoted through an active move before its park is drop
   }
 });
 
+test("a persisted blocked pair whose both files are gone is dropped on boot with no abort", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-blocked-gone-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const legacy = "task-inventory-mapping";
+    const target = normalizeEntityName("Task inventory mapping", "project");
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({ version: 1, complete: false, mappings: {}, blocked: { [legacy]: target } }),
+      "utf8",
+    );
+
+    await new StorageManager(dir).ensureDirectories();
+
+    const journal = JSON.parse(
+      await readFile(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), "utf8"),
+    ) as { blocked?: Record<string, string>; complete?: boolean };
+    assert.equal(journal.blocked?.[legacy], undefined);
+    assert.equal(journal.complete, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 test("a persisted mapping whose Type now normalizes to a new canonical id does not abort startup", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-retarget-"));
   try {
