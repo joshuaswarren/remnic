@@ -25,6 +25,7 @@ import { chunkArgsByLength, parseTapSummary } from "./root-test-runner-lib.mjs";
 
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const SKIP_LIST_PATH = path.join(REPO_ROOT, "scripts", "windows-skip-list.json");
+export const SMOKE_LIST_PATH = path.join(REPO_ROOT, "scripts", "windows-smoke-list.json");
 
 /** Suite under test: the `@remnic/core` unit tests, as posix repo-relative paths. */
 export const CORE_TEST_DIR = "packages/remnic-core/src";
@@ -79,6 +80,40 @@ export function parseSkipList(raw) {
     }
     seen.add(file);
     return { file, issue, reason };
+  });
+}
+
+/**
+ * Validate the parsed smoke manifest into a sorted list of posix repo-relative
+ * paths. Same explicit-rejection discipline as parseSkipList: an unrecognized
+ * shape is never reinterpreted as "run everything".
+ */
+export function parseSmokeList(raw) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("windows-smoke-list.json must contain a JSON object");
+  }
+  const { files } = raw;
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new Error('windows-smoke-list.json: "files" must be a non-empty array');
+  }
+  const seen = new Set();
+  return files.map((file, index) => {
+    const where = `windows-smoke-list.json: files[${index}]`;
+    const entry = requireOneLine(file, where);
+    if (entry.includes("\\") || entry.startsWith("/") || entry.split("/").includes("..")) {
+      throw new Error(`${where} must be a repo-relative posix path, got "${entry}"`);
+    }
+    if (!(entry === CORE_TEST_DIR || entry.startsWith(`${CORE_TEST_DIR}/`))) {
+      throw new Error(`${where} must live under ${CORE_TEST_DIR}, got "${entry}"`);
+    }
+    if (!entry.endsWith(".test.ts")) {
+      throw new Error(`${where} must name a *.test.ts file, got "${entry}"`);
+    }
+    if (seen.has(entry)) {
+      throw new Error(`${where} duplicates an earlier entry: ${entry}`);
+    }
+    seen.add(entry);
+    return entry;
   });
 }
 
@@ -150,23 +185,43 @@ function runNodeTest(files, env) {
 }
 
 async function main() {
+  const smoke = process.argv.includes("--smoke");
   let entries;
+  let smokeFiles;
   try {
     entries = parseSkipList(JSON.parse(readFileSync(SKIP_LIST_PATH, "utf8")));
+    if (smoke) {
+      smokeFiles = parseSmokeList(JSON.parse(readFileSync(SMOKE_LIST_PATH, "utf8")));
+    }
   } catch (error) {
     console.error(`[windows-tests] ERROR: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   }
 
-  const files = collectCoreTestFiles();
-  if (files.length === 0) {
+  const all = collectCoreTestFiles();
+  if (all.length === 0) {
     console.error(
       `[windows-tests] ERROR: no *.test.ts files under ${CORE_TEST_DIR} — coverage would be silently lost.`
     );
     process.exit(1);
   }
 
-  const { run, skipped, stale } = partitionSkipped(files, entries);
+  // Stale smoke entries are validated against the full collected set so a
+  // renamed file fails loudly instead of silently shrinking the subset.
+  if (smoke) {
+    const present = new Set(all);
+    const missing = smokeFiles.filter((file) => !present.has(file));
+    if (missing.length > 0) {
+      console.error(
+        "[windows-tests] ERROR: scripts/windows-smoke-list.json lists files that no longer exist — delete or correct these entries:"
+      );
+      for (const file of missing) console.error(`[windows-tests]   [STALE] ${file}`);
+      process.exit(1);
+    }
+  }
+  const universe = smoke ? smokeFiles : all;
+
+  const { skipped, stale } = partitionSkipped(all, entries);
   if (stale.length > 0) {
     console.error(
       "[windows-tests] ERROR: scripts/windows-skip-list.json lists files that no longer exist — delete or correct these entries:"
@@ -179,11 +234,16 @@ async function main() {
 
   for (const line of formatSkipReport(skipped)) console.warn(line);
 
+  const skippedFiles = new Set(skipped.map((entry) => entry.file));
+  const run = universe.filter((file) => !skippedFiles.has(file));
   if (run.length === 0) {
     console.error("[windows-tests] ERROR: every test file is skipped — the job would prove nothing.");
     process.exit(1);
   }
-  console.warn(`[windows-tests] running ${run.length}/${files.length} @remnic/core test file(s)`);
+  console.warn(
+    `[windows-tests] running ${run.length}/${universe.length} @remnic/core test file(s)`
+      + (smoke ? " per scripts/windows-smoke-list.json" : ""),
+  );
 
   const env = {
     ...process.env,

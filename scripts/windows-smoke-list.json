@@ -1,0 +1,18 @@
+{
+  "note": "Curated subset for the PR windows-smoke job. The full @remnic/core suite (766 files) no longer fits the free-tier 25-minute Windows runner cap (issue #3034), so pull-request runs execute only the files below: the native SQLite binding and the path-handling surfaces most likely to break on Windows. The full suite remains available by running scripts/windows-test-runner.mjs without --smoke. Keep this list small enough to finish well inside the budget; add a file only when it guards a real Windows failure mode.",
+  "files": [
+    "packages/remnic-core/src/runtime/better-sqlite.test.ts",
+    "packages/remnic-core/src/native-binding-hint.test.ts",
+    "packages/remnic-core/src/utils/path-containment.test.ts",
+    "packages/remnic-core/src/activity/journal-path.test.ts",
+    "packages/remnic-core/src/activity/vault-path.test.ts",
+    "packages/remnic-core/src/storage-fallback-category-dirs.test.ts",
+    "packages/remnic-core/src/connectors/paths.test.ts",
+    "packages/remnic-core/src/compat/codex-subpath-aliases.test.ts",
+    "packages/remnic-core/src/config-discovery.test.ts",
+    "packages/remnic-core/src/search/document-scanner.test.ts",
+    "packages/remnic-core/src/support-passport/grant-store-path-safety.test.ts",
+    "packages/remnic-core/src/reconcile/plan.test.ts",
+    "packages/remnic-core/src/qmd-process-group.test.ts"
+  ]
+}
