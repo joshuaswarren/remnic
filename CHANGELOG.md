@@ -10,6 +10,8 @@ All notable changes to this project will be documented in this file.
 
 - Entity canonical-id migration parks missing or retargeted pairs instead of Fatal-exiting the daemon on boot.
 
+- Windows PR CI runs the curated smoke subset from `scripts/windows-smoke-list.json`; the full core suite no longer fits the 25-minute OSS runner cap and stayed in a permanent cancel loop.
+
 ## [v9.69.57] — 2026-08-31
 
 ### Fixed
