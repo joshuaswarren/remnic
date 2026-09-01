@@ -16,22 +16,35 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRemnicAdapter } from "../../adapters/remnic-adapter.js";
-import type { BenchMemoryAdapter } from "../../adapters/types.js";
+import type { BenchMemoryAdapter, BenchResponder } from "../../adapters/types.js";
 import { runBenchmark } from "../../benchmark.js";
 import {
   createProviderBackedJudge,
-  createProviderBackedResponder,
+  getProviderBackedResponderIdentity,
 } from "../../responders.js";
 import type { ProviderFactoryConfig } from "../../providers/types.js";
 import type { TaskResult } from "../../types.js";
-import { buildInjectionSuiteAdapterOptions } from "./product-lifecycle.js";
-import { resolveOpenAiCompatToken } from "./llm-executor.js";
+import {
+  completeChatResult,
+  resolveOpenAiCompatToken,
+  type InjectionSuiteChatMessage,
+  type InjectionSuiteChatResult,
+  type InjectionSuiteLlmOptions,
+} from "./llm-executor.js";
+import {
+  buildInjectionSuiteAdapterOptions,
+  buildInjectionSuiteBehaviorMessages,
+} from "./product-lifecycle.js";
 import {
   analyzeInjectionSuiteUtility,
   type InjectionSuiteUtilityAnalysis,
   type InjectionSuiteUtilityObservation,
 } from "./utility-stats.js";
-import type { InjectionSuiteArm, InjectionSuiteCliInput } from "./types.js";
+import {
+  injectionSuiteArmUsesFence,
+  type InjectionSuiteArm,
+  type InjectionSuiteCliInput,
+} from "./types.js";
 
 const UTILITY_ARMS = ["none", "fencing"] as const;
 const UTILITY_SEEDS = [1, 2, 3, 4, 5] as const;
@@ -178,6 +191,57 @@ function providerConfig(input: InjectionSuiteCliInput, seed: number): ProviderFa
   throw new Error("H5 utility requires ollama or openai-compat executor");
 }
 
+/**
+ * Arm-consistent utility responder (v3 U1): answers every arm with the
+ * exact multi-message construction the security rows score, sent through
+ * the same completeChatResult path as product-lifecycle (temperature 0,
+ * max 256 tokens, no tools for utility).
+ */
+export interface InjectionSuiteResponderDeps {
+  complete?: (
+    options: InjectionSuiteLlmOptions,
+    messages: readonly InjectionSuiteChatMessage[],
+  ) => Promise<InjectionSuiteChatResult>;
+  identity?: string;
+}
+
+export function createInjectionSuiteBehaviorResponder(
+  input: InjectionSuiteCliInput,
+  arm: InjectionSuiteArm,
+  deps: InjectionSuiteResponderDeps = {},
+): BenchResponder {
+  const complete = deps.complete ?? completeChatResult;
+  const fenced = injectionSuiteArmUsesFence(arm);
+  const identity = deps.identity;
+  return {
+    ...(identity ? { identity: () => identity } : {}),
+    async respond(question, recalledText) {
+      const messages = buildInjectionSuiteBehaviorMessages(
+        arm,
+        recalledText,
+        question,
+        fenced,
+      );
+      const startedAt = Date.now();
+      const chat = await complete(
+        {
+          kind: input.executor ?? "openai-compat",
+          baseUrl: input.baseUrl,
+          model: input.model,
+          requestTimeoutMs: input.requestTimeoutMs,
+        },
+        messages,
+      );
+      return {
+        text: chat.text,
+        tokens: { input: chat.inputTokens, output: chat.outputTokens },
+        latencyMs: Date.now() - startedAt,
+        model: chat.model,
+      };
+    },
+  };
+}
+
 async function createUtilityAdapter(
   input: InjectionSuiteCliInput,
   arm: InjectionSuiteArm,
@@ -186,7 +250,9 @@ async function createUtilityAdapter(
   const provider = providerConfig(input, seed);
   return createRemnicAdapter({
     ...buildInjectionSuiteAdapterOptions(arm, input),
-    responder: createProviderBackedResponder(provider),
+    responder: createInjectionSuiteBehaviorResponder(input, arm, {
+      identity: getProviderBackedResponderIdentity(provider),
+    }),
     judge: createProviderBackedJudge(provider),
   });
 }

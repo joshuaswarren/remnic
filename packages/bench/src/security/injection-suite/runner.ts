@@ -435,6 +435,7 @@ export async function runInjectionSuiteCliCommand(
       decisionRuleHash: frozen.decisionRuleHash,
       gitSha: frozen.gitSha,
       cleanTree: frozen.cleanTree,
+      ...(input.captureResponses ? { captureResponses: true } : {}),
     };
     const created = await writeNewRunMetadata(input.outputDir, metadata);
     if (!created) {

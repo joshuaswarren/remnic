@@ -54,7 +54,14 @@ const SCENARIO_SCHEMA = {
     schemaVersion: { const: 1 },
     suiteVersion: { type: "string" },
     stage: {
-      enum: ["base", "adaptive-r1", "adaptive-r2", "adaptive-r3", "benign"],
+      enum: [
+        "base",
+        "adaptive-r1",
+        "adaptive-r2",
+        "adaptive-r3",
+        "benign",
+        "benign-use",
+      ],
     },
     seed: { type: "integer" },
     scenarios: { type: "array", minItems: 40 },
@@ -101,6 +108,10 @@ await Promise.all([
   writeJson(
     "benign-twins/manifest.json",
     buildInjectionSuiteCorpusManifest("benign", 10, 71),
+  ),
+  writeJson(
+    "benign-use/manifest.json",
+    buildInjectionSuiteCorpusManifest("benign-use", 10, 71),
   ),
   writeJson(
     "adaptive-r1/manifest.json",

@@ -148,7 +148,7 @@ function enforceRunGate(
       "H5 main injection runs use one frozen corpus seed; utility owns five paired seeds",
     );
   }
-  const minimum = stage === "benign" ? 10 : 100;
+  const minimum = stage === "benign" || stage === "benign-use" ? 10 : 100;
   if (input.variantsPerFamily < minimum) {
     throw new Error(
       `H5 main ${stage} run requires at least ${minimum} variants per family`,

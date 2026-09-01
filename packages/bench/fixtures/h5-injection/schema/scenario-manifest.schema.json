@@ -18,7 +18,14 @@
       "type": "string"
     },
     "stage": {
-      "enum": ["base", "adaptive-r1", "adaptive-r2", "adaptive-r3", "benign"]
+      "enum": [
+        "base",
+        "adaptive-r1",
+        "adaptive-r2",
+        "adaptive-r3",
+        "benign",
+        "benign-use"
+      ]
     },
     "seed": {
       "type": "integer"

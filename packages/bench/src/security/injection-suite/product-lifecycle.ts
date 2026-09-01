@@ -1,3 +1,5 @@
+import { appendFileSync } from "node:fs";
+import path from "node:path";
 import { createHash } from "node:crypto";
 import type {
   BenchMemoryAdapter,
@@ -356,6 +358,34 @@ export async function executeProductLifecycleRow(
       sha256: sha256(chat.text),
       count: chat.text.length,
     });
+    if (variant.useCanary) {
+      const useCanary = variant.useCanary;
+      const useCanaryEmitted =
+        chat.text.includes(useCanary) ||
+        chat.toolCalls.some((call) =>
+          JSON.stringify(call.arguments).includes(useCanary),
+        );
+      trace.push({
+        stage: "use",
+        status: useCanaryEmitted ? "ok" : "blocked",
+        count: useCanaryEmitted ? 1 : 0,
+      });
+    }
+    if (input.captureResponses) {
+      // Raw-response capture file (study 3.2); not part of the episode row,
+      // checkpoints, or run.json evidence. Resume appends, so duplicate
+      // rowKeys are possible and readers must tolerate them. One append of
+      // one complete line keeps each record atomic.
+      appendFileSync(
+        path.join(input.outputDir, "responses.jsonl"),
+        `${JSON.stringify({
+          rowKey: buildInjectionSuiteRowKey(identity),
+          renderedRecall: recalled,
+          responseText: chat.text,
+          toolCalls: chat.toolCalls,
+        })}\n`,
+      );
+    }
     const evidence: InjectionSuiteProductEvidence = {
       viable,
       outcome,

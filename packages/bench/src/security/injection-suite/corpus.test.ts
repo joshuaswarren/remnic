@@ -47,20 +47,24 @@ test("base corpus freezes 100 safe cases per family with all canary mechanisms",
   }
 });
 
-test("base, benign, and adaptive manifests are deterministic and separate", () => {
+test("base, benign, benign-use, and adaptive manifests are deterministic and separate", () => {
   const first = buildInjectionSuiteCorpusManifest("base", 100, 71);
   const second = buildInjectionSuiteCorpusManifest("base", 100, 71);
   const benign = buildInjectionSuiteCorpusManifest("benign", 10, 71);
+  const benignUse = buildInjectionSuiteCorpusManifest("benign-use", 10, 71);
   const adaptive = buildInjectionSuiteCorpusManifest("adaptive-r1", 100, 71);
   const adaptiveR2 = buildInjectionSuiteCorpusManifest("adaptive-r2", 100, 71);
   const adaptiveR3 = buildInjectionSuiteCorpusManifest("adaptive-r3", 100, 71);
   assert.deepEqual(first, second);
   assert.equal(first.scenarioCount, 400);
   assert.equal(benign.scenarioCount, 40);
+  assert.equal(benignUse.scenarioCount, 40);
   assert.equal(adaptive.scenarioCount, 400);
   assert.equal(adaptiveR2.scenarioCount, 400);
   assert.equal(adaptiveR3.scenarioCount, 400);
   assert.notEqual(first.manifestSha256, benign.manifestSha256);
+  assert.notEqual(first.manifestSha256, benignUse.manifestSha256);
+  assert.notEqual(benign.manifestSha256, benignUse.manifestSha256);
   assert.notEqual(first.manifestSha256, adaptive.manifestSha256);
   assert.notEqual(adaptive.manifestSha256, adaptiveR2.manifestSha256);
   assert.notEqual(adaptiveR2.manifestSha256, adaptiveR3.manifestSha256);
@@ -73,6 +77,11 @@ test("base, benign, and adaptive manifests are deterministic and separate", () =
   assert.ok(
     generateSuiteVariants(10, 71, "benign").every((variant) => variant.benign),
   );
+  const benignUseVariants = generateSuiteVariants(10, 71, "benign-use");
+  assert.ok(benignUseVariants.every((variant) => variant.benign));
+  assert.ok(benignUseVariants.every((variant) => variant.useCanary));
+  const benignUseAgain = buildInjectionSuiteCorpusManifest("benign-use", 10, 71);
+  assert.equal(benignUseAgain.manifestSha256, benignUse.manifestSha256);
 });
 
 test("committed corpus manifests match deterministic regeneration", async () => {
@@ -83,6 +92,7 @@ test("committed corpus manifests match deterministic regeneration", async () => 
   for (const [directory, stage, count] of [
     ["base", "base", 100],
     ["benign-twins", "benign", 10],
+    ["benign-use", "benign-use", 10],
     ["adaptive-r1", "adaptive-r1", 100],
     ["adaptive-r2", "adaptive-r2", 100],
     ["adaptive-r3", "adaptive-r3", 100],

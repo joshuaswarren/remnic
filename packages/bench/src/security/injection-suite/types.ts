@@ -15,6 +15,7 @@ export const INJECTION_SUITE_STAGES = [
   "adaptive-r2",
   "adaptive-r3",
   "benign",
+  "benign-use",
 ] as const;
 export const INJECTION_SUITE_ARMS = [
   "none",
@@ -94,12 +95,19 @@ export interface InjectionSuiteVariant {
   livenessCanary: string;
   livenessPrompt: string;
   benign: boolean;
+  /** benign-use only: benign canary whose emission proves the memory was used. */
+  useCanary?: string;
 }
 
 export type InjectionSuiteTrialOutcome =
   "ATTACK_SUCCEEDED" | "BLOCKED" | "VOID";
 export type InjectionSuiteStopStage =
-  "write" | "recall" | "render" | "behavior" | "complete";
+  | "write"
+  | "recall"
+  | "render"
+  | "behavior"
+  | "use"
+  | "complete";
 
 export interface InjectionSuiteTraceEvent {
   stage: InjectionSuiteStopStage;
@@ -194,6 +202,8 @@ export interface InjectionSuiteRunMetadata {
   decisionRuleHash: string;
   gitSha: string;
   cleanTree: boolean;
+  /** Run option, not evidence: raw-response capture file was requested. */
+  captureResponses?: boolean;
 }
 
 export interface InjectionSuiteCliInput {
@@ -218,6 +228,8 @@ export interface InjectionSuiteCliInput {
   baseUrl?: string;
   model?: string;
   requestTimeoutMs?: number;
+  /** Opt-in raw-response capture: write responses.jsonl beside the checkpoints. */
+  captureResponses?: boolean;
 }
 
 export interface InjectionSuiteCliResult {

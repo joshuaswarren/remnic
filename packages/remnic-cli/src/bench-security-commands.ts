@@ -36,7 +36,7 @@ Options:
   --variants-per-family N   Variants per attack family (default: 25)
   --family FAMILY           Target one dev/pilot attack family; forbidden for main
   --model-profile ID        Profile label recorded on each row (default: local-dry)
-  --stage base|adaptive-r1|adaptive-r2|adaptive-r3|benign
+  --stage base|adaptive-r1|adaptive-r2|adaptive-r3|benign|benign-use
                             Frozen corpus stage (default: base)
   --arm ID                  Repeat to select frozen defense arms
   --run-kind dev|pilot|main Run gate to enforce (default: dev)
@@ -55,6 +55,7 @@ Options:
   --request-timeout-ms N    Per-call timeout (default: 300000)
   --out DIR                 New run directory (default: ~/.remnic/bench/results/h5-injection-suite)
   --run DIR                 Existing run directory; implies --resume
+  --capture-responses       Write raw responses.jsonl beside the checkpoints
   --resume                  Continue an existing run (required if DIR already has run.json)
   --retry-ambiguous         Retry a persisted in-flight paid request after operator review
   --limit N                 Execute at most N planned rows (dry-run / smoke)
@@ -69,7 +70,13 @@ interface InjectionSuiteCommand {
   variantsPerFamily: number;
   family?: "minja" | "sleeper" | "cross-session" | "tool-hijack";
   modelProfileId: string;
-  stage: "base" | "adaptive-r1" | "adaptive-r2" | "adaptive-r3" | "benign";
+  stage:
+    | "base"
+    | "adaptive-r1"
+    | "adaptive-r2"
+    | "adaptive-r3"
+    | "benign"
+    | "benign-use";
   arms?: Array<
     | "none"
     | "fencing"
@@ -95,6 +102,7 @@ interface InjectionSuiteCommand {
   modelDigest?: string;
   modelContextTokens?: number;
   requestTimeoutMs?: number;
+  captureResponses: boolean;
 }
 
 function parsePositiveInteger(raw: string | undefined, flag: string): number {
@@ -135,6 +143,7 @@ export function parseBenchSecurityArgs(
   let modelDigest: string | undefined;
   let modelContextTokens: number | undefined;
   let requestTimeoutMs: number | undefined;
+  let captureResponses = false;
 
   for (let index = 1; index < args.length; index += 1) {
     const flag = args[index] ?? "";
@@ -172,10 +181,11 @@ export function parseBenchSecurityArgs(
         next !== "adaptive-r1" &&
         next !== "adaptive-r2" &&
         next !== "adaptive-r3" &&
-        next !== "benign"
+        next !== "benign" &&
+        next !== "benign-use"
       ) {
         throw new Error(
-          "--stage must be base, adaptive-r1, adaptive-r2, adaptive-r3, or benign",
+          "--stage must be base, adaptive-r1, adaptive-r2, adaptive-r3, benign, or benign-use",
         );
       }
       stage = next;
@@ -266,6 +276,8 @@ export function parseBenchSecurityArgs(
     } else if (flag === "--limit") {
       limit = parsePositiveInteger(next, "--limit");
       index += 1;
+    } else if (flag === "--capture-responses") {
+      captureResponses = true;
     } else {
       throw new Error(`unknown option ${flag}`);
     }
@@ -297,6 +309,7 @@ export function parseBenchSecurityArgs(
     ...(longmemevalDatasetDir === undefined ? {} : { longmemevalDatasetDir }),
     ...(utilityBenchmarks.length === 0 ? {} : { utilityBenchmarks }),
     ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
+    captureResponses,
   };
 }
 
@@ -472,6 +485,7 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
       ...(parsed.requestTimeoutMs === undefined
         ? {}
         : { requestTimeoutMs: parsed.requestTimeoutMs }),
+      ...(parsed.captureResponses ? { captureResponses: true } : {}),
     });
     if (result.exitCode === 0) console.log(result.output);
     else console.error(result.output);

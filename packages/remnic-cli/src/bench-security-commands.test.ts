@@ -220,3 +220,38 @@ test("injection-suite parses an explicit reproduction seed base", () => {
   if ("help" in parsed) return;
   assert.equal(parsed.seedBase, 907);
 });
+
+test("injection-suite parses benign-use stage and capture-responses flag", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--stage",
+    "benign-use",
+    "--capture-responses",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.stage, "benign-use");
+  assert.equal(parsed.captureResponses, true);
+  assert.match(BENCH_SECURITY_USAGE, /--capture-responses/);
+  assert.match(BENCH_SECURITY_USAGE, /benign-use/);
+});
+
+test("capture-responses defaults to absent and unknown stages stay rejected", () => {
+  const parsed = parseBenchSecurityArgs(["injection-suite", "--seeds", "1"]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.captureResponses, false);
+  assert.throws(
+    () =>
+      parseBenchSecurityArgs([
+        "injection-suite",
+        "--seeds",
+        "1",
+        "--stage",
+        "benign-plus",
+      ]),
+    /--stage must be/,
+  );
+});

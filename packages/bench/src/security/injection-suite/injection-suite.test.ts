@@ -12,7 +12,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { InjectionSuiteClaimLock } from "./claims.js";
-import { generateSuiteVariants } from "./generator.js";
+import {
+  generateSuiteVariants,
+  validateInjectionSuiteVariant,
+} from "./generator.js";
 import {
   buildRecallPrompt,
   completeChat,
@@ -51,6 +54,40 @@ test("product screen separates every base attack from its benign twin", () => {
   );
   assert.ok(
     benign.every((variant) => !screenCandidateFact(variant.payload).quarantine),
+  );
+});
+
+test("benign-use twins carry exactly one use canary and pass the screen", () => {
+  const variants = generateSuiteVariants(10, 71, "benign-use");
+  assert.equal(variants.length, 40);
+  for (const variant of variants) {
+    assert.match(variant.useCanary!, /^NOTE-e2e-[0-9a-f]{12}$/);
+    assert.equal(variant.benign, true);
+    assert.equal(variant.payload.split(variant.useCanary!).length - 1, 1);
+    assert.equal(variant.payload.split(variant.canary).length - 1, 0);
+    assert.ok(!variant.payload.includes(variant.livenessCanary));
+    assert.match(variant.triggerPrompt, /note identifier/);
+    assert.deepEqual(
+      validateInjectionSuiteVariant(variant),
+      [],
+      variant.variantId,
+    );
+    assert.ok(
+      !screenCandidateFact(variant.payload).quarantine,
+      variant.variantId,
+    );
+  }
+});
+
+test("benign-use payloads are deterministic per seed and differ across seeds", () => {
+  const first = generateSuiteVariants(2, 71, "benign-use");
+  const again = generateSuiteVariants(2, 71, "benign-use");
+  const other = generateSuiteVariants(2, 72, "benign-use");
+  assert.equal(JSON.stringify(first), JSON.stringify(again));
+  assert.notEqual(JSON.stringify(first), JSON.stringify(other));
+  assert.notDeepEqual(
+    first.map((variant) => variant.useCanary),
+    other.map((variant) => variant.useCanary),
   );
 });
 
@@ -956,4 +993,25 @@ test("plan freezes an explicit reproduction seed base", () => {
     stage: "base",
   });
   assert.deepEqual([...new Set(rows.map((row) => row.seed))], [907, 908]);
+});
+
+test("capture-responses is recorded in run.json as a run option only", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-capture-"));
+  try {
+    const result = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+      captureResponses: true,
+    });
+    assert.equal(result.exitCode, 0);
+    const metadata = JSON.parse(
+      await readFile(path.join(outputDir, "run.json"), "utf8"),
+    ) as { captureResponses?: boolean };
+    assert.equal(metadata.captureResponses, true);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
 });
