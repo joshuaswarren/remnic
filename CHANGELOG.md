@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.59] — 2026-09-01
+
 ### Fixed
 
 - Entity canonical-id migration parks missing or retargeted pairs instead of Fatal-exiting the daemon on boot.
