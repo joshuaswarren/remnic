@@ -402,7 +402,8 @@ export async function runInjectionSuiteUtility(
   }
   mkdirSync(input.outputDir, { recursive: true });
   const observations: InjectionSuiteUtilityObservation[] = [];
-  for (const arm of UTILITY_ARMS) {
+  const arms = input.arms && input.arms.length > 0 ? [...new Set(input.arms)] : UTILITY_ARMS;
+  for (const arm of arms) {
     for (let offset = 0; offset < UTILITY_SEEDS.length; offset += UTILITY_SEED_CONCURRENCY) {
       const seeds = UTILITY_SEEDS.slice(offset, offset + UTILITY_SEED_CONCURRENCY);
       const bySeed = await Promise.all(seeds.map(async (seed) => {

@@ -450,6 +450,7 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
         ...(parsed.utilityBenchmarks === undefined
           ? {}
           : { utilityBenchmarks: parsed.utilityBenchmarks }),
+        ...(parsed.arms === undefined ? {} : { arms: parsed.arms }),
       });
       console.log(JSON.stringify(analysis, null, 2));
       return;
