@@ -773,6 +773,58 @@ test("a persisted mapping whose both entity files are gone does not abort startu
   }
 });
 
+test("a parked target is promoted through an active move before its park is dropped", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-park-promote-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const name = "Task inventory mapping";
+    const legacy = "task-inventory-mapping";
+    const movedTarget = normalizeEntityName(name, "task");
+    const live = normalizeEntityName(name, "automation");
+    assert.notEqual(movedTarget, live);
+    // Only the final canonical file survives on disk; the intermediate
+    // target was moved out-of-band. The journal still parks A -> B beside
+    // the active B -> C.
+    await writeFile(
+      path.join(dir, "entities", `${live}.md`),
+      `---\nid: ${live}\ncreated: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n---\n\n`
+      + `# ${name}\n\n**Type:** automation\n\nLive target.\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({
+        version: 1,
+        complete: false,
+        mappings: { [movedTarget]: live },
+        blocked: { [legacy]: movedTarget },
+      }),
+      "utf8",
+    );
+    const factDir = path.join(dir, "facts", "2026-03-01");
+    await mkdir(factDir, { recursive: true });
+    const factPath = path.join(factDir, "fact-park-promote.md");
+    await writeFile(
+      factPath,
+      `---\nid: fact-park-promote\ncategory: fact\nconfidence: 0.9\n`
+      + `created: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n`
+      + `entityRef: ${legacy}\nstatus: active\n---\n\nThe mapping tracks tasks.\n`,
+      "utf8",
+    );
+
+    await new StorageManager(dir).ensureDirectories();
+
+    assert.equal(
+      /^entityRef: (.*)$/m.exec(await readFile(factPath, "utf8"))?.[1],
+      live,
+      "a park must promote through the active move instead of stranding its references",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a persisted mapping whose Type now normalizes to a new canonical id does not abort startup", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-retarget-"));
   try {

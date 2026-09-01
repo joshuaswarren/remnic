@@ -944,10 +944,20 @@ export async function migrateLegacyEntityCanonicalIds(
           delete parked[legacyId];
           if (active[legacyId] !== undefined) continue;
           const legacyPath = deps.resolveEntityFilePath(legacyId);
-          const canonicalPath = deps.resolveEntityFilePath(canonicalId);
           if (legacyPath !== null && (await fileExists(legacyPath))) continue;
-          if (canonicalPath === null || !(await fileExists(canonicalPath))) continue;
-          active[legacyId] = canonicalId;
+          // Resolve the parked target through ACTIVE moves before deciding
+          // its file is gone: a parked A -> B beside an active B -> C must
+          // promote to A -> C and rewrite, not drop because B was moved
+          // out-of-band. Only a target with no surviving file may drop.
+          let target = canonicalId;
+          const seenTargets = new Set<string>();
+          while (active[target] !== undefined && !seenTargets.has(target)) {
+            seenTargets.add(target);
+            target = active[target]!;
+          }
+          const targetPath = deps.resolveEntityFilePath(target);
+          if (targetPath === null || !(await fileExists(targetPath))) continue;
+          active[legacyId] = target;
           revived = true;
         }
         // Reviving a whole chain at once yields A -> B -> C, and each rewrite
