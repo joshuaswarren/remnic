@@ -1008,19 +1008,19 @@ function errorMessage(err: unknown): string {
 
 function notifyRecallDisabled(session: PiContextSnapshot): string {
   const message =
-    "Remnic recall is disabled for this process because timeouts delayed operations; " +
-    "memory recall is unavailable until restart.";
+    "Remnic recall is paused for this process because timeouts delayed operations; " +
+    "recall retries automatically after a 5 minute cooldown.";
   session.notify(message, "warning");
   return message;
 }
 
-const RECALL_DISABLED_STATUS = "Remnic recall disabled until restart (timeouts delayed operations)";
+const RECALL_DISABLED_STATUS = "Remnic recall paused (timeouts delayed operations; auto-retry after cooldown)";
 
 function emitRecallTimeoutTrip(pi: PiApi, session: PiContextSnapshot, config: RemnicPiConfig, err: unknown): void {
   const message =
-    `Remnic recall has been disabled for this process because repeated timeouts delayed operations. ` +
-    `Memory recall is unavailable until restart (${config.recallTimeoutThreshold} timeouts in the last ` +
-    `${config.recallTimeoutWindow} recall attempts).`;
+    `Remnic recall has been paused because repeated timeouts delayed operations ` +
+    `(${config.recallTimeoutThreshold} timeouts in the last ${config.recallTimeoutWindow} recall attempts). ` +
+    `It retries automatically after a 5 minute cooldown.`;
   session.notify(message, "warning");
   if (config.statusEnabled) {
     session.setStatus("remnic", RECALL_DISABLED_STATUS);
@@ -1030,7 +1030,7 @@ function emitRecallTimeoutTrip(pi: PiApi, session: PiContextSnapshot, config: Re
     code: "RECALL_TIMEOUT_TRIP",
     threshold: config.recallTimeoutThreshold,
     window: config.recallTimeoutWindow,
-    reason: "Recall disabled until restart because timeouts delayed operations",
+    reason: "Recall paused because timeouts delayed operations; auto-retries after cooldown",
     message,
     error: errorMessage(err),
     disabledAt: new Date().toISOString(),
@@ -1045,6 +1045,7 @@ async function executeRecallWithBreaker<T>(
   session: PiContextSnapshot,
   config: RemnicPiConfig,
 ): Promise<T> {
+  if (breaker.isTripped()) throw new RemnicRequestAbortedError();
   try {
     const result = await operation(breaker.signal);
     breaker.recordSuccess();
