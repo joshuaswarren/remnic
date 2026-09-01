@@ -747,3 +747,138 @@ test("addEntityRelationship falls back to the legacy file while its rename is in
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a persisted mapping whose both entity files are gone does not abort startup", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-both-missing-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const legacy = "task-inventory-mapping";
+    const canonical = normalizeEntityName("Task inventory mapping", "project");
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({ version: 1, complete: false, mappings: { [legacy]: canonical } }),
+      "utf8",
+    );
+
+    await new StorageManager(dir).ensureDirectories();
+
+    const journal = JSON.parse(
+      await readFile(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), "utf8"),
+    ) as { mappings?: Record<string, string>; blocked?: Record<string, string> };
+    assert.equal(journal.mappings?.[legacy], undefined);
+    assert.equal(journal.blocked?.[legacy], undefined, "a park whose files are gone is dropped, not sealed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a parked target is promoted through an active move before its park is dropped", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-park-promote-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const name = "Task inventory mapping";
+    const legacy = "task-inventory-mapping";
+    const movedTarget = normalizeEntityName(name, "task");
+    const live = normalizeEntityName(name, "automation");
+    assert.notEqual(movedTarget, live);
+    // Only the final canonical file survives on disk; the intermediate
+    // target was moved out-of-band. The journal still parks A -> B beside
+    // the active B -> C.
+    await writeFile(
+      path.join(dir, "entities", `${live}.md`),
+      `---\nid: ${live}\ncreated: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n---\n\n`
+      + `# ${name}\n\n**Type:** automation\n\nLive target.\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({
+        version: 1,
+        complete: false,
+        mappings: { [movedTarget]: live },
+        blocked: { [legacy]: movedTarget },
+      }),
+      "utf8",
+    );
+    const factDir = path.join(dir, "facts", "2026-03-01");
+    await mkdir(factDir, { recursive: true });
+    const factPath = path.join(factDir, "fact-park-promote.md");
+    await writeFile(
+      factPath,
+      `---\nid: fact-park-promote\ncategory: fact\nconfidence: 0.9\n`
+      + `created: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n`
+      + `entityRef: ${legacy}\nstatus: active\n---\n\nThe mapping tracks tasks.\n`,
+      "utf8",
+    );
+
+    await new StorageManager(dir).ensureDirectories();
+
+    assert.equal(
+      /^entityRef: (.*)$/m.exec(await readFile(factPath, "utf8"))?.[1],
+      live,
+      "a park must promote through the active move instead of stranding its references",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a persisted blocked pair whose both files are gone is dropped on boot with no abort", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-blocked-gone-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const legacy = "task-inventory-mapping";
+    const target = normalizeEntityName("Task inventory mapping", "project");
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({ version: 1, complete: false, mappings: {}, blocked: { [legacy]: target } }),
+      "utf8",
+    );
+
+    await new StorageManager(dir).ensureDirectories();
+
+    const journal = JSON.parse(
+      await readFile(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), "utf8"),
+    ) as { blocked?: Record<string, string>; complete?: boolean };
+    assert.equal(journal.blocked?.[legacy], undefined);
+    assert.equal(journal.complete, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("a persisted mapping whose Type now normalizes to a new canonical id does not abort startup", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-retarget-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const name = "Task inventory mapping";
+    const legacy = normalizeEntityName(name, "task");
+    const staleCanonical = normalizeEntityName(name, "project");
+    const liveCanonical = normalizeEntityName(name, "automation");
+    assert.notEqual(staleCanonical, liveCanonical);
+    await writeFile(
+      path.join(dir, "entities", `${legacy}.md`),
+      `---\nid: ${legacy}\ncreated: 2026-03-01T00:00:00.000Z\nupdated: 2026-03-01T00:00:00.000Z\n---\n\n`
+      + `# ${name}\n\n**Type:** automation\n\nLive type.\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({ version: 1, complete: false, mappings: { [legacy]: staleCanonical } }),
+      "utf8",
+    );
+
+    await new StorageManager(dir).ensureDirectories();
+
+    const live = await readFile(path.join(dir, "entities", `${liveCanonical}.md`), "utf8").catch(() =>
+      readFile(path.join(dir, "entities", `${legacy}.md`), "utf8"),
+    );
+    assert.match(live, /Live type\./);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
