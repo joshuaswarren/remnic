@@ -54,17 +54,77 @@ test("sliding window ages out older timeouts", () => {
   assert.equal(breaker.isTripped(), true, "new timeouts refill the window");
 });
 
-test("permanent trip survives later successes", () => {
+test("trip pauses recall and ignores records until the reset cooldown elapses", () => {
   const breaker = new RecallTimeoutBreaker({ threshold: 7, window: 10 });
   for (let i = 0; i < 7; i++) {
     breaker.record("timeout");
   }
   assert.equal(breaker.isTripped(), true);
+  assert.equal(breaker.signal.aborted, true);
   for (let i = 0; i < 20; i++) {
     assert.equal(breaker.record("success"), false, "post-trip records are ignored");
   }
-  assert.equal(breaker.isTripped(), true);
-  assert.equal(breaker.timeoutCount(), 7);
+  assert.equal(breaker.isTripped(), true, "still tripped before the cooldown");
+  assert.equal(breaker.signal.aborted, true, "signal stays aborted while tripped");
+});
+
+test("breaker re-arms after the reset cooldown with a cleared window and live signal", () => {
+  const realDateNow = Date.now;
+  let now = 1_700_000_000_000;
+  Date.now = () => now;
+  try {
+    const breaker = new RecallTimeoutBreaker({ threshold: 2, window: 2 });
+    breaker.record("timeout");
+    breaker.record("timeout");
+    assert.equal(breaker.isTripped(), true);
+    now += 299_999;
+    assert.equal(breaker.isTripped(), true, "one millisecond before the cooldown is not enough");
+    now += 1;
+    assert.equal(breaker.isTripped(), false, "cooldown elapsed, breaker re-armed");
+    assert.equal(breaker.timeoutCount(), 0, "window cleared on re-arm");
+    assert.equal(breaker.signal.aborted, false, "fresh signal installed on re-arm");
+  } finally {
+    Date.now = realDateNow;
+  }
+});
+
+test("re-armed breaker re-trips on a fresh window of timeouts", () => {
+  const realDateNow = Date.now;
+  let now = 1_700_000_000_000;
+  Date.now = () => now;
+  try {
+    const breaker = new RecallTimeoutBreaker({ threshold: 2, window: 2 });
+    breaker.record("timeout");
+    breaker.record("timeout");
+    assert.equal(breaker.isTripped(), true);
+    now += 300_000;
+    assert.equal(breaker.isTripped(), false);
+    assert.equal(breaker.record("timeout"), false);
+    assert.equal(breaker.record("timeout"), true, "fresh window trips again");
+    assert.equal(breaker.isTripped(), true);
+  } finally {
+    Date.now = realDateNow;
+  }
+});
+
+test("resetAfterMs option overrides the default cooldown", () => {
+  const realDateNow = Date.now;
+  let now = 1_700_000_000_000;
+  Date.now = () => now;
+  try {
+    const breaker = new RecallTimeoutBreaker({ threshold: 1, window: 1, resetAfterMs: 50 });
+    breaker.record("timeout");
+    assert.equal(breaker.isTripped(), true);
+    now += 50;
+    assert.equal(breaker.isTripped(), false, "custom cooldown honored");
+  } finally {
+    Date.now = realDateNow;
+  }
+});
+
+test("rejects invalid resetAfterMs values", () => {
+  assert.throws(() => new RecallTimeoutBreaker({ threshold: 1, window: 2, resetAfterMs: 0 }), /positive integer/);
+  assert.throws(() => new RecallTimeoutBreaker({ threshold: 1, window: 2, resetAfterMs: 1.5 }), /positive integer/);
 });
 
 test("non-timeout failures age the window without counting toward the threshold", () => {
