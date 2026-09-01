@@ -237,7 +237,11 @@ async function main() {
     process.exit(1);
   }
 
-  for (const line of formatSkipReport(skipped, smoke ? "the curated smoke subset" : undefined)) {
+  // Name only skips that apply to the universe being run: a full-suite
+  // entry outside the curated subset would overstate what smoke omits.
+  const universeSet = new Set(universe);
+  const skippedInScope = skipped.filter((entry) => universeSet.has(entry.file));
+  for (const line of formatSkipReport(skippedInScope, smoke ? "the curated smoke subset" : undefined)) {
     console.warn(line);
   }
   if (smoke) {

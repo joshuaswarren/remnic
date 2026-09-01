@@ -12,7 +12,6 @@
     "packages/remnic-core/src/config-discovery.test.ts",
     "packages/remnic-core/src/search/document-scanner.test.ts",
     "packages/remnic-core/src/support-passport/grant-store-path-safety.test.ts",
-    "packages/remnic-core/src/reconcile/plan.test.ts",
-    "packages/remnic-core/src/qmd-process-group.test.ts"
+    "packages/remnic-core/src/reconcile/plan.test.ts"
   ]
 }
