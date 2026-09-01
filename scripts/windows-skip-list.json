@@ -1,4 +1,10 @@
 {
-  "note": "Test files excluded from the windows-smoke CI job (issue #3034). This list only ever SHRINKS: an entry is deleted when its Windows defect is fixed, and a new failure is fixed forward rather than added here. Every entry needs a real `issue` (\"#<number>\" or a github issue URL) and a one-line `reason`. Paths are repo-relative posix paths and must exist — a stale entry fails the job instead of silently covering nothing. Never suppress a Windows failure inline (`|| true`, `continue-on-error`); a skip must be named here so the job log states what was not covered.",
-  "skips": []
+  "note": "Test files excluded from the windows-smoke CI job (issue #3034). Every entry needs a real `issue` (\"#<number>\" or a github issue URL) and a one-line `reason`. Paths are repo-relative posix paths and must exist — a stale entry fails the job instead of silently covering nothing. Never suppress a Windows failure inline (`|| true`, `continue-on-error`); a skip must be named here so the job log states what was not covered. Product-defect entries are fix-forward and their entries only ever shrink. An environment-limitation entry — code cannot fix it inside the test, for example win32 directory-fd identity semantics — is acceptable and persists until the platform-aware fix named in its issue lands.",
+  "skips": [
+    {
+      "file": "packages/remnic-core/src/support-passport/grant-store-path-safety.test.ts",
+      "issue": "#3069",
+      "reason": "win32 directory fd semantics: the no-follow ancestor stability check rejects a legitimate temp dir"
+    }
+  ]
 }

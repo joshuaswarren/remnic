@@ -422,11 +422,16 @@ jobs:
       - name: CLI smoke
         run: node scripts/windows-cli-smoke.mjs
 
-      # Runs the @remnic/core suite minus scripts/windows-skip-list.json, and
-      # prints every skip by name. No inline suppression: a Windows failure is
-      # either fixed forward or named in that list with an issue link.
+      # Runs the curated Windows-risk subset from scripts/windows-smoke-list.json
+      # (native SQLite binding, path handling). The FULL @remnic/core suite no
+      # longer fits the free-tier 25-minute Windows runner cap, so a full run
+      # can never go green here; without this cap the job burns 25 minutes of
+      # allocation on every PR and always cancels. The full suite remains
+      # runnable by hand: `node scripts/windows-test-runner.mjs` (no --smoke),
+      # governed by scripts/windows-skip-list.json as before — a Windows
+      # failure is either fixed forward or named in that list with an issue.
       - name: Core unit tests
-        run: node scripts/windows-test-runner.mjs
+        run: node scripts/windows-test-runner.mjs --smoke
 
   # Aggregator that preserves the required status-check context `quality`
   # (branch ruleset) while the real work runs in parallel jobs above. Fails
