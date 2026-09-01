@@ -301,8 +301,15 @@ export async function completeChatResult(
         messages,
         temperature: 0,
         max_tokens: 256,
-        reasoning_effort: model.startsWith("openai/gpt-oss-") ? "low" : "none",
-        chat_template_kwargs: { enable_thinking: false },
+        reasoning_effort:
+          model.startsWith("openai/gpt-oss-") ||
+          model === "meta/llama-3.2-11b-vision-instruct"
+            ? "low"
+            : "none",
+        // Llama 3.2's NVIDIA endpoint rejects this newer template option.
+        ...(model === "meta/llama-3.2-11b-vision-instruct"
+          ? {}
+          : { chat_template_kwargs: { enable_thinking: false } }),
         ...(tools
           ? {
               tools,
