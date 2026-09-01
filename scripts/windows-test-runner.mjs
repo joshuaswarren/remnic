@@ -143,13 +143,18 @@ export function partitionSkipped(files, entries) {
   return { run: files.filter((file) => !skippedFiles.has(file)), skipped, stale };
 }
 
-/** Log lines naming every skipped file. Printed even when the list is empty. */
-export function formatSkipReport(skipped) {
+/**
+ * Log lines naming every skipped file. Printed even when the list is empty.
+ * `scope` names the universe the report describes (undefined = the full
+ * suite), so smoke mode never claims full-suite coverage it does not have.
+ */
+export function formatSkipReport(skipped, scope) {
+  const label = scope ? ` within ${scope}` : "";
   if (skipped.length === 0) {
-    return ["[windows-tests] skip list is empty — every @remnic/core test file runs."];
+    return [`[windows-tests] skip list is empty — every test file${label} runs.`];
   }
   return [
-    `[windows-tests] SKIPPING ${skipped.length} test file(s) per scripts/windows-skip-list.json:`,
+    `[windows-tests] SKIPPING ${skipped.length} test file(s) per scripts/windows-skip-list.json${label}:`,
     ...skipped.map((entry) => `[windows-tests]   [SKIP] ${entry.file} — ${entry.reason} (${entry.issue})`),
     "[windows-tests] this list only shrinks: fix the defect, then delete the entry.",
   ];
@@ -232,7 +237,15 @@ async function main() {
     process.exit(1);
   }
 
-  for (const line of formatSkipReport(skipped)) console.warn(line);
+  for (const line of formatSkipReport(skipped, smoke ? "the curated smoke subset" : undefined)) {
+    console.warn(line);
+  }
+  if (smoke) {
+    console.warn(
+      `[windows-tests] the curated subset omits ${all.length - universe.length} of ${all.length}`
+        + " @remnic/core test file(s); full coverage runs only where the budget allows."
+    );
+  }
 
   const skippedFiles = new Set(skipped.map((entry) => entry.file));
   const run = universe.filter((file) => !skippedFiles.has(file));

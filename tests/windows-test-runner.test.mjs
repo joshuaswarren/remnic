@@ -109,3 +109,13 @@ test("parseSmokeList rejects shapes that would silently widen the subset", () =>
   assert.throws(() => parseSmokeList({ files: [good, good] }), /duplicates an earlier entry/);
   assert.deepEqual(parseSmokeList({ files: [good] }), [good]);
 });
+
+test("the skip report states its scope so smoke mode never claims full coverage", () => {
+  const full = formatSkipReport([]).join("\n");
+  assert.match(full, /every test file runs\./);
+  const smoke = formatSkipReport([], "the curated smoke subset").join("\n");
+  assert.match(smoke, /every test file within the curated smoke subset runs\./);
+  const scoped = formatSkipReport([ENTRY], "the curated smoke subset").join("\n");
+  assert.match(scoped, /per scripts\/windows-skip-list\.json within the curated smoke subset:/);
+  assert.ok(scoped.includes(ENTRY.file), "scoped report must still name the skipped file");
+});
