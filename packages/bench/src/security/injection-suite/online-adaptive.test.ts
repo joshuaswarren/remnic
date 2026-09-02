@@ -490,13 +490,12 @@ async function runOnlineAdaptiveWithFake(
   const attackerPromptPath = path.join(config.outputDir, "attacker-prompt.txt");
   await writeFile(attackerPromptPath, "fixture attacker prompt\n", "utf8");
   const deps: InjectionSuiteProductLifecycleDeps = {
-    createAdapter: (options) =>
-      makeFakeAdapter({
-        configOverrides: {
-          memoryInjectionDefenseMode:
-            options.configOverrides?.memoryInjectionDefenseMode ?? "off",
-        },
-      }),
+    createAdapter: (options) => {
+      const mode = options.configOverrides?.memoryInjectionDefenseMode;
+      return makeFakeAdapter({
+        configOverrides: { memoryInjectionDefenseMode: typeof mode === "string" ? mode : "off" },
+      });
+    },
     complete: async (options, messages) => {
       const isAttacker = (options.model ?? "").includes("attacker");
       return (isAttacker ? config.attackerResponder : config.defendedResponder)(messages);

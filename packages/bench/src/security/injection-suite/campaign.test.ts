@@ -29,6 +29,7 @@ function utility(equivalent: boolean | null): InjectionSuiteUtilityAnalysis {
   return {
     schemaVersion: 1,
     pairs: equivalent === null ? 0 : 1,
+    missingObservations: 0,
     baselineMean: equivalent === null ? null : 1,
     fencingMean: equivalent === null ? null : 1,
     relativeDelta: equivalent === null ? null : 0,

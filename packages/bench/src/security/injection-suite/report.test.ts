@@ -29,6 +29,7 @@ function analysis(profile: string): InjectionSuiteStatisticalAnalysis {
 const utility: InjectionSuiteUtilityAnalysis = {
   schemaVersion: 1,
   pairs: 1,
+  missingObservations: 0,
   baselineMean: 1,
   fencingMean: 1,
   relativeDelta: 0,
