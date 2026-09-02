@@ -51,7 +51,7 @@ function trailingHostFaults(tries) {
   return count;
 }
 
-export async function h5Status(runDir, staleAfterMinutes = 20) {
+export async function h5Status(runDir, staleAfterMinutes = 20, statImpl = stat) {
   const root = path.resolve(runDir);
   const run = await jsonFile(path.join(root, "run.json"));
   const expected = expectedRows(run);
@@ -72,7 +72,7 @@ export async function h5Status(runDir, staleAfterMinutes = 20) {
   const activeClaimKeys = new Set();
   let activeClaims = 0;
   let staleClaims = 0;
-  let latestMs = (await stat(path.join(root, "run.json"))).mtimeMs;
+  let latestMs = (await statImpl(path.join(root, "run.json"))).mtimeMs;
   for (const entry of claimEntries) {
     // Heartbeat writes owner.json; the lock directory itself is only stamped
     // when the row is claimed, so the directory mtime under-reports liveness
@@ -80,11 +80,19 @@ export async function h5Status(runDir, staleAfterMinutes = 20) {
     // owner.json mtime (the same source `InjectionSuiteClaimLock` reclaims
     // against) and fall back to the directory mtime only when owner.json is
     // missing.
-    const info = await stat(path.join(checkpointDir, entry.name));
+    let info;
+    try {
+      info = await statImpl(path.join(checkpointDir, entry.name));
+    } catch (error) {
+      // Lock directory removed between readdir and stat: the claim is gone,
+      // not broken — skip it rather than failing the whole scan.
+      if (error?.code !== "ENOENT") throw error;
+      continue;
+    }
     const ownerPath = path.join(checkpointDir, entry.name, "owner.json");
     let livenessMs = info.mtimeMs;
     try {
-      livenessMs = (await stat(ownerPath)).mtimeMs;
+      livenessMs = (await statImpl(ownerPath)).mtimeMs;
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
@@ -104,7 +112,7 @@ export async function h5Status(runDir, staleAfterMinutes = 20) {
 
   for (const entry of checkpointFiles) {
     const file = path.join(checkpointDir, entry.name);
-    const [checkpoint, info] = await Promise.all([jsonFile(file), stat(file)]);
+    const [checkpoint, info] = await Promise.all([jsonFile(file), statImpl(file)]);
     latestMs = Math.max(latestMs, info.mtimeMs);
     if (!Array.isArray(checkpoint.tries)) throw new Error(`${entry.name} has no tries array`);
     hostFaultTries += checkpoint.tries.filter((item) => item?.outcome?.kind === "HOST_API_FAULT").length;

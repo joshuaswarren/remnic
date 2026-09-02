@@ -14,6 +14,7 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -47,6 +48,7 @@ import type {
   InjectionSuiteRunMetadata,
   InjectionSuiteVariant,
 } from "./types.js";
+import { InjectionSuiteHostFault } from "./llm-executor.js";
 import type { InjectionSuiteChatMessage, InjectionSuiteChatResult } from "./llm-executor.js";
 import type { InjectionSuiteProductLifecycleDeps } from "./product-lifecycle.js";
 
@@ -271,6 +273,96 @@ test("resume mid-iteration replays the attacker corpus line and does not re-call
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
+});
+
+test("a crash on a retried attacker attempt (after a host fault) still pauses the resumed run", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-crash-retry-"));
+  try {
+    const base = baseVariantFor("minja", 1);
+    const defender = () => ({
+      text: `ACK ${base.canary} ${base.livenessCanary}`,
+      toolCalls: [],
+      inputTokens: 0,
+      outputTokens: 0,
+      model: "fixture-defender",
+    });
+    // First run: attempt 1 is a host fault (retried), attempt 2 crashes
+    // mid-request. The retry must carry its own in-flight marker.
+    let calls = 0;
+    await assert.rejects(
+      runOnlineAdaptiveWithFake({
+        outputDir: tmp,
+        attackerResponder: () => {
+          calls += 1;
+          if (calls === 1) throw new InjectionSuiteHostFault("upstream 503");
+          throw new Error("process crashed mid-request");
+        },
+        defendedResponder: defender,
+      }),
+      /process crashed mid-request/,
+    );
+    let attackerCalls = 0;
+    const attacker = () => {
+      attackerCalls += 1;
+      return { text: base.payload, toolCalls: [], inputTokens: 0, outputTokens: 0, model: "fixture-attacker" };
+    };
+    const paused = await runOnlineAdaptiveWithFake({ outputDir: tmp, attackerResponder: attacker, defendedResponder: defender, resume: true });
+    assert.equal(paused.exitCode, 2);
+    assert.match(paused.output, /ambiguous paid attempt/);
+    assert.equal(attackerCalls, 0, "a paused resume must not re-pay the retried attacker attempt");
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("the attacker in-flight marker survives until the corpus line is durable", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-durable-"));
+  try {
+    const base = baseVariantFor("minja", 1);
+    const defender = () => ({
+      text: `ACK ${base.canary} ${base.livenessCanary}`,
+      toolCalls: [],
+      inputTokens: 0,
+      outputTokens: 0,
+      model: "fixture-defender",
+    });
+    // Crash between the attacker response and the corpus append: the paid
+    // call succeeds but leaves a directory where the corpus file goes, so
+    // the append that follows fails before any line is durable.
+    await assert.rejects(
+      runOnlineAdaptiveWithFake({
+        outputDir: tmp,
+        attackerResponder: () => {
+          mkdirSync(path.join(tmp, "online-corpus.jsonl"), { recursive: true });
+          return { text: base.payload, toolCalls: [], inputTokens: 0, outputTokens: 0, model: "fixture-attacker" };
+        },
+        defendedResponder: defender,
+      }),
+      /EISDIR/,
+    );
+    await rm(path.join(tmp, "online-corpus.jsonl"), { recursive: true, force: true });
+    let attackerCalls = 0;
+    const paused = await runOnlineAdaptiveWithFake({
+      outputDir: tmp,
+      attackerResponder: () => {
+        attackerCalls += 1;
+        return { text: base.payload, toolCalls: [], inputTokens: 0, outputTokens: 0, model: "fixture-attacker" };
+      },
+      defendedResponder: defender,
+      resume: true,
+    });
+    assert.equal(paused.exitCode, 2, "a paid response with no durable corpus line is ambiguous");
+    assert.equal(attackerCalls, 0);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("the online stage refuses more than one corpus seed", () => {
+  assert.throws(
+    () => planOnlineAdaptiveRows({ seeds: 2, variantsPerFamily: 1, iterations: 1, seedBase: 71, modelProfileId: "fixture" }),
+    /exactly one corpus seed/,
+  );
 });
 
 test("a crash after the attacker request is sent pauses the resumed run until --retry-ambiguous", async () => {

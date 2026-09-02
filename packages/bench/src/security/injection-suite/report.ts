@@ -63,10 +63,10 @@ function blockRateSvg(base: readonly InjectionSuiteStatisticalAnalysis[]): strin
     const y = 55 + index * rowHeight;
     const label = entry.label.replaceAll("&", "&amp;").replaceAll("<", "&lt;");
     const fencingBar = entry.fencing === null
-      ? `<text x="250" y="${y}" font-size="12" fill="#6b7280">NA</text>`
+      ? `<text x="250" y="${y - 2}" font-size="12" fill="#6b7280">NA</text>`
       : `<rect x="250" y="${y - 14}" width="${Math.round(entry.fencing * 500)}" height="14" fill="#2563eb"/>`;
     const quarantineBar = entry.quarantine === null
-      ? `<text x="250" y="${y + 3}" font-size="12" fill="#6b7280">NA</text>`
+      ? `<text x="250" y="${y + 15}" font-size="12" fill="#6b7280">NA</text>`
       : `<rect x="250" y="${y + 3}" width="${Math.round(entry.quarantine * 500)}" height="14" fill="#d97706"/>`;
     return [
       `<text x="10" y="${y}" font-size="12">${label}</text>`,

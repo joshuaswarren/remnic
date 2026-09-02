@@ -26,6 +26,29 @@ export function decideInjectionSuiteCampaignResults(
   if (adaptive.length !== 0 && adaptive.length !== 2) {
     throw new Error("H5 adaptive campaign requires zero or two model runs");
   }
+  for (const analysis of base) {
+    if (analysis.stage !== "base") {
+      throw new Error(`H5 base evidence must come from a base-stage run (got ${analysis.stage})`);
+    }
+    // A base run frozen with an --arm subset passes its own completeness
+    // check but cannot support the four-arm claim; the confirmatory design
+    // needs every registered arm observed in every family.
+    if (analysis.families.length === 0) {
+      throw new Error("H5 base evidence has no family results");
+    }
+    for (const family of analysis.families) {
+      for (const arm of ["baseline", "fencing", "quarantine", "both"] as const) {
+        if (family[arm].denominator + family[arm].voids === 0) {
+          throw new Error(`H5 base run is missing the ${arm} arm for family ${family.family}`);
+        }
+      }
+    }
+  }
+  for (const analysis of adaptive) {
+    if (!/^adaptive-(online-)?r[123]$/.test(analysis.stage)) {
+      throw new Error(`H5d evidence must come from an adaptive-stage run (got ${analysis.stage})`);
+    }
+  }
   const profiles = base.map((analysis) => analysis.modelProfileHash);
   if (new Set(profiles).size !== 2) throw new Error("H5 campaign model profiles must be distinct");
   const baseNotEstimable = base.some((analysis) => analysis.decision === "NOT_ESTIMABLE");

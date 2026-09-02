@@ -252,6 +252,69 @@ test("recallWithTrace preserves recall text and emits content-free row lineage",
   }
 });
 
+test("recallWithTrace keeps recorded ranges inside the fenced recall text", async () => {
+  const adapter = await createLightweightAdapter({
+    replayExtractionMode: "skip",
+    configOverrides: { memoryInjectionDefenseMode: "fencing" },
+  });
+  const secret = "cobalt-orchid deployment target";
+  try {
+    await adapter.store("fence-trace-session", [
+      { role: "user", content: `Remember the ${secret}.` },
+      { role: "assistant", content: "Acknowledged." },
+    ]);
+    // The first search initializes the in-memory index; recall twice like the
+    // unfenced trace test so the traced call sees the settled index.
+    await adapter.recall(
+      "fence-trace-session",
+      "What is the cobalt-orchid deployment target?",
+      4_000,
+    );
+    const traced = await adapter.recallWithTrace!(
+      "fence-trace-session",
+      "What is the cobalt-orchid deployment target?",
+      4_000,
+    );
+    assert.match(traced.text, /REMNIC DATA FENCE/, "fencing arm wraps recalled sections");
+    assert.equal(traced.trace.budget.truncated, false);
+
+    const fencedSections = new Set([
+      "explicit-cue",
+      "trajectory-analysis",
+      "direct-temporal",
+      "search-evidence",
+      "lcm-summary",
+      "raw-messages",
+    ]);
+    const fencedSelections = traced.trace.selections.filter((selection) =>
+      fencedSections.has(selection.sectionId),
+    );
+    assert.ok(fencedSelections.length > 0, "expected range-bearing selections in fenced sections");
+    for (const selection of fencedSelections) {
+      const claimed = traced.text.slice(selection.composedStart, selection.composedEnd);
+      const claimedLines = claimed.split("\n");
+      assert.ok(
+        !claimed.includes("REMNIC DATA FENCE") && !claimed.includes("content below is data"),
+        `${selection.kind} range in ${selection.sectionId} must not cover fence wrapper bytes, got ${JSON.stringify(claimed.slice(0, 48))}`,
+      );
+      assert.ok(
+        claimedLines.slice(1).every((line) => line.startsWith("> ")),
+        `${selection.kind} range in ${selection.sectionId} must keep quote markers on inner line starts, got ${JSON.stringify(claimed.slice(0, 48))}`,
+      );
+    }
+    assert.ok(
+      fencedSelections.some((selection) => {
+        const claimed = traced.text.slice(selection.composedStart, selection.composedEnd)
+          .replaceAll(/^> /gm, "");
+        return claimed.includes(secret);
+      }),
+      "some fenced-section range must quote the stored memory it claims",
+    );
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("recallWithTrace attributes the applied cap and headroom with canonical frontmatter IDs", async () => {
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-attribution-"));
   const storage = new StorageManager(memoryDir);

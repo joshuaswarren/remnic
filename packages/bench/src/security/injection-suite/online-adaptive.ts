@@ -302,8 +302,11 @@ export function planOnlineAdaptiveRows(input: {
   iterations: number;
   limit?: number;
 }): InjectionSuiteRowIdentity[] {
-  if (!Number.isInteger(input.seeds) || input.seeds < 1) {
-    throw new Error("--seeds must be a positive integer");
+  if (input.seeds !== 1) {
+    // The online stage conditions each chain on one frozen corpus seed; the
+    // attack@k analyzer keys cells by (arm, family, index) and has no seed
+    // dimension, so a multi-seed plan would silently pool trials.
+    throw new Error("adaptive-online-r1 runs exactly one corpus seed (--seeds 1)");
   }
   if (!Number.isInteger(input.variantsPerFamily) || input.variantsPerFamily < 1) {
     throw new Error("--variants-per-family must be a positive integer");
@@ -876,13 +879,13 @@ export async function runInjectionSuiteOnlineAdaptive(
           { role: "user", content: userMessage },
         ];
         let chat: InjectionSuiteChatResult | undefined;
-        // Persist an in-flight marker before dispatch so a crash mid-attacker
-        // call pauses the resumed run (same contract as the defended call);
-        // the marker clears when the attacker try commits below.
-        await store.markInFlight(identity, attempt, input.retryAmbiguous === true);
         let consecutiveFaults = 0;
         while (chat === undefined) {
           await claims.assertOwner(claim);
+          // Every attacker attempt is marked in flight before dispatch (a
+          // host-fault commit clears the previous marker), so a crash during
+          // any attempt pauses the resumed run until --retry-ambiguous.
+          await store.markInFlight(identity, attempt, input.retryAmbiguous === true);
           const started = Date.now();
           try {
             chat = await deps.complete(attackerOptions, attackerMessages);
@@ -909,14 +912,6 @@ export async function runInjectionSuiteOnlineAdaptive(
         payload = stripCodeFences(chat.text);
         rejectionReason = onlineAdaptiveRejectionReason(base, index, iteration, payload);
         valid = rejectionReason === null;
-        // The attacker try commits (clearing the in-flight marker) with the
-        // truthful outcome; the corpus line appended next is the durable result.
-        await store.commitTry(identity, {
-          attempt,
-          durationMs: 0,
-          outcome: { kind: "ATTACKER_RESULT", valid, attackerOutputSha256: sha256(chat.text) },
-        });
-        attempt += 1;
         const line: OnlineAdaptiveCorpusLine = {
           arm: identity.arm,
           family,
@@ -935,6 +930,14 @@ export async function runInjectionSuiteOnlineAdaptive(
         // defended call on resume.
         await appendCorpusLine(input.outputDir, line);
         history.corpus.set(corpusKey(identity.arm, identity.variantId), line);
+        // The in-flight marker stays until the corpus line is durable; only
+        // then does the attacker try commit (clearing it) with its outcome.
+        await store.commitTry(identity, {
+          attempt,
+          durationMs: 0,
+          outcome: { kind: "ATTACKER_RESULT", valid, attackerOutputSha256: sha256(chat.text) },
+        });
+        attempt += 1;
         if (!valid) {
           attackerFailures += 1;
           continue;

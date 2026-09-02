@@ -74,7 +74,9 @@ import {
   resolveSkipExtractionLcmFirst,
   shouldIncludeCoreRecallForReplay,
   HARNESS_AUTHORED_RECALL_SECTIONS,
+  translateSelectionOffsets,
   secureBenchRecallSection,
+  type SecuredBenchRecallSection,
 } from "./remnic-recall-support.js";
 
 export {
@@ -2046,20 +2048,24 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         }
         const sections: string[] = [];
         let usedChars = 0;
+        const securedSections: Record<string, SecuredBenchRecallSection> = {};
+        const securedOffsetAt = (sectionId: string): ((offset: number) => number) =>
+          securedSections[sectionId]?.offsetAt ?? ((offset) => offset);
         const appendSection = (
           id: string,
           source: Parameters<BenchRecallTraceRecorder["appendSection"]>[1],
           rendered: string,
-        ): string | null => {
+        ): SecuredBenchRecallSection | null => {
           const secured = secureBenchRecallSection(
             rendered,
             state.recallSecurity,
             HARNESS_AUTHORED_RECALL_SECTIONS.has(id),
           );
-          if (!secured) return null;
-          traceRecorder?.appendSection(id, source, secured.length);
-          sections.push(secured);
-          usedChars += secured.length;
+          if (!secured.text) return null;
+          securedSections[id] = secured;
+          traceRecorder?.appendSection(id, source, secured.text.length);
+          sections.push(secured.text);
+          usedChars += secured.text.length;
           return secured;
         };
         const explicitReferences = historicalRecall
@@ -2163,7 +2169,10 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             }));
         if (exactReferenceEvidence) {
           appendSection("explicit-cue", "explicit-cue", exactReferenceEvidence);
-          traceRecorder?.recordEvidenceSelections("explicit-cue", explicitCueSelections);
+          traceRecorder?.recordEvidenceSelections(
+            "explicit-cue",
+            translateSelectionOffsets(explicitCueSelections, securedOffsetAt("explicit-cue"), "blockStart", "blockEnd"),
+          );
         }
 
         const trajectorySelections: TrajectoryAnalysisLineReceipt[] = [];
@@ -2187,7 +2196,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           appendSection("trajectory-analysis", "trajectory-analysis", trajectoryAnalysisEvidence);
           traceRecorder?.recordTrajectorySelections(
             "trajectory-analysis",
-            trajectorySelections,
+            translateSelectionOffsets(trajectorySelections, securedOffsetAt("trajectory-analysis"), "lineStart", "lineEnd"),
           );
         }
 
@@ -2510,7 +2519,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               appendSection("direct-temporal", "evidence-pack", section);
               traceRecorder?.recordEvidenceSelections(
                 "direct-temporal",
-                directTemporalSelections,
+                translateSelectionOffsets(directTemporalSelections, securedOffsetAt("direct-temporal"), "blockStart", "blockEnd"),
               );
               remainingSearchBudget = 0;
             }
@@ -2543,7 +2552,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               appendSection("search-evidence", "evidence-pack", searchEvidence);
               traceRecorder?.recordEvidenceSelections(
                 "search-evidence",
-                searchSelections,
+                translateSelectionOffsets(searchSelections, securedOffsetAt("search-evidence"), "blockStart", "blockEnd"),
               );
             }
           }
@@ -2575,7 +2584,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             if (summaryCapture) {
               traceRecorder?.recordSummarySelections(
                 "lcm-summary",
-                summaryCapture.selectedSummaries,
+                translateSelectionOffsets(summaryCapture.selectedSummaries, securedOffsetAt("lcm-summary"), "entryStart", "entryEnd"),
               );
             }
           }
@@ -2606,7 +2615,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               // authority is on.
               const securedRawSection = appendSection("raw-messages", "raw-row", rawSection);
               if (securedRawSection !== null) {
-                const securedRows = securedRawSection.slice(prefix.length).split("\n");
+                const securedRows = securedRawSection.text.slice(prefix.length).split("\n");
                 let rowStart = prefix.length;
                 securedRows.forEach((row, index) => {
                   const rowEnd = rowStart + row.length;

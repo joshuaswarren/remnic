@@ -432,14 +432,24 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   const expectedKeys = new Set(design.rows.map((row) => row.rowKey));
   let missingPlannedRows = 0;
   let neverGeneratedIterations = 0;
+  const seedsInDesign = new Set(design.rows.map((row) => row.identity.seed));
+  if (seedsInDesign.size !== 1) {
+    throw new Error(`adaptive-online-r1 analysis expects one corpus seed; design has ${seedsInDesign.size}`);
+  }
   for (const row of design.rows) {
     if (byRowKey.has(row.rowKey)) continue;
     const online = parseOnlineVariantId(row.identity.variantId);
+    const valid = corpusValid.get(corpusKey(row.identity.arm, row.identity.variantId));
     if (!online || online.iteration === 0) {
+      // Iteration 0 replays the frozen base payload and never has a corpus
+      // line; the runner refuses to start if the base payload fails
+      // validation, so an absent k0 row is always a missing execution.
+      if (valid !== undefined) {
+        throw new Error(`unexpected corpus line for iteration-0 row ${row.rowKey}`);
+      }
       missingPlannedRows += 1;
       continue;
     }
-    const valid = corpusValid.get(corpusKey(row.identity.arm, row.identity.variantId));
     if (valid === true) missingPlannedRows += 1;
     else if (valid === undefined) neverGeneratedIterations += 1;
   }

@@ -65,6 +65,44 @@ export const HARNESS_AUTHORED_RECALL_SECTIONS: ReadonlySet<string> = new Set([
   "personal-history-empty",
 ]);
 
+/**
+ * A recall section after screening and origin-authority securing, plus the
+ * offset map trace evidence needs: range-bearing receipts (evidence blocks,
+ * summary entries, raw rows) are computed against the pre-securing text, and
+ * `offsetAt` translates such an offset onto the same character in `text`.
+ */
+export interface SecuredBenchRecallSection {
+  text: string;
+  offsetAt: (offset: number) => number;
+}
+
+function unfencedSection(text: string): SecuredBenchRecallSection {
+  return { text, offsetAt: (offset) => offset };
+}
+
+/**
+ * The authority fence prepends two header lines, prefixes every content line
+ * with a quote marker, and appends one closing delimiter line. Derive the
+ * header width and marker length from the fence just rendered so the map
+ * cannot drift from `renderAuthorityFence` output; the recall-trace fencing
+ * tests fail loudly if the fence shape ever changes.
+ */
+function fencedSectionOffsets(content: string, text: string): (offset: number) => number {
+  const headerChars = text.indexOf("\n", text.indexOf("\n") + 1) + 1;
+  const firstLineEnd = content.indexOf("\n");
+  const firstLine = firstLineEnd === -1 ? content : content.slice(0, firstLineEnd);
+  const markerChars = text.indexOf(firstLine, headerChars) - headerChars;
+  return (offset) => {
+    let lines = 0;
+    for (let i = 0; i < offset; i++) {
+      if (content.charCodeAt(i) === 10) lines++;
+    }
+    // Every content line carries its own quote marker, including the line
+    // holding the offset, so the marker count is lines-before plus one.
+    return headerChars + offset + markerChars * (lines + 1);
+  };
+}
+
 export function secureBenchRecallSection(
   content: string,
   security: {
@@ -73,15 +111,36 @@ export function secureBenchRecallSection(
     injectionScreenProfile: "default" | "hardened";
   },
   trustedSection: boolean,
-): string {
-  if (trustedSection) return content;
+): SecuredBenchRecallSection {
+  if (trustedSection) return unfencedSection(content);
   if (
     security.injectionScreenEnabled
     && screenCandidateFact(content, security.injectionScreenProfile).quarantine
   ) {
-    return "";
+    return unfencedSection("");
   }
-  return security.originAuthorityEnabled ? renderAuthorityFence(content, "unknown") : content;
+  if (!security.originAuthorityEnabled) return unfencedSection(content);
+  const text = renderAuthorityFence(content, "unknown");
+  return { text, offsetAt: fencedSectionOffsets(content, text) };
+}
+
+/**
+ * Rewrite the offset pair named by `startKey`/`endKey` on every receipt from
+ * pre-securing section coordinates into the secured coordinates recorded in
+ * the recall trace. Without it, a fenced section makes every recorded range
+ * point at fence header bytes instead of the quoted content.
+ */
+export function translateSelectionOffsets<T>(
+  receipts: readonly T[],
+  offsetAt: (offset: number) => number,
+  startKey: keyof T,
+  endKey: keyof T,
+): T[] {
+  return receipts.map((receipt) => ({
+    ...receipt,
+    [startKey]: offsetAt(receipt[startKey] as number),
+    [endKey]: offsetAt(receipt[endKey] as number),
+  })) as T[];
 }
 
 function normalizeSupportToken(value: string): string {

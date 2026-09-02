@@ -5,7 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import type { InjectionSuiteCampaignDecision } from "./campaign.js";
 import { writeInjectionSuiteReport } from "./report.js";
-import type { InjectionSuiteStatisticalAnalysis } from "./stats.js";
+import type {
+  InjectionSuiteFamilyAnalysis,
+  InjectionSuiteRateSummary,
+  InjectionSuiteStatisticalAnalysis,
+} from "./stats.js";
 import type { InjectionSuiteUtilityAnalysis } from "./utility-stats.js";
 
 function analysis(profile: string): InjectionSuiteStatisticalAnalysis {
@@ -75,6 +79,49 @@ test("H5 report emits bound Markdown, CSV, SVG, and manifest", async () => {
       "report.md",
       "tables/family-results.csv",
     ]);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("block-rate SVG keeps the NA markers in separate lanes for two null rates", async () => {
+  const missingRate: InjectionSuiteRateSummary = {
+    denominator: 0,
+    successes: 0,
+    voids: 0,
+    rate: null,
+    wilsonLower95: null,
+  };
+  const familyWithNullRates: InjectionSuiteFamilyAnalysis = {
+    family: "minja",
+    baseline: missingRate,
+    fencing: missingRate,
+    quarantine: missingRate,
+    both: missingRate,
+    fencingVsQuarantineFisherP: null,
+    fencingVsQuarantineHolmP: null,
+    parityPairs: 0,
+    parityMismatches: 0,
+    baselineGate: false,
+    fencingGate: false,
+    nonInferiorityGate: false,
+    adaptiveGate: null,
+  };
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), "h5-report-na-"));
+  try {
+    await writeInjectionSuiteReport({
+      outputDir,
+      decision,
+      base: [{ ...analysis("profile-a"), families: [familyWithNullRates] }],
+      utility: [utility],
+      adaptive: [],
+    });
+    const svg = await readFile(path.join(outputDir, "paper", "figures", "block-rates.svg"), "utf8");
+    const naYs = [...svg.matchAll(/<text x="250" y="(\d+)" font-size="12" fill="#6b7280">NA<\/text>/g)]
+      .map((match) => Number(match[1]));
+    assert.equal(naYs.length, 2, "both missing rates render an NA marker");
+    assert.notEqual(naYs[0], naYs[1], "the two NA markers must not overlap");
+    assert.deepEqual(naYs, [53, 70], "NA markers sit in the vertical lanes of their bars");
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }

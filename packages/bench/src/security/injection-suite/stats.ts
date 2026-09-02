@@ -1,8 +1,8 @@
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
+import { verifyFrozenDesign, type InjectionSuiteExpectedDesign } from "./freeze.js";
+import { H5_DECISION_RULE } from "./decision-rule.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { H5_DECISION_RULE } from "./decision-rule.js";
-import type { InjectionSuiteExpectedDesign } from "./freeze.js";
 import type {
   InjectionSuiteArm,
   InjectionSuiteEpisodeRow,
@@ -290,12 +290,19 @@ function parseEpisodes(text: string): InjectionSuiteEpisodeRow[] {
   return text.split("\n").filter(Boolean).map((line) => JSON.parse(line) as InjectionSuiteEpisodeRow);
 }
 
-export async function analyzeInjectionSuiteRun(runDir: string): Promise<InjectionSuiteStatisticalAnalysis> {
+export async function computeInjectionSuiteRun(
+  runDir: string,
+): Promise<InjectionSuiteStatisticalAnalysis> {
   const [metadata, design, episodeText] = await Promise.all([
-    readFile(path.join(runDir, "run.json"), "utf8").then((text) => JSON.parse(text) as InjectionSuiteRunMetadata),
-    readFile(path.join(runDir, "expected-design.json"), "utf8").then((text) => JSON.parse(text) as InjectionSuiteExpectedDesign),
+    readFile(path.join(runDir, "run.json"), "utf8").then(
+      (text) => JSON.parse(text) as InjectionSuiteRunMetadata,
+    ),
+    readFile(path.join(runDir, "expected-design.json"), "utf8").then(
+      (text) => JSON.parse(text) as InjectionSuiteExpectedDesign,
+    ),
     readFile(path.join(runDir, "episodes.jsonl"), "utf8"),
   ]);
+  verifyFrozenDesign(design, metadata);
   const rows = parseEpisodes(episodeText);
   const expected = new Set(design.rows.map((row) => row.rowKey));
   const seen = new Set<string>();
@@ -309,7 +316,13 @@ export async function analyzeInjectionSuiteRun(runDir: string): Promise<Injectio
     if (!row.evidence) invalid += 1;
   }
   const missing = [...expected].filter((rowKey) => !seen.has(rowKey)).length;
-  const analysis = analyzeInjectionSuiteRows(rows, metadata, { invalid, duplicate, missing, unexpected });
+  return analyzeInjectionSuiteRows(rows, metadata, { invalid, duplicate, missing, unexpected });
+}
+
+export async function analyzeInjectionSuiteRun(
+  runDir: string,
+): Promise<InjectionSuiteStatisticalAnalysis> {
+  const analysis = await computeInjectionSuiteRun(runDir);
   await writeFileAtomically(
     path.join(runDir, "statistics.json"),
     `${JSON.stringify(analysis, null, 2)}\n`,
@@ -319,7 +332,7 @@ export async function analyzeInjectionSuiteRun(runDir: string): Promise<Injectio
 
 export async function replayInjectionSuiteStatistics(runDir: string): Promise<void> {
   const frozen = await readFile(path.join(runDir, "statistics.json"), "utf8");
-  const analysis = await analyzeInjectionSuiteRun(runDir);
+  const analysis = await computeInjectionSuiteRun(runDir);
   const replayed = `${JSON.stringify(analysis, null, 2)}\n`;
   if (frozen !== replayed) throw new Error("H5 statistics replay drifted");
 }

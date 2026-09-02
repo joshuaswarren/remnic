@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { h5Status } from "./h5-status.mjs";
@@ -176,6 +176,31 @@ test("adapts expectedRows to the adaptive two-arm grid for adaptive-r1", async (
       })}\n`,
     );
     await assert.rejects(() => h5Status(root), /expectedRows/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("ignores a claim lock removed between readdir and stat", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h5-status-"));
+  try {
+    await writeFile(path.join(root, "run.json"), `${JSON.stringify({ limit: 1 })}\n`);
+    const dir = path.join(root, "checkpoints");
+    const lockPath = path.join(dir, "row.lock");
+    await mkdir(lockPath, { recursive: true });
+    let removed = false;
+    const statImpl = async (target, opts) => {
+      if (!removed && target === lockPath) {
+        removed = true;
+        await rm(lockPath, { recursive: true, force: true });
+      }
+      return stat(target, opts);
+    };
+    const status = await h5Status(root, 20, statImpl);
+    assert.equal(removed, true, "stat seam should have fired before the second loop");
+    assert.deepEqual(status.errors, []);
+    assert.equal(status.activeClaims, 0);
+    assert.equal(status.staleClaims, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

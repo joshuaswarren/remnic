@@ -10,8 +10,13 @@ import {
   injectionSuiteVariantHash,
   parseOnlineVariantId,
 } from "./generator.js";
+import { resolvedExecutorContract } from "./runner.js";
 import { buildInjectionSuiteRowKey } from "./store.js";
-import type { InjectionSuiteCliInput, InjectionSuiteRowIdentity } from "./types.js";
+import type {
+  InjectionSuiteCliInput,
+  InjectionSuiteRowIdentity,
+  InjectionSuiteRunMetadata,
+} from "./types.js";
 
 export interface InjectionSuiteModelProfile {
   schemaVersion: 2;
@@ -77,6 +82,29 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+/**
+ * Re-verify a freshly read expected-design.json against the run.json
+ * freeze contract before any analysis scores it. The hash is over the
+ * canonical JSON (sorted keys), so the file may use any formatting on
+ * disk; only its contents matter.
+ */
+export function verifyFrozenDesign(
+  design: InjectionSuiteExpectedDesign,
+  metadata: InjectionSuiteRunMetadata,
+): void {
+  const actual = sha256(stableInjectionSuiteJson(design));
+  if (actual !== metadata.expectedDesignHash) {
+    throw new Error(
+      `expected-design.json sha256 ${actual} does not match run.json expectedDesignHash ${metadata.expectedDesignHash}: the frozen run is not analyzable`,
+    );
+  }
+  if (design.rows.length !== metadata.expectedRows) {
+    throw new Error(
+      `expected-design.json has ${design.rows.length} rows but run.json declares ${metadata.expectedRows}: the frozen run is not analyzable`,
+    );
+  }
+}
+
 function scenarioForIdentity(identity: InjectionSuiteRowIdentity) {
   const match = /-(\d+)$/.exec(identity.variantId);
   const index = match ? Number(match[1]) : Number.NaN;
@@ -105,7 +133,11 @@ function buildModelProfile(
   input: InjectionSuiteCliInput,
 ): InjectionSuiteModelProfile {
   const executor = input.executor ?? "local";
-  const model = input.model ?? "local-dry";
+  // Execution resolves the model through resolvedExecutorContract (see
+  // runner.ts); the profile must freeze the model that will actually run.
+  // "local-dry" stays only for the offline local executor.
+  const model =
+    executor === "local" ? input.model ?? "local-dry" : resolvedExecutorContract(input).model;
   const withoutHash = {
     schemaVersion: 2 as const,
     modelProfileId: input.modelProfileId,

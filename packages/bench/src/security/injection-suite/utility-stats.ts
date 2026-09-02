@@ -38,8 +38,16 @@ function percentile(sorted: readonly number[], quantile: number): number {
   return sorted[index] ?? 0;
 }
 
+/** The planned utility universe, recorded by the runner before any cell completes. */
+export interface InjectionSuiteUtilityPlan {
+  benchmarks: readonly InjectionSuiteUtilityObservation["benchmark"][];
+  seeds: readonly number[];
+  items: ReadonlyArray<Pick<InjectionSuiteUtilityObservation, "benchmark" | "itemId">>;
+}
+
 export function analyzeInjectionSuiteUtility(
   observations: readonly InjectionSuiteUtilityObservation[],
+  plan?: InjectionSuiteUtilityPlan,
 ): InjectionSuiteUtilityAnalysis {
   const baseline = new Map<string, InjectionSuiteUtilityObservation>();
   const fencing = new Map<string, InjectionSuiteUtilityObservation>();
@@ -48,15 +56,26 @@ export function analyzeInjectionSuiteUtility(
     if (observation.arm === "none") baseline.set(key, observation);
     if (observation.arm === "fencing") fencing.set(key, observation);
   }
-  // Completeness: every (benchmark, item) x seed must be observed for BOTH
-  // arms. A partially executed study cannot declare equivalence.
+  // Completeness: every planned (benchmark, item) x seed must be observed
+  // for BOTH arms. The universe comes from the plan when the runner supplies
+  // one (so a benchmark, item, or seed that never produced an observation
+  // still counts as missing) and from the observations otherwise; observed
+  // cells outside the plan are unexpected and count as missing too.
   const items = new Set<string>();
-  const seeds = new Set<number>();
+  const seeds = new Set<number>(plan?.seeds ?? []);
+  for (const item of plan?.items ?? []) items.add(`${item.benchmark}\0${item.itemId}`);
+  let missingObservations = 0;
   for (const observation of observations) {
-    items.add(`${observation.benchmark}\0${observation.itemId}`);
+    const item = `${observation.benchmark}\0${observation.itemId}`;
+    if (plan && (!items.has(item) || !seeds.has(observation.seed))) missingObservations += 1;
+    items.add(item);
     seeds.add(observation.seed);
   }
-  let missingObservations = 0;
+  for (const benchmark of plan?.benchmarks ?? []) {
+    if (![...items].some((item) => item.startsWith(`${benchmark}\0`))) {
+      missingObservations += seeds.size * 2;
+    }
+  }
   for (const item of items) {
     for (const seed of seeds) {
       const key = `${item}\0${seed}`;

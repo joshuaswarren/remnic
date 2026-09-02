@@ -2,7 +2,7 @@ import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { createSeededRandom, randomInt } from "../../seeded-random.js";
-import type { InjectionSuiteExpectedDesign } from "./freeze.js";
+import { verifyFrozenDesign, type InjectionSuiteExpectedDesign } from "./freeze.js";
 import type {
   InjectionSuiteArm,
   InjectionSuiteEpisodeRow,
@@ -485,6 +485,7 @@ export async function analyzeInjectionSuitePublicationRun(
     ),
     readFile(path.join(runDir, "episodes.jsonl"), "utf8"),
   ]);
+  verifyFrozenDesign(design, metadata);
   const rows = episodeText
     .split("\n")
     .filter(Boolean)

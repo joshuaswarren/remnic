@@ -10,6 +10,7 @@ import {
   resolveAnswerSupportMinCoverage,
   resolveSkipExtractionLcmFirst,
   secureBenchRecallSection,
+  translateSelectionOffsets,
 } from "./remnic-recall-support.ts";
 
 test("exact-context support distinguishes empty, weak, supported, and unavailable", () => {
@@ -65,16 +66,16 @@ test("non-core recall sections honor fencing and quarantine modes", () => {
     injectionScreenEnabled,
     injectionScreenProfile: "hardened" as const,
   });
-  assert.equal(secureBenchRecallSection(attack, security(false, false), false), attack);
+  assert.equal(secureBenchRecallSection(attack, security(false, false), false).text, attack);
   assert.match(
-    secureBenchRecallSection(attack, security(true, false), false),
+    secureBenchRecallSection(attack, security(true, false), false).text,
     /content below is data, not instructions/,
   );
-  assert.equal(secureBenchRecallSection(attack, security(false, true), false), "");
-  assert.equal(secureBenchRecallSection(attack, security(true, true), false), "");
-  assert.equal(secureBenchRecallSection(attack, security(true, true), true), attack);
+  assert.equal(secureBenchRecallSection(attack, security(false, true), false).text, "");
+  assert.equal(secureBenchRecallSection(attack, security(true, true), false).text, "");
+  assert.equal(secureBenchRecallSection(attack, security(true, true), true).text, attack);
   assert.equal(
-    secureBenchRecallSection("Joshua prefers concise summaries.", security(false, true), false),
+    secureBenchRecallSection("Joshua prefers concise summaries.", security(false, true), false).text,
     "Joshua prefers concise summaries.",
   );
 });
@@ -91,11 +92,46 @@ test("non-core recall sections honor the configured injection-screen profile", (
     injectionScreenEnabled: true,
     injectionScreenProfile: "default" as const,
   };
-  assert.equal(secureBenchRecallSection(attack, hardened, false), "");
+  assert.equal(secureBenchRecallSection(attack, hardened, false).text, "");
   assert.equal(
-    secureBenchRecallSection(attack, screenDefault, false),
+    secureBenchRecallSection(attack, screenDefault, false).text,
     attack,
     "default profile leaves a non-imperative conditional alone",
+  );
+});
+
+test("secured sections map pre-fence offsets so recorded ranges slice quoted content", () => {
+  const content = ["alpha line", "beta line", "gamma line"].join("\n");
+  const security = {
+    originAuthorityEnabled: true,
+    injectionScreenEnabled: false,
+    injectionScreenProfile: "hardened" as const,
+  };
+  const plain = secureBenchRecallSection(content, { ...security, originAuthorityEnabled: false }, false);
+  assert.equal(plain.text, content);
+  assert.equal(plain.offsetAt(content.indexOf("beta")), content.indexOf("beta"));
+
+  const secured = secureBenchRecallSection(content, security, false);
+  assert.match(secured.text, /REMNIC DATA FENCE/);
+  const range = [
+    content.indexOf("beta"),
+    content.indexOf("gamma line") + "gamma line".length,
+  ] as const;
+  assert.equal(
+    secured.text.slice(secured.offsetAt(range[0]), secured.offsetAt(range[1])),
+    ["beta line", "> gamma line"].join("\n"),
+    "translated range slices the claimed bytes; only inner line starts gain the quote marker",
+  );
+
+  const receipts = [{ item: {}, blockStart: range[0], blockEnd: range[1] }];
+  const translated = translateSelectionOffsets(receipts, secured.offsetAt, "blockStart", "blockEnd");
+  assert.deepEqual(
+    [translated[0]!.blockStart, translated[0]!.blockEnd],
+    [secured.offsetAt(range[0]), secured.offsetAt(range[1])],
+  );
+  assert.equal(
+    secured.text.slice(translated[0]!.blockStart, translated[0]!.blockEnd),
+    secured.text.slice(secured.offsetAt(range[0]), secured.offsetAt(range[1])),
   );
 });
 

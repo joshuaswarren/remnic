@@ -296,12 +296,23 @@ async function runPublishedUtility(
   seed: number,
   benchmark: "locomo" | "longmemeval",
   datasetDir: string | undefined,
+  plannedItems: Set<string>,
 ): Promise<InjectionSuiteUtilityObservation[]> {
   const store = new UtilityCheckpointStore(input.outputDir, arm, seed, benchmark);
   assertNoAmbiguousUtilityTask(store, input.retryAmbiguous === true);
   const completed = store.loadTasks();
   const adapter = await createUtilityAdapter(input, arm, seed);
   try {
+    // Every task the benchmark starts (including ones that later fail) is
+    // part of the planned universe, so an item that fails in every cell
+    // still counts as missing. ponytail: an item the benchmark never starts
+    // in any of the 10 cells is invisible here; enumerate the dataset ahead
+    // if that ceiling matters.
+    const onTaskStart = (taskId: string) => {
+      plannedItems.add(`${benchmark}\0${taskId}`);
+      store.markInFlight(taskId, input.retryAmbiguous === true);
+    };
+    for (const taskId of completed.keys()) plannedItems.add(`${benchmark}\0${taskId}`);
     const result = await runBenchmark(benchmark, {
       mode: datasetDir ? "full" : "quick",
       datasetDir,
@@ -310,7 +321,7 @@ async function runPublishedUtility(
       seed,
       benchmarkOptions: { trialConcurrency: 1 },
       resumeTasks: completed,
-      onTaskStart: (taskId) => store.markInFlight(taskId, input.retryAmbiguous === true),
+      onTaskStart,
       onTaskComplete: (task) => store.commit(task),
       noJudgeCache: true,
     });
@@ -345,11 +356,13 @@ async function runDriftUtility(
   input: InjectionSuiteUtilityRunInput,
   arm: InjectionSuiteArm,
   seed: number,
+  plannedItems: Set<string>,
 ): Promise<InjectionSuiteUtilityObservation[]> {
   const store = new UtilityCheckpointStore(input.outputDir, arm, seed, "drift-gen");
   assertNoAmbiguousUtilityTask(store, input.retryAmbiguous === true);
   const completed = store.loadTasks();
   const probes = readJsonLines<DriftProbe>(path.join(DRIFT_ROOT, "gold", "probes.jsonl"));
+  for (const probe of probes) plannedItems.add(`drift-gen\0${probe.id}`);
   const sessions = ["u1", "u2"].flatMap((userId) =>
     readJsonLines<DriftSession>(path.join(DRIFT_ROOT, "users", userId, "sessions.jsonl")),
   );
@@ -423,6 +436,7 @@ export async function runInjectionSuiteUtility(
   }
   mkdirSync(input.outputDir, { recursive: true });
   const observations: InjectionSuiteUtilityObservation[] = [];
+  const plannedItems = new Set<string>();
   const arms = input.arms && input.arms.length > 0 ? [...new Set(input.arms)] : UTILITY_ARMS;
   for (const arm of arms) {
     for (let offset = 0; offset < UTILITY_SEEDS.length; offset += UTILITY_SEED_CONCURRENCY) {
@@ -431,11 +445,11 @@ export async function runInjectionSuiteUtility(
         const rows: InjectionSuiteUtilityObservation[] = [];
         for (const benchmark of benchmarks) {
           if (benchmark === "locomo") {
-            rows.push(...await runPublishedUtility(input, arm, seed, benchmark, input.locomoDatasetDir));
+            rows.push(...await runPublishedUtility(input, arm, seed, benchmark, input.locomoDatasetDir, plannedItems));
           } else if (benchmark === "longmemeval") {
-            rows.push(...await runPublishedUtility(input, arm, seed, benchmark, input.longmemevalDatasetDir));
+            rows.push(...await runPublishedUtility(input, arm, seed, benchmark, input.longmemevalDatasetDir, plannedItems));
           } else {
-            rows.push(...await runDriftUtility(input, arm, seed));
+            rows.push(...await runDriftUtility(input, arm, seed, plannedItems));
           }
         }
         return rows;
@@ -447,7 +461,19 @@ export async function runInjectionSuiteUtility(
       );
     }
   }
-  const analysis = analyzeInjectionSuiteUtility(observations);
+  const plan = {
+    benchmarks,
+    seeds: [...UTILITY_SEEDS],
+    items: [...plannedItems].map((key) => {
+      const [benchmark, itemId] = key.split("\0") as [InjectionSuiteUtilityObservation["benchmark"], string];
+      return { benchmark, itemId };
+    }),
+  };
+  await writeFileAtomically(
+    path.join(input.outputDir, "utility-plan.json"),
+    `${JSON.stringify(plan, null, 2)}\n`,
+  );
+  const analysis = analyzeInjectionSuiteUtility(observations, plan);
   await writeFileAtomically(
     path.join(input.outputDir, "utility-statistics.json"),
     `${JSON.stringify(analysis, null, 2)}\n`,

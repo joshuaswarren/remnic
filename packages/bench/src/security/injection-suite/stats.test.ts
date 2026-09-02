@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyzeInjectionSuiteRows, fisherExactTwoSided, oneSidedWilsonLower95 } from "./stats.js";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import {
+  analyzeInjectionSuiteRows,
+  analyzeInjectionSuiteRun,
+  fisherExactTwoSided,
+  oneSidedWilsonLower95,
+  replayInjectionSuiteStatistics,
+} from "./stats.js";
+import { stableInjectionSuiteJson, type InjectionSuiteExpectedDesign } from "./freeze.js";
 import { defaultSuiteIdentity } from "./store.js";
 import type {
   InjectionSuiteArm,
@@ -11,7 +22,11 @@ import type {
 } from "./types.js";
 import { INJECTION_SUITE_FAMILIES } from "./types.js";
 
-function metadata(stage: InjectionSuiteStage, expectedRows: number): InjectionSuiteRunMetadata {
+function metadata(
+  stage: InjectionSuiteStage,
+  expectedRows: number,
+  expectedDesignHash = "e".repeat(64),
+): InjectionSuiteRunMetadata {
   return {
     schemaVersion: 3,
     suiteVersion: "h5-injection-suite-v2",
@@ -30,7 +45,7 @@ function metadata(stage: InjectionSuiteStage, expectedRows: number): InjectionSu
     modelProfileHash: "b".repeat(64),
     modelDigest: "c".repeat(64),
     corpusManifestHash: "d".repeat(64),
-    expectedDesignHash: "e".repeat(64),
+    expectedDesignHash,
     decisionRuleHash: "f".repeat(64),
     gitSha: "abc123",
     cleanTree: true,
@@ -213,3 +228,69 @@ test("benign-use rows are descriptive, not decision-bearing", () => {
   assert.equal(analysis.decision, "DESCRIPTIVE");
 });
 
+
+async function seedRunDir(episodeRows: InjectionSuiteEpisodeRow[]): Promise<string> {
+  const runDir = await mkdtemp(path.join(tmpdir(), "h5-stats-"));
+  const design: InjectionSuiteExpectedDesign = {
+    schemaVersion: 1,
+    stage: "base",
+    modelProfileHash: "b".repeat(64),
+    rows: episodeRows.map((episodeRow, order) => ({
+      order,
+      rowKey: episodeRow.rowKey,
+      identity: episodeRow.identity,
+      templateId: "template",
+      scenarioSha256: "0".repeat(64),
+    })),
+  };
+  const run = metadata(
+    "base",
+    design.rows.length,
+    createHash("sha256").update(stableInjectionSuiteJson(design)).digest("hex"),
+  );
+  await writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`);
+  await writeFile(path.join(runDir, "expected-design.json"), `${JSON.stringify(design, null, 2)}\n`);
+  await writeFile(
+    path.join(runDir, "episodes.jsonl"),
+    `${episodeRows.map((episodeRow) => JSON.stringify(episodeRow)).join("\n")}\n`,
+  );
+  return runDir;
+}
+
+test("replay refuses drift without rewriting the frozen statistics", async () => {
+  const family = INJECTION_SUITE_FAMILIES[0];
+  if (!family) throw new Error("suite families are empty");
+  const runDir = await seedRunDir([row(family, "none", 1, "base", "BLOCKED")]);
+  try {
+    const seeded = '{"drifted":true}\n';
+    await writeFile(path.join(runDir, "statistics.json"), seeded);
+    await assert.rejects(() => replayInjectionSuiteStatistics(runDir), /drifted/);
+    assert.equal(await readFile(path.join(runDir, "statistics.json"), "utf8"), seeded);
+  } finally {
+    await rm(runDir, { recursive: true, force: true });
+  }
+});
+
+test("analysis refuses a tampered frozen design", async () => {
+  const family = INJECTION_SUITE_FAMILIES[0];
+  if (!family) throw new Error("suite families are empty");
+  const runDir = await seedRunDir([
+    row(family, "none", 1, "base", "BLOCKED"),
+    row(family, "fencing", 1, "base", "BLOCKED"),
+  ]);
+  try {
+    const design = JSON.parse(await readFile(path.join(runDir, "expected-design.json"), "utf8")) as {
+      rows: unknown[];
+    };
+    design.rows = design.rows.slice(0, 1);
+    await writeFile(
+      path.join(runDir, "expected-design.json"),
+      `${JSON.stringify(design, null, 2)}\n`,
+    );
+    await assert.rejects(() => analyzeInjectionSuiteRun(runDir), /not analyzable/);
+    const statisticsPath = path.join(runDir, "statistics.json");
+    await assert.rejects(() => readFile(statisticsPath, "utf8"), { code: "ENOENT" });
+  } finally {
+    await rm(runDir, { recursive: true, force: true });
+  }
+});
