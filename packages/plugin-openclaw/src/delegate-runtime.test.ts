@@ -2314,6 +2314,43 @@ test("delegate registers a memory prompt preparation that recalls before prompt 
   }
 });
 
+test("delegate preparation and before_prompt_build share one recallBudgetChars per prompt", async () => {
+  const stub = await startDaemonStub(() => ({ context: "memory ".repeat(200), count: 1 }));
+  try {
+    const api = recordingApi();
+    const preparations: Array<(params: Record<string, unknown>) => Promise<readonly string[]>> = [];
+    Object.assign(api, {
+      registerMemoryPromptPreparation(prepare: (params: Record<string, unknown>) => Promise<readonly string[]>): void {
+        preparations.push(prepare);
+      },
+    });
+    const namespaceBindings = createInMemorySessionNamespaceBindingStore();
+    await namespaceBindings.remember("agent:main:budget", "team-alpha");
+    registerDelegateRuntime(api, optionsFor(stub.port, { namespaceBindings, recallBudgetChars: 300 }));
+    const prepared = (await preparations[0]!({ agentSessionKey: "agent:main:budget" })).join("\n");
+    assert.ok(prepared.length > 0, "the preparation injected");
+    // The preparation spent the budget on this prompt: the hook that follows
+    // must not add a second full allowance on top of it.
+    const result = (await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "what did we decide about the rollout?" },
+      { sessionKey: "agent:main:budget" },
+    )) as Record<string, unknown> | undefined;
+    assert.equal(result?.prependSystemContext, undefined, "no second injection on the same prompt");
+    // The next prompt (no preparation ran) gets the full budget again.
+    const next = (await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "what did we decide about the rollout?" },
+      { sessionKey: "agent:main:budget" },
+    )) as Record<string, unknown> | undefined;
+    assert.match(String(next?.prependSystemContext), /memory memory/, "the record is consumed per prompt");
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate prompt preparation degrades to no lines when the binding lookup fails", async () => {
   const stub = await startDaemonStub(() => ({ context: "never injected" }));
   try {
