@@ -62,7 +62,11 @@ function sessionKeyFor(params: Record<string, unknown>, ctx: ToolContext | undef
  * layout reaches the model.
  */
 function activeMemoryGetOutputFrom(record: unknown): ActiveMemoryGetOutput {
-  if (typeof record !== "object" || record === null) return { error: "not_found" };
+  if (typeof record !== "object" || record === null) {
+    // A miss is the daemon's 404 (handled by the caller); a 2xx without a
+    // record is version skew or a corrupting proxy, not an absent memory.
+    throw new Error("daemon memory route responded 2xx without a memory record");
+  }
   const memory = record as { id?: unknown; content?: unknown; frontmatter?: unknown };
   if (typeof memory.id !== "string" || typeof memory.content !== "string") {
     throw new Error("daemon memory route returned a malformed memory record");
@@ -98,19 +102,30 @@ export function buildDelegateMemorySearchTool(options: {
   resolveNamespace: (sessionKey: string, timeoutMs: number) => Promise<string | undefined>;
 }) {
   const snippetMaxChars = clampSnippetMaxChars(options.snippetMaxChars);
+  const spent = (deadline: number, signal: AbortSignal | undefined, stage: string): void => {
+    if (signal?.aborted) throw new Error(`memory_search aborted before ${stage}`);
+    if (deadline - Date.now() <= 0) throw new Error(`memory_search budget of ${options.timeoutMs}ms spent before ${stage}`);
+  };
   return {
     name: "memory_search",
     description: "Search Remnic memories via the Remnic daemon (delegate).",
     parameters: MemorySearchInputSchema,
     inputSchema: MemorySearchInputSchema,
-    async execute(_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal, ctx?: ToolContext) {
+    async execute(_toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal, ctx?: ToolContext) {
       const query = typeof params.query === "string" ? params.query.trim() : "";
       if (query.length === 0) throw new Error("memory_search requires a non-empty query");
+      // ONE budget for the whole invocation, opened before the manager is
+      // acquired (a cold capability cache probes the daemon there). The
+      // manager's own search deadline is the host contract's and cannot be
+      // shortened per call, so what is checked here is that it never STARTS
+      // after this budget is spent.
+      const deadline = Date.now() + options.timeoutMs;
       const { manager, error } = await options.runtime.getMemorySearchManager({
         cfg: undefined,
         agentId: ctx?.agentId ?? options.agentId,
       });
       if (!manager) throw new Error(error ?? "delegate memory search manager unavailable");
+      spent(deadline, signal, "scope resolution");
       // One extra hit tells whether the page was cut, which is what the
       // embedded tool reports as `truncated`. Fractions are schema-valid
       // (`Type.Number`), and the manager rejects a non-integer maxResults.
@@ -123,13 +138,14 @@ export function buildDelegateMemorySearchTool(options: {
       const filters = params.filters && typeof params.filters === "object" ? (params.filters as Record<string, unknown>) : undefined;
       const requested = typeof filters?.namespace === "string" && filters.namespace.trim().length > 0 ? filters.namespace.trim() : undefined;
       if (requested !== undefined) {
-        const scope = await options.resolveNamespace(sessionKey, options.timeoutMs);
+        const scope = await options.resolveNamespace(sessionKey, Math.max(1, deadline - Date.now()));
         if (requested !== scope) {
           throw new Error(
             `memory_search filters.namespace "${requested}" does not match the session's memory scope${scope === undefined ? "" : ` "${scope}"`}`
           );
         }
       }
+      spent(deadline, signal, "search");
       // The daemon's search schema caps `query` at 2048 chars; embedded mode
       // accepts any length, so trim rather than turn a valid call into a 400.
       const results = await manager.search(query.slice(0, DAEMON_SEARCH_QUERY_MAX_CHARS), {
@@ -211,8 +227,32 @@ export function buildDelegateMemoryGetTool(options: {
   };
 }
 
-/** Apis that already carry the delegate `memory_search` / `memory_get` tools. */
-const delegateToolApis = new WeakSet<object>();
+/**
+ * Apis that already carry the delegate `memory_search` / `memory_get` tools,
+ * with the entry whose closures the tools consult. A passive entry (slot not
+ * owned) registers them too, so an active sibling on the SAME api — the
+ * canonical and legacy plugin ids load in either order — takes the wiring
+ * over: otherwise the tools would keep reading the passive entry's binding
+ * store while the active entry's hooks update its own.
+ */
+const delegateToolOwners = new WeakMap<object, DelegateToolWiring & { passive: boolean }>();
+
+type DelegateToolWiring = {
+  target: DelegateDaemonTarget;
+  serviceId: string;
+  runtime: RemnicCapabilityRuntime;
+  agentId: string;
+  snippetMaxChars?: number;
+  timeoutMs: number;
+  /** The session's remembered binding, else the registration scope. */
+  resolveSearchNamespace: (sessionKey: unknown) => Promise<string | undefined>;
+  /** The capability's resolver: the daemon's concrete default for an unbound session. */
+  resolveScopedNamespace: (
+    explicit: string | undefined,
+    timeoutMs: number,
+    operations: readonly string[]
+  ) => Promise<string | undefined>;
+};
 
 /**
  * Register the daemon-backed tools on a host that exposes `registerTool`.
@@ -223,54 +263,46 @@ const delegateToolApis = new WeakSet<object>();
  */
 export function registerDelegateTools(
   api: { registerTool?(tool: Record<string, unknown>, opts?: { name?: string }): void },
-  options: {
-    target: DelegateDaemonTarget;
-    serviceId: string;
-    enabled: boolean;
-    runtime: RemnicCapabilityRuntime;
-    agentId: string;
-    snippetMaxChars?: number;
-    timeoutMs: number;
-    /** The session's remembered binding, else the registration scope. */
-    resolveSearchNamespace: (sessionKey: unknown) => Promise<string | undefined>;
-    /** The capability's resolver: the daemon's concrete default for an unbound session. */
-    resolveScopedNamespace: (
-      explicit: string | undefined,
-      timeoutMs: number,
-      operations: readonly string[]
-    ) => Promise<string | undefined>;
-  }
+  options: DelegateToolWiring & { enabled: boolean; passive: boolean }
 ): void {
   if (!options.enabled || typeof api.registerTool !== "function") return;
+  const { enabled: _enabled, ...wiring } = options;
   // Once per api object: the canonical and legacy plugin ids both register
   // here, and a second `memory_search` on one api is a host tool-name
-  // conflict, not a second tool.
-  if (delegateToolApis.has(api)) return;
-  delegateToolApis.add(api);
+  // conflict, not a second tool. The tools read their wiring through the
+  // owner record, so an active entry arriving after a passive one takes it
+  // over without re-registering.
+  const existing = delegateToolOwners.get(api);
+  if (existing !== undefined) {
+    if (existing.passive && !wiring.passive) Object.assign(existing, wiring);
+    return;
+  }
+  const owner = { ...wiring };
+  delegateToolOwners.set(api, owner);
   // The SAME trusted scope path the capability's search takes: the session
   // binding, then the daemon's concrete default for an unbound session — never
   // an omitted namespace a scoped credential would refuse. The binding lookup
   // spends from the same budget as the daemon call.
   const resolveNamespace = (operation: string) => async (sessionKey: string, timeoutMs: number) => {
     const deadline = Date.now() + timeoutMs;
-    const bound = await options.resolveSearchNamespace(sessionKey);
-    return options.resolveScopedNamespace(bound, Math.max(1, deadline - Date.now()), [operation]);
+    const bound = await owner.resolveSearchNamespace(sessionKey);
+    return owner.resolveScopedNamespace(bound, Math.max(1, deadline - Date.now()), [operation]);
   };
   api.registerTool(
     buildDelegateMemorySearchTool({
-      target: options.target,
-      runtime: options.runtime,
-      agentId: options.agentId,
-      snippetMaxChars: options.snippetMaxChars,
-      timeoutMs: options.timeoutMs,
+      get target() { return owner.target; },
+      get runtime() { return owner.runtime; },
+      get agentId() { return owner.agentId; },
+      get snippetMaxChars() { return owner.snippetMaxChars; },
+      get timeoutMs() { return owner.timeoutMs; },
       resolveNamespace: resolveNamespace("memory_search"),
     })
   );
   api.registerTool(
     buildDelegateMemoryGetTool({
-      target: options.target,
-      serviceId: options.serviceId,
-      timeoutMs: options.timeoutMs,
+      get target() { return owner.target; },
+      get serviceId() { return owner.serviceId; },
+      get timeoutMs() { return owner.timeoutMs; },
       resolveNamespace: resolveNamespace("memory_get"),
     })
   );

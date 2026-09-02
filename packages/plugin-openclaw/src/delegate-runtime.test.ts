@@ -1832,6 +1832,46 @@ test("delegate passive mode skips memory hooks and capability but keeps the tool
   ]);
 });
 
+test("delegate tools registered by a passive entry follow the active sibling on the same api", async () => {
+  const stub = await startDaemonStub((pathname) =>
+    pathname.startsWith("/engram/v1/memories/fact-1")
+      ? { found: true, memory: { id: "fact-1", content: "x", frontmatter: { id: "fact-1" } } }
+      : { accepted: true },
+  );
+  try {
+    const api = recordingApi();
+    const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
+    Object.assign(api, {
+      registerTool(tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }): void {
+        tools.set(tool.name, tool);
+      },
+    });
+    // The legacy id loads first, passively, with its own (empty) binding store.
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true }),
+    );
+    // The canonical id then owns the slot; its hooks update ITS bindings.
+    const canonicalBindings = createInMemorySessionNamespaceBindingStore();
+    await canonicalBindings.remember("tool-session", "team-alpha");
+    registerDelegateRuntime(api, optionsFor(stub.port, { namespaceBindings: canonicalBindings }));
+    assert.equal(tools.size, 2, "the tools are registered once per api");
+    // memory_get scopes through the ACTIVE entry's bindings, not the passive
+    // entry's stale store: the bound scope is accepted and reaches the daemon.
+    await tools.get("memory_get")!.execute(
+      "tc-1",
+      { id: "fact-1", namespace: "team-alpha" },
+      undefined,
+      { sessionKey: "tool-session" },
+    );
+    const get = stub.calls.find((call) => call.pathname.startsWith("/engram/v1/memories/fact-1"));
+    assert.ok(get, "the get reached the daemon");
+    assert.equal(new URL(get.pathname, "http://daemon").searchParams.get("namespace"), "team-alpha");
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate honors allowPromptInjection=false but keeps observe/flush", async () => {
   const api = recordingApi();
   registerDelegateRuntime(api, optionsFor(1, { allowPromptInjection: false }));
@@ -2338,6 +2378,7 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
         ],
       };
     }
+    if (pathname.startsWith("/engram/v1/memories/malformed")) return { found: true };
     if (pathname.startsWith("/engram/v1/memories/fact-1")) {
       return {
         found: true,
@@ -2484,6 +2525,18 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
       stub.calls.filter((call) => call.pathname === "/engram/v1/memories/search").at(-1)?.body.query,
       "rollout",
       "a filter restating the bound scope searches normally",
+    );
+
+    // A host abort is honored before any daemon work starts.
+    await assert.rejects(
+      tools.get("memory_search")!.execute("tc-11", { query: "rollout" }, AbortSignal.abort(), { sessionKey: "tool-session" }),
+      /memory_search aborted/,
+    );
+    // A 2xx without a record is a protocol failure, not a miss (the daemon's
+    // miss is its 404).
+    await assert.rejects(
+      tools.get("memory_get")!.execute("tc-12", { id: "malformed" }, undefined, { sessionKey: "tool-session" }),
+      /2xx without a memory record/,
     );
   } finally {
     await stub.close();

@@ -400,6 +400,7 @@ export function registerDelegateRuntime(
     target,
     serviceId: options.serviceId,
     enabled: options.openclawToolsEnabled !== false,
+    passive: options.passive,
     runtime: capability.runtime,
     agentId: options.capability.agentIds[0] ?? "main",
     snippetMaxChars: options.openclawToolSnippetMaxChars,
