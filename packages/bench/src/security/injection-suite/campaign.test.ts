@@ -49,7 +49,7 @@ test("supported H5 recommends the core fencing mode", () => {
   assert.equal(result.h5d, "NOT_RUN");
 });
 
-test("utility regression forces REJECTED even when a base run is partially supported", () => {
+test("a utility regression rejects the layered claim; a missing measurement is not estimable", () => {
   const layered = decideInjectionSuiteCampaignResults(
     [run("profile-a", "PARTIALLY_SUPPORTED"), run("profile-b", "SUPPORTED")],
     [utility(true), utility(false)],
@@ -57,16 +57,25 @@ test("utility regression forces REJECTED even when a base run is partially suppo
   assert.equal(layered.h5, "REJECTED");
   assert.equal(layered.recommendedCoreMode, null);
 
+  const partial = decideInjectionSuiteCampaignResults(
+    [run("profile-a", "PARTIALLY_SUPPORTED"), run("profile-b", "SUPPORTED")],
+    [utility(true), utility(true)],
+  );
+  assert.equal(partial.h5, "PARTIALLY_SUPPORTED");
+  assert.equal(partial.recommendedCoreMode, "layered");
+
+  // A missing or incomplete utility measurement is NOT a rejection: the
+  // hypothesis is simply not estimable from this campaign.
   const missing = decideInjectionSuiteCampaignResults(
     [run("profile-a", "SUPPORTED"), run("profile-b", "SUPPORTED")],
     [utility(true), utility(null)],
   );
-  assert.equal(missing.h5, "REJECTED");
+  assert.equal(missing.h5, "NOT_ESTIMABLE");
   assert.equal(missing.recommendedCoreMode, null);
 
   const notEstimable = decideInjectionSuiteCampaignResults(
     [run("profile-a", "NOT_ESTIMABLE"), run("profile-b", "SUPPORTED")],
     [utility(true), utility(true)],
   );
-  assert.equal(notEstimable.h5, "REJECTED");
+  assert.equal(notEstimable.h5, "NOT_ESTIMABLE");
 });

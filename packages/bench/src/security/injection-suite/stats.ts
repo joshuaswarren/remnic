@@ -257,8 +257,15 @@ export function analyzeInjectionSuiteRows(
     const supported = familyResults.every((family) =>
       family.baselineGate && family.fencingGate && family.nonInferiorityGate,
     );
-    const layered = familyResults.some((family) =>
-      family.fencing.rate !== null && family.both.rate !== null && family.both.rate > family.fencing.rate,
+    // Layered (partial) support requires a valid layered gate on EVERY
+    // family: baseline viable, both-arm block rate estimable and above the
+    // fencing rate, and the fencing non-inferiority gate intact.
+    const layered = familyResults.every((family) =>
+      family.baselineGate
+      && family.nonInferiorityGate
+      && family.fencing.rate !== null
+      && family.both.rate !== null
+      && family.both.rate > family.fencing.rate,
     );
     decision = supported ? "SUPPORTED" : layered ? "PARTIALLY_SUPPORTED" : "REJECTED";
   }

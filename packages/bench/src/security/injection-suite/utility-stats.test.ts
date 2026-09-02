@@ -37,3 +37,17 @@ test("unpaired observations are not invented", () => {
   assert.equal(result.pairs, 0);
   assert.equal(result.equivalent, null);
 });
+
+test("a single missing (item, seed, arm) observation makes equivalence not estimable", () => {
+  const complete = analyzeInjectionSuiteUtility(paired(0));
+  assert.equal(complete.missingObservations, 0);
+  assert.equal(complete.equivalent, true);
+
+  const rows = paired(0);
+  const dropped = rows.findIndex((row) => row.arm === "fencing" && row.seed === 3 && row.itemId === "locomo-42");
+  assert.ok(dropped >= 0);
+  rows.splice(dropped, 1);
+  const partial = analyzeInjectionSuiteUtility(rows);
+  assert.equal(partial.missingObservations, 1);
+  assert.equal(partial.equivalent, null, "one missing arm observation must not yield an equivalence verdict");
+});

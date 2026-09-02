@@ -13,6 +13,8 @@ export interface InjectionSuiteUtilityObservation {
 export interface InjectionSuiteUtilityAnalysis {
   schemaVersion: 1;
   pairs: number;
+  /** Expected (benchmark, item, seed, arm) observations that are absent; > 0 makes `equivalent` null. */
+  missingObservations: number;
   baselineMean: number | null;
   fencingMean: number | null;
   relativeDelta: number | null;
@@ -46,6 +48,22 @@ export function analyzeInjectionSuiteUtility(
     if (observation.arm === "none") baseline.set(key, observation);
     if (observation.arm === "fencing") fencing.set(key, observation);
   }
+  // Completeness: every (benchmark, item) x seed must be observed for BOTH
+  // arms. A partially executed study cannot declare equivalence.
+  const items = new Set<string>();
+  const seeds = new Set<number>();
+  for (const observation of observations) {
+    items.add(`${observation.benchmark}\0${observation.itemId}`);
+    seeds.add(observation.seed);
+  }
+  let missingObservations = 0;
+  for (const item of items) {
+    for (const seed of seeds) {
+      const key = `${item}\0${seed}`;
+      if (!baseline.has(key)) missingObservations += 1;
+      if (!fencing.has(key)) missingObservations += 1;
+    }
+  }
   const pairs = [...baseline].flatMap(([key, baseObs]) => {
     const fencedObs = fencing.get(key);
     if (!fencedObs) return [];
@@ -60,10 +78,11 @@ export function analyzeInjectionSuiteUtility(
       difference: fenced - base,
     }];
   });
-  if (pairs.length === 0) {
+  if (pairs.length === 0 || missingObservations > 0) {
     return {
       schemaVersion: 1,
-      pairs: 0,
+      pairs: pairs.length,
+      missingObservations,
       baselineMean: null,
       fencingMean: null,
       relativeDelta: null,
@@ -79,6 +98,7 @@ export function analyzeInjectionSuiteUtility(
     return {
       schemaVersion: 1,
       pairs: pairs.length,
+      missingObservations,
       baselineMean,
       fencingMean,
       relativeDelta: null,
@@ -148,6 +168,7 @@ export function analyzeInjectionSuiteUtility(
   return {
     schemaVersion: 1,
     pairs: pairs.length,
+    missingObservations,
     baselineMean,
     fencingMean,
     relativeDelta,
