@@ -1902,6 +1902,29 @@ test("delegate tools registered by a passive entry follow the active sibling on 
       optedOutTools.get("memory_search")!.execute("tc-3", { query: "rollout" }, undefined, { sessionKey: "tool-session" }),
       /memory_search is disabled: the memory slot owner set openclawToolsEnabled: false/,
     );
+
+    // The inverse order: the slot owner opts out FIRST. Its record is a
+    // tombstone, so an enabled passive sibling loading afterwards cannot
+    // install the tools around the opt-out.
+    const tombstoneApi = recordingApi();
+    const tombstoneTools: string[] = [];
+    Object.assign(tombstoneApi, { registerTool: (tool: { name: string }) => tombstoneTools.push(tool.name) });
+    registerDelegateRuntime(tombstoneApi, optionsFor(stub.port, { openclawToolsEnabled: false }));
+    registerDelegateRuntime(tombstoneApi, optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true }));
+    assert.deepEqual(tombstoneTools, [], "an active opt-out is not bypassed by a later passive sibling");
+
+    // And a passive entry that opted out yields to an enabled active sibling,
+    // which installs the tools it never did.
+    const lateApi = recordingApi();
+    const lateTools: string[] = [];
+    Object.assign(lateApi, { registerTool: (tool: { name: string }) => lateTools.push(tool.name) });
+    registerDelegateRuntime(
+      lateApi,
+      optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true, openclawToolsEnabled: false }),
+    );
+    assert.deepEqual(lateTools, []);
+    registerDelegateRuntime(lateApi, optionsFor(stub.port));
+    assert.deepEqual(lateTools.sort(), ["memory_get", "memory_search"], "the active owner installs what the passive entry skipped");
   } finally {
     await stub.close();
   }
@@ -2244,9 +2267,19 @@ test("delegate registers a memory prompt preparation that recalls before prompt 
         preparations.push(prepare);
       },
     });
-    registerDelegateRuntime(preparationApi, optionsFor(stub.port));
+    const namespaceBindings = createInMemorySessionNamespaceBindingStore();
+    registerDelegateRuntime(preparationApi, optionsFor(stub.port, { namespaceBindings }));
     assert.equal(preparations.length, 1, "one preparation registered");
 
+    // A fresh session has no trusted scope yet (preparation runs before the
+    // hook that records `runtime.agent.session.namespace`), so it injects
+    // nothing rather than the daemon default's memories.
+    assert.deepEqual(
+      await preparations[0]!({ availableTools: new Set<string>(), agentId: "main", agentSessionKey: "agent:main:prepared" }),
+      [],
+    );
+    assert.equal(stub.calls.filter((call) => call.pathname === "/engram/v1/recall").length, 0, "no recall before a binding");
+    await namespaceBindings.remember("agent:main:prepared", "team-alpha");
     const lines = await preparations[0]!({
       availableTools: new Set<string>(),
       agentId: "main",
@@ -2255,6 +2288,7 @@ test("delegate registers a memory prompt preparation that recalls before prompt 
     const recall = stub.calls.find((call) => call.pathname === "/engram/v1/recall");
     assert.ok(recall, "the preparation POSTs /engram/v1/recall");
     assert.equal(recall.body.sessionKey, "agent:main:prepared");
+    assert.equal(recall.body.namespace, "team-alpha", "the preparation recalls in the session's bound scope");
     assert.ok(String(recall.body.query).length >= 5, "the preparation sends a usable query");
     assert.ok(lines.some((line) => line.includes("## Memory Context (Remnic)")));
     assert.ok(lines.some((line) => line.includes("prepared daemon context")));

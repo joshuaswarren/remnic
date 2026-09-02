@@ -546,6 +546,14 @@ export function registerDelegateRuntime(
           sessionKey,
           ...(typeof params?.agentId === "string" ? { agentId: params.agentId } : {}),
         };
+        // The host hands preparation no session metadata, and it runs BEFORE
+        // `before_prompt_build` — the hook that sees
+        // `runtime.agent.session.namespace` and records the binding. A fresh
+        // session therefore has no trusted scope yet: recalling now would read
+        // the daemon default, another tenant's memories for a credential that
+        // can read across namespaces. Wait for the binding; the hook still
+        // injects this turn's prompt-specific recall in the right scope.
+        if ((await rememberedNamespacesFor(sessionKey, namespaceBindings)).length === 0) return [];
         const recalled = await recallContext(PREPARATION_RECALL_QUERY, {}, ctx);
         return recalled?.lines ?? [];
       });

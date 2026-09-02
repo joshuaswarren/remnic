@@ -235,7 +235,8 @@ export function buildDelegateMemoryGetTool(options: {
  * over: otherwise the tools would keep reading the passive entry's binding
  * store while the active entry's hooks update its own.
  */
-const delegateToolOwners = new WeakMap<object, DelegateToolWiring & { enabled: boolean; passive: boolean }>();
+type DelegateToolOwner = DelegateToolWiring & { enabled: boolean; passive: boolean; installed: boolean };
+const delegateToolOwners = new WeakMap<object, DelegateToolOwner>();
 
 type DelegateToolWiring = {
   target: DelegateDaemonTarget;
@@ -266,20 +267,22 @@ export function registerDelegateTools(
   options: DelegateToolWiring & { enabled: boolean; passive: boolean }
 ): void {
   if (typeof api.registerTool !== "function") return;
+  const registerTool = api.registerTool.bind(api);
   // Once per api object: the canonical and legacy plugin ids both register
   // here, and a second `memory_search` on one api is a host tool-name
   // conflict, not a second tool. The tools read their wiring through the
   // owner record, so an active entry arriving after a passive one takes it
-  // over without re-registering — its opt-out included: the host exposes no
-  // unregister, so tools a passive sibling already installed go inert.
+  // over — its opt-out included: the host exposes no unregister, so tools a
+  // passive sibling already installed go inert. A disabled entry records
+  // itself too: as the slot owner it is a tombstone a later enabled passive
+  // sibling cannot bypass; as a passive entry it yields like any other.
   const existing = delegateToolOwners.get(api);
-  if (existing !== undefined) {
-    if (existing.passive && !options.passive) Object.assign(existing, options);
-    return;
-  }
-  if (!options.enabled) return;
-  const owner = { ...options };
-  delegateToolOwners.set(api, owner);
+  const owner: DelegateToolOwner = existing ?? { ...options, installed: false };
+  if (existing === undefined) delegateToolOwners.set(api, owner);
+  else if (existing.passive && !options.passive) Object.assign(existing, options);
+  else return;
+  if (owner.installed || !owner.enabled) return;
+  owner.installed = true;
   const gated = <T extends { name: string; execute: (...args: never[]) => Promise<unknown> }>(tool: T): T => ({
     ...tool,
     execute: async (...args: Parameters<T["execute"]>) => {
@@ -296,7 +299,7 @@ export function registerDelegateTools(
     const bound = await owner.resolveSearchNamespace(sessionKey);
     return owner.resolveScopedNamespace(bound, Math.max(1, deadline - Date.now()), [operation]);
   };
-  api.registerTool(
+  registerTool(
     gated(buildDelegateMemorySearchTool({
       get target() { return owner.target; },
       get runtime() { return owner.runtime; },
@@ -306,7 +309,7 @@ export function registerDelegateTools(
       resolveNamespace: resolveNamespace("memory_search"),
     })),
   );
-  api.registerTool(
+  registerTool(
     gated(buildDelegateMemoryGetTool({
       get target() { return owner.target; },
       get serviceId() { return owner.serviceId; },
