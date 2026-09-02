@@ -149,18 +149,6 @@ export interface DelegateHookApi extends DelegateCapabilityApi {
   // Method syntax (bivariant params) so the real OpenClaw api — whose
   // builder parameter is a wider SDK union — remains assignable.
   registerMemoryPromptSection?(builder: (params: { sessionKey?: string }) => string[] | null): void;
-  /**
-   * OpenClaw 2.0: an async step the host awaits while preparing the memory
-   * section, BEFORE `before_prompt_build`. Its lines are spliced into the
-   * system prompt's own memory section.
-   */
-  registerMemoryPromptPreparation?(
-    prepare: (params: {
-      agentId?: string;
-      agentSessionKey?: string;
-      sessionKey?: string;
-    }) => Promise<readonly string[]>,
-  ): void;
   registerTool?(tool: Record<string, unknown>, opts?: { name?: string }): void;
   registerService?(service: {
     id: string;
@@ -175,8 +163,6 @@ const DELEGATE_BATCH_FLUSH_CACHE_TTL_MS = 30_000;
  * prompt, so the query keeps the tail.
  */
 const MAX_RECALL_QUERY_CHARS = 1_500;
-/** Preparation gets no prompt, only the session: its recall is session-primed. */
-const PREPARATION_RECALL_QUERY = "recent relevant memories for this session";
 const delegatePassportServiceApiServices = new WeakMap<object, Set<string>>();
 
 import {
@@ -419,13 +405,10 @@ export function registerDelegateRuntime(
      * Recall for one query on behalf of a session. `undefined` when nothing
      * injects: policy skip, short query, daemon failure, or empty context.
      */
-    // Chars the preparation injected per session: the hook on the SAME prompt gets the rest.
-    const preparedCharsBySession = new Map<string, number>();
     const recallContext = async (
       query: string,
       event: Record<string, unknown>,
       ctx: Record<string, unknown>,
-      maxChars = options.recallBudgetChars,
     ): Promise<
       { prompt: string; lines: string[]; degradation?: RecallContextDegradation } | undefined
     > => {
@@ -491,7 +474,7 @@ export function registerDelegateRuntime(
         const composition = readContextComposition(response ?? {}, rawContext);
         const rendered = renderMemoryContextPrompt({
           ...composition,
-          maxChars,
+          maxChars: options.recallBudgetChars,
         });
         if (!rendered) return undefined;
         return {
@@ -508,11 +491,7 @@ export function registerDelegateRuntime(
       event: Record<string, unknown>,
       ctx: Record<string, unknown>,
     ): Promise<Record<string, unknown> | undefined> => {
-      const sessionKey = sessionKeyFrom(event, ctx);
-      const remaining = options.recallBudgetChars - (preparedCharsBySession.get(sessionKey) ?? 0);
-      preparedCharsBySession.delete(sessionKey);
-      if (remaining <= 0) return undefined;
-      const recalled = await recallContext(recallQueryFrom(event, options.cleanUserMessage), event, ctx, remaining);
+      const recalled = await recallContext(recallQueryFrom(event, options.cleanUserMessage), event, ctx);
       if (!recalled) return undefined;
       if (cachePromptLines) {
         // A registered section builder injects; the hook only pre-computes.
@@ -530,38 +509,11 @@ export function registerDelegateRuntime(
       (event, ctx) => recallHandler(event, ctx),
       { timeoutMs: options.hookTimeoutMs },
     );
-    if (typeof api.registerMemoryPromptPreparation === "function") {
-      // OpenClaw 2.0 prepares the memory section (reading the capability's sync
-      // promptBuilder) BEFORE `before_prompt_build`, so only this path reaches
-      // the prompt's own memory section. The host hands it no prompt (recall is
-      // session-primed); the hook still injects the prompt-specific recall from
-      // what this leaves of the budget, so one prompt never carries two.
-      api.registerMemoryPromptPreparation(async (params) => {
-        const sessionKey =
-          [params?.agentSessionKey, params?.sessionKey].find(
-            (candidate): candidate is string =>
-              typeof candidate === "string" && candidate.trim().length > 0,
-          ) ?? "default";
-        const ctx = {
-          sessionKey,
-          ...(typeof params?.agentId === "string" ? { agentId: params.agentId } : {}),
-        };
-        // Preparation gets no session metadata and runs BEFORE the hook that
-        // records `runtime.agent.session.namespace`: a fresh session has no
-        // trusted scope, and recalling now would read the daemon default (another
-        // tenant for a cross-namespace credential). Wait for the binding; the hook
-        // still injects in scope. The host awaits this during prompt assembly, so
-        // an unreadable binding file costs the memory section, never the turn.
-        const bound = await rememberedNamespacesFor(sessionKey, namespaceBindings).catch((err: unknown) => {
-          log.warn(`delegate prompt preparation skipped: binding lookup failed: ${String(err)}`);
-          return [];
-        });
-        if (bound.length === 0) return [];
-        const recalled = await recallContext(PREPARATION_RECALL_QUERY, {}, ctx);
-        if (recalled) preparedCharsBySession.set(sessionKey, recalled.prompt.length);
-        return recalled?.lines ?? [];
-      });
-    }
+    // No `registerMemoryPromptPreparation`: that OpenClaw 2.0 step runs BEFORE
+    // `before_prompt_build` and is handed only session/agent ids — never the
+    // `runtime.agent.session.namespace` this turn binds — so on a rebinding
+    // turn it could only recall the PREVIOUS scope into the new one. The hook
+    // above sees the binding and injects this turn's recall in scope.
     if (useSectionBuilder && api.registerMemoryPromptSection) {
       const memoryBuildFn = Object.assign(
         (params: { sessionKey?: string }): string[] | null => {
