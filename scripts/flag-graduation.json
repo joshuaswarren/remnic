@@ -471,6 +471,12 @@
       "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
     },
     {
+      "flag": "memoryInjectionDefenseMode",
+      "addedIn": "9.70.0",
+      "issue": 1962,
+      "graduationCriterion": "Default stays `custom` (existing origin-authority and screen settings) until one named mode passes the preregistered H5 gate on every family for at least two model profiles (block-rate lower bound >= 0.95 base, >= 0.80 adaptive) AND is non-inferior on the frozen utility benchmark. The H5 v3 campaign found `fencing` FALSIFIED and `layered` REJECTED on all five profiles, so no mode currently qualifies; graduation would flip the default to the qualifying mode and delete this entry."
+    },
+    {
       "flag": "memoryPoisoningDefenseEnabled",
       "addedIn": "<=9.69.55",
       "issue": 3032,
