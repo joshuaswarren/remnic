@@ -108,20 +108,48 @@ function resolveUntrustedOrigins(
   return normalized.length > 0 ? normalized : [...DEFAULT_UNTRUSTED_ORIGINS];
 }
 
-function resolveMemoryInjectionDefenseMode(value: unknown): MemoryInjectionDefenseMode {
-  const source = value ?? readEnvVar("REMNIC_MEMORY_INJECTION_DEFENSE_MODE") ?? "custom";
+function validateDefenseMode(value: unknown): MemoryInjectionDefenseMode {
   if (
-    source === "custom"
-    || source === "off"
-    || source === "fencing"
-    || source === "quarantine"
-    || source === "layered"
+    value === "custom"
+    || value === "off"
+    || value === "fencing"
+    || value === "quarantine"
+    || value === "layered"
   ) {
-    return source;
+    return value;
   }
   throw new Error(
-    `memoryInjectionDefenseMode must be custom|off|fencing|quarantine|layered; got ${JSON.stringify(source)}`,
+    `memoryInjectionDefenseMode must be custom|off|fencing|quarantine|layered; got ${JSON.stringify(value)}`,
   );
+}
+
+function isOperatorAuthored(
+  rawOperatorConfig: Record<string, unknown> | null | undefined,
+  key: string,
+): boolean {
+  return rawOperatorConfig !== undefined
+    && rawOperatorConfig !== null
+    && Object.prototype.hasOwnProperty.call(rawOperatorConfig, key)
+    && (rawOperatorConfig as Record<string, unknown>)[key] !== undefined
+    && (rawOperatorConfig as Record<string, unknown>)[key] !== null;
+}
+
+function resolveMemoryInjectionDefenseMode(
+  value: unknown,
+  rawOperatorConfig: Record<string, unknown> | null | undefined,
+): MemoryInjectionDefenseMode {
+  if (value !== undefined && value !== null) {
+    return validateDefenseMode(value);
+  }
+  if (isOperatorAuthored(rawOperatorConfig, "memoryInjectionDefenseMode")) {
+    const sourced = (rawOperatorConfig as Record<string, unknown>).memoryInjectionDefenseMode;
+    if (sourced !== undefined && sourced !== null) {
+      return validateDefenseMode(sourced);
+    }
+  }
+  const envValue = readEnvVar("REMNIC_MEMORY_INJECTION_DEFENSE_MODE");
+  if (envValue !== undefined) return validateDefenseMode(envValue);
+  return "custom";
 }
 
 function hasExplicitUntrustedOrigins(
@@ -147,6 +175,7 @@ export function parseSecurityConfig(
 } {
   const memoryInjectionDefenseMode = resolveMemoryInjectionDefenseMode(
     cfg.memoryInjectionDefenseMode,
+    rawOperatorConfig,
   );
   const customOriginAuthority = resolveSecurityBooleanConfig(
     cfg.originAuthorityEnabled,

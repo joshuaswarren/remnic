@@ -137,3 +137,46 @@ test("rejects duplicate terminal episodes as MALFORMED", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("treats a lock with a recent owner.json heartbeat as an active claim", async () => {
+  const root = await fixture();
+  try {
+    await checkpoint(root, { tries: [] });
+    const lockDir = path.join(root, "checkpoints", "row.lock");
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(path.join(lockDir, "owner.json"), `{}\n`);
+    const status = await h5Status(root);
+    assert.equal(status.activeClaims, 1);
+    assert.equal(status.staleClaims, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("adapts expectedRows to the adaptive two-arm grid for adaptive-r1", async () => {
+  const root = await fixture();
+  try {
+    await writeFile(
+      path.join(root, "run.json"),
+      `${JSON.stringify({
+        seeds: [71],
+        variantsPerFamily: 100,
+        stage: "adaptive-r1",
+        expectedRows: 800,
+      })}\n`,
+    );
+    assert.equal((await h5Status(root)).expectedRows, 800);
+    await writeFile(
+      path.join(root, "run.json"),
+      `${JSON.stringify({
+        seeds: [71],
+        variantsPerFamily: 100,
+        stage: "adaptive-r1",
+        expectedRows: 1600,
+      })}\n`,
+    );
+    await assert.rejects(() => h5Status(root), /expectedRows/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

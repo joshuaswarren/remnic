@@ -39,16 +39,26 @@ function percentile(sorted: readonly number[], quantile: number): number {
 export function analyzeInjectionSuiteUtility(
   observations: readonly InjectionSuiteUtilityObservation[],
 ): InjectionSuiteUtilityAnalysis {
-  const baseline = new Map<string, number>();
-  const fencing = new Map<string, number>();
+  const baseline = new Map<string, InjectionSuiteUtilityObservation>();
+  const fencing = new Map<string, InjectionSuiteUtilityObservation>();
   for (const observation of observations) {
     const key = `${observation.benchmark}\0${observation.itemId}\0${observation.seed}`;
-    if (observation.arm === "none") baseline.set(key, observation.score);
-    if (observation.arm === "fencing") fencing.set(key, observation.score);
+    if (observation.arm === "none") baseline.set(key, observation);
+    if (observation.arm === "fencing") fencing.set(key, observation);
   }
-  const pairs = [...baseline].flatMap(([key, base]) => {
-    const fenced = fencing.get(key);
-    return fenced === undefined ? [] : [{ base, fenced, difference: fenced - base }];
+  const pairs = [...baseline].flatMap(([key, baseObs]) => {
+    const fencedObs = fencing.get(key);
+    if (!fencedObs) return [];
+    const base = baseObs.score;
+    const fenced = fencedObs.score;
+    return [{
+      benchmark: baseObs.benchmark,
+      itemId: baseObs.itemId,
+      seed: baseObs.seed,
+      base,
+      fenced,
+      difference: fenced - base,
+    }];
   });
   if (pairs.length === 0) {
     return {
@@ -79,6 +89,7 @@ export function analyzeInjectionSuiteUtility(
     };
   }
   const meanDifference = fencingMean - baselineMean;
+
   const relativeDelta = meanDifference / baselineMean;
   const squared = pairs.reduce((sum, pair) => sum + (pair.difference - meanDifference) ** 2, 0);
   const standardDeviation = pairs.length > 1 ? Math.sqrt(squared / (pairs.length - 1)) : 0;
@@ -97,17 +108,32 @@ export function analyzeInjectionSuiteUtility(
 
   const rng = createSeededRandom(H5_DECISION_RULE.analysis.statisticsSeed);
   const draws: number[] = [];
-  for (let draw = 0; draw < H5_DECISION_RULE.analysis.bootstrapDraws; draw += 1) {
-    let baseSum = 0;
-    let fencedSum = 0;
-    for (let index = 0; index < pairs.length; index += 1) {
-      const pair = pairs[randomInt(rng, 0, pairs.length - 1)];
-      if (!pair) continue;
-      baseSum += pair.base;
-      fencedSum += pair.fenced;
+  // Cluster-aware bootstrap: resample items (clusters) with replacement and
+  // include every seed-level pair inside each resampled item, so repeated
+  // seeds per item do not inflate effective n.
+  const clusterBuckets = new Map<string, { base: number; fenced: number }[]>();
+  for (const pair of pairs) {
+    const cluster = `${pair.benchmark}\0${pair.itemId}`;
+    const bucket = clusterBuckets.get(cluster) ?? [];
+    bucket.push({ base: pair.base, fenced: pair.fenced });
+    clusterBuckets.set(cluster, bucket);
+  }
+  const clusterKeys = [...clusterBuckets.keys()];
+  if (clusterKeys.length === 0) {
+    draws.push(0);
+  } else {
+    for (let draw = 0; draw < H5_DECISION_RULE.analysis.bootstrapDraws; draw += 1) {
+      let baseSum = 0;
+      let fencedSum = 0;
+      for (let index = 0; index < clusterKeys.length; index += 1) {
+        const sampled = clusterKeys[randomInt(rng, 0, clusterKeys.length - 1)] ?? clusterKeys[0]!;
+        for (const pair of clusterBuckets.get(sampled) ?? []) {
+          baseSum += pair.base;
+          fencedSum += pair.fenced;
+        }
+      }
+      draws.push(baseSum > 0 ? (fencedSum - baseSum) / baseSum : 0);
     }
-    const sampledBase = baseSum / pairs.length;
-    draws.push(sampledBase > 0 ? (fencedSum / pairs.length - sampledBase) / sampledBase : 0);
   }
   draws.sort((left, right) => left - right);
   const interval = {

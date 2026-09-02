@@ -214,6 +214,7 @@ type BenchOrchestratorState = {
   recallSecurity: {
     originAuthorityEnabled: boolean;
     injectionScreenEnabled: boolean;
+    injectionScreenProfile: "default" | "hardened";
   };
 };
 
@@ -449,6 +450,7 @@ async function createBenchOrchestrator(
     recallSecurity: {
       originAuthorityEnabled: config.originAuthorityEnabled,
       injectionScreenEnabled: config.injectionScreenEnabled,
+      injectionScreenProfile: config.injectionScreenProfile,
     },
   };
 }
@@ -2048,16 +2050,17 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           id: string,
           source: Parameters<BenchRecallTraceRecorder["appendSection"]>[1],
           rendered: string,
-        ): void => {
+        ): string | null => {
           const secured = secureBenchRecallSection(
             rendered,
             state.recallSecurity,
             HARNESS_AUTHORED_RECALL_SECTIONS.has(id),
           );
-          if (!secured) return;
+          if (!secured) return null;
           traceRecorder?.appendSection(id, source, secured.length);
           sections.push(secured);
           usedChars += secured.length;
+          return secured;
         };
         const explicitReferences = historicalRecall
           ? []
@@ -2596,17 +2599,25 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 (message) => `[${message.role}]: ${message.content}`,
               );
               const rawSection = `${prefix}${rows.join("\n")}`;
-              appendSection("raw-messages", "raw-row", rawSection);
-              let rowStart = prefix.length;
-              expanded.forEach((message, index) => {
-                const rowEnd = rowStart + rows[index]!.length;
-                traceRecorder?.recordRawRow(
-                  "raw-messages",
-                  { start: rowStart, end: rowEnd },
-                  message,
-                );
-                rowStart = rowEnd + 1;
-              });
+              // Capture the secured text so range-bearing trace evidence
+              // reflects the post-fence body the responder actually sees.
+              // The fence prefixes each non-core line with `> `, so offsets
+              // computed from the unsecured prefix drift when origin
+              // authority is on.
+              const securedRawSection = appendSection("raw-messages", "raw-row", rawSection);
+              if (securedRawSection !== null) {
+                const securedRows = securedRawSection.slice(prefix.length).split("\n");
+                let rowStart = prefix.length;
+                securedRows.forEach((row, index) => {
+                  const rowEnd = rowStart + row.length;
+                  traceRecorder?.recordRawRow(
+                    "raw-messages",
+                    { start: rowStart, end: rowEnd },
+                    expanded[index]!,
+                  );
+                  rowStart = rowEnd + 1;
+                });
+              }
             }
           }
         }

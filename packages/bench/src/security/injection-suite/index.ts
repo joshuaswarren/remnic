@@ -7,7 +7,7 @@ export {
 } from "./runner.js";
 export {
   analyzeInjectionSuiteOnlineAdaptiveRun,
-  DEFAULT_ATTACKER_PROMPT_PATH,
+  DEFAULT_ATTACKER_PROMPT_PATH_GETTER,
   ONLINE_ADAPTIVE_STAGE,
   planOnlineAdaptiveRows,
   runInjectionSuiteOnlineAdaptive,

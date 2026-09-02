@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { generateFamilyVariants } from "./generator.js";
 import { executeProductLifecycleRow } from "./product-lifecycle.js";
+import { InjectionSuiteHostFault } from "./llm-executor.js";
 import { buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
 
 function fakeAdapter(options: {
@@ -420,4 +421,41 @@ test("plain benign rows never record a use trace event", async () => {
     row.evidence?.trace.some((event) => event.stage === "use"),
     false,
   );
+});
+
+test("adapter host faults are converted to InjectionSuiteHostFault", async () => {
+  const variant = generateFamilyVariants("minja", 1, 1)[0]!;
+  const identity = defaultSuiteIdentity({
+    modelProfileId: "model-a",
+    arm: "fencing",
+    family: variant.family,
+    variantId: variant.variantId,
+    seed: 1,
+  });
+  const cases = [
+    "fetch failed",
+    "HTTP 500 Internal Server Error",
+    "request timeout",
+    "drain() timed out",
+    "ECONN", // standalone ECONN prefix
+  ];
+  for (const message of cases) {
+    const error = new Error(message);
+    await assert.rejects(
+      () =>
+        executeProductLifecycleRow(
+          identity,
+          variant,
+          input(),
+          {
+            createAdapter: async () => fakeAdapter({ recalled: "" }),
+            complete: async () => {
+              throw error;
+            },
+          },
+        ),
+      (caught: unknown) => caught instanceof InjectionSuiteHostFault,
+      message,
+    );
+  }
 });

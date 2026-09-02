@@ -124,6 +124,26 @@ test("parseConfig memory-poisoning hardening defaults and validation (#1955)", (
   }
 });
 
+test("parseConfig honors REMNIC_MEMORY_INJECTION_DEFENSE_MODE when the operator omits the field", () => {
+  const previousMode = process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE;
+  delete process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE;
+  try {
+    process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE = "layered";
+    const resolved = parseConfig({});
+    assert.equal(
+      resolved.memoryInjectionDefenseMode,
+      "layered",
+      "env override activates when host materializes the schema default 'custom' into cfg",
+    );
+    assert.equal(resolved.originAuthorityEnabled, true);
+    assert.equal(resolved.injectionScreenEnabled, true);
+    assert.equal(resolved.injectionScreenProfile, "hardened");
+  } finally {
+    if (previousMode === undefined) delete process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE;
+    else process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE = previousMode;
+  }
+});
+
 test("parseConfig emitLegacyTools sticky-legacy default (issue #1550)", () => {
   // Fresh install (no legacy connector entries): canonical-only surface.
   withIsolatedConnectorsDir(false, () => {

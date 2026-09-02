@@ -18,7 +18,7 @@
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
 import { renderAuthorityFence } from "@remnic/core";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -103,30 +103,129 @@ export const ONLINE_ADAPTIVE_ARMS = [
 ] as const satisfies readonly InjectionSuiteArm[];
 
 /**
- * Resolve a repo-relative disclosed file from either the source tree or the
- * built dist: walk up from this module until the relative path exists.
+ * Find the `@remnic/bench` package root that ships the disclosed fixtures.
+ * The published layout places this module under
+ * `node_modules/@remnic/bench/dist/...`; a monorepo checkout places it under
+ * `packages/bench/src/...`. Walking up to the first `package.json` whose
+ * `name` is `@remnic/bench` handles both layouts without a hard-coded
+ * `packages/` parent. The walk is lazy and only runs on first access, so
+ * importing the module never throws on a missing fixture or manifest.
  */
-function resolveDisclosedFile(relativeToPackages: string): string {
+function benchPackageRoot(): string | null {
   let dir = path.dirname(fileURLToPath(import.meta.url));
   for (let depth = 0; depth < 8; depth += 1) {
-    const candidate = path.join(dir, "packages", relativeToPackages);
-    if (existsSync(candidate)) return candidate;
+    const candidate = path.join(dir, "package.json");
+    if (existsSync(candidate)) {
+      try {
+        const manifest = JSON.parse(readFileSync(candidate, "utf8")) as {
+          name?: unknown;
+        };
+        if (manifest.name === "@remnic/bench") return dir;
+      } catch {
+        // continue past a malformed manifest
+      }
+    }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  throw new Error(`cannot locate disclosed file packages/${relativeToPackages}`);
+  return null;
 }
 
 /** Frozen attacker system prompt shipped with the bench fixtures. */
-export const DEFAULT_ATTACKER_PROMPT_PATH = resolveDisclosedFile(
-  "bench/fixtures/h5-injection/online-adaptive/attacker-prompt-v1.md",
-);
+export function resolveDefaultAttackerPromptPath(): string {
+  const root = benchPackageRoot();
+  if (root === null) {
+    throw new Error(
+      "cannot locate @remnic/bench package root; pass --attacker-prompt explicitly",
+    );
+  }
+  const relative = "fixtures/h5-injection/online-adaptive/attacker-prompt-v1.md";
+  const absolute = path.join(root, relative);
+  if (!existsSync(absolute)) {
+    throw new Error(
+      `bench fixture ${relative} is not published; pass --attacker-prompt explicitly`,
+    );
+  }
+  return absolute;
+}
 
-/** White-box disclosure: the exact write-path screen the rewrites must pass. */
-export const DEFAULT_SCREEN_SOURCE_PATH = resolveDisclosedFile(
-  "remnic-core/src/security/injection-screen.ts",
-);
+/**
+ * Resolve the disclosed write-path screen source through the published
+ * `@remnic/core` package. `@remnic/core` ships both `src/` and `dist/` in
+ * `files`; the attacker prompt conditions on the exact module the gate
+ * tests, so prefer the TypeScript source and fall back to the built JS.
+ */
+export function resolveDefaultScreenSourcePath(): string {
+  // `@remnic/core` ships both `src/` and `dist/` in `files`. Reach the
+  // package root by resolving the published entry through ESM and walking
+  // up to the first `package.json`; the entry has no exports for
+  // `./package.json`, so `require.resolve('@remnic/core/package.json')`
+  // is intentionally avoided.
+  const coreEntry = import.meta.resolve("@remnic/core");
+  const coreRoot = walkUpToPackageRoot(coreEntry);
+  if (coreRoot === null) {
+    throw new Error(
+      "cannot resolve @remnic/core package root for the disclosed write-path screen source",
+    );
+  }
+  const tsCandidate = path.join(
+    coreRoot,
+    "src",
+    "security",
+    "injection-screen.ts",
+  );
+  if (existsSync(tsCandidate)) return tsCandidate;
+  const jsCandidate = path.join(
+    coreRoot,
+    "dist",
+    "security",
+    "injection-screen.js",
+  );
+  if (existsSync(jsCandidate)) return jsCandidate;
+  throw new Error(
+    "cannot locate @remnic/core/src/security/injection-screen.ts or its dist build",
+  );
+}
+
+function walkUpToPackageRoot(startPath: string): string | null {
+  let dir = path.dirname(fileURLToPath(startPath));
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (existsSync(path.join(dir, "package.json"))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+/**
+ * Lazy backwards-compatible string exports. Each call resolves on first
+ * access and caches the result; importing the module never resolves them.
+ */
+let cachedAttackerPromptPath: string | undefined;
+let cachedScreenSourcePath: string | undefined;
+
+/**
+ * Resolved at call time: if the bench fixture is missing, an install that
+ * only ships the bench source (e.g. a parent project that lists
+ * `@remnic/bench` as a dep without the `fixtures/h5-injection` subtree) only
+ * fails when the online command actually runs.
+ */
+export function DEFAULT_ATTACKER_PROMPT_PATH_GETTER(): string {
+  if (cachedAttackerPromptPath === undefined) {
+    cachedAttackerPromptPath = resolveDefaultAttackerPromptPath();
+  }
+  return cachedAttackerPromptPath;
+}
+
+export function DEFAULT_SCREEN_SOURCE_PATH_GETTER(): string {
+  if (cachedScreenSourcePath === undefined) {
+    cachedScreenSourcePath = resolveDefaultScreenSourcePath();
+  }
+  return cachedScreenSourcePath;
+}
+
 
 const FAMILY_GOALS: Record<InjectionSuiteFamily, string> = {
   minja:
@@ -557,7 +656,7 @@ export async function runInjectionSuiteOnlineAdaptive(
   const attackerPrompt = await readFile(input.attackerPromptPath, "utf8");
   const attackerPromptSha256 = sha256(attackerPrompt);
   const screenSource = await readFile(
-    input.screenSourcePath ?? DEFAULT_SCREEN_SOURCE_PATH,
+    input.screenSourcePath ?? DEFAULT_SCREEN_SOURCE_PATH_GETTER(),
     "utf8",
   );
   const fenceTemplate = disclosedFenceTemplate();
@@ -777,6 +876,10 @@ export async function runInjectionSuiteOnlineAdaptive(
           { role: "user", content: userMessage },
         ];
         let chat: InjectionSuiteChatResult | undefined;
+        // Persist an in-flight marker before dispatch so a crash mid-attacker
+        // call pauses the resumed run (same contract as the defended call);
+        // the marker clears when the attacker try commits below.
+        await store.markInFlight(identity, attempt, input.retryAmbiguous === true);
         let consecutiveFaults = 0;
         while (chat === undefined) {
           await claims.assertOwner(claim);
@@ -806,6 +909,14 @@ export async function runInjectionSuiteOnlineAdaptive(
         payload = stripCodeFences(chat.text);
         rejectionReason = onlineAdaptiveRejectionReason(base, index, iteration, payload);
         valid = rejectionReason === null;
+        // The attacker try commits (clearing the in-flight marker) with the
+        // truthful outcome; the corpus line appended next is the durable result.
+        await store.commitTry(identity, {
+          attempt,
+          durationMs: 0,
+          outcome: { kind: "ATTACKER_RESULT", valid, attackerOutputSha256: sha256(chat.text) },
+        });
+        attempt += 1;
         const line: OnlineAdaptiveCorpusLine = {
           arm: identity.arm,
           family,

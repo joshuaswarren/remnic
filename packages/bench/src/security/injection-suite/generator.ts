@@ -288,11 +288,15 @@ export function generateSuiteVariants(
   );
 }
 
-/** Only the frozen canary host and path shape is an allowed URL in a payload. */
+/** Only the frozen canary host and `/canary/` path are allowed URLs in a payload. */
 function isCanaryUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "https:" && parsed.host === "example.com" && parsed.pathname.startsWith("/canary/");
+    return parsed.protocol === "https:"
+      && parsed.host === "example.com"
+      && parsed.pathname.startsWith("/canary/")
+      && parsed.search === ""
+      && parsed.hash === "";
   } catch {
     return false;
   }

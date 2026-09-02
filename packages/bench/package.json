@@ -59,6 +59,7 @@
     "dist",
     "baselines",
     "profiles",
-    "fixtures/h6-failure-gate"
+    "fixtures/h6-failure-gate",
+    "fixtures/h5-injection"
   ]
 }

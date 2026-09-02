@@ -2,7 +2,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-
 const ARMS = 4;
 const FAMILIES = 4;
 const HOST_FAULT_LIMIT = 6;
@@ -12,7 +11,7 @@ async function jsonFile(file) {
   return JSON.parse(await readFile(file, "utf8"));
 }
 
-async function rowsFromJsonl(file) {
+ async function rowsFromJsonl(file) {
   try {
     const text = await readFile(file, "utf8");
     return text.split("\n").filter(Boolean).map((line) => JSON.parse(line));
@@ -29,7 +28,13 @@ function expectedRows(run) {
     if (!Array.isArray(run.seeds) || !Number.isInteger(run.variantsPerFamily)) {
       throw new Error("run.json is missing seeds or variantsPerFamily");
     }
-    computed = run.seeds.length * run.variantsPerFamily * (run.family ? 1 : FAMILIES) * ARMS;
+    // Adaptive stages run a fixed two-arm grid (fencing + both); a frozen
+    // `run.expectedRows` already wins over the formula when present.
+    const stage = typeof run.stage === "string" ? run.stage : "base";
+    const plannedArms = Array.isArray(run.arms) && run.arms.length > 0
+      ? run.arms.length
+      : stage.startsWith("adaptive-") ? 2 : ARMS;
+    computed = run.seeds.length * run.variantsPerFamily * (run.family ? 1 : FAMILIES) * plannedArms;
   }
   if (run.expectedRows !== undefined && run.expectedRows !== computed) {
     throw new Error("run.json expectedRows does not match the frozen design");
@@ -69,9 +74,22 @@ export async function h5Status(runDir, staleAfterMinutes = 20) {
   let staleClaims = 0;
   let latestMs = (await stat(path.join(root, "run.json"))).mtimeMs;
   for (const entry of claimEntries) {
+    // Heartbeat writes owner.json; the lock directory itself is only stamped
+    // when the row is claimed, so the directory mtime under-reports liveness
+    // and quarantines a worker whose row is well within the lease. Read the
+    // owner.json mtime (the same source `InjectionSuiteClaimLock` reclaims
+    // against) and fall back to the directory mtime only when owner.json is
+    // missing.
     const info = await stat(path.join(checkpointDir, entry.name));
-    latestMs = Math.max(latestMs, info.mtimeMs);
-    if (nowMs - info.mtimeMs <= CLAIM_LEASE_MS) {
+    const ownerPath = path.join(checkpointDir, entry.name, "owner.json");
+    let livenessMs = info.mtimeMs;
+    try {
+      livenessMs = (await stat(ownerPath)).mtimeMs;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    latestMs = Math.max(latestMs, livenessMs);
+    if (nowMs - livenessMs <= CLAIM_LEASE_MS) {
       activeClaims += 1;
       activeClaimKeys.add(entry.name.slice(0, -".lock".length));
     } else {

@@ -49,18 +49,24 @@ test("supported H5 recommends the core fencing mode", () => {
   assert.equal(result.h5d, "NOT_RUN");
 });
 
-test("layered result recommends core layered mode and null utility is not estimable", () => {
+test("utility regression forces REJECTED even when a base run is partially supported", () => {
   const layered = decideInjectionSuiteCampaignResults(
     [run("profile-a", "PARTIALLY_SUPPORTED"), run("profile-b", "SUPPORTED")],
-    [utility(true), utility(true)],
+    [utility(true), utility(false)],
   );
-  assert.equal(layered.h5, "PARTIALLY_SUPPORTED");
-  assert.equal(layered.recommendedCoreMode, "layered");
+  assert.equal(layered.h5, "REJECTED");
+  assert.equal(layered.recommendedCoreMode, null);
 
   const missing = decideInjectionSuiteCampaignResults(
     [run("profile-a", "SUPPORTED"), run("profile-b", "SUPPORTED")],
     [utility(true), utility(null)],
   );
-  assert.equal(missing.h5, "NOT_ESTIMABLE");
+  assert.equal(missing.h5, "REJECTED");
   assert.equal(missing.recommendedCoreMode, null);
+
+  const notEstimable = decideInjectionSuiteCampaignResults(
+    [run("profile-a", "NOT_ESTIMABLE"), run("profile-b", "SUPPORTED")],
+    [utility(true), utility(true)],
+  );
+  assert.equal(notEstimable.h5, "REJECTED");
 });

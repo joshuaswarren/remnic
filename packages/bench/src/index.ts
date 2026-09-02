@@ -806,7 +806,7 @@ export {
   analyzeInjectionSuiteOnlineAdaptiveRun,
   planOnlineAdaptiveRows,
   stripCodeFences,
-  DEFAULT_ATTACKER_PROMPT_PATH,
+  DEFAULT_ATTACKER_PROMPT_PATH_GETTER,
   ONLINE_ADAPTIVE_STAGE,
   executeLocalRow,
   generateFamilyVariants,

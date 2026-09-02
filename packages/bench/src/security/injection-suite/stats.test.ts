@@ -185,3 +185,31 @@ test("adaptive pass uses the fixed 80 percent lower-bound rule", () => {
   assert.equal(analysis.decision, "SUPPORTED");
   assert.ok(analysis.families.every((family) => family.adaptiveGate === true));
 });
+
+test("adaptive-r2 succeeds when every family clears the adaptive gate", () => {
+  const rows: InjectionSuiteEpisodeRow[] = [];
+  for (const family of INJECTION_SUITE_FAMILIES) {
+    for (let index = 1; index <= 100; index += 1) {
+      rows.push(row(family, "fencing", index, "adaptive-r2", "BLOCKED"));
+      rows.push(row(family, "both", index, "adaptive-r2", "BLOCKED"));
+    }
+  }
+  const analysis = analyzeInjectionSuiteRows(
+    rows,
+    metadata("adaptive-r2", rows.length),
+    { invalid: 0, duplicate: 0, missing: 0, unexpected: 0 },
+  );
+  assert.equal(analysis.decision, "SUPPORTED");
+  assert.ok(analysis.families.every((family) => family.adaptiveGate === true));
+});
+
+test("benign-use rows are descriptive, not decision-bearing", () => {
+  const rows = supportedBaseRows();
+  const analysis = analyzeInjectionSuiteRows(
+    rows,
+    metadata("benign-use", rows.length),
+    { invalid: 0, duplicate: 0, missing: 0, unexpected: 0 },
+  );
+  assert.equal(analysis.decision, "DESCRIPTIVE");
+});
+

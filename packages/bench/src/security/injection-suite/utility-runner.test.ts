@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { InjectionSuiteCliInput } from "./types.js";
 import type {
   InjectionSuiteChatMessage,
@@ -12,6 +15,7 @@ import {
   injectionSuiteArmUsesFence,
 } from "./types.js";
 import {
+  UtilityCheckpointStore,
   createInjectionSuiteBehaviorResponder,
   isRetryableUtilityFailure,
 } from "./utility-runner.js";
@@ -130,4 +134,16 @@ test("none arm still answers with recalled text present", async () => {
     JSON.stringify(dep.chats[0]!.messages).includes(RECALL_SENTINEL),
     true,
   );
+});
+test("concurrent markInFlight calls throw an ambiguous-task error instead of overwriting", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "h5-util-test-"));
+  const store = new UtilityCheckpointStore(dir, "fencing", 71, "locomo");
+  store.markInFlight("task-a", false);
+  assert.throws(
+    () => store.markInFlight("task-a", false),
+    /ambiguous paid utility task/,
+  );
+  store.markInFlight("task-a", true);
+  // replace=true clears the previous marker so a subsequent claim succeeds.
+  assert.doesNotThrow(() => store.markInFlight("task-a", true));
 });

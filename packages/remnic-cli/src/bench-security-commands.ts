@@ -564,7 +564,7 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
         );
       }
       const attackerPromptPath =
-        parsed.attackerPromptPath ?? bench.DEFAULT_ATTACKER_PROMPT_PATH;
+        parsed.attackerPromptPath ?? bench.DEFAULT_ATTACKER_PROMPT_PATH_GETTER();
       const result = await runOnline({
         ...suiteInput,
         attackerExecutor: parsed.attackerExecutor ?? "openai-compat",

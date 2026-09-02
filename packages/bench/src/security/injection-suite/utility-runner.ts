@@ -80,7 +80,7 @@ export function isRetryableUtilityFailure(task: { details?: unknown }): boolean 
   return details?.benchmarkFailure?.kind === "trial_execution_failure";
 }
 
-class UtilityCheckpointStore {
+export class UtilityCheckpointStore {
   readonly directory: string;
 
   constructor(
@@ -124,10 +124,20 @@ class UtilityCheckpointStore {
 
   markInFlight(taskId: string, replace: boolean): void {
     const target = this.inFlightPath(taskId);
-    if (existsSync(target) && !replace) {
-      throw new Error(`ambiguous paid utility task ${taskId}; owner review required`);
+    if (replace) {
+      rmSync(target, { force: true });
     }
-    this.writeAtomicSync(target, `${taskId}\n`);
+    try {
+      const handle = openSync(target, "wx", 0o600);
+      writeFileSync(handle, `${taskId}\n`, "utf8");
+      fsyncSync(handle);
+      closeSync(handle);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new Error(`ambiguous paid utility task ${taskId}; owner review required`);
+      }
+      throw error;
+    }
   }
   commit(task: TaskResult): void {
     const target = this.checkpointPath(task.taskId);

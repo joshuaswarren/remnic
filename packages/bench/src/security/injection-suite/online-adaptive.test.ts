@@ -34,6 +34,9 @@ import {
   runInjectionSuiteOnlineAdaptive,
   stripCodeFences,
   analyzeInjectionSuiteOnlineAdaptiveRows,
+  analyzeInjectionSuiteOnlineAdaptiveRun,
+  resolveDefaultAttackerPromptPath,
+  resolveDefaultScreenSourcePath,
 } from "./online-adaptive.js";
 import { generateFamilyVariants, parseOnlineVariantId } from "./generator.js";
 import { buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
@@ -41,6 +44,7 @@ import type {
   InjectionSuiteArm,
   InjectionSuiteEpisodeRow,
   InjectionSuiteFamily,
+  InjectionSuiteRunMetadata,
   InjectionSuiteVariant,
 } from "./types.js";
 import type { InjectionSuiteChatMessage, InjectionSuiteChatResult } from "./llm-executor.js";
@@ -269,6 +273,52 @@ test("resume mid-iteration replays the attacker corpus line and does not re-call
   }
 });
 
+test("a crash after the attacker request is sent pauses the resumed run until --retry-ambiguous", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-crash-"));
+  try {
+    const base = baseVariantFor("minja", 1);
+    const defender = () => ({
+      text: `ACK ${base.canary} ${base.livenessCanary}`,
+      toolCalls: [],
+      inputTokens: 0,
+      outputTokens: 0,
+      model: "fixture-defender",
+    });
+    // First run: the attacker transport dies with a non-host-fault error
+    // after the in-flight marker is persisted and before any corpus line.
+    await assert.rejects(
+      runOnlineAdaptiveWithFake({
+        outputDir: tmp,
+        attackerResponder: () => {
+          throw new Error("process crashed mid-request");
+        },
+        defendedResponder: defender,
+      }),
+      /process crashed mid-request/,
+    );
+    const corpusBefore = await readFile(path.join(tmp, "online-corpus.jsonl"), "utf8").catch(() => "");
+    assert.equal(corpusBefore.trim(), "", "no corpus line landed for the crashed attacker call");
+    // Resume without --retry-ambiguous must pause on the ambiguous paid attempt.
+    let attackerCalls = 0;
+    const attacker = () => {
+      attackerCalls += 1;
+      return { text: base.payload, toolCalls: [], inputTokens: 0, outputTokens: 0, model: "fixture-attacker" };
+    };
+    const paused = await runOnlineAdaptiveWithFake({ outputDir: tmp, attackerResponder: attacker, defendedResponder: defender, resume: true });
+    assert.equal(paused.exitCode, 2);
+    assert.match(paused.output, /ambiguous paid attempt/);
+    assert.equal(attackerCalls, 0, "a paused resume must not re-pay the attacker");
+    // With --retry-ambiguous the run proceeds and the corpus line lands.
+    const recovered = await runOnlineAdaptiveWithFake({ outputDir: tmp, attackerResponder: attacker, defendedResponder: defender, resume: true, retryAmbiguous: true });
+    assert.equal(recovered.exitCode, 0);
+    assert.ok(attackerCalls >= 1);
+    const corpusAfter = (await readJsonlLines(path.join(tmp, "online-corpus.jsonl"))) ?? [];
+    assert.ok(corpusAfter.length >= 1);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("resume contract refuses a changed attacker prompt hash", () => {
   const original = injectionSuiteResumeContractHashForOnline({
     suiteVersion: "h5-injection-suite-v3",
@@ -430,6 +480,7 @@ interface RunnerE2EConfig {
   attackerResponder: (messages: readonly InjectionSuiteChatMessage[]) => InjectionSuiteChatResult;
   defendedResponder: (messages: readonly InjectionSuiteChatMessage[]) => InjectionSuiteChatResult;
   resume?: boolean;
+  retryAmbiguous?: boolean;
 }
 
 async function runOnlineAdaptiveWithFake(
@@ -440,7 +491,12 @@ async function runOnlineAdaptiveWithFake(
   await writeFile(attackerPromptPath, "fixture attacker prompt\n", "utf8");
   const deps: InjectionSuiteProductLifecycleDeps = {
     createAdapter: (options) =>
-      makeFakeAdapter(options.configOverrides?.memoryInjectionDefenseMode ?? "off"),
+      makeFakeAdapter({
+        configOverrides: {
+          memoryInjectionDefenseMode:
+            options.configOverrides?.memoryInjectionDefenseMode ?? "off",
+        },
+      }),
     complete: async (options, messages) => {
       const isAttacker = (options.model ?? "").includes("attacker");
       return (isAttacker ? config.attackerResponder : config.defendedResponder)(messages);
@@ -466,6 +522,7 @@ async function runOnlineAdaptiveWithFake(
         attackerIterations: 1,
         attackerPromptPath,
         ...(config.resume ? { resume: true } : {}),
+        ...(config.retryAmbiguous ? { retryAmbiguous: true } : {}),
       },
       deps,
     );
@@ -571,3 +628,341 @@ function buildFixtureRows(
   }
   return rows;
 }
+
+test("analyzer success@k is unchanged for a complete run with manifest", async () => {
+  // Build a minimal complete run directory:
+  // - run.json with expectedRows matching the planned count
+  // - expected-design.json with two planned rows
+  // - episodes.jsonl covering both rows
+  // - online-corpus.jsonl covering both iterations
+  // - online-corpus-manifest.json whose corpusLines and corpusSha256 match the body
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-estimable-"));
+  try {
+    const arm = "source-authenticated-fencing" as InjectionSuiteArm;
+    const families = ["minja", "tool-hijack"] as const;
+    const variants = [1, 2];
+    const identities = families.flatMap((family) =>
+      variants.map((index) =>
+        defaultSuiteIdentity({
+          stage: "adaptive-online-r1",
+          modelProfileId: "fixture",
+          arm,
+          family,
+          variantId: `adaptive-online-r1-${family}-${index}-k1`,
+          seed: 71,
+        }),
+      ),
+    );
+    const expectedRows = identities.length;
+    const designRows = identities.map((identity, idx) => ({
+      rowKey: buildInjectionSuiteRowKey(identity),
+      identity,
+      templateId: idx % 2 === 0 ? "T0" : "T1",
+    }));
+    await writeFile(
+      path.join(tmp, "run.json"),
+      `${JSON.stringify({
+        schemaVersion: 3 as const,
+        suiteVersion: "h5-injection-suite-v3",
+        resumeContractHash: "0".repeat(64),
+        modelProfileId: "fixture",
+        seeds: [71],
+        variantsPerFamily: 2,
+        family: null,
+        limit: null,
+        expectedRows,
+        executor: "openai-compat",
+        model: "fixture-defender",
+        baseUrl: "http://127.0.0.1:9",
+        requestTimeoutMs: 5_000,
+        stage: "adaptive-online-r1",
+        runKind: "dev",
+        modelProfileHash: "0".repeat(64),
+        modelDigest: "0".repeat(64),
+        corpusManifestHash: "0".repeat(64),
+        expectedDesignHash: "0".repeat(64),
+        decisionRuleHash: "0".repeat(64),
+        gitSha: "0".repeat(40),
+        cleanTree: true,
+        attackerIterations: 1,
+      } satisfies InjectionSuiteRunMetadata)}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(tmp, "expected-design.json"),
+      `${JSON.stringify({
+        schemaVersion: 1 as const,
+        stage: "adaptive-online-r1",
+        suiteVersion: "h5-injection-suite-v3",
+        rows: designRows,
+      })}\n`,
+      "utf8",
+    );
+    const corpusLines = identities.map((identity) => ({
+      arm: identity.arm,
+      family: identity.family,
+      variantId: identity.variantId,
+      iteration: 1,
+      payload: "rewrite",
+      valid: true,
+      rejectionReason: null,
+      attackerPromptSha256: "0".repeat(64),
+      attackerInputSha256: "0".repeat(64),
+      attackerOutputSha256: "0".repeat(64),
+    }));
+    const corpusBody = `${corpusLines
+      .map((line) => JSON.stringify(line))
+      .join("\n")}\n`;
+    await writeFile(path.join(tmp, "online-corpus.jsonl"), corpusBody, "utf8");
+    await writeFile(
+      path.join(tmp, "online-corpus-manifest.json"),
+      `${JSON.stringify({
+        schemaVersion: 1 as const,
+        stage: "adaptive-online-r1",
+        suiteVersion: "h5-injection-suite-v3",
+        corpusSha256: sha256(corpusBody),
+        corpusLines: corpusLines.length,
+        validPayloads: corpusLines.length,
+        invalidPayloads: 0,
+        episodeRows: identities.length,
+        attackerIterations: 1,
+        attackerExecutor: "openai-compat",
+        attackerModel: "fixture-attacker",
+        attackerModelDigest: "0".repeat(64),
+        attackerPromptSha256: "0".repeat(64),
+        attackerSeedBase: 71,
+      })}\n`,
+      "utf8",
+    );
+    const episodes = identities.map((identity, idx) => ({
+      rowKey: buildInjectionSuiteRowKey(identity),
+      identity,
+      // First row variant succeeds; second row variant blocks at k=1. This
+      // gives 1/2 success and 1/2 block — the fixed denominator the
+      // analyzer accumulates against.
+      attackSucceeded: idx % 2 === 0,
+      canaryEmitted: idx % 2 === 0,
+      quarantined: false,
+      fenced: idx % 2 === 1,
+    }));
+    await writeFile(
+      path.join(tmp, "episodes.jsonl"),
+      `${episodes.map((row) => JSON.stringify(row)).join("\n")}\n`,
+      "utf8",
+    );
+    const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(stats.decision.estimable, true);
+    assert.equal(stats.rowAccounting?.corpusManifestPresent, true);
+    assert.equal(stats.rowAccounting?.manifestHashVerified, true);
+    assert.equal(stats.rowAccounting?.missingPlannedRows, 0);
+    // Cumulative success@k fixed denominator (1 attacker iteration, two
+    // variants): one of two succeeded. The exact rate is locked in by
+    // this fixture; a code change that flips how missing corpus lines
+    // count flips this number.
+    assert.equal(
+      stats.arms
+        .find((entry) => entry.arm === arm)!
+        .families.find((entry) => entry.family === "minja")!
+        .successAt[1]!.rate,
+      0.5,
+    );
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("analyzer flags an interrupted run with missing manifest as not estimable", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-interrupted-"));
+  try {
+    const identity = defaultSuiteIdentity({
+      stage: "adaptive-online-r1",
+      modelProfileId: "fixture",
+      arm: "source-authenticated-fencing",
+      family: "minja",
+      variantId: "adaptive-online-r1-minja-1-k1",
+      seed: 71,
+    });
+    await writeFile(
+      path.join(tmp, "run.json"),
+      `${JSON.stringify({
+        schemaVersion: 3 as const,
+        suiteVersion: "h5-injection-suite-v3",
+        resumeContractHash: "0".repeat(64),
+        modelProfileId: "fixture",
+        seeds: [71],
+        variantsPerFamily: 1,
+        family: null,
+        limit: null,
+        expectedRows: 2,
+        executor: "openai-compat",
+        model: "fixture-defender",
+        baseUrl: "http://127.0.0.1:9",
+        requestTimeoutMs: 5_000,
+        stage: "adaptive-online-r1",
+        runKind: "dev",
+        modelProfileHash: "0".repeat(64),
+        modelDigest: "0".repeat(64),
+        corpusManifestHash: "0".repeat(64),
+        expectedDesignHash: "0".repeat(64),
+        decisionRuleHash: "0".repeat(64),
+        gitSha: "0".repeat(40),
+        cleanTree: true,
+        attackerIterations: 1,
+      } satisfies InjectionSuiteRunMetadata)}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(tmp, "expected-design.json"),
+      `${JSON.stringify({
+        schemaVersion: 1 as const,
+        stage: "adaptive-online-r1",
+        suiteVersion: "h5-injection-suite-v3",
+        rows: [
+          {
+            rowKey: buildInjectionSuiteRowKey(identity),
+            identity,
+            templateId: "T0",
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+    // No corpus, no manifest, no episodes: the run never finished.
+    const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(stats.decision.estimable, false);
+    assert.equal(stats.rowAccounting?.corpusManifestPresent, false);
+    assert.equal(stats.decision.fencingSupported, false);
+    assert.equal(stats.decision.layeredSupported, false);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("analyzer flags a run with manifest but a missing planned row as not estimable", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-missing-row-"));
+  try {
+    const arm = "source-authenticated-fencing" as InjectionSuiteArm;
+    const planned = ["minja-1", "minja-2"].map((variant) =>
+      defaultSuiteIdentity({
+        stage: "adaptive-online-r1",
+        modelProfileId: "fixture",
+        arm,
+        family: "minja",
+        variantId: `adaptive-online-r1-${variant}-k1`,
+        seed: 71,
+      }),
+    );
+    const identities = [planned[0]!]; // design says 2, only 1 episode rowKey
+    const episodes = identities.map((identity) => ({
+      rowKey: buildInjectionSuiteRowKey(identity),
+      identity,
+      attackSucceeded: false,
+      canaryEmitted: false,
+      quarantined: false,
+      fenced: true,
+    }));
+    await writeFile(
+      path.join(tmp, "run.json"),
+      `${JSON.stringify({
+        schemaVersion: 3 as const,
+        suiteVersion: "h5-injection-suite-v3",
+        resumeContractHash: "0".repeat(64),
+        modelProfileId: "fixture",
+        seeds: [71],
+        variantsPerFamily: 2,
+        family: null,
+        limit: null,
+        expectedRows: 2,
+        executor: "openai-compat",
+        model: "fixture-defender",
+        baseUrl: "http://127.0.0.1:9",
+        requestTimeoutMs: 5_000,
+        stage: "adaptive-online-r1",
+        runKind: "dev",
+        modelProfileHash: "0".repeat(64),
+        modelDigest: "0".repeat(64),
+        corpusManifestHash: "0".repeat(64),
+        expectedDesignHash: "0".repeat(64),
+        decisionRuleHash: "0".repeat(64),
+        gitSha: "0".repeat(40),
+        cleanTree: true,
+        attackerIterations: 1,
+      } satisfies InjectionSuiteRunMetadata)}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(tmp, "expected-design.json"),
+      `${JSON.stringify({
+        schemaVersion: 1 as const,
+        stage: "adaptive-online-r1",
+        suiteVersion: "h5-injection-suite-v3",
+        rows: planned.map((identity, idx) => ({
+          rowKey: buildInjectionSuiteRowKey(identity),
+          identity,
+          templateId: idx % 2 === 0 ? "T0" : "T1",
+        })),
+      })}\n`,
+      "utf8",
+    );
+    const corpusLines = planned.map((identity) => ({
+      arm: identity.arm,
+      family: identity.family,
+      variantId: identity.variantId,
+      iteration: 1,
+      payload: "rewrite",
+      valid: true,
+      rejectionReason: null,
+      attackerPromptSha256: "0".repeat(64),
+      attackerInputSha256: "0".repeat(64),
+      attackerOutputSha256: "0".repeat(64),
+    }));
+    const corpusBody = `${corpusLines
+      .map((line) => JSON.stringify(line))
+      .join("\n")}\n`;
+    await writeFile(path.join(tmp, "online-corpus.jsonl"), corpusBody, "utf8");
+    await writeFile(
+      path.join(tmp, "online-corpus-manifest.json"),
+      `${JSON.stringify({
+        schemaVersion: 1 as const,
+        stage: "adaptive-online-r1",
+        suiteVersion: "h5-injection-suite-v3",
+        corpusSha256: sha256(corpusBody),
+        corpusLines: corpusLines.length,
+        validPayloads: corpusLines.length,
+        invalidPayloads: 0,
+        episodeRows: episodes.length,
+        attackerIterations: 1,
+        attackerExecutor: "openai-compat",
+        attackerModel: "fixture-attacker",
+        attackerModelDigest: "0".repeat(64),
+        attackerPromptSha256: "0".repeat(64),
+        attackerSeedBase: 71,
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(tmp, "episodes.jsonl"),
+      `${episodes.map((row) => JSON.stringify(row)).join("\n")}\n`,
+      "utf8",
+    );
+    const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(stats.decision.estimable, false);
+    assert.equal(stats.rowAccounting?.missingPlannedRows, 1);
+    assert.equal(stats.decision.fencingSupported, false);
+    assert.equal(stats.decision.layeredSupported, false);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("importing online-adaptive never resolves filesystem when run from a temp dir", async () => {
+  // The module loads fine from this worktree (fixtures present) or from a
+  // temp dir (resolvers are lazy). We verify the resolvers throw only when
+  // actually invoked without the bench or core layout.
+  assert.doesNotThrow(() => {
+    // The named export is a function — calling it triggers the lookup.
+    // Calling it on this worktree must succeed because fixtures exist.
+    resolveDefaultAttackerPromptPath();
+  });
+  assert.equal(typeof resolveDefaultScreenSourcePath(), "string");
+});

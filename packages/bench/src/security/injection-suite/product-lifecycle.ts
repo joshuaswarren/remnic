@@ -427,7 +427,7 @@ export async function executeProductLifecycleRow(
     if (error instanceof InjectionSuiteHostFault) throw error;
     const message = error instanceof Error ? error.message : String(error);
     if (
-      /\\b(?:fetch failed|timeout|timed out|ECONN|ENET|HTTP [45]\\d\\d|socket|network)\\b/i.test(
+      /\b(?:fetch failed|timeout|timed out|ECONN|ENET|HTTP [45]\d\d|socket|network)\b/i.test(
         message,
       )
     ) {

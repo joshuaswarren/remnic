@@ -1,6 +1,7 @@
 import { renderAuthorityFence, screenCandidateFact } from "@remnic/core";
 import type { BenchRecallSupportAssessment, BenchRecallSupportRequest } from "./types.js";
 
+
 export const DEFAULT_ANSWER_SUPPORT_MIN_COVERAGE = 0.34;
 
 const ANSWER_SUPPORT_STOP_WORDS = new Set([
@@ -66,11 +67,20 @@ export const HARNESS_AUTHORED_RECALL_SECTIONS: ReadonlySet<string> = new Set([
 
 export function secureBenchRecallSection(
   content: string,
-  security: { originAuthorityEnabled: boolean; injectionScreenEnabled: boolean },
+  security: {
+    originAuthorityEnabled: boolean;
+    injectionScreenEnabled: boolean;
+    injectionScreenProfile: "default" | "hardened";
+  },
   trustedSection: boolean,
 ): string {
   if (trustedSection) return content;
-  if (security.injectionScreenEnabled && screenCandidateFact(content, "hardened").quarantine) return "";
+  if (
+    security.injectionScreenEnabled
+    && screenCandidateFact(content, security.injectionScreenProfile).quarantine
+  ) {
+    return "";
+  }
   return security.originAuthorityEnabled ? renderAuthorityFence(content, "unknown") : content;
 }
 

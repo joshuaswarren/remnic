@@ -148,6 +148,8 @@ export interface InjectionSuiteProductEvidence {
 
 export type InjectionSuiteTryOutcome =
   | { kind: "HOST_API_FAULT"; message: string }
+  /** Online-adaptive attacker phase completed; the corpus line is the durable result. */
+  | { kind: "ATTACKER_RESULT"; valid: boolean; attackerOutputSha256: string }
   | {
       kind: "TASK_RESULT";
       attackSucceeded: boolean;
