@@ -315,6 +315,32 @@ test("recallWithTrace keeps recorded ranges inside the fenced recall text", asyn
   }
 });
 
+test("fenced recallWithTrace maps raw-message rows through the fence instead of slicing the wrapper", async () => {
+  const adapter = await createLightweightAdapter({
+    replayExtractionMode: "skip",
+    configOverrides: { memoryInjectionDefenseMode: "fencing" },
+  });
+  try {
+    await adapter.store("fence-raw-session", [
+      { role: "user", content: "The vermilion-heron rollout starts Monday." },
+      { role: "assistant", content: "Noted." },
+    ]);
+    // An unrelated query finds no sections, so recall falls back to the raw
+    // message rows; under the fencing arm those rows are quoted.
+    const traced = await adapter.recallWithTrace!("fence-raw-session", "zzzz qqqq unrelated", 4_000);
+    assert.match(traced.text, /REMNIC DATA FENCE/);
+    const rawRows = traced.trace.selections.filter((selection) => selection.sectionId === "raw-messages");
+    assert.equal(rawRows.length, 2, "one raw-row selection per expanded message");
+    for (const selection of rawRows) {
+      const claimed = traced.text.slice(selection.composedStart, selection.composedEnd);
+      assert.ok(!claimed.includes("REMNIC DATA FENCE"), `raw row covers fence bytes: ${JSON.stringify(claimed)}`);
+      assert.match(claimed.replace(/^> /, ""), /^\[(user|assistant)\]: /, `raw row is not a message row: ${JSON.stringify(claimed)}`);
+    }
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("recallWithTrace attributes the applied cap and headroom with canonical frontmatter IDs", async () => {
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-attribution-"));
   const storage = new StorageManager(memoryDir);

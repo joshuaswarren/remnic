@@ -2608,20 +2608,20 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 (message) => `[${message.role}]: ${message.content}`,
               );
               const rawSection = `${prefix}${rows.join("\n")}`;
-              // Capture the secured text so range-bearing trace evidence
-              // reflects the post-fence body the responder actually sees.
-              // The fence prefixes each non-core line with `> `, so offsets
-              // computed from the unsecured prefix drift when origin
-              // authority is on.
+              // Row ranges are computed on the unsecured section and mapped
+              // through the fence's offset map, so recorded evidence points
+              // at the post-fence body the responder actually sees.
               const securedRawSection = appendSection("raw-messages", "raw-row", rawSection);
               if (securedRawSection !== null) {
-                const securedRows = securedRawSection.text.slice(prefix.length).split("\n");
                 let rowStart = prefix.length;
-                securedRows.forEach((row, index) => {
+                rows.forEach((row, index) => {
                   const rowEnd = rowStart + row.length;
                   traceRecorder?.recordRawRow(
                     "raw-messages",
-                    { start: rowStart, end: rowEnd },
+                    {
+                      start: securedRawSection.offsetAt(rowStart),
+                      end: securedRawSection.offsetAt(rowEnd),
+                    },
                     expanded[index]!,
                   );
                   rowStart = rowEnd + 1;
