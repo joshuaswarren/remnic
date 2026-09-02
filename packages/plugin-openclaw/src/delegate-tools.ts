@@ -25,9 +25,7 @@ function sessionKeyFor(params: Record<string, unknown>, ctx: ToolContext | undef
   if (typeof ctx?.sessionKey === "string" && ctx.sessionKey.trim().length > 0) {
     return ctx.sessionKey;
   }
-  return typeof params.sessionKey === "string" && params.sessionKey.trim().length > 0
-    ? params.sessionKey
-    : "default";
+  return typeof params.sessionKey === "string" && params.sessionKey.trim().length > 0 ? params.sessionKey : "default";
 }
 
 export function buildDelegateMemorySearchTool(options: {
@@ -40,14 +38,8 @@ export function buildDelegateMemorySearchTool(options: {
     description: "Search Remnic memories via the Remnic daemon (delegate).",
     parameters: MemorySearchInputSchema,
     inputSchema: MemorySearchInputSchema,
-    async execute(
-      _toolCallId: string,
-      params: Record<string, unknown>,
-      _signal?: AbortSignal,
-      ctx?: ToolContext,
-    ) {
-      const query =
-        typeof params.query === "string" && params.query.trim().length > 0 ? params.query : null;
+    async execute(_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal, ctx?: ToolContext) {
+      const query = typeof params.query === "string" && params.query.trim().length > 0 ? params.query : null;
       if (!query) throw new Error("memory_search requires a non-empty query");
       const { manager, error } = await options.runtime.getMemorySearchManager({
         cfg: undefined,
@@ -80,12 +72,7 @@ export function buildDelegateMemoryGetTool(options: {
     description: "Fetch one Remnic memory via the Remnic daemon (delegate).",
     parameters: MemoryGetInputSchema,
     inputSchema: MemoryGetInputSchema,
-    async execute(
-      _toolCallId: string,
-      params: Record<string, unknown>,
-      _signal?: AbortSignal,
-      ctx?: ToolContext,
-    ) {
+    async execute(_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal, ctx?: ToolContext) {
       const id = typeof params.id === "string" && params.id.trim().length > 0 ? params.id : null;
       if (!id) throw new Error("memory_get requires an id");
       const sessionKey = sessionKeyFor(params, ctx);
@@ -100,7 +87,7 @@ export function buildDelegateMemoryGetTool(options: {
           : undefined;
       if (requested !== undefined && requested !== namespace) {
         throw new Error(
-          `memory_get namespace "${requested}" does not match the session's memory scope${namespace === undefined ? "" : ` "${namespace}"`}`,
+          `memory_get namespace "${requested}" does not match the session's memory scope${namespace === undefined ? "" : ` "${namespace}"`}`
         );
       }
       const search = new URLSearchParams({ sessionKey });

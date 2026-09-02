@@ -8,24 +8,21 @@
  */
 
 import path from "node:path";
+import { log } from "@remnic/core/logger";
 import {
   SESSION_NAMESPACE_BINDING_MAX_ENTRIES,
   SESSION_NAMESPACE_BINDING_MAX_NAMESPACES,
   type SessionNamespaceBindingStore,
   createFileSessionNamespaceBindingStore,
 } from "@remnic/core/session-namespace-bindings";
-import { log } from "@remnic/core/logger";
 
-import {
-  REMNIC_OPENCLAW_LEGACY_PLUGIN_ID,
-  REMNIC_OPENCLAW_PLUGIN_ID,
-} from "./plugin-id.js";
+import { REMNIC_OPENCLAW_LEGACY_PLUGIN_ID, REMNIC_OPENCLAW_PLUGIN_ID } from "./plugin-id.js";
 
 const delegateNamespaceMigrationChains = new Map<string, Map<string, Promise<void>>>();
 const queueDelegateNamespaceMigration = <T>(
   bindingPath: string,
   sessionKey: string,
-  operation: () => Promise<T>,
+  operation: () => Promise<T>
 ): Promise<T> => {
   let sessionChains = delegateNamespaceMigrationChains.get(bindingPath);
   if (sessionChains === undefined) {
@@ -36,7 +33,7 @@ const queueDelegateNamespaceMigration = <T>(
   const run = prior.catch(() => undefined).then(operation);
   const settled = run.then(
     () => undefined,
-    () => undefined,
+    () => undefined
   );
   sessionChains.set(sessionKey, settled);
   void settled.then(() => {
@@ -52,7 +49,7 @@ const queueDelegateNamespaceMigration = <T>(
 export function createDelegateNamespaceBindingStore(
   memoryDir: string,
   serviceId: string,
-  isLegacyAdapterActive: () => boolean,
+  isLegacyAdapterActive: () => boolean
 ): SessionNamespaceBindingStore {
   const bindingPath = (pluginId: string): string =>
     path.join(memoryDir, "state", "plugins", pluginId, "session-namespace-bindings.json");
@@ -60,9 +57,7 @@ export function createDelegateNamespaceBindingStore(
   const primary = createFileSessionNamespaceBindingStore(primaryPath);
   if (serviceId !== REMNIC_OPENCLAW_PLUGIN_ID) return primary;
 
-  const legacy = createFileSessionNamespaceBindingStore(
-    bindingPath(REMNIC_OPENCLAW_LEGACY_PLUGIN_ID),
-  );
+  const legacy = createFileSessionNamespaceBindingStore(bindingPath(REMNIC_OPENCLAW_LEGACY_PLUGIN_ID));
   const migratedLegacySessions = new Set<string>();
   const rememberMigratedLegacySession = (sessionKey: string): void => {
     if (migratedLegacySessions.has(sessionKey)) return;
@@ -73,14 +68,9 @@ export function createDelegateNamespaceBindingStore(
       migratedLegacySessions.delete(oldest);
     }
   };
-  const queueSessionMigration = <T>(
-    sessionKey: string,
-    operation: () => Promise<T>,
-  ): Promise<T> => queueDelegateNamespaceMigration(primaryPath, sessionKey, operation);
-  const readLegacyNamespaces = async (
-    sessionKey: string,
-    current: string[],
-  ): Promise<string[]> => {
+  const queueSessionMigration = <T>(sessionKey: string, operation: () => Promise<T>): Promise<T> =>
+    queueDelegateNamespaceMigration(primaryPath, sessionKey, operation);
+  const readLegacyNamespaces = async (sessionKey: string, current: string[]): Promise<string[]> => {
     if (!isLegacyAdapterActive() && migratedLegacySessions.has(sessionKey)) return [];
     try {
       const previous = await legacy.namespacesFor(sessionKey);
@@ -88,9 +78,7 @@ export function createDelegateNamespaceBindingStore(
       return previous;
     } catch (err) {
       if (current.length > 0) {
-        log.warn(
-          `[${serviceId}] delegate legacy namespace read failed; using canonical bindings: ${String(err)}`,
-        );
+        log.warn(`[${serviceId}] delegate legacy namespace read failed; using canonical bindings: ${String(err)}`);
         return [];
       }
       throw err;
@@ -108,7 +96,7 @@ export function createDelegateNamespaceBindingStore(
   const persistNamespaceHistory = async (
     store: SessionNamespaceBindingStore,
     sessionKey: string,
-    namespaces: string[],
+    namespaces: string[]
   ): Promise<void> => {
     if (store.replace !== undefined) {
       await store.replace(sessionKey, namespaces);
