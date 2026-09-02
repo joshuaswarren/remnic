@@ -854,10 +854,10 @@ export function registerDelegateRuntime(
         // The SAME trusted scope path search takes: the session binding, then
         // the daemon's concrete default for an unbound session — never an
         // omitted namespace a scoped credential would refuse.
-        resolveNamespace: async (sessionKey) =>
+        resolveNamespace: async (sessionKey, timeoutMs) =>
           capability.resolveScopedNamespace(
             await resolveSearchNamespace(sessionKey),
-            options.recallTimeoutMs,
+            timeoutMs,
             ["memory_get"],
           ),
       }),

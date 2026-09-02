@@ -87,8 +87,11 @@ export function buildDelegateMemorySearchTool(options: {
         agentId: ctx?.agentId ?? options.agentId,
       });
       if (!manager) throw new Error(error ?? "delegate memory search manager unavailable");
+      // One extra hit tells whether the page was cut, which is what the
+      // embedded tool reports as `truncated`.
+      const limit = typeof params.limit === "number" ? params.limit : DEFAULT_SEARCH_RESULTS;
       const results = await manager.search(query, {
-        maxResults: typeof params.limit === "number" ? params.limit : DEFAULT_SEARCH_RESULTS,
+        maxResults: limit + 1,
         sessionKey: sessionKeyFor(params, ctx),
       });
       // The public active-memory shape the embedded tool returns: `id` is the
@@ -96,12 +99,12 @@ export function buildDelegateMemorySearchTool(options: {
       // `text` the snippet. The manager's absolute `path` stays internal — it
       // names the operator's filesystem, which the model has no use for.
       const output: ActiveMemorySearchOutput = {
-        results: results.map((result) => ({
+        results: results.slice(0, limit).map((result) => ({
           id: path.basename(result.citation ?? result.path, ".md"),
           score: result.score,
           text: result.snippet,
         })),
-        truncated: false,
+        truncated: results.length > limit,
       };
       return toolJsonResult(output);
     },
@@ -112,8 +115,12 @@ export function buildDelegateMemoryGetTool(options: {
   target: DelegateDaemonTarget;
   serviceId: string;
   timeoutMs: number;
-  /** The session's remembered namespace, so get reads where search searched. */
-  resolveNamespace: (sessionKey: string) => Promise<string | undefined>;
+  /**
+   * The session's remembered namespace, so get reads where search searched.
+   * Given what is LEFT of the tool's deadline: scope resolution and the GET
+   * share one budget.
+   */
+  resolveNamespace: (sessionKey: string, timeoutMs: number) => Promise<string | undefined>;
 }) {
   return {
     name: "memory_get",
@@ -128,7 +135,8 @@ export function buildDelegateMemoryGetTool(options: {
       // model-supplied namespace may only restate it. The daemon default is
       // the SAME scope the session's search used, so an unbound session cannot
       // name another tenant's namespace to reach a known memory id.
-      const namespace = await options.resolveNamespace(sessionKey);
+      const deadline = Date.now() + options.timeoutMs;
+      const namespace = await options.resolveNamespace(sessionKey, options.timeoutMs);
       const requested =
         typeof params.namespace === "string" && params.namespace.trim().length > 0
           ? params.namespace.trim()
@@ -141,7 +149,7 @@ export function buildDelegateMemoryGetTool(options: {
       const search = new URLSearchParams({ sessionKey });
       if (namespace !== undefined) search.set("namespace", namespace);
       const pathname = `/engram/v1/memories/${encodeURIComponent(id)}?${search}`;
-      const response = await getJson(options.target, options.serviceId, pathname, options.timeoutMs);
+      const response = await getJson(options.target, options.serviceId, pathname, Math.max(1, deadline - Date.now()));
       if (response.status === 404) return toolJsonResult({ error: "not_found" } satisfies ActiveMemoryGetOutput);
       if (response.status < 200 || response.status > 299) {
         throw new Error(`daemon ${pathname} responded ${response.status}`);

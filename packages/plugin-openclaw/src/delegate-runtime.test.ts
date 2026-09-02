@@ -2321,7 +2321,10 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
       return {
         query: "rollout",
         count: 1,
-        results: [{ path: memoryPath, score: 0.9, snippet: "we decided to roll out on Monday" }],
+        results: [
+          { path: memoryPath, score: 0.9, snippet: "we decided to roll out on Monday" },
+          { path: "facts/2026-01-02/fact-2.md", score: 0.4, snippet: "rollout retro" },
+        ],
       };
     }
     if (pathname.startsWith("/engram/v1/memories/fact-1")) {
@@ -2361,19 +2364,19 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
 
     const searched = (await tools.get("memory_search")!.execute(
       "tc-1",
-      { query: "rollout", limit: 3 },
+      { query: "rollout", limit: 1 },
       undefined,
       { sessionKey: "tool-session" },
     )) as { content: Array<{ text: string }> };
     const search = stub.calls.find((call) => call.pathname === "/engram/v1/memories/search");
     assert.ok(search, "memory_search POSTs the daemon's ranked search");
     assert.equal(search.body.query, "rollout");
-    assert.equal(search.body.maxResults, 3);
+    assert.equal(search.body.maxResults, 2, "one extra hit decides `truncated`");
     // The public active-memory shape the embedded tool returns — and no
     // absolute path: the manager's `path` names the operator's filesystem.
     assert.deepEqual(JSON.parse(searched.content[0]!.text), {
       results: [{ id: "fact-1", score: 0.9, text: "we decided to roll out on Monday" }],
-      truncated: false,
+      truncated: true,
     });
     assert.doesNotMatch(searched.content[0]!.text, /\/facts\//, "no filesystem path reaches the model");
 
