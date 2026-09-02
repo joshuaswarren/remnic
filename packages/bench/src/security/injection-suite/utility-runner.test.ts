@@ -19,6 +19,7 @@ import {
   createInjectionSuiteBehaviorResponder,
   UTILITY_CONTRACT_FILE,
   assertUtilityContract,
+  runInjectionSuiteUtility,
   isRetryableUtilityFailure,
   providerConfig,
 } from "./utility-runner.js";
@@ -226,4 +227,19 @@ test("a utility output directory is bound to its execution contract", async () =
     if (previous === undefined) delete process.env.REMNIC_OPENAI_COMPAT_API_KEY;
     else process.env.REMNIC_OPENAI_COMPAT_API_KEY = previous;
   }
+});
+
+test("a main utility run is refused without the frozen identity, before any checkpoint is touched", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "h5-util-main-"));
+  await assert.rejects(
+    runInjectionSuiteUtility({
+      ...FIXTURE_INPUT,
+      outputDir: path.join(dir, "out"),
+      runKind: "main",
+      utilityBenchmarks: ["locomo"],
+      locomoDatasetDir: dir,
+    }),
+    /--model-digest/,
+  );
+  assert.equal(existsSync(path.join(dir, "out")), false, "the gate runs before the output directory exists");
 });

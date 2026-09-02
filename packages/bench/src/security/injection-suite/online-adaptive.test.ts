@@ -42,7 +42,7 @@ import {
 } from "./online-adaptive.js";
 import { stableInjectionSuiteJson } from "./freeze.js";
 import { generateFamilyVariants, parseOnlineVariantId } from "./generator.js";
-import { buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
+import { InjectionSuiteRowStore, buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
 import type {
   InjectionSuiteArm,
   InjectionSuiteEpisodeRow,
@@ -372,6 +372,50 @@ test("online run.json records the resolved defended endpoint when flags are omit
     assert.equal(run.baseUrl, DEFAULT_OPENAI_COMPAT_BASE_URL);
     assert.equal(run.model, profile.model);
     assert.equal(run.baseUrl, profile.baseUrl);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("a durable corpus line reconciles a marker left by a crash before the attacker try committed", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-reconcile-"));
+  try {
+    const base = baseVariantFor("minja", 1);
+    const defender = () => ({ text: `ACK ${base.canary} ${base.livenessCanary}`, toolCalls: [], inputTokens: 0, outputTokens: 0, model: "d" });
+    // Crash after the corpus append and before the attacker try commits:
+    // simulate by letting the first run finish, then re-arming the marker
+    // and dropping the attacker try from the checkpoint.
+    let attackerCalls = 0;
+    const attacker = () => {
+      attackerCalls += 1;
+      return { text: base.payload, toolCalls: [], inputTokens: 0, outputTokens: 0, model: "a" };
+    };
+    const first = await runOnlineAdaptiveWithFake({ outputDir: tmp, attackerResponder: attacker, defendedResponder: defender });
+    assert.equal(first.exitCode, 0);
+    const store = new InjectionSuiteRowStore(tmp);
+    const rows = (await readJsonlLines(path.join(tmp, "episodes.jsonl"))) ?? [];
+    const k1 = rows.map((text) => JSON.parse(text) as InjectionSuiteEpisodeRow).find((row) => row.identity.variantId.endsWith("-k1"));
+    assert.ok(k1);
+    const loaded = await store.load(k1.identity);
+    assert.equal(loaded.kind, "VALID");
+    if (loaded.kind !== "VALID") return;
+    const checkpointPath = path.join(tmp, "checkpoints", `${k1.rowKey}.json`);
+    await writeFile(
+      checkpointPath,
+      `${JSON.stringify({ ...loaded.checkpoint, terminal: undefined, tries: [], inFlight: { attempt: 1, startedAt: new Date().toISOString() } }, null, 2)}\n`,
+    );
+    const callsBefore = attackerCalls;
+    // A plain resume must neither pause nor re-pay the attacker: the corpus
+    // line is the durable result of that paid call.
+    const resumed = await runOnlineAdaptiveWithFake({ outputDir: tmp, attackerResponder: attacker, defendedResponder: defender, resume: true });
+    assert.equal(resumed.exitCode, 0, resumed.output);
+    assert.equal(attackerCalls, callsBefore);
+    const after = await store.load(k1.identity);
+    assert.equal(after.kind, "VALID");
+    if (after.kind === "VALID") {
+      assert.equal(after.checkpoint.inFlight, undefined);
+      assert.ok(after.checkpoint.tries.some((entry) => entry.outcome.kind === "ATTACKER_RESULT"));
+    }
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

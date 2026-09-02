@@ -19,6 +19,8 @@ import { createRemnicAdapter } from "../../adapters/remnic-adapter.js";
 import type { BenchMemoryAdapter, BenchResponder } from "../../adapters/types.js";
 import { runBenchmark } from "../../benchmark.js";
 import { resolvedExecutorContract } from "./runner.js";
+import { enforceRunIdentityGate } from "./freeze.js";
+import { captureBenchmarkExecutionProvenance } from "../../reporter.js";
 import {
   createProviderBackedJudge,
   getProviderBackedResponderIdentity,
@@ -498,6 +500,10 @@ export async function runInjectionSuiteUtility(
   if (benchmarks.includes("drift-gen")) {
     await readFile(path.join(DRIFT_ROOT, "..", "dataset.manifest.json"), "utf8");
   }
+  // Utility evidence carries the same identity guarantees as the injection
+  // runs it is paired with: pilot/main need a frozen digest, a declared
+  // context window, and a clean tree; main forbids --limit.
+  enforceRunIdentityGate(input, !captureBenchmarkExecutionProvenance().gitDirty);
   mkdirSync(input.outputDir, { recursive: true });
   await assertUtilityContract(input, benchmarks);
   const observations: InjectionSuiteUtilityObservation[] = [];

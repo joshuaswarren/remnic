@@ -807,10 +807,36 @@ export async function runInjectionSuiteOnlineAdaptive(
         resumed += 1;
         continue;
       }
-      const ambiguous =
+      let ambiguous =
         fresh.kind === "VALID" && !fresh.checkpoint.terminal
           ? fresh.checkpoint.inFlight
           : undefined;
+      let reconciled = false;
+      const durableCorpus =
+        iteration > 0
+          ? history.corpus.get(corpusKey(identity.arm, identity.variantId))
+          : undefined;
+      if (
+        ambiguous &&
+        durableCorpus &&
+        fresh.kind === "VALID" &&
+        !fresh.checkpoint.tries.some((entry) => entry.outcome.kind === "ATTACKER_RESULT")
+      ) {
+        // The attacker call completed and its corpus line is durable, but
+        // the process died before the attacker try committed: reconcile the
+        // marker from the corpus instead of treating the paid call as lost.
+        await store.commitTry(identity, {
+          attempt: ambiguous.attempt,
+          durationMs: 0,
+          outcome: {
+            kind: "ATTACKER_RESULT",
+            valid: durableCorpus.valid,
+            attackerOutputSha256: durableCorpus.attackerOutputSha256,
+          },
+        });
+        ambiguous = undefined;
+        reconciled = true;
+      }
       if (ambiguous && input.retryAmbiguous !== true) {
         return paused(
           `${buildInjectionSuiteRowKey(identity)} has ambiguous paid attempt ${ambiguous.attempt}. Verify provider logs, then resume with --retry-ambiguous only if a retry is acceptable.`,
@@ -818,13 +844,11 @@ export async function runInjectionSuiteOnlineAdaptive(
           resumed,
         );
       }
-      const priorTries = fresh.kind === "VALID" ? fresh.checkpoint.tries.length : 0;
+      const reloaded = reconciled ? await store.load(identity) : fresh;
+      const priorTries = reloaded.kind === "VALID" ? reloaded.checkpoint.tries.length : 0;
       let attempt = ambiguous?.attempt ?? priorTries + 1;
       const base = regenBaseVariant(family, index, identity.seed);
-      const existingCorpus =
-        iteration > 0
-          ? history.corpus.get(corpusKey(identity.arm, identity.variantId))
-          : undefined;
+      const existingCorpus = durableCorpus;
 
       let payload: string;
       let valid: boolean;

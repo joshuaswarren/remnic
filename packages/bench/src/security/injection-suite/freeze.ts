@@ -172,15 +172,16 @@ function buildModelProfile(
   };
 }
 
-function enforceRunGate(
+/**
+ * The identity half of the run gate, shared by the injection and utility
+ * runners: pilot and main evidence needs a frozen served-model digest, a
+ * declared context window, and a clean tree; main evidence forbids cuts.
+ */
+export function enforceRunIdentityGate(
   input: InjectionSuiteCliInput,
   cleanTree: boolean,
 ): void {
   const runKind = input.runKind ?? "dev";
-  const stage = input.stage ?? "base";
-  if (runKind === "pilot" && input.variantsPerFamily < 25) {
-    throw new Error("H5 pilot requires at least 25 variants per family");
-  }
   if (runKind === "dev") return;
   if (!input.modelDigest?.trim())
     throw new Error(`H5 ${runKind} requires --model-digest`);
@@ -191,6 +192,19 @@ function enforceRunGate(
     throw new Error(`H5 ${runKind} requires --model-context-tokens >= 8192`);
   }
   if (!cleanTree) throw new Error(`H5 ${runKind} requires a clean git tree`);
+  if (runKind === "main" && input.limit !== undefined) throw new Error("H5 main forbids --limit");
+}
+
+function enforceRunGate(
+  input: InjectionSuiteCliInput,
+  cleanTree: boolean,
+): void {
+  const runKind = input.runKind ?? "dev";
+  const stage = input.stage ?? "base";
+  if (runKind === "pilot" && input.variantsPerFamily < 25) {
+    throw new Error("H5 pilot requires at least 25 variants per family");
+  }
+  enforceRunIdentityGate(input, cleanTree);
   if (runKind !== "main") return;
   if (input.seeds !== 1) {
     throw new Error(
@@ -204,7 +218,6 @@ function enforceRunGate(
     );
   }
   if (input.family !== undefined) throw new Error("H5 main forbids --family");
-  if (input.limit !== undefined) throw new Error("H5 main forbids --limit");
 }
 
 export function prepareInjectionSuiteFreeze(
