@@ -1,8 +1,9 @@
+import { buildInjectionSuiteRowKey } from "./store.js";
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { createSeededRandom, randomInt } from "../../seeded-random.js";
-import { verifyFrozenDesign, type InjectionSuiteExpectedDesign } from "./freeze.js";
+import { verifyFrozenDesign, type InjectionSuiteExpectedDesign, verifyFrozenDecisionRule } from "./freeze.js";
 import type {
   InjectionSuiteArm,
   InjectionSuiteEpisodeRow,
@@ -486,6 +487,7 @@ export async function analyzeInjectionSuitePublicationRun(
     readFile(path.join(runDir, "episodes.jsonl"), "utf8"),
   ]);
   verifyFrozenDesign(design, metadata);
+  verifyFrozenDecisionRule(metadata);
   const rows = episodeText
     .split("\n")
     .filter(Boolean)
@@ -499,7 +501,7 @@ export async function analyzeInjectionSuitePublicationRun(
     if (seen.has(row.rowKey)) duplicate += 1;
     seen.add(row.rowKey);
     if (!expected.has(row.rowKey)) unexpected += 1;
-    if (!row.evidence) invalid += 1;
+    if (!row.evidence || buildInjectionSuiteRowKey(row.identity) !== row.rowKey) invalid += 1;
   }
   const analysis = analyzeInjectionSuitePublicationRows(
     rows,

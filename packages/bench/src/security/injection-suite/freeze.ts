@@ -88,6 +88,18 @@ function sha256(value: string): string {
  * canonical JSON (sorted keys), so the file may use any formatting on
  * disk; only its contents matter.
  */
+/** The analyzer scores with the rule it imports; refuse a run frozen under a different one. */
+export function verifyFrozenDecisionRule(metadata: InjectionSuiteRunMetadata): void {
+  if (!metadata.decisionRuleHash) {
+    throw new Error("run.json has no decisionRuleHash: the frozen run is not analyzable");
+  }
+  if (metadata.decisionRuleHash !== H5_DECISION_RULE_SHA256) {
+    throw new Error(
+      `run.json decisionRuleHash ${metadata.decisionRuleHash} does not match this analyzer's decision rule ${H5_DECISION_RULE_SHA256}: analyze with the @remnic/bench version that froze the run`,
+    );
+  }
+}
+
 export function verifyFrozenDesign(
   design: InjectionSuiteExpectedDesign,
   metadata: InjectionSuiteRunMetadata,

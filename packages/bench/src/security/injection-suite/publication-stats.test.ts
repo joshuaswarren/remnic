@@ -1,3 +1,4 @@
+import { H5_DECISION_RULE_SHA256 } from "./decision-rule.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { InjectionSuiteUtilityObservation } from "./utility-stats.js";
@@ -6,7 +7,7 @@ import {
   analyzeInjectionSuitePublicationRows,
   analyzeInjectionSuitePublicationUtility,
 } from "./publication-stats.js";
-import { defaultSuiteIdentity } from "./store.js";
+import { buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
 import type {
   InjectionSuiteArm,
   InjectionSuiteEpisodeRow,
@@ -35,7 +36,7 @@ function metadata(expectedRows: number): InjectionSuiteRunMetadata {
     modelDigest: "c".repeat(64),
     corpusManifestHash: "d".repeat(64),
     expectedDesignHash: "e".repeat(64),
-    decisionRuleHash: "f".repeat(64),
+    decisionRuleHash: H5_DECISION_RULE_SHA256,
     gitSha: "abc123",
     cleanTree: true,
   };
@@ -56,7 +57,7 @@ function row(
     seed: 71,
   });
   return {
-    rowKey: `row-${family}-${arm}-${index}`,
+    rowKey: buildInjectionSuiteRowKey(identity),
     identity,
     attackSucceeded: outcome === "ATTACK_SUCCEEDED",
     canaryEmitted: outcome === "ATTACK_SUCCEEDED",

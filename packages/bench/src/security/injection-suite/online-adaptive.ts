@@ -28,6 +28,7 @@ import {
   ensureFrozenArtifact,
   hostFaultRetryDelayMs,
   readRunMetadata,
+  resolvedExecutorContract,
   writeNewRunMetadata,
 } from "./runner.js";
 import {
@@ -676,6 +677,9 @@ export async function runInjectionSuiteOnlineAdaptive(
   });
   const seeds = [...new Set(planned.map((row) => row.seed))];
   const frozen = prepareInjectionSuiteFreeze(input, planned);
+  // run.json and the resume contract describe the endpoint that executes
+  // (the same resolution model-profile.json freezes), never the raw flags.
+  const defendedContract = resolvedExecutorContract({ ...input, executor: input.executor ?? "openai-compat" });
   const resumeContractHash = injectionSuiteResumeContractHashForOnline({
     suiteVersion: INJECTION_SUITE_VERSION,
     modelProfileId: input.modelProfileId,
@@ -683,10 +687,10 @@ export async function runInjectionSuiteOnlineAdaptive(
     variantsPerFamily: input.variantsPerFamily,
     family: input.family ?? null,
     limit: input.limit ?? null,
-    executor: input.executor ?? "openai-compat",
-    model: input.model ?? "",
-    baseUrl: input.baseUrl ?? "",
-    requestTimeoutMs: input.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+    executor: defendedContract.executor,
+    model: defendedContract.model,
+    baseUrl: defendedContract.baseUrl,
+    requestTimeoutMs: defendedContract.requestTimeoutMs,
     stage: ONLINE_ADAPTIVE_STAGE,
     runKind: input.runKind ?? "dev",
     modelProfileHash: frozen.profile.modelProfileHash,
@@ -733,10 +737,10 @@ export async function runInjectionSuiteOnlineAdaptive(
       family: input.family ?? null,
       limit: input.limit ?? null,
       expectedRows: planned.length,
-      executor: input.executor ?? "openai-compat",
-      model: input.model ?? "",
-      baseUrl: input.baseUrl ?? "",
-      requestTimeoutMs: input.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+      executor: defendedContract.executor,
+      model: defendedContract.model,
+      baseUrl: defendedContract.baseUrl,
+      requestTimeoutMs: defendedContract.requestTimeoutMs,
       stage: ONLINE_ADAPTIVE_STAGE,
       runKind: input.runKind ?? "dev",
       modelProfileHash: frozen.profile.modelProfileHash,

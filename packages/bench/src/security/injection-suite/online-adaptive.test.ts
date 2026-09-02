@@ -12,6 +12,7 @@
  * -corpus-manifest).
  */
 
+import { H5_DECISION_RULE_SHA256 } from "./decision-rule.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
@@ -49,7 +50,7 @@ import type {
   InjectionSuiteRunMetadata,
   InjectionSuiteVariant,
 } from "./types.js";
-import { InjectionSuiteHostFault } from "./llm-executor.js";
+import { DEFAULT_OLLAMA_MODEL, DEFAULT_OPENAI_COMPAT_BASE_URL, InjectionSuiteHostFault } from "./llm-executor.js";
 import type { InjectionSuiteChatMessage, InjectionSuiteChatResult } from "./llm-executor.js";
 import type { InjectionSuiteProductLifecycleDeps } from "./product-lifecycle.js";
 
@@ -359,6 +360,23 @@ test("the attacker in-flight marker survives until the corpus line is durable", 
   }
 });
 
+test("online run.json records the resolved defended endpoint when flags are omitted", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-resolved-meta-"));
+  try {
+    const base = baseVariantFor("minja", 1);
+    const responder = () => ({ text: `ACK ${base.canary} ${base.livenessCanary}`, toolCalls: [], inputTokens: 0, outputTokens: 0, model: "m" });
+    await runOnlineAdaptiveWithFake({ outputDir: tmp, attackerResponder: responder, defendedResponder: responder, omitDefendedFlags: true });
+    const run = JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) as { model: string; baseUrl: string };
+    const profile = JSON.parse(await readFile(path.join(tmp, "model-profile.json"), "utf8")) as { model: string; baseUrl: string };
+    assert.equal(run.model, DEFAULT_OLLAMA_MODEL);
+    assert.equal(run.baseUrl, DEFAULT_OPENAI_COMPAT_BASE_URL);
+    assert.equal(run.model, profile.model);
+    assert.equal(run.baseUrl, profile.baseUrl);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("the online stage refuses more than one corpus seed", () => {
   assert.throws(
     () => planOnlineAdaptiveRows({ seeds: 2, variantsPerFamily: 1, iterations: 1, seedBase: 71, modelProfileId: "fixture" }),
@@ -574,6 +592,7 @@ interface RunnerE2EConfig {
   defendedResponder: (messages: readonly InjectionSuiteChatMessage[]) => InjectionSuiteChatResult;
   resume?: boolean;
   retryAmbiguous?: boolean;
+  omitDefendedFlags?: boolean;
 }
 
 async function runOnlineAdaptiveWithFake(
@@ -605,8 +624,7 @@ async function runOnlineAdaptiveWithFake(
         modelProfileId: "fixture",
         outputDir: config.outputDir,
         executor: "openai-compat",
-        baseUrl: "http://127.0.0.1:9",
-        model: "fixture-defender",
+        ...(config.omitDefendedFlags ? {} : { baseUrl: "http://127.0.0.1:9", model: "fixture-defender" }),
         requestTimeoutMs: 5_000,
         attackerExecutor: "openai-compat",
         attackerBaseUrl: "http://127.0.0.1:9",
@@ -779,7 +797,7 @@ test("analyzer success@k is unchanged for a complete run with manifest", async (
         modelDigest: "0".repeat(64),
         corpusManifestHash: "0".repeat(64),
         expectedDesignHash: sha256(stableInjectionSuiteJson(design)),
-        decisionRuleHash: "0".repeat(64),
+        decisionRuleHash: H5_DECISION_RULE_SHA256,
         gitSha: "0".repeat(40),
         cleanTree: true,
         attackerIterations: 1,
@@ -913,7 +931,7 @@ async function writeOnlineFixture(
       modelDigest: "0".repeat(64),
       corpusManifestHash: "0".repeat(64),
       expectedDesignHash: sha256(stableInjectionSuiteJson(design)),
-      decisionRuleHash: "0".repeat(64),
+      decisionRuleHash: H5_DECISION_RULE_SHA256,
       gitSha: "0".repeat(40),
       cleanTree: true,
       attackerIterations: options.attackerIterations ?? 1,

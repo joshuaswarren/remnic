@@ -1,3 +1,4 @@
+import { H5_DECISION_RULE_SHA256 } from "./decision-rule.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
@@ -12,7 +13,7 @@ import {
   replayInjectionSuiteStatistics,
 } from "./stats.js";
 import { stableInjectionSuiteJson, type InjectionSuiteExpectedDesign } from "./freeze.js";
-import { defaultSuiteIdentity } from "./store.js";
+import { buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
 import type {
   InjectionSuiteArm,
   InjectionSuiteEpisodeRow,
@@ -46,7 +47,7 @@ function metadata(
     modelDigest: "c".repeat(64),
     corpusManifestHash: "d".repeat(64),
     expectedDesignHash,
-    decisionRuleHash: "f".repeat(64),
+    decisionRuleHash: H5_DECISION_RULE_SHA256,
     gitSha: "abc123",
     cleanTree: true,
   };
@@ -68,7 +69,7 @@ function row(
     seed: 71,
   });
   return {
-    rowKey: `row-${stage}-${family}-${arm}-${index}`,
+    rowKey: buildInjectionSuiteRowKey(identity),
     identity,
     attackSucceeded: outcome === "ATTACK_SUCCEEDED",
     canaryEmitted: outcome === "ATTACK_SUCCEEDED",
@@ -290,6 +291,44 @@ test("analysis refuses a tampered frozen design", async () => {
     await assert.rejects(() => analyzeInjectionSuiteRun(runDir), /not analyzable/);
     const statisticsPath = path.join(runDir, "statistics.json");
     await assert.rejects(() => readFile(statisticsPath, "utf8"), { code: "ENOENT" });
+  } finally {
+    await rm(runDir, { recursive: true, force: true });
+  }
+});
+
+test("analysis refuses a run frozen under a different decision rule", async () => {
+  const family = INJECTION_SUITE_FAMILIES[0];
+  if (!family) throw new Error("suite families are empty");
+  const runDir = await seedRunDir([row(family, "none", 1, "base", "BLOCKED")]);
+  try {
+    const run = JSON.parse(await readFile(path.join(runDir, "run.json"), "utf8")) as { decisionRuleHash: string };
+    run.decisionRuleHash = "1".repeat(64);
+    await writeFile(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`);
+    await assert.rejects(() => analyzeInjectionSuiteRun(runDir), /decisionRuleHash/);
+  } finally {
+    await rm(runDir, { recursive: true, force: true });
+  }
+});
+
+test("an episode whose identity does not match its rowKey is invalid, not scored", async () => {
+  const family = INJECTION_SUITE_FAMILIES[0];
+  if (!family) throw new Error("suite families are empty");
+  const rows = supportedBaseRows();
+  const runDir = await seedRunDir(rows);
+  try {
+    const clean = await analyzeInjectionSuiteRun(runDir);
+    assert.equal(clean.invalidRows, 0);
+    // Re-attribute one blocked baseline row to the fencing arm under its old key.
+    const tampered = rows.map((episode, index) =>
+      index === 0 ? { ...episode, identity: { ...episode.identity, arm: "fencing" as const } } : episode,
+    );
+    await writeFile(
+      path.join(runDir, "episodes.jsonl"),
+      `${tampered.map((episode) => JSON.stringify(episode)).join("\n")}\n`,
+    );
+    const analysis = await analyzeInjectionSuiteRun(runDir);
+    assert.equal(analysis.invalidRows, 1);
+    assert.equal(analysis.decision, "NOT_ESTIMABLE");
   } finally {
     await rm(runDir, { recursive: true, force: true });
   }

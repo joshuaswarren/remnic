@@ -4,7 +4,8 @@
  * file-size ratchet; that module re-exports this public surface unchanged.
  */
 
-import { verifyFrozenDesign } from "./freeze.js";
+import { buildInjectionSuiteRowKey } from "./store.js";
+import { verifyFrozenDecisionRule, verifyFrozenDesign } from "./freeze.js";
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -405,6 +406,7 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   const metadata = JSON.parse(metadataText) as InjectionSuiteRunMetadata;
   const design = JSON.parse(designText) as InjectionSuiteExpectedDesign;
   verifyFrozenDesign(design, metadata);
+  verifyFrozenDecisionRule(metadata);
   const clusterByVariantBase = new Map<string, string>();
   const plannedCells = new Set<string>();
   const maxPlannedIteration = new Map<string, number>();
@@ -427,6 +429,9 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   let duplicateLines = 0;
   for (const line of episodeLines ?? []) {
     const row = JSON.parse(line) as InjectionSuiteEpisodeRow;
+    if (buildInjectionSuiteRowKey(row.identity) !== row.rowKey) {
+      throw new Error(`episode identity does not match its rowKey ${row.rowKey}`);
+    }
     const prior = byRowKey.get(row.rowKey);
     if (prior) {
       duplicateLines += 1;

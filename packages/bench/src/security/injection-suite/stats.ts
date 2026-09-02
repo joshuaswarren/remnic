@@ -1,5 +1,5 @@
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
-import { verifyFrozenDesign, type InjectionSuiteExpectedDesign } from "./freeze.js";
+import { verifyFrozenDesign, type InjectionSuiteExpectedDesign, verifyFrozenDecisionRule } from "./freeze.js";
 import { H5_DECISION_RULE } from "./decision-rule.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -10,6 +10,7 @@ import type {
   InjectionSuiteRunMetadata,
 } from "./types.js";
 import { INJECTION_SUITE_FAMILIES } from "./types.js";
+import { buildInjectionSuiteRowKey } from "./store.js";
 
 export interface InjectionSuiteRateSummary {
   denominator: number;
@@ -303,6 +304,7 @@ export async function computeInjectionSuiteRun(
     readFile(path.join(runDir, "episodes.jsonl"), "utf8"),
   ]);
   verifyFrozenDesign(design, metadata);
+  verifyFrozenDecisionRule(metadata);
   const rows = parseEpisodes(episodeText);
   const expected = new Set(design.rows.map((row) => row.rowKey));
   const seen = new Set<string>();
@@ -313,7 +315,9 @@ export async function computeInjectionSuiteRun(
     if (seen.has(row.rowKey)) duplicate += 1;
     seen.add(row.rowKey);
     if (!expected.has(row.rowKey)) unexpected += 1;
-    if (!row.evidence) invalid += 1;
+    // The key is the identity's hash; an episode whose identity no longer
+    // matches its key would be scored under the wrong arm or family.
+    if (!row.evidence || buildInjectionSuiteRowKey(row.identity) !== row.rowKey) invalid += 1;
   }
   const missing = [...expected].filter((rowKey) => !seen.has(rowKey)).length;
   return analyzeInjectionSuiteRows(rows, metadata, { invalid, duplicate, missing, unexpected });
