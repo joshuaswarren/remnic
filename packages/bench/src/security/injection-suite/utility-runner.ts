@@ -311,6 +311,17 @@ async function runPublishedUtility(
       arm,
       score: taskScore(task),
     }));
+  } catch (error) {
+    // A partial benchmark (provider trial failures) must not abort the
+    // remaining seeds: every completed task is already checkpointed, the
+    // failed ones are excluded from the resume map, and the next run retries
+    // only those. Surface the partial cell; the analysis treats missing
+    // tasks as missing, never as utility loss.
+    if (!(error instanceof Error) || !error.message.includes("produced a partial result")) throw error;
+    console.warn(`[h5-utility] ${arm} seed ${seed} ${benchmark}: ${error.message}; continuing with remaining seeds`);
+    return [...store.loadTasks().values()]
+      .filter((task) => !isRetryableUtilityFailure(task))
+      .map((task) => ({ benchmark, itemId: task.taskId, seed, arm, score: taskScore(task) }));
   } finally {
     await adapter.destroy();
   }
