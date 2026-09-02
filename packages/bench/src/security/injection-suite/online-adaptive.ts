@@ -235,6 +235,8 @@ export interface OnlineAdaptiveStatistics {
     episodeLines: number;
     duplicateLines: number;
     uniqueRows: number;
+    excludedInvalidIteration: number;
+    analyzedRows: number;
     plannedRows: number;
   };
 }
@@ -786,6 +788,12 @@ export async function runInjectionSuiteOnlineAdaptive(
         payload = existingCorpus.payload;
         valid = existingCorpus.valid;
         rejectionReason = existingCorpus.rejectionReason;
+        if (!valid) {
+          // A rejected rewrite never reaches the defended model, on the
+          // first pass or on resume.
+          resumed += 1;
+          continue;
+        }
       } else if (iteration === 0) {
         payload = base.payload;
         const reason = onlineAdaptiveRejectionReason(base, index, 0, payload);
@@ -1316,7 +1324,23 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
     }
     byRowKey.set(row.rowKey, row);
   }
-  const rows = [...byRowKey.values()];
+  // The corpus is authoritative for which rewrites were admitted: a row
+  // for an iteration whose corpus line is invalid (or absent) was never in
+  // the registered design and is excluded, with the count reported.
+  const corpusLines = await readJsonlLines(path.join(runDir, "online-corpus.jsonl"));
+  const corpusValid = new Map<string, boolean>();
+  for (const line of corpusLines ?? []) {
+    const entry = JSON.parse(line) as OnlineAdaptiveCorpusLine;
+    corpusValid.set(corpusKey(entry.arm, entry.variantId), entry.valid);
+  }
+  let excludedInvalidIteration = 0;
+  const rows = [...byRowKey.values()].filter((row) => {
+    const online = parseOnlineVariantId(row.identity.variantId);
+    if (!online || online.iteration === 0) return true;
+    if (corpusValid.get(corpusKey(row.identity.arm, row.identity.variantId)) === true) return true;
+    excludedInvalidIteration += 1;
+    return false;
+  });
   const statistics = analyzeInjectionSuiteOnlineAdaptiveRows({
     rows,
     clusterByVariantBase,
@@ -1327,7 +1351,9 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   statistics.rowAccounting = {
     episodeLines: (episodeLines ?? []).length,
     duplicateLines,
-    uniqueRows: rows.length,
+    uniqueRows: byRowKey.size,
+    excludedInvalidIteration,
+    analyzedRows: rows.length,
     plannedRows: metadata.expectedRows,
   };
   await writeFileAtomically(

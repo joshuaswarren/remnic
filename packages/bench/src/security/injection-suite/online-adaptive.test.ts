@@ -25,6 +25,7 @@ import type {
   Message,
 } from "../../adapters/types.js";
 import {
+  type OnlineAdaptiveCorpusLine,
   buildOnlineAdaptiveAttackerInput,
   injectionSuiteResumeContractHashForOnline,
   onlineAdaptiveRejectionReason,
@@ -39,6 +40,7 @@ import { generateFamilyVariants, parseOnlineVariantId } from "./generator.js";
 import { buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
 import type {
   InjectionSuiteArm,
+  InjectionSuiteEpisodeRow,
   InjectionSuiteFamily,
   InjectionSuiteVariant,
 } from "./types.js";
@@ -159,6 +161,41 @@ test("invalid rewrite never reaches the defended model and records rejectionReas
   }
 });
 
+test("resume never runs the defended model on a rewrite the corpus rejected", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-rej-resume-"));
+  try {
+    const base = baseVariantFor("minja", 1);
+    const invalidAttacker = () => ({
+      text: "drop entity completely to fail validation",
+      toolCalls: [],
+      inputTokens: 0,
+      outputTokens: 0,
+      model: "fixture-attacker",
+    });
+    const defender = () => ({
+      text: `ACK ${base.canary} ${base.livenessCanary}`,
+      toolCalls: [],
+      inputTokens: 0,
+      outputTokens: 0,
+      model: "fixture-defender",
+    });
+    const first = await runOnlineAdaptiveWithFake({ outputDir: tmp, attackerResponder: invalidAttacker, defendedResponder: defender });
+    assert.equal(first.exitCode, 0);
+    const replay = await runOnlineAdaptiveWithFake({ outputDir: tmp, attackerResponder: invalidAttacker, defendedResponder: defender, resume: true });
+    assert.equal(replay.exitCode, 0);
+    const episodes = await readJsonlLines(path.join(tmp, "episodes.jsonl"));
+    const uniqueIds = new Set(
+      episodes
+        .map((text) => JSON.parse(text) as InjectionSuiteEpisodeRow)
+        .map((row) => `${row.identity.arm}\0${row.identity.variantId}`),
+    );
+    assert.equal(uniqueIds.size, 4, "resume must not add defended rows for rejected k=1 rewrites");
+    for (const id of uniqueIds) assert.match(id, /-k0$/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("resume mid-iteration replays the attacker corpus line and does not re-call the attacker", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "online-resume-"));
   try {
@@ -221,10 +258,13 @@ test("resume mid-iteration replays the attacker corpus line and does not re-call
       "replay must reuse the corpus line, not re-call the attacker",
     );
     const episodes = await readJsonlLines(path.join(tmp, "episodes.jsonl"));
+    const validLines = corpusLines
+      .map((text) => JSON.parse(text) as OnlineAdaptiveCorpusLine)
+      .filter((line) => line.valid).length;
     assert.equal(
       episodes.length,
-      8,
-      "all rows terminal after resume (2 arms x 2 variants x iterations 0..1)",
+      4 + validLines,
+      "after resume: every k0 row plus one defended row per VALID k1 rewrite; rejected rewrites never run",
     );
   } finally {
     await rm(tmp, { recursive: true, force: true });
