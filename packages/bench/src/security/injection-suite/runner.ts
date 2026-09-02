@@ -96,7 +96,7 @@ export function injectionSuiteResumeContractHash(metadata: {
     .digest("hex");
 }
 
-function hostFaultRetryDelayMs(
+export function hostFaultRetryDelayMs(
   message: string,
   consecutiveFaults: number,
 ): number {
@@ -252,7 +252,7 @@ async function executeRow(
   return executeProductLifecycleRow(identity, variant, input);
 }
 
-async function readRunMetadata(
+export async function readRunMetadata(
   outputDir: string,
 ): Promise<InjectionSuiteRunMetadata | undefined> {
   try {
@@ -265,7 +265,7 @@ async function readRunMetadata(
   }
 }
 
-async function writeNewRunMetadata(
+export async function writeNewRunMetadata(
   outputDir: string,
   metadata: InjectionSuiteRunMetadata,
 ): Promise<boolean> {
@@ -295,7 +295,7 @@ async function writeNewRunMetadata(
   }
 }
 
-async function ensureFrozenArtifact(
+export async function ensureFrozenArtifact(
   outputDir: string,
   fileName: string,
   content: string,

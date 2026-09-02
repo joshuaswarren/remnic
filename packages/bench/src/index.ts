@@ -801,7 +801,13 @@ export {
   H5_PUBLICATION_ANALYSIS_RULE,
   H5_PUBLICATION_DEFENSE_BASELINES,
   replayInjectionSuiteStatistics,
+  runInjectionSuiteOnlineAdaptive,
   runInjectionSuiteUtility,
+  analyzeInjectionSuiteOnlineAdaptiveRun,
+  planOnlineAdaptiveRows,
+  stripCodeFences,
+  DEFAULT_ATTACKER_PROMPT_PATH,
+  ONLINE_ADAPTIVE_STAGE,
   executeLocalRow,
   generateFamilyVariants,
   generateSuiteVariants,
@@ -821,9 +827,13 @@ export type {
   InjectionSuiteCliResult,
   InjectionSuiteEpisodeRow,
   InjectionSuiteFamily,
+  InjectionSuiteOnlineAdaptiveInput,
   InjectionSuiteProductEvidence,
   InjectionSuiteRowIdentity,
   InjectionSuiteStage,
+  OnlineAdaptiveCorpusLine,
+  OnlineAdaptiveCorpusManifest,
+  OnlineAdaptiveStatistics,
 } from "./security/injection-suite/index.js";
 
 // ---------------------------------------------------------------------------

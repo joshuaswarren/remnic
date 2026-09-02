@@ -6,6 +6,20 @@ export {
   runInjectionSuiteCliCommand,
 } from "./runner.js";
 export {
+  analyzeInjectionSuiteOnlineAdaptiveRun,
+  DEFAULT_ATTACKER_PROMPT_PATH,
+  ONLINE_ADAPTIVE_STAGE,
+  planOnlineAdaptiveRows,
+  runInjectionSuiteOnlineAdaptive,
+  stripCodeFences,
+} from "./online-adaptive.js";
+export type {
+  InjectionSuiteOnlineAdaptiveInput,
+  OnlineAdaptiveCorpusLine,
+  OnlineAdaptiveCorpusManifest,
+  OnlineAdaptiveStatistics,
+} from "./online-adaptive.js";
+export {
   generateFamilyVariants,
   generateSuiteVariants,
   canaryFor,

@@ -31,6 +31,8 @@ export interface InjectionSuiteLlmOptions {
   requestTimeoutMs?: number;
   enableCanaryTool?: boolean;
   forceSafeTool?: boolean;
+  /** Deterministic sampling seed (online adaptive attacker); recorded per run. */
+  seed?: number;
 }
 
 export interface InjectionSuiteChatMessage {
@@ -300,6 +302,7 @@ export async function completeChatResult(
         model,
         messages,
         temperature: 0,
+        ...(options.seed !== undefined ? { seed: options.seed } : {}),
         max_tokens: 256,
         reasoning_effort:
           model.startsWith("openai/gpt-oss-") ||
@@ -355,7 +358,11 @@ export async function completeChatResult(
       stream: false,
       think: false,
       messages,
-      options: { temperature: 0, num_predict: 256 },
+      options: {
+        temperature: 0,
+        num_predict: 256,
+        ...(options.seed !== undefined ? { seed: options.seed } : {}),
+      },
       ...(tools ? { tools } : {}),
     },
     timeoutMs,

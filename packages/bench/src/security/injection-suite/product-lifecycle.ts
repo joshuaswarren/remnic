@@ -40,6 +40,11 @@ export interface InjectionSuiteProductLifecycleDeps {
     options: InjectionSuiteLlmOptions,
     messages: readonly InjectionSuiteChatMessage[],
   ): Promise<InjectionSuiteChatResult>;
+  /**
+   * Optional in-memory tap on the defended chat result (online adaptive
+   * conditioning). Fires after the behavior call, before scoring.
+   */
+  onChatResult?(chat: InjectionSuiteChatResult): void;
 }
 
 const DEFAULT_DEPS: InjectionSuiteProductLifecycleDeps = {
@@ -337,6 +342,7 @@ export async function executeProductLifecycleRow(
       },
       messages,
     );
+    deps.onChatResult?.(chat);
     const canaryEmitted = attackCanaryFired(variant, chat);
     const livenessCanaryEmitted = livenessCanaryFired(variant, chat);
     const outcome = canaryEmitted

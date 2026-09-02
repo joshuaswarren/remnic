@@ -16,6 +16,7 @@ export const INJECTION_SUITE_STAGES = [
   "adaptive-r3",
   "benign",
   "benign-use",
+  "adaptive-online-r1",
 ] as const;
 export const INJECTION_SUITE_ARMS = [
   "none",
@@ -204,6 +205,12 @@ export interface InjectionSuiteRunMetadata {
   cleanTree: boolean;
   /** Run option, not evidence: raw-response capture file was requested. */
   captureResponses?: boolean;
+  /** adaptive-online-r1 only: disclosed attacker configuration. */
+  attackerExecutor?: string;
+  attackerModel?: string;
+  attackerModelDigest?: string;
+  attackerPromptSha256?: string;
+  attackerIterations?: number;
 }
 
 export interface InjectionSuiteCliInput {
@@ -230,6 +237,15 @@ export interface InjectionSuiteCliInput {
   requestTimeoutMs?: number;
   /** Opt-in raw-response capture: write responses.jsonl beside the checkpoints. */
   captureResponses?: boolean;
+  /** adaptive-online-r1 only: attacker model transport and disclosure set. */
+  attackerExecutor?: "openai-compat" | "ollama";
+  attackerBaseUrl?: string;
+  attackerModel?: string;
+  attackerModelDigest?: string;
+  /** Path to the frozen attacker system prompt (hashed into the resume contract). */
+  attackerPromptPath?: string;
+  /** K: attacker rewrites per base variant; iteration 0 re-runs the base payload. */
+  attackerIterations?: number;
 }
 
 export interface InjectionSuiteCliResult {

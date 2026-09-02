@@ -8,12 +8,10 @@ import {
 import {
   generateFamilyVariants,
   injectionSuiteVariantHash,
+  parseOnlineVariantId,
 } from "./generator.js";
 import { buildInjectionSuiteRowKey } from "./store.js";
-import type {
-  InjectionSuiteCliInput,
-  InjectionSuiteRowIdentity,
-} from "./types.js";
+import type { InjectionSuiteCliInput, InjectionSuiteRowIdentity } from "./types.js";
 
 export interface InjectionSuiteModelProfile {
   schemaVersion: 2;
@@ -82,8 +80,15 @@ function sha256(value: string): string {
 function scenarioForIdentity(identity: InjectionSuiteRowIdentity) {
   const match = /-(\d+)$/.exec(identity.variantId);
   const index = match ? Number(match[1]) : Number.NaN;
-  if (!Number.isInteger(index) || index < 1)
-    throw new Error(`invalid H5 variant id ${identity.variantId}`);
+  const online = parseOnlineVariantId(identity.variantId);
+  if (identity.stage === "adaptive-online-r1") {
+    if (!online || online.family !== identity.family) {
+      throw new Error(`invalid H5 variant id ${identity.variantId}`);
+    }
+    return generateFamilyVariants(online.family, online.index, identity.seed, "base")[
+      online.index - 1
+    ];
+  }
   const variant = generateFamilyVariants(
     identity.family,
     index,

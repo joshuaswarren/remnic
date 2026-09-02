@@ -24,7 +24,8 @@ leases, and --limit follow the H6 contract (issue #1963 / PR #2312).
 
 Additional commands:
   remnic bench security injection-suite-analyze --run DIR
-  remnic bench security injection-suite-publication-analyze --run DIR
+  remnic bench security injection-suite-adaptive-online [injection-suite options]
+  remnic bench security injection-suite-adaptive-online-analyze --run DIR
   remnic bench security injection-suite-publication-utility --observations FILE --out FILE
   remnic bench security injection-suite-replay --run DIR
   remnic bench security injection-suite-utility [injection-suite options] [--dataset-dir DIR]
@@ -35,9 +36,16 @@ Options:
   --seed-base N             First deterministic corpus seed (default: 71)
   --variants-per-family N   Variants per attack family (default: 25)
   --family FAMILY           Target one dev/pilot attack family; forbidden for main
-  --model-profile ID        Profile label recorded on each row (default: local-dry)
   --stage base|adaptive-r1|adaptive-r2|adaptive-r3|benign|benign-use
                             Frozen corpus stage (default: base)
+  --attacker-executor openai-compat|ollama
+                            adaptive-online only: attacker transport
+  --attacker-base-url URL   Attacker endpoint (defaults mirror the defended executor)
+  --attacker-model NAME     Attacker model id (default: qwen3.8-27b-64k:latest)
+  --attacker-model-digest SHA256
+                            Immutable served attacker-model digest
+  --attacker-iterations N   K attacker rewrites per base variant (default: 3)
+  --attacker-prompt FILE    Frozen attacker system prompt (default: bench fixture)
   --arm ID                  Repeat to select frozen defense arms
   --run-kind dev|pilot|main Run gate to enforce (default: dev)
   --executor local|ollama|openai-compat
@@ -76,7 +84,8 @@ interface InjectionSuiteCommand {
     | "adaptive-r2"
     | "adaptive-r3"
     | "benign"
-    | "benign-use";
+    | "benign-use"
+    | "adaptive-online-r1";
   arms?: Array<
     | "none"
     | "fencing"
@@ -103,6 +112,12 @@ interface InjectionSuiteCommand {
   modelContextTokens?: number;
   requestTimeoutMs?: number;
   captureResponses: boolean;
+  attackerExecutor?: "openai-compat" | "ollama";
+  attackerBaseUrl?: string;
+  attackerModel?: string;
+  attackerModelDigest?: string;
+  attackerIterations?: number;
+  attackerPromptPath?: string;
 }
 
 function parsePositiveInteger(raw: string | undefined, flag: string): number {
@@ -144,6 +159,12 @@ export function parseBenchSecurityArgs(
   let modelContextTokens: number | undefined;
   let requestTimeoutMs: number | undefined;
   let captureResponses = false;
+  let attackerExecutor: InjectionSuiteCommand["attackerExecutor"];
+  let attackerBaseUrl: string | undefined;
+  let attackerModel: string | undefined;
+  let attackerModelDigest: string | undefined;
+  let attackerIterations: number | undefined;
+  let attackerPromptPath: string | undefined;
 
   for (let index = 1; index < args.length; index += 1) {
     const flag = args[index] ?? "";
@@ -182,10 +203,11 @@ export function parseBenchSecurityArgs(
         next !== "adaptive-r2" &&
         next !== "adaptive-r3" &&
         next !== "benign" &&
-        next !== "benign-use"
+        next !== "benign-use" &&
+        next !== "adaptive-online-r1"
       ) {
         throw new Error(
-          "--stage must be base, adaptive-r1, adaptive-r2, adaptive-r3, benign, or benign-use",
+          "--stage must be base, adaptive-r1, adaptive-r2, adaptive-r3, benign, benign-use, or adaptive-online-r1",
         );
       }
       stage = next;
@@ -278,6 +300,35 @@ export function parseBenchSecurityArgs(
       index += 1;
     } else if (flag === "--capture-responses") {
       captureResponses = true;
+    } else if (flag === "--attacker-executor") {
+      if (next !== "openai-compat" && next !== "ollama") {
+        throw new Error("--attacker-executor must be openai-compat or ollama");
+      }
+      attackerExecutor = next;
+      index += 1;
+    } else if (flag === "--attacker-base-url") {
+      if (next === undefined || next.startsWith("-"))
+        throw new Error("missing value for --attacker-base-url");
+      attackerBaseUrl = next;
+      index += 1;
+    } else if (flag === "--attacker-model") {
+      if (next === undefined || next.startsWith("-"))
+        throw new Error("missing value for --attacker-model");
+      attackerModel = next;
+      index += 1;
+    } else if (flag === "--attacker-model-digest") {
+      if (next === undefined || next.startsWith("-"))
+        throw new Error("missing value for --attacker-model-digest");
+      attackerModelDigest = next;
+      index += 1;
+    } else if (flag === "--attacker-iterations") {
+      attackerIterations = parsePositiveInteger(next, "--attacker-iterations");
+      index += 1;
+    } else if (flag === "--attacker-prompt") {
+      if (next === undefined || next.startsWith("-"))
+        throw new Error("missing value for --attacker-prompt");
+      attackerPromptPath = expandTilde(next);
+      index += 1;
     } else {
       throw new Error(`unknown option ${flag}`);
     }
@@ -310,6 +361,12 @@ export function parseBenchSecurityArgs(
     ...(utilityBenchmarks.length === 0 ? {} : { utilityBenchmarks }),
     ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
     captureResponses,
+    ...(attackerExecutor === undefined ? {} : { attackerExecutor }),
+    ...(attackerBaseUrl === undefined ? {} : { attackerBaseUrl }),
+    ...(attackerModel === undefined ? {} : { attackerModel }),
+    ...(attackerModelDigest === undefined ? {} : { attackerModelDigest }),
+    ...(attackerIterations === undefined ? {} : { attackerIterations }),
+    ...(attackerPromptPath === undefined ? {} : { attackerPromptPath }),
   };
 }
 
@@ -375,6 +432,7 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
     }
     if (
       args[0] === "injection-suite-analyze" ||
+      args[0] === "injection-suite-adaptive-online-analyze" ||
       args[0] === "injection-suite-publication-analyze" ||
       args[0] === "injection-suite-replay"
     ) {
@@ -383,7 +441,15 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
       }
       const analysisBench = await loadBenchModule();
       const runDir = expandTilde(args[2]);
-      if (args[0] === "injection-suite-analyze") {
+      if (args[0] === "injection-suite-adaptive-online-analyze") {
+        const analyze = analysisBench.analyzeInjectionSuiteOnlineAdaptiveRun;
+        if (typeof analyze !== "function")
+          throw new Error(
+            "Installed @remnic/bench lacks the adaptive-online analysis",
+          );
+        const analysis = await analyze(runDir);
+        console.log(JSON.stringify(analysis, null, 2));
+      } else if (args[0] === "injection-suite-analyze") {
         const analyze = analysisBench.analyzeInjectionSuiteRun;
         if (typeof analyze !== "function")
           throw new Error("Installed @remnic/bench lacks H5 analysis");
@@ -407,8 +473,11 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
       return;
     }
     const utilityMode = args[0] === "injection-suite-utility";
+    const onlineMode = args[0] === "injection-suite-adaptive-online";
     const parsed = parseBenchSecurityArgs(
-      utilityMode ? ["injection-suite", ...args.slice(1)] : args,
+      utilityMode || onlineMode
+        ? ["injection-suite", ...args.slice(1)]
+        : args,
     );
     if ("help" in parsed) {
       console.log(BENCH_SECURITY_USAGE);
@@ -455,13 +524,7 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
       console.log(JSON.stringify(analysis, null, 2));
       return;
     }
-    const run = bench.runInjectionSuiteCliCommand;
-    if (typeof run !== "function") {
-      throw new Error(
-        "Installed @remnic/bench is missing runInjectionSuiteCliCommand",
-      );
-    }
-    const result = await run({
+    const suiteInput = {
       seeds: parsed.seeds,
       ...(parsed.seedBase === undefined ? {} : { seedBase: parsed.seedBase }),
       variantsPerFamily: parsed.variantsPerFamily,
@@ -487,7 +550,53 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
         ? {}
         : { requestTimeoutMs: parsed.requestTimeoutMs }),
       ...(parsed.captureResponses ? { captureResponses: true } : {}),
-    });
+    };
+    if (onlineMode) {
+      const runOnline = bench.runInjectionSuiteOnlineAdaptive;
+      if (typeof runOnline !== "function") {
+        throw new Error(
+          "Installed @remnic/bench lacks runInjectionSuiteOnlineAdaptive",
+        );
+      }
+      if (parsed.executor === "local") {
+        throw new Error(
+          "adaptive-online-r1 requires --executor ollama or openai-compat (local executor cannot run product rows)",
+        );
+      }
+      const attackerPromptPath =
+        parsed.attackerPromptPath ?? bench.DEFAULT_ATTACKER_PROMPT_PATH;
+      const result = await runOnline({
+        ...suiteInput,
+        attackerExecutor: parsed.attackerExecutor ?? "openai-compat",
+        attackerIterations: parsed.attackerIterations ?? 3,
+        attackerPromptPath,
+        ...(parsed.attackerBaseUrl === undefined
+          ? {}
+          : { attackerBaseUrl: parsed.attackerBaseUrl }),
+        ...(parsed.attackerModel === undefined
+          ? {}
+          : { attackerModel: parsed.attackerModel }),
+        ...(parsed.attackerModelDigest === undefined
+          ? {}
+          : { attackerModelDigest: parsed.attackerModelDigest }),
+      });
+      if (result.exitCode === 0) console.log(result.output);
+      else console.error(result.output);
+      if (result.exitCode !== 0) process.exitCode = result.exitCode;
+      return;
+    }
+    if (parsed.stage === "adaptive-online-r1") {
+      throw new Error(
+        "stage adaptive-online-r1 requires the injection-suite-adaptive-online command",
+      );
+    }
+    const run = bench.runInjectionSuiteCliCommand;
+    if (typeof run !== "function") {
+      throw new Error(
+        "Installed @remnic/bench is missing runInjectionSuiteCliCommand",
+      );
+    }
+    const result = await run(suiteInput);
     if (result.exitCode === 0) console.log(result.output);
     else console.error(result.output);
     if (result.exitCode !== 0) process.exitCode = result.exitCode;

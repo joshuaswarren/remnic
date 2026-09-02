@@ -121,13 +121,13 @@ export interface InjectionSuitePublicationAnalysis {
   layered: "SUPPORTED" | "REJECTED" | "NOT_ESTIMABLE";
 }
 
-interface ClusteredOutcome {
+export interface ClusteredOutcome {
   cluster: string;
   success: boolean;
   void: boolean;
 }
 
-interface AnalysisOptions {
+export interface AnalysisOptions {
   draws?: number;
   seed?: number;
 }
@@ -146,7 +146,7 @@ function interval(draws: number[]): ClusterBootstrapInterval | null {
   return { lower: percentile(draws, 0.05), upper: percentile(draws, 0.95) };
 }
 
-function bootstrapRate(
+export function bootstrapRate(
   outcomes: readonly ClusteredOutcome[],
   voidAsFailure: boolean,
   options: AnalysisOptions,

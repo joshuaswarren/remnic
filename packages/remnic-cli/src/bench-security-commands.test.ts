@@ -255,3 +255,70 @@ test("capture-responses defaults to absent and unknown stages stay rejected", ()
     /--stage must be/,
   );
 });
+
+test("injection-suite parses online attacker flags and accepts adaptive-online-r1 stage", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--stage",
+    "adaptive-online-r1",
+    "--arm",
+    "source-authenticated-fencing",
+    "--arm",
+    "layered-fence-quarantine",
+    "--attacker-executor",
+    "openai-compat",
+    "--attacker-model",
+    "attacker-model-3b",
+    "--attacker-base-url",
+    "http://attacker.local",
+    "--attacker-model-digest",
+    "b".repeat(64),
+    "--attacker-iterations",
+    "3",
+    "--attacker-prompt",
+    "/tmp/attacker-prompt.md",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.stage, "adaptive-online-r1");
+  assert.equal(parsed.attackerExecutor, "openai-compat");
+  assert.equal(parsed.attackerModel, "attacker-model-3b");
+  assert.equal(parsed.attackerBaseUrl, "http://attacker.local");
+  assert.equal(parsed.attackerModelDigest, "b".repeat(64));
+  assert.equal(parsed.attackerIterations, 3);
+  assert.equal(parsed.attackerPromptPath, "/tmp/attacker-prompt.md");
+  assert.deepEqual(parsed.arms, [
+    "source-authenticated-fencing",
+    "layered-fence-quarantine",
+  ]);
+  assert.match(BENCH_SECURITY_USAGE, /injection-suite-adaptive-online/);
+  assert.match(BENCH_SECURITY_USAGE, /--attacker-executor/);
+  assert.match(BENCH_SECURITY_USAGE, /--attacker-iterations/);
+});
+
+test("injection-suite rejects unknown attacker executor and iterations count", () => {
+  assert.throws(
+    () =>
+      parseBenchSecurityArgs([
+        "injection-suite",
+        "--seeds",
+        "1",
+        "--attacker-executor",
+        "anthropic",
+      ]),
+    /--attacker-executor must be/,
+  );
+  assert.throws(
+    () =>
+      parseBenchSecurityArgs([
+        "injection-suite",
+        "--seeds",
+        "1",
+        "--attacker-iterations",
+        "0",
+      ]),
+    /--attacker-iterations must be/,
+  );
+});
