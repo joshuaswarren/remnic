@@ -264,7 +264,7 @@ test("default Pi extension preserves a tripped breaker across reloads", async (t
   await remnicPiExtension(second.pi);
   await second.emit("session_start", {}, secondContext);
 
-  assert.deepEqual(secondStatuses.at(-1), ["remnic", "Remnic recall disabled until restart (timeouts delayed operations)"]);
+  assert.deepEqual(secondStatuses.at(-1), ["remnic", "Remnic recall paused (timeouts delayed operations; auto-retry after cooldown)"]);
 
   fs.writeFileSync(configPath, JSON.stringify({ ...reloadConfig, authToken: "other-token" }));
   const differentCredential = makePiHarness();
@@ -2162,7 +2162,7 @@ test("session_start preserves the recall-disabled status after a successful heal
   await emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, context("breaker-first"));
   await emit("session_start", {}, context("breaker-second"));
 
-  assert.deepEqual(statuses.at(-1), ["remnic", "Remnic recall disabled until restart (timeouts delayed operations)"]);
+  assert.deepEqual(statuses.at(-1), ["remnic", "Remnic recall paused (timeouts delayed operations; auto-retry after cooldown)"]);
 });
 
 test("/remnic-recall bounds retry to the general request budget instead of unbounded retries (review cursor)", async (t) => {
