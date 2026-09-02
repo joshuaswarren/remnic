@@ -94,3 +94,5 @@ export function renderAuthorityFence(content: string, origin: OriginClass): stri
     AUTHORITY_FENCE_DELIMITER,
   ].join("\n");
 }
+
+export type { MemoryInjectionDefenseMode } from "./types.js";
