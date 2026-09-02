@@ -27,6 +27,8 @@ import { toolJsonResult } from "./openclaw-tools/tool-json-result.js";
 const DEFAULT_SEARCH_RESULTS = 8;
 /** Embedded parity (`recallForActiveMemory`): default snippet budget. */
 const DEFAULT_SNIPPET_MAX_CHARS = 600;
+/** The daemon's `memorySearchSchema` cap on `query`. */
+const DAEMON_SEARCH_QUERY_MAX_CHARS = 2_048;
 
 /** Embedded parity: finite limits floor into [1, 50]; anything else is the default. */
 function clampLimit(value: unknown): number {
@@ -108,7 +110,9 @@ export function buildDelegateMemorySearchTool(options: {
       // embedded tool reports as `truncated`. Fractions are schema-valid
       // (`Type.Number`), and the manager rejects a non-integer maxResults.
       const limit = clampLimit(params.limit);
-      const results = await manager.search(query, {
+      // The daemon's search schema caps `query` at 2048 chars; embedded mode
+      // accepts any length, so trim rather than turn a valid call into a 400.
+      const results = await manager.search(query.slice(0, DAEMON_SEARCH_QUERY_MAX_CHARS), {
         maxResults: limit + 1,
         sessionKey: sessionKeyFor(params, ctx),
       });

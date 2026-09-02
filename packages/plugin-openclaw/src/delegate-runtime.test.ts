@@ -2423,6 +2423,11 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
       /non-empty query/,
     );
     await assert.rejects(tools.get("memory_get")!.execute("tc-4", {}, undefined, {}), /requires an id/);
+    // The daemon caps `query` at 2048 chars; a longer public input is trimmed
+    // rather than turned into a 400 the embedded tool never produces.
+    await tools.get("memory_search")!.execute("tc-5", { query: "q".repeat(3_000) }, undefined, {});
+    const longSearch = stub.calls.filter((call) => call.pathname === "/engram/v1/memories/search").at(-1);
+    assert.equal(String(longSearch?.body.query).length, 2_048);
   } finally {
     await stub.close();
   }

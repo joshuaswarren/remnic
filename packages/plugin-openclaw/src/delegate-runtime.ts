@@ -174,11 +174,6 @@ const DELEGATE_BATCH_FLUSH_CACHE_TTL_MS = 30_000;
  */
 const MAX_RECALL_QUERY_CHARS = 1_500;
 /**
- * The observe POST is detached from `agent_end` (a hung daemon must not hold
- * the host's hook), so its timeout only bounds a background socket.
- */
-const DETACHED_OBSERVE_TIMEOUT_MS = 8_000;
-/**
  * The host hands a memory prompt preparation no prompt, only the session, so
  * its recall is session-primed rather than prompt-specific.
  */
@@ -603,10 +598,11 @@ export function registerDelegateRuntime(
     // connection and never answers would otherwise hold the host's agent_end
     // for the whole observe timeout on every turn; the turn capture is not
     // worth that, and its result feeds nothing the host waits for. Per-session
-    // chaining keeps turns in order and lets a flush wait behind them.
+    // chaining keeps turns in order and lets a flush wait behind them (the
+    // flush drain is budget-bounded, so a slow turn keeps the full configured
+    // observe timeout rather than being dropped at a shorter cap).
     const observe = async (): Promise<void> => {
-      const observeDeadline =
-        Date.now() + Math.min(options.observeTimeoutMs, DETACHED_OBSERVE_TIMEOUT_MS);
+      const observeDeadline = Date.now() + options.observeTimeoutMs;
       const observeRemaining = (): number => observeDeadline - Date.now();
       try {
         await postJson(
