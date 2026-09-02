@@ -58,6 +58,9 @@ export function copyBufferTurn(turn: BufferTurn): BufferTurn {
   if (typeof turn.sourceConnector === "string") {
     copy.sourceConnector = turn.sourceConnector;
   }
+  if (turn.originRole === "user" || turn.originRole === "assistant" || turn.originRole === "tool") {
+    copy.originRole = turn.originRole;
+  }
   if (typeof turn.ambientCapture === "boolean") {
     copy.ambientCapture = turn.ambientCapture;
   }
@@ -77,6 +80,7 @@ export function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn
     left.turnFingerprint === right.turnFingerprint &&
     left.persistProcessedFingerprint === right.persistProcessedFingerprint &&
     left.sourceConnector === right.sourceConnector &&
+    left.originRole === right.originRole &&
     left.ambientCapture === right.ambientCapture
   );
 }

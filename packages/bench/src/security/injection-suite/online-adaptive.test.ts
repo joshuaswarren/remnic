@@ -875,7 +875,11 @@ function onlineIdentity(variant: string) {
 async function writeOnlineFixture(
   tmp: string,
   planned: readonly ReturnType<typeof onlineIdentity>[],
-  options: { corpusFor?: readonly ReturnType<typeof onlineIdentity>[]; episodesFor?: readonly ReturnType<typeof onlineIdentity>[] } = {},
+  options: {
+    corpusFor?: readonly ReturnType<typeof onlineIdentity>[];
+    episodesFor?: readonly ReturnType<typeof onlineIdentity>[];
+    attackerIterations?: number;
+  } = {},
 ): Promise<void> {
   const design = {
     schemaVersion: 1 as const,
@@ -912,7 +916,7 @@ async function writeOnlineFixture(
       decisionRuleHash: "0".repeat(64),
       gitSha: "0".repeat(40),
       cleanTree: true,
-      attackerIterations: 1,
+      attackerIterations: options.attackerIterations ?? 1,
     } satisfies InjectionSuiteRunMetadata)}\n`,
     "utf8",
   );
@@ -1008,6 +1012,22 @@ test("analyzer treats a never-generated planned iteration as incomplete", async 
     const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(stats.rowAccounting?.missingPlannedRows, 0);
     assert.equal(stats.rowAccounting?.neverGeneratedIterations, 1);
+    assert.equal(stats.decision.estimable, false);
+    assert.equal(stats.decision.fencingSupported, false);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("analyzer treats a planned chain that stops before the final k as incomplete", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-truncated-"));
+  try {
+    // The frozen design holds only k1 for its cells (a --limit cut) while
+    // the run declares K=3; a blocked k1 must not become a k3 block.
+    const planned = [onlineIdentity("minja-1"), onlineIdentity("minja-2")];
+    await writeOnlineFixture(tmp, planned, { corpusFor: planned, episodesFor: planned, attackerIterations: 3 });
+    const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(stats.rowAccounting?.truncatedChains, 2);
     assert.equal(stats.decision.estimable, false);
     assert.equal(stats.decision.fencingSupported, false);
   } finally {

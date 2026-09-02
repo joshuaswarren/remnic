@@ -274,6 +274,7 @@ export class TurnIngestionCoordinator {
         rawContent: turn.rawContent,
         sourceFormat: turn.sourceFormat,
         sourceConnector: turn.sourceConnector,
+        ...(turn.originRole ? { originRole: turn.originRole } : {}),
       });
       bySession.set(key, list);
     }
@@ -461,6 +462,7 @@ export class TurnIngestionCoordinator {
         turnFingerprint: turn.turnFingerprint,
         persistProcessedFingerprint: turn.persistProcessedFingerprint === true,
         ...(turn.sourceConnector ? { sourceConnector: turn.sourceConnector } : {}),
+        ...(turn.originRole ? { originRole: turn.originRole } : {}),
       });
     }
     if (sessionTurns.length === 0) {

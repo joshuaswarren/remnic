@@ -13,6 +13,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { SmartBuffer } from "./buffer.js";
+import { bufferTurnsEqual, copyBufferTurn } from "./buffer-turn-helpers.js";
 import {
   ExtractionRunCoordinator,
   type ExtractionRunCoordinatorDeps,
@@ -238,6 +239,7 @@ test("ingestReplayBatch: sourceConnector preserved through replay ingestion", as
         content: "hello from chatgpt",
         timestamp: "2026-07-12T00:00:00Z",
         sourceConnector: "chatgpt",
+        originRole: "tool",
       },
     ]);
 
@@ -246,6 +248,11 @@ test("ingestReplayBatch: sourceConnector preserved through replay ingestion", as
       capturedTurns[0].sourceConnector,
       "chatgpt",
       "ingestReplayBatch must preserve sourceConnector on rebuilt BufferTurn"
+    );
+    assert.equal(
+      capturedTurns[0].originRole,
+      "tool",
+      "ingestReplayBatch must preserve the authenticated originRole so origin authority fences tool content"
     );
   } finally {
     StorageManager.clearAllStaticCaches();
@@ -698,4 +705,16 @@ test("runExtraction: the Source agent header connector equals the persisted sour
     StorageManager.clearAllStaticCaches();
     await rm(baseDir, { recursive: true, force: true });
   }
+});
+
+test("copyBufferTurn and bufferTurnsEqual carry originRole", () => {
+  const turn = makeTurn({ content: "tool output", originRole: "tool" });
+  const copy = copyBufferTurn(turn);
+  assert.equal(copy.originRole, "tool", "extraction snapshots must keep the authenticated origin role");
+  assert.equal(bufferTurnsEqual(copy, turn), true);
+  assert.equal(
+    bufferTurnsEqual(copy, makeTurn({ content: "tool output", originRole: "user" })),
+    false,
+    "a turn re-attributed to another origin is not the same turn",
+  );
 });

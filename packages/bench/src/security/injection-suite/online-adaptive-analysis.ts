@@ -105,6 +105,8 @@ export interface OnlineAdaptiveStatistics {
     missingPlannedRows?: number;
     /** k>0 chain links with no corpus line: the attacker never ran for them (scored no-success). */
     neverGeneratedIterations?: number;
+    /** Planned cells whose iteration chain stops before the final k (a `--limit` cut). */
+    truncatedChains?: number;
     /** Lines recorded in online-corpus.jsonl (one per attacker iteration). */
     corpusLines?: number;
     /** Was an online-corpus-manifest.json written? */
@@ -405,10 +407,13 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   verifyFrozenDesign(design, metadata);
   const clusterByVariantBase = new Map<string, string>();
   const plannedCells = new Set<string>();
+  const maxPlannedIteration = new Map<string, number>();
   for (const row of design.rows) {
     const online = parseOnlineVariantId(row.identity.variantId);
     if (!online) continue;
-    plannedCells.add(`${row.identity.arm}\0${row.identity.family}\0${online.index}`);
+    const cell = `${row.identity.arm}\0${row.identity.family}\0${online.index}`;
+    plannedCells.add(cell);
+    maxPlannedIteration.set(cell, Math.max(maxPlannedIteration.get(cell) ?? 0, online.iteration));
     clusterByVariantBase.set(
       `${row.identity.family}\0${online.index}`,
       `${row.identity.family}:${row.templateId}`,
@@ -492,11 +497,18 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   // Every planned iteration above zero runs the attacker, so an iteration
   // with neither a corpus line nor a row was never executed (a peer worker
   // may still own it); it cannot be read as a blocked attack.
+  // A `--limit` cut can freeze a cell whose chain stops before the final
+  // k; attack@k at that k would then read the missing iterations as blocks.
+  const finalIteration = metadata.attackerIterations ?? 3;
+  const truncatedChains = [...maxPlannedIteration.values()].filter(
+    (maxIteration) => maxIteration < finalIteration,
+  ).length;
   const incomplete =
     !corpusManifestPresent ||
     !manifestHashVerified ||
     missingPlannedRows > 0 ||
-    neverGeneratedIterations > 0;
+    neverGeneratedIterations > 0 ||
+    truncatedChains > 0;
   const statistics = analyzeInjectionSuiteOnlineAdaptiveRows({
     rows,
     clusterByVariantBase,
@@ -520,6 +532,7 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
     expectedPlannedRowKeys: expectedKeys.size,
     missingPlannedRows,
     neverGeneratedIterations,
+    truncatedChains,
     corpusLines: corpusSeenCount,
     corpusManifestPresent,
     manifestHashVerified: manifestHashVerified,
