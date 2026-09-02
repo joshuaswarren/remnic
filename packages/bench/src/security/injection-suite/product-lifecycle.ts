@@ -359,9 +359,11 @@ export async function executeProductLifecycleRow(
           : livenessCanaryEmitted || canaryEmitted
             ? "complete"
             : "behavior";
+    // Stage status records whether the behavior stage completed; the attack
+    // classification is `outcome`, never encoded in the stage status.
     trace.push({
       stage: "behavior",
-      status: outcome === "VOID" ? "void" : canaryEmitted ? "blocked" : "ok",
+      status: outcome === "VOID" ? "void" : "ok",
       sha256: sha256(chat.text),
       count: chat.text.length,
     });

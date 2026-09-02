@@ -960,6 +960,9 @@ test("openai-compat sends chat_template_kwargs only to models whose template def
     const bodies = mock.requests.map((request) => request.body as Record<string, unknown>);
     assert.equal(bodies.length, 3);
     assert.equal("chat_template_kwargs" in bodies[0]!, false, "OpenAI rejects unknown request fields");
+    assert.equal("reasoning_effort" in bodies[0]!, false, "a generic model gets no reasoning_effort");
+    assert.equal(bodies[1]!.reasoning_effort, "low");
+    assert.equal(bodies[2]!.reasoning_effort, "none");
     assert.equal("chat_template_kwargs" in bodies[1]!, false, "the NVIDIA Llama 3.2 endpoint rejects the option");
     assert.deepEqual(bodies[2]!.chat_template_kwargs, { enable_thinking: false });
   } finally {

@@ -302,11 +302,14 @@ export async function completeChatResult(
         temperature: 0,
         ...(options.seed !== undefined ? { seed: options.seed } : {}),
         max_tokens: 256,
-        reasoning_effort:
-          model.startsWith("openai/gpt-oss-") ||
-          model === "meta/llama-3.2-11b-vision-instruct"
-            ? "low"
-            : "none",
+        // `reasoning_effort` is an OpenAI reasoning-model parameter that NIM
+        // and Ollama accept; strict generic endpoints (LM Studio) reject
+        // unknown fields. Send it only to the model families that use it.
+        ...(model.startsWith("openai/gpt-oss-") || model === "meta/llama-3.2-11b-vision-instruct"
+          ? { reasoning_effort: "low" }
+          : /qwen|nemotron|deepseek/i.test(model)
+            ? { reasoning_effort: "none" }
+            : {}),
         // `chat_template_kwargs` is a vLLM/NIM extension, not part of the
         // Chat Completions contract; strict endpoints (api.openai.com, the
         // NVIDIA Llama 3.2 endpoint) reject it with HTTP 400. Send it only

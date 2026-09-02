@@ -104,6 +104,16 @@ export function verifyFrozenDesign(
   design: InjectionSuiteExpectedDesign,
   metadata: InjectionSuiteRunMetadata,
 ): void {
+  if (design.stage !== metadata.stage) {
+    throw new Error(
+      `expected-design.json stage ${design.stage} does not match run.json stage ${metadata.stage}: the frozen run is not analyzable`,
+    );
+  }
+  if (design.modelProfileHash !== metadata.modelProfileHash) {
+    throw new Error(
+      "expected-design.json modelProfileHash does not match run.json: the frozen run is not analyzable",
+    );
+  }
   const actual = sha256(stableInjectionSuiteJson(design));
   if (actual !== metadata.expectedDesignHash) {
     throw new Error(

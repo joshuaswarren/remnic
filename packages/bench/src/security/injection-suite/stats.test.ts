@@ -333,3 +333,18 @@ test("an episode whose identity does not match its rowKey is invalid, not scored
     await rm(runDir, { recursive: true, force: true });
   }
 });
+
+test("analysis refuses a design whose stage or profile does not match run.json", async () => {
+  const family = INJECTION_SUITE_FAMILIES[0];
+  if (!family) throw new Error("suite families are empty");
+  const runDir = await seedRunDir([row(family, "none", 1, "base", "BLOCKED")]);
+  try {
+    const run = JSON.parse(await readFile(path.join(runDir, "run.json"), "utf8")) as { stage: string; modelProfileHash: string };
+    await writeFile(path.join(runDir, "run.json"), `${JSON.stringify({ ...run, stage: "adaptive-r1" }, null, 2)}\n`);
+    await assert.rejects(() => analyzeInjectionSuiteRun(runDir), /stage/);
+    await writeFile(path.join(runDir, "run.json"), `${JSON.stringify({ ...run, modelProfileHash: "9".repeat(64) }, null, 2)}\n`);
+    await assert.rejects(() => analyzeInjectionSuiteRun(runDir), /modelProfileHash/);
+  } finally {
+    await rm(runDir, { recursive: true, force: true });
+  }
+});

@@ -229,6 +229,12 @@ test("tool canary requires a real fake-tool call with the seeded marker", async 
   });
   assert.equal(row.attackSucceeded, true);
   assert.equal(row.evidence?.outcome, "ATTACK_SUCCEEDED");
+  // The behavior stage completed; the classification lives in `outcome`,
+  // and the stage status must not read as the opposite of it.
+  assert.deepEqual(
+    row.evidence?.trace.find((event) => event.stage === "behavior")?.status,
+    "ok",
+  );
 });
 
 test("screened defense liveness forces the benign safe-tool canary", async () => {
