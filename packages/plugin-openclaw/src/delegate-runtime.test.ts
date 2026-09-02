@@ -1833,11 +1833,14 @@ test("delegate passive mode skips memory hooks and capability but keeps the tool
 });
 
 test("delegate tools registered by a passive entry follow the active sibling on the same api", async () => {
-  const stub = await startDaemonStub((pathname) =>
-    pathname.startsWith("/engram/v1/memories/fact-1")
+  const stub = await startDaemonStub((pathname) => {
+    if (pathname === "/engram/v1/memories/search") {
+      return { query: "rollout", count: 1, results: [{ path: "facts/f.md", score: 0.9, snippet: "we decided to roll out on Monday" }] };
+    }
+    return pathname.startsWith("/engram/v1/memories/fact-1")
       ? { found: true, memory: { id: "fact-1", content: "x", frontmatter: { id: "fact-1" } } }
-      : { accepted: true },
-  );
+      : { accepted: true };
+  });
   try {
     const api = recordingApi();
     const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
@@ -1846,15 +1849,20 @@ test("delegate tools registered by a passive entry follow the active sibling on 
         tools.set(tool.name, tool);
       },
     });
-    // The legacy id loads first, passively, with its own (empty) binding store.
+    // The legacy id loads first, passively, with its own (empty) binding store
+    // and a tight snippet cap.
     registerDelegateRuntime(
       api,
-      optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true }),
+      optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true, openclawToolSnippetMaxChars: 12 }),
     );
-    // The canonical id then owns the slot; its hooks update ITS bindings.
+    // The canonical id then owns the slot; its hooks update ITS bindings and
+    // its config is the one that counts.
     const canonicalBindings = createInMemorySessionNamespaceBindingStore();
     await canonicalBindings.remember("tool-session", "team-alpha");
-    registerDelegateRuntime(api, optionsFor(stub.port, { namespaceBindings: canonicalBindings }));
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, { namespaceBindings: canonicalBindings, openclawToolSnippetMaxChars: 4_000 }),
+    );
     assert.equal(tools.size, 2, "the tools are registered once per api");
     // memory_get scopes through the ACTIVE entry's bindings, not the passive
     // entry's stale store: the bound scope is accepted and reaches the daemon.
@@ -1867,6 +1875,33 @@ test("delegate tools registered by a passive entry follow the active sibling on 
     const get = stub.calls.find((call) => call.pathname.startsWith("/engram/v1/memories/fact-1"));
     assert.ok(get, "the get reached the daemon");
     assert.equal(new URL(get.pathname, "http://daemon").searchParams.get("namespace"), "team-alpha");
+    const searched = (await tools.get("memory_search")!.execute(
+      "tc-2",
+      { query: "rollout" },
+      undefined,
+      { sessionKey: "tool-session" },
+    )) as { content: Array<{ text: string }> };
+    assert.deepEqual(
+      JSON.parse(searched.content[0]!.text),
+      { results: [{ id: "f", score: 0.9, text: "we decided to roll out on Monday" }], truncated: false },
+      "the snippet cap is the active owner's, not the passive entry's eager one",
+    );
+
+    // An active owner that opts out of the tools makes the sibling-installed
+    // tools inert (the host exposes no unregister).
+    const optedOutApi = recordingApi();
+    const optedOutTools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
+    Object.assign(optedOutApi, {
+      registerTool(tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }): void {
+        optedOutTools.set(tool.name, tool);
+      },
+    });
+    registerDelegateRuntime(optedOutApi, optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true }));
+    registerDelegateRuntime(optedOutApi, optionsFor(stub.port, { openclawToolsEnabled: false }));
+    await assert.rejects(
+      optedOutTools.get("memory_search")!.execute("tc-3", { query: "rollout" }, undefined, { sessionKey: "tool-session" }),
+      /memory_search is disabled: the memory slot owner set openclawToolsEnabled: false/,
+    );
   } finally {
     await stub.close();
   }

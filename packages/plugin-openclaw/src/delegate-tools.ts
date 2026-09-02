@@ -101,7 +101,6 @@ export function buildDelegateMemorySearchTool(options: {
   /** The session's memory scope, so a `filters.namespace` may only restate it. */
   resolveNamespace: (sessionKey: string, timeoutMs: number) => Promise<string | undefined>;
 }) {
-  const snippetMaxChars = clampSnippetMaxChars(options.snippetMaxChars);
   const spent = (deadline: number, signal: AbortSignal | undefined, stage: string): void => {
     if (signal?.aborted) throw new Error(`memory_search aborted before ${stage}`);
     if (deadline - Date.now() <= 0) throw new Error(`memory_search budget of ${options.timeoutMs}ms spent before ${stage}`);
@@ -161,7 +160,8 @@ export function buildDelegateMemorySearchTool(options: {
         results: results.slice(0, limit).map((result) => ({
           id: path.basename(result.citation ?? result.path, ".md"),
           score: result.score,
-          text: truncateCodePointSafe(collapseWhitespace(result.snippet), snippetMaxChars),
+          // Read per call: the owner's cap can change on an active takeover.
+          text: truncateCodePointSafe(collapseWhitespace(result.snippet), clampSnippetMaxChars(options.snippetMaxChars)),
         })),
         truncated: results.length > limit,
       };
@@ -235,7 +235,7 @@ export function buildDelegateMemoryGetTool(options: {
  * over: otherwise the tools would keep reading the passive entry's binding
  * store while the active entry's hooks update its own.
  */
-const delegateToolOwners = new WeakMap<object, DelegateToolWiring & { passive: boolean }>();
+const delegateToolOwners = new WeakMap<object, DelegateToolWiring & { enabled: boolean; passive: boolean }>();
 
 type DelegateToolWiring = {
   target: DelegateDaemonTarget;
@@ -265,20 +265,28 @@ export function registerDelegateTools(
   api: { registerTool?(tool: Record<string, unknown>, opts?: { name?: string }): void },
   options: DelegateToolWiring & { enabled: boolean; passive: boolean }
 ): void {
-  if (!options.enabled || typeof api.registerTool !== "function") return;
-  const { enabled: _enabled, ...wiring } = options;
+  if (typeof api.registerTool !== "function") return;
   // Once per api object: the canonical and legacy plugin ids both register
   // here, and a second `memory_search` on one api is a host tool-name
   // conflict, not a second tool. The tools read their wiring through the
   // owner record, so an active entry arriving after a passive one takes it
-  // over without re-registering.
+  // over without re-registering — its opt-out included: the host exposes no
+  // unregister, so tools a passive sibling already installed go inert.
   const existing = delegateToolOwners.get(api);
   if (existing !== undefined) {
-    if (existing.passive && !wiring.passive) Object.assign(existing, wiring);
+    if (existing.passive && !options.passive) Object.assign(existing, options);
     return;
   }
-  const owner = { ...wiring };
+  if (!options.enabled) return;
+  const owner = { ...options };
   delegateToolOwners.set(api, owner);
+  const gated = <T extends { name: string; execute: (...args: never[]) => Promise<unknown> }>(tool: T): T => ({
+    ...tool,
+    execute: async (...args: Parameters<T["execute"]>) => {
+      if (!owner.enabled) throw new Error(`${tool.name} is disabled: the memory slot owner set openclawToolsEnabled: false`);
+      return tool.execute(...args);
+    },
+  });
   // The SAME trusted scope path the capability's search takes: the session
   // binding, then the daemon's concrete default for an unbound session — never
   // an omitted namespace a scoped credential would refuse. The binding lookup
@@ -289,21 +297,21 @@ export function registerDelegateTools(
     return owner.resolveScopedNamespace(bound, Math.max(1, deadline - Date.now()), [operation]);
   };
   api.registerTool(
-    buildDelegateMemorySearchTool({
+    gated(buildDelegateMemorySearchTool({
       get target() { return owner.target; },
       get runtime() { return owner.runtime; },
       get agentId() { return owner.agentId; },
       get snippetMaxChars() { return owner.snippetMaxChars; },
       get timeoutMs() { return owner.timeoutMs; },
       resolveNamespace: resolveNamespace("memory_search"),
-    })
+    })),
   );
   api.registerTool(
-    buildDelegateMemoryGetTool({
+    gated(buildDelegateMemoryGetTool({
       get target() { return owner.target; },
       get serviceId() { return owner.serviceId; },
       get timeoutMs() { return owner.timeoutMs; },
       resolveNamespace: resolveNamespace("memory_get"),
-    })
+    })),
   );
 }
