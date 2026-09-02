@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { InjectionSuiteUtilityObservation } from "./utility-stats.js";
 import type { InjectionSuiteExpectedDesign } from "./freeze.js";
 import {
   analyzeInjectionSuitePublicationRows,
@@ -159,7 +160,7 @@ test("void-as-failure sensitivity can overturn an otherwise perfect layered rate
 });
 
 test("utility analysis clusters repeated seeds by item and reports benchmarks separately", () => {
-  const observations = ["locomo", "drift-gen"].flatMap((benchmark) =>
+  const observations: InjectionSuiteUtilityObservation[] = (["locomo", "drift-gen"] as const).flatMap((benchmark) =>
     ["a", "b"].flatMap((itemId) =>
       [1, 2].flatMap((seed) => [
         { benchmark, itemId, seed, arm: "none" as const, score: 1 },

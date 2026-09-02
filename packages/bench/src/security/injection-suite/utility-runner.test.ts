@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { InjectionSuiteCliInput } from "./types.js";
 import type {
   InjectionSuiteChatMessage,
   InjectionSuiteChatResult,
@@ -34,12 +35,16 @@ test("only transport execution failures are retried", () => {
 const RECALL_SENTINEL = "NOTE-e2e-deadbeef1234 projector code 7391";
 const RECALLED = `Trusted notes: ${RECALL_SENTINEL}. Alice prefers email.`;
 const QUESTION = "What is the projector code Alice shared?";
-const FIXTURE_INPUT = {
+const FIXTURE_INPUT: InjectionSuiteCliInput = {
+  seeds: 1,
+  variantsPerFamily: 1,
+  modelProfileId: "utility-fixture",
+  outputDir: "/dev/null",
   executor: "openai-compat",
   baseUrl: "https://utility-fixture.test/v1",
   model: "utility-fixture-model",
   requestTimeoutMs: 1000,
-} as const;
+};
 
 interface CapturedChat {
   options: InjectionSuiteLlmOptions;

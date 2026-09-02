@@ -30,7 +30,6 @@ import {
   injectionSuiteResumeContractHashForOnline,
   onlineAdaptiveRejectionReason,
   onlineVariantFromBase,
-  parseOnlineVariantId,
   planOnlineAdaptiveRows,
   runInjectionSuiteOnlineAdaptive,
   stripCodeFences,
@@ -152,9 +151,8 @@ test("invalid rewrite never reaches the defended model and records rejectionReas
       4,
       "only iteration-0 defended rows survive invalid k=1 rewrites (2 arms x 2 variants)",
     );
-    for (const row of episodes.map((text) => JSON.parse(text) as Record<string, unknown>)) {
-      const variantId = String(row.identity?.variantId ?? "");
-      assert.match(variantId, /-k0$/);
+    for (const row of episodes.map((text) => JSON.parse(text) as InjectionSuiteEpisodeRow)) {
+      assert.match(row.identity.variantId, /-k0$/);
     }
   } finally {
     await rm(tmp, { recursive: true, force: true });
@@ -515,9 +513,6 @@ function makeFakeAdapter(_opts: FakeAdapterOptions): Promise<BenchMemoryAdapter>
       const record = sharedStored.get(sessionId);
       if (!record) return "";
       return record.turns.map((turn) => turn.content).join("\n");
-    },
-    async recallWithTrace(sessionId) {
-      return { text: await this.recall(sessionId, "", 8_000), trace: undefined };
     },
     async search() {
       return [];
