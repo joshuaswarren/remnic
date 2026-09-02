@@ -2361,10 +2361,11 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
     assert.equal(search.body.maxResults, 3);
     const searchPayload = JSON.parse(searched.content[0]!.text) as {
       count: number;
-      results: Array<{ citation?: string; snippet: string; score: number }>;
+      results: Array<{ id?: string; citation?: string; snippet: string; score: number }>;
     };
     assert.equal(searchPayload.count, 1);
     assert.equal(searchPayload.results[0]?.citation, memoryPath);
+    assert.equal(searchPayload.results[0]?.id, "fact-1", "the id memory_get takes rides on each hit");
     assert.equal(searchPayload.results[0]?.snippet, "we decided to roll out on Monday");
 
     // The session binding decides memory_get's scope; the model may only
@@ -2422,11 +2423,13 @@ test("explicit delegate preflight retries the configured interface address after
   process.env.REMNIC_PORT = "4318";
   try {
     const probed: string[] = [];
+    const probedTimeouts: number[] = [];
     const handled = maybeRegisterDelegateRuntime(
       recordingApi(),
       {
         serviceId: "openclaw-remnic",
         configBridgeMode: "delegate",
+        bridgeHealthTimeoutMs: 5_000,
         passive: false,
         allowPromptInjection: true,
         gateHeartbeatTurns: false,
@@ -2441,8 +2444,9 @@ test("explicit delegate preflight retries the configured interface address after
         capability: TEST_CAPABILITY,
       },
       {
-        checkHealth: (host) => {
+        checkHealth: (host, _port, timeoutMs) => {
           probed.push(host);
+          probedTimeouts.push(timeoutMs);
           return host === local.address;
         },
         probeAuthorization: async () => ({ state: "authorized", tokenSource: "test" }) as never,
@@ -2450,6 +2454,11 @@ test("explicit delegate preflight retries the configured interface address after
     );
     assert.equal(handled, true, "delegate registered against the configured address");
     assert.deepEqual(probed, ["127.0.0.1", local.address], "loopback first, then the NIC");
+    assert.equal(probedTimeouts[0], 5_000, "the first dial gets the whole preflight budget");
+    assert.ok(
+      probedTimeouts[1]! <= 5_000 && probedTimeouts[1]! > 0,
+      "the fallback dial gets only what is left of it",
+    );
   } finally {
     for (const [key, value] of [
       ["REMNIC_BRIDGE_MODE", prior.mode],

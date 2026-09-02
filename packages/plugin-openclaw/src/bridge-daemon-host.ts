@@ -64,8 +64,9 @@ export function loopbackForSameHost(host: string): string | undefined {
   if (normalized === "0.0.0.0") return LOOPBACK_V4;
   const v6 = canonicalIPv6(normalized);
   if (v6 === "::") return "::1";
-  if (isLocalInterfaceAddress(v6 ?? normalized)) return v6 === undefined ? LOOPBACK_V4 : "::1";
-  return undefined;
+  const local = localInterfaceFamily(v6 ?? normalized);
+  if (local === undefined) return undefined;
+  return local === "IPv4" ? LOOPBACK_V4 : "::1";
 }
 
 /**
@@ -75,19 +76,31 @@ export function loopbackForSameHost(host: string): string | undefined {
  */
 export function sameHostDialFallback(host: string): string | undefined {
   const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
-  return isLocalInterfaceAddress(canonicalIPv6(normalized) ?? normalized) ? normalized : undefined;
+  return localInterfaceFamily(canonicalIPv6(normalized) ?? normalized) === undefined ? undefined : normalized;
 }
 
-function isLocalInterfaceAddress(address: string): boolean {
-  if (isIP(address) === 0) return false;
+/**
+ * The family of the interface this address is assigned to, or `undefined`
+ * when it is not one of this host's addresses. An IPv4 interface is matched
+ * by its dotted form AND its IPv4-mapped IPv6 form (`::ffff:a.b.c.d`), which
+ * is how an operator may spell it in a v6-first config; a mapped address is
+ * still IPv4 traffic and dials the v4 loopback.
+ */
+function localInterfaceFamily(address: string): "IPv4" | "IPv6" | undefined {
+  if (isIP(address) === 0) return undefined;
   for (const entries of Object.values(os.networkInterfaces())) {
     for (const entry of entries ?? []) {
       if (entry.internal) continue;
-      const assigned = entry.family === "IPv6" ? canonicalIPv6(entry.address.replace(/%.*$/, "")) : entry.address;
-      if (assigned === address) return true;
+      if (entry.family === "IPv6") {
+        if (canonicalIPv6(entry.address.replace(/%.*$/, "")) === address) return "IPv6";
+        continue;
+      }
+      if (entry.address === address || canonicalIPv6(`::ffff:${entry.address}`) === address) {
+        return "IPv4";
+      }
     }
   }
-  return false;
+  return undefined;
 }
 
 export function normalizeDaemonHost(value: string): string {

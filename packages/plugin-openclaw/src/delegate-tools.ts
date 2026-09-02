@@ -8,6 +8,8 @@
  * uses — and get reads the daemon's memory route.
  */
 
+import path from "node:path";
+
 import type { DelegateDaemonTarget } from "./bridge.js";
 import { getJson } from "./delegate-http.js";
 import type { RemnicCapabilityRuntime } from "./memory-capability-types.js";
@@ -50,10 +52,15 @@ export function buildDelegateMemorySearchTool(options: {
         maxResults: typeof params.limit === "number" ? params.limit : DEFAULT_SEARCH_RESULTS,
         sessionKey: sessionKeyFor(params, ctx),
       });
+      // Memory files are `<id>.md` (the daemon's own `memoryIdFromPath`
+      // convention), so the id `memory_get` takes is the citation's basename.
       return toolJsonResult({
         query,
         count: results.length,
-        results,
+        results: results.map((result) => ({
+          id: path.basename(result.citation ?? result.path, ".md"),
+          ...result,
+        })),
         remnic: { bridgeMode: "delegate", daemon: `${options.target.host}:${options.target.port}` },
       });
     },

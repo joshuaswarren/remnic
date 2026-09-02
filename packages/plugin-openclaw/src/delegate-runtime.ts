@@ -851,7 +851,15 @@ export function registerDelegateRuntime(
         target,
         serviceId: options.serviceId,
         timeoutMs: options.recallTimeoutMs,
-        resolveNamespace: resolveSearchNamespace,
+        // The SAME trusted scope path search takes: the session binding, then
+        // the daemon's concrete default for an unbound session — never an
+        // omitted namespace a scoped credential would refuse.
+        resolveNamespace: async (sessionKey) =>
+          capability.resolveScopedNamespace(
+            await resolveSearchNamespace(sessionKey),
+            options.recallTimeoutMs,
+            ["memory_get"],
+          ),
       }),
     );
   }
@@ -1068,9 +1076,14 @@ export function maybeRegisterDelegateRuntime(
       bridge.daemonHostFallback === undefined
         ? [bridge.daemonHost]
         : [bridge.daemonHost, bridge.daemonHostFallback];
-    const healthyHost = hosts.find((host) =>
-      deps.checkHealth(host, bridge.daemonPort, bridgeHealthTimeoutMs),
-    );
+    // ONE preflight budget across both dials, as the auto walk already does:
+    // a loopback that accepts and stalls must not let the fallback spend the
+    // documented total again.
+    const preflightDeadline = Date.now() + bridgeHealthTimeoutMs;
+    const healthyHost = hosts.find((host, index) => {
+      const remaining = index === 0 ? bridgeHealthTimeoutMs : preflightDeadline - Date.now();
+      return remaining > 0 && deps.checkHealth(host, bridge.daemonPort, remaining);
+    });
     if (healthyHost !== undefined && healthyHost !== bridge.daemonHost) {
       log.info(
         `[${options.serviceId}] bridge mode delegate: loopback refused, dialing the configured address ${healthyHost}`,

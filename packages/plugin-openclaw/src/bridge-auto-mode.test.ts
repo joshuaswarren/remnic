@@ -996,6 +996,10 @@ test("an address assigned to one of this host's interfaces is dialed through loo
   if (local === undefined) return;
   assert.equal(loopbackForSameHost(local.address), "127.0.0.1", `${local.address} is this host`);
   assert.equal(isLoopbackDaemonHost(local.address), true);
+  // The same interface spelled as an IPv4-mapped IPv6 literal is still IPv4
+  // traffic on this host: recognized, and dialed on the v4 loopback.
+  assert.equal(loopbackForSameHost(`::ffff:${local.address}`), "127.0.0.1");
+  assert.equal(isLoopbackDaemonHost(`[::ffff:${local.address}]`), true);
   const resolved = withDaemonEnv(undefined, () => {
     process.env.REMNIC_HOST = local.address;
     return resolveBridgeMode("delegate");
