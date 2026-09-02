@@ -2331,14 +2331,23 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
   });
   try {
     const api = recordingApi();
+    const registered: string[] = [];
     const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
     Object.assign(api, {
       registerTool(tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }): void {
+        registered.push(tool.name);
         tools.set(tool.name, tool);
       },
     });
-    registerDelegateRuntime(api, optionsFor(stub.port));
-    assert.deepEqual([...tools.keys()].sort(), ["memory_get", "memory_search"]);
+    const namespaceBindings = createInMemorySessionNamespaceBindingStore();
+    registerDelegateRuntime(api, optionsFor(stub.port, { namespaceBindings }));
+    // The legacy plugin id registers on the SAME api; a second `memory_search`
+    // there is a host tool-name conflict, not a second tool.
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, { namespaceBindings, serviceId: "openclaw-engram" }),
+    );
+    assert.deepEqual(registered.sort(), ["memory_get", "memory_search"]);
 
     const searched = (await tools.get("memory_search")!.execute(
       "tc-1",
@@ -2358,6 +2367,24 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
     assert.equal(searchPayload.results[0]?.citation, memoryPath);
     assert.equal(searchPayload.results[0]?.snippet, "we decided to roll out on Monday");
 
+    // The session binding decides memory_get's scope; the model may only
+    // restate it. An unbound session reads the daemon default and cannot
+    // name another tenant's namespace to reach a known memory id.
+    await assert.rejects(
+      tools.get("memory_get")!.execute(
+        "tc-2",
+        { id: "fact-1", namespace: "team-other" },
+        undefined,
+        { sessionKey: "tool-session" },
+      ),
+      /does not match the session's memory scope/,
+    );
+    assert.equal(
+      stub.calls.some((call) => call.pathname.startsWith("/engram/v1/memories/fact-1")),
+      false,
+      "a mismatched scope never reaches the daemon",
+    );
+    await namespaceBindings.remember("tool-session", "team-alpha");
     const got = (await tools.get("memory_get")!.execute(
       "tc-2",
       { id: "fact-1", namespace: "team-alpha" },
@@ -2381,6 +2408,57 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
     await assert.rejects(tools.get("memory_get")!.execute("tc-4", {}, undefined, {}), /requires an id/);
   } finally {
     await stub.close();
+  }
+});
+
+test("explicit delegate preflight retries the configured interface address after loopback refuses", () => {
+  const local = Object.values(os.networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .find((entry) => entry.family === "IPv4" && !entry.internal);
+  if (local === undefined) return;
+  const prior = { mode: process.env.REMNIC_BRIDGE_MODE, host: process.env.REMNIC_HOST, port: process.env.REMNIC_PORT };
+  process.env.REMNIC_BRIDGE_MODE = "delegate";
+  process.env.REMNIC_HOST = local.address;
+  process.env.REMNIC_PORT = "4318";
+  try {
+    const probed: string[] = [];
+    const handled = maybeRegisterDelegateRuntime(
+      recordingApi(),
+      {
+        serviceId: "openclaw-remnic",
+        configBridgeMode: "delegate",
+        passive: false,
+        allowPromptInjection: true,
+        gateHeartbeatTurns: false,
+        recallBudgetChars: 8_000,
+        memoryDir: path.join(os.tmpdir(), "remnic-delegate-nic-fallback"),
+        sessionTogglesEnabled: false,
+        respectBundledActiveMemoryToggle: false,
+        cleanUserMessage: (text: string) => text,
+        hookTimeoutMs: 5_000,
+        shouldSkipRecall: () => false,
+        flushOnResetEnabled: true,
+        capability: TEST_CAPABILITY,
+      },
+      {
+        checkHealth: (host) => {
+          probed.push(host);
+          return host === local.address;
+        },
+        probeAuthorization: async () => ({ state: "authorized", tokenSource: "test" }) as never,
+      },
+    );
+    assert.equal(handled, true, "delegate registered against the configured address");
+    assert.deepEqual(probed, ["127.0.0.1", local.address], "loopback first, then the NIC");
+  } finally {
+    for (const [key, value] of [
+      ["REMNIC_BRIDGE_MODE", prior.mode],
+      ["REMNIC_HOST", prior.host],
+      ["REMNIC_PORT", prior.port],
+    ] as const) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
   }
 });
 

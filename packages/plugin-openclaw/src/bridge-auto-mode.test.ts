@@ -74,7 +74,7 @@ const server = http.createServer((req, res) => {
   res.writeHead(warming ? 503 : workerData.status, { "content-type": "application/json" });
   res.end(warming ? JSON.stringify({ ok: false, ready: false }) : workerData.body);
 });
-server.listen(0, "127.0.0.1", () => {
+server.listen(0, workerData.listenHost ?? "127.0.0.1", () => {
   parentPort.postMessage({ port: server.address().port });
 });
 parentPort.on("message", (message) => {
@@ -89,6 +89,7 @@ async function startHealthStub(
   hang = false,
   requireToken?: string,
   stallBody = false,
+  listenHost?: string,
 ): Promise<HealthStub> {
   const worker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(STUB_SOURCE)}`),
@@ -100,6 +101,7 @@ async function startHealthStub(
         hang,
         requireToken,
         stallBody,
+        listenHost,
         body: typeof body === "string" ? body : JSON.stringify(body),
       },
     } as ConstructorParameters<typeof Worker>[1] & { type: "module" },
@@ -1002,6 +1004,44 @@ test("an address assigned to one of this host's interfaces is dialed through loo
   // A routable address that is NOT on this host stays remote (RFC 5737 TEST-NET-1).
   assert.equal(loopbackForSameHost("192.0.2.1"), undefined);
   assert.equal(isLoopbackDaemonHost("192.0.2.1"), false);
+});
+
+test("a daemon bound to one interface address only is reached through the configured address", async () => {
+  // Loopback is dialed first; a daemon that answers only on its own NIC
+  // address refuses that, so the configured address stays available as the
+  // fallback — explicit delegate probes it, auto lists it as a candidate.
+  const local = Object.values(os.networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .find((entry) => entry.family === "IPv4" && !entry.internal);
+  if (local === undefined) return;
+  const stub = await startHealthStub(
+    { ok: true, memoryDir: MEMORY_DIR },
+    200,
+    0,
+    false,
+    undefined,
+    false,
+    local.address,
+  );
+  try {
+    const explicit = withDaemonEnv(stub.port, () => {
+      process.env.REMNIC_HOST = local.address;
+      return resolveBridgeMode("delegate");
+    });
+    assert.equal(explicit.daemonHost, "127.0.0.1");
+    assert.equal(explicit.daemonHostFallback, local.address);
+    assert.equal(checkDaemonHealthSync("127.0.0.1", stub.port, 2_000), false, "loopback refuses");
+    assert.equal(checkDaemonHealthSync(local.address, stub.port, 2_000), true, "the NIC answers");
+
+    const auto = withDaemonEnv(stub.port, () => {
+      process.env.REMNIC_HOST = local.address;
+      return resolveBridgeMode("auto", { memoryDir: MEMORY_DIR, timeoutMs: 5_000 });
+    });
+    assert.equal(auto.mode, "delegate", "auto falls through to the configured address");
+    assert.equal(auto.daemonHost, local.address);
+  } finally {
+    await stub.close();
+  }
 });
 
 test("each probed endpoint carries its own config's token", async () => {

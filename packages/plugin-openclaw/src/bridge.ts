@@ -83,6 +83,12 @@ export interface BridgeConfig {
   daemonHost: string;
   daemonPort: number;
   /**
+   * The configured interface address behind a same-host loopback rewrite,
+   * dialed only when the loopback probe fails: a daemon bound to exactly that
+   * address answers no loopback dial.
+   */
+  daemonHostFallback?: string;
+  /**
    * True when this resolution already proved the daemon healthy. `auto` does,
    * as part of its corpus-identity probe; explicit `delegate` does not. Lets
    * the caller skip a second liveness request that would otherwise let a
@@ -320,10 +326,18 @@ export function loopbackForSameHost(host: string): string | undefined {
   if (normalized === "0.0.0.0") return DEFAULT_HOST;
   const v6 = canonicalIPv6(normalized);
   if (v6 === "::") return "::1";
-  // ponytail: a daemon bound to exactly one NIC address answers no loopback
-  // dial; probe the configured address as a fallback if that deployment appears.
   if (isLocalInterfaceAddress(v6 ?? normalized)) return v6 === undefined ? DEFAULT_HOST : "::1";
   return undefined;
+}
+
+/**
+ * The configured address to retry when a same-host loopback dial fails. Only
+ * an interface address qualifies — a wildcard bind is not dialable, and a
+ * daemon bound to exactly one interface address answers no loopback dial.
+ */
+export function sameHostDialFallback(host: string): string | undefined {
+  const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  return isLocalInterfaceAddress(canonicalIPv6(normalized) ?? normalized) ? normalized : undefined;
 }
 
 function isLocalInterfaceAddress(address: string): boolean {
@@ -583,6 +597,7 @@ function daemonEndpointCandidates(
       envHost !== undefined && envHost.trim() !== "" ? envHost : (host ?? DEFAULT_HOST),
     );
     const dialHost = loopbackForSameHost(resolvedHost) ?? resolvedHost;
+    const dialFallback = sameHostDialFallback(resolvedHost);
     const dialPort = envPort ?? port ?? DEFAULT_PORT;
     // Dedupe on the endpoint AND its credential: an inactive service config
     // and a manually launched daemon can share host:port while carrying
@@ -597,38 +612,40 @@ function daemonEndpointCandidates(
     const configToken = configPath === undefined ? undefined : readServerBlock(configPath)?.authToken;
     const fallbackToken =
       configToken !== undefined && configToken !== token ? configToken : undefined;
-    if (
-      candidates.some(
-        (c) =>
-          c.host === dialHost &&
-          c.port === dialPort &&
-          c.token === token &&
-          // The BOUND credential is part of the identity too: when a gateway
-          // token wins for both, two configs on one endpoint resolve the same
-          // primary token but carry different fallbacks, and dropping the
-          // second would leave the daemon's real credential untried.
-          c.fallbackToken === fallbackToken &&
-          // So is the UNIT the credential is re-read from per request: two
-          // units can agree today and diverge on the next rotation.
-          c.authTokenUnit?.unitPath === authTokenUnit?.unitPath &&
-          // And so is the CONFIG, for the same reason: `daemonConfigPath` is
-          // re-read per request, so collapsing two configs that agree today
-          // would keep sending the retained one's token after the other
-          // rotates.
-          c.configPath === configPath,
-      )
-    ) {
-      return;
+    for (const candidateHost of dialFallback === undefined ? [dialHost] : [dialHost, dialFallback]) {
+      if (
+        candidates.some(
+          (c) =>
+            c.host === candidateHost &&
+            c.port === dialPort &&
+            c.token === token &&
+            // The BOUND credential is part of the identity too: when a gateway
+            // token wins for both, two configs on one endpoint resolve the same
+            // primary token but carry different fallbacks, and dropping the
+            // second would leave the daemon's real credential untried.
+            c.fallbackToken === fallbackToken &&
+            // So is the UNIT the credential is re-read from per request: two
+            // units can agree today and diverge on the next rotation.
+            c.authTokenUnit?.unitPath === authTokenUnit?.unitPath &&
+            // And so is the CONFIG, for the same reason: `daemonConfigPath` is
+            // re-read per request, so collapsing two configs that agree today
+            // would keep sending the retained one's token after the other
+            // rotates.
+            c.configPath === configPath,
+        )
+      ) {
+        continue;
+      }
+      candidates.push({
+        host: candidateHost,
+        port: dialPort,
+        configPath,
+        token,
+        ...(authTokenOverride === undefined ? {} : { authTokenOverride }),
+        ...(authTokenUnit === undefined ? {} : { authTokenUnit }),
+        ...(fallbackToken === undefined ? {} : { fallbackToken }),
+      });
     }
-    candidates.push({
-      host: dialHost,
-      port: dialPort,
-      configPath,
-      token,
-      ...(authTokenOverride === undefined ? {} : { authTokenOverride }),
-      ...(authTokenUnit === undefined ? {} : { authTokenUnit }),
-      ...(fallbackToken === undefined ? {} : { fallbackToken }),
-    });
   };
   // An env override alone, so a specified environment is dialed first even
   // when no config file exists. Without one this would inject a bare
@@ -981,10 +998,13 @@ export function resolveBridgeMode(
   // can pair this endpoint with another file's token, which the daemon answers
   // with a 401 and the plugin reads as "no daemon".
   const selectedConfig = selectedDaemonConfigPath();
+  const configuredHost = readConfiguredDaemonHost();
+  const fallbackHost = sameHostDialFallback(configuredHost);
   return {
     mode: requested,
-    daemonHost: readDaemonHost(),
+    daemonHost: loopbackForSameHost(configuredHost) ?? configuredHost,
     daemonPort: readDaemonPort(),
+    ...(fallbackHost === undefined ? {} : { daemonHostFallback: fallbackHost }),
     ...(selectedConfig === undefined ? {} : { daemonConfigPath: selectedConfig }),
   };
 }

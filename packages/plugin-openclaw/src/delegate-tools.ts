@@ -89,10 +89,20 @@ export function buildDelegateMemoryGetTool(options: {
       const id = typeof params.id === "string" && params.id.trim().length > 0 ? params.id : null;
       if (!id) throw new Error("memory_get requires an id");
       const sessionKey = sessionKeyFor(params, ctx);
-      const namespace =
+      // The session binding decides the scope, never the model: a
+      // model-supplied namespace may only restate it. The daemon default is
+      // the SAME scope the session's search used, so an unbound session cannot
+      // name another tenant's namespace to reach a known memory id.
+      const namespace = await options.resolveNamespace(sessionKey);
+      const requested =
         typeof params.namespace === "string" && params.namespace.trim().length > 0
           ? params.namespace.trim()
-          : await options.resolveNamespace(sessionKey);
+          : undefined;
+      if (requested !== undefined && requested !== namespace) {
+        throw new Error(
+          `memory_get namespace "${requested}" does not match the session's memory scope${namespace === undefined ? "" : ` "${namespace}"`}`,
+        );
+      }
       const search = new URLSearchParams({ sessionKey });
       if (namespace !== undefined) search.set("namespace", namespace);
       const pathname = `/engram/v1/memories/${encodeURIComponent(id)}?${search}`;

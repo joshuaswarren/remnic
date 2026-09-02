@@ -702,9 +702,17 @@ export function registerDelegateRuntime(
       }
       // The session's last turn may still be on its way to the daemon
       // (`agent_end` detaches the observe POST). Flushing ahead of it would
-      // leave that turn buffered behind the flush. Each link is bounded by
-      // `DETACHED_OBSERVE_TIMEOUT_MS`, so this wait is too.
-      await observeChains.get(sessionKey);
+      // leave that turn buffered behind the flush — but a backlog of queued
+      // turns on a hung daemon must not eat the lifecycle deadline either, so
+      // the drain is bounded by what is LEFT of it.
+      const pendingObserve = observeChains.get(sessionKey);
+      if (pendingObserve !== undefined) {
+        const drainDeadline = Promise.withResolvers<void>();
+        const timer = setTimeout(drainDeadline.resolve, Math.max(0, remainingBudget()));
+        timer.unref?.();
+        await Promise.race([pendingObserve, drainDeadline.promise]);
+        clearTimeout(timer);
+      }
       const namespaces = await lifecycleSessionNamespacesFrom(
         sessionKey,
         event,
@@ -826,7 +834,11 @@ export function registerDelegateRuntime(
   // Explicit tools the daemon serves: embedded mode builds these over the
   // in-process orchestrator, delegate mode over the daemon (tool-discovery
   // hosts register in this mode and expose nothing without them).
-  if (typeof api.registerTool === "function") {
+  if (typeof api.registerTool === "function" && !delegateToolApis.has(api)) {
+    // Once per api object: the canonical and legacy plugin ids both register
+    // here, and a second `memory_search` on one api is a host tool-name
+    // conflict, not a second tool.
+    delegateToolApis.add(api);
     api.registerTool(
       buildDelegateMemorySearchTool({
         target,
@@ -920,6 +932,8 @@ const delegateEmbeddedFallbackApis = new WeakSet<object>();
  * rather than bind an embedded runtime alongside.
  */
 const delegateBoundApis = new WeakSet<object>();
+/** Apis that already carry the delegate `memory_search` / `memory_get` tools. */
+const delegateToolApis = new WeakSet<object>();
 const delegateAuthorizationPreflightServices = new WeakMap<object, Set<string>>();
 
 /**
@@ -1047,29 +1061,43 @@ export function maybeRegisterDelegateRuntime(
   // registration spend twice `bridgeHealthTimeoutMs` — which the config
   // documents as the TOTAL preflight budget. Only the explicit `delegate`
   // path, which has probed nothing yet, pays for the liveness request.
-  if (
-    !bridge.healthVerified &&
-    !deps.checkHealth(bridge.daemonHost, bridge.daemonPort, bridgeHealthTimeoutMs)
-  ) {
-    // Same sibling rule as the embedded-resolution branch: when delegate hooks
-    // are already bound on this api by the canonical/legacy counterpart, a
-    // transient probe failure here must not hand the caller an embedded
-    // runtime to stack beside them.
-    if (delegateBoundApis.has(api)) {
-      log.warn(
-        `[${options.serviceId}] no healthy daemon at ${bridge.daemonHost}:${bridge.daemonPort}, ` +
-          `but a sibling service already bound delegate hooks on this api — reusing them instead of stacking an embedded runtime`,
-      );
-      return true;
-    }
-    // Record the fallback so a later register() on the same api does not switch
-    // to delegate and stack memory paths on top of the embedded hooks just bound.
-    delegateEmbeddedFallbackApis.add(api);
-    log.error(
-      `bridge mode delegate requested but no healthy daemon at ` +
-        `${bridge.daemonHost}:${bridge.daemonPort} — falling back to the embedded runtime`,
+  if (!bridge.healthVerified) {
+    // The configured interface address is tried only after loopback refuses:
+    // a daemon bound to exactly that address answers no loopback dial.
+    const hosts =
+      bridge.daemonHostFallback === undefined
+        ? [bridge.daemonHost]
+        : [bridge.daemonHost, bridge.daemonHostFallback];
+    const healthyHost = hosts.find((host) =>
+      deps.checkHealth(host, bridge.daemonPort, bridgeHealthTimeoutMs),
     );
-    return false;
+    if (healthyHost !== undefined && healthyHost !== bridge.daemonHost) {
+      log.info(
+        `[${options.serviceId}] bridge mode delegate: loopback refused, dialing the configured address ${healthyHost}`,
+      );
+      bridge = { ...bridge, daemonHost: healthyHost };
+    }
+    if (healthyHost === undefined) {
+      // Same sibling rule as the embedded-resolution branch: when delegate hooks
+      // are already bound on this api by the canonical/legacy counterpart, a
+      // transient probe failure here must not hand the caller an embedded
+      // runtime to stack beside them.
+      if (delegateBoundApis.has(api)) {
+        log.warn(
+          `[${options.serviceId}] no healthy daemon at ${hosts.join("/")}:${bridge.daemonPort}, ` +
+            `but a sibling service already bound delegate hooks on this api — reusing them instead of stacking an embedded runtime`,
+        );
+        return true;
+      }
+      // Record the fallback so a later register() on the same api does not switch
+      // to delegate and stack memory paths on top of the embedded hooks just bound.
+      delegateEmbeddedFallbackApis.add(api);
+      log.error(
+        `bridge mode delegate requested but no healthy daemon at ` +
+          `${hosts.join("/")}:${bridge.daemonPort} — falling back to the embedded runtime`,
+      );
+      return false;
+    }
   }
   // Passive mode attaches no hooks — recording it as bound would make a later
   // ACTIVE register() on the same api skip both delegate and embedded paths.
