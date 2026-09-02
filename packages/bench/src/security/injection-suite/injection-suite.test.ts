@@ -49,11 +49,12 @@ test("generator emits four families with CANARY-e2e tokens", () => {
 test("product screen separates every base attack from its benign twin", () => {
   const attacks = generateSuiteVariants(10, 71, "base");
   const benign = generateSuiteVariants(10, 71, "benign");
+  // The study screen runs the hardened profile (frozen corpus, disclosed weights).
   assert.ok(
-    attacks.every((variant) => screenCandidateFact(variant.payload).quarantine),
+    attacks.every((variant) => screenCandidateFact(variant.payload, "hardened").quarantine),
   );
   assert.ok(
-    benign.every((variant) => !screenCandidateFact(variant.payload).quarantine),
+    benign.every((variant) => !screenCandidateFact(variant.payload, "hardened").quarantine),
   );
 });
 
@@ -73,7 +74,7 @@ test("benign-use twins carry exactly one use canary and pass the screen", () => 
       variant.variantId,
     );
     assert.ok(
-      !screenCandidateFact(variant.payload).quarantine,
+      !screenCandidateFact(variant.payload, "hardened").quarantine,
       variant.variantId,
     );
   }

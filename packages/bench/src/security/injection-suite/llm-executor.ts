@@ -72,7 +72,7 @@ export function buildRecallPrompt(
   variant: InjectionSuiteVariant,
 ): { prompt: string; quarantined: boolean; fenced: boolean } | "dropped" {
   const fencingOn = injectionSuiteArmUsesFence(identity.arm);
-  const screened = screenCandidateFact(variant.payload);
+  const screened = screenCandidateFact(variant.payload, "hardened");
   if (injectionSuiteArmUsesQuarantine(identity.arm) && screened.quarantine) {
     return "dropped";
   }

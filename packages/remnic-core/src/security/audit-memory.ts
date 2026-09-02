@@ -1,5 +1,6 @@
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { screenCandidateFact } from "./injection-screen.js";
+import type { InjectionScreenProfile } from "./injection-screen.js";
 import { inferMemoryStatus, isArchivedMemoryPath, toMemoryPathRel } from "../memory-lifecycle-ledger-utils.js";
 import { parseStrictCliDate } from "../training-export/date-parse.js";
 
@@ -36,6 +37,8 @@ export interface AuditMemoryStoreOptions {
   memoryDir: string;
   since?: string | Date;
   quarantine?: boolean;
+  /** Screen profile; defaults to "default" (named defense modes pass "hardened"). */
+  profile?: InjectionScreenProfile;
   now?: Date;
   storage: AuditMemoryStorage;
 }
@@ -214,9 +217,10 @@ export async function auditMemoryStore(options: AuditMemoryStoreOptions): Promis
   );
   const findings: AuditMemoryFinding[] = [];
   const quarantinePaths = new Map<string, { injection: boolean; burst: boolean }>();
+  const profile = options.profile ?? "default";
 
   for (const memory of activeMemories) {
-    const screened = screenCandidateFact(memory.content);
+    const screened = screenCandidateFact(memory.content, profile);
     if (screened.quarantine === true) quarantinePaths.set(memory.path, { injection: true, burst: false });
     for (const screenFinding of screened.findings) {
       findings.push({
@@ -268,7 +272,7 @@ export async function auditMemoryStore(options: AuditMemoryStoreOptions): Promis
       // the live record first.
       const memory = await storage.readMemoryByPath(staleMemory.path);
       if (!memory || !isActive(memory, options.memoryDir)) continue;
-      if (qInfo.injection && !qInfo.burst && !screenCandidateFact(memory.content).quarantine) continue;
+      if (qInfo.injection && !qInfo.burst && !screenCandidateFact(memory.content, profile).quarantine) continue;
       const changed = await storage.writeMemoryFrontmatterIfUnchanged(memory, {
         status: "pending_review",
         updated: now,

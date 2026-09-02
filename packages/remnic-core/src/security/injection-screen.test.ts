@@ -51,7 +51,8 @@ test("screenCandidateFact catches response and tool-control directives without g
     "The assistant output latency was 30 milliseconds.",
     "The preferred tool material is stainless steel.",
   ];
-  assert.ok(attacks.every((content) => screenCandidateFact(content).quarantine));
+  assert.ok(attacks.every((content) => screenCandidateFact(content, "hardened").quarantine));
+  assert.ok(benign.every((content) => !screenCandidateFact(content, "hardened").quarantine));
   assert.ok(benign.every((content) => !screenCandidateFact(content).quarantine));
 });
 test("screenCandidateFact only flags executable Remnic directives", () => {
@@ -89,4 +90,16 @@ test("screenCandidateFact returns stable rule names and excerpts", () => {
     "conditional-trigger",
   ]);
   assert.equal(result.findings.every((finding) => finding.excerpt.length > 0), true);
+});
+
+test("screenCandidateFact profile keeps benign conditional prose unquarantined (#1962)", () => {
+  const hotfix = "When you cut a hotfix release, follow the checklist";
+  const benign = screenCandidateFact(hotfix);
+  assert.deepEqual(rulesFor(hotfix), ["conditional-trigger"]);
+  assert.equal(benign.score, 3);
+  assert.equal(benign.quarantine, false);
+
+  const hardened = screenCandidateFact(hotfix, "hardened");
+  assert.equal(hardened.score, 4);
+  assert.equal(hardened.quarantine, true);
 });

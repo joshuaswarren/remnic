@@ -16,6 +16,8 @@ export interface InjectionScreenResult {
   quarantine: boolean;
 }
 
+export type InjectionScreenProfile = "default" | "hardened";
+
 // Each score reflects the confidence that the candidate carries executable
 // instructions rather than an ordinary fact.
 const RULE_WEIGHTS = {
@@ -27,8 +29,6 @@ const RULE_WEIGHTS = {
   "encoded-blob": 5,
   // Instruction resets directly try to replace the active authority.
   "ignore-previous-family": 4,
-  // Conditional triggers encode a hidden action for a future turn.
-  "conditional-trigger": 4,
   // Remnic command references can redirect the memory system itself.
   "authority-escalation": 4,
   // Stored response controls try to turn recalled data into future behavior.
@@ -36,6 +36,23 @@ const RULE_WEIGHTS = {
   // Tool-routing controls replace the current tool choice from recalled data.
   "tool-routing-directive": 4,
 } as const;
+
+// Rules whose confidence depends on the screen profile (#1962). `hardened`
+// (any named memoryInjectionDefenseMode) treats a conditional trigger alone
+// as high-confidence; `default` (custom mode) keeps weight 3 so benign
+// conditional procedure prose stays below the threshold. Rules absent from
+// this table share RULE_WEIGHTS in both profiles.
+const PROFILE_RULE_WEIGHTS = {
+  // Conditional triggers encode a hidden action for a future turn.
+  "conditional-trigger": { default: 3, hardened: 4 },
+} as const;
+
+function ruleWeight(rule: string, profile: InjectionScreenProfile): number {
+  const profileWeights = PROFILE_RULE_WEIGHTS[rule as keyof typeof PROFILE_RULE_WEIGHTS];
+  return profileWeights
+    ? profileWeights[profile]
+    : RULE_WEIGHTS[rule as keyof typeof RULE_WEIGHTS];
+}
 
 // Weight 4 blocks one high-confidence instruction pattern, while ordinary
 // prose remains at zero. Encoded blobs use weight 5 because they are opaque.
@@ -159,7 +176,7 @@ function findAuthorityEscalation(content: string): InjectionScreenFinding | unde
 }
 
 /** Screen a candidate fact without model calls, I/O, or mutable state. */
-export function screenCandidateFact(content: string): InjectionScreenResult {
+export function screenCandidateFact(content: string, profile: InjectionScreenProfile = "default"): InjectionScreenResult {
   const findings: InjectionScreenFinding[] = [];
   const rules: Array<[string, (value: string) => InjectionScreenFinding | undefined]> = [
     ["imperative-to-agent", findImperativeToAgent],
@@ -175,6 +192,6 @@ export function screenCandidateFact(content: string): InjectionScreenResult {
     const finding = find(content);
     if (finding) findings.push({ rule, excerpt: finding.excerpt });
   }
-  const score = findings.reduce((sum, finding) => sum + RULE_WEIGHTS[finding.rule as keyof typeof RULE_WEIGHTS], 0);
+  const score = findings.reduce((sum, finding) => sum + ruleWeight(finding.rule, profile), 0);
   return { score, findings, quarantine: score >= INJECTION_SCREEN_THRESHOLD };
 }

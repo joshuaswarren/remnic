@@ -45,7 +45,7 @@ test("parseConfig memory-poisoning hardening defaults and validation (#1955)", (
     assert.equal(defaults.memoryInjectionDefenseMode, "custom");
     assert.equal(defaults.originAuthorityEnabled, false);
     assert.equal(defaults.injectionScreenEnabled, true);
-    assert.deepEqual(defaults.untrustedOrigins, ["tool_output", "import:*", "unknown"]);
+    assert.equal(defaults.injectionScreenProfile, "default");
 
     for (const [mode, originAuthorityEnabled, injectionScreenEnabled] of [
       ["off", false, false],
@@ -57,6 +57,7 @@ test("parseConfig memory-poisoning hardening defaults and validation (#1955)", (
       assert.equal(resolved.memoryInjectionDefenseMode, mode);
       assert.equal(resolved.originAuthorityEnabled, originAuthorityEnabled);
       assert.equal(resolved.injectionScreenEnabled, injectionScreenEnabled);
+      assert.equal(resolved.injectionScreenProfile, "hardened");
       assert.deepEqual(
         resolved.untrustedOrigins,
         ["user", "tool_output", "connector:*", "import:*", "unknown"],

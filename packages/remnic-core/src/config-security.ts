@@ -5,6 +5,7 @@ import {
   HARDENED_UNTRUSTED_ORIGINS,
 } from "./security/origin-authority.js";
 import type { MemoryInjectionDefenseMode } from "./security/types.js";
+import type { InjectionScreenProfile } from "./security/injection-screen.js";
 
 // Memory-poisoning hardening (#1955): preserve explicit config, but let env
 // values replace schema-materialized defaults from the host config loader.
@@ -141,6 +142,7 @@ export function parseSecurityConfig(
   memoryInjectionDefenseMode: MemoryInjectionDefenseMode;
   originAuthorityEnabled: boolean;
   injectionScreenEnabled: boolean;
+  injectionScreenProfile: InjectionScreenProfile;
   untrustedOrigins: string[];
 } {
   const memoryInjectionDefenseMode = resolveMemoryInjectionDefenseMode(
@@ -168,6 +170,8 @@ export function parseSecurityConfig(
     layered: [true, true],
   } satisfies Record<MemoryInjectionDefenseMode, readonly [boolean, boolean]>;
   const [originAuthorityEnabled, injectionScreenEnabled] = flags[memoryInjectionDefenseMode];
+  const injectionScreenProfile: InjectionScreenProfile =
+    memoryInjectionDefenseMode === "custom" ? "default" : "hardened";
   const configuredOrigins = resolveUntrustedOrigins(cfg.untrustedOrigins, rawOperatorConfig);
   const untrustedOrigins =
     memoryInjectionDefenseMode !== "custom"
@@ -178,6 +182,7 @@ export function parseSecurityConfig(
     memoryInjectionDefenseMode,
     originAuthorityEnabled,
     injectionScreenEnabled,
+    injectionScreenProfile,
     untrustedOrigins,
   };
 }

@@ -70,7 +70,7 @@ export function secureBenchRecallSection(
   trustedSection: boolean,
 ): string {
   if (trustedSection) return content;
-  if (security.injectionScreenEnabled && screenCandidateFact(content).quarantine) return "";
+  if (security.injectionScreenEnabled && screenCandidateFact(content, "hardened").quarantine) return "";
   return security.originAuthorityEnabled ? renderAuthorityFence(content, "unknown") : content;
 }
 

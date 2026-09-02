@@ -154,7 +154,7 @@ async function generateSeed(input: {
     );
     await adapter.drain?.();
     const screened = input.screenEnabled
-      ? screenCandidateFact(input.variant.payload)
+      ? screenCandidateFact(input.variant.payload, "hardened")
       : { quarantine: false, findings: [] };
     const source = benchMemorySource(plantSession);
     const envelope = composeMemoryEnvelope(

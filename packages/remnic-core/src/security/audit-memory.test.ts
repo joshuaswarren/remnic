@@ -163,8 +163,9 @@ test("auditMemoryStore audits legacy missing-status memories and excludes archiv
 });
 
 test("auditMemoryStore quarantines a single-rule finding and leaves benign prose untouched", async () => {
-  // Every screen rule now carries weight >= INJECTION_SCREEN_THRESHOLD, so one
-  // finding is sufficient to quarantine; there is no sub-threshold finding.
+  // The hardened profile keeps every rule at weight >= INJECTION_SCREEN_THRESHOLD,
+  // so one finding is sufficient to quarantine; the default profile keeps
+  // conditional triggers sub-threshold (#1962).
   const root = await mkdtemp(path.join(tmpdir(), "remnic-audit-memory-threshold-"));
   try {
     const trigger = makeMemory(
@@ -183,6 +184,7 @@ test("auditMemoryStore quarantines a single-rule finding and leaves benign prose
       memoryDir: root,
       storage: memoryStorage([trigger, benign]),
       quarantine: true,
+      profile: "hardened",
     });
     assert.deepEqual(
       report.findings.map(({ memoryId, category, rule }) => ({ memoryId, category, rule })),
