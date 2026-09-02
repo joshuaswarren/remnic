@@ -919,6 +919,53 @@ test("delegate flushes every namespace observed before a session rebind", async 
   }
 });
 
+test("delegate flushes again when the observe queue outlasts the lifecycle drain", async () => {
+  // Each observe fits its own cap (half the flush budget), but a QUEUE of them
+  // does not: the drain gives up mid-queue, so the turns still in flight would
+  // buffer behind the flush that already ran. A follow-up flush chained behind
+  // the queue is what keeps an ended session's last turns from being stranded.
+  const stub = await startDaemonStub(async (pathname) => {
+    if (pathname === "/engram/v1/observe") {
+      await sleep(80);
+      return { accepted: true };
+    }
+    if (pathname === "/engram/v1/lcm/compaction/flush") return { flushed: true };
+    return { accepted: true };
+  });
+  try {
+    const api = recordingApi();
+    // Drain and per-observe cap are both 100ms; two 80ms observes outlast one.
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 200 }));
+    const sessionKey = "late-observe-session";
+    for (const turn of ["first", "second"]) {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${turn} turn before the session ends` },
+            { role: "assistant", content: "the turn is captured" },
+          ],
+        },
+        { sessionKey },
+      );
+    }
+    const flushPath = "/engram/v1/lcm/compaction/flush";
+    assert.equal(await invoke(api, "session_end", { sessionKey }), true);
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === flushPath).length,
+      1,
+      "the lifecycle flush proceeds rather than overrunning the host's deadline",
+    );
+    // The follow-up runs once the queue drains, so the late turns are flushed.
+    await stub.nextCall(flushPath);
+    assert.equal(stub.calls.filter((call) => call.pathname === flushPath).length, 2);
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate batches rebound namespace flushes within one hook deadline", async () => {
   const pendingFlushes: Array<() => void> = [];
   const stub = await startDaemonStub((pathname) => {

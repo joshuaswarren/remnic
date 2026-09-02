@@ -400,6 +400,8 @@ export function registerDelegateRuntime(
   // Detached observe POSTs, per session (see `agent_end`). A flush for the
   // same session waits behind them so a turn is buffered before it is flushed.
   const observeChains = new Map<string, Promise<void>>();
+  /** Sessions whose lifecycle flush already chained a follow-up behind the queue. */
+  const followUpFlushSessions = new Set<string>();
   if (promptInjectionEnabled) {
     /**
      * Recall for one query on behalf of a session. `undefined` when nothing
@@ -686,18 +688,32 @@ export function registerDelegateRuntime(
         log.warn("delegate flush skipped: lifecycle event has malformed session key");
         return false;
       }
-      // The session's last turn may still be on its way to the daemon
-      // (`agent_end` detaches the observe POST). Flushing ahead of it would
-      // leave that turn buffered behind the flush — but the drain is bounded
-      // to the observe's own cap (half the flush budget, see `observe`), so a
-      // slow turn or a backlog on a hung daemon leaves the flush its half.
+      // The session's last turns may still be on their way to the daemon
+      // (`agent_end` detaches the observe POST). Flushing ahead of them would
+      // leave them buffered behind the flush, but the drain cannot spend more
+      // than half the lifecycle budget or the flush itself has nothing left.
+      // So when the QUEUE outlasts the drain, this flush proceeds and a
+      // follow-up flush is chained behind the queue: late turns are flushed
+      // after `session_end` rather than left buffered forever.
       const pendingObserve = observeChains.get(sessionKey);
       if (pendingObserve !== undefined) {
         const drainDeadline = Promise.withResolvers<void>();
         const timer = setTimeout(drainDeadline.resolve, Math.max(0, Math.min(remainingBudget(), options.flushTimeoutMs / 2)));
         timer.unref?.();
-        await Promise.race([pendingObserve, drainDeadline.promise]);
+        const drained = await Promise.race([
+          pendingObserve.then(() => true),
+          drainDeadline.promise.then(() => false),
+        ]);
         clearTimeout(timer);
+        // One follow-up per session: it runs when the chain is settled, so its
+        // own drain finds nothing pending and cannot chain another.
+        if (!drained && !followUpFlushSessions.has(sessionKey)) {
+          followUpFlushSessions.add(sessionKey);
+          void pendingObserve
+            .then(() => flushHandler(event, ctx))
+            .catch((err: unknown) => log.warn(`delegate follow-up flush failed: ${String(err)}`))
+            .finally(() => followUpFlushSessions.delete(sessionKey));
+        }
       }
       const namespaces = await lifecycleSessionNamespacesFrom(
         sessionKey,
