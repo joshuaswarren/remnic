@@ -19,7 +19,9 @@ import {
   type ClusterBootstrapInterval,
 } from "./publication-stats.js";
 import {
+  INJECTION_SUITE_ARMS,
   INJECTION_SUITE_FAMILIES,
+  INJECTION_SUITE_PUBLICATION_ARMS,
   type InjectionSuiteArm,
   type InjectionSuiteEpisodeRow,
   type InjectionSuiteFamily,
@@ -170,9 +172,15 @@ export function analyzeInjectionSuiteOnlineAdaptiveRows(args: {
 }): OnlineAdaptiveStatistics {
   const iterationsOf = (row: InjectionSuiteEpisodeRow) =>
     parseOnlineVariantId(row.identity.variantId)?.iteration ?? Number.NaN;
-  const arms = [
-    ...new Set(args.rows.map((row) => row.identity.arm)),
-  ] as InjectionSuiteArm[];
+  // Arms in registered order, so the seeded bootstrap does not depend on
+  // which worker appended its first episode first.
+  const registeredOrder: readonly string[] = [
+    ...INJECTION_SUITE_PUBLICATION_ARMS,
+    ...INJECTION_SUITE_ARMS,
+  ];
+  const arms = [...new Set(args.rows.map((row) => row.identity.arm))].sort(
+    (left, right) => registeredOrder.indexOf(left) - registeredOrder.indexOf(right),
+  ) as InjectionSuiteArm[];
   const cellPlanned = (arm: InjectionSuiteArm, family: string, index: number) =>
     args.plannedCells === undefined || args.plannedCells.has(`${arm}\0${family}\0${index}`);
   const indicesFor = (arm: InjectionSuiteArm, family: string) => {

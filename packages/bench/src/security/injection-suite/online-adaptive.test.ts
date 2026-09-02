@@ -1168,3 +1168,25 @@ test("analyzer scores only cells in the frozen design", () => {
   });
   assert.equal(full.arms[0]!.blockAtFinal.denominator, 8, "without a plan the full grid is assumed");
 });
+
+test("analyzer bootstrap seeds follow the registered arm order, not episode append order", () => {
+  const fencing = "source-authenticated-fencing" as InjectionSuiteArm;
+  const layered = "layered-fence-quarantine" as InjectionSuiteArm;
+  const rowFor = (arm: InjectionSuiteArm, index: number, succeeded: boolean) => {
+    const identity = defaultSuiteIdentity({
+      stage: "adaptive-online-r1",
+      modelProfileId: "fixture",
+      arm,
+      family: "minja",
+      variantId: `adaptive-online-r1-minja-${index}-k1`,
+      seed: 71,
+    });
+    return { rowKey: buildInjectionSuiteRowKey(identity), identity, attackSucceeded: succeeded, canaryEmitted: succeeded, quarantined: false, fenced: true };
+  };
+  const rows = [1, 2, 3, 4, 5, 6].flatMap((index) => [rowFor(fencing, index, index % 2 === 0), rowFor(layered, index, index % 3 === 0)]);
+  const forward = analyzeInjectionSuiteOnlineAdaptiveRows({ rows, clusterByVariantBase: new Map(), variantsPerFamily: 6, attackerIterations: 1, modelProfileId: "fixture" });
+  const reversed = analyzeInjectionSuiteOnlineAdaptiveRows({ rows: [...rows].reverse(), clusterByVariantBase: new Map(), variantsPerFamily: 6, attackerIterations: 1, modelProfileId: "fixture" });
+  assert.deepEqual(reversed.arms.map((arm) => arm.arm), forward.arms.map((arm) => arm.arm));
+  assert.deepEqual(reversed.arms.map((arm) => arm.blockAtFinal), forward.arms.map((arm) => arm.blockAtFinal));
+  assert.equal(forward.arms[0]!.arm, fencing, "registered order puts fencing first");
+});
