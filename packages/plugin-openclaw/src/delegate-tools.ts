@@ -29,6 +29,8 @@ const DEFAULT_SEARCH_RESULTS = 8;
 const DEFAULT_SNIPPET_MAX_CHARS = 600;
 /** The daemon's `memorySearchSchema` cap on `query`. */
 const DAEMON_SEARCH_QUERY_MAX_CHARS = 2_048;
+/** The daemon's `memoryGetSchema` cap on `memoryId` and `sessionKey`. */
+const DAEMON_MEMORY_GET_MAX_CHARS = 512;
 
 /** Embedded parity: finite limits floor into [1, 50]; anything else is the default. */
 function clampLimit(value: unknown): number {
@@ -99,8 +101,8 @@ export function buildDelegateMemorySearchTool(options: {
     parameters: MemorySearchInputSchema,
     inputSchema: MemorySearchInputSchema,
     async execute(_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal, ctx?: ToolContext) {
-      const query = typeof params.query === "string" && params.query.trim().length > 0 ? params.query : null;
-      if (!query) throw new Error("memory_search requires a non-empty query");
+      const query = typeof params.query === "string" ? params.query.trim() : "";
+      if (query.length === 0) throw new Error("memory_search requires a non-empty query");
       const { manager, error } = await options.runtime.getMemorySearchManager({
         cfg: undefined,
         agentId: ctx?.agentId ?? options.agentId,
@@ -151,9 +153,18 @@ export function buildDelegateMemoryGetTool(options: {
     parameters: MemoryGetInputSchema,
     inputSchema: MemoryGetInputSchema,
     async execute(_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal, ctx?: ToolContext) {
-      const id = typeof params.id === "string" && params.id.trim().length > 0 ? params.id : null;
-      if (!id) throw new Error("memory_get requires an id");
+      const id = typeof params.id === "string" ? params.id.trim() : "";
+      if (id.length === 0) throw new Error("memory_get requires an id");
+      // The daemon's `memoryGetSchema` caps both at 512 chars. No stored id is
+      // that long, so embedded mode answers `not_found`; a session key that
+      // long is a caller defect, named locally instead of as a daemon 400.
+      if (id.length > DAEMON_MEMORY_GET_MAX_CHARS) {
+        return toolJsonResult({ error: "not_found" } satisfies ActiveMemoryGetOutput);
+      }
       const sessionKey = sessionKeyFor(params, ctx);
+      if (sessionKey.length > DAEMON_MEMORY_GET_MAX_CHARS) {
+        throw new Error(`memory_get sessionKey exceeds the daemon's ${DAEMON_MEMORY_GET_MAX_CHARS}-char cap`);
+      }
       // The session binding decides the scope, never the model: a
       // model-supplied namespace may only restate it. The daemon default is
       // the SAME scope the session's search used, so an unbound session cannot

@@ -2423,11 +2423,33 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
       /non-empty query/,
     );
     await assert.rejects(tools.get("memory_get")!.execute("tc-4", {}, undefined, {}), /requires an id/);
-    // The daemon caps `query` at 2048 chars; a longer public input is trimmed
-    // rather than turned into a 400 the embedded tool never produces.
+    // The daemon caps `query` at 2048 chars AFTER trimming; a longer public
+    // input is trimmed then capped rather than turned into a 400 the embedded
+    // tool never produces.
     await tools.get("memory_search")!.execute("tc-5", { query: "q".repeat(3_000) }, undefined, {});
     const longSearch = stub.calls.filter((call) => call.pathname === "/engram/v1/memories/search").at(-1);
     assert.equal(String(longSearch?.body.query).length, 2_048);
+    await tools.get("memory_search")!.execute("tc-6", { query: `${" ".repeat(2_100)}rollout` }, undefined, {});
+    const padded = stub.calls.filter((call) => call.pathname === "/engram/v1/memories/search").at(-1);
+    assert.equal(padded?.body.query, "rollout", "leading whitespace is trimmed before the cap");
+
+    // memory_get: the daemon caps `memoryId`/`sessionKey` at 512. An id that
+    // long cannot exist, so it is `not_found` (embedded parity) without a
+    // daemon round-trip; an oversized session key is a caller defect.
+    const getCallsBefore = stub.calls.filter((call) => call.pathname.startsWith("/engram/v1/memories/")).length;
+    const longId = (await tools.get("memory_get")!.execute("tc-7", { id: "x".repeat(600) }, undefined, {
+      sessionKey: "tool-session",
+    })) as { content: Array<{ text: string }> };
+    assert.deepEqual(JSON.parse(longId.content[0]!.text), { error: "not_found" });
+    assert.equal(
+      stub.calls.filter((call) => call.pathname.startsWith("/engram/v1/memories/")).length,
+      getCallsBefore,
+      "an impossible id never reaches the daemon",
+    );
+    await assert.rejects(
+      tools.get("memory_get")!.execute("tc-8", { id: "fact-1" }, undefined, { sessionKey: "s".repeat(600) }),
+      /sessionKey exceeds/,
+    );
   } finally {
     await stub.close();
   }
