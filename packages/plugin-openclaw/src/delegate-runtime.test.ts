@@ -966,6 +966,54 @@ test("delegate flushes again when the observe queue outlasts the lifecycle drain
   }
 });
 
+test("delegate skips the follow-up flush when a post-lifecycle turn is observed", async () => {
+  // The deferred flush belongs to the generation that ended. A turn observed
+  // under the same key after the lifecycle hook returned must not be swept
+  // into it (nor filed under the ended event's namespace); the next lifecycle
+  // event owns that turn.
+  const stub = await startDaemonStub(async (pathname) => {
+    if (pathname === "/engram/v1/observe") {
+      await sleep(80);
+      return { accepted: true };
+    }
+    if (pathname === "/engram/v1/lcm/compaction/flush") return { flushed: true };
+    return { accepted: true };
+  });
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 200 }));
+    const sessionKey = "post-reset-session";
+    const observeTurn = async (turn: string): Promise<void> => {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${turn} turn of this session` },
+            { role: "assistant", content: "the turn is captured" },
+          ],
+        },
+        { sessionKey },
+      );
+    };
+    await observeTurn("first");
+    await observeTurn("second");
+    const flushPath = "/engram/v1/lcm/compaction/flush";
+    assert.equal(await invoke(api, "before_reset", { sessionKey }), true);
+    // A new turn under the same key BEFORE the old queue settles.
+    await observeTurn("post-reset");
+    await sleep(400);
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === flushPath).length,
+      1,
+      "the follow-up must not flush a generation it does not own",
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate batches rebound namespace flushes within one hook deadline", async () => {
   const pendingFlushes: Array<() => void> = [];
   const stub = await startDaemonStub((pathname) => {

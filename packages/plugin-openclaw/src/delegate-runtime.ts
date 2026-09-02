@@ -705,12 +705,22 @@ export function registerDelegateRuntime(
           drainDeadline.promise.then(() => false),
         ]);
         clearTimeout(timer);
-        // One follow-up per session: it runs when the chain is settled, so its
-        // own drain finds nothing pending and cannot chain another.
+        // One follow-up per session, fenced to the generation that ended: the
+        // chain self-clears when it is the map's current entry, so a map entry
+        // still present after it settles means a POST-lifecycle turn was
+        // observed under the same key. Flushing then would sweep that new
+        // turn into the ended generation (and file its notes under this
+        // event's captured namespace); the next lifecycle event owns it.
         if (!drained && !followUpFlushSessions.has(sessionKey)) {
           followUpFlushSessions.add(sessionKey);
           void pendingObserve
-            .then(() => flushHandler(event, ctx))
+            .then(() => {
+              if (observeChains.has(sessionKey)) {
+                log.debug(`delegate follow-up flush skipped: ${sessionKey} observed a newer turn`);
+                return false;
+              }
+              return flushHandler(event, ctx);
+            })
             .catch((err: unknown) => log.warn(`delegate follow-up flush failed: ${String(err)}`))
             .finally(() => followUpFlushSessions.delete(sessionKey));
         }
