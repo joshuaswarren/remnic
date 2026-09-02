@@ -2325,7 +2325,17 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
       };
     }
     if (pathname.startsWith("/engram/v1/memories/fact-1")) {
-      return { found: true, memory: { id: "fact-1", content: "we decided to roll out on Monday" } };
+      return {
+        found: true,
+        namespace: "team-alpha",
+        memory: {
+          id: "fact-1",
+          path: `/home/user/memory/${memoryPath}`,
+          category: "fact",
+          content: "we decided to roll out on Monday",
+          frontmatter: { id: "fact-1", category: "fact", updated: "2026-01-01T00:00:00Z" },
+        },
+      };
     }
     return { accepted: true };
   });
@@ -2359,14 +2369,13 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
     assert.ok(search, "memory_search POSTs the daemon's ranked search");
     assert.equal(search.body.query, "rollout");
     assert.equal(search.body.maxResults, 3);
-    const searchPayload = JSON.parse(searched.content[0]!.text) as {
-      count: number;
-      results: Array<{ id?: string; citation?: string; snippet: string; score: number }>;
-    };
-    assert.equal(searchPayload.count, 1);
-    assert.equal(searchPayload.results[0]?.citation, memoryPath);
-    assert.equal(searchPayload.results[0]?.id, "fact-1", "the id memory_get takes rides on each hit");
-    assert.equal(searchPayload.results[0]?.snippet, "we decided to roll out on Monday");
+    // The public active-memory shape the embedded tool returns — and no
+    // absolute path: the manager's `path` names the operator's filesystem.
+    assert.deepEqual(JSON.parse(searched.content[0]!.text), {
+      results: [{ id: "fact-1", score: 0.9, text: "we decided to roll out on Monday" }],
+      truncated: false,
+    });
+    assert.doesNotMatch(searched.content[0]!.text, /\/facts\//, "no filesystem path reaches the model");
 
     // The session binding decides memory_get's scope; the model may only
     // restate it. An unbound session reads the daemon default and cannot
@@ -2398,9 +2407,12 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
     assert.equal(getUrl.pathname, "/engram/v1/memories/fact-1");
     assert.equal(getUrl.searchParams.get("namespace"), "team-alpha");
     assert.equal(getUrl.searchParams.get("sessionKey"), "tool-session");
-    const getPayload = JSON.parse(got.content[0]!.text) as { found: boolean; memory: { id: string } };
-    assert.equal(getPayload.found, true);
-    assert.equal(getPayload.memory.id, "fact-1");
+    assert.deepEqual(JSON.parse(got.content[0]!.text), {
+      id: "fact-1",
+      text: "we decided to roll out on Monday",
+      metadata: { type: "fact", updatedAt: "2026-01-01T00:00:00Z" },
+    });
+    assert.doesNotMatch(got.content[0]!.text, /\/facts\//, "no filesystem path reaches the model");
 
     await assert.rejects(
       tools.get("memory_search")!.execute("tc-3", { query: "   " }, undefined, {}),

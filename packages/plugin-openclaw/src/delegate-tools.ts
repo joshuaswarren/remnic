@@ -10,6 +10,13 @@
 
 import path from "node:path";
 
+import {
+  type ActiveMemoryGetOutput,
+  type ActiveMemoryMetadata,
+  type ActiveMemorySearchOutput,
+  collapseWhitespace,
+} from "@remnic/core";
+
 import type { DelegateDaemonTarget } from "./bridge.js";
 import { getJson } from "./delegate-http.js";
 import type { RemnicCapabilityRuntime } from "./memory-capability-types.js";
@@ -28,6 +35,38 @@ function sessionKeyFor(params: Record<string, unknown>, ctx: ToolContext | undef
     return ctx.sessionKey;
   }
   return typeof params.sessionKey === "string" && params.sessionKey.trim().length > 0 ? params.sessionKey : "default";
+}
+
+/**
+ * The daemon's memory record, translated into the public active-memory get
+ * shape the embedded tool returns. Its absolute `path` and raw frontmatter
+ * stay behind: same contract in either bridge mode, and no filesystem
+ * layout reaches the model.
+ */
+function activeMemoryGetOutputFrom(record: unknown): ActiveMemoryGetOutput {
+  if (typeof record !== "object" || record === null) return { error: "not_found" };
+  const memory = record as { id?: unknown; content?: unknown; frontmatter?: unknown };
+  if (typeof memory.id !== "string" || typeof memory.content !== "string") {
+    throw new Error("daemon memory route returned a malformed memory record");
+  }
+  const frontmatter =
+    typeof memory.frontmatter === "object" && memory.frontmatter !== null
+      ? (memory.frontmatter as Record<string, unknown>)
+      : {};
+  const metadata: ActiveMemoryMetadata = {};
+  if (frontmatter.category === "fact" || frontmatter.category === "preference") {
+    metadata.type = frontmatter.category;
+  }
+  if (Array.isArray(frontmatter.tags) && typeof frontmatter.tags[0] === "string") {
+    metadata.topic = frontmatter.tags[0];
+  }
+  if (typeof frontmatter.updated === "string") metadata.updatedAt = frontmatter.updated;
+  if (typeof frontmatter.source === "string") metadata.sourceUri = frontmatter.source;
+  return {
+    id: memory.id,
+    text: collapseWhitespace(memory.content),
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+  };
 }
 
 export function buildDelegateMemorySearchTool(options: {
@@ -52,17 +91,19 @@ export function buildDelegateMemorySearchTool(options: {
         maxResults: typeof params.limit === "number" ? params.limit : DEFAULT_SEARCH_RESULTS,
         sessionKey: sessionKeyFor(params, ctx),
       });
-      // Memory files are `<id>.md` (the daemon's own `memoryIdFromPath`
-      // convention), so the id `memory_get` takes is the citation's basename.
-      return toolJsonResult({
-        query,
-        count: results.length,
+      // The public active-memory shape the embedded tool returns: `id` is the
+      // `<id>.md` basename (the daemon's own `memoryIdFromPath` convention),
+      // `text` the snippet. The manager's absolute `path` stays internal — it
+      // names the operator's filesystem, which the model has no use for.
+      const output: ActiveMemorySearchOutput = {
         results: results.map((result) => ({
           id: path.basename(result.citation ?? result.path, ".md"),
-          ...result,
+          score: result.score,
+          text: result.snippet,
         })),
-        remnic: { bridgeMode: "delegate", daemon: `${options.target.host}:${options.target.port}` },
-      });
+        truncated: false,
+      };
+      return toolJsonResult(output);
     },
   };
 }
@@ -101,11 +142,11 @@ export function buildDelegateMemoryGetTool(options: {
       if (namespace !== undefined) search.set("namespace", namespace);
       const pathname = `/engram/v1/memories/${encodeURIComponent(id)}?${search}`;
       const response = await getJson(options.target, options.serviceId, pathname, options.timeoutMs);
-      if (response.status === 404) return toolJsonResult({ found: false, id });
+      if (response.status === 404) return toolJsonResult({ error: "not_found" } satisfies ActiveMemoryGetOutput);
       if (response.status < 200 || response.status > 299) {
         throw new Error(`daemon ${pathname} responded ${response.status}`);
       }
-      return toolJsonResult(response.body);
+      return toolJsonResult(activeMemoryGetOutputFrom(response.body?.memory));
     },
   };
 }
