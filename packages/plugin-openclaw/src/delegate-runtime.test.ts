@@ -2314,6 +2314,32 @@ test("delegate registers a memory prompt preparation that recalls before prompt 
   }
 });
 
+test("delegate prompt preparation degrades to no lines when the binding lookup fails", async () => {
+  const stub = await startDaemonStub(() => ({ context: "never injected" }));
+  try {
+    const api = recordingApi();
+    const preparations: Array<(params: Record<string, unknown>) => Promise<readonly string[]>> = [];
+    Object.assign(api, {
+      registerMemoryPromptPreparation(prepare: (params: Record<string, unknown>) => Promise<readonly string[]>): void {
+        preparations.push(prepare);
+      },
+    });
+    const broken: SessionNamespaceBindingStore = {
+      ...createInMemorySessionNamespaceBindingStore(),
+      namespacesFor: async () => {
+        throw new Error("EACCES: bindings file unreadable");
+      },
+    };
+    registerDelegateRuntime(api, optionsFor(stub.port, { namespaceBindings: broken }));
+    // The host awaits the preparation while assembling the prompt: a broken
+    // binding store costs the memory section, never the turn.
+    assert.deepEqual(await preparations[0]!({ agentSessionKey: "agent:main:broken" }), []);
+    assert.equal(stub.calls.filter((call) => call.pathname === "/engram/v1/recall").length, 0);
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate prompt preparation honors the session toggle and cron policy", async () => {
   const stub = await startDaemonStub(() => ({ context: "never injected" }));
   try {
