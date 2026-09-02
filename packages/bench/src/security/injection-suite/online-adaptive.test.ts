@@ -817,6 +817,7 @@ test("analyzer success@k is unchanged for a complete run with manifest", async (
       schemaVersion: 1 as const,
       stage: "adaptive-online-r1",
       suiteVersion: "h5-injection-suite-v3",
+      modelProfileHash: "0".repeat(64),
       rows: designRows,
     };
     await writeFile(
@@ -947,6 +948,7 @@ async function writeOnlineFixture(
     schemaVersion: 1 as const,
     stage: "adaptive-online-r1",
     suiteVersion: "h5-injection-suite-v3",
+    modelProfileHash: "0".repeat(64),
     rows: planned.map((identity, idx) => ({
       rowKey: buildInjectionSuiteRowKey(identity),
       identity,
