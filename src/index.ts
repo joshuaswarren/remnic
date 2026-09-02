@@ -1375,11 +1375,15 @@ const pluginDefinition = {
       return;
     }
 
+    // Discovery passes inspect the plugin's surfaces: capability handlers
+    // register, filesystem maintenance stays off.
+    const discoveryPass =
+      typeof sdkCaps.registrationMode === "string" &&
+      DISCOVERY_REGISTRATION_MODES.has(sdkCaps.registrationMode);
     const disableRegisterMigration =
       readEnvVar("REMNIC_DISABLE_REGISTER_MIGRATION") === "1" ||
       readEnvVar("OPENCLAW_ENGRAM_DISABLE_REGISTER_MIGRATION") === "1" ||
-      (typeof sdkCaps.registrationMode === "string" &&
-        DISCOVERY_REGISTRATION_MODES.has(sdkCaps.registrationMode));
+      discoveryPass;
     if (!disableRegisterMigration) {
       const migrationPromise = ((globalThis as any)[ENGRAM_MIGRATION_PROMISE] ??=
         migrateFromEngram({
@@ -2019,12 +2023,13 @@ const pluginDefinition = {
       await queueDreamSurfaceSync();
     }
 
-    void pruneRecallAuditEntries(
-      recallAuditDir,
-      cfg.recallTranscriptRetentionDays,
-    ).catch((error) => {
-      log.debug(`recall audit prune failed: ${String(error)}`);
-    });
+    // Retention maintenance deletes audit directories: a runtime concern, not
+    // something a read-only discovery pass may do to the memory dir.
+    if (!discoveryPass) {
+      void pruneRecallAuditEntries(recallAuditDir, cfg.recallTranscriptRetentionDays).catch((error) => {
+        log.debug(`recall audit prune failed: ${String(error)}`);
+      });
+    }
     const sessionCommandDescriptors = buildSessionCommandDescriptors(serviceId, {
       toggles: sessionToggleStore,
       getLastRecall: (sessionKey) => orchestrator.getLastRecall(sessionKey),

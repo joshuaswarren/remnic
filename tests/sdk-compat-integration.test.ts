@@ -11,7 +11,9 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { setTimeout as sleep } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -812,14 +814,31 @@ test("discovery registration modes register capability handlers and skip the mig
   resetGlobals();
   const previousDisableMigration = process.env[DISABLE_REGISTER_MIGRATION_ENV];
   delete process.env[DISABLE_REGISTER_MIGRATION_ENV];
+  const fixture = await makeMemoryFixture();
+  // An audit day well past any retention window: runtime registration prunes
+  // it, a read-only discovery pass must not touch it.
+  const expiredAuditDay = path.join(
+    fixture.memoryDir, "state", "plugins", "openclaw-remnic", "transcripts", "2000-01-01",
+  );
+  await mkdir(expiredAuditDay, { recursive: true });
   try {
     const { default: plugin } = await import("../src/index.js");
 
     for (const mode of ["discovery", "tool-discovery"]) {
       const api = buildNewSdkApi(`${mode}-test`);
-      api.pluginConfig = { qmdEnabled: false, modelSource: "gateway", transcriptEnabled: false };
+      api.pluginConfig = {
+        qmdEnabled: false,
+        modelSource: "gateway",
+        transcriptEnabled: false,
+        memoryDir: fixture.memoryDir,
+        workspaceDir: fixture.workspaceDir,
+      };
       api.registrationMode = mode;
       plugin.register(api as any);
+      // The prune is fire-and-forget with no exposed promise, so a real delay is
+      // the only way to give a (wrongly) started prune time to delete the dir.
+      await sleep(50);
+      assert.ok(existsSync(expiredAuditDay), `${mode} mode must not prune the recall audit dir`);
 
       for (const hook of ["before_prompt_build", "agent_end"]) {
         assert.ok(
@@ -841,6 +860,7 @@ test("discovery registration modes register capability handlers and skip the mig
   } finally {
     await awaitPendingMigration();
     restoreRegisterMigrationEnv(previousDisableMigration);
+    await fixture.cleanup();
     resetGlobals();
   }
 });

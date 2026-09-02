@@ -583,11 +583,12 @@ export function registerDelegateRuntime(
     // for the whole observe timeout on every turn; the turn capture is not
     // worth that, and its result feeds nothing the host waits for. Per-session
     // chaining keeps turns in order and lets a flush wait behind them. That
-    // wait is bounded by the flush deadline, so an observe is bounded by it
-    // too: one that could outlive the drain would land AFTER the session's
-    // final flush, leaving an ended session's last turn unflushed.
+    // wait draws on the flush deadline, so an observe gets at most HALF of
+    // it: the drain can always outwait the observe (nothing lands after the
+    // session's final flush), and the flush keeps the other half for its own
+    // requests rather than inheriting a ~1ms remainder from a slow observe.
     const observe = async (): Promise<void> => {
-      const observeDeadline = Date.now() + Math.min(options.observeTimeoutMs, options.flushTimeoutMs);
+      const observeDeadline = Date.now() + Math.min(options.observeTimeoutMs, options.flushTimeoutMs / 2);
       const observeRemaining = (): number => observeDeadline - Date.now();
       try {
         await postJson(
@@ -687,13 +688,13 @@ export function registerDelegateRuntime(
       }
       // The session's last turn may still be on its way to the daemon
       // (`agent_end` detaches the observe POST). Flushing ahead of it would
-      // leave that turn buffered behind the flush — but a backlog of queued
-      // turns on a hung daemon must not eat the lifecycle deadline either, so
-      // the drain is bounded by what is LEFT of it.
+      // leave that turn buffered behind the flush — but the drain is bounded
+      // to the observe's own cap (half the flush budget, see `observe`), so a
+      // slow turn or a backlog on a hung daemon leaves the flush its half.
       const pendingObserve = observeChains.get(sessionKey);
       if (pendingObserve !== undefined) {
         const drainDeadline = Promise.withResolvers<void>();
-        const timer = setTimeout(drainDeadline.resolve, Math.max(0, remainingBudget()));
+        const timer = setTimeout(drainDeadline.resolve, Math.max(0, Math.min(remainingBudget(), options.flushTimeoutMs / 2)));
         timer.unref?.();
         await Promise.race([pendingObserve, drainDeadline.promise]);
         clearTimeout(timer);
