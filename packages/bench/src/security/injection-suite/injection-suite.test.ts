@@ -940,6 +940,33 @@ test("openai-compat custom https host sends REMNIC_OPENAI_COMPAT_API_KEY", async
   }
 });
 
+test("openai-compat sends chat_template_kwargs only to models whose template defines enable_thinking", async () => {
+  const mock = mockJsonFetch({ choices: [{ message: { content: "ok" } }] });
+  try {
+    await withEnv({ ...AUTH_CLEAR_ENV, OPENAI_API_KEY: "openai-key", NVIDIA_API_KEY: "nvidia-key" }, async () => {
+      await completeChat(
+        { kind: "openai-compat", baseUrl: "https://api.openai.com/v1", model: "gpt-4.1-mini", requestTimeoutMs: 250 },
+        "hi",
+      );
+      await completeChat(
+        { kind: "openai-compat", baseUrl: "https://integrate.api.nvidia.com/v1", model: "meta/llama-3.2-11b-vision-instruct", requestTimeoutMs: 250 },
+        "hi",
+      );
+      await completeChat(
+        { kind: "openai-compat", baseUrl: "https://integrate.api.nvidia.com/v1", model: "nvidia/nemotron-3.5-lightning-30b-a3b", requestTimeoutMs: 250 },
+        "hi",
+      );
+    });
+    const bodies = mock.requests.map((request) => request.body as Record<string, unknown>);
+    assert.equal(bodies.length, 3);
+    assert.equal("chat_template_kwargs" in bodies[0]!, false, "OpenAI rejects unknown request fields");
+    assert.equal("chat_template_kwargs" in bodies[1]!, false, "the NVIDIA Llama 3.2 endpoint rejects the option");
+    assert.deepEqual(bodies[2]!.chat_template_kwargs, { enable_thinking: false });
+  } finally {
+    mock.restore();
+  }
+});
+
 test("ollama omits Authorization even when OPENAI_API_KEY is set", async () => {
   const mock = mockJsonFetch({
     message: { content: "ok" },

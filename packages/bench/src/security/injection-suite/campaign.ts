@@ -45,8 +45,10 @@ export function decideInjectionSuiteCampaignResults(
     }
   }
   for (const analysis of adaptive) {
-    if (!/^adaptive-(online-)?r[123]$/.test(analysis.stage)) {
-      throw new Error(`H5d evidence must come from an adaptive-stage run (got ${analysis.stage})`);
+    // Online runs (adaptive-online-r1) carry attack@k statistics from their
+    // own analyzer and are reported beside the campaign, never through it.
+    if (!/^adaptive-r[123]$/.test(analysis.stage)) {
+      throw new Error(`H5d evidence must come from an adaptive-r1..r3 run (got ${analysis.stage})`);
     }
   }
   const profiles = base.map((analysis) => analysis.modelProfileHash);

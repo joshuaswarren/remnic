@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { createRemnicAdapter } from "../../adapters/remnic-adapter.js";
 import type { BenchMemoryAdapter, BenchResponder } from "../../adapters/types.js";
 import { runBenchmark } from "../../benchmark.js";
+import { resolvedExecutorContract } from "./runner.js";
 import {
   createProviderBackedJudge,
   getProviderBackedResponderIdentity,
@@ -168,13 +169,13 @@ export class UtilityCheckpointStore {
   }
 }
 
-function providerConfig(input: InjectionSuiteCliInput, seed: number): ProviderFactoryConfig {
+export function providerConfig(input: InjectionSuiteCliInput, seed: number): ProviderFactoryConfig {
   const executor = input.executor ?? "local";
   if (executor === "openai-compat") {
     const baseUrl = input.baseUrl ?? "http://127.0.0.1:11434/v1";
     return {
       provider: "litellm",
-      model: input.model ?? "local-model",
+      model: resolvedExecutorContract(input).model,
       baseUrl,
       apiKey: resolveOpenAiCompatToken(baseUrl),
       disableThinking: true,
@@ -191,7 +192,7 @@ function providerConfig(input: InjectionSuiteCliInput, seed: number): ProviderFa
   if (executor === "ollama") {
     return {
       provider: "ollama",
-      model: input.model ?? "local-model",
+      model: resolvedExecutorContract(input).model,
       baseUrl: input.baseUrl,
       disableThinking: true,
       temperature: 0,

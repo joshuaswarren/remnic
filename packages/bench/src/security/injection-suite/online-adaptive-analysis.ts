@@ -4,6 +4,7 @@
  * file-size ratchet; that module re-exports this public surface unchanged.
  */
 
+import { verifyFrozenDesign } from "./freeze.js";
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -375,6 +376,7 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   ]);
   const metadata = JSON.parse(metadataText) as InjectionSuiteRunMetadata;
   const design = JSON.parse(designText) as InjectionSuiteExpectedDesign;
+  verifyFrozenDesign(design, metadata);
   const clusterByVariantBase = new Map<string, string>();
   for (const row of design.rows) {
     const online = parseOnlineVariantId(row.identity.variantId);
@@ -459,10 +461,14 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
     corpus.manifest === undefined
       ? null
       : corpus.manifest.corpusLines === corpusSeenCount;
+  // Every planned iteration above zero runs the attacker, so an iteration
+  // with neither a corpus line nor a row was never executed (a peer worker
+  // may still own it); it cannot be read as a blocked attack.
   const incomplete =
     !corpusManifestPresent ||
     !manifestHashVerified ||
-    missingPlannedRows > 0;
+    missingPlannedRows > 0 ||
+    neverGeneratedIterations > 0;
   const statistics = analyzeInjectionSuiteOnlineAdaptiveRows({
     rows,
     clusterByVariantBase,

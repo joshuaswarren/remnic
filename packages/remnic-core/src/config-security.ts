@@ -138,16 +138,17 @@ function resolveMemoryInjectionDefenseMode(
   value: unknown,
   rawOperatorConfig: Record<string, unknown> | null | undefined,
 ): MemoryInjectionDefenseMode {
-  if (value !== undefined && value !== null) {
-    return validateDefenseMode(value);
-  }
+  // Precedence: operator-authored config, then the environment, then a
+  // host-materialized schema default. A host that fills in the manifest
+  // default must not shadow an operator's environment override.
   if (isOperatorAuthored(rawOperatorConfig, "memoryInjectionDefenseMode")) {
-    const sourced = (rawOperatorConfig as Record<string, unknown>).memoryInjectionDefenseMode;
-    if (sourced !== undefined && sourced !== null) {
-      return validateDefenseMode(sourced);
-    }
+    return validateDefenseMode(
+      (rawOperatorConfig as Record<string, unknown>).memoryInjectionDefenseMode,
+    );
   }
   const envValue = readEnvVar("REMNIC_MEMORY_INJECTION_DEFENSE_MODE");
+  if (envValue !== undefined && rawOperatorConfig !== undefined) return validateDefenseMode(envValue);
+  if (value !== undefined && value !== null) return validateDefenseMode(value);
   if (envValue !== undefined) return validateDefenseMode(envValue);
   return "custom";
 }

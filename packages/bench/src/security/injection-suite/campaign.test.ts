@@ -123,7 +123,17 @@ test("campaign validates evidence by stage before deciding", () => {
       [utility(true), utility(true)],
       [run("profile-a", "SUPPORTED"), run("profile-b", "SUPPORTED")],
     ),
-    /adaptive-stage run/,
+    /adaptive-r1..r3 run/,
+  );
+  // Online runs carry attack@k statistics from their own analyzer; the
+  // generic campaign path must not consume them as H5d evidence.
+  assert.throws(
+    () => decideInjectionSuiteCampaignResults(
+      [run("profile-a", "SUPPORTED"), run("profile-b", "SUPPORTED")],
+      [utility(true), utility(true)],
+      [run("profile-a", "SUPPORTED", { stage: "adaptive-online-r1" }), run("profile-b", "SUPPORTED", { stage: "adaptive-online-r1" })],
+    ),
+    /adaptive-r1..r3 run/,
   );
 });
 

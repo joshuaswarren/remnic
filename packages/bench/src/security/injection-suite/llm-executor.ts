@@ -307,10 +307,13 @@ export async function completeChatResult(
           model === "meta/llama-3.2-11b-vision-instruct"
             ? "low"
             : "none",
-        // Llama 3.2's NVIDIA endpoint rejects this newer template option.
-        ...(model === "meta/llama-3.2-11b-vision-instruct"
-          ? {}
-          : { chat_template_kwargs: { enable_thinking: false } }),
+        // `chat_template_kwargs` is a vLLM/NIM extension, not part of the
+        // Chat Completions contract; strict endpoints (api.openai.com, the
+        // NVIDIA Llama 3.2 endpoint) reject it with HTTP 400. Send it only
+        // to models whose chat template defines `enable_thinking`.
+        ...(/qwen|nemotron/i.test(model)
+          ? { chat_template_kwargs: { enable_thinking: false } }
+          : {}),
         ...(tools
           ? {
               tools,

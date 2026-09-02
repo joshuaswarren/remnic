@@ -130,14 +130,20 @@ test("parseConfig honors REMNIC_MEMORY_INJECTION_DEFENSE_MODE when the operator 
   try {
     process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE = "layered";
     const resolved = parseConfig({});
-    assert.equal(
-      resolved.memoryInjectionDefenseMode,
-      "layered",
-      "env override activates when host materializes the schema default 'custom' into cfg",
-    );
+    assert.equal(resolved.memoryInjectionDefenseMode, "layered");
     assert.equal(resolved.originAuthorityEnabled, true);
     assert.equal(resolved.injectionScreenEnabled, true);
     assert.equal(resolved.injectionScreenProfile, "hardened");
+    // A host that materializes the manifest default into cfg while the
+    // operator's raw config omits the key must not shadow the env override.
+    const materialized = parseConfig({ memoryInjectionDefenseMode: "custom" }, {});
+    assert.equal(materialized.memoryInjectionDefenseMode, "layered");
+    // An operator-authored value still outranks the environment.
+    const authored = parseConfig(
+      { memoryInjectionDefenseMode: "fencing" },
+      { memoryInjectionDefenseMode: "fencing" },
+    );
+    assert.equal(authored.memoryInjectionDefenseMode, "fencing");
   } finally {
     if (previousMode === undefined) delete process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE;
     else process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE = previousMode;

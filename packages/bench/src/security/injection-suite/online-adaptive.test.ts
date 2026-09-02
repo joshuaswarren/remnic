@@ -39,6 +39,7 @@ import {
   resolveDefaultAttackerPromptPath,
   resolveDefaultScreenSourcePath,
 } from "./online-adaptive.js";
+import { stableInjectionSuiteJson } from "./freeze.js";
 import { generateFamilyVariants, parseOnlineVariantId } from "./generator.js";
 import { buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
 import type {
@@ -750,6 +751,12 @@ test("analyzer success@k is unchanged for a complete run with manifest", async (
       identity,
       templateId: idx % 2 === 0 ? "T0" : "T1",
     }));
+    const design = {
+      schemaVersion: 1 as const,
+      stage: "adaptive-online-r1",
+      suiteVersion: "h5-injection-suite-v3",
+      rows: designRows,
+    };
     await writeFile(
       path.join(tmp, "run.json"),
       `${JSON.stringify({
@@ -771,7 +778,7 @@ test("analyzer success@k is unchanged for a complete run with manifest", async (
         modelProfileHash: "0".repeat(64),
         modelDigest: "0".repeat(64),
         corpusManifestHash: "0".repeat(64),
-        expectedDesignHash: "0".repeat(64),
+        expectedDesignHash: sha256(stableInjectionSuiteJson(design)),
         decisionRuleHash: "0".repeat(64),
         gitSha: "0".repeat(40),
         cleanTree: true,
@@ -779,16 +786,7 @@ test("analyzer success@k is unchanged for a complete run with manifest", async (
       } satisfies InjectionSuiteRunMetadata)}\n`,
       "utf8",
     );
-    await writeFile(
-      path.join(tmp, "expected-design.json"),
-      `${JSON.stringify({
-        schemaVersion: 1 as const,
-        stage: "adaptive-online-r1",
-        suiteVersion: "h5-injection-suite-v3",
-        rows: designRows,
-      })}\n`,
-      "utf8",
-    );
+    await writeFile(path.join(tmp, "expected-design.json"), `${JSON.stringify(design)}\n`, "utf8");
     const corpusLines = identities.map((identity) => ({
       arm: identity.arm,
       family: identity.family,
@@ -862,63 +860,118 @@ test("analyzer success@k is unchanged for a complete run with manifest", async (
   }
 });
 
+function onlineIdentity(variant: string) {
+  return defaultSuiteIdentity({
+    stage: "adaptive-online-r1",
+    modelProfileId: "fixture",
+    arm: "source-authenticated-fencing",
+    family: "minja",
+    variantId: `adaptive-online-r1-${variant}-k1`,
+    seed: 71,
+  });
+}
+
+/** Write a minimal frozen online run: metadata + design (hash-consistent), optional corpus/manifest/episodes. */
+async function writeOnlineFixture(
+  tmp: string,
+  planned: readonly ReturnType<typeof onlineIdentity>[],
+  options: { corpusFor?: readonly ReturnType<typeof onlineIdentity>[]; episodesFor?: readonly ReturnType<typeof onlineIdentity>[] } = {},
+): Promise<void> {
+  const design = {
+    schemaVersion: 1 as const,
+    stage: "adaptive-online-r1",
+    suiteVersion: "h5-injection-suite-v3",
+    rows: planned.map((identity, idx) => ({
+      rowKey: buildInjectionSuiteRowKey(identity),
+      identity,
+      templateId: idx % 2 === 0 ? "T0" : "T1",
+    })),
+  };
+  await writeFile(
+    path.join(tmp, "run.json"),
+    `${JSON.stringify({
+      schemaVersion: 3 as const,
+      suiteVersion: "h5-injection-suite-v3",
+      resumeContractHash: "0".repeat(64),
+      modelProfileId: "fixture",
+      seeds: [71],
+      variantsPerFamily: planned.length,
+      family: null,
+      limit: null,
+      expectedRows: planned.length,
+      executor: "openai-compat",
+      model: "fixture-defender",
+      baseUrl: "http://127.0.0.1:9",
+      requestTimeoutMs: 5_000,
+      stage: "adaptive-online-r1",
+      runKind: "dev",
+      modelProfileHash: "0".repeat(64),
+      modelDigest: "0".repeat(64),
+      corpusManifestHash: "0".repeat(64),
+      expectedDesignHash: sha256(stableInjectionSuiteJson(design)),
+      decisionRuleHash: "0".repeat(64),
+      gitSha: "0".repeat(40),
+      cleanTree: true,
+      attackerIterations: 1,
+    } satisfies InjectionSuiteRunMetadata)}\n`,
+    "utf8",
+  );
+  await writeFile(path.join(tmp, "expected-design.json"), `${JSON.stringify(design)}\n`, "utf8");
+  if (!options.corpusFor) return;
+  const corpusLines = options.corpusFor.map((identity) => ({
+    arm: identity.arm,
+    family: identity.family,
+    variantId: identity.variantId,
+    iteration: 1,
+    payload: "rewrite",
+    valid: true,
+    rejectionReason: null,
+    attackerPromptSha256: "0".repeat(64),
+    attackerInputSha256: "0".repeat(64),
+    attackerOutputSha256: "0".repeat(64),
+  }));
+  const corpusBody = `${corpusLines.map((line) => JSON.stringify(line)).join("\n")}\n`;
+  await writeFile(path.join(tmp, "online-corpus.jsonl"), corpusBody, "utf8");
+  const episodes = (options.episodesFor ?? []).map((identity) => ({
+    rowKey: buildInjectionSuiteRowKey(identity),
+    identity,
+    attackSucceeded: false,
+    canaryEmitted: false,
+    quarantined: false,
+    fenced: true,
+  }));
+  await writeFile(
+    path.join(tmp, "online-corpus-manifest.json"),
+    `${JSON.stringify({
+      schemaVersion: 1 as const,
+      stage: "adaptive-online-r1",
+      suiteVersion: "h5-injection-suite-v3",
+      corpusSha256: sha256(corpusBody),
+      corpusLines: corpusLines.length,
+      validPayloads: corpusLines.length,
+      invalidPayloads: 0,
+      episodeRows: episodes.length,
+      attackerIterations: 1,
+      attackerExecutor: "openai-compat",
+      attackerModel: "fixture-attacker",
+      attackerModelDigest: "0".repeat(64),
+      attackerPromptSha256: "0".repeat(64),
+      attackerSeedBase: 71,
+    })}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(tmp, "episodes.jsonl"),
+    `${episodes.map((row) => JSON.stringify(row)).join("\n")}\n`,
+    "utf8",
+  );
+}
+
 test("analyzer flags an interrupted run with missing manifest as not estimable", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "online-interrupted-"));
   try {
-    const identity = defaultSuiteIdentity({
-      stage: "adaptive-online-r1",
-      modelProfileId: "fixture",
-      arm: "source-authenticated-fencing",
-      family: "minja",
-      variantId: "adaptive-online-r1-minja-1-k1",
-      seed: 71,
-    });
-    await writeFile(
-      path.join(tmp, "run.json"),
-      `${JSON.stringify({
-        schemaVersion: 3 as const,
-        suiteVersion: "h5-injection-suite-v3",
-        resumeContractHash: "0".repeat(64),
-        modelProfileId: "fixture",
-        seeds: [71],
-        variantsPerFamily: 1,
-        family: null,
-        limit: null,
-        expectedRows: 2,
-        executor: "openai-compat",
-        model: "fixture-defender",
-        baseUrl: "http://127.0.0.1:9",
-        requestTimeoutMs: 5_000,
-        stage: "adaptive-online-r1",
-        runKind: "dev",
-        modelProfileHash: "0".repeat(64),
-        modelDigest: "0".repeat(64),
-        corpusManifestHash: "0".repeat(64),
-        expectedDesignHash: "0".repeat(64),
-        decisionRuleHash: "0".repeat(64),
-        gitSha: "0".repeat(40),
-        cleanTree: true,
-        attackerIterations: 1,
-      } satisfies InjectionSuiteRunMetadata)}\n`,
-      "utf8",
-    );
-    await writeFile(
-      path.join(tmp, "expected-design.json"),
-      `${JSON.stringify({
-        schemaVersion: 1 as const,
-        stage: "adaptive-online-r1",
-        suiteVersion: "h5-injection-suite-v3",
-        rows: [
-          {
-            rowKey: buildInjectionSuiteRowKey(identity),
-            identity,
-            templateId: "T0",
-          },
-        ],
-      })}\n`,
-      "utf8",
-    );
     // No corpus, no manifest, no episodes: the run never finished.
+    await writeOnlineFixture(tmp, [onlineIdentity("minja-1")]);
     const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(stats.decision.estimable, false);
     assert.equal(stats.rowAccounting?.corpusManifestPresent, false);
@@ -932,115 +985,46 @@ test("analyzer flags an interrupted run with missing manifest as not estimable",
 test("analyzer flags a run with manifest but a missing planned row as not estimable", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "online-missing-row-"));
   try {
-    const arm = "source-authenticated-fencing" as InjectionSuiteArm;
-    const planned = ["minja-1", "minja-2"].map((variant) =>
-      defaultSuiteIdentity({
-        stage: "adaptive-online-r1",
-        modelProfileId: "fixture",
-        arm,
-        family: "minja",
-        variantId: `adaptive-online-r1-${variant}-k1`,
-        seed: 71,
-      }),
-    );
-    const identities = [planned[0]!]; // design says 2, only 1 episode rowKey
-    const episodes = identities.map((identity) => ({
-      rowKey: buildInjectionSuiteRowKey(identity),
-      identity,
-      attackSucceeded: false,
-      canaryEmitted: false,
-      quarantined: false,
-      fenced: true,
-    }));
-    await writeFile(
-      path.join(tmp, "run.json"),
-      `${JSON.stringify({
-        schemaVersion: 3 as const,
-        suiteVersion: "h5-injection-suite-v3",
-        resumeContractHash: "0".repeat(64),
-        modelProfileId: "fixture",
-        seeds: [71],
-        variantsPerFamily: 2,
-        family: null,
-        limit: null,
-        expectedRows: 2,
-        executor: "openai-compat",
-        model: "fixture-defender",
-        baseUrl: "http://127.0.0.1:9",
-        requestTimeoutMs: 5_000,
-        stage: "adaptive-online-r1",
-        runKind: "dev",
-        modelProfileHash: "0".repeat(64),
-        modelDigest: "0".repeat(64),
-        corpusManifestHash: "0".repeat(64),
-        expectedDesignHash: "0".repeat(64),
-        decisionRuleHash: "0".repeat(64),
-        gitSha: "0".repeat(40),
-        cleanTree: true,
-        attackerIterations: 1,
-      } satisfies InjectionSuiteRunMetadata)}\n`,
-      "utf8",
-    );
-    await writeFile(
-      path.join(tmp, "expected-design.json"),
-      `${JSON.stringify({
-        schemaVersion: 1 as const,
-        stage: "adaptive-online-r1",
-        suiteVersion: "h5-injection-suite-v3",
-        rows: planned.map((identity, idx) => ({
-          rowKey: buildInjectionSuiteRowKey(identity),
-          identity,
-          templateId: idx % 2 === 0 ? "T0" : "T1",
-        })),
-      })}\n`,
-      "utf8",
-    );
-    const corpusLines = planned.map((identity) => ({
-      arm: identity.arm,
-      family: identity.family,
-      variantId: identity.variantId,
-      iteration: 1,
-      payload: "rewrite",
-      valid: true,
-      rejectionReason: null,
-      attackerPromptSha256: "0".repeat(64),
-      attackerInputSha256: "0".repeat(64),
-      attackerOutputSha256: "0".repeat(64),
-    }));
-    const corpusBody = `${corpusLines
-      .map((line) => JSON.stringify(line))
-      .join("\n")}\n`;
-    await writeFile(path.join(tmp, "online-corpus.jsonl"), corpusBody, "utf8");
-    await writeFile(
-      path.join(tmp, "online-corpus-manifest.json"),
-      `${JSON.stringify({
-        schemaVersion: 1 as const,
-        stage: "adaptive-online-r1",
-        suiteVersion: "h5-injection-suite-v3",
-        corpusSha256: sha256(corpusBody),
-        corpusLines: corpusLines.length,
-        validPayloads: corpusLines.length,
-        invalidPayloads: 0,
-        episodeRows: episodes.length,
-        attackerIterations: 1,
-        attackerExecutor: "openai-compat",
-        attackerModel: "fixture-attacker",
-        attackerModelDigest: "0".repeat(64),
-        attackerPromptSha256: "0".repeat(64),
-        attackerSeedBase: 71,
-      })}\n`,
-      "utf8",
-    );
-    await writeFile(
-      path.join(tmp, "episodes.jsonl"),
-      `${episodes.map((row) => JSON.stringify(row)).join("\n")}\n`,
-      "utf8",
-    );
+    const planned = [onlineIdentity("minja-1"), onlineIdentity("minja-2")];
+    // Design says 2, corpus has both, only 1 episode row.
+    await writeOnlineFixture(tmp, planned, { corpusFor: planned, episodesFor: [planned[0]!] });
     const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(stats.decision.estimable, false);
     assert.equal(stats.rowAccounting?.missingPlannedRows, 1);
     assert.equal(stats.decision.fencingSupported, false);
     assert.equal(stats.decision.layeredSupported, false);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("analyzer treats a never-generated planned iteration as incomplete", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-never-generated-"));
+  try {
+    const planned = [onlineIdentity("minja-1"), onlineIdentity("minja-2")];
+    // A peer worker still owns minja-2: no corpus line and no row for it,
+    // yet this worker wrote a valid manifest over its own single line.
+    await writeOnlineFixture(tmp, planned, { corpusFor: [planned[0]!], episodesFor: [planned[0]!] });
+    const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(stats.rowAccounting?.missingPlannedRows, 0);
+    assert.equal(stats.rowAccounting?.neverGeneratedIterations, 1);
+    assert.equal(stats.decision.estimable, false);
+    assert.equal(stats.decision.fencingSupported, false);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("analyzer refuses an online design that does not match the frozen hash", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-tampered-design-"));
+  try {
+    const planned = [onlineIdentity("minja-1"), onlineIdentity("minja-2")];
+    await writeOnlineFixture(tmp, planned, { corpusFor: planned, episodesFor: planned });
+    const designPath = path.join(tmp, "expected-design.json");
+    const design = JSON.parse(await readFile(designPath, "utf8")) as { rows: unknown[] };
+    design.rows.pop();
+    await writeFile(designPath, `${JSON.stringify(design)}\n`, "utf8");
+    await assert.rejects(analyzeInjectionSuiteOnlineAdaptiveRun(tmp), /not analyzable/);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

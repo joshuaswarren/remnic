@@ -18,7 +18,9 @@ import {
   UtilityCheckpointStore,
   createInjectionSuiteBehaviorResponder,
   isRetryableUtilityFailure,
+  providerConfig,
 } from "./utility-runner.js";
+import { DEFAULT_OLLAMA_MODEL } from "./llm-executor.js";
 
 test("only transport execution failures are retried", () => {
   assert.equal(
@@ -146,4 +148,23 @@ test("concurrent markInFlight calls throw an ambiguous-task error instead of ove
   store.markInFlight("task-a", true);
   // replace=true clears the previous marker so a subsequent claim succeeds.
   assert.doesNotThrow(() => store.markInFlight("task-a", true));
+});
+
+test("the utility judge resolves its model from the executor contract, not a literal", () => {
+  const previous = process.env.REMNIC_OPENAI_COMPAT_API_KEY;
+  process.env.REMNIC_OPENAI_COMPAT_API_KEY = "fixture-key";
+  try {
+    const compat = providerConfig(
+      { ...FIXTURE_INPUT, executor: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", model: undefined },
+      1,
+    );
+    assert.equal(compat.model, DEFAULT_OLLAMA_MODEL, "documented default when --model is omitted");
+    const ollama = providerConfig({ ...FIXTURE_INPUT, executor: "ollama", model: undefined }, 1);
+    assert.equal(ollama.model, DEFAULT_OLLAMA_MODEL);
+    const explicit = providerConfig({ ...FIXTURE_INPUT, executor: "ollama", model: "custom:latest" }, 1);
+    assert.equal(explicit.model, "custom:latest");
+  } finally {
+    if (previous === undefined) delete process.env.REMNIC_OPENAI_COMPAT_API_KEY;
+    else process.env.REMNIC_OPENAI_COMPAT_API_KEY = previous;
+  }
 });
