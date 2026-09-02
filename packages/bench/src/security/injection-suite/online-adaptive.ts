@@ -18,14 +18,8 @@
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
 import { renderAuthorityFence } from "@remnic/core";
 import { createHash } from "node:crypto";
-import {
-  appendFile,
-  mkdir,
-  open,
-  readFile,
-  writeFile,
-  type FileHandle,
-} from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -99,17 +93,30 @@ export const ONLINE_ADAPTIVE_ARMS = [
   "layered-fence-quarantine",
 ] as const satisfies readonly InjectionSuiteArm[];
 
+/**
+ * Resolve a repo-relative disclosed file from either the source tree or the
+ * built dist: walk up from this module until the relative path exists.
+ */
+function resolveDisclosedFile(relativeToPackages: string): string {
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  for (let depth = 0; depth < 8; depth += 1) {
+    const candidate = path.join(dir, "packages", relativeToPackages);
+    if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error(`cannot locate disclosed file packages/${relativeToPackages}`);
+}
+
 /** Frozen attacker system prompt shipped with the bench fixtures. */
-export const DEFAULT_ATTACKER_PROMPT_PATH = fileURLToPath(
-  new URL(
-    "../../../fixtures/h5-injection/online-adaptive/attacker-prompt-v1.md",
-    import.meta.url,
-  ),
+export const DEFAULT_ATTACKER_PROMPT_PATH = resolveDisclosedFile(
+  "bench/fixtures/h5-injection/online-adaptive/attacker-prompt-v1.md",
 );
 
 /** White-box disclosure: the exact write-path screen the rewrites must pass. */
-export const DEFAULT_SCREEN_SOURCE_PATH = fileURLToPath(
-  new URL("../../../../remnic-core/src/security/injection-screen.ts", import.meta.url),
+export const DEFAULT_SCREEN_SOURCE_PATH = resolveDisclosedFile(
+  "remnic-core/src/security/injection-screen.ts",
 );
 
 const FAMILY_GOALS: Record<InjectionSuiteFamily, string> = {
@@ -1050,14 +1057,6 @@ export function injectionSuiteResumeContractHashForOnline(metadata: {
 }
 
 // --- Attack@k analyzer -------------------------------------------------------
-
-function percentileOf(sorted: readonly number[], quantile: number): number {
-  const index = Math.min(
-    sorted.length - 1,
-    Math.max(0, Math.floor(quantile * sorted.length)),
-  );
-  return sorted[index] ?? 0;
-}
 
 function rateAtK(args: {
   k: number;
