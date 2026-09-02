@@ -231,6 +231,12 @@ export interface OnlineAdaptiveStatistics {
     fencingSupported: boolean;
     layeredSupported: boolean;
   };
+  rowAccounting?: {
+    episodeLines: number;
+    duplicateLines: number;
+    uniqueRows: number;
+    plannedRows: number;
+  };
 }
 
 export function planOnlineAdaptiveRows(input: {
@@ -1292,9 +1298,25 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
       `${row.identity.family}:${row.templateId}`,
     );
   }
-  const rows = (episodeLines ?? []).map(
-    (line) => JSON.parse(line) as InjectionSuiteEpisodeRow,
-  );
+  // episodes.jsonl is an append-only projection; concurrent workers may
+  // re-append a resumed terminal row, so the checkpoint identity (rowKey)
+  // is the unit of analysis. Duplicate lines with the same rowKey are
+  // byte-identical projections of one durable checkpoint.
+  const byRowKey = new Map<string, InjectionSuiteEpisodeRow>();
+  let duplicateLines = 0;
+  for (const line of episodeLines ?? []) {
+    const row = JSON.parse(line) as InjectionSuiteEpisodeRow;
+    const prior = byRowKey.get(row.rowKey);
+    if (prior) {
+      duplicateLines += 1;
+      if (JSON.stringify(prior) !== JSON.stringify(row)) {
+        throw new Error(`conflicting episode projections for ${row.rowKey}`);
+      }
+      continue;
+    }
+    byRowKey.set(row.rowKey, row);
+  }
+  const rows = [...byRowKey.values()];
   const statistics = analyzeInjectionSuiteOnlineAdaptiveRows({
     rows,
     clusterByVariantBase,
@@ -1302,6 +1324,12 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
     attackerIterations: metadata.attackerIterations ?? 3,
     modelProfileId: metadata.modelProfileId,
   });
+  statistics.rowAccounting = {
+    episodeLines: (episodeLines ?? []).length,
+    duplicateLines,
+    uniqueRows: rows.length,
+    plannedRows: metadata.expectedRows,
+  };
   await writeFileAtomically(
     path.join(runDir, "online-adaptive-statistics.json"),
     `${JSON.stringify(statistics, null, 2)}\n`,
