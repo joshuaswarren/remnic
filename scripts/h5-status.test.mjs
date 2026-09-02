@@ -36,6 +36,60 @@ test("rejects expected-design drift in run metadata", async () => {
   }
 });
 
+test("the frozen design outranks the metadata grid formula", async () => {
+  const root = await fixture();
+  try {
+    // A single-arm run: the formula would say 4 rows; the design says 1.
+    await writeFile(path.join(root, "run.json"), `${JSON.stringify({
+      seeds: [71],
+      variantsPerFamily: 1,
+      family: "minja",
+      expectedRows: 1,
+    })}\n`);
+    await writeFile(path.join(root, "expected-design.json"), `${JSON.stringify({ rows: [{ rowKey: "row" }] })}\n`);
+    assert.equal((await h5Status(root)).expectedRows, 1);
+    // Drift between run.json and the design is refused.
+    await writeFile(path.join(root, "expected-design.json"), `${JSON.stringify({ rows: [{ rowKey: "a" }, { rowKey: "b" }] })}\n`);
+    await assert.rejects(() => h5Status(root), /expectedRows/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("online rows with a durably rejected rewrite count as completed", async () => {
+  const root = await fixture();
+  try {
+    await writeFile(path.join(root, "run.json"), `${JSON.stringify({ stage: "adaptive-online-r1", expectedRows: 1 })}\n`);
+    await writeFile(path.join(root, "expected-design.json"), `${JSON.stringify({
+      rows: [{ rowKey: "row", identity: { arm: "source-authenticated-fencing", variantId: "adaptive-online-r1-minja-1-k1" } }],
+    })}\n`);
+    await writeFile(path.join(root, "online-corpus.jsonl"), `${JSON.stringify({
+      arm: "source-authenticated-fencing", variantId: "adaptive-online-r1-minja-1-k1", iteration: 1, valid: false,
+    })}\n`);
+    const status = await h5Status(root);
+    assert.equal(status.state, "COMPLETE");
+    assert.equal(status.rejectedRewriteRows, 1);
+    assert.equal(status.remainingRows, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("byte-identical re-appended episode rows are one row; conflicting repeats are malformed", async () => {
+  const root = await fixture();
+  try {
+    await checkpoint(root, { tries: [], terminal: { rowKey: "row" } });
+    await writeFile(path.join(root, "episodes.jsonl"), '{"rowKey":"row","fenced":true}\n{"rowKey":"row","fenced":true}\n');
+    assert.equal((await h5Status(root)).state, "COMPLETE");
+    await writeFile(path.join(root, "episodes.jsonl"), '{"rowKey":"row","fenced":true}\n{"rowKey":"row","fenced":false}\n');
+    const conflicting = await h5Status(root);
+    assert.equal(conflicting.state, "MALFORMED");
+    assert.ok(conflicting.errors.includes("duplicate episode rowKey"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("counts one family for targeted calibration runs", async () => {
   const root = await fixture();
   try {
@@ -125,18 +179,6 @@ test("reports six trailing host faults as PAUSED", async () => {
   }
 });
 
-test("rejects duplicate terminal episodes as MALFORMED", async () => {
-  const root = await fixture();
-  try {
-    await checkpoint(root, { tries: [], terminal: { rowKey: "row" } });
-    await writeFile(path.join(root, "episodes.jsonl"), '{"rowKey":"row"}\n{"rowKey":"row"}\n');
-    const status = await h5Status(root);
-    assert.equal(status.state, "MALFORMED");
-    assert.match(status.errors.join(" "), /duplicate/);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
 
 test("treats a lock with a recent owner.json heartbeat as an active claim", async () => {
   const root = await fixture();
@@ -166,16 +208,13 @@ test("adapts expectedRows to the adaptive two-arm grid for adaptive-r1", async (
       })}\n`,
     );
     assert.equal((await h5Status(root)).expectedRows, 800);
+    // Without a frozen design the grid formula is the fallback only when
+    // run.json carries no expectedRows.
     await writeFile(
       path.join(root, "run.json"),
-      `${JSON.stringify({
-        seeds: [71],
-        variantsPerFamily: 100,
-        stage: "adaptive-r1",
-        expectedRows: 1600,
-      })}\n`,
+      `${JSON.stringify({ seeds: [71], variantsPerFamily: 100, stage: "adaptive-r1" })}\n`,
     );
-    await assert.rejects(() => h5Status(root), /expectedRows/);
+    assert.equal((await h5Status(root)).expectedRows, 800);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

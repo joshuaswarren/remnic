@@ -17,9 +17,12 @@ import {
 import {
   UtilityCheckpointStore,
   createInjectionSuiteBehaviorResponder,
+  UTILITY_CONTRACT_FILE,
+  assertUtilityContract,
   isRetryableUtilityFailure,
   providerConfig,
 } from "./utility-runner.js";
+import { existsSync, mkdirSync } from "node:fs";
 import { DEFAULT_OLLAMA_MODEL } from "./llm-executor.js";
 
 test("only transport execution failures are retried", () => {
@@ -163,6 +166,42 @@ test("the utility judge resolves its model from the executor contract, not a lit
     assert.equal(ollama.model, DEFAULT_OLLAMA_MODEL);
     const explicit = providerConfig({ ...FIXTURE_INPUT, executor: "ollama", model: "custom:latest" }, 1);
     assert.equal(explicit.model, "custom:latest");
+  } finally {
+    if (previous === undefined) delete process.env.REMNIC_OPENAI_COMPAT_API_KEY;
+    else process.env.REMNIC_OPENAI_COMPAT_API_KEY = previous;
+  }
+});
+
+test("a utility output directory is bound to its execution contract", async () => {
+  const previous = process.env.REMNIC_OPENAI_COMPAT_API_KEY;
+  process.env.REMNIC_OPENAI_COMPAT_API_KEY = "fixture-key";
+  const dir = mkdtempSync(path.join(os.tmpdir(), "h5-util-contract-"));
+  try {
+    const input = { ...FIXTURE_INPUT, outputDir: dir };
+    await assertUtilityContract(input, ["locomo", "drift-gen"]);
+    assert.ok(existsSync(path.join(dir, UTILITY_CONTRACT_FILE)), "first run records the contract");
+    await assertUtilityContract(input, ["locomo", "drift-gen"]);
+    await assert.rejects(
+      assertUtilityContract({ ...input, model: "other-model" }, ["locomo", "drift-gen"]),
+      /different utility contract/,
+      "a different model must not reuse the checkpoints",
+    );
+    await assert.rejects(
+      assertUtilityContract(input, ["locomo"]),
+      /different utility contract/,
+      "a different benchmark set must not reuse the checkpoints",
+    );
+    await assert.rejects(
+      assertUtilityContract({ ...input, limit: 5 }, ["locomo", "drift-gen"]),
+      /different utility contract/,
+    );
+    // Checkpoints from before the contract existed are refused rather than reused.
+    const legacy = mkdtempSync(path.join(os.tmpdir(), "h5-util-legacy-"));
+    mkdirSync(path.join(legacy, "utility-checkpoints"), { recursive: true });
+    await assert.rejects(
+      assertUtilityContract({ ...input, outputDir: legacy }, ["locomo", "drift-gen"]),
+      /no utility-contract.json/,
+    );
   } finally {
     if (previous === undefined) delete process.env.REMNIC_OPENAI_COMPAT_API_KEY;
     else process.env.REMNIC_OPENAI_COMPAT_API_KEY = previous;

@@ -21,25 +21,31 @@ async function jsonFile(file) {
   }
 }
 
-function expectedRows(run) {
-  let computed;
-  if (Number.isInteger(run.limit) && run.limit > 0) computed = run.limit;
-  else {
-    if (!Array.isArray(run.seeds) || !Number.isInteger(run.variantsPerFamily)) {
-      throw new Error("run.json is missing seeds or variantsPerFamily");
+async function expectedRows(root, run, design) {
+  // The frozen design is authoritative: run.json's expectedRows is checked
+  // against it by every analyzer, and reconstructing the grid from metadata
+  // misses `--arm` subsets and the online stage's iteration factor.
+  if (design !== null) {
+    if (run.expectedRows !== undefined && run.expectedRows !== design.rows.length) {
+      throw new Error("run.json expectedRows does not match the frozen design");
     }
-    // Adaptive stages run a fixed two-arm grid (fencing + both); a frozen
-    // `run.expectedRows` already wins over the formula when present.
-    const stage = typeof run.stage === "string" ? run.stage : "base";
-    const plannedArms = Array.isArray(run.arms) && run.arms.length > 0
-      ? run.arms.length
-      : stage.startsWith("adaptive-") ? 2 : ARMS;
-    computed = run.seeds.length * run.variantsPerFamily * (run.family ? 1 : FAMILIES) * plannedArms;
+    return design.rows.length;
   }
-  if (run.expectedRows !== undefined && run.expectedRows !== computed) {
-    throw new Error("run.json expectedRows does not match the frozen design");
+  if (Number.isInteger(run.expectedRows) && run.expectedRows > 0) {
+    if (Number.isInteger(run.limit) && run.limit > 0 && run.expectedRows > run.limit) {
+      throw new Error("run.json expectedRows does not match the frozen design");
+    }
+    return run.expectedRows;
   }
-  return computed;
+  if (Number.isInteger(run.limit) && run.limit > 0) return run.limit;
+  if (!Array.isArray(run.seeds) || !Number.isInteger(run.variantsPerFamily)) {
+    throw new Error("run.json is missing seeds or variantsPerFamily");
+  }
+  const stage = typeof run.stage === "string" ? run.stage : "base";
+  const plannedArms = Array.isArray(run.arms) && run.arms.length > 0
+    ? run.arms.length
+    : stage.startsWith("adaptive-") ? 2 : ARMS;
+  return run.seeds.length * run.variantsPerFamily * (run.family ? 1 : FAMILIES) * plannedArms;
 }
 
 function trailingHostFaults(tries) {
@@ -51,13 +57,52 @@ function trailingHostFaults(tries) {
   return count;
 }
 
+async function frozenDesign(root) {
+  try {
+    const design = await jsonFile(path.join(root, "expected-design.json"));
+    if (!Array.isArray(design.rows)) throw new Error("expected-design.json has no rows array");
+    return design;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    return null;
+  }
+}
+
+/** Design rows whose attacker rewrite was durably rejected (online stage): they never get an episode. */
+async function rejectedRewriteRowKeys(root, design) {
+  const rejected = new Set();
+  if (design === null) return rejected;
+  const invalid = new Set();
+  for (const line of await rowsFromJsonl(path.join(root, "online-corpus.jsonl"))) {
+    if (line?.valid === false) invalid.add(`${line.arm}\0${line.variantId}`);
+  }
+  for (const row of design.rows) {
+    if (invalid.has(`${row?.identity?.arm}\0${row?.identity?.variantId}`)) rejected.add(row.rowKey);
+  }
+  return rejected;
+}
+
 export async function h5Status(runDir, staleAfterMinutes = 20, statImpl = stat) {
   const root = path.resolve(runDir);
   const run = await jsonFile(path.join(root, "run.json"));
-  const expected = expectedRows(run);
+  const design = await frozenDesign(root);
+  const expected = await expectedRows(root, run, design);
+  const rejectedKeys = await rejectedRewriteRowKeys(root, design);
   const episodes = await rowsFromJsonl(path.join(root, "episodes.jsonl"));
   const episodeKeys = episodes.map((row) => row?.rowKey);
   const uniqueEpisodeKeys = new Set(episodeKeys);
+  // episodes.jsonl is an append-only projection; concurrent workers may
+  // re-append a resumed terminal row. Byte-identical repeats of one rowKey
+  // are one row (the analyzers dedupe the same way); conflicting repeats
+  // are malformed.
+  const projectionByKey = new Map();
+  let conflictingEpisodes = 0;
+  for (const row of episodes) {
+    const serialized = JSON.stringify(row);
+    const prior = projectionByKey.get(row?.rowKey);
+    if (prior === undefined) projectionByKey.set(row?.rowKey, serialized);
+    else if (prior !== serialized) conflictingEpisodes += 1;
+  }
   const checkpointDir = path.join(root, "checkpoints");
   let entries = [];
   try {
@@ -105,6 +150,7 @@ export async function h5Status(runDir, staleAfterMinutes = 20, statImpl = stat) 
     }
   }
   let terminalCheckpoints = 0;
+  const terminalKeys = new Set();
   let pausedRows = 0;
   let inFlightRows = 0;
   let ambiguousRows = 0;
@@ -120,21 +166,29 @@ export async function h5Status(runDir, staleAfterMinutes = 20, statImpl = stat) 
       inFlightRows += 1;
       if (!activeClaimKeys.has(checkpoint.rowKey)) ambiguousRows += 1;
     }
-    if (checkpoint.terminal) terminalCheckpoints += 1;
-    else if (trailingHostFaults(checkpoint.tries) >= HOST_FAULT_LIMIT) pausedRows += 1;
+    if (checkpoint.terminal) {
+      terminalCheckpoints += 1;
+      terminalKeys.add(checkpoint.rowKey);
+    } else if (rejectedKeys.has(checkpoint.rowKey)) {
+      // A durably rejected rewrite is this row's completion; nothing is owed.
+    } else if (trailingHostFaults(checkpoint.tries) >= HOST_FAULT_LIMIT) pausedRows += 1;
   }
+  // Online-stage rows whose attacker rewrite was durably rejected (corpus
+  // line with valid=false) never get a defended episode.
+  const rejectedRewriteRows = [...rejectedKeys].filter((key) => !terminalKeys.has(key)).length;
 
   const errors = [];
-  if (uniqueEpisodeKeys.size !== episodeKeys.length) errors.push("duplicate episode rowKey");
+  if (conflictingEpisodes > 0) errors.push("duplicate episode rowKey");
   if (episodeKeys.some((key) => typeof key !== "string")) errors.push("episode missing rowKey");
-  if (episodes.length > expected || terminalCheckpoints > expected) errors.push("terminal rows exceed design");
+  const completedRows = terminalCheckpoints + rejectedRewriteRows;
+  if (uniqueEpisodeKeys.size > expected || completedRows > expected) errors.push("terminal rows exceed design");
   if (uniqueEpisodeKeys.size > terminalCheckpoints) errors.push("episode has no terminal checkpoint");
   const recoveryRows = Math.max(0, terminalCheckpoints - uniqueEpisodeKeys.size);
 
   const ageMinutes = Math.max(0, (nowMs - latestMs) / 60_000);
   let state;
   if (errors.length > 0) state = "MALFORMED";
-  else if (terminalCheckpoints === expected && recoveryRows === 0) state = "COMPLETE";
+  else if (completedRows === expected && recoveryRows === 0) state = "COMPLETE";
   else if (pausedRows > 0 || ambiguousRows > 0 || recoveryRows > 0) state = "PAUSED";
   else if (activeClaims > 0 || ageMinutes <= staleAfterMinutes) state = "RUNNING";
   else state = "STALLED";
@@ -147,7 +201,8 @@ export async function h5Status(runDir, staleAfterMinutes = 20, statImpl = stat) 
     modelProfileHash: run.modelProfileHash ?? null,
     expectedRows: expected,
     terminalRows: terminalCheckpoints,
-    remainingRows: expected - terminalCheckpoints,
+    rejectedRewriteRows,
+    remainingRows: expected - completedRows,
     activeClaims,
     staleClaims,
     pausedRows,

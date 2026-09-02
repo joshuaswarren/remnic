@@ -419,6 +419,56 @@ async function runDriftUtility(
   }
 }
 
+export const UTILITY_CONTRACT_FILE = "utility-contract.json";
+
+/** What a utility checkpoint directory was produced under; a mismatch refuses to reuse it. */
+export function utilityContract(
+  input: InjectionSuiteUtilityRunInput,
+  benchmarks: readonly UtilityBenchmark[],
+): Record<string, unknown> {
+  const executor = resolvedExecutorContract(input);
+  return {
+    contract: "h5-utility-contract-v1",
+    executor: executor.executor,
+    model: executor.model,
+    baseUrl: executor.baseUrl,
+    benchmarks: [...benchmarks],
+    seeds: [...UTILITY_SEEDS],
+    limit: input.limit ?? null,
+    runKind: input.runKind ?? null,
+    locomoDatasetDir: input.locomoDatasetDir ?? null,
+    longmemevalDatasetDir: input.longmemevalDatasetDir ?? null,
+  };
+}
+
+export async function assertUtilityContract(
+  input: InjectionSuiteUtilityRunInput,
+  benchmarks: readonly UtilityBenchmark[],
+): Promise<void> {
+  const file = path.join(input.outputDir, UTILITY_CONTRACT_FILE);
+  const current = `${JSON.stringify(utilityContract(input, benchmarks), null, 2)}\n`;
+  let existing: string | undefined;
+  try {
+    existing = await readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (existing === undefined) {
+    if (existsSync(path.join(input.outputDir, "utility-checkpoints"))) {
+      throw new Error(
+        `${input.outputDir} holds utility checkpoints but no ${UTILITY_CONTRACT_FILE}; use a fresh output directory`,
+      );
+    }
+    await writeFileAtomically(file, current);
+    return;
+  }
+  if (existing !== current) {
+    throw new Error(
+      `${input.outputDir} was produced under a different utility contract (model, endpoint, benchmarks, seeds, limit, or dataset); use a fresh output directory`,
+    );
+  }
+}
+
 export async function runInjectionSuiteUtility(
   input: InjectionSuiteUtilityRunInput,
 ): Promise<InjectionSuiteUtilityAnalysis> {
@@ -436,6 +486,7 @@ export async function runInjectionSuiteUtility(
     await readFile(path.join(DRIFT_ROOT, "..", "dataset.manifest.json"), "utf8");
   }
   mkdirSync(input.outputDir, { recursive: true });
+  await assertUtilityContract(input, benchmarks);
   const observations: InjectionSuiteUtilityObservation[] = [];
   const plannedItems = new Set<string>();
   const arms = input.arms && input.arms.length > 0 ? [...new Set(input.arms)] : UTILITY_ARMS;
