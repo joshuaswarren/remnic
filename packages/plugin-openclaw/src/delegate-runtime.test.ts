@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import test from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { Worker } from "node:worker_threads";
 import { initLogger, resetLogger } from "@remnic/core/logger";
 
@@ -50,6 +51,8 @@ interface RecordedCall {
 interface DaemonStub {
   port: number;
   calls: RecordedCall[];
+  /** Resolves when the NEXT request for `pathname` arrives. */
+  nextCall: (pathname: string) => Promise<RecordedCall>;
   close: () => Promise<void>;
 }
 
@@ -110,6 +113,7 @@ async function startDaemonStub(
   } = {},
 ): Promise<DaemonStub> {
   const calls: RecordedCall[] = [];
+  const arrivals: Array<{ pathname: string; resolve: (call: RecordedCall) => void }> = [];
   let capabilityResponseIndex = 0;
   const server = http.createServer((req, res) => {
     let raw = "";
@@ -124,7 +128,12 @@ async function startDaemonStub(
       } catch {
         // empty/non-JSON bodies stay {}
       }
-      calls.push({ pathname, body });
+      const call = { pathname, body };
+      calls.push(call);
+      for (const waiter of arrivals.splice(0)) {
+        if (waiter.pathname === pathname) waiter.resolve(call);
+        else arrivals.push(waiter);
+      }
       const capabilityResponse =
         pathname === "/engram/v1/capabilities"
           ? options.capabilityResponses?.[capabilityResponseIndex++]
@@ -198,6 +207,11 @@ async function startDaemonStub(
   return {
     port: address.port,
     calls,
+    nextCall: (pathname) => {
+      const { promise, resolve } = Promise.withResolvers<RecordedCall>();
+      arrivals.push({ pathname, resolve });
+      return promise;
+    },
     close: () => {
       const closed = Promise.withResolvers<void>();
       server.close(() => closed.resolve());
@@ -245,6 +259,18 @@ async function invoke(
   const list = api.handlers.get(hook);
   assert.ok(list && list.length === 1, `exactly one handler registered for ${hook}`);
   return await list[0](event, ctx);
+}
+
+/**
+ * `agent_end` returns before its observe POST settles (the turn capture is
+ * detached from the hook), so a test that inspects the daemon's observe
+ * calls waits for the expected number to ARRIVE first.
+ */
+async function observed(stub: DaemonStub, count = 1): Promise<RecordedCall[]> {
+  const observes = () => stub.calls.filter((call) => call.pathname === "/engram/v1/observe");
+  while (observes().length < count) await stub.nextCall("/engram/v1/observe");
+  assert.equal(observes().length, count, `${count} observe call(s) reached the daemon`);
+  return observes();
 }
 
 test("delegate recall injects daemon context under the memory header", async () => {
@@ -406,8 +432,7 @@ test("delegate agent_end observes exactly the last turn's textual messages", asy
       { sessionKey: "session-c" },
     );
 
-    const observe = stub.calls.find((call) => call.pathname === "/engram/v1/observe");
-    assert.ok(observe, "daemon observe route was called");
+    const [observe] = await observed(stub);
     const messages = observe.body.messages as Array<Record<string, unknown>>;
     assert.deepEqual(
       messages,
@@ -586,6 +611,7 @@ test("delegate records a matching default scope as a session rebind", async () =
       },
       { sessionKey, runtime: { agent: { session: { namespace: "team-named" } } } },
     );
+    await observed(stub, 1);
     const defaultScopeContext = { sessionKey, runtime: { agent: { session: {} } } };
     await invoke(
       api,
@@ -617,6 +643,7 @@ test("delegate records a matching default scope as a session rebind", async () =
       },
       { sessionKey },
     );
+    await observed(stub, 3);
 
     const calls = stub.calls.filter((call) =>
       ["/engram/v1/recall", "/engram/v1/observe"].includes(call.pathname),
@@ -2113,6 +2140,250 @@ test("an OpenClaw 2.0 host (capability, no section builder) gets the hook's own 
   }
 });
 
+test("delegate registers a memory prompt preparation that recalls before prompt assembly", async () => {
+  // OpenClaw's `prepareMemoryPromptSection` awaits registered preparations and
+  // splices their lines into the memory section BEFORE `before_prompt_build`
+  // runs, so the preparation is the only path that puts recall into the
+  // system prompt's own memory section on a 2.0 host. The hook still injects
+  // the prompt-specific recall afterwards.
+  const stub = await startDaemonStub(() => ({ context: "prepared daemon context", count: 1 }));
+  try {
+    const api = recordingApi();
+    const preparations: Array<(params: Record<string, unknown>) => Promise<readonly string[]>> = [];
+    const preparationApi = Object.assign(api, {
+      registerMemoryCapability(): void {},
+      registerMemoryPromptPreparation(
+        prepare: (params: Record<string, unknown>) => Promise<readonly string[]>,
+      ): void {
+        preparations.push(prepare);
+      },
+    });
+    registerDelegateRuntime(preparationApi, optionsFor(stub.port));
+    assert.equal(preparations.length, 1, "one preparation registered");
+
+    const lines = await preparations[0]!({
+      availableTools: new Set<string>(),
+      agentId: "main",
+      agentSessionKey: "agent:main:prepared",
+    });
+    const recall = stub.calls.find((call) => call.pathname === "/engram/v1/recall");
+    assert.ok(recall, "the preparation POSTs /engram/v1/recall");
+    assert.equal(recall.body.sessionKey, "agent:main:prepared");
+    assert.ok(String(recall.body.query).length >= 5, "the preparation sends a usable query");
+    assert.ok(lines.some((line) => line.includes("## Memory Context (Remnic)")));
+    assert.ok(lines.some((line) => line.includes("prepared daemon context")));
+
+    const result = (await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "what did we decide about the rollout?" },
+      { sessionKey: "agent:main:prepared" },
+    )) as Record<string, unknown>;
+    assert.match(
+      String(result?.prependSystemContext),
+      /prepared daemon context/,
+      "before_prompt_build still prepends the prompt-specific recall",
+    );
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/recall").length,
+      2,
+      "preparation and hook each recall once",
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate prompt preparation honors the session toggle and cron policy", async () => {
+  const stub = await startDaemonStub(() => ({ context: "never injected" }));
+  try {
+    const api = recordingApi();
+    const preparations: Array<(params: Record<string, unknown>) => Promise<readonly string[]>> = [];
+    Object.assign(api, {
+      registerMemoryPromptPreparation(
+        prepare: (params: Record<string, unknown>) => Promise<readonly string[]>,
+      ): void {
+        preparations.push(prepare);
+      },
+    });
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, {
+        resolveSessionDisabled: async (sessionKey) => sessionKey === "muted",
+        shouldSkipRecall: (sessionKey) => sessionKey.startsWith("agent:cron:"),
+      }),
+    );
+    assert.deepEqual(await preparations[0]!({ agentSessionKey: "muted" }), []);
+    assert.deepEqual(await preparations[0]!({ agentSessionKey: "agent:cron:nightly" }), []);
+    assert.equal(stub.calls.filter((call) => call.pathname === "/engram/v1/recall").length, 0);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate recall queries with the current user turn, capped so an assembled prompt cannot 413", async () => {
+  const stub = await startDaemonStub(() => ({ context: "ctx" }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, {
+        cleanUserMessage: (text: string) => text.replace(/^\[channel\] /, ""),
+      }),
+    );
+    // A host may hand the hook its whole assembled prompt (system text first,
+    // the operator's turn last). The daemon caps request bodies, so the query
+    // keeps the END of the prompt, where the current turn is.
+    const assembled = `[channel] ${"system preamble ".repeat(500)}what did we decide about the rollout?`;
+    await invoke(api, "before_prompt_build", { prompt: assembled }, { sessionKey: "cap" });
+    const [first] = stub.calls.filter((call) => call.pathname === "/engram/v1/recall");
+    assert.ok(first);
+    const query = String(first.body.query);
+    assert.equal(query.length, 1_500);
+    assert.ok(query.endsWith("what did we decide about the rollout?"), "the tail is kept");
+
+    // The current turn outranks history: `messages` is the transcript BEFORE
+    // this turn, so its last user entry is the previous question.
+    await invoke(
+      api,
+      "before_prompt_build",
+      {
+        prompt: "[channel] the current question",
+        messages: [{ role: "user", content: "the previous question" }],
+      },
+      { sessionKey: "cap" },
+    );
+    const [, second] = stub.calls.filter((call) => call.pathname === "/engram/v1/recall");
+    assert.equal(second?.body.query, "the current question", "envelope stripped, current turn used");
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate agent_end returns before the observe POST settles and flush waits for it", async () => {
+  // A daemon that accepts the connection and never answers must not hold the
+  // host's agent_end hook for the whole observe timeout. The capture is
+  // detached from the hook; a later flush for the same session still waits
+  // for it so the turn is buffered before it is flushed.
+  const observeGate = Promise.withResolvers<void>();
+  const stub = await startDaemonStub(async (pathname) => {
+    if (pathname === "/engram/v1/observe") {
+      await observeGate.promise;
+      return { accepted: 1 };
+    }
+    return { flushed: true };
+  });
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const observeArrived = stub.nextCall("/engram/v1/observe");
+    await invoke(
+      api,
+      "agent_end",
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "a question worth remembering" },
+          { role: "assistant", content: "an answer worth remembering" },
+        ],
+      },
+      { sessionKey: "detached" },
+    );
+    await observeArrived;
+    const requestsBeforeFlush = stub.calls.length;
+    const flushing = invoke(api, "before_compaction", {}, { sessionKey: "detached" });
+    // Real time, deliberately: the daemon still holds the observe open, and a
+    // flush that did NOT wait for it would already have probed health and
+    // posted within this window on loopback. No event exists to await for
+    // "nothing happened".
+    await sleep(150);
+    assert.equal(
+      stub.calls.length,
+      requestsBeforeFlush,
+      "the flush issues no request while the session's observe is in flight",
+    );
+    observeGate.resolve();
+    assert.equal(await flushing, true);
+    const order = stub.calls
+      .map((call) => call.pathname)
+      .filter((pathname) => pathname === "/engram/v1/observe" || pathname === "/engram/v1/lcm/compaction/flush");
+    assert.deepEqual(order, ["/engram/v1/observe", "/engram/v1/lcm/compaction/flush"]);
+  } finally {
+    observeGate.resolve();
+    await stub.close();
+  }
+});
+
+test("delegate registers daemon-backed memory_search and memory_get tools when the host exposes registerTool", async () => {
+  const memoryPath = "facts/2026-01-01/fact-1.md";
+  const stub = await startDaemonStub((pathname) => {
+    if (pathname === "/engram/v1/memories/search") {
+      return {
+        query: "rollout",
+        count: 1,
+        results: [{ path: memoryPath, score: 0.9, snippet: "we decided to roll out on Monday" }],
+      };
+    }
+    if (pathname.startsWith("/engram/v1/memories/fact-1")) {
+      return { found: true, memory: { id: "fact-1", content: "we decided to roll out on Monday" } };
+    }
+    return { accepted: true };
+  });
+  try {
+    const api = recordingApi();
+    const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
+    Object.assign(api, {
+      registerTool(tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }): void {
+        tools.set(tool.name, tool);
+      },
+    });
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    assert.deepEqual([...tools.keys()].sort(), ["memory_get", "memory_search"]);
+
+    const searched = (await tools.get("memory_search")!.execute(
+      "tc-1",
+      { query: "rollout", limit: 3 },
+      undefined,
+      { sessionKey: "tool-session" },
+    )) as { content: Array<{ text: string }> };
+    const search = stub.calls.find((call) => call.pathname === "/engram/v1/memories/search");
+    assert.ok(search, "memory_search POSTs the daemon's ranked search");
+    assert.equal(search.body.query, "rollout");
+    assert.equal(search.body.maxResults, 3);
+    const searchPayload = JSON.parse(searched.content[0]!.text) as {
+      count: number;
+      results: Array<{ citation?: string; snippet: string; score: number }>;
+    };
+    assert.equal(searchPayload.count, 1);
+    assert.equal(searchPayload.results[0]?.citation, memoryPath);
+    assert.equal(searchPayload.results[0]?.snippet, "we decided to roll out on Monday");
+
+    const got = (await tools.get("memory_get")!.execute(
+      "tc-2",
+      { id: "fact-1", namespace: "team-alpha" },
+      undefined,
+      { sessionKey: "tool-session" },
+    )) as { content: Array<{ text: string }> };
+    const get = stub.calls.find((call) => call.pathname.startsWith("/engram/v1/memories/fact-1"));
+    assert.ok(get, "memory_get reads the daemon's memory route");
+    const getUrl = new URL(get.pathname, "http://daemon");
+    assert.equal(getUrl.pathname, "/engram/v1/memories/fact-1");
+    assert.equal(getUrl.searchParams.get("namespace"), "team-alpha");
+    assert.equal(getUrl.searchParams.get("sessionKey"), "tool-session");
+    const getPayload = JSON.parse(got.content[0]!.text) as { found: boolean; memory: { id: string } };
+    assert.equal(getPayload.found, true);
+    assert.equal(getPayload.memory.id, "fact-1");
+
+    await assert.rejects(
+      tools.get("memory_search")!.execute("tc-3", { query: "   " }, undefined, {}),
+      /non-empty query/,
+    );
+    await assert.rejects(tools.get("memory_get")!.execute("tc-4", {}, undefined, {}), /requires an id/);
+  } finally {
+    await stub.close();
+  }
+});
+
 test("maybeRegisterDelegateRuntime deduplicates hook binding per api object", async () => {
   const stub = await startDaemonStub(() => ({ context: "ctx" }));
   try {
@@ -2245,8 +2516,7 @@ test("delegate observe cleans user envelopes but not assistant text", async () =
       },
       { sessionKey: "clean" },
     );
-    const observe = stub.calls.find((call) => call.pathname === "/engram/v1/observe");
-    assert.ok(observe, "observe was sent");
+    const [observe] = await observed(stub);
     assert.deepEqual(observe.body.messages, [
       { role: "user", content: "the real question" },
       { role: "assistant", content: "[channel] stays verbatim" },

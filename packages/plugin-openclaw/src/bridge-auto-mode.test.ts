@@ -18,7 +18,7 @@ import {
   detectDaemonBridgeMode,
   isLoopbackDaemonHost,
   loadDaemonAuth,
-  loopbackForWildcardBind,
+  loopbackForSameHost,
   readDaemonConfigAuthToken,
   readDaemonMemoryDirSync,
   resolveBridgeMode,
@@ -974,13 +974,34 @@ test("equivalent IPv6 loopback and wildcard spellings are recognized", () => {
   }
   for (const spelling of ["::", "[::]", "0:0:0:0:0:0:0:0", "0.0.0.0"]) {
     assert.equal(isLoopbackDaemonHost(spelling), true, `${spelling} is a wildcard bind`);
-    assert.ok(loopbackForWildcardBind(spelling) !== undefined, `${spelling} dials through loopback`);
+    assert.ok(loopbackForSameHost(spelling) !== undefined, `${spelling} dials through loopback`);
   }
   // Still literal-only: a routable v6 address and a loopback-shaped DNS name
   // must not pass.
   for (const spelling of ["2001:db8::1", "::ffff:10.0.0.1", "127.daemon.example"]) {
     assert.equal(isLoopbackDaemonHost(spelling), false, `${spelling} is not loopback`);
   }
+});
+
+test("an address assigned to one of this host's interfaces is dialed through loopback", () => {
+  // An operator exports REMNIC_HOST as the machine's own NIC or VIP address.
+  // That names the same daemon loopback reaches, and a gateway fetch to such
+  // an address has been observed to hang, so it is classified as same-host
+  // and dialed through loopback — like a wildcard bind.
+  const local = Object.values(os.networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .find((entry) => entry.family === "IPv4" && !entry.internal);
+  if (local === undefined) return;
+  assert.equal(loopbackForSameHost(local.address), "127.0.0.1", `${local.address} is this host`);
+  assert.equal(isLoopbackDaemonHost(local.address), true);
+  const resolved = withDaemonEnv(undefined, () => {
+    process.env.REMNIC_HOST = local.address;
+    return resolveBridgeMode("delegate");
+  });
+  assert.equal(resolved.daemonHost, "127.0.0.1", "explicit delegate dials loopback, not the NIC");
+  // A routable address that is NOT on this host stays remote (RFC 5737 TEST-NET-1).
+  assert.equal(loopbackForSameHost("192.0.2.1"), undefined);
+  assert.equal(isLoopbackDaemonHost("192.0.2.1"), false);
 });
 
 test("each probed endpoint carries its own config's token", async () => {

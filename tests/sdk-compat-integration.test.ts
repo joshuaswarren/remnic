@@ -767,13 +767,7 @@ test("non-runtime registration modes skip all registration", async () => {
   try {
     const { default: plugin } = await import("../src/index.js");
 
-    for (const mode of [
-      "discovery",
-      "tool-discovery",
-      "setup-only",
-      "setup-runtime",
-      "cli-metadata",
-    ]) {
+    for (const mode of ["setup-only", "setup-runtime", "cli-metadata"]) {
       const api = buildNewSdkApi(`${mode}-test`);
       api.registrationMode = mode;
       plugin.register(api as any);
@@ -800,6 +794,49 @@ test("non-runtime registration modes skip all registration", async () => {
         !api._memoryPromptSectionRegistered,
         `registerMemoryPromptSection should NOT be called in ${mode} mode`,
       );
+    }
+  } finally {
+    await awaitPendingMigration();
+    restoreRegisterMigrationEnv(previousDisableMigration);
+    resetGlobals();
+  }
+});
+
+test("discovery registration modes register capability handlers and skip the migration", async () => {
+  // OpenClaw's loader accepts capability handlers (tools, hooks, memory
+  // capability) in `discovery` and `tool-discovery` exactly as in `full`;
+  // the agent runtime that serves `openclaw agent` turns registers in those
+  // modes. Skipping register() there left it with no tools and no
+  // before_prompt_build / agent_end. Both are read-only discovery passes, so
+  // the one-time engram migration (a filesystem write) stays off.
+  resetGlobals();
+  const previousDisableMigration = process.env[DISABLE_REGISTER_MIGRATION_ENV];
+  delete process.env[DISABLE_REGISTER_MIGRATION_ENV];
+  try {
+    const { default: plugin } = await import("../src/index.js");
+
+    for (const mode of ["discovery", "tool-discovery"]) {
+      const api = buildNewSdkApi(`${mode}-test`);
+      api.pluginConfig = { qmdEnabled: false, modelSource: "gateway", transcriptEnabled: false };
+      api.registrationMode = mode;
+      plugin.register(api as any);
+
+      for (const hook of ["before_prompt_build", "agent_end"]) {
+        assert.ok(
+          api._registeredHooks.includes(hook),
+          `expected ${hook} in ${mode} mode, got: ${api._registeredHooks.join(", ")}`,
+        );
+      }
+      assert.ok(
+        api._registeredToolNames.includes("memory_search"),
+        `expected memory_search tool in ${mode} mode`,
+      );
+      assert.equal(
+        (globalThis as any)[MIGRATION_PROMISE_KEY],
+        undefined,
+        `the engram migration must not start in ${mode} mode`,
+      );
+      resetGlobals();
     }
   } finally {
     await awaitPendingMigration();

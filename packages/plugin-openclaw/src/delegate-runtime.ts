@@ -83,6 +83,7 @@ import {
 } from "./delegate-capability.js";
 import type { SupportPassportModelRoute } from "@remnic/core";
 import { createDelegateSupportPassportModelService } from "./delegate-support-passport-model.js";
+import { buildDelegateMemoryGetTool, buildDelegateMemorySearchTool } from "./delegate-tools.js";
 
 export interface DelegateRuntimeOptions {
   serviceId: string;
@@ -149,6 +150,19 @@ export interface DelegateHookApi extends DelegateCapabilityApi {
   // Method syntax (bivariant params) so the real OpenClaw api — whose
   // builder parameter is a wider SDK union — remains assignable.
   registerMemoryPromptSection?(builder: (params: { sessionKey?: string }) => string[] | null): void;
+  /**
+   * OpenClaw 2.0: an async step the host awaits while preparing the memory
+   * section, BEFORE `before_prompt_build`. Its lines are spliced into the
+   * system prompt's own memory section.
+   */
+  registerMemoryPromptPreparation?(
+    prepare: (params: {
+      agentId?: string;
+      agentSessionKey?: string;
+      sessionKey?: string;
+    }) => Promise<readonly string[]>,
+  ): void;
+  registerTool?(tool: Record<string, unknown>, opts?: { name?: string }): void;
   registerService?(service: {
     id: string;
     start(): Promise<void>;
@@ -156,6 +170,22 @@ export interface DelegateHookApi extends DelegateCapabilityApi {
   }): void;
 }
 const DELEGATE_BATCH_FLUSH_CACHE_TTL_MS = 30_000;
+/**
+ * The daemon caps request bodies (128 KiB by default), and a host may hand the
+ * hook its whole assembled prompt. The current turn is at the END of such a
+ * prompt, so the query keeps the tail.
+ */
+const MAX_RECALL_QUERY_CHARS = 1_500;
+/**
+ * The observe POST is detached from `agent_end` (a hung daemon must not hold
+ * the host's hook), so its timeout only bounds a background socket.
+ */
+const DETACHED_OBSERVE_TIMEOUT_MS = 8_000;
+/**
+ * The host hands a memory prompt preparation no prompt, only the session, so
+ * its recall is session-primed rather than prompt-specific.
+ */
+const PREPARATION_RECALL_QUERY = "recent relevant memories for this session";
 const delegatePassportServiceApiServices = new WeakMap<object, Set<string>>();
 
 import {
@@ -187,16 +217,19 @@ function lifecycleSessionKeyFrom(
   return sessionKeyFrom(event, ctx);
 }
 
-function recallQueryFrom(event: Record<string, unknown>): string {
-  // Mirrors the embedded recall hook: prefer event.prompt, but when it is
-  // missing or shorter than 5 chars, scan event.messages backward for the most
-  // recent user utterance >= 5 chars (before_prompt_build may only ship messages).
-  let prompt = typeof event.prompt === "string" ? event.prompt : undefined;
-  if ((!prompt || prompt.length < 5) && Array.isArray(event.messages)) {
+function recallQueryFrom(
+  event: Record<string, unknown>,
+  cleanUserMessage: (text: string) => string,
+): string {
+  // The current turn is `event.prompt`; `event.messages` is the transcript
+  // BEFORE it, so its last user entry is only a fallback for a host that ships
+  // no usable prompt (embedded parity: the 5-char floor).
+  let prompt = typeof event.prompt === "string" ? cleanUserMessage(event.prompt).trim() : "";
+  if (prompt.length < 5 && Array.isArray(event.messages)) {
     const msgs = event.messages as Array<Record<string, unknown>>;
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i]?.role === "user") {
-        const text = extractTextContent(msgs[i] as Record<string, unknown>);
+        const text = extractTextContent(msgs[i] as Record<string, unknown>).trim();
         if (text.length >= 5) {
           prompt = text;
           break;
@@ -204,7 +237,7 @@ function recallQueryFrom(event: Record<string, unknown>): string {
       }
     }
   }
-  return prompt ?? "";
+  return prompt.length > MAX_RECALL_QUERY_CHARS ? prompt.slice(-MAX_RECALL_QUERY_CHARS) : prompt;
 }
 
 /** Embedded parity: the workspace dir can arrive per hook (ctx/event), not
@@ -317,27 +350,28 @@ export function registerDelegateRuntime(
   // hosts the hook returns the injection itself.
   const cachePromptLines = useSectionBuilder;
 
+  // Capability searches and explicit tool reads scope through the SAME
+  // per-session binding history the hooks use (the non-explicit branch of
+  // sessionNamespaceFrom): the host hands the runtime a sessionKey but no
+  // event/ctx to read an explicit namespace from, so the remembered binding —
+  // else the registration-wide fallback — is the correct scope.
+  const resolveSearchNamespace = async (sessionKey: unknown): Promise<string | undefined> => {
+    // A non-STRING key from the untyped host must not reach the binding
+    // store: its `encodeURIComponent` would coerce `123` to `"123"` and the
+    // search would inherit the binding of a distinct, string-keyed session —
+    // another tenant's namespace whenever the delegate token can read both.
+    // An unusable key falls back to the registration scope, never a guess.
+    if (typeof sessionKey === "string" && sessionKey.trim().length > 0) {
+      const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
+      if (remembered.length > 0) return remembered.at(-1) || undefined;
+    }
+    return namespace.trim() || undefined;
+  };
   const capability = registerDelegateMemoryCapability(api, {
     serviceId: options.serviceId,
     target,
     namespace,
-    // Capability searches scope through the SAME per-session binding history
-    // the hooks use (the non-explicit branch of sessionNamespaceFrom): the
-    // host hands the runtime a sessionKey but no event/ctx to read an explicit
-    // namespace from, so the remembered binding — else the registration-wide
-    // fallback — is the correct scope.
-    resolveSearchNamespace: async (sessionKey) => {
-      // A non-STRING key from the untyped host must not reach the binding
-      // store: its `encodeURIComponent` would coerce `123` to `"123"` and the
-      // search would inherit the binding of a distinct, string-keyed session —
-      // another tenant's namespace whenever the delegate token can read both.
-      // An unusable key falls back to the registration scope, never a guess.
-      if (typeof sessionKey === "string" && sessionKey.trim().length > 0) {
-        const remembered = await rememberedNamespacesFor(sessionKey, namespaceBindings);
-        if (remembered.length > 0) return remembered.at(-1) || undefined;
-      }
-      return namespace.trim() || undefined;
-    },
+    resolveSearchNamespace,
     // The daemon's own namespace-aware probe, so a substituted default is
     // proven usable before the first search rather than 403-ing on it.
     verifyNamespaceAuthorization: async (candidate, timeoutMs, operations) => {
@@ -368,20 +402,27 @@ export function registerDelegateRuntime(
     healthTimeoutMs: options.recallTimeoutMs,
     now: options.now,
   });
+  // Detached observe POSTs, per session (see `agent_end`). A flush for the
+  // same session waits behind them so a turn is buffered before it is flushed.
+  const observeChains = new Map<string, Promise<void>>();
   if (promptInjectionEnabled) {
-
-    const recallHandler = async (
+    /**
+     * Recall for one query on behalf of a session. `undefined` when nothing
+     * injects: policy skip, short query, daemon failure, or empty context.
+     */
+    const recallContext = async (
+      query: string,
       event: Record<string, unknown>,
       ctx: Record<string, unknown>,
-    ): Promise<Record<string, unknown> | undefined> => {
-      const query = recallQueryFrom(event);
+    ): Promise<
+      { prompt: string; lines: string[]; degradation?: RecallContextDegradation } | undefined
+    > => {
       const sessionKey = sessionKeyFrom(event, ctx);
-      // Evict BEFORE the short-query exit. On a capability-only host the
-      // builder is the sole consumer, so a turn whose prompt construction
-      // aborted leaves lines behind; returning early without clearing would
-      // inject the PREVIOUS query's memory into this prompt.
+      // Evict BEFORE the short-query exit: a turn whose prompt construction
+      // aborted leaves lines behind, and returning early without clearing
+      // would inject the PREVIOUS query's memory into this prompt.
       if (cachePromptLines) promptLinesBySession.delete(sessionKey);
-      if (query.trim().length < 5) return undefined;
+      if (query.length < 5) return undefined;
       // The host abandons this hook at `hookTimeoutMs`, so namespace
       // resolution and the recall POST share ONE deadline rather than each
       // taking its own full timeout and together overrunning it.
@@ -441,15 +482,9 @@ export function registerDelegateRuntime(
           maxChars: options.recallBudgetChars,
         });
         if (!rendered) return undefined;
-        const prompt = rendered.prompt;
-        if (cachePromptLines) {
-          // A registered section builder injects; the hook only pre-computes.
-          // Returning injection fields here too would double-inject.
-          promptLinesBySession.set(sessionKey, rendered.lines);
-          return undefined;
-        }
         return {
-          prependSystemContext: prompt,
+          prompt: rendered.prompt,
+          lines: rendered.lines,
           ...(composition.degradation ? { degradation: composition.degradation } : {}),
         };
       } catch (err) {
@@ -457,11 +492,52 @@ export function registerDelegateRuntime(
         return undefined;
       }
     };
+    const recallHandler = async (
+      event: Record<string, unknown>,
+      ctx: Record<string, unknown>,
+    ): Promise<Record<string, unknown> | undefined> => {
+      const recalled = await recallContext(
+        recallQueryFrom(event, options.cleanUserMessage),
+        event,
+        ctx,
+      );
+      if (!recalled) return undefined;
+      if (cachePromptLines) {
+        // A registered section builder injects; the hook only pre-computes.
+        // Returning injection fields here too would double-inject.
+        promptLinesBySession.set(sessionKeyFrom(event, ctx), recalled.lines);
+        return undefined;
+      }
+      return {
+        prependSystemContext: recalled.prompt,
+        ...(recalled.degradation ? { degradation: recalled.degradation } : {}),
+      };
+    };
     api.on(
       "before_prompt_build",
       (event, ctx) => recallHandler(event, ctx),
       { timeoutMs: options.hookTimeoutMs },
     );
+    if (typeof api.registerMemoryPromptPreparation === "function") {
+      // OpenClaw 2.0 prepares the memory section (and reads the capability's
+      // synchronous promptBuilder) BEFORE `before_prompt_build`, so this is the
+      // only path that puts recall into the system prompt's own memory
+      // section. The host hands it no prompt: the recall is session-primed,
+      // and the hook above still injects the prompt-specific recall.
+      api.registerMemoryPromptPreparation(async (params) => {
+        const sessionKey =
+          [params?.agentSessionKey, params?.sessionKey].find(
+            (candidate): candidate is string =>
+              typeof candidate === "string" && candidate.trim().length > 0,
+          ) ?? "default";
+        const ctx = {
+          sessionKey,
+          ...(typeof params?.agentId === "string" ? { agentId: params.agentId } : {}),
+        };
+        const recalled = await recallContext(PREPARATION_RECALL_QUERY, {}, ctx);
+        return recalled?.lines ?? [];
+      });
+    }
     if (useSectionBuilder && api.registerMemoryPromptSection) {
       const memoryBuildFn = Object.assign(
         (params: { sessionKey?: string }): string[] | null => {
@@ -510,42 +586,58 @@ export function registerDelegateRuntime(
           message.content.trim().length > 0,
       );
     if (turn.length === 0) return;
+    const cwd = cwdFrom(event, ctx, options.cwd);
+    let scopedNamespace: string | undefined;
     try {
-      // `observeTimeoutMs` alone. `hookTimeoutMs` is the PROMPT hook's budget —
-      // it is passed to that registration only (`{ timeoutMs }` above), and
-      // documented as the cold-start recall timeout. `agent_end` carries no
-      // host timeout, so borrowing the prompt's would abandon a turn capture
-      // the host was still willing to wait for.
-      const observeDeadline = Date.now() + options.observeTimeoutMs;
-      const observeRemaining = (): number => observeDeadline - Date.now();
-      const cwd = cwdFrom(event, ctx, options.cwd);
-      const scopedNamespace = await sessionNamespaceFrom(
+      // Awaited: the binding store is local, and the session's namespace must
+      // be durable before the next hook on this session reads it.
+      scopedNamespace = await sessionNamespaceFrom(
         sessionKey,
         event,
         ctx,
         namespace,
         namespaceBindings,
       );
-      await postJson(
-        target,
-        options.serviceId,
-        "/engram/v1/observe",
-        await withNamespace(
-          scopedNamespace,
-          {
-            sessionKey,
-            messages: turn,
-            ...(cwd ? { cwd } : {}),
-            ...(options.projectTag ? { projectTag: options.projectTag } : {}),
-          },
-          (explicit) =>
-            capability.resolveScopedNamespace(explicit, observeRemaining(), ["observe"]),
-        ),
-        Math.max(1, observeRemaining()),
-      );
     } catch (err) {
       log.warn(`delegate observe failed: ${String(err)}`);
+      return;
     }
+    // The daemon call is DETACHED from the hook. A daemon that accepts the
+    // connection and never answers would otherwise hold the host's agent_end
+    // for the whole observe timeout on every turn; the turn capture is not
+    // worth that, and its result feeds nothing the host waits for. Per-session
+    // chaining keeps turns in order and lets a flush wait behind them.
+    const observe = async (): Promise<void> => {
+      const observeDeadline =
+        Date.now() + Math.min(options.observeTimeoutMs, DETACHED_OBSERVE_TIMEOUT_MS);
+      const observeRemaining = (): number => observeDeadline - Date.now();
+      try {
+        await postJson(
+          target,
+          options.serviceId,
+          "/engram/v1/observe",
+          await withNamespace(
+            scopedNamespace,
+            {
+              sessionKey,
+              messages: turn,
+              ...(cwd ? { cwd } : {}),
+              ...(options.projectTag ? { projectTag: options.projectTag } : {}),
+            },
+            (explicit) =>
+              capability.resolveScopedNamespace(explicit, observeRemaining(), ["observe"]),
+          ),
+          Math.max(1, observeRemaining()),
+        );
+      } catch (err) {
+        log.warn(`delegate observe failed: ${String(err)}`);
+      }
+    };
+    const chained = (observeChains.get(sessionKey) ?? Promise.resolve()).then(observe);
+    observeChains.set(sessionKey, chained);
+    void chained.then(() => {
+      if (observeChains.get(sessionKey) === chained) observeChains.delete(sessionKey);
+    });
   });
 
   let cachedBatchFlushSupport: boolean | undefined;
@@ -615,6 +707,11 @@ export function registerDelegateRuntime(
         log.warn("delegate flush skipped: lifecycle event has malformed session key");
         return false;
       }
+      // The session's last turn may still be on its way to the daemon
+      // (`agent_end` detaches the observe POST). Flushing ahead of it would
+      // leave that turn buffered behind the flush. Each link is bounded by
+      // `DETACHED_OBSERVE_TIMEOUT_MS`, so this wait is too.
+      await observeChains.get(sessionKey);
       const namespaces = await lifecycleSessionNamespacesFrom(
         sessionKey,
         event,
@@ -733,7 +830,26 @@ export function registerDelegateRuntime(
     api.on("before_reset", flushEndedSession);
     api.on("session_end", flushEndedSession);
   }
-
+  // Explicit tools the daemon serves: embedded mode builds these over the
+  // in-process orchestrator, delegate mode over the daemon (tool-discovery
+  // hosts register in this mode and expose nothing without them).
+  if (typeof api.registerTool === "function") {
+    api.registerTool(
+      buildDelegateMemorySearchTool({
+        target,
+        runtime: capability.runtime,
+        agentId: options.capability.agentIds[0] ?? "main",
+      }),
+    );
+    api.registerTool(
+      buildDelegateMemoryGetTool({
+        target,
+        serviceId: options.serviceId,
+        timeoutMs: options.recallTimeoutMs,
+        resolveNamespace: resolveSearchNamespace,
+      }),
+    );
+  }
 
   log.info(
     `[${options.serviceId}] bridge mode delegate: memory loop backed by daemon at ` +

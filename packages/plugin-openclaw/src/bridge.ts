@@ -10,7 +10,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { isIPv6 } from "node:net";
+import os from "node:os";
+import { isIP, isIPv6 } from "node:net";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { configPathCandidates, readCompatEnv } from "@remnic/core";
 import { isLoopbackHost } from "@remnic/core/runtime/http-transport.js";
@@ -275,12 +276,13 @@ function isDaemonRunning(): boolean {
  * embedded beside a reachable same-host daemon just because its config
  * spelled the address differently.
  *
- * A wildcard bind names every interface on this host, so it counts as local —
+ * A wildcard bind or an address assigned to one of this host's interfaces
+ * names every interface on this host, so it counts as local —
  * `server.host: "0.0.0.0"` is the documented daemon configuration.
  */
 export function isLoopbackDaemonHost(host: string): boolean {
   const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
-  if (loopbackForWildcardBind(normalized) !== undefined) return true;
+  if (loopbackForSameHost(normalized) !== undefined) return true;
   return isLoopbackHost(normalized);
 }
 
@@ -299,17 +301,42 @@ function canonicalIPv6(value: string): string | undefined {
 }
 
 /**
+ * The loopback address a same-host daemon is dialed on, or `undefined` for a
+ * host that is not provably this machine.
+ *
  * A wildcard bind names every interface on THIS host, not a remote one. The
  * documented `server.host: "0.0.0.0"` daemon config would otherwise be
  * classified as remote — leaving `auto` embedded beside a same-host daemon on
  * the same corpus — and is not a portable destination address either, so it is
  * dialed through the matching loopback.
+ *
+ * An address assigned to one of this host's own interfaces (a NIC or a VIP the
+ * operator exported as `REMNIC_HOST`) is the same case: it names the daemon
+ * loopback reaches, and a gateway fetch to such an address has been observed to
+ * hang on the connect while loopback answers at once.
  */
-export function loopbackForWildcardBind(host: string): string | undefined {
+export function loopbackForSameHost(host: string): string | undefined {
   const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
   if (normalized === "0.0.0.0") return DEFAULT_HOST;
-  if (canonicalIPv6(normalized) === "::") return "::1";
+  const v6 = canonicalIPv6(normalized);
+  if (v6 === "::") return "::1";
+  // ponytail: a daemon bound to exactly one NIC address answers no loopback
+  // dial; probe the configured address as a fallback if that deployment appears.
+  if (isLocalInterfaceAddress(v6 ?? normalized)) return v6 === undefined ? DEFAULT_HOST : "::1";
   return undefined;
+}
+
+function isLocalInterfaceAddress(address: string): boolean {
+  if (isIP(address) === 0) return false;
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.internal) continue;
+      const assigned =
+        entry.family === "IPv6" ? canonicalIPv6(entry.address.replace(/%.*$/, "")) : entry.address;
+      if (assigned === address) return true;
+    }
+  }
+  return false;
 }
 
 function normalizeDaemonHost(value: string): string {
@@ -462,7 +489,7 @@ function shouldProbeDaemonHealth(host: string): boolean {
  */
 function readDaemonHost(): string {
   const resolved = readConfiguredDaemonHost();
-  return loopbackForWildcardBind(resolved) ?? resolved;
+  return loopbackForSameHost(resolved) ?? resolved;
 }
 
 /**
@@ -555,7 +582,7 @@ function daemonEndpointCandidates(
     const resolvedHost = normalizeDaemonHost(
       envHost !== undefined && envHost.trim() !== "" ? envHost : (host ?? DEFAULT_HOST),
     );
-    const dialHost = loopbackForWildcardBind(resolvedHost) ?? resolvedHost;
+    const dialHost = loopbackForSameHost(resolvedHost) ?? resolvedHost;
     const dialPort = envPort ?? port ?? DEFAULT_PORT;
     // Dedupe on the endpoint AND its credential: an inactive service config
     // and a manually launched daemon can share host:port while carrying

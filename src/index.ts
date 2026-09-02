@@ -1301,12 +1301,25 @@ async function embedBatchWithOpenClawProvider(
 /** SDK capabilities detected at register() time — available to later tasks. */
 let sdkCaps: SdkCapabilities | undefined;
 
+/**
+ * Modes whose register() inspects static surfaces only. OpenClaw's loader
+ * (`resolvePluginRegistrationCapabilities`) accepts capability handlers —
+ * tools, hooks, the memory capability — in `full`, `discovery`, AND
+ * `tool-discovery`, and the agent runtime that serves `openclaw agent` turns
+ * registers in the discovery modes. Treating them as non-runtime skipped
+ * register() there, so that runtime had no tools, no before_prompt_build,
+ * and no agent_end.
+ */
 const NON_RUNTIME_REGISTRATION_MODES = new Set<OpenClawRegistrationMode>([
-  "discovery",
-  "tool-discovery",
   "setup-only",
   "setup-runtime",
   "cli-metadata",
+]);
+
+/** Read-only discovery passes: capability handlers register, filesystem writes stay off. */
+const DISCOVERY_REGISTRATION_MODES = new Set<OpenClawRegistrationMode>([
+  "discovery",
+  "tool-discovery",
 ]);
 
 function isNonRuntimeRegistrationMode(
@@ -1364,7 +1377,9 @@ const pluginDefinition = {
 
     const disableRegisterMigration =
       readEnvVar("REMNIC_DISABLE_REGISTER_MIGRATION") === "1" ||
-      readEnvVar("OPENCLAW_ENGRAM_DISABLE_REGISTER_MIGRATION") === "1";
+      readEnvVar("OPENCLAW_ENGRAM_DISABLE_REGISTER_MIGRATION") === "1" ||
+      (typeof sdkCaps.registrationMode === "string" &&
+        DISCOVERY_REGISTRATION_MODES.has(sdkCaps.registrationMode));
     if (!disableRegisterMigration) {
       const migrationPromise = ((globalThis as any)[ENGRAM_MIGRATION_PROMISE] ??=
         migrateFromEngram({
