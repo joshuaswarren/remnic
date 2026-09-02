@@ -1496,6 +1496,8 @@ const pluginDefinition = {
       shouldSkipRecall: (sk: string) => shouldSkipRecallForSession(sk, cfg),
       cwd: getOpenClawRuntimeWorkspaceDir(api),
       flushOnResetEnabled: cfg.flushOnResetEnabled,
+      openclawToolsEnabled: cfg.openclawToolsEnabled,
+      openclawToolSnippetMaxChars: cfg.openclawToolSnippetMaxChars,
       supportPassportModelRoute: delegateSupportPassportGatewayRoute ?? undefined,
       // Memory-slot capability inputs. Mirrors the embedded derivation: the
       // registration-time runtime agent owns this memory, and QMD is the

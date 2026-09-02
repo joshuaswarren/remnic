@@ -23,6 +23,7 @@ import {
   SESSION_NAMESPACE_BINDING_MAX_ENTRIES,
   createFileSessionNamespaceBindingStore,
   createInMemorySessionNamespaceBindingStore,
+  type SessionNamespaceBindingStore,
 } from "@remnic/core/session-namespace-bindings";
 
 /**
@@ -2422,6 +2423,91 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
       /non-empty query/,
     );
     await assert.rejects(tools.get("memory_get")!.execute("tc-4", {}, undefined, {}), /requires an id/);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate tools honor openclawToolsEnabled, the snippet cap, and normalize fractional limits", async () => {
+  const stub = await startDaemonStub((pathname) => {
+    if (pathname === "/engram/v1/memories/search") {
+      return {
+        query: "rollout",
+        count: 2,
+        results: [
+          { path: "facts/2026-01-01/fact-1.md", score: 0.9, snippet: "we   decided\nto roll out on Monday" },
+          { path: "facts/2026-01-02/fact-2.md", score: 0.4, snippet: "rollout retro" },
+        ],
+      };
+    }
+    if (pathname.startsWith("/engram/v1/memories/fact-1")) {
+      return { found: true, memory: { id: "fact-1", content: "x", frontmatter: { id: "fact-1" } } };
+    }
+    return { accepted: true };
+  });
+  try {
+    // Opt-out: embedded parity — `openclawToolsEnabled: false` registers nothing.
+    const optedOut = recordingApi();
+    const optedOutRegistered: string[] = [];
+    Object.assign(optedOut, { registerTool: (tool: { name: string }) => optedOutRegistered.push(tool.name) });
+    registerDelegateRuntime(optedOut, optionsFor(stub.port, { openclawToolsEnabled: false }));
+    assert.deepEqual(optedOutRegistered, [], "opt-out registers no model-facing tools");
+
+    const api = recordingApi();
+    const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
+    Object.assign(api, {
+      registerTool(tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }): void {
+        tools.set(tool.name, tool);
+      },
+    });
+    registerDelegateRuntime(api, optionsFor(stub.port, { openclawToolSnippetMaxChars: 12 }));
+    assert.deepEqual([...tools.keys()].sort(), ["memory_get", "memory_search"]);
+
+    // A schema-valid fractional limit floors like embedded mode instead of
+    // forwarding a non-integer maxResults the manager rejects.
+    const searched = (await tools.get("memory_search")!.execute(
+      "tc-1",
+      { query: "rollout", limit: 1.5 },
+      undefined,
+      { sessionKey: "tool-session" },
+    )) as { content: Array<{ text: string }> };
+    const search = stub.calls.find((call) => call.pathname === "/engram/v1/memories/search");
+    assert.ok(search);
+    assert.equal(search.body.maxResults, 2, "1.5 floors to 1, plus the truncation probe");
+    // The configured cap (below the daemon's 800) collapses whitespace and
+    // truncates the snippet, as embedded `recallForActiveMemory` does.
+    assert.deepEqual(JSON.parse(searched.content[0]!.text), {
+      results: [{ id: "fact-1", score: 0.9, text: "we decided t" }],
+      truncated: true,
+    });
+
+    // memory_get: the binding lookup and the daemon GET share one budget, so
+    // a slow lookup leaves the GET only what remains rather than a fresh
+    // full timeout.
+    const slowApi = recordingApi();
+    const slowTools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
+    Object.assign(slowApi, {
+      registerTool(tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }): void {
+        slowTools.set(tool.name, tool);
+      },
+    });
+    const bindings = createInMemorySessionNamespaceBindingStore();
+    await bindings.remember("tool-session", "team-alpha");
+    const slowLookup: SessionNamespaceBindingStore = {
+      ...bindings,
+      namespacesFor: async (sessionKey: string) => {
+        await sleep(60);
+        return bindings.namespacesFor(sessionKey);
+      },
+    };
+    registerDelegateRuntime(
+      slowApi,
+      optionsFor(stub.port, { namespaceBindings: slowLookup, recallTimeoutMs: 40 }),
+    );
+    await assert.rejects(
+      slowTools.get("memory_get")!.execute("tc-2", { id: "fact-1" }, undefined, { sessionKey: "tool-session" }),
+      /deadline exceeded|timeout|abort/i,
+    );
   } finally {
     await stub.close();
   }

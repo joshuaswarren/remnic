@@ -15,6 +15,7 @@ import {
   type ActiveMemoryMetadata,
   type ActiveMemorySearchOutput,
   collapseWhitespace,
+  truncateCodePointSafe,
 } from "@remnic/core";
 
 import type { DelegateDaemonTarget } from "./bridge.js";
@@ -24,6 +25,19 @@ import { MemoryGetInputSchema, MemorySearchInputSchema } from "./openclaw-tools/
 import { toolJsonResult } from "./openclaw-tools/tool-json-result.js";
 
 const DEFAULT_SEARCH_RESULTS = 8;
+/** Embedded parity (`recallForActiveMemory`): default snippet budget. */
+const DEFAULT_SNIPPET_MAX_CHARS = 600;
+
+/** Embedded parity: finite limits floor into [1, 50]; anything else is the default. */
+function clampLimit(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_SEARCH_RESULTS;
+  return Math.max(1, Math.min(50, Math.floor(value)));
+}
+
+function clampSnippetMaxChars(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_SNIPPET_MAX_CHARS;
+  return Math.max(1, Math.min(4_000, Math.floor(value)));
+}
 
 interface ToolContext {
   sessionKey?: string;
@@ -73,7 +87,10 @@ export function buildDelegateMemorySearchTool(options: {
   target: DelegateDaemonTarget;
   runtime: RemnicCapabilityRuntime;
   agentId: string;
+  /** Embedded parity: `openclawToolSnippetMaxChars`, applied over the daemon's own cap. */
+  snippetMaxChars?: number;
 }) {
+  const snippetMaxChars = clampSnippetMaxChars(options.snippetMaxChars);
   return {
     name: "memory_search",
     description: "Search Remnic memories via the Remnic daemon (delegate).",
@@ -88,21 +105,23 @@ export function buildDelegateMemorySearchTool(options: {
       });
       if (!manager) throw new Error(error ?? "delegate memory search manager unavailable");
       // One extra hit tells whether the page was cut, which is what the
-      // embedded tool reports as `truncated`.
-      const limit = typeof params.limit === "number" ? params.limit : DEFAULT_SEARCH_RESULTS;
+      // embedded tool reports as `truncated`. Fractions are schema-valid
+      // (`Type.Number`), and the manager rejects a non-integer maxResults.
+      const limit = clampLimit(params.limit);
       const results = await manager.search(query, {
         maxResults: limit + 1,
         sessionKey: sessionKeyFor(params, ctx),
       });
       // The public active-memory shape the embedded tool returns: `id` is the
       // `<id>.md` basename (the daemon's own `memoryIdFromPath` convention),
-      // `text` the snippet. The manager's absolute `path` stays internal — it
-      // names the operator's filesystem, which the model has no use for.
+      // `text` the snippet under the configured budget. The manager's absolute
+      // `path` stays internal — it names the operator's filesystem, which the
+      // model has no use for.
       const output: ActiveMemorySearchOutput = {
         results: results.slice(0, limit).map((result) => ({
           id: path.basename(result.citation ?? result.path, ".md"),
           score: result.score,
-          text: result.snippet,
+          text: truncateCodePointSafe(collapseWhitespace(result.snippet), snippetMaxChars),
         })),
         truncated: results.length > limit,
       };
@@ -136,7 +155,7 @@ export function buildDelegateMemoryGetTool(options: {
       // the SAME scope the session's search used, so an unbound session cannot
       // name another tenant's namespace to reach a known memory id.
       const deadline = Date.now() + options.timeoutMs;
-      const namespace = await options.resolveNamespace(sessionKey, options.timeoutMs);
+      const namespace = await options.resolveNamespace(sessionKey, Math.max(1, deadline - Date.now()));
       const requested =
         typeof params.namespace === "string" && params.namespace.trim().length > 0
           ? params.namespace.trim()

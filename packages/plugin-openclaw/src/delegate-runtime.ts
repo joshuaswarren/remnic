@@ -115,6 +115,10 @@ export interface DelegateRuntimeOptions {
   recallTimeoutMs: number;
   observeTimeoutMs: number;
   flushTimeoutMs: number;
+  /** Embedded parity: `openclawToolsEnabled !== false` registers the model-facing tools. */
+  openclawToolsEnabled?: boolean;
+  /** Embedded parity: `openclawToolSnippetMaxChars` caps each search result's text. */
+  openclawToolSnippetMaxChars?: number;
   /**
    * Memory-slot capability inputs (issue #2120). The daemon-backed capability
    * gives delegate mode the same host surface as embedded: prompt builder,
@@ -833,8 +837,13 @@ export function registerDelegateRuntime(
   }
   // Explicit tools the daemon serves: embedded mode builds these over the
   // in-process orchestrator, delegate mode over the daemon (tool-discovery
-  // hosts register in this mode and expose nothing without them).
-  if (typeof api.registerTool === "function" && !delegateToolApis.has(api)) {
+  // hosts register in this mode and expose nothing without them). The
+  // operator's `openclawToolsEnabled: false` opt-out holds in both modes.
+  if (
+    options.openclawToolsEnabled !== false &&
+    typeof api.registerTool === "function" &&
+    !delegateToolApis.has(api)
+  ) {
     // Once per api object: the canonical and legacy plugin ids both register
     // here, and a second `memory_search` on one api is a host tool-name
     // conflict, not a second tool.
@@ -844,6 +853,7 @@ export function registerDelegateRuntime(
         target,
         runtime: capability.runtime,
         agentId: options.capability.agentIds[0] ?? "main",
+        snippetMaxChars: options.openclawToolSnippetMaxChars,
       }),
     );
     api.registerTool(
@@ -853,13 +863,13 @@ export function registerDelegateRuntime(
         timeoutMs: options.recallTimeoutMs,
         // The SAME trusted scope path search takes: the session binding, then
         // the daemon's concrete default for an unbound session — never an
-        // omitted namespace a scoped credential would refuse.
-        resolveNamespace: async (sessionKey, timeoutMs) =>
-          capability.resolveScopedNamespace(
-            await resolveSearchNamespace(sessionKey),
-            timeoutMs,
-            ["memory_get"],
-          ),
+        // omitted namespace a scoped credential would refuse. The binding
+        // lookup spends from the same budget as the daemon call.
+        resolveNamespace: async (sessionKey, timeoutMs) => {
+          const deadline = Date.now() + timeoutMs;
+          const bound = await resolveSearchNamespace(sessionKey);
+          return capability.resolveScopedNamespace(bound, Math.max(1, deadline - Date.now()), ["memory_get"]);
+        },
       }),
     );
   }
@@ -900,6 +910,10 @@ export interface MaybeRegisterDelegateOptions {
   projectTag?: string;
   /** Embedded parity: gate buffer flush on reset/session_end. */
   flushOnResetEnabled: boolean;
+  /** Embedded parity: `openclawToolsEnabled !== false` registers the model-facing tools. */
+  openclawToolsEnabled?: boolean;
+  /** Embedded parity: `openclawToolSnippetMaxChars` caps each search result's text. */
+  openclawToolSnippetMaxChars?: number;
   /**
    * Memory-slot capability inputs (issue #2120) — forwarded verbatim to the
    * daemon-backed capability so delegate mode keeps the host surface embedded
@@ -1158,6 +1172,8 @@ export function maybeRegisterDelegateRuntime(
     cwd: options.cwd,
     projectTag: options.projectTag,
     flushOnResetEnabled: options.flushOnResetEnabled,
+    openclawToolsEnabled: options.openclawToolsEnabled,
+    openclawToolSnippetMaxChars: options.openclawToolSnippetMaxChars,
     capability: options.capability,
     recallTimeoutMs: 25_000,
     observeTimeoutMs: 120_000,
