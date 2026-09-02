@@ -76,7 +76,7 @@ import {
 } from "./delegate-capability.js";
 import type { SupportPassportModelRoute } from "@remnic/core";
 import { createDelegateSupportPassportModelService } from "./delegate-support-passport-model.js";
-import { buildDelegateMemoryGetTool, buildDelegateMemorySearchTool } from "./delegate-tools.js";
+import { registerDelegateTools } from "./delegate-tools.js";
 
 export interface DelegateRuntimeOptions {
   serviceId: string;
@@ -835,44 +835,17 @@ export function registerDelegateRuntime(
     api.on("before_reset", flushEndedSession);
     api.on("session_end", flushEndedSession);
   }
-  // Explicit tools the daemon serves: embedded mode builds these over the
-  // in-process orchestrator, delegate mode over the daemon (tool-discovery
-  // hosts register in this mode and expose nothing without them). The
-  // operator's `openclawToolsEnabled: false` opt-out holds in both modes.
-  if (
-    options.openclawToolsEnabled !== false &&
-    typeof api.registerTool === "function" &&
-    !delegateToolApis.has(api)
-  ) {
-    // Once per api object: the canonical and legacy plugin ids both register
-    // here, and a second `memory_search` on one api is a host tool-name
-    // conflict, not a second tool.
-    delegateToolApis.add(api);
-    api.registerTool(
-      buildDelegateMemorySearchTool({
-        target,
-        runtime: capability.runtime,
-        agentId: options.capability.agentIds[0] ?? "main",
-        snippetMaxChars: options.openclawToolSnippetMaxChars,
-      }),
-    );
-    api.registerTool(
-      buildDelegateMemoryGetTool({
-        target,
-        serviceId: options.serviceId,
-        timeoutMs: options.recallTimeoutMs,
-        // The SAME trusted scope path search takes: the session binding, then
-        // the daemon's concrete default for an unbound session — never an
-        // omitted namespace a scoped credential would refuse. The binding
-        // lookup spends from the same budget as the daemon call.
-        resolveNamespace: async (sessionKey, timeoutMs) => {
-          const deadline = Date.now() + timeoutMs;
-          const bound = await resolveSearchNamespace(sessionKey);
-          return capability.resolveScopedNamespace(bound, Math.max(1, deadline - Date.now()), ["memory_get"]);
-        },
-      }),
-    );
-  }
+  registerDelegateTools(api, {
+    target,
+    serviceId: options.serviceId,
+    enabled: options.openclawToolsEnabled !== false,
+    runtime: capability.runtime,
+    agentId: options.capability.agentIds[0] ?? "main",
+    snippetMaxChars: options.openclawToolSnippetMaxChars,
+    timeoutMs: options.recallTimeoutMs,
+    resolveSearchNamespace,
+    resolveScopedNamespace: capability.resolveScopedNamespace,
+  });
 
   log.info(
     `[${options.serviceId}] bridge mode delegate: memory loop backed by daemon at ` +
@@ -954,8 +927,6 @@ const delegateEmbeddedFallbackApis = new WeakSet<object>();
  * rather than bind an embedded runtime alongside.
  */
 const delegateBoundApis = new WeakSet<object>();
-/** Apis that already carry the delegate `memory_search` / `memory_get` tools. */
-const delegateToolApis = new WeakSet<object>();
 const delegateAuthorizationPreflightServices = new WeakMap<object, Set<string>>();
 
 /**

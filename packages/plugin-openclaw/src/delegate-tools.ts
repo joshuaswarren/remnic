@@ -177,3 +177,65 @@ export function buildDelegateMemoryGetTool(options: {
     },
   };
 }
+
+/** Apis that already carry the delegate `memory_search` / `memory_get` tools. */
+const delegateToolApis = new WeakSet<object>();
+
+/**
+ * Register the daemon-backed tools on a host that exposes `registerTool`.
+ * Embedded mode builds these over the in-process orchestrator, delegate mode
+ * over the daemon (tool-discovery hosts register in this mode and expose
+ * nothing without them). The operator's `openclawToolsEnabled: false` opt-out
+ * holds in both modes.
+ */
+export function registerDelegateTools(
+  api: { registerTool?(tool: Record<string, unknown>, opts?: { name?: string }): void },
+  options: {
+    target: DelegateDaemonTarget;
+    serviceId: string;
+    enabled: boolean;
+    runtime: RemnicCapabilityRuntime;
+    agentId: string;
+    snippetMaxChars?: number;
+    timeoutMs: number;
+    /** The session's remembered binding, else the registration scope. */
+    resolveSearchNamespace: (sessionKey: unknown) => Promise<string | undefined>;
+    /** The capability's resolver: the daemon's concrete default for an unbound session. */
+    resolveScopedNamespace: (
+      explicit: string | undefined,
+      timeoutMs: number,
+      operations: readonly string[]
+    ) => Promise<string | undefined>;
+  }
+): void {
+  if (!options.enabled || typeof api.registerTool !== "function") return;
+  // Once per api object: the canonical and legacy plugin ids both register
+  // here, and a second `memory_search` on one api is a host tool-name
+  // conflict, not a second tool.
+  if (delegateToolApis.has(api)) return;
+  delegateToolApis.add(api);
+  api.registerTool(
+    buildDelegateMemorySearchTool({
+      target: options.target,
+      runtime: options.runtime,
+      agentId: options.agentId,
+      snippetMaxChars: options.snippetMaxChars,
+    })
+  );
+  api.registerTool(
+    buildDelegateMemoryGetTool({
+      target: options.target,
+      serviceId: options.serviceId,
+      timeoutMs: options.timeoutMs,
+      // The SAME trusted scope path search takes: the session binding, then
+      // the daemon's concrete default for an unbound session — never an
+      // omitted namespace a scoped credential would refuse. The binding
+      // lookup spends from the same budget as the daemon call.
+      resolveNamespace: async (sessionKey, timeoutMs) => {
+        const deadline = Date.now() + timeoutMs;
+        const bound = await options.resolveSearchNamespace(sessionKey);
+        return options.resolveScopedNamespace(bound, Math.max(1, deadline - Date.now()), ["memory_get"]);
+      },
+    })
+  );
+}
