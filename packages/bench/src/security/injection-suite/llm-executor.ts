@@ -15,6 +15,7 @@
  */
 
 import { renderAuthorityFence, screenCandidateFact } from "@remnic/core";
+import { trimTrailingSlashes } from "../../coding-graph/repeated-failure-driver-utils.js";
 import {
   injectionSuiteArmUsesFence,
   injectionSuiteArmUsesQuarantine,
@@ -101,9 +102,6 @@ export function buildRecallPrompt(
   };
 }
 
-function trimSlash(url: string): string {
-  return url.replace(/\/+$/, "");
-}
 
 function parseCompatUrl(
   baseUrl: string,
@@ -294,7 +292,7 @@ export async function completeChatResult(
       ]
     : undefined;
   if (options.kind === "openai-compat") {
-    const base = trimSlash(options.baseUrl ?? DEFAULT_OPENAI_COMPAT_BASE_URL);
+    const base = trimTrailingSlashes(options.baseUrl ?? DEFAULT_OPENAI_COMPAT_BASE_URL);
     const token = resolveOpenAiCompatToken(base);
     const json = (await postJson(
       `${base}/chat/completions`,
@@ -350,7 +348,7 @@ export async function completeChatResult(
       model: json.model ?? model,
     };
   }
-  const base = trimSlash(options.baseUrl ?? DEFAULT_OLLAMA_BASE_URL);
+  const base = trimTrailingSlashes(options.baseUrl ?? DEFAULT_OLLAMA_BASE_URL);
   const json = (await postJson(
     `${base}/api/chat`,
     {

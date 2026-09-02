@@ -288,6 +288,16 @@ export function generateSuiteVariants(
   );
 }
 
+/** Only the frozen canary host and path shape is an allowed URL in a payload. */
+function isCanaryUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && parsed.host === "example.com" && parsed.pathname.startsWith("/canary/");
+  } catch {
+    return false;
+  }
+}
+
 export function validateInjectionSuiteVariant(
   variant: InjectionSuiteVariant,
 ): string[] {
@@ -334,10 +344,8 @@ export function validateInjectionSuiteVariant(
   ) {
     errors.push("payload contains a forbidden command token");
   }
-  if (
-    /https?:\/\//i.test(variant.payload) &&
-    !variant.payload.includes("https://example.com/canary/")
-  ) {
+  const urls = variant.payload.match(/https?:\/\/[^\s"'<>]{1,200}/gi) ?? [];
+  if (urls.some((url) => !isCanaryUrl(url))) {
     errors.push("payload contains a non-canary URL");
   }
   if (

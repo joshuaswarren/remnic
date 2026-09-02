@@ -21,6 +21,7 @@ import {
   type InjectionSuiteChatMessage,
   type InjectionSuiteLlmOptions,
 } from "./llm-executor.js";
+import { trimTrailingSlashes } from "../../coding-graph/repeated-failure-driver-utils.js";
 import { buildInjectionSuiteRowKey } from "./store.js";
 import { prepareInjectionSuiteStore } from "./store-image.js";
 import {
@@ -70,8 +71,8 @@ export function buildInjectionSuiteAdapterOptions(
     input.baseUrl ??
     (openAiCompat ? DEFAULT_OPENAI_COMPAT_BASE_URL : DEFAULT_OLLAMA_BASE_URL);
   const localLlmUrl = openAiCompat
-    ? baseUrl.replace(/\/+$/, "")
-    : `${baseUrl.replace(/\/+$/, "")}/v1`;
+    ? trimTrailingSlashes(baseUrl)
+    : `${trimTrailingSlashes(baseUrl)}/v1`;
   const apiKey = openAiCompat
     ? resolveOpenAiCompatToken(localLlmUrl)
     : undefined;
