@@ -1805,18 +1805,28 @@ test("delegate preserves legacy bindings while the legacy adapter is active", as
     await stub.close();
   }
 });
-test("delegate passive mode skips memory hooks but keeps the passport model worker", async () => {
+test("delegate passive mode skips memory hooks and capability but keeps the tools and passport model worker", async () => {
   const api = recordingApi() as RecordingApi & {
     services: Array<{ id: string }>;
     registerService(service: { id: string }): void;
   };
   api.services = [];
   api.registerService = (service) => api.services.push(service);
+  const tools: string[] = [];
+  const capabilities: string[] = [];
+  Object.assign(api, {
+    registerTool: (tool: { name: string }) => tools.push(tool.name),
+    registerMemoryCapability: () => capabilities.push("capability"),
+    registerMemoryRuntime: () => capabilities.push("runtime"),
+  });
   registerDelegateRuntime(api, optionsFor(1, {
     passive: true,
     supportPassportModelRoute: { kind: "gateway", invoke: async () => null },
   }));
   assert.equal(api.handlers.size, 0, "passive slot mode must not register hooks");
+  assert.deepEqual(capabilities, [], "passive slot mode must not claim the memory slot");
+  // Embedded parity: the explicit tools stay available in passive mode.
+  assert.deepEqual(tools.sort(), ["memory_get", "memory_search"]);
   assert.deepEqual(api.services.map((service) => service.id), [
     "openclaw-remnic:support-passport-model",
   ]);
@@ -2449,6 +2459,31 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
     await assert.rejects(
       tools.get("memory_get")!.execute("tc-8", { id: "fact-1" }, undefined, { sessionKey: "s".repeat(600) }),
       /sessionKey exceeds/,
+    );
+
+    // `filters.namespace` may restate the session's scope, never redirect the
+    // search to another one (embedded honors the filter; delegate stays
+    // session-scoped, so a mismatch is an error rather than silent results
+    // from a different scope).
+    await assert.rejects(
+      tools.get("memory_search")!.execute(
+        "tc-9",
+        { query: "rollout", filters: { namespace: "team-other" } },
+        undefined,
+        { sessionKey: "tool-session" },
+      ),
+      /filters\.namespace "team-other" does not match the session's memory scope "team-alpha"/,
+    );
+    await tools.get("memory_search")!.execute(
+      "tc-10",
+      { query: "rollout", filters: { namespace: "team-alpha" } },
+      undefined,
+      { sessionKey: "tool-session" },
+    );
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/memories/search").at(-1)?.body.query,
+      "rollout",
+      "a filter restating the bound scope searches normally",
     );
   } finally {
     await stub.close();

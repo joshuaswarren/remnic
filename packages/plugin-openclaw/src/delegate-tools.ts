@@ -93,6 +93,9 @@ export function buildDelegateMemorySearchTool(options: {
   agentId: string;
   /** Embedded parity: `openclawToolSnippetMaxChars`, applied over the daemon's own cap. */
   snippetMaxChars?: number;
+  timeoutMs: number;
+  /** The session's memory scope, so a `filters.namespace` may only restate it. */
+  resolveNamespace: (sessionKey: string, timeoutMs: number) => Promise<string | undefined>;
 }) {
   const snippetMaxChars = clampSnippetMaxChars(options.snippetMaxChars);
   return {
@@ -112,11 +115,26 @@ export function buildDelegateMemorySearchTool(options: {
       // embedded tool reports as `truncated`. Fractions are schema-valid
       // (`Type.Number`), and the manager rejects a non-integer maxResults.
       const limit = clampLimit(params.limit);
+      const sessionKey = sessionKeyFor(params, ctx);
+      // Delegate searches stay session-scoped (the manager resolves the scope
+      // itself). A schema-valid `filters.namespace` is honored by the embedded
+      // tool, so here it may restate that scope but never silently search
+      // another one.
+      const filters = params.filters && typeof params.filters === "object" ? (params.filters as Record<string, unknown>) : undefined;
+      const requested = typeof filters?.namespace === "string" && filters.namespace.trim().length > 0 ? filters.namespace.trim() : undefined;
+      if (requested !== undefined) {
+        const scope = await options.resolveNamespace(sessionKey, options.timeoutMs);
+        if (requested !== scope) {
+          throw new Error(
+            `memory_search filters.namespace "${requested}" does not match the session's memory scope${scope === undefined ? "" : ` "${scope}"`}`
+          );
+        }
+      }
       // The daemon's search schema caps `query` at 2048 chars; embedded mode
       // accepts any length, so trim rather than turn a valid call into a 400.
       const results = await manager.search(query.slice(0, DAEMON_SEARCH_QUERY_MAX_CHARS), {
         maxResults: limit + 1,
-        sessionKey: sessionKeyFor(params, ctx),
+        sessionKey,
       });
       // The public active-memory shape the embedded tool returns: `id` is the
       // `<id>.md` basename (the daemon's own `memoryIdFromPath` convention),
@@ -229,12 +247,23 @@ export function registerDelegateTools(
   // conflict, not a second tool.
   if (delegateToolApis.has(api)) return;
   delegateToolApis.add(api);
+  // The SAME trusted scope path the capability's search takes: the session
+  // binding, then the daemon's concrete default for an unbound session — never
+  // an omitted namespace a scoped credential would refuse. The binding lookup
+  // spends from the same budget as the daemon call.
+  const resolveNamespace = (operation: string) => async (sessionKey: string, timeoutMs: number) => {
+    const deadline = Date.now() + timeoutMs;
+    const bound = await options.resolveSearchNamespace(sessionKey);
+    return options.resolveScopedNamespace(bound, Math.max(1, deadline - Date.now()), [operation]);
+  };
   api.registerTool(
     buildDelegateMemorySearchTool({
       target: options.target,
       runtime: options.runtime,
       agentId: options.agentId,
       snippetMaxChars: options.snippetMaxChars,
+      timeoutMs: options.timeoutMs,
+      resolveNamespace: resolveNamespace("memory_search"),
     })
   );
   api.registerTool(
@@ -242,15 +271,7 @@ export function registerDelegateTools(
       target: options.target,
       serviceId: options.serviceId,
       timeoutMs: options.timeoutMs,
-      // The SAME trusted scope path search takes: the session binding, then
-      // the daemon's concrete default for an unbound session — never an
-      // omitted namespace a scoped credential would refuse. The binding
-      // lookup spends from the same budget as the daemon call.
-      resolveNamespace: async (sessionKey, timeoutMs) => {
-        const deadline = Date.now() + timeoutMs;
-        const bound = await options.resolveSearchNamespace(sessionKey);
-        return options.resolveScopedNamespace(bound, Math.max(1, deadline - Date.now()), ["memory_get"]);
-      },
+      resolveNamespace: resolveNamespace("memory_get"),
     })
   );
 }

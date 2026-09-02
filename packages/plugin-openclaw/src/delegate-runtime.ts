@@ -72,6 +72,8 @@ import {
 } from "./transcript-turns.js";
 import {
   type DelegateCapabilityApi,
+  type DelegateCapabilityOptions,
+  createDelegateMemoryCapability,
   registerDelegateMemoryCapability,
 } from "./delegate-capability.js";
 import type { SupportPassportModelRoute } from "@remnic/core";
@@ -317,12 +319,6 @@ export function registerDelegateRuntime(
       }
     }
   }
-  if (options.passive) {
-    log.info(
-      `[${options.serviceId}] bridge mode delegate: memory slot not owned — passive, no memory hooks registered`,
-    );
-    return;
-  }
 
   // Session-scoped cache of precomputed recall lines, mirroring the embedded
   // pre-compute-then-consume contract: the recall hook fills it, the
@@ -359,7 +355,10 @@ export function registerDelegateRuntime(
     }
     return namespace.trim() || undefined;
   };
-  const capability = registerDelegateMemoryCapability(api, {
+  // Passive (slot not owned) still serves the explicit tools, like embedded:
+  // the capability is BUILT for their search manager and scope resolver but
+  // never registered with the host, which keeps the memory slot untouched.
+  const capabilityOptions: DelegateCapabilityOptions = {
     serviceId: options.serviceId,
     target,
     namespace,
@@ -393,7 +392,27 @@ export function registerDelegateRuntime(
     searchTimeoutMs: options.recallTimeoutMs,
     healthTimeoutMs: options.recallTimeoutMs,
     now: options.now,
+  };
+  const capability = options.passive
+    ? createDelegateMemoryCapability(capabilityOptions)
+    : registerDelegateMemoryCapability(api, capabilityOptions);
+  registerDelegateTools(api, {
+    target,
+    serviceId: options.serviceId,
+    enabled: options.openclawToolsEnabled !== false,
+    runtime: capability.runtime,
+    agentId: options.capability.agentIds[0] ?? "main",
+    snippetMaxChars: options.openclawToolSnippetMaxChars,
+    timeoutMs: options.recallTimeoutMs,
+    resolveSearchNamespace,
+    resolveScopedNamespace: capability.resolveScopedNamespace,
   });
+  if (options.passive) {
+    log.info(
+      `[${options.serviceId}] bridge mode delegate: memory slot not owned — passive, no memory hooks registered`,
+    );
+    return;
+  }
   // Detached observe POSTs, per session (see `agent_end`). A flush for the
   // same session waits behind them so a turn is buffered before it is flushed.
   const observeChains = new Map<string, Promise<void>>();
@@ -831,17 +850,6 @@ export function registerDelegateRuntime(
     api.on("before_reset", flushEndedSession);
     api.on("session_end", flushEndedSession);
   }
-  registerDelegateTools(api, {
-    target,
-    serviceId: options.serviceId,
-    enabled: options.openclawToolsEnabled !== false,
-    runtime: capability.runtime,
-    agentId: options.capability.agentIds[0] ?? "main",
-    snippetMaxChars: options.openclawToolSnippetMaxChars,
-    timeoutMs: options.recallTimeoutMs,
-    resolveSearchNamespace,
-    resolveScopedNamespace: capability.resolveScopedNamespace,
-  });
 
   log.info(
     `[${options.serviceId}] bridge mode delegate: memory loop backed by daemon at ` +
