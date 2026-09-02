@@ -47,12 +47,29 @@ export function shouldIncludeCoreRecallForReplay(options: {
     (options.replayExtractionMode !== "skip" || !options.skipExtractionLcmFirst);
 }
 
+/**
+ * Recall section ids the harness authors as responder guidance (they are
+ * instruction-shaped by design and may quote short evidence snippets the
+ * harness already selected). They are trusted like core memory: never
+ * screened, never fenced. Every other section quotes raw conversation or
+ * derived content and goes through the configured defenses. The security
+ * suite's rows recall only core sections, so this list does not touch them.
+ */
+export const HARNESS_AUTHORED_RECALL_SECTIONS: ReadonlySet<string> = new Set([
+  "core",
+  "contradiction-guidance",
+  "dependency-version",
+  "implementation-targets",
+  "historical-empty",
+  "personal-history-empty",
+]);
+
 export function secureBenchRecallSection(
   content: string,
   security: { originAuthorityEnabled: boolean; injectionScreenEnabled: boolean },
-  coreSection: boolean,
+  trustedSection: boolean,
 ): string {
-  if (coreSection) return content;
+  if (trustedSection) return content;
   if (security.injectionScreenEnabled && screenCandidateFact(content).quarantine) return "";
   return security.originAuthorityEnabled ? renderAuthorityFence(content, "unknown") : content;
 }

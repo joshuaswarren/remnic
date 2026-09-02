@@ -73,6 +73,7 @@ import {
   resolveAnswerSupportMinCoverage,
   resolveSkipExtractionLcmFirst,
   shouldIncludeCoreRecallForReplay,
+  HARNESS_AUTHORED_RECALL_SECTIONS,
   secureBenchRecallSection,
 } from "./remnic-recall-support.js";
 
@@ -2051,7 +2052,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           const secured = secureBenchRecallSection(
             rendered,
             state.recallSecurity,
-            source === "core",
+            HARNESS_AUTHORED_RECALL_SECTIONS.has(id),
           );
           if (!secured) return;
           traceRecorder?.appendSection(id, source, secured.length);
