@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.59] — 2026-09-01
+
+### Fixed
+
+- Entity canonical-id migration parks missing or retargeted pairs instead of Fatal-exiting the daemon on boot.
+
+- Windows PR CI runs the curated smoke subset from `scripts/windows-smoke-list.json`; the full core suite no longer fits the 25-minute OSS runner cap and stayed in a permanent cancel loop.
+
+## [v9.69.57] — 2026-08-31
+
+### Fixed
+
+- Release recursive package build excludes `@remnic/core` after the dedicated core build so tsup does not wipe core `dist` mid-flight.
+
+## [v9.69.57] — 2026-08-31
+
+### Fixed
+
+- Release `pnpm -r run build` now builds `@remnic/core` first so tsup DTS in dependents can resolve `@remnic/core`.
+
+## [v9.69.57] — 2026-08-31
+
+### Fixed
+
+- `@remnic/belief-ledger` imports store helpers from `@remnic/core` instead of subpath exports, so tsup DTS emit does not need `dist/storage.d.ts` and friends to already exist.
+
+## [v9.69.57] — 2026-08-31
+
+### Fixed
+
+- `@remnic/belief-ledger` aliases `FallbackLlmLedgerAdapterOptions` to `FallbackLlmOptions` instead of `interface extends`, so tsup DTS keeps the `@remnic/core` import and the release build can finish.
+
 ## [v9.69.56] — 2026-08-26
 
 ### Added

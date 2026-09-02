@@ -478,8 +478,11 @@ jobs:
 
       - name: Build all packages
         run: |
-          pnpm -r run build
+          node scripts/ensure-core-build.mjs
+          pnpm -r --filter '!@remnic/core' --filter '!remnic-workspace' run build
           pnpm run build
+
+
 
       - name: Verify root release artifacts
         run: node scripts/check-release-artifacts.mjs

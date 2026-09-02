@@ -4,9 +4,11 @@ import test from "node:test";
 
 import {
   SKIP_LIST_PATH,
+  SMOKE_LIST_PATH,
   collectCoreTestFiles,
   formatSkipReport,
   parseSkipList,
+  parseSmokeList,
   partitionSkipped,
 } from "../scripts/windows-test-runner.mjs";
 
@@ -82,4 +84,38 @@ test("collectCoreTestFiles returns sorted posix repo-relative test paths", () =>
     assert.ok(!file.includes("\\"), `path must be posix: ${file}`);
   }
   assert.deepEqual(files, [...files].sort());
+});
+
+test("the shipped smoke list parses and every entry names a real collected file", () => {
+  const smokeFiles = parseSmokeList(JSON.parse(readFileSync(SMOKE_LIST_PATH, "utf8")));
+  const collected = new Set(collectCoreTestFiles());
+  const missing = smokeFiles.filter((file) => !collected.has(file));
+  assert.deepEqual(
+    missing,
+    [],
+    `scripts/windows-smoke-list.json lists missing files: ${missing.join(", ")}`
+  );
+});
+
+test("parseSmokeList rejects shapes that would silently widen the subset", () => {
+  const good = "packages/remnic-core/src/a.test.ts";
+  assert.throws(() => parseSmokeList({ files: [] }), /"files" must be a non-empty array/);
+  assert.throws(() => parseSmokeList({ files: {} }), /"files" must be a non-empty array/);
+  assert.throws(() => parseSmokeList([]), /must contain a JSON object/);
+  assert.throws(() => parseSmokeList({ files: ["src/a.test.ts"] }), /must live under packages\/remnic-core\/src/);
+  assert.throws(() => parseSmokeList({ files: ["packages\\remnic-core\\src\\a.test.ts"] }), /repo-relative posix path/);
+  assert.throws(() => parseSmokeList({ files: ["packages/remnic-core/src/../src/a.test.ts"] }), /repo-relative posix path/);
+  assert.throws(() => parseSmokeList({ files: ["packages/remnic-core/src/a.ts"] }), /must name a \*\.test\.ts file/);
+  assert.throws(() => parseSmokeList({ files: [good, good] }), /duplicates an earlier entry/);
+  assert.deepEqual(parseSmokeList({ files: [good] }), [good]);
+});
+
+test("the skip report states its scope so smoke mode never claims full coverage", () => {
+  const full = formatSkipReport([]).join("\n");
+  assert.match(full, /every test file runs\./);
+  const smoke = formatSkipReport([], "the curated smoke subset").join("\n");
+  assert.match(smoke, /every test file within the curated smoke subset runs\./);
+  const scoped = formatSkipReport([ENTRY], "the curated smoke subset").join("\n");
+  assert.match(scoped, /per scripts\/windows-skip-list\.json within the curated smoke subset:/);
+  assert.ok(scoped.includes(ENTRY.file), "scoped report must still name the skipped file");
 });

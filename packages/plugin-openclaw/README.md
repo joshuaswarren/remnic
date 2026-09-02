@@ -243,6 +243,14 @@ OpenClaw 2026.5.30-beta.1 may resolve bare package names npm-first during the
 launch cutover, so operator docs should keep the explicit `clawhub:` prefix for
 deterministic installs.
 
+OpenClaw 2026.8.1 (2.0) removed `api.registerMemoryPromptSection`. Plugin
+releases up to and including `9.69.56` relied on that API in bridge/delegate
+mode: on a 2.0 host the plugin loads, reaches the daemon, and captures turns,
+but injects no memory into agent prompts. Upgrading the host to 2.0 requires
+`@remnic/plugin-openclaw` `9.69.57` or newer. OpenClaw 1.x hosts (2026.4
+through 2026.7.x) and embedded (non-delegate) memory mode are unaffected on
+every plugin version. See issue #3057.
+
 The manifest declares `activation.onStartup: false`, exposes the optional
 plugin-mode OpenAI key through `providerAuthChoices`, and mirrors the
 `OPENAI_API_KEY` env signal through `setup.providers[].envVars` for current

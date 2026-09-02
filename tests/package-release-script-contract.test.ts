@@ -45,7 +45,7 @@ test("release smoke coverage verifies build artifacts after the build", () => {
     "utf8",
   );
   assert.match(releaseWorkflow, /pnpm run build\s*\n\s*node scripts\/check-release-artifacts\.mjs/);
-  assert.match(releaseWorkflow, /pnpm -r run build\s*\n\s*pnpm run build\s*\n\s*\n\s*- name: Verify root release artifacts/);
+  assert.match(releaseWorkflow, /node scripts\/ensure-core-build\.mjs\s*\n\s*pnpm -r --filter '!@remnic\/core' --filter '!remnic-workspace' run build\s*\n\s*pnpm run build\s*\n\s*\n\s*- name: Verify root release artifacts/);
   assert.match(releaseWorkflow, /- name: Verify root release artifacts\s*\n\s*run: node scripts\/check-release-artifacts\.mjs/);
 });
 

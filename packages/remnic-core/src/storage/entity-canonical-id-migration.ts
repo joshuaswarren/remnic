@@ -695,18 +695,6 @@ function mergeDiscoveredMappings(
   for (const [legacyId, canonicalId] of Object.entries(discovered)) {
     const previousMapping = merged[legacyId];
     if (previousMapping !== undefined && previousMapping !== canonicalId) {
-      // A -> B collapses to A -> C once B -> C exists, so a rescan that still
-      // reads A -> B off disk is reporting the same chain, not a new target.
-      // Only a target the chain cannot reach is a real conflict.
-      let hop: string | undefined = canonicalId;
-      const seen = new Set<string>();
-      while (hop !== undefined && hop !== previousMapping && !seen.has(hop)) {
-        seen.add(hop);
-        hop = merged[hop];
-      }
-      if (hop !== previousMapping) {
-        throw new Error(`Legacy entity id ${legacyId} changed canonical target during migration.`);
-      }
       continue;
     }
     if (previousMapping === undefined && wouldCreateMappingCycle(merged, legacyId, canonicalId)) continue;
@@ -876,6 +864,11 @@ export async function migrateLegacyEntityCanonicalIds(
         };
       }
       const blocked: BlockedEntityPairs = new Map();
+      // Parks for pairs whose files are GONE, tracked separately from
+      // collision parks: pruneBlocked drops these (the canonical file is gone
+      // too), and the rescan's blocked.clear() would otherwise silence them
+      // before finish() reports anything.
+      const staleParked: BlockedEntityPairs = new Map();
       // ONE aggregated line per run, not one per pair per restart: this used to
       // abort the daemon, so the operator needs the whole list and the remedy.
       const finish = async (): Promise<string | undefined> => {
@@ -884,6 +877,13 @@ export async function migrateLegacyEntityCanonicalIds(
           log.warn(
             `entity canonical-id migration skipped ${blocked.size} unresolvable pair(s): ${pairs}. `
             + "Both files were kept and the legacy id still resolves; merge or delete one side to migrate it.",
+          );
+        }
+        if (staleParked.size > 0) {
+          const pairs = [...staleParked].map(([legacyId, canonicalId]) => `${legacyId} -> ${canonicalId}`).join(", ");
+          log.warn(
+            `entity canonical-id migration dropped ${staleParked.size} mapping(s) whose entity files are gone: ${pairs}. `
+            + "The stale journal entries were removed; references to those legacy ids do not resolve either way.",
           );
         }
         // Every finish() path either just rewrote references (main/reconcile
@@ -945,9 +945,22 @@ export async function migrateLegacyEntityCanonicalIds(
           if (active[legacyId] !== undefined) continue;
           const legacyPath = deps.resolveEntityFilePath(legacyId);
           if (legacyPath !== null && (await fileExists(legacyPath))) continue;
-          // Source gone: the rename is moot, but references still name it and
-          // this record is the only thing that can still rewrite them.
-          active[legacyId] = canonicalId;
+          // Resolve the parked target through ACTIVE moves before deciding
+          // its file is gone: a parked A -> B beside an active B -> C must
+          // promote to A -> C and rewrite, not drop because B was moved
+          // out-of-band. Only a target with no surviving file may drop.
+          let target = canonicalId;
+          const seenTargets = new Set<string>();
+          while (active[target] !== undefined && !seenTargets.has(target)) {
+            seenTargets.add(target);
+            target = active[target]!;
+          }
+          const targetPath = deps.resolveEntityFilePath(target);
+          if (targetPath === null || !(await fileExists(targetPath))) {
+            staleParked.set(legacyId, canonicalId);
+            continue;
+          }
+          active[legacyId] = target;
           revived = true;
         }
         // Reviving a whole chain at once yields A -> B -> C, and each rewrite
@@ -1069,10 +1082,13 @@ export async function migrateLegacyEntityCanonicalIds(
           }
           if (deferredMappings.length === 0) break;
           if (!progressed) {
-            const [legacyId, canonicalId] = deferredMappings[0]!;
-            throw new Error(
-              `Cannot migrate legacy entity id ${legacyId}: both files are missing and no intermediate mapping can advance migration.`,
-            );
+            // Deferred means both files are missing: no later pass can help
+            // these pairs, so park them all instead of Fatal-exiting.
+            for (const [legacyId, canonicalId] of deferredMappings) {
+              blocked.set(legacyId, canonicalId);
+              staleParked.set(legacyId, canonicalId);
+            }
+            break;
           }
           pendingMappings = deferredMappings;
         }
