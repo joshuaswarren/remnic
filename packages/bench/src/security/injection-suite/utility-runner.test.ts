@@ -153,6 +153,21 @@ test("concurrent markInFlight calls throw an ambiguous-task error instead of ove
   assert.doesNotThrow(() => store.markInFlight("task-a", true));
 });
 
+test("a marker left behind by a crash after the durable commit is not ambiguous", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "h5-util-test-"));
+  const store = new UtilityCheckpointStore(dir, "fencing", 71, "locomo");
+  store.markInFlight("task-a", false);
+  const task = { taskId: "task-a", question: "q", expected: "e", actual: "a", scores: { s: 1 }, latencyMs: 1 };
+  store.commit(task as never);
+  // Re-create the marker as if the crash happened before commit() removed it.
+  store.markInFlight("task-a", false);
+  assert.deepEqual(store.ambiguousTaskIds(), [], "a checkpointed task owes nothing");
+  assert.doesNotThrow(() => store.markInFlight("task-a", false), "the stale marker was reconciled away");
+  // A marker for a task with no checkpoint is still ambiguous.
+  store.markInFlight("task-b", false);
+  assert.deepEqual(store.ambiguousTaskIds(), ["task-b"]);
+});
+
 test("the utility judge resolves its model from the executor contract, not a literal", () => {
   const previous = process.env.REMNIC_OPENAI_COMPAT_API_KEY;
   process.env.REMNIC_OPENAI_COMPAT_API_KEY = "fixture-key";
@@ -194,6 +209,11 @@ test("a utility output directory is bound to its execution contract", async () =
     await assert.rejects(
       assertUtilityContract({ ...input, limit: 5 }, ["locomo", "drift-gen"]),
       /different utility contract/,
+    );
+    await assert.rejects(
+      assertUtilityContract({ ...input, modelDigest: "sha256:other" }, ["locomo", "drift-gen"]),
+      /different utility contract/,
+      "new weights behind the same served name must not reuse the checkpoints",
     );
     // Checkpoints from before the contract existed are refused rather than reused.
     const legacy = mkdtempSync(path.join(os.tmpdir(), "h5-util-legacy-"));

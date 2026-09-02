@@ -117,10 +117,21 @@ export class UtilityCheckpointStore {
   }
 
   ambiguousTaskIds(): string[] {
-    return readdirSync(this.directory)
-      .filter((entry) => entry.endsWith(".inflight"))
-      .map((entry) => readFileSync(path.join(this.directory, entry), "utf8").trim())
-      .filter(Boolean);
+    const ambiguous: string[] = [];
+    for (const entry of readdirSync(this.directory)) {
+      if (!entry.endsWith(".inflight")) continue;
+      const taskId = readFileSync(path.join(this.directory, entry), "utf8").trim();
+      if (!taskId) continue;
+      // A crash between the durable commit and the marker removal leaves a
+      // marker for a task that is already checkpointed: nothing is owed.
+      const checkpoint = this.checkpointPath(taskId);
+      if (existsSync(checkpoint) && !isRetryableUtilityFailure(JSON.parse(readFileSync(checkpoint, "utf8")) as TaskResult)) {
+        rmSync(path.join(this.directory, entry), { force: true });
+        continue;
+      }
+      ambiguous.push(taskId);
+    }
+    return ambiguous;
   }
 
   markInFlight(taskId: string, replace: boolean): void {
@@ -431,6 +442,8 @@ export function utilityContract(
     contract: "h5-utility-contract-v1",
     executor: executor.executor,
     model: executor.model,
+    modelDigest: input.modelDigest?.trim() || "unverified",
+    modelProfileId: input.modelProfileId,
     baseUrl: executor.baseUrl,
     benchmarks: [...benchmarks],
     seeds: [...UTILITY_SEEDS],

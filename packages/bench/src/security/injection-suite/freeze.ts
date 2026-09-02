@@ -136,15 +136,15 @@ function buildModelProfile(
   // Execution resolves the model through resolvedExecutorContract (see
   // runner.ts); the profile must freeze the model that will actually run.
   // "local-dry" stays only for the offline local executor.
-  const model =
-    executor === "local" ? input.model ?? "local-dry" : resolvedExecutorContract(input).model;
+  const contract = resolvedExecutorContract(input);
+  const model = executor === "local" ? input.model ?? "local-dry" : contract.model;
   const withoutHash = {
     schemaVersion: 2 as const,
     modelProfileId: input.modelProfileId,
     executor,
     model,
     servedModelDigest: input.modelDigest?.trim() || "unverified",
-    baseUrl: input.baseUrl ?? "",
+    baseUrl: executor === "local" ? input.baseUrl ?? "" : contract.baseUrl,
     requestTimeoutMs: input.requestTimeoutMs ?? 300_000,
     contextTokens: input.modelContextTokens ?? 0,
     temperature: 0 as const,
