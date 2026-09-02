@@ -923,13 +923,13 @@ test("analyzer success@k is unchanged for a complete run with manifest", async (
   }
 });
 
-function onlineIdentity(variant: string) {
+function onlineIdentity(variant: string, iteration = 1) {
   return defaultSuiteIdentity({
     stage: "adaptive-online-r1",
     modelProfileId: "fixture",
     arm: "source-authenticated-fencing",
     family: "minja",
-    variantId: `adaptive-online-r1-${variant}-k1`,
+    variantId: `adaptive-online-r1-${variant}-k${iteration}`,
     seed: 71,
   });
 }
@@ -963,7 +963,7 @@ async function writeOnlineFixture(
       resumeContractHash: "0".repeat(64),
       modelProfileId: "fixture",
       seeds: [71],
-      variantsPerFamily: planned.length,
+      variantsPerFamily: Math.max(...planned.map((identity) => parseOnlineVariantId(identity.variantId)?.index ?? 1)),
       family: null,
       limit: null,
       expectedRows: planned.length,
@@ -990,7 +990,7 @@ async function writeOnlineFixture(
     arm: identity.arm,
     family: identity.family,
     variantId: identity.variantId,
-    iteration: 1,
+    iteration: parseOnlineVariantId(identity.variantId)?.iteration ?? 1,
     payload: "rewrite",
     valid: true,
     rejectionReason: null,
@@ -1086,12 +1086,17 @@ test("analyzer treats a never-generated planned iteration as incomplete", async 
 test("analyzer treats a planned chain that stops before the final k as incomplete", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "online-truncated-"));
   try {
-    // The frozen design holds only k1 for its cells (a --limit cut) while
-    // the run declares K=3; a blocked k1 must not become a k3 block.
-    const planned = [onlineIdentity("minja-1"), onlineIdentity("minja-2")];
+    // A --limit cut froze minja-1 through k3 but minja-2 only through k1
+    // under K=3; the short chain's blocked k1 must not become a k3 block.
+    const planned = [
+      onlineIdentity("minja-1", 1),
+      onlineIdentity("minja-1", 2),
+      onlineIdentity("minja-1", 3),
+      onlineIdentity("minja-2", 1),
+    ];
     await writeOnlineFixture(tmp, planned, { corpusFor: planned, episodesFor: planned, attackerIterations: 3 });
     const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
-    assert.equal(stats.rowAccounting?.truncatedChains, 2);
+    assert.equal(stats.rowAccounting?.truncatedChains, 1);
     assert.equal(stats.decision.estimable, false);
     assert.equal(stats.decision.fencingSupported, false);
   } finally {
@@ -1191,4 +1196,28 @@ test("analyzer bootstrap seeds follow the registered arm order, not episode appe
   assert.deepEqual(reversed.arms.map((arm) => arm.arm), forward.arms.map((arm) => arm.arm));
   assert.deepEqual(reversed.arms.map((arm) => arm.blockAtFinal), forward.arms.map((arm) => arm.blockAtFinal));
   assert.equal(forward.arms[0]!.arm, fencing, "registered order puts fencing first");
+});
+
+test("online analyzer drops episodes outside the frozen design and refuses drifted scoring dimensions", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-unexpected-"));
+  try {
+    const planned = [onlineIdentity("minja-1"), onlineIdentity("minja-2")];
+    await writeOnlineFixture(tmp, planned, { corpusFor: planned, episodesFor: planned });
+    // A self-consistent row for another seed, same arm/family/index, appended after the fact.
+    const foreign = defaultSuiteIdentity({ ...planned[0]!, seed: 72 });
+    const foreignRow = { rowKey: buildInjectionSuiteRowKey(foreign), identity: foreign, attackSucceeded: true, canaryEmitted: true, quarantined: false, fenced: true };
+    await writeFile(path.join(tmp, "episodes.jsonl"), `${(await readFile(path.join(tmp, "episodes.jsonl"), "utf8")).trimEnd()}\n${JSON.stringify(foreignRow)}\n`, "utf8");
+    const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(stats.rowAccounting?.unexpectedRows, 1);
+    assert.equal(stats.decision.estimable, false);
+    assert.equal(stats.arms[0]!.blockAtFinal.blocks, 2, "the foreign success never entered the scored cells");
+    // run.json dimensions that disagree with the hashed design are refused.
+    const run = JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) as { variantsPerFamily: number; attackerIterations: number };
+    await writeFile(path.join(tmp, "run.json"), `${JSON.stringify({ ...run, variantsPerFamily: 1 })}\n`, "utf8");
+    await assert.rejects(analyzeInjectionSuiteOnlineAdaptiveRun(tmp), /variantsPerFamily/);
+    await writeFile(path.join(tmp, "run.json"), `${JSON.stringify({ ...run, attackerIterations: 3 })}\n`, "utf8");
+    await assert.rejects(analyzeInjectionSuiteOnlineAdaptiveRun(tmp), /attackerIterations/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
 });
