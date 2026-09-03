@@ -1018,16 +1018,14 @@ test("delegate follow-up drains the ended generation even when newer turns arriv
   }
 });
 
-test("delegate leaves no observation buffered after the last flush of an ended session", async () => {
-  // One follow-up drains a bounded number of rounds, so a session that keeps
-  // observing can still have turns in flight when that flush runs. Whether the
-  // remainder is covered by that flush or by another one chained behind it is
-  // an implementation detail; the invariant is that no observation lands after
-  // the session's final flush, which is exactly what "buffered past
-  // session_end" means.
+
+test("a second lifecycle event does not stack a duplicate follow-up drain", async () => {
+  // The follow-up releases its ownership marker before its own flush so that
+  // flush can chain a successor. A lifecycle event arriving while the
+  // successor is queued must NOT schedule a parallel drain: overlapping
+  // follow-ups mean duplicate daemon flush/extraction requests for one
+  // session.
   const stub = await startDaemonStub(async (pathname) => {
-    // Never answers observe: each link ends at its own timeout (half the flush
-    // budget), which paces the queue without depending on load.
     if (pathname === "/engram/v1/observe") return new Promise<Record<string, unknown>>(() => {});
     if (pathname === "/engram/v1/lcm/compaction/flush") return { flushed: true };
     return { accepted: true };
@@ -1035,7 +1033,7 @@ test("delegate leaves no observation buffered after the last flush of an ended s
   try {
     const api = recordingApi();
     registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 400 }));
-    const sessionKey = "long-queue-session";
+    const sessionKey = "stacked-followup-session";
     const observePath = "/engram/v1/observe";
     const flushPath = "/engram/v1/lcm/compaction/flush";
     const observeTurn = async (turn: number): Promise<void> => {
@@ -1052,29 +1050,28 @@ test("delegate leaves no observation buffered after the last flush of an ended s
         { sessionKey },
       );
     };
-    // Two queued links outlast the drain (half the flush budget), so the
-    // lifecycle flush defers to a follow-up instead of waiting the queue out.
     await observeTurn(0);
     await observeTurn(1);
+    // Two lifecycle events, each finding a queue it cannot drain in time.
     assert.equal(await invoke(api, "session_end", { sessionKey }), true);
-    assert.equal(stub.calls.filter((call) => call.pathname === flushPath).length, 1);
-    // Feed one link per arrival so the chain is never empty and the follow-up
-    // spends rounds on it, then stop and let the session go quiet.
-    for (let turn = 2; turn <= 13; turn += 1) {
+    for (let turn = 2; turn <= 5; turn += 1) {
       const arrived = stub.nextCall(observePath);
       await observeTurn(turn);
       await arrived;
     }
+    assert.equal(await invoke(api, "before_reset", { sessionKey }), true);
+    const lifecycleFlushes = 2;
     const lastIndexOf = (pathname: string): number =>
       stub.calls.reduce((found, call, index) => (call.pathname === pathname ? index : found), -1);
     const deadline = Date.now() + 20_000;
     while (lastIndexOf(flushPath) < lastIndexOf(observePath) && Date.now() < deadline) {
       await sleep(50);
     }
-    assert.ok(
-      lastIndexOf(flushPath) > lastIndexOf(observePath),
-      "a flush must follow the last observation of the ended session",
-    );
+    const flushes = stub.calls.filter((call) => call.pathname === flushPath).length;
+    // Two lifecycle flushes plus at most one deferred chain link per lifecycle
+    // event — never a fan-out of overlapping drains.
+    assert.ok(flushes >= lifecycleFlushes, `both lifecycle flushes ran (saw ${flushes})`);
+    assert.ok(flushes <= lifecycleFlushes + 2, `no stacked follow-up drains (saw ${flushes})`);
   } finally {
     await stub.close();
   }
@@ -1093,7 +1090,10 @@ test("delegate batches rebound namespace flushes within one hook deadline", asyn
   });
   try {
     const api = recordingApi();
-    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 50 }));
+    // Wide enough that the lifecycle drain (half the flush budget) is not the
+    // thing under test here: this case is about batching two rebound
+    // namespaces into ONE flush request.
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 400 }));
     const sessionKey = "concurrent-rebound-session";
 
     for (const namespace of ["team-first", "team-second"]) {

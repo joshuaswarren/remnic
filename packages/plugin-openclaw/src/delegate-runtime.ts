@@ -400,8 +400,8 @@ export function registerDelegateRuntime(
   // Detached observe POSTs, per session (see `agent_end`). A flush for the
   // same session waits behind them so a turn is buffered before it is flushed.
   const observeChains = new Map<string, Promise<void>>();
-  /** Sessions whose lifecycle flush already chained a follow-up behind the queue. */
-  const followUpFlushSessions = new Set<string>();
+  /** Session -> the token owning its deferred flush (see the flush handler). */
+  const followUpFlushSessions = new Map<string, object>();
   if (promptInjectionEnabled) {
     /**
      * Recall for one query on behalf of a session. `undefined` when nothing
@@ -689,12 +689,10 @@ export function registerDelegateRuntime(
         return false;
       }
       // The session's last turns may still be on their way to the daemon
-      // (`agent_end` detaches the observe POST). Flushing ahead of them would
-      // leave them buffered behind the flush, but the drain cannot spend more
-      // than half the lifecycle budget or the flush itself has nothing left.
-      // So when the QUEUE outlasts the drain, this flush proceeds and a
-      // follow-up flush is chained behind the queue: late turns are flushed
-      // after `session_end` rather than left buffered forever.
+      // (`agent_end` detaches the observe POST). Flushing ahead of them leaves
+      // them buffered, but the drain cannot spend more than half the lifecycle
+      // budget or the flush has nothing left — so when the QUEUE outlasts the
+      // drain, this flush proceeds and a follow-up is chained behind it.
       const pendingObserve = observeChains.get(sessionKey);
       if (pendingObserve !== undefined) {
         const drainDeadline = Promise.withResolvers<void>();
@@ -705,17 +703,26 @@ export function registerDelegateRuntime(
           drainDeadline.promise.then(() => false),
         ]);
         clearTimeout(timer);
-        // One follow-up per session. It drains the whole queue — the captured
+        // One follow-up per session, draining the whole queue — the ended
         // generation's late turns AND anything observed after the hook
-        // returned — because the daemon buffers per session, so abandoning the
-        // follow-up would strand the ended generation until some later
-        // lifecycle event that may never come. Flushing a newer turn early is
-        // safe; losing an ended session's turns is not. The flush runs off a
-        // scope-neutral event so its namespaces come from the session's
-        // bindings rather than this event's captured (possibly superseded)
-        // runtime metadata.
+        // returned, since the daemon buffers per session and abandoning the
+        // follow-up would strand the ended generation until a later lifecycle
+        // event that may never come. Flushing a newer turn early is safe;
+        // losing an ended session's turns is not. It flushes off a
+        // scope-neutral event, so namespaces come from the session's bindings
+        // rather than this event's captured (possibly superseded) metadata.
         if (!drained && !followUpFlushSessions.has(sessionKey)) {
-          followUpFlushSessions.add(sessionKey);
+          // Ownership is a TOKEN, not mere presence: this follow-up releases
+          // the marker before its flush (below), that flush can install a
+          // successor, and an unconditional clear afterwards would let the next
+          // lifecycle event stack a second, overlapping drain on the session.
+          const followUp = {};
+          followUpFlushSessions.set(sessionKey, followUp);
+          const releaseIfOwner = (): void => {
+            if (followUpFlushSessions.get(sessionKey) === followUp) {
+              followUpFlushSessions.delete(sessionKey);
+            }
+          };
           void pendingObserve
             .then(async () => {
               // ponytail: 8 rounds is the ceiling on ONE follow-up — a session
@@ -727,16 +734,15 @@ export function registerDelegateRuntime(
                 await queued;
               }
               // Released BEFORE the flush: when the queue outlasted those
-              // rounds, this flush's own drain must be free to chain the NEXT
-              // follow-up, or the remainder lands after the last flush and
-              // stays buffered past `session_end`. Each successor pays a full
-              // drain window first, so a busy session is rate-limited rather
-              // than spun on.
-              followUpFlushSessions.delete(sessionKey);
+              // rounds, that flush's own drain must be free to chain the NEXT
+              // follow-up, or the remainder stays buffered past `session_end`.
+              // Each successor pays a full drain window, so a busy session is
+              // rate-limited rather than spun on.
+              releaseIfOwner();
               return flushHandler({ sessionKey }, {});
             })
             .catch((err: unknown) => log.warn(`delegate follow-up flush failed: ${String(err)}`))
-            .finally(() => followUpFlushSessions.delete(sessionKey));
+            .finally(releaseIfOwner);
         }
       }
       const namespaces = await lifecycleSessionNamespacesFrom(
