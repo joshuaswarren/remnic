@@ -2059,10 +2059,13 @@ test("delegate tools registered by a passive entry follow the active sibling on 
     });
     registerDelegateRuntime(optedOutApi, optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true }));
     registerDelegateRuntime(optedOutApi, optionsFor(stub.port, { openclawToolsEnabled: false }));
+    // The flag is an ADAPTER toggle: `memory_get` goes inert, but a search
+    // surface survives it in both bridge modes.
     await assert.rejects(
-      optedOutTools.get("memory_search")!.execute("tc-3", { query: "rollout" }, undefined, { sessionKey: "tool-session" }),
-      /memory_search is disabled: the memory slot owner set openclawToolsEnabled: false/,
+      optedOutTools.get("memory_get")!.execute("tc-3", { id: "fact-1" }, undefined, { sessionKey: "tool-session" }),
+      /memory_get is disabled: the memory slot owner set openclawToolsEnabled: false/,
     );
+    assert.ok(optedOutTools.has("memory_search"), "search stays available under the adapter opt-out");
 
     // The inverse order: the slot owner opts out FIRST. Its record is a
     // tombstone, so an enabled passive sibling loading afterwards cannot
@@ -2072,7 +2075,11 @@ test("delegate tools registered by a passive entry follow the active sibling on 
     Object.assign(tombstoneApi, { registerTool: (tool: { name: string }) => tombstoneTools.push(tool.name) });
     registerDelegateRuntime(tombstoneApi, optionsFor(stub.port, { openclawToolsEnabled: false }));
     registerDelegateRuntime(tombstoneApi, optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true }));
-    assert.deepEqual(tombstoneTools, [], "an active opt-out is not bypassed by a later passive sibling");
+    assert.deepEqual(
+      tombstoneTools,
+      ["memory_search"],
+      "the adapter opt-out keeps search and is not bypassed into registering memory_get",
+    );
 
     // And a passive entry that opted out yields to an enabled active sibling,
     // which installs the tools it never did.
@@ -2083,9 +2090,9 @@ test("delegate tools registered by a passive entry follow the active sibling on 
       lateApi,
       optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true, openclawToolsEnabled: false }),
     );
-    assert.deepEqual(lateTools, []);
+    assert.deepEqual(lateTools, ["memory_search"]);
     registerDelegateRuntime(lateApi, optionsFor(stub.port));
-    assert.deepEqual(lateTools.sort(), ["memory_get", "memory_search"], "the active owner installs what the passive entry skipped");
+    assert.deepEqual(lateTools.sort(), ["memory_get", "memory_search"], "the active owner installs the adapter the passive entry skipped");
   } finally {
     await stub.close();
   }
@@ -2706,12 +2713,13 @@ test("delegate tools honor openclawToolsEnabled, the snippet cap, and normalize 
     return { accepted: true };
   });
   try {
-    // Opt-out: embedded parity — `openclawToolsEnabled: false` registers nothing.
+    // Adapter opt-out: embedded parity — the dedicated `memory_get` adapter
+    // goes, the search surface stays.
     const optedOut = recordingApi();
     const optedOutRegistered: string[] = [];
     Object.assign(optedOut, { registerTool: (tool: { name: string }) => optedOutRegistered.push(tool.name) });
     registerDelegateRuntime(optedOut, optionsFor(stub.port, { openclawToolsEnabled: false }));
-    assert.deepEqual(optedOutRegistered, [], "opt-out registers no model-facing tools");
+    assert.deepEqual(optedOutRegistered, ["memory_search"], "the adapter opt-out keeps a search surface");
 
     const api = recordingApi();
     const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();

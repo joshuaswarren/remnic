@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import http from "node:http";
 import test from "node:test";
 
 import {
@@ -68,12 +69,14 @@ test("an embedded slot owner adopts the tools a passive delegate sibling install
   await api.tools.get("memory_get")!.execute(...([] as never[]));
   assert.deepEqual(calls, ["memory_search", "memory_get"]);
 
-  // An owner that opted out makes the sibling-installed tools inert.
+  // An owner that opted out of the adapters makes the sibling-installed
+  // `memory_get` inert; the search surface survives the flag in both modes.
   adoptDelegateTools(api, { enabled: false, tools: embeddedTools });
   await assert.rejects(
-    api.tools.get("memory_search")!.execute(...([] as never[])),
+    api.tools.get("memory_get")!.execute(...([] as never[])),
     /openclawToolsEnabled: false/,
   );
+  await api.tools.get("memory_search")!.execute(...([] as never[]));
 });
 
 test("adoption reports false when the api carries no delegate tools", () => {
@@ -105,4 +108,45 @@ test("memory_get hands namespace resolution the remaining budget, not the full t
   assert.equal(budgets.length, 1);
   assert.ok(budgets[0]! <= timeoutMs, `resolution must not get a fresh budget (got ${budgets[0]})`);
   assert.ok(budgets[0]! > 0, "and must still get a usable one");
+});
+
+/**
+ * Embedded parity for the handle contract: `getMemoryForActiveMemory` answers
+ * an unresolvable `[m:xxxx]` handle with `not_found`, so delegate mode must not
+ * turn the daemon's 400 for the same input into a tool exception. Other 400s
+ * still surface.
+ */
+test("memory_get maps a daemon 400 for an unresolvable handle to not_found", async () => {
+  const statuses = new Map<string, number>([
+    ["%5Bm%3Adead%5D", 400],
+    ["plain-id", 400],
+  ]);
+  const server = http.createServer((req, res) => {
+    const path = req.url ?? "";
+    const status = [...statuses].find(([id]) => path.includes(id))?.[1] ?? 200;
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "bad request" }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
+  try {
+    const tool = buildDelegateMemoryGetTool({
+      target: { ...wiringFor("remnic").target, port },
+      serviceId: "openclaw-remnic",
+      timeoutMs: 5_000,
+      resolveNamespace: async () => undefined,
+    });
+    const missed = (await tool.execute("tc-1", { id: "[m:dead]" }, undefined, { sessionKey: "s" })) as {
+      content: Array<{ text: string }>;
+    };
+    assert.deepEqual(JSON.parse(missed.content[0]!.text), { error: "not_found" });
+    // A 400 for a raw id is a real protocol error, not a miss.
+    await assert.rejects(
+      tool.execute("tc-2", { id: "plain-id" }, undefined, { sessionKey: "s" }),
+      /responded 400/,
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });

@@ -19,6 +19,8 @@ import {
 } from "@remnic/core";
 
 import type { DelegateDaemonTarget } from "./bridge.js";
+import { isHandleToken } from "@remnic/core/recall-handles";
+
 import { getJson } from "./delegate-http.js";
 import type { RemnicCapabilityRuntime } from "./memory-capability-types.js";
 import { MemoryGetInputSchema, MemorySearchInputSchema } from "./openclaw-tools/shapes.js";
@@ -219,6 +221,13 @@ export function buildDelegateMemoryGetTool(options: {
       const pathname = `/engram/v1/memories/${encodeURIComponent(id)}?${search}`;
       const response = await getJson(options.target, options.serviceId, pathname, Math.max(1, deadline - Date.now()));
       if (response.status === 404) return toolJsonResult({ error: "not_found" } satisfies ActiveMemoryGetOutput);
+      // Embedded parity: an unresolvable `[m:xxxx]` handle is a MISS, not an
+      // error (`getMemoryForActiveMemory` returns not_found when resolution
+      // fails). The daemon reports that as a 400 input error, so only a
+      // handle-shaped id gets the translation — other 400s still surface.
+      if (response.status === 400 && isHandleToken(id)) {
+        return toolJsonResult({ error: "not_found" } satisfies ActiveMemoryGetOutput);
+      }
       if (response.status < 200 || response.status > 299) {
         throw new Error(`daemon ${pathname} responded ${response.status}`);
       }
@@ -239,7 +248,8 @@ type AdoptableTool = { name: string; execute: (...args: never[]) => Promise<unkn
 type DelegateToolOwner = DelegateToolWiring & {
   enabled: boolean;
   passive: boolean;
-  installed: boolean;
+  /** Tool names already registered on this api; a takeover adds what is missing. */
+  installed: Set<string>;
   /**
    * Set when the memory slot's owner resolved to EMBEDDED after a passive
    * delegate sibling already registered these names. The host exposes no
@@ -290,20 +300,35 @@ export function registerDelegateTools(
   // itself too: as the slot owner it is a tombstone a later enabled passive
   // sibling cannot bypass; as a passive entry it yields like any other.
   const existing = delegateToolOwners.get(api);
-  const owner: DelegateToolOwner = existing ?? { ...options, installed: false };
+  const owner: DelegateToolOwner = existing ?? { ...options, installed: new Set<string>() };
   if (existing === undefined) delegateToolOwners.set(api, owner);
-  else if (existing.passive && !options.passive) Object.assign(existing, options);
+  else if (existing.passive && !options.passive) Object.assign(existing, options, { installed: existing.installed });
   else return;
-  if (owner.installed || !owner.enabled) return;
-  owner.installed = true;
+  // `openclawToolsEnabled` is an ADAPTER toggle (see the manifest), not a
+  // global tool opt-out: embedded mode answers it by registering its legacy
+  // `memory_search` instead of the adapters, so a search surface always
+  // survives. Delegate mode has no separate legacy implementation, so the
+  // daemon-backed search stays registered and only `memory_get` — which
+  // exists solely as an adapter — goes away with the flag.
   const gated = <T extends AdoptableTool>(tool: T): T => ({
     ...tool,
     execute: async (...args: Parameters<T["execute"]>) => {
-      if (!owner.enabled) throw new Error(`${tool.name} is disabled: the memory slot owner set openclawToolsEnabled: false`);
+      if (!owner.enabled && tool.name !== "memory_search") {
+        throw new Error(`${tool.name} is disabled: the memory slot owner set openclawToolsEnabled: false`);
+      }
       const adopted = owner.override?.[tool.name];
       return (adopted ?? tool).execute(...args);
     },
   });
+  // Per NAME, not per api: a passive entry that opted out of the adapters
+  // installed only `memory_search`, and the active sibling taking the wiring
+  // over must still add the `memory_get` its predecessor skipped. Re-adding a
+  // name would be a host tool-name conflict, so each is installed once.
+  const install = (tool: AdoptableTool): void => {
+    if (owner.installed.has(tool.name)) return;
+    owner.installed.add(tool.name);
+    registerTool(gated(tool) as unknown as Record<string, unknown>);
+  };
   // The SAME trusted scope path the capability's search takes: the session
   // binding, then the daemon's concrete default for an unbound session — never
   // an omitted namespace a scoped credential would refuse. The binding lookup
@@ -313,24 +338,22 @@ export function registerDelegateTools(
     const bound = await owner.resolveSearchNamespace(sessionKey);
     return owner.resolveScopedNamespace(bound, Math.max(1, deadline - Date.now()), [operation]);
   };
-  registerTool(
-    gated(buildDelegateMemorySearchTool({
-      get target() { return owner.target; },
-      get runtime() { return owner.runtime; },
-      get agentId() { return owner.agentId; },
-      get snippetMaxChars() { return owner.snippetMaxChars; },
-      get timeoutMs() { return owner.timeoutMs; },
-      resolveNamespace: resolveNamespace("memory_search"),
-    })),
-  );
-  registerTool(
-    gated(buildDelegateMemoryGetTool({
+  install(buildDelegateMemorySearchTool({
+    get target() { return owner.target; },
+    get runtime() { return owner.runtime; },
+    get agentId() { return owner.agentId; },
+    get snippetMaxChars() { return owner.snippetMaxChars; },
+    get timeoutMs() { return owner.timeoutMs; },
+    resolveNamespace: resolveNamespace("memory_search"),
+  }));
+  if (owner.enabled) {
+    install(buildDelegateMemoryGetTool({
       get target() { return owner.target; },
       get serviceId() { return owner.serviceId; },
       get timeoutMs() { return owner.timeoutMs; },
       resolveNamespace: resolveNamespace("memory_get"),
-    })),
-  );
+    }));
+  }
 }
 
 /**
@@ -350,7 +373,7 @@ export function adoptDelegateTools(
   options: { enabled: boolean; tools: readonly AdoptableTool[] },
 ): boolean {
   const owner = delegateToolOwners.get(api);
-  if (owner === undefined || !owner.installed) return false;
+  if (owner === undefined || owner.installed.size === 0) return false;
   owner.enabled = options.enabled;
   owner.override = Object.fromEntries(options.tools.map((tool) => [tool.name, tool]));
   return true;
