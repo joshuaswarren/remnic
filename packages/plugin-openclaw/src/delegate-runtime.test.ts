@@ -1016,6 +1016,66 @@ test("delegate follow-up drains the ended generation even when newer turns arriv
   }
 });
 
+test("delegate keeps flushing when the observe queue outlasts the follow-up's round cutoff", async () => {
+  // One follow-up drains a bounded number of rounds. A session that keeps
+  // observing past that cutoff still has turns in flight when its flush runs,
+  // so the follow-up guard must be released before that flush — otherwise the
+  // remainder lands after the last flush and stays buffered past session_end.
+  const stub = await startDaemonStub(async (pathname) => {
+    // Never answers observe: each link ends at its own timeout (half the flush
+    // budget), which paces the queue deterministically.
+    if (pathname === "/engram/v1/observe") return new Promise<Record<string, unknown>>(() => {});
+    if (pathname === "/engram/v1/lcm/compaction/flush") return { flushed: true };
+    return { accepted: true };
+  });
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 120 }));
+    const sessionKey = "long-queue-session";
+    const observePath = "/engram/v1/observe";
+    const flushPath = "/engram/v1/lcm/compaction/flush";
+    const observeTurn = async (turn: number): Promise<void> => {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture turn ${turn} of this session` },
+            { role: "assistant", content: "the turn is captured" },
+          ],
+        },
+        { sessionKey },
+      );
+    };
+    // Two queued links outlast the drain (half the flush budget), so the
+    // lifecycle flush defers instead of waiting the queue out.
+    await observeTurn(0);
+    await observeTurn(1);
+    assert.equal(await invoke(api, "session_end", { sessionKey }), true);
+    assert.equal(stub.calls.filter((call) => call.pathname === flushPath).length, 1);
+    // Feed one link per arrival: the chain is never empty, so the follow-up
+    // spends a round per link and runs past its cutoff with turns pending.
+    for (let turn = 2; turn <= 11; turn += 1) {
+      const arrived = stub.nextCall(observePath);
+      await observeTurn(turn);
+      await arrived;
+    }
+    // Once the session goes quiet the remainder is flushed rather than
+    // stranded: the cutoff flush, plus one behind the turns still in flight.
+    const deadline = Date.now() + 10_000;
+    while (stub.calls.filter((call) => call.pathname === flushPath).length < 3 && Date.now() < deadline) {
+      await sleep(50);
+    }
+    assert.ok(
+      stub.calls.filter((call) => call.pathname === flushPath).length >= 3,
+      `a flush must follow the queue remainder (saw ${stub.calls.filter((call) => call.pathname === flushPath).length})`,
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate batches rebound namespace flushes within one hook deadline", async () => {
   const pendingFlushes: Array<() => void> = [];
   const stub = await startDaemonStub((pathname) => {

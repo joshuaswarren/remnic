@@ -718,14 +718,21 @@ export function registerDelegateRuntime(
           followUpFlushSessions.add(sessionKey);
           void pendingObserve
             .then(async () => {
-              // ponytail: 8 rounds is the ceiling — a session observing turns
-              // faster than they drain gets flushed by its next lifecycle
-              // event instead of holding this one open forever.
+              // ponytail: 8 rounds is the ceiling on ONE follow-up — a session
+              // observing turns faster than they drain must not hold this
+              // callback open forever.
               for (let round = 0; round < 8; round += 1) {
                 const queued = observeChains.get(sessionKey);
                 if (queued === undefined) break;
                 await queued;
               }
+              // Released BEFORE the flush: when the queue outlasted those
+              // rounds, this flush's own drain must be free to chain the NEXT
+              // follow-up, or the remainder lands after the last flush and
+              // stays buffered past `session_end`. Each successor pays a full
+              // drain window first, so a busy session is rate-limited rather
+              // than spun on.
+              followUpFlushSessions.delete(sessionKey);
               return flushHandler({ sessionKey }, {});
             })
             .catch((err: unknown) => log.warn(`delegate follow-up flush failed: ${String(err)}`))
