@@ -926,7 +926,7 @@ test("delegate flushes again when the observe queue outlasts the lifecycle drain
   // the queue is what keeps an ended session's last turns from being stranded.
   const stub = await startDaemonStub(async (pathname) => {
     if (pathname === "/engram/v1/observe") {
-      await sleep(80);
+      await sleep(350);
       return { accepted: true };
     }
     if (pathname === "/engram/v1/lcm/compaction/flush") return { flushed: true };
@@ -934,8 +934,10 @@ test("delegate flushes again when the observe queue outlasts the lifecycle drain
   });
   try {
     const api = recordingApi();
-    // Drain and per-observe cap are both 100ms; two 80ms observes outlast one.
-    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 200 }));
+    // Drain and per-observe cap are both 500ms: each 350ms observe fits its
+    // own cap, two of them outlast the drain. Wide margins on purpose — this
+    // ordering must not depend on load.
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 1_000 }));
     const sessionKey = "late-observe-session";
     for (const turn of ["first", "second"]) {
       await invoke(
@@ -973,7 +975,7 @@ test("delegate follow-up drains the ended generation even when newer turns arriv
   // later lifecycle event. The follow-up drains the whole queue instead.
   const stub = await startDaemonStub(async (pathname) => {
     if (pathname === "/engram/v1/observe") {
-      await sleep(80);
+      await sleep(350);
       return { accepted: true };
     }
     if (pathname === "/engram/v1/lcm/compaction/flush") return { flushed: true };
@@ -981,7 +983,7 @@ test("delegate follow-up drains the ended generation even when newer turns arriv
   });
   try {
     const api = recordingApi();
-    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 200 }));
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 1_000 }));
     const sessionKey = "post-reset-session";
     const observeTurn = async (turn: string): Promise<void> => {
       await invoke(
@@ -1016,21 +1018,23 @@ test("delegate follow-up drains the ended generation even when newer turns arriv
   }
 });
 
-test("delegate keeps flushing when the observe queue outlasts the follow-up's round cutoff", async () => {
-  // One follow-up drains a bounded number of rounds. A session that keeps
-  // observing past that cutoff still has turns in flight when its flush runs,
-  // so the follow-up guard must be released before that flush — otherwise the
-  // remainder lands after the last flush and stays buffered past session_end.
+test("delegate leaves no observation buffered after the last flush of an ended session", async () => {
+  // One follow-up drains a bounded number of rounds, so a session that keeps
+  // observing can still have turns in flight when that flush runs. Whether the
+  // remainder is covered by that flush or by another one chained behind it is
+  // an implementation detail; the invariant is that no observation lands after
+  // the session's final flush, which is exactly what "buffered past
+  // session_end" means.
   const stub = await startDaemonStub(async (pathname) => {
     // Never answers observe: each link ends at its own timeout (half the flush
-    // budget), which paces the queue deterministically.
+    // budget), which paces the queue without depending on load.
     if (pathname === "/engram/v1/observe") return new Promise<Record<string, unknown>>(() => {});
     if (pathname === "/engram/v1/lcm/compaction/flush") return { flushed: true };
     return { accepted: true };
   });
   try {
     const api = recordingApi();
-    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 120 }));
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 400 }));
     const sessionKey = "long-queue-session";
     const observePath = "/engram/v1/observe";
     const flushPath = "/engram/v1/lcm/compaction/flush";
@@ -1049,27 +1053,27 @@ test("delegate keeps flushing when the observe queue outlasts the follow-up's ro
       );
     };
     // Two queued links outlast the drain (half the flush budget), so the
-    // lifecycle flush defers instead of waiting the queue out.
+    // lifecycle flush defers to a follow-up instead of waiting the queue out.
     await observeTurn(0);
     await observeTurn(1);
     assert.equal(await invoke(api, "session_end", { sessionKey }), true);
     assert.equal(stub.calls.filter((call) => call.pathname === flushPath).length, 1);
-    // Feed one link per arrival: the chain is never empty, so the follow-up
-    // spends a round per link and runs past its cutoff with turns pending.
-    for (let turn = 2; turn <= 11; turn += 1) {
+    // Feed one link per arrival so the chain is never empty and the follow-up
+    // spends rounds on it, then stop and let the session go quiet.
+    for (let turn = 2; turn <= 13; turn += 1) {
       const arrived = stub.nextCall(observePath);
       await observeTurn(turn);
       await arrived;
     }
-    // Once the session goes quiet the remainder is flushed rather than
-    // stranded: the cutoff flush, plus one behind the turns still in flight.
-    const deadline = Date.now() + 10_000;
-    while (stub.calls.filter((call) => call.pathname === flushPath).length < 3 && Date.now() < deadline) {
+    const lastIndexOf = (pathname: string): number =>
+      stub.calls.reduce((found, call, index) => (call.pathname === pathname ? index : found), -1);
+    const deadline = Date.now() + 20_000;
+    while (lastIndexOf(flushPath) < lastIndexOf(observePath) && Date.now() < deadline) {
       await sleep(50);
     }
     assert.ok(
-      stub.calls.filter((call) => call.pathname === flushPath).length >= 3,
-      `a flush must follow the queue remainder (saw ${stub.calls.filter((call) => call.pathname === flushPath).length})`,
+      lastIndexOf(flushPath) > lastIndexOf(observePath),
+      "a flush must follow the last observation of the ended session",
     );
   } finally {
     await stub.close();
@@ -2689,6 +2693,13 @@ test("delegate tools honor openclawToolsEnabled, the snippet cap, and normalize 
         ],
       };
     }
+    if (pathname.startsWith("/engram/v1/memories/slow-fact")) {
+      // Answers, but slower than what the shared budget leaves the GET.
+      return sleep(100).then(() => ({
+        found: true,
+        memory: { id: "slow-fact", content: "x", frontmatter: { id: "slow-fact" } },
+      }));
+    }
     if (pathname.startsWith("/engram/v1/memories/fact-1")) {
       return { found: true, memory: { id: "fact-1", content: "x", frontmatter: { id: "fact-1" } } };
     }
@@ -2745,16 +2756,20 @@ test("delegate tools honor openclawToolsEnabled, the snippet cap, and normalize 
     const slowLookup: SessionNamespaceBindingStore = {
       ...bindings,
       namespacesFor: async (sessionKey: string) => {
-        await sleep(60);
+        // Spends most of the tool's budget, leaving the GET ~50ms of the 300ms
+        // — less than the daemon's 100ms answer, so the shared deadline aborts
+        // it. Given a FRESH 300ms it would resolve instead; both sides of the
+        // contract are decided by a 50ms margin rather than a 1ms residual.
+        await sleep(250);
         return bindings.namespacesFor(sessionKey);
       },
     };
     registerDelegateRuntime(
       slowApi,
-      optionsFor(stub.port, { namespaceBindings: slowLookup, recallTimeoutMs: 40 }),
+      optionsFor(stub.port, { namespaceBindings: slowLookup, recallTimeoutMs: 300 }),
     );
     await assert.rejects(
-      slowTools.get("memory_get")!.execute("tc-2", { id: "fact-1" }, undefined, { sessionKey: "tool-session" }),
+      slowTools.get("memory_get")!.execute("tc-2", { id: "slow-fact" }, undefined, { sessionKey: "tool-session" }),
       /deadline exceeded|timeout|abort/i,
     );
   } finally {

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { adoptDelegateTools, registerDelegateTools } from "./delegate-tools.js";
+import {
+  adoptDelegateTools,
+  buildDelegateMemoryGetTool,
+  registerDelegateTools,
+} from "./delegate-tools.js";
 import type { RemnicCapabilityRuntime } from "./memory-capability-types.js";
 
 type Tool = { name: string; execute: (...args: never[]) => Promise<unknown> };
@@ -75,4 +79,30 @@ test("an embedded slot owner adopts the tools a passive delegate sibling install
 test("adoption reports false when the api carries no delegate tools", () => {
   const api = { registerTool: () => {} };
   assert.equal(adoptDelegateTools(api, { enabled: true, tools: [] }), false);
+});
+
+/**
+ * `memory_get` opens ONE deadline for the whole call, so scope resolution must
+ * receive what is LEFT of it rather than a fresh full timeout — otherwise one
+ * invocation can run for nearly twice the configured budget.
+ */
+test("memory_get hands namespace resolution the remaining budget, not the full timeout", async () => {
+  const timeoutMs = 10_000;
+  const budgets: number[] = [];
+  const tool = buildDelegateMemoryGetTool({
+    target: wiringFor("remnic").target,
+    serviceId: "openclaw-remnic",
+    timeoutMs,
+    resolveNamespace: async (_sessionKey, remainingMs) => {
+      budgets.push(remainingMs);
+      throw new Error("scope resolution stops the call before any daemon request");
+    },
+  });
+  await assert.rejects(
+    tool.execute("tc-1", { id: "fact-1" }, undefined, { sessionKey: "s" }),
+    /scope resolution stops the call/,
+  );
+  assert.equal(budgets.length, 1);
+  assert.ok(budgets[0]! <= timeoutMs, `resolution must not get a fresh budget (got ${budgets[0]})`);
+  assert.ok(budgets[0]! > 0, "and must still get a usable one");
 });
