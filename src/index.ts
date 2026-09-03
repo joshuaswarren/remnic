@@ -5089,7 +5089,12 @@ const pluginDefinition = {
     // attempting to bind it through api.on() produces an "unknown typed hook"
     // warning on current runtimes.
     const commandApi = api as { registerCommand?: (spec: unknown) => void };
+    // Durable command registration is a runtime concern: a discovery pass is
+    // transient, its registrations are discarded, and claiming the
+    // process-global guard here would make the later full registration skip
+    // them — leaving the deployment with no session commands at all.
     if (
+      !discoveryPass &&
       !passiveMode &&
       cfg.commandsListEnabled &&
       cfg.sessionTogglesEnabled !== false
@@ -5125,7 +5130,7 @@ const pluginDefinition = {
 
     // CLI guard is intentionally process-global (not per-serviceId) because CLI
     // commands live in the gateway's central registry.  See CLI_REGISTERED_GUARD.
-    if (!(globalThis as any)[CLI_REGISTERED_GUARD]) {
+    if (!discoveryPass && !(globalThis as any)[CLI_REGISTERED_GUARD]) {
       (globalThis as any)[CLI_REGISTERED_GUARD] = true;
       registerCli(
         api as unknown as Parameters<typeof registerCli>[0],

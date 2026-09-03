@@ -45,7 +45,13 @@ test("construction never creates the registry dir; the first save does", () => {
     // Constructing a registry happens on every plugin registration, including
     // read-only discovery passes, so it must not touch the memory dir.
     assert.equal(existsSync(registryDir), false, "no dir before anything is cached");
-    registry.setCapabilities("local-model", { contextWindow: 32_768 });
+    registry.setCapabilities("local-model", {
+      maxPositionEmbeddings: 32_768,
+      contextWindow: 32_768,
+      supportsExtendedContext: false,
+      typicalOutputTokens: 2_048,
+      source: "manual",
+    });
     assert.equal(existsSync(registryDir), true, "the first cached model creates it");
   } finally {
     rmSync(dir, { recursive: true, force: true });

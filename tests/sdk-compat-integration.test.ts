@@ -839,6 +839,20 @@ test("discovery registration modes register capability handlers and skip the mig
       // the only way to give a (wrongly) started prune time to delete the dir.
       await sleep(50);
       assert.ok(existsSync(expiredAuditDay), `${mode} mode must not prune the recall audit dir`);
+      // Durable command/CLI registration belongs to a full pass. A discovery
+      // pass that claimed the process-global guards would leave the later full
+      // registration with no session commands and no CLI.
+      assert.deepEqual(api._registeredCommands, [], `${mode} mode must not register commands`);
+      assert.equal(
+        (globalThis as any)[SESSION_COMMANDS_REGISTERED_GUARD_KEY],
+        undefined,
+        `${mode} mode must not claim the session-command guard`,
+      );
+      assert.equal(
+        (globalThis as any)[CLI_REGISTERED_GUARD_KEY],
+        undefined,
+        `${mode} mode must not claim the CLI guard`,
+      );
 
       for (const hook of ["before_prompt_build", "agent_end"]) {
         assert.ok(
