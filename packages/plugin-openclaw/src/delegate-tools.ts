@@ -356,21 +356,24 @@ export function registerDelegateTools(
  * Hand tools a PASSIVE delegate entry already registered to the memory slot's
  * owner when that owner resolved to embedded mode.
  *
- * The canonical and legacy plugin ids register separately against one api, so
- * a passive delegate entry can install `memory_search` / `memory_get` before
- * the slot-owning sibling resolves its own bridge mode. If that owner is
- * embedded, it must neither register the same names again (a host tool-name
- * conflict) nor leave the model calling the passive entry's daemon and
- * namespace. Returns true when the api already carries the delegate tools and
- * the caller must therefore SKIP its own registration.
+ * The canonical and legacy plugin ids register separately against one api, so a
+ * passive delegate entry can install `memory_search` / `memory_get` before the
+ * slot-owning sibling resolves its own bridge mode. If that owner is embedded,
+ * it must neither register those names again (a host tool-name conflict) nor
+ * leave the model calling the passive entry's daemon and namespace.
+ *
+ * Returns the names actually adopted — the adoption can be PARTIAL, since a
+ * passive entry with the adapters disabled installs `memory_search` alone — so
+ * the caller registers only what is missing.
  */
 export function adoptDelegateTools(
   api: object,
   options: { enabled: boolean; tools: readonly AdoptableTool[] },
-): boolean {
+): string[] {
   const owner = delegateToolOwners.get(api);
-  if (owner === undefined || owner.installed.size === 0) return false;
+  if (owner === undefined || owner.installed.size === 0) return [];
   owner.enabled = options.enabled;
-  owner.override = Object.fromEntries(options.tools.map((tool) => [tool.name, tool]));
-  return true;
+  const adopted = options.tools.filter((tool) => owner.installed.has(tool.name));
+  owner.override = { ...owner.override, ...Object.fromEntries(adopted.map((tool) => [tool.name, tool])) };
+  return adopted.map((tool) => tool.name);
 }

@@ -56,10 +56,10 @@ test("an embedded slot owner adopts the tools a passive delegate sibling install
       return { content: [{ text: "embedded" }] };
     },
   }));
-  assert.equal(
-    adoptDelegateTools(api, { enabled: true, tools: embeddedTools }),
-    true,
-    "the embedded owner must be told to skip its own registration",
+  assert.deepEqual(
+    adoptDelegateTools(api, { enabled: true, tools: embeddedTools }).sort(),
+    ["memory_get", "memory_search"],
+    "the embedded owner must be told which names it may not register again",
   );
   assert.equal(api.tools.size, 2, "no second registration of either name");
 
@@ -79,9 +79,50 @@ test("an embedded slot owner adopts the tools a passive delegate sibling install
   await api.tools.get("memory_search")!.execute(...([] as never[]));
 });
 
-test("adoption reports false when the api carries no delegate tools", () => {
+test("adoption reports nothing when the api carries no delegate tools", () => {
   const api = { registerTool: () => {} };
-  assert.equal(adoptDelegateTools(api, { enabled: true, tools: [] }), false);
+  assert.deepEqual(adoptDelegateTools(api, { enabled: true, tools: [] }), []);
+});
+
+/**
+ * A passive sibling with the adapters disabled installs `memory_search` alone,
+ * so adoption is PARTIAL: the embedded owner must still register `memory_get`
+ * itself, and must not re-register the adopted name.
+ */
+test("a partial adoption names only the tools the sibling installed", async () => {
+  const registered: string[] = [];
+  const tools = new Map<string, Tool>();
+  const api = {
+    registerTool(tool: Record<string, unknown>) {
+      const named = tool as unknown as Tool;
+      assert.equal(tools.has(named.name), false, `${named.name} registered twice on one api`);
+      registered.push(named.name);
+      tools.set(named.name, named);
+    },
+  };
+  // Passive delegate entry with the adapter toggle off: search only.
+  registerDelegateTools(api, { ...wiringFor("engram"), enabled: false, passive: true });
+  assert.deepEqual(registered, ["memory_search"]);
+
+  const calls: string[] = [];
+  const embeddedTools: Tool[] = ["memory_search", "memory_get"].map((name) => ({
+    name,
+    execute: async () => {
+      calls.push(name);
+      return { content: [{ text: "embedded" }] };
+    },
+  }));
+  assert.deepEqual(
+    adoptDelegateTools(api, { enabled: true, tools: embeddedTools }),
+    ["memory_search"],
+    "only the installed name is adopted",
+  );
+  // The adopted name routes to the embedded owner; `memory_get` is the caller's
+  // to register, and doing so must not conflict.
+  await tools.get("memory_search")!.execute(...([] as never[]));
+  assert.deepEqual(calls, ["memory_search"]);
+  api.registerTool(embeddedTools[1] as unknown as Record<string, unknown>);
+  assert.deepEqual(registered.sort(), ["memory_get", "memory_search"]);
 });
 
 /**

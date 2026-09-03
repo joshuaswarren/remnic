@@ -5065,22 +5065,28 @@ const pluginDefinition = {
     // CLI commands, by contrast, live in the central plugin registry (not in
     // per-registry api state), so registering them more than once would create
     // duplicate engram command trees. CLI registration stays behind the guard.
+    // A PASSIVE delegate sibling (canonical/legacy ids register separately
+    // against one api) may already carry these names. Re-registering one would
+    // be a host tool-name conflict, and leaving it alone would keep the model
+    // on that entry's daemon while this entry owns the slot — so the owner
+    // adopts what is there and registers only what is missing. Adoption is
+    // PARTIAL when that sibling had the adapters disabled: it installed
+    // `memory_search` alone.
+    let adoptedToolNames: readonly string[] = [];
     if (typeof api.registerTool === "function") {
       const embeddedTools = [
         buildMemorySearchTool(orchestrator, { snippetMaxChars: cfg.openclawToolSnippetMaxChars }),
         buildMemoryGetTool(orchestrator),
       ];
-      // A PASSIVE delegate sibling (canonical/legacy ids register separately
-      // against one api) may already carry these names. Re-registering them
-      // would be a host tool-name conflict, and leaving them alone would keep
-      // the model on that entry's daemon while this entry owns the slot — so
-      // the owner adopts them instead.
-      const adopted = adoptDelegateTools(api, {
+      adoptedToolNames = adoptDelegateTools(api, {
         enabled: cfg.openclawToolsEnabled !== false,
         tools: embeddedTools,
       });
-      if (!adopted && cfg.openclawToolsEnabled !== false) {
-        for (const tool of embeddedTools) api.registerTool(tool as Record<string, unknown>);
+      if (cfg.openclawToolsEnabled !== false) {
+        for (const tool of embeddedTools) {
+          if (adoptedToolNames.includes(tool.name)) continue;
+          api.registerTool(tool as Record<string, unknown>);
+        }
       }
     }
 
@@ -5119,6 +5125,8 @@ const pluginDefinition = {
       orchestrator,
       // Host-native, model-inaccessible origin for shared-context tool writes.
       getOpenClawRuntimeAgentId(api),
+      // The legacy `memory_search` must not collide with an adopted one.
+      adoptedToolNames,
     );
     // Register LCM tools when enabled
     if (orchestrator.lcmEngine?.enabled) {

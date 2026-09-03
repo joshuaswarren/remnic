@@ -273,7 +273,17 @@ function formatContinuityLoopSummary(loop: ContinuityImprovementLoop): string {
   return lines.join("\n");
 }
 
-export function registerTools(api: ToolApi, orchestrator: Orchestrator, hostRuntimeAgentId?: string): void {
+export function registerTools(
+  api: ToolApi,
+  orchestrator: Orchestrator,
+  hostRuntimeAgentId?: string,
+  /**
+   * Tool names a sibling entry already registered on this api (see
+   * `adoptDelegateTools`). Re-registering one is a host tool-name conflict, so
+   * the legacy fallback below leaves a taken name alone.
+   */
+  reservedToolNames: readonly string[] = [],
+): void {
   const useDedicatedOpenClawMemoryTools =
     orchestrator.config.openclawToolsEnabled !== false;
   const actionTypes: MemoryActionType[] = [
@@ -400,7 +410,7 @@ export function registerTools(api: ToolApi, orchestrator: Orchestrator, hostRunt
     }
   }
 
-  if (!useDedicatedOpenClawMemoryTools) {
+  if (!useDedicatedOpenClawMemoryTools && !reservedToolNames.includes("memory_search")) {
     api.registerTool(
       {
         name: "memory_search",
