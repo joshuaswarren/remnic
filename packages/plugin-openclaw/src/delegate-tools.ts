@@ -235,7 +235,20 @@ export function buildDelegateMemoryGetTool(options: {
  * over: otherwise the tools would keep reading the passive entry's binding
  * store while the active entry's hooks update its own.
  */
-type DelegateToolOwner = DelegateToolWiring & { enabled: boolean; passive: boolean; installed: boolean };
+type AdoptableTool = { name: string; execute: (...args: never[]) => Promise<unknown> };
+type DelegateToolOwner = DelegateToolWiring & {
+  enabled: boolean;
+  passive: boolean;
+  installed: boolean;
+  /**
+   * Set when the memory slot's owner resolved to EMBEDDED after a passive
+   * delegate sibling already registered these names. The host exposes no
+   * unregister and a second `memory_search` is a name conflict, so the
+   * registered tools keep their identity and route to the embedded owner's
+   * implementations instead of this record's daemon wiring.
+   */
+  override?: Record<string, AdoptableTool>;
+};
 const delegateToolOwners = new WeakMap<object, DelegateToolOwner>();
 
 type DelegateToolWiring = {
@@ -283,11 +296,12 @@ export function registerDelegateTools(
   else return;
   if (owner.installed || !owner.enabled) return;
   owner.installed = true;
-  const gated = <T extends { name: string; execute: (...args: never[]) => Promise<unknown> }>(tool: T): T => ({
+  const gated = <T extends AdoptableTool>(tool: T): T => ({
     ...tool,
     execute: async (...args: Parameters<T["execute"]>) => {
       if (!owner.enabled) throw new Error(`${tool.name} is disabled: the memory slot owner set openclawToolsEnabled: false`);
-      return tool.execute(...args);
+      const adopted = owner.override?.[tool.name];
+      return (adopted ?? tool).execute(...args);
     },
   });
   // The SAME trusted scope path the capability's search takes: the session
@@ -317,4 +331,27 @@ export function registerDelegateTools(
       resolveNamespace: resolveNamespace("memory_get"),
     })),
   );
+}
+
+/**
+ * Hand tools a PASSIVE delegate entry already registered to the memory slot's
+ * owner when that owner resolved to embedded mode.
+ *
+ * The canonical and legacy plugin ids register separately against one api, so
+ * a passive delegate entry can install `memory_search` / `memory_get` before
+ * the slot-owning sibling resolves its own bridge mode. If that owner is
+ * embedded, it must neither register the same names again (a host tool-name
+ * conflict) nor leave the model calling the passive entry's daemon and
+ * namespace. Returns true when the api already carries the delegate tools and
+ * the caller must therefore SKIP its own registration.
+ */
+export function adoptDelegateTools(
+  api: object,
+  options: { enabled: boolean; tools: readonly AdoptableTool[] },
+): boolean {
+  const owner = delegateToolOwners.get(api);
+  if (owner === undefined || !owner.installed) return false;
+  owner.enabled = options.enabled;
+  owner.override = Object.fromEntries(options.tools.map((tool) => [tool.name, tool]));
+  return true;
 }

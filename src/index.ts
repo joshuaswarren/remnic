@@ -79,6 +79,7 @@ import {
   maybeRegisterDelegateRuntime,
   type DelegateHookApi,
 } from "../packages/plugin-openclaw/src/delegate-runtime.js";
+import { adoptDelegateTools } from "../packages/plugin-openclaw/src/delegate-tools.js";
 import {
   extractLastTurn,
   extractTextContent,
@@ -5064,13 +5065,23 @@ const pluginDefinition = {
     // CLI commands, by contrast, live in the central plugin registry (not in
     // per-registry api state), so registering them more than once would create
     // duplicate engram command trees. CLI registration stays behind the guard.
-    if (cfg.openclawToolsEnabled !== false && typeof api.registerTool === "function") {
-      api.registerTool(
-        buildMemorySearchTool(orchestrator, {
-          snippetMaxChars: cfg.openclawToolSnippetMaxChars,
-        }) as Record<string, unknown>,
-      );
-      api.registerTool(buildMemoryGetTool(orchestrator) as Record<string, unknown>);
+    if (typeof api.registerTool === "function") {
+      const embeddedTools = [
+        buildMemorySearchTool(orchestrator, { snippetMaxChars: cfg.openclawToolSnippetMaxChars }),
+        buildMemoryGetTool(orchestrator),
+      ];
+      // A PASSIVE delegate sibling (canonical/legacy ids register separately
+      // against one api) may already carry these names. Re-registering them
+      // would be a host tool-name conflict, and leaving them alone would keep
+      // the model on that entry's daemon while this entry owns the slot — so
+      // the owner adopts them instead.
+      const adopted = adoptDelegateTools(api, {
+        enabled: cfg.openclawToolsEnabled !== false,
+        tools: embeddedTools,
+      });
+      if (!adopted && cfg.openclawToolsEnabled !== false) {
+        for (const tool of embeddedTools) api.registerTool(tool as Record<string, unknown>);
+      }
     }
 
     // OpenClaw's command discovery is driven by registerCommand() entries.
