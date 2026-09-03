@@ -21,7 +21,6 @@ import {
 import {
   INJECTION_SUITE_ARMS,
   INJECTION_SUITE_FAMILIES,
-  INJECTION_SUITE_VERSION,
   INJECTION_SUITE_PUBLICATION_ARMS,
   type InjectionSuiteArm,
   type InjectionSuiteEpisodeRow,
@@ -634,7 +633,14 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   // a positive integer at least as large as the frozen design. Anything
   // else (0, null, a coerced string, a stale hand edit) is treated as
   // absent, which keeps the conservative marking (PR #3081 r1).
-  const recordedUnsliced = Number.isInteger(metadata.unslicedPlannedRows)
+  // A PRESENT but implausible value (0, null, a coerced string, below the
+  // frozen design) is itself a tamper signal: it marks the run limited
+  // rather than skipping verification, which a cleared `limit` could
+  // otherwise ride (post-cap r5).
+  const unslicedPresent = metadata.unslicedPlannedRows !== undefined
+    && metadata.unslicedPlannedRows !== null;
+  const recordedUnsliced = unslicedPresent
+    && Number.isInteger(metadata.unslicedPlannedRows)
     && (metadata.unslicedPlannedRows ?? 0) >= design.rows.length
     && (metadata.unslicedPlannedRows ?? 0) > 0
     ? metadata.unslicedPlannedRows
@@ -646,7 +652,7 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   // then marked LIMITED rather than merely distrusted -- clearing the value
   // alone would let a nulled `limit` read the run as complete (PR #3081 r3).
   let unsliced = recordedUnsliced;
-  let unslicedUnverifiable = false;
+  let unslicedUnverifiable = unslicedPresent && recordedUnsliced === undefined;
   if (recordedUnsliced !== undefined) {
     // The runner hashes the digest as "" when absent but persists the
     // "unverified" sentinel; normalize the same way before recomputing, and

@@ -1239,6 +1239,18 @@ test("a hand-edited unsliced count is distrusted via the resume-contract hash (P
     const tampered = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(tampered.rowAccounting?.limitedDesign, true, "a stale count cannot dodge the marking");
     assert.equal(tampered.decision.estimable, false);
+    // The same hole with the limit CLEARED: an implausible PRESENT count
+    // (0, a string, below the design) plus limit:null must still mark the
+    // run limited -- presence alone is a tamper signal (post-cap r5).
+    for (const bad of [0, "8", 3]) {
+      await writeFile(
+        path.join(tmp, "run.json"),
+        `${JSON.stringify({ ...run, limit: null, unslicedPlannedRows: bad })}\n`,
+        "utf8",
+      );
+      const nulledInvalid = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+      assert.equal(nulledInvalid.rowAccounting?.limitedDesign, true, `limit:null + unsliced=${JSON.stringify(bad)} stays limited`);
+    }
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
