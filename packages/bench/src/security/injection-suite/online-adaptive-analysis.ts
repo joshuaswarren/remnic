@@ -21,6 +21,7 @@ import {
 import {
   INJECTION_SUITE_ARMS,
   INJECTION_SUITE_FAMILIES,
+  INJECTION_SUITE_VERSION,
   INJECTION_SUITE_PUBLICATION_ARMS,
   type InjectionSuiteArm,
   type InjectionSuiteEpisodeRow,
@@ -406,6 +407,74 @@ async function readCorpusManifest(runDir: string): Promise<{
   return { manifest, hashVerified };
 }
 
+export const INJECTION_SUITE_ONLINE_RESUME_CONTRACT = "h5-injection-suite-online-resume-v1";
+
+export function injectionSuiteResumeContractHashForOnline(metadata: {
+  suiteVersion: string;
+  modelProfileId: string;
+  seeds: readonly number[];
+  variantsPerFamily: number;
+  family?: string | null;
+  limit: number | null;
+  executor: string;
+  model: string;
+  baseUrl: string;
+  requestTimeoutMs: number;
+  backend?: string;
+  unslicedPlannedRows?: number;
+  stage?: string;
+  runKind?: string;
+  modelProfileHash?: string;
+  corpusManifestHash?: string;
+  expectedDesignHash?: string;
+  decisionRuleHash?: string;
+  gitSha?: string;
+  attackerExecutor?: string;
+  attackerModel?: string;
+  attackerBaseUrl?: string;
+  attackerModelDigest?: string;
+  attackerPromptSha256?: string;
+  attackerIterations?: number;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        contract: INJECTION_SUITE_ONLINE_RESUME_CONTRACT,
+        suiteVersion: metadata.suiteVersion,
+        modelProfileId: metadata.modelProfileId,
+        seeds: metadata.seeds,
+        variantsPerFamily: metadata.variantsPerFamily,
+        family: metadata.family ?? null,
+        limit: metadata.limit,
+        executor: metadata.executor,
+        model: metadata.model,
+        baseUrl: metadata.baseUrl,
+        requestTimeoutMs: metadata.requestTimeoutMs,
+        // Folded in only when recorded, so runs frozen before the backend
+        // became part of the identity keep their resume hash (#3079).
+        ...(metadata.backend === undefined ? {} : { backend: metadata.backend }),
+        // The unsliced count decides whether a limit truncated the design,
+        // so it is tamper-evident: folded into the resume hash and verified
+        // by the analyzer whenever it is recorded (#3080, PR #3081 r2).
+        ...(metadata.unslicedPlannedRows === undefined ? {} : { unslicedPlannedRows: metadata.unslicedPlannedRows }),
+        stage: metadata.stage ?? ONLINE_ADAPTIVE_STAGE,
+        runKind: metadata.runKind ?? "dev",
+        modelProfileHash: metadata.modelProfileHash ?? "",
+        corpusManifestHash: metadata.corpusManifestHash ?? "",
+        expectedDesignHash: metadata.expectedDesignHash ?? "",
+        decisionRuleHash: metadata.decisionRuleHash ?? "",
+        gitSha: metadata.gitSha ?? "",
+        attackerExecutor: metadata.attackerExecutor ?? "",
+        attackerModel: metadata.attackerModel ?? "",
+        attackerBaseUrl: metadata.attackerBaseUrl ?? "",
+        attackerModelDigest: metadata.attackerModelDigest ?? "",
+        attackerPromptSha256: metadata.attackerPromptSha256 ?? "",
+        attackerIterations: metadata.attackerIterations ?? 0,
+      }),
+    )
+    .digest("hex");
+}
+
 export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   runDir: string,
 ): Promise<OnlineAdaptiveStatistics> {
@@ -565,12 +634,21 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   // a positive integer at least as large as the frozen design. Anything
   // else (0, null, a coerced string, a stale hand edit) is treated as
   // absent, which keeps the conservative marking (PR #3081 r1).
-  const unsliced =
+  let unsliced =
     Number.isInteger(metadata.unslicedPlannedRows)
     && (metadata.unslicedPlannedRows ?? 0) >= design.rows.length
     && (metadata.unslicedPlannedRows ?? 0) > 0
       ? metadata.unslicedPlannedRows
       : undefined;
+  // The value decides whether a limit truncated the design, so it is
+  // tamper-evident: whenever it is recorded, the resume-contract hash must
+  // have been computed WITH it. A hand-edited count (stale, coerced, or
+  // set equal to the limit to dodge the marking) breaks the hash and the
+  // value is distrusted (#3080, PR #3081 r2).
+  if (unsliced !== undefined && metadata.limit !== null && metadata.limit !== undefined) {
+    const expectedHash = injectionSuiteResumeContractHashForOnline(metadata);
+    if (expectedHash !== metadata.resumeContractHash) unsliced = undefined;
+  }
   const limitedDesign = Number.isInteger(recordedLimit)
     && recordedLimit > 0
     && (unsliced === undefined || recordedLimit < unsliced);

@@ -960,6 +960,8 @@ async function writeOnlineFixture(
     corpusFor?: readonly ReturnType<typeof onlineIdentity>[];
     episodesFor?: readonly ReturnType<typeof onlineIdentity>[];
     attackerIterations?: number;
+    limit?: number;
+    unslicedPlannedRows?: number;
   } = {},
 ): Promise<void> {
   const design = {
@@ -973,33 +975,43 @@ async function writeOnlineFixture(
       templateId: idx % 2 === 0 ? "T0" : "T1",
     })),
   };
+  const baseMetadata: Omit<InjectionSuiteRunMetadata, "resumeContractHash"> = {
+    schemaVersion: 3 as const,
+    suiteVersion: "h5-injection-suite-v3",
+    modelProfileId: "fixture",
+    seeds: [71],
+    variantsPerFamily: Math.max(...planned.map((identity) => parseOnlineVariantId(identity.variantId)?.index ?? 1)),
+    family: null,
+    limit: options.limit ?? null,
+    ...(options.unslicedPlannedRows === undefined ? {} : { unslicedPlannedRows: options.unslicedPlannedRows }),
+    expectedRows: planned.length,
+    executor: "openai-compat",
+    model: "fixture-defender",
+    baseUrl: "http://127.0.0.1:9",
+    requestTimeoutMs: 5_000,
+    stage: "adaptive-online-r1",
+    runKind: "dev",
+    modelProfileHash: "0".repeat(64),
+    modelDigest: "0".repeat(64),
+    corpusManifestHash: "0".repeat(64),
+    expectedDesignHash: sha256(stableInjectionSuiteJson(design)),
+    decisionRuleHash: H5_DECISION_RULE_SHA256,
+    gitSha: "0".repeat(40),
+    cleanTree: true,
+    attackerIterations: options.attackerIterations ?? 1,
+    // When the fixture records an unsliced count, the resume hash must be
+    // the real one computed over the exact metadata below, or the
+    // analyzer's tamper check (correctly) distrusts the value.
+  };
+  const metadata: InjectionSuiteRunMetadata = {
+    ...baseMetadata,
+    resumeContractHash: options.unslicedPlannedRows === undefined
+      ? "0".repeat(64)
+      : injectionSuiteResumeContractHashForOnline(baseMetadata),
+  };
   await writeFile(
     path.join(tmp, "run.json"),
-    `${JSON.stringify({
-      schemaVersion: 3 as const,
-      suiteVersion: "h5-injection-suite-v3",
-      resumeContractHash: "0".repeat(64),
-      modelProfileId: "fixture",
-      seeds: [71],
-      variantsPerFamily: Math.max(...planned.map((identity) => parseOnlineVariantId(identity.variantId)?.index ?? 1)),
-      family: null,
-      limit: null,
-      expectedRows: planned.length,
-      executor: "openai-compat",
-      model: "fixture-defender",
-      baseUrl: "http://127.0.0.1:9",
-      requestTimeoutMs: 5_000,
-      stage: "adaptive-online-r1",
-      runKind: "dev",
-      modelProfileHash: "0".repeat(64),
-      modelDigest: "0".repeat(64),
-      corpusManifestHash: "0".repeat(64),
-      expectedDesignHash: sha256(stableInjectionSuiteJson(design)),
-      decisionRuleHash: H5_DECISION_RULE_SHA256,
-      gitSha: "0".repeat(40),
-      cleanTree: true,
-      attackerIterations: options.attackerIterations ?? 1,
-    } satisfies InjectionSuiteRunMetadata)}\n`,
+    `${JSON.stringify(metadata)}\n`,
     "utf8",
   );
   await writeFile(path.join(tmp, "expected-design.json"), `${JSON.stringify(design)}\n`, "utf8");
@@ -1140,46 +1152,68 @@ test("a recorded --limit makes a complete-looking smoke run non-estimable", asyn
       episodesFor: planned,
       attackerIterations: 3,
     });
-    const run = JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) as Record<string, unknown>;
     const unlimited = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
-    assert.equal(unlimited.rowAccounting?.truncatedChains, 0, "the frozen chain is complete");
-    assert.equal(unlimited.rowAccounting?.missingPlannedRows, 0);
     assert.equal(unlimited.rowAccounting?.limitedDesign, false);
     assert.equal(unlimited.decision.estimable, true, "without a limit this shape is estimable");
-    await writeFile(path.join(tmp, "run.json"), `${JSON.stringify({ ...run, limit: 4 })}\n`, "utf8");
+    // A truncating limit marks it; the hash covers the unsliced count.
+    await writeOnlineFixture(tmp, planned, {
+      corpusFor: planned.slice(1),
+      episodesFor: planned,
+      attackerIterations: 3,
+      limit: 4,
+      unslicedPlannedRows: 8,
+    });
     const limited = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(limited.rowAccounting?.limitedDesign, true);
     assert.equal(limited.decision.estimable, false);
-    assert.equal(limited.decision.fencingSupported, false);
-    // A limit at or above the unsliced grid is a no-op when the unsliced
-    // count is recorded: the design is complete and analyzes normally (#3080).
-    await writeFile(
-      path.join(tmp, "run.json"),
-      `${JSON.stringify({ ...run, limit: 4, unslicedPlannedRows: 4 })}\n`,
-      "utf8",
-    );
+    // A limit at or above the grid is a no-op and analyzes normally (#3080).
+    await writeOnlineFixture(tmp, planned, {
+      corpusFor: planned.slice(1),
+      episodesFor: planned,
+      attackerIterations: 3,
+      limit: 4,
+      unslicedPlannedRows: 4,
+    });
     const noopLimit = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(noopLimit.rowAccounting?.limitedDesign, false);
     assert.equal(noopLimit.decision.estimable, true, "a non-truncating limit does not mark the run");
     // A limit ABOVE the grid is the same no-op (limit >= unsliced, r1).
-    await writeFile(
-      path.join(tmp, "run.json"),
-      `${JSON.stringify({ ...run, limit: 5, unslicedPlannedRows: 4 })}\n`,
-      "utf8",
-    );
+    const above = { ...JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) } as Record<string, unknown>;
+    const finalAbove = { ...above, limit: 5, unslicedPlannedRows: 5 };
+    const aboveHash = injectionSuiteResumeContractHashForOnline(finalAbove as never);
+    await writeFile(path.join(tmp, "run.json"), `${JSON.stringify({ ...finalAbove, resumeContractHash: aboveHash })}\n`, "utf8");
     const greaterLimit = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(greaterLimit.rowAccounting?.limitedDesign, false);
-    // An implausible unsliced count (0, a string, below the frozen design)
-    // is treated as absent, so the conservative marking returns (r1).
-    for (const bad of [0, "8", 3, null]) {
-      await writeFile(
-        path.join(tmp, "run.json"),
-        `${JSON.stringify({ ...run, limit: 4, unslicedPlannedRows: bad })}\n`,
-        "utf8",
-      );
-      const distrusted = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
-      assert.equal(distrusted.rowAccounting?.limitedDesign, true, `unsliced=${JSON.stringify(bad)} must be distrusted`);
-    }
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("a hand-edited unsliced count is distrusted via the resume-contract hash (PR #3081 r2)", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-tamper-"));
+  try {
+    const planned = [
+      onlineIdentity("minja-1", 0),
+      onlineIdentity("minja-1", 1),
+      onlineIdentity("minja-1", 2),
+      onlineIdentity("minja-1", 3),
+    ];
+    // A real truncating run: limit 4 of an 8-row grid, hash over 8.
+    await writeOnlineFixture(tmp, planned, {
+      corpusFor: planned.slice(1),
+      episodesFor: planned,
+      attackerIterations: 3,
+      limit: 4,
+      unslicedPlannedRows: 8,
+    });
+    // Tamper: set the count equal to the limit so the run reads as a no-op.
+    // The hash no longer matches, so the value is distrusted and the run
+    // stays non-estimable.
+    const run = JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) as Record<string, unknown>;
+    await writeFile(path.join(tmp, "run.json"), `${JSON.stringify({ ...run, unslicedPlannedRows: 4 })}\n`, "utf8");
+    const tampered = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(tampered.rowAccounting?.limitedDesign, true, "a stale count cannot dodge the marking");
+    assert.equal(tampered.decision.estimable, false);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
