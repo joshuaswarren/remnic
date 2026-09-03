@@ -406,6 +406,74 @@ async function readCorpusManifest(runDir: string): Promise<{
   return { manifest, hashVerified };
 }
 
+export const INJECTION_SUITE_ONLINE_RESUME_CONTRACT = "h5-injection-suite-online-resume-v1";
+
+export function injectionSuiteResumeContractHashForOnline(metadata: {
+  suiteVersion: string;
+  modelProfileId: string;
+  seeds: readonly number[];
+  variantsPerFamily: number;
+  family?: string | null;
+  limit: number | null;
+  executor: string;
+  model: string;
+  baseUrl: string;
+  requestTimeoutMs: number;
+  backend?: string;
+  unslicedPlannedRows?: number;
+  stage?: string;
+  runKind?: string;
+  modelProfileHash?: string;
+  corpusManifestHash?: string;
+  expectedDesignHash?: string;
+  decisionRuleHash?: string;
+  gitSha?: string;
+  attackerExecutor?: string;
+  attackerModel?: string;
+  attackerBaseUrl?: string;
+  attackerModelDigest?: string;
+  attackerPromptSha256?: string;
+  attackerIterations?: number;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        contract: INJECTION_SUITE_ONLINE_RESUME_CONTRACT,
+        suiteVersion: metadata.suiteVersion,
+        modelProfileId: metadata.modelProfileId,
+        seeds: metadata.seeds,
+        variantsPerFamily: metadata.variantsPerFamily,
+        family: metadata.family ?? null,
+        limit: metadata.limit,
+        executor: metadata.executor,
+        model: metadata.model,
+        baseUrl: metadata.baseUrl,
+        requestTimeoutMs: metadata.requestTimeoutMs,
+        // Folded in only when recorded, so runs frozen before the backend
+        // became part of the identity keep their resume hash (#3079).
+        ...(metadata.backend === undefined ? {} : { backend: metadata.backend }),
+        // The unsliced count decides whether a limit truncated the design,
+        // so it is tamper-evident: folded into the resume hash and verified
+        // by the analyzer whenever it is recorded (#3080, PR #3081 r2).
+        ...(metadata.unslicedPlannedRows === undefined ? {} : { unslicedPlannedRows: metadata.unslicedPlannedRows }),
+        stage: metadata.stage ?? ONLINE_ADAPTIVE_STAGE,
+        runKind: metadata.runKind ?? "dev",
+        modelProfileHash: metadata.modelProfileHash ?? "",
+        corpusManifestHash: metadata.corpusManifestHash ?? "",
+        expectedDesignHash: metadata.expectedDesignHash ?? "",
+        decisionRuleHash: metadata.decisionRuleHash ?? "",
+        gitSha: metadata.gitSha ?? "",
+        attackerExecutor: metadata.attackerExecutor ?? "",
+        attackerModel: metadata.attackerModel ?? "",
+        attackerBaseUrl: metadata.attackerBaseUrl ?? "",
+        attackerModelDigest: metadata.attackerModelDigest ?? "",
+        attackerPromptSha256: metadata.attackerPromptSha256 ?? "",
+        attackerIterations: metadata.attackerIterations ?? 0,
+      }),
+    )
+    .digest("hex");
+}
+
 export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   runDir: string,
 ): Promise<OnlineAdaptiveStatistics> {
@@ -554,12 +622,61 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   const truncatedChains = [...maxPlannedIteration.values()].filter(
     (maxIteration) => maxIteration < finalIteration,
   ).length;
-  // `--limit` freezes a subset of the registered grid, so the run is a
-  // smoke artifact and never estimable, even when the cells it did freeze
-  // are complete (with K=3, `--limit 4` leaves one whole k0..k3 chain and
-  // trips no other counter). `main` forbids `--limit`, so this only labels
-  // dev artifacts honestly (#3078).
-  const limitedDesign = Number.isInteger(metadata.limit) && (metadata.limit ?? 0) > 0;
+  // A limit that actually truncated the grid freezes a subset of the
+  // registered design, so the run is a smoke artifact and never estimable
+  // (`main` forbids `--limit`; this labels dev artifacts honestly). When the
+  // unsliced count is recorded, a limit at or above it is a no-op and the
+  // run analyzes normally (#3080). Legacy runs without the field keep the
+  // conservative marking.
+  const recordedLimit = metadata.limit ?? 0;
+  // Trust a recorded unsliced count only when it is a plausible grid size:
+  // a positive integer at least as large as the frozen design. Anything
+  // else (0, null, a coerced string, a stale hand edit) is treated as
+  // absent, which keeps the conservative marking (PR #3081 r1).
+  // A PRESENT but implausible value (0, null, a coerced string, below the
+  // frozen design) is itself a tamper signal: it marks the run limited
+  // rather than skipping verification, which a cleared `limit` could
+  // otherwise ride (post-cap r5).
+  // An own-property whose value is null is PRESENT and invalid: a cleared
+  // limit plus an explicit null must not read as absent (post-cap r6).
+  const unslicedPresent = metadata.unslicedPlannedRows !== undefined;
+  const recordedUnsliced = unslicedPresent
+    && Number.isInteger(metadata.unslicedPlannedRows)
+    && (metadata.unslicedPlannedRows ?? 0) >= design.rows.length
+    && (metadata.unslicedPlannedRows ?? 0) > 0
+    ? metadata.unslicedPlannedRows
+    : undefined;
+  // The value decides whether a limit truncated the design, so it is
+  // tamper-evident: whenever it is recorded, the resume-contract hash must
+  // verify. A hand-edited count (stale, coerced, set equal to the limit, or
+  // paired with an edited `limit`/`null`) breaks the hash, and the run is
+  // then marked LIMITED rather than merely distrusted -- clearing the value
+  // alone would let a nulled `limit` read the run as complete (PR #3081 r3).
+  let unsliced = recordedUnsliced;
+  // The resume-contract hash is the arbiter. Runs on the NEW metadata
+  // contract (attackerBaseUrl persisted, which this code always writes) are
+  // verified UNCONDITIONALLY: every legitimate new state recomputes to its
+  // stored hash, so any mismatch -- an edited count, an edited or nulled
+  // limit, or the field deleted entirely -- marks the design LIMITED.
+  // LEGACY runs hashed a resolved attacker URL they never persisted, so
+  // their hash cannot be reconstructed; for them verification runs only
+  // when the unsliced field is present (superset of the pre-r8 behavior,
+  // and no frozen campaign run records a limit). Residual, documented: a
+  // new run stripped of attackerBaseUrl AND unsliced AND limit falls to the
+  // legacy path; closing that needs a contract version bump (post-cap r9).
+  const newContract = metadata.attackerBaseUrl !== undefined;
+  const digest = metadata.attackerModelDigest ?? "";
+  const digestCandidates = digest === "unverified" ? [digest, ""] : [digest];
+  const mustVerify = newContract || unslicedPresent;
+  const resumeHashVerifies = !mustVerify || digestCandidates.some((candidate) =>
+    injectionSuiteResumeContractHashForOnline({ ...metadata, attackerModelDigest: candidate })
+      === metadata.resumeContractHash);
+  const unslicedUnverifiable = !resumeHashVerifies;
+  if (unslicedUnverifiable) unsliced = undefined;
+  const limitedDesign = Number.isInteger(recordedLimit)
+    && recordedLimit > 0
+    && (unsliced === undefined || recordedLimit < unsliced)
+    || unslicedUnverifiable;
   const incomplete =
     limitedDesign ||
     !corpusManifestPresent ||
