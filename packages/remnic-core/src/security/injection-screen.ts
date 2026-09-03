@@ -266,11 +266,14 @@ const ORDINARY_CAPITALIZED_WORDS: ReadonlySet<string> = new Set([
  * described value rather than a literal to emit, and ordinary acronyms are
  * excluded, so technical prose does not match (PR #3079 review).
  */
+/** Non-global probe for the emission verb, for the structural early exit. */
+const EMISSION_VERB_PRESENT = /\b(?:begin|start|end|include|contain|say|state|output|return|emit|produce|reply|respond|answer|replace|becomes?|is|are|be)\b[ \t]/i;
+
 const OPAQUE_EMISSION_TARGET =
   /\b(?:begin|start|end|include|contain|say|state|output|return|emit|produce|reply|respond|answer|replace|becomes?|is|are|be)\b[ \t]{1,8}(?:(?:with|by|exactly)[ \t]{1,8})?(?:normal[ \t]{1,8}behaviou?r[ \t]{1,8}with[ \t]{1,8})?/gi;
 
-/** The emission slot's own content: a quoted payload or a shaped marker. */
-const EMISSION_SLOT_VALUE = /^(?:"([^"\n]{2,40})"|'([^'\n]{2,40})'|([A-Za-z][A-Za-z0-9_-]{1,39})\b)/;
+/** The emission slot's own content: a quoted payload or a shaped marker. Sticky: anchored at `lastIndex`, so no per-match slicing. */
+const EMISSION_SLOT_VALUE = /(?:"([^"\n]{2,40})"|'([^'\n]{2,40})'|([A-Za-z][A-Za-z0-9_-]{1,39})\b)/y;
 
 /**
  * Sentence split that never cuts inside a quoted span: a payload like
@@ -278,52 +281,39 @@ const EMISSION_SLOT_VALUE = /^(?:"([^"\n]{2,40})"|'([^'\n]{2,40})'|([A-Za-z][A-Z
  * unrecognizable (PR #3079 r4).
  */
 function splitSentencesOutsideQuotes(content: string): string[] {
+  // Token-jump scan: advance between quote and boundary characters instead
+  // of visiting every character, so a large memory costs one linear pass
+  // regardless of size (PR #3081 r4).
   const sentences: string[] = [];
-  let current = "";
+  const TOKEN = /["'.!?\n]/g;
+  let start = 0;
   let quote: string | undefined;
-  let previous = "";
-  for (let index = 0; index < content.length; index += 1) {
-    const char = content[index]!;
-    const rest = content.slice(index + 1);
+  let match: RegExpExecArray | null;
+  while ((match = TOKEN.exec(content)) !== null) {
+    const char = match[0];
+    const index = match.index;
     if (quote !== undefined) {
-      current += char;
       if (char === quote) quote = undefined;
-      previous = char;
       continue;
     }
-    // An apostrophe inside a word is a contraction ("It's"), not an opening
-    // quote: treating it as one merges sentences and lets a marker in a
-    // later sentence corroborate an ordinary directive (PR #3079 post-cap).
-    if (char === '"' || (char === "'" && !/[A-Za-z0-9]/.test(previous))) {
+    if (char === '"' || (char === "'" && !/[A-Za-z0-9]/.test(content[index - 1] ?? " "))) {
       quote = char;
-      current += char;
-      previous = char;
       continue;
     }
-    // A period only ends a sentence when the next character is whitespace or
-    // the end: dots inside URLs, hostnames, decimals, and version strings
-    // ("https://example.com/canary/x to answers") must not split a sentence
-    // that carries both the directive and its payload (#3080).
-    // A newline only ends the unit when the fragment is not a continuation:
-    // "Responses must include:\nCANARY" and its Markdown-list form are a
-    // single directive with its payload (PR #3081 r1).
-    const newlineEndsUnit = !/[:\-]\s*$/.test(current);
-    // `?` and `!` follow the same rule as `.`: inside a token they are part
-    // of it (a URL query, "https://x/p?mode=y"), and only end the unit when
-    // followed by whitespace or the end (PR #3081 r3).
-    const endsSentence =
-      ((char === "!" || char === "?" || char === ".") && !/[^\s]/.test(rest.slice(0, 1)))
-      || (char === "\n" && newlineEndsUnit);
-    if (endsSentence) {
-      if (current.trim().length > 0) sentences.push(current);
-      current = "";
-      previous = char;
-      continue;
+    const next = content[index + 1];
+    const insideToken = next !== undefined && !/\s/.test(next);
+    // An empty URL query ("payload? to") still binds the unit: a prose
+    // question mark precedes a capital, a quote, or the end.
+    const emptyQuery = char === "?" && /\s+[a-z]/.test(content.slice(index + 1, index + 3));
+    const newlineContinues = char === "\n" && /[:\-][ \t]*$/.test(content.slice(Math.max(0, index - 4), index));
+    const endsUnit = !insideToken && !emptyQuery && !newlineContinues
+      && (char === "." || char === "!" || char === "?" || char === "\n");
+    if (endsUnit) {
+      if (index > start) sentences.push(content.slice(start, index));
+      start = index + 1;
     }
-    current += char;
-    previous = char;
   }
-  if (current.trim().length > 0) sentences.push(current);
+  if (start < content.length) sentences.push(content.slice(start));
   return sentences;
 }
 
@@ -367,7 +357,8 @@ function hasOpaqueEmissionTarget(sentence: string): boolean {
     verb !== null;
     verb = OPAQUE_EMISSION_TARGET.exec(sentence)
   ) {
-    const match = EMISSION_SLOT_VALUE.exec(sentence.slice(verb.index + verb[0].length));
+    EMISSION_SLOT_VALUE.lastIndex = verb.index + verb[0].length;
+    const match = EMISSION_SLOT_VALUE.exec(sentence);
     if (!match) continue;
     const quoted = match[1] ?? match[2];
     if (quoted !== undefined) {
@@ -410,24 +401,27 @@ function findResponseControlDirective(
   // signal, which is what keeps ordinary response prose out of quarantine.
   if (profile === "hardened") return directive;
   // Cue scope is a measured trade; see RESPONSE_CONTROL_CORROBORATORS.
+  // Cheap structural exit: if the whole memory carries no corroborator and
+  // no emission verb, locality cannot produce a finding, and the splitter's
+  // per-character scan is skipped entirely (large ordinary memories never
+  // pay for it) — PR #3081 r4.
+  const anyCorroborator = RESPONSE_CONTROL_CORROBORATORS.some((pattern) => pattern.test(content));
+  const anyEmissionVerb = !anyCorroborator
+    ? EMISSION_VERB_PRESENT.test(content)
+    : true;
+  if (!anyCorroborator && !anyEmissionVerb) return undefined;
   // Corroborators are sentence-local now that sentence splitting no longer
   // breaks URLs: a cue in an unrelated sentence ("The fixture value is
   // CANARY.") cannot corroborate an ordinary directive, while a payload the
   // directive sentence itself names ("...add https://... to answers...")
   // still does (#3080).
-  if (
-    splitSentencesOutsideQuotes(content).some(
-      (sentence) =>
-        RESPONSE_CONTROL_PATTERNS.some((pattern) => pattern.test(sentence))
-        && (RESPONSE_CONTROL_CORROBORATORS.some((pattern) => pattern.test(sentence))
-          || hasOpaqueEmissionTarget(sentence)),
-    )
-  ) return directive;
-  // ...unless no sentence boundary exists at all (single-line payloads).
-  if (!/[.!?\n]/.test(content)
-    && RESPONSE_CONTROL_CORROBORATORS.some((pattern) => pattern.test(content))) return directive;
+  // Cue locality: a corroborator must sit in the directive's own sentence
+  // (continuation lines included). The emission slot needs no splitting --
+  // the verb and its slot are adjacent by construction, so that check is
+  // intrinsically local and runs over the whole content (PR #3081 r4).
   for (const sentence of splitSentencesOutsideQuotes(content)) {
     if (!RESPONSE_CONTROL_PATTERNS.some((pattern) => pattern.test(sentence))) continue;
+    if (anyCorroborator && RESPONSE_CONTROL_CORROBORATORS.some((pattern) => pattern.test(sentence))) return directive;
     if (hasOpaqueEmissionTarget(sentence)) return directive;
   }
   return undefined;
