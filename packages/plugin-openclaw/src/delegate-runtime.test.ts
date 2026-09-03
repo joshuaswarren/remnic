@@ -2647,10 +2647,9 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
       /sessionKey exceeds/,
     );
 
-    // `filters.namespace` may restate the session's scope, never redirect the
-    // search to another one (embedded honors the filter; delegate stays
-    // session-scoped, so a mismatch is an error rather than silent results
-    // from a different scope).
+    // `filters.namespace` is refused outright: the manager resolves the
+    // session scope itself, so a scope validated here could be rebound before
+    // the search runs and answer from another namespace.
     await assert.rejects(
       tools.get("memory_search")!.execute(
         "tc-9",
@@ -2658,18 +2657,17 @@ test("delegate registers daemon-backed memory_search and memory_get tools when t
         undefined,
         { sessionKey: "tool-session" },
       ),
-      /filters\.namespace "team-other" does not match the session's memory scope "team-alpha"/,
+      /filters\.namespace "team-other" is not supported in delegate mode/,
     );
-    await tools.get("memory_search")!.execute(
-      "tc-10",
-      { query: "rollout", filters: { namespace: "team-alpha" } },
-      undefined,
-      { sessionKey: "tool-session" },
-    );
-    assert.equal(
-      stub.calls.filter((call) => call.pathname === "/engram/v1/memories/search").at(-1)?.body.query,
-      "rollout",
-      "a filter restating the bound scope searches normally",
+    await assert.rejects(
+      tools.get("memory_search")!.execute(
+        "tc-10",
+        { query: "rollout", filters: { namespace: "team-alpha" } },
+        undefined,
+        { sessionKey: "tool-session" },
+      ),
+      /is not supported in delegate mode/,
+      "even restating the bound scope is refused: it cannot be honored atomically",
     );
 
     // A host abort is honored before any daemon work starts.

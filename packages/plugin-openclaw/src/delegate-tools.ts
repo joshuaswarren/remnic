@@ -100,8 +100,6 @@ export function buildDelegateMemorySearchTool(options: {
   /** Embedded parity: `openclawToolSnippetMaxChars`, applied over the daemon's own cap. */
   snippetMaxChars?: number;
   timeoutMs: number;
-  /** The session's memory scope, so a `filters.namespace` may only restate it. */
-  resolveNamespace: (sessionKey: string, timeoutMs: number) => Promise<string | undefined>;
 }) {
   const spent = (deadline: number, signal: AbortSignal | undefined, stage: string): void => {
     if (signal?.aborted) throw new Error(`memory_search aborted before ${stage}`);
@@ -132,19 +130,18 @@ export function buildDelegateMemorySearchTool(options: {
       // (`Type.Number`), and the manager rejects a non-integer maxResults.
       const limit = clampLimit(params.limit);
       const sessionKey = sessionKeyFor(params, ctx);
-      // Delegate searches stay session-scoped (the manager resolves the scope
-      // itself). A schema-valid `filters.namespace` is honored by the embedded
-      // tool, so here it may restate that scope but never silently search
-      // another one.
+      // Delegate searches are session-scoped: `manager.search` resolves the
+      // session's namespace ITSELF, so a scope validated here can be rebound
+      // before that resolution runs and the search would answer from the new
+      // namespace while the caller asked for the old one — a cross-tenant
+      // result for a credential that can read both. There is no way to carry a
+      // validated scope into the search atomically, so the filter is refused
+      // rather than honored approximately.
       const filters = params.filters && typeof params.filters === "object" ? (params.filters as Record<string, unknown>) : undefined;
-      const requested = typeof filters?.namespace === "string" && filters.namespace.trim().length > 0 ? filters.namespace.trim() : undefined;
-      if (requested !== undefined) {
-        const scope = await options.resolveNamespace(sessionKey, Math.max(1, deadline - Date.now()));
-        if (requested !== scope) {
-          throw new Error(
-            `memory_search filters.namespace "${requested}" does not match the session's memory scope${scope === undefined ? "" : ` "${scope}"`}`
-          );
-        }
+      if (typeof filters?.namespace === "string" && filters.namespace.trim().length > 0) {
+        throw new Error(
+          `memory_search filters.namespace "${filters.namespace.trim()}" is not supported in delegate mode: the search is scoped to the session's own namespace`
+        );
       }
       spent(deadline, signal, "search");
       // The daemon's search schema caps `query` at 2048 chars; embedded mode
@@ -344,7 +341,6 @@ export function registerDelegateTools(
     get agentId() { return owner.agentId; },
     get snippetMaxChars() { return owner.snippetMaxChars; },
     get timeoutMs() { return owner.timeoutMs; },
-    resolveNamespace: resolveNamespace("memory_search"),
   }));
   if (owner.enabled) {
     install(buildDelegateMemoryGetTool({
