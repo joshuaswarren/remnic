@@ -217,6 +217,20 @@ test("a utility output directory is bound to its execution contract", async () =
       /different utility contract/,
       "new weights behind the same served name must not reuse the checkpoints",
     );
+    // The resolved backend selects non-generic request fields, so resuming
+    // under a different override is a different condition (PR #3079).
+    const previousBackend = process.env.REMNIC_BENCH_OPENAI_COMPAT_BACKEND;
+    process.env.REMNIC_BENCH_OPENAI_COMPAT_BACKEND = "ollama";
+    try {
+      await assert.rejects(
+        assertUtilityContract(input, ["locomo", "drift-gen"]),
+        /different utility contract/,
+        "a backend override must not reuse checkpoints from another backend",
+      );
+    } finally {
+      if (previousBackend === undefined) delete process.env.REMNIC_BENCH_OPENAI_COMPAT_BACKEND;
+      else process.env.REMNIC_BENCH_OPENAI_COMPAT_BACKEND = previousBackend;
+    }
     // Checkpoints from before the contract existed are refused rather than reused.
     const legacy = mkdtempSync(path.join(os.tmpdir(), "h5-util-legacy-"));
     mkdirSync(path.join(legacy, "utility-checkpoints"), { recursive: true });

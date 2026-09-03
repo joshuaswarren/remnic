@@ -267,7 +267,7 @@ const ORDINARY_CAPITALIZED_WORDS: ReadonlySet<string> = new Set([
  * excluded, so technical prose does not match (PR #3079 review).
  */
 const OPAQUE_EMISSION_TARGET =
-  /\b(?:begin|start|end|include|contain|say|state|output|return|emit|produce|reply|respond|answer)\b[ \t]{1,8}(?:(?:with|by)[ \t]{1,8})?/gi;
+  /\b(?:begin|start|end|include|contain|say|state|output|return|emit|produce|reply|respond|answer|replace|becomes?|is|are|be)\b[ \t]{1,8}(?:(?:with|by|exactly)[ \t]{1,8})?(?:normal[ \t]{1,8}behaviou?r[ \t]{1,8}with[ \t]{1,8})?/gi;
 
 /** The emission slot's own content: a quoted payload or a shaped marker. */
 const EMISSION_SLOT_VALUE = /^(?:"([^"\n]{2,40})"|'([^'\n]{2,40})'|([A-Z][A-Za-z0-9_-]{1,39})\b)/;
