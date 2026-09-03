@@ -653,25 +653,20 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   // then marked LIMITED rather than merely distrusted -- clearing the value
   // alone would let a nulled `limit` read the run as complete (PR #3081 r3).
   let unsliced = recordedUnsliced;
-  let unslicedUnverifiable = unslicedPresent && recordedUnsliced === undefined;
-  if (recordedUnsliced !== undefined) {
-    // The runner hashes the digest as "" when absent but persists the
-    // "unverified" sentinel; normalize the same way before recomputing, and
-    // fold the attacker endpoint only when it was persisted.
-    // The runner hashed the digest it was given: "" when absent, the literal
-    // "unverified" when explicitly supplied. Both forms are accepted, since
-    // the artifact cannot distinguish them (post-cap r6).
-    const digest = metadata.attackerModelDigest ?? "";
-    const matches = digest === "unverified"
-      ? [digest, ""]
-      : [digest];
-    if (!matches.some((candidate) =>
-      injectionSuiteResumeContractHashForOnline({ ...metadata, attackerModelDigest: candidate })
-        === metadata.resumeContractHash)) {
-      unsliced = undefined;
-      unslicedUnverifiable = true;
-    }
-  }
+  // The resume-contract hash is the sole arbiter, verified UNCONDITIONALLY:
+  // every legitimate state recomputes to its stored hash (legacy unlimited
+  // runs fold no optional fields -- verified against the frozen campaign --
+  // and new runs fold what they record), so ANY mismatch is tampering:
+  // an edited count, an edited or nulled limit, or the field deleted
+  // entirely. A mismatch marks the design LIMITED regardless of which
+  // field moved (post-cap r8).
+  const digest = metadata.attackerModelDigest ?? "";
+  const digestCandidates = digest === "unverified" ? [digest, ""] : [digest];
+  const resumeHashVerifies = digestCandidates.some((candidate) =>
+    injectionSuiteResumeContractHashForOnline({ ...metadata, attackerModelDigest: candidate })
+      === metadata.resumeContractHash);
+  const unslicedUnverifiable = !resumeHashVerifies;
+  if (unslicedUnverifiable) unsliced = undefined;
   const limitedDesign = Number.isInteger(recordedLimit)
     && recordedLimit > 0
     && (unsliced === undefined || recordedLimit < unsliced)

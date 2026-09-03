@@ -877,18 +877,38 @@ test("analyzer success@k is unchanged for a complete run with manifest", async (
       modelProfileHash: "0".repeat(64),
       rows: designRows,
     };
-    await writeFile(
-      path.join(tmp, "run.json"),
-      `${JSON.stringify({
-        schemaVersion: 3 as const,
+    const runMetadata: InjectionSuiteRunMetadata = {
+      schemaVersion: 3 as const,
+      suiteVersion: "h5-injection-suite-v3",
+      modelProfileId: "fixture",
+      seeds: [71],
+      variantsPerFamily: 2,
+      family: null,
+      limit: null,
+      expectedRows,
+      executor: "openai-compat",
+      model: "fixture-defender",
+      baseUrl: "http://127.0.0.1:9",
+      requestTimeoutMs: 5_000,
+      stage: "adaptive-online-r1",
+      runKind: "dev",
+      modelProfileHash: "0".repeat(64),
+      modelDigest: "0".repeat(64),
+      corpusManifestHash: "0".repeat(64),
+      expectedDesignHash: sha256(stableInjectionSuiteJson(design)),
+      decisionRuleHash: H5_DECISION_RULE_SHA256,
+      gitSha: "0".repeat(40),
+      cleanTree: true,
+      attackerIterations: 1,
+      // Unconditional verification: the fixture writes the real hash over
+      // exactly the metadata it persists.
+      resumeContractHash: injectionSuiteResumeContractHashForOnline({
         suiteVersion: "h5-injection-suite-v3",
-        resumeContractHash: "0".repeat(64),
         modelProfileId: "fixture",
         seeds: [71],
         variantsPerFamily: 2,
         family: null,
         limit: null,
-        expectedRows,
         executor: "openai-compat",
         model: "fixture-defender",
         baseUrl: "http://127.0.0.1:9",
@@ -896,14 +916,16 @@ test("analyzer success@k is unchanged for a complete run with manifest", async (
         stage: "adaptive-online-r1",
         runKind: "dev",
         modelProfileHash: "0".repeat(64),
-        modelDigest: "0".repeat(64),
         corpusManifestHash: "0".repeat(64),
         expectedDesignHash: sha256(stableInjectionSuiteJson(design)),
         decisionRuleHash: H5_DECISION_RULE_SHA256,
         gitSha: "0".repeat(40),
-        cleanTree: true,
         attackerIterations: 1,
-      } satisfies InjectionSuiteRunMetadata)}\n`,
+      }),
+    };
+    await writeFile(
+      path.join(tmp, "run.json"),
+      `${JSON.stringify(runMetadata)}\n`,
       "utf8",
     );
     await writeFile(path.join(tmp, "expected-design.json"), `${JSON.stringify(design)}\n`, "utf8");
@@ -1042,16 +1064,12 @@ async function writeOnlineFixture(
     // the real one computed over the exact metadata below, or the
     // analyzer's tamper check (correctly) distrusts the value.
   };
+  // The analyzer verifies the resume hash unconditionally, so the fixture
+  // always writes the real one (both digest forms accepted, like the
+  // analyzer: hash with the stored sentinel).
   const metadata: InjectionSuiteRunMetadata = {
     ...baseMetadata,
-    resumeContractHash: options.unslicedPlannedRows === undefined
-      ? "0".repeat(64)
-      // Mirror the runner: the digest sentinel is hashed as "" and the
-      // attacker endpoint folds in when present.
-      : injectionSuiteResumeContractHashForOnline({
-        ...baseMetadata,
-        attackerModelDigest: "",
-      }),
+    resumeContractHash: injectionSuiteResumeContractHashForOnline(baseMetadata),
   };
   await writeFile(
     path.join(tmp, "run.json"),
@@ -1258,6 +1276,16 @@ test("a hand-edited unsliced count is distrusted via the resume-contract hash (P
     const tampered = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(tampered.rowAccounting?.limitedDesign, true, "a stale count cannot dodge the marking");
     assert.equal(tampered.decision.estimable, false);
+    // Deleting the field entirely cannot dodge either: the run was created
+    // with limit+unsliced folded into its hash, so stripping both fails the
+    // unconditional verification (post-cap r8).
+    await writeFile(
+      path.join(tmp, "run.json"),
+      `${JSON.stringify({ ...run, limit: null, unslicedPlannedRows: undefined })}\n`,
+      "utf8",
+    );
+    const stripped = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(stripped.rowAccounting?.limitedDesign, true, "a stripped field fails the unconditional hash check");
     // The same hole with the limit CLEARED: an implausible PRESENT count
     // (0, a string, below the design) plus limit:null must still mark the
     // run limited -- presence alone is a tamper signal (post-cap r5).

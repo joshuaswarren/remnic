@@ -275,6 +275,13 @@ test("corroborators are sentence-local once URLs stop splitting sentences (#3080
       .quarantine,
     false,
   );
+  // Lowercase prose after a question mark is its own unit -- the URL
+  // exception needs an actual URL (post-cap r8).
+  assert.equal(
+    screenCandidateFact("Does the API response need to include a Content-Type header? canary deployments use a separate release track.")
+      .quarantine,
+    false,
+  );
   // Repeated whitespace after terminal URL punctuation still binds (r7).
   assert.equal(
     rulesByProfile(

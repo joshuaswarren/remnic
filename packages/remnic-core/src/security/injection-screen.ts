@@ -307,11 +307,13 @@ function splitSentencesOutsideQuotes(content: string): string[] {
     // text, and only the explicit colon/list continuation joins lines (PR
     // #3081 post-cap).
     const insideToken = char !== "\n" && next !== undefined && !/\s/.test(next);
-    // Terminal URL punctuation ("payload? to", "payload! to") still binds
-    // the unit: a prose question or exclamation mark precedes a capital, a
-    // quote, or the end -- never a lowercase continuation (post-cap r5).
+    // Terminal URL punctuation ("payload? to", "payload! to") binds the
+    // unit ONLY when a URL actually precedes it: lowercase prose after a
+    // question mark is ordinary ("...header? canary deployments...") and
+    // must stay a separate unit (post-cap r8).
     const terminalUrlPunctuation = (char === "?" || char === "!")
-      && /\s{1,4}[a-z]/.test(content.slice(index + 1, index + 6));
+      && /\s{1,4}[a-z]/.test(content.slice(index + 1, index + 6))
+      && /:\/\/[^\s]*$/.test(content.slice(Math.max(0, index - 300), index));
     const newlineContinues = char === "\n" && /[:\-][ \t]*$/.test(content.slice(Math.max(0, index - 4), index));
     const endsUnit = !insideToken && !terminalUrlPunctuation && !newlineContinues
       && (char === "." || char === "!" || char === "?" || char === "\n");
