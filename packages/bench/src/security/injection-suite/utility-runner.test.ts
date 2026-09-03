@@ -280,15 +280,23 @@ test("the utility contract binds to dataset CONTENTS, not just the directory pat
     const withLink = datasetDigest(dataset);
     writeFileSync(path.join(external, "real.json"), '{"v":2}\n');
     assert.notEqual(datasetDigest(dataset), withLink, "a retargeted symlink changes the digest");
-    // A directory symlink is not walked (cycle safety) but its target path
-    // is folded in, so repointing it is still visible.
+    // A directory symlink is traversed, so files below it are hashed: an
+    // in-place edit under the link and a retarget to different contents are
+    // both visible, and a cycle does not hang the walk (PR #3079 r2).
     const externalDir = mkdtempSync(path.join(os.tmpdir(), "h5-locomo-dir-"));
     const otherDir = mkdtempSync(path.join(os.tmpdir(), "h5-locomo-dir2-"));
+    writeFileSync(path.join(externalDir, "shard.json"), '{"s":1}\n');
+    writeFileSync(path.join(otherDir, "shard.json"), '{"s":99}\n');
     symlinkSync(externalDir, path.join(dataset, "shard"));
     const withDirLink = datasetDigest(dataset);
+    writeFileSync(path.join(externalDir, "shard.json"), '{"s":2}\n');
+    assert.notEqual(datasetDigest(dataset), withDirLink, "an edit below a directory link changes the digest");
+    const withEdit = datasetDigest(dataset);
     rmSync(path.join(dataset, "shard"));
     symlinkSync(otherDir, path.join(dataset, "shard"));
-    assert.notEqual(datasetDigest(dataset), withDirLink, "a repointed directory link changes the digest");
+    assert.notEqual(datasetDigest(dataset), withEdit, "a retarget to different contents changes the digest");
+    symlinkSync(dataset, path.join(otherDir, "loop"));
+    assert.ok(datasetDigest(dataset)?.startsWith("sha256:"), "a symlink cycle terminates");
   } finally {
     if (previous === undefined) delete process.env.REMNIC_OPENAI_COMPAT_API_KEY;
     else process.env.REMNIC_OPENAI_COMPAT_API_KEY = previous;

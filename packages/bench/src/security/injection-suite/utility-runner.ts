@@ -8,7 +8,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
-  readlinkSync,
+  realpathSync,
   statSync,
   renameSync,
   rmSync,
@@ -447,7 +447,19 @@ export function datasetDigest(directory: string | undefined): string | null {
   if (!directory) return null;
   const root = path.resolve(directory);
   const files: string[] = [];
+  // Symlinks are followed (the benchmark loaders read through them) with
+  // realpath cycle protection, so a link target edited between partial runs
+  // changes the digest instead of going unnoticed (PR #3079 review).
+  const visited = new Set<string>();
   const walk = (dir: string): void => {
+    let real: string;
+    try {
+      real = realpathSync(dir);
+    } catch {
+      return;
+    }
+    if (visited.has(real)) return;
+    visited.add(real);
     for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
       const full = path.join(dir, entry.name);
       if (entry.isFile()) {
@@ -459,11 +471,6 @@ export function datasetDigest(directory: string | undefined): string | null {
         continue;
       }
       if (!entry.isSymbolicLink()) continue;
-      // The benchmark loaders read through symlinks, so the digest must too
-      // or editing a link target between partial runs would go unnoticed.
-      // Directory links are NOT walked (a link can form a cycle or point
-      // outside the frozen dataset); their target path is folded in instead,
-      // so a retarget still changes the digest.
       let target: Stats | undefined;
       try {
         target = statSync(full);
@@ -471,19 +478,12 @@ export function datasetDigest(directory: string | undefined): string | null {
         target = undefined;
       }
       if (target?.isFile()) files.push(full);
-      else linkedDirectories.push(`${full}\u0000${readlinkSync(full)}`);
+      else if (target?.isDirectory()) walk(full);
     }
   };
-  const linkedDirectories: string[] = [];
   walk(root);
   const digest = createHash("sha256");
-  for (const link of linkedDirectories.sort()) {
-    digest.update(path.relative(root, link.split("\u0000")[0] ?? "").split(path.sep).join("/"));
-    digest.update("\u0000dirlink\u0000");
-    digest.update(link.split("\u0000")[1] ?? "");
-    digest.update("\0");
-  }
-  for (const file of files) {
+  for (const file of files.sort()) {
     digest.update(path.relative(root, file).split(path.sep).join("/"));
     digest.update("\0");
     digest.update(createHash("sha256").update(readFileSync(file)).digest("hex"));

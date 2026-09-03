@@ -250,25 +250,42 @@ function readToolCalls(value: unknown): InjectionSuiteToolCall[] {
   });
 }
 
-/** Backends whose non-generic request fields are known-accepted, keyed off the endpoint. */
+/** Backends whose non-generic request fields are known-accepted. */
 export type OpenAiCompatBackend = "nim" | "ollama" | "generic";
 
-export function openAiCompatBackend(baseUrl: string): OpenAiCompatBackend {
+/** Operator override for a backend that cannot be identified from the URL. */
+export const OPENAI_COMPAT_BACKEND_ENV = "REMNIC_BENCH_OPENAI_COMPAT_BACKEND";
+
+/**
+ * Identify the backend behind an OpenAI-compatible endpoint.
+ *
+ * Only the vendor host is inferred, because a host name IS the vendor. A
+ * PORT is not an identity: `baseUrl` is operator-configurable, so LM Studio
+ * on :11434 would be mistaken for Ollama (and 400 on every request) while
+ * Ollama on another port would silently lose its no-thinking setting (PR
+ * #3079 review). Everything else is `generic` — the safe contract — unless
+ * the operator names the backend explicitly.
+ */
+export function openAiCompatBackend(
+  baseUrl: string,
+  override?: string,
+): OpenAiCompatBackend {
+  const named = (override ?? process.env[OPENAI_COMPAT_BACKEND_ENV] ?? "").trim().toLowerCase();
+  if (named === "nim" || named === "ollama" || named === "generic") return named;
+  if (named.length > 0) {
+    throw new InjectionSuiteHostFault(
+      `${OPENAI_COMPAT_BACKEND_ENV} must be one of nim, ollama, generic (got ${named})`,
+    );
+  }
   let host: string;
-  let port: string;
   try {
-    const parsed = new URL(trimTrailingSlashes(baseUrl));
     // Terminal dots are legal in a hostname and are stripped by
     // `resolveOpenAiCompatToken`; classify the same host it authenticates.
-    host = parsed.hostname.toLowerCase().replace(/\.+$/, "");
-    port = parsed.port;
+    host = new URL(trimTrailingSlashes(baseUrl)).hostname.toLowerCase().replace(/\.+$/, "");
   } catch {
     return "generic";
   }
   if (host === "integrate.api.nvidia.com" || host.endsWith(".api.nvidia.com")) return "nim";
-  // Ollama's OpenAI-compatible surface: it honors `reasoning_effort` and
-  // silently drops `chat_template_kwargs` (see local-llm.ts, issue #1996).
-  if (port === "11434") return "ollama";
   return "generic";
 }
 
@@ -281,8 +298,9 @@ export function openAiCompatBackend(baseUrl: string): OpenAiCompatBackend {
 export function openAiCompatExtensions(
   baseUrl: string,
   model: string,
+  backendOverride?: string,
 ): Record<string, unknown> {
-  const backend = openAiCompatBackend(baseUrl);
+  const backend = openAiCompatBackend(baseUrl, backendOverride);
   if (backend === "generic") return {};
   const extensions: Record<string, unknown> = {};
   const lowEffortModel =

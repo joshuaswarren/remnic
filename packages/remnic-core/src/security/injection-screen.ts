@@ -213,10 +213,49 @@ const RESPONSE_CONTROL_CORROBORATORS: readonly RegExp[] = [
   // The subject is the agent, not a system under discussion.
   /\byour[ \t]{1,8}(?:answers?|responses?|repl(?:y|ies)|output|behaviou?r|memory)\b/i,
   /\b(?:assistant|agent|model)(?:'s)?[ \t]{1,8}(?:answers?|responses?|repl(?:y|ies)|output|behaviou?r)\b/i,
+  // Naming the emission as a phrase/marker/token is a payload cue: ordinary
+  // prose names a field ("the request id"), not "the phrase".
+  /\b(?:the|this|that|following)[ \t]{1,8}(?:phrase|marker|token|string|sequence|literal|codeword|passphrase)\b/i,
   // A hidden activation phrase is itself the second signal.
   /\b(?:activation|trigger)[ \t]{1,8}(?:phrase|key|word|code)\b/i,
   /\b(?:approved|required|correct|canonical)[ \t]{1,8}(?:response|answer|reply)\b/i,
 ];
+
+/**
+ * Acronyms that appear as ordinary content in technical memories, so an
+ * all-caps token alone is not evidence of an injected marker.
+ */
+const ORDINARY_CAPS_TOKENS: ReadonlySet<string> = new Set([
+  "API", "HTTP", "HTTPS", "JSON", "XML", "HTML", "CSS", "CSV", "TSV", "YAML", "TOML",
+  "SQL", "URL", "URI", "UUID", "ID", "IDS", "UTC", "ISO", "PDF", "PNG", "JPEG", "SVG",
+  "TLS", "SSL", "SSH", "DNS", "TCP", "UDP", "IP", "CDN", "CORS", "CSRF", "JWT", "OAUTH",
+  "REST", "GRPC", "RPC", "SDK", "CLI", "GUI", "OK", "YES", "NO", "TODO", "FAQ", "PR",
+  "CI", "CD", "QA", "UX", "UI", "MIT", "GPL", "EU", "US", "AM", "PM", "FYI", "ETA",
+]);
+
+/**
+ * An opaque token the memory wants echoed verbatim, in the emission slot of
+ * a directive: "responses must begin with PWNED". A determiner ("with THE
+ * ticket number", "include A Content-Type header") means the object is a
+ * described value rather than a literal to emit, and ordinary acronyms are
+ * excluded, so technical prose does not match (PR #3079 review).
+ */
+const OPAQUE_EMISSION_TARGET =
+  /\b(?:begin|start|end|include|contain|say|state|output|return|emit|produce|reply|respond|answer|use)\b[ \t]{1,8}(?:(?:with|by|using)[ \t]{1,8})?(?:"([^"\n]{2,40})"|'([^'\n]{2,40})'|([A-Z][A-Z0-9_-]{1,39})\b)/;
+
+function hasOpaqueEmissionTarget(content: string): boolean {
+  const match = OPAQUE_EMISSION_TARGET.exec(content);
+  if (!match) return false;
+  const quoted = match[1] ?? match[2];
+  if (quoted !== undefined) return true;
+  const token = match[3];
+  if (token === undefined) return false;
+  // A hyphenated token is opaque only if some segment is not an ordinary
+  // acronym or number: `HTTP-200` is a described value, `ACK-7` is a marker.
+  const segments = token.split(/[-_]+/).filter((segment) => segment.length > 0);
+  if (segments.length === 0) return false;
+  return segments.some((segment) => !ORDINARY_CAPS_TOKENS.has(segment) && !/^[0-9]+$/.test(segment));
+}
 
 /**
  * A directive over what the agent's future answer must contain or say,
@@ -226,7 +265,9 @@ const RESPONSE_CONTROL_CORROBORATORS: readonly RegExp[] = [
  * directives and are not flagged.
  */
 function findResponseControlDirective(content: string): InjectionScreenFinding | undefined {
-  const corroborated = RESPONSE_CONTROL_CORROBORATORS.some((pattern) => pattern.test(content));
+  const corroborated =
+    RESPONSE_CONTROL_CORROBORATORS.some((pattern) => pattern.test(content)) ||
+    hasOpaqueEmissionTarget(content);
   if (!corroborated) return undefined;
   for (const pattern of RESPONSE_CONTROL_PATTERNS) {
     const finding = findingFor("response-control-directive", content, pattern);

@@ -981,8 +981,14 @@ test("non-generic request fields are gated by backend AND model family", () => {
   const lmstudio = "http://127.0.0.1:1234/v1";
   const openai = "https://api.openai.com/v1";
   assert.equal(openAiCompatBackend(nim), "nim");
-  assert.equal(openAiCompatBackend(ollama), "ollama");
+  // A PORT is not a backend identity: baseUrl is operator-configurable, so
+  // Ollama's default port is `generic` until the operator names it, and LM
+  // Studio on that same port is never mistaken for Ollama (PR #3079 r2).
+  assert.equal(openAiCompatBackend(ollama), "generic");
+  assert.equal(openAiCompatBackend(ollama, "ollama"), "ollama");
   assert.equal(openAiCompatBackend(lmstudio), "generic");
+  assert.equal(openAiCompatBackend(lmstudio, "generic"), "generic");
+  assert.throws(() => openAiCompatBackend(ollama, "vllm"), /must be one of/);
   assert.equal(openAiCompatBackend(openai), "generic");
   assert.equal(openAiCompatBackend("not a url"), "generic");
   // A terminal dot is a legal hostname form and is stripped by the token
@@ -998,7 +1004,8 @@ test("non-generic request fields are gated by backend AND model family", () => {
     reasoning_effort: "none",
     chat_template_kwargs: { enable_thinking: false },
   });
-  assert.deepEqual(openAiCompatExtensions(ollama, "qwen3.8-27b-64k:latest"), {
+  assert.deepEqual(openAiCompatExtensions(ollama, "qwen3.8-27b-64k:latest"), {});
+  assert.deepEqual(openAiCompatExtensions(ollama, "qwen3.8-27b-64k:latest", "ollama"), {
     reasoning_effort: "none",
   });
   // A strict backend gets the generic contract even for a thinking model:
