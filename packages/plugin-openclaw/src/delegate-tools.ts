@@ -242,20 +242,57 @@ export function buildDelegateMemoryGetTool(options: {
  * store while the active entry's hooks update its own.
  */
 type AdoptableTool = { name: string; execute: (...args: never[]) => Promise<unknown> };
-type DelegateToolOwner = DelegateToolWiring & {
+/**
+ * Ownership of the `memory_search` / `memory_get` names on one api.
+ *
+ * Both bridge modes register through this record: the canonical and legacy
+ * plugin ids register separately against one api and either can arrive first,
+ * so whoever registers a name keeps its identity (the host exposes no
+ * unregister, and a second `memory_search` is a name conflict) while the
+ * ACTIVE slot owner decides what that name executes.
+ */
+type DelegateToolOwner = {
   enabled: boolean;
   passive: boolean;
   /** Tool names already registered on this api; a takeover adds what is missing. */
   installed: Set<string>;
   /**
-   * Set when the memory slot's owner resolved to EMBEDDED after a passive
-   * delegate sibling already registered these names. The host exposes no
-   * unregister and a second `memory_search` is a name conflict, so the
-   * registered tools keep their identity and route to the embedded owner's
-   * implementations instead of this record's daemon wiring.
+   * What each registered name executes right now. The ACTIVE slot owner puts
+   * its own implementations here, so a name registered by a passive sibling
+   * (of either bridge mode) is repointed rather than registered twice.
    */
-  override?: Record<string, AdoptableTool>;
+  serve: Record<string, AdoptableTool>;
 };
+
+/**
+ * Register `tools` on the api under the shared ownership record: each name is
+ * registered at most once, behind a wrapper that dispatches through
+ * `owner.serve`, and the caller's implementations become what those names run.
+ */
+function installSharedTools(
+  registerTool: (tool: Record<string, unknown>, opts?: { name?: string }) => void,
+  owner: DelegateToolOwner,
+  tools: readonly AdoptableTool[],
+): void {
+  for (const tool of tools) owner.serve[tool.name] = tool;
+  for (const tool of tools) {
+    if (owner.installed.has(tool.name)) continue;
+    owner.installed.add(tool.name);
+    registerTool(
+      {
+        ...tool,
+        execute: async (...args: never[]) => {
+          const serving = owner.serve[tool.name] ?? tool;
+          if (!owner.enabled && tool.name !== "memory_search") {
+            throw new Error(`${tool.name} is disabled: the memory slot owner set openclawToolsEnabled: false`);
+          }
+          return serving.execute(...args);
+        },
+      } as unknown as Record<string, unknown>,
+      { name: tool.name },
+    );
+  }
+}
 const delegateToolOwners = new WeakMap<object, DelegateToolOwner>();
 
 type DelegateToolWiring = {
@@ -297,83 +334,81 @@ export function registerDelegateTools(
   // itself too: as the slot owner it is a tombstone a later enabled passive
   // sibling cannot bypass; as a passive entry it yields like any other.
   const existing = delegateToolOwners.get(api);
-  const owner: DelegateToolOwner = existing ?? { ...options, installed: new Set<string>() };
+  const owner: DelegateToolOwner = existing ?? {
+    enabled: options.enabled,
+    passive: options.passive,
+    installed: new Set<string>(),
+    serve: {},
+  };
   if (existing === undefined) delegateToolOwners.set(api, owner);
-  else if (existing.passive && !options.passive) Object.assign(existing, options, { installed: existing.installed });
-  else return;
+  else if (existing.passive && !options.passive) {
+    // An ACTIVE delegate entry takes the names over from a passive sibling of
+    // either mode: that sibling's implementations belong to a runtime which
+    // does not own the memory slot.
+    owner.enabled = options.enabled;
+    owner.passive = options.passive;
+  } else return;
   // `openclawToolsEnabled` is an ADAPTER toggle (see the manifest), not a
   // global tool opt-out: embedded mode answers it by registering its legacy
   // `memory_search` instead of the adapters, so a search surface always
   // survives. Delegate mode has no separate legacy implementation, so the
   // daemon-backed search stays registered and only `memory_get` — which
   // exists solely as an adapter — goes away with the flag.
-  const gated = <T extends AdoptableTool>(tool: T): T => ({
-    ...tool,
-    execute: async (...args: Parameters<T["execute"]>) => {
-      if (!owner.enabled && tool.name !== "memory_search") {
-        throw new Error(`${tool.name} is disabled: the memory slot owner set openclawToolsEnabled: false`);
-      }
-      const adopted = owner.override?.[tool.name];
-      return (adopted ?? tool).execute(...args);
-    },
-  });
-  // Per NAME, not per api: a passive entry that opted out of the adapters
-  // installed only `memory_search`, and the active sibling taking the wiring
-  // over must still add the `memory_get` its predecessor skipped. Re-adding a
-  // name would be a host tool-name conflict, so each is installed once.
-  const install = (tool: AdoptableTool): void => {
-    if (owner.installed.has(tool.name)) return;
-    owner.installed.add(tool.name);
-    registerTool(gated(tool) as unknown as Record<string, unknown>);
-  };
+  //
   // The SAME trusted scope path the capability's search takes: the session
   // binding, then the daemon's concrete default for an unbound session — never
   // an omitted namespace a scoped credential would refuse. The binding lookup
   // spends from the same budget as the daemon call.
   const resolveNamespace = (operation: string) => async (sessionKey: string, timeoutMs: number) => {
     const deadline = Date.now() + timeoutMs;
-    const bound = await owner.resolveSearchNamespace(sessionKey);
-    return owner.resolveScopedNamespace(bound, Math.max(1, deadline - Date.now()), [operation]);
+    const bound = await options.resolveSearchNamespace(sessionKey);
+    return options.resolveScopedNamespace(bound, Math.max(1, deadline - Date.now()), [operation]);
   };
-  install(buildDelegateMemorySearchTool({
-    get target() { return owner.target; },
-    get runtime() { return owner.runtime; },
-    get agentId() { return owner.agentId; },
-    get snippetMaxChars() { return owner.snippetMaxChars; },
-    get timeoutMs() { return owner.timeoutMs; },
-  }));
+  const tools: AdoptableTool[] = [buildDelegateMemorySearchTool(options)];
   if (owner.enabled) {
-    install(buildDelegateMemoryGetTool({
-      get target() { return owner.target; },
-      get serviceId() { return owner.serviceId; },
-      get timeoutMs() { return owner.timeoutMs; },
-      resolveNamespace: resolveNamespace("memory_get"),
-    }));
+    tools.push(
+      buildDelegateMemoryGetTool({
+        target: options.target,
+        serviceId: options.serviceId,
+        timeoutMs: options.timeoutMs,
+        resolveNamespace: resolveNamespace("memory_get"),
+      }),
+    );
   }
+  installSharedTools(registerTool, owner, tools);
 }
 
 /**
- * Hand tools a PASSIVE delegate entry already registered to the memory slot's
- * owner when that owner resolved to embedded mode.
+ * Register the EMBEDDED runtime's memory tools through the same ownership
+ * record the delegate path uses, and report which names the api now carries.
  *
- * The canonical and legacy plugin ids register separately against one api, so a
- * passive delegate entry can install `memory_search` / `memory_get` before the
- * slot-owning sibling resolves its own bridge mode. If that owner is embedded,
- * it must neither register those names again (a host tool-name conflict) nor
- * leave the model calling the passive entry's daemon and namespace.
- *
- * Returns the names actually adopted — the adoption can be PARTIAL, since a
- * passive entry with the adapters disabled installs `memory_search` alone — so
- * the caller registers only what is missing.
+ * Either bridge mode can register first on one api (canonical and legacy
+ * plugin ids register separately, and a passive entry registers tools too).
+ * One record means a name is registered exactly once, whoever arrives second
+ * repoints it instead of colliding, and the ACTIVE entry decides what it runs.
+ * The returned names are the ones the caller must NOT register itself —
+ * including through its legacy fallback.
  */
-export function adoptDelegateTools(
-  api: object,
-  options: { enabled: boolean; tools: readonly AdoptableTool[] },
+export function registerEmbeddedTools(
+  api: { registerTool?(tool: Record<string, unknown>, opts?: { name?: string }): void },
+  options: { enabled: boolean; passive: boolean; tools: readonly AdoptableTool[] },
 ): string[] {
-  const owner = delegateToolOwners.get(api);
-  if (owner === undefined || owner.installed.size === 0) return [];
-  owner.enabled = options.enabled;
-  const adopted = options.tools.filter((tool) => owner.installed.has(tool.name));
-  owner.override = { ...owner.override, ...Object.fromEntries(adopted.map((tool) => [tool.name, tool])) };
-  return adopted.map((tool) => tool.name);
+  if (typeof api.registerTool !== "function") return [];
+  const registerTool = api.registerTool.bind(api);
+  const existing = delegateToolOwners.get(api);
+  const owner: DelegateToolOwner = existing ?? {
+    enabled: options.enabled,
+    passive: options.passive,
+    installed: new Set<string>(),
+    serve: {},
+  };
+  if (existing === undefined) delegateToolOwners.set(api, owner);
+  // A PASSIVE entry never displaces what an ACTIVE owner is serving.
+  else if (options.passive && !existing.passive) return [...owner.installed];
+  else if (!options.passive) {
+    owner.enabled = options.enabled;
+    owner.passive = false;
+  }
+  installSharedTools(registerTool, owner, options.tools);
+  return [...owner.installed];
 }

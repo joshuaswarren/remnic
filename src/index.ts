@@ -17,7 +17,7 @@ import {
   defaultWorkspaceDir,
 } from "@remnic/core/orchestrator";
 import { beginCodexSubscriptionShutdown, getCodexSubscriptionRunnerForOwner, terminateActiveCodexSubscriptionChildren } from "@remnic/core";
-import { registerTools } from "./tools.js";
+import { buildLegacyMemorySearchTool, registerTools } from "./tools.js";
 import { registerLcmTools } from "@remnic/core/lcm/index";
 import { estimateTokens as estimateLcmTokens } from "@remnic/core/lcm/archive";
 import { registerCli } from "@remnic/core/cli";
@@ -79,7 +79,7 @@ import {
   maybeRegisterDelegateRuntime,
   type DelegateHookApi,
 } from "../packages/plugin-openclaw/src/delegate-runtime.js";
-import { adoptDelegateTools } from "../packages/plugin-openclaw/src/delegate-tools.js";
+import { registerEmbeddedTools } from "../packages/plugin-openclaw/src/delegate-tools.js";
 import {
   extractLastTurn,
   extractTextContent,
@@ -5065,30 +5065,28 @@ const pluginDefinition = {
     // CLI commands, by contrast, live in the central plugin registry (not in
     // per-registry api state), so registering them more than once would create
     // duplicate engram command trees. CLI registration stays behind the guard.
-    // A PASSIVE delegate sibling (canonical/legacy ids register separately
-    // against one api) may already carry these names. Re-registering one would
-    // be a host tool-name conflict, and leaving it alone would keep the model
-    // on that entry's daemon while this entry owns the slot — so the owner
-    // adopts what is there and registers only what is missing. Adoption is
-    // PARTIAL when that sibling had the adapters disabled: it installed
-    // `memory_search` alone.
-    let adoptedToolNames: readonly string[] = [];
-    if (typeof api.registerTool === "function") {
-      const embeddedTools = [
-        buildMemorySearchTool(orchestrator, { snippetMaxChars: cfg.openclawToolSnippetMaxChars }),
-        buildMemoryGetTool(orchestrator),
-      ];
-      adoptedToolNames = adoptDelegateTools(api, {
-        enabled: cfg.openclawToolsEnabled !== false,
-        tools: embeddedTools,
-      });
-      if (cfg.openclawToolsEnabled !== false) {
-        for (const tool of embeddedTools) {
-          if (adoptedToolNames.includes(tool.name)) continue;
-          api.registerTool(tool as Record<string, unknown>);
-        }
-      }
-    }
+    // Both bridge modes register these names through ONE ownership record
+    // (`registerEmbeddedTools` / `registerDelegateTools`): the canonical and
+    // legacy plugin ids register separately against one api and either can
+    // arrive first, including passively. The record registers each name once
+    // and lets the ACTIVE slot owner decide what it executes, so no mode ever
+    // installs a duplicate `memory_search`.
+    //
+    // With the adapters disabled this hands over the LEGACY search
+    // implementation, which is what this owner would have registered on its
+    // own — the disabled adapter must not keep serving searches just because a
+    // delegate sibling registered the name first.
+    const adaptersEnabled = cfg.openclawToolsEnabled !== false;
+    const ownedToolNames = registerEmbeddedTools(api, {
+      enabled: adaptersEnabled,
+      passive: passiveMode,
+      tools: adaptersEnabled
+        ? [
+            buildMemorySearchTool(orchestrator, { snippetMaxChars: cfg.openclawToolSnippetMaxChars }),
+            buildMemoryGetTool(orchestrator),
+          ]
+        : [buildLegacyMemorySearchTool(orchestrator)],
+    });
 
     // OpenClaw's command discovery is driven by registerCommand() entries.
     // `commands.list` is a gateway RPC surface, not a plugin typed hook, so
@@ -5125,8 +5123,8 @@ const pluginDefinition = {
       orchestrator,
       // Host-native, model-inaccessible origin for shared-context tool writes.
       getOpenClawRuntimeAgentId(api),
-      // The legacy `memory_search` must not collide with an adopted one.
-      adoptedToolNames,
+      // Names the shared ownership record already carries.
+      ownedToolNames,
     );
     // Register LCM tools when enabled
     if (orchestrator.lcmEngine?.enabled) {
