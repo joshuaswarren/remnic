@@ -198,6 +198,8 @@ export interface InjectionSuiteRunMetadata {
   requestTimeoutMs: number;
   /** Resolved OpenAI-compatible backend; it selects non-generic request fields (#3078). */
   backend?: string;
+  /** Row count the grid WOULD have had before `--limit` sliced it (#3080): lets an analyzer tell a truncating limit from a no-op one. */
+  unslicedPlannedRows?: number;
   stage: InjectionSuiteStage;
   runKind: "dev" | "pilot" | "main";
   modelProfileHash: string;

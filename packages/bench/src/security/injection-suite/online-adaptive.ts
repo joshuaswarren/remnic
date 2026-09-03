@@ -675,6 +675,20 @@ export async function runInjectionSuiteOnlineAdaptive(
     iterations: input.attackerIterations,
     ...(input.limit === undefined ? {} : { limit: input.limit }),
   });
+  // The unsliced grid size, so a later analysis can tell a limit that
+  // actually truncated the design from one at or above the row count
+  // (#3080). Pure recomputation at freeze time; no effect on the plan.
+  const unslicedPlannedRows = input.limit === undefined
+    ? undefined
+    : planOnlineAdaptiveRows({
+      seeds: input.seeds,
+      ...(input.seedBase === undefined ? {} : { seedBase: input.seedBase }),
+      variantsPerFamily: input.variantsPerFamily,
+      modelProfileId: input.modelProfileId,
+      ...(input.family === undefined ? {} : { family: input.family }),
+      ...(input.arms?.length ? { arms: input.arms } : {}),
+      iterations: input.attackerIterations,
+    }).length;
   const seeds = [...new Set(planned.map((row) => row.seed))];
   const frozen = prepareInjectionSuiteFreeze(input, planned);
   // run.json and the resume contract describe the endpoint that executes
@@ -737,6 +751,7 @@ export async function runInjectionSuiteOnlineAdaptive(
       variantsPerFamily: input.variantsPerFamily,
       family: input.family ?? null,
       limit: input.limit ?? null,
+      ...(unslicedPlannedRows === undefined ? {} : { unslicedPlannedRows }),
       expectedRows: planned.length,
       executor: defendedContract.executor,
       model: defendedContract.model,

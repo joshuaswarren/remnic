@@ -1133,6 +1133,16 @@ test("a recorded --limit makes a complete-looking smoke run non-estimable", asyn
     assert.equal(limited.rowAccounting?.limitedDesign, true);
     assert.equal(limited.decision.estimable, false);
     assert.equal(limited.decision.fencingSupported, false);
+    // A limit at or above the unsliced grid is a no-op when the unsliced
+    // count is recorded: the design is complete and analyzes normally (#3080).
+    await writeFile(
+      path.join(tmp, "run.json"),
+      `${JSON.stringify({ ...run, limit: 4, unslicedPlannedRows: 4 })}\n`,
+      "utf8",
+    );
+    const noopLimit = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(noopLimit.rowAccounting?.limitedDesign, false);
+    assert.equal(noopLimit.decision.estimable, true, "a non-truncating limit does not mark the run");
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

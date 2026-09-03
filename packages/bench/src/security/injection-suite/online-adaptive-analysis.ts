@@ -554,12 +554,17 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   const truncatedChains = [...maxPlannedIteration.values()].filter(
     (maxIteration) => maxIteration < finalIteration,
   ).length;
-  // `--limit` freezes a subset of the registered grid, so the run is a
-  // smoke artifact and never estimable, even when the cells it did freeze
-  // are complete (with K=3, `--limit 4` leaves one whole k0..k3 chain and
-  // trips no other counter). `main` forbids `--limit`, so this only labels
-  // dev artifacts honestly (#3078).
-  const limitedDesign = Number.isInteger(metadata.limit) && (metadata.limit ?? 0) > 0;
+  // A limit that actually truncated the grid freezes a subset of the
+  // registered design, so the run is a smoke artifact and never estimable
+  // (`main` forbids `--limit`; this labels dev artifacts honestly). When the
+  // unsliced count is recorded, a limit at or above it is a no-op and the
+  // run analyzes normally (#3080). Legacy runs without the field keep the
+  // conservative marking.
+  const recordedLimit = metadata.limit ?? 0;
+  const limitedDesign = Number.isInteger(recordedLimit)
+    && recordedLimit > 0
+    && (metadata.unslicedPlannedRows === undefined
+      || recordedLimit < metadata.unslicedPlannedRows);
   const incomplete =
     limitedDesign ||
     !corpusManifestPresent ||

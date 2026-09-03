@@ -247,6 +247,33 @@ const ORDINARY_CAPS_TOKENS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Common lowercase words that appear in ordinary emission slots ("replies
+ * must begin with hello", "must include thanks"). A lowercase token in the
+ * slot is treated as a marker only when it is NOT one of these (#3080).
+ * Ceiling: an attacker who picks a common word as the marker passes in the
+ * `default` profile; `hardened` applies no corroboration gate at all.
+ */
+const ORDINARY_LOWERCASE_WORDS: ReadonlySet<string> = new Set([
+  "hello", "hi", "hey", "dear", "regards", "thanks", "thank", "please", "sorry",
+  "yes", "no", "ok", "okay", "done", "ready", "pending", "active", "closed",
+  "name", "number", "date", "time", "id", "key", "value", "summary", "title",
+  "body", "text", "subject", "header", "footer", "line", "label", "field",
+  "ticket", "order", "invoice", "receipt", "customer", "user", "account",
+  "greeting", "salutation", "signature", "disclaimer", "notice", "warning",
+  "status", "version", "revision", "issue", "request", "response", "reply",
+  "answer", "output", "result", "summary", "confirmation", "acknowledgment",
+  "the", "a", "an", "this", "that", "these", "those", "your", "our", "their",
+  // Modals and function words: the slot capture can land on them when an
+  // earlier emission verb ("Each REPLY must begin with...") precedes the
+  // real one.
+  "must", "should", "shall", "will", "would", "can", "could", "may", "might",
+  "not", "never", "always", "only", "then", "also", "and", "or", "but", "to",
+  "be", "been", "being", "have", "has", "had", "do", "does", "did", "with",
+  "one", "two", "three", "first", "last", "next", "new", "old", "current",
+  "beginning", "start", "end", "middle", "top", "bottom", "prefix", "suffix",
+]);
+
+/**
  * Capitalized words that open ordinary templates ("replies must begin with
  * Dear"), so a leading capital alone is not a marker (PR #3079 r3).
  */
@@ -270,7 +297,7 @@ const OPAQUE_EMISSION_TARGET =
   /\b(?:begin|start|end|include|contain|say|state|output|return|emit|produce|reply|respond|answer|replace|becomes?|is|are|be)\b[ \t]{1,8}(?:(?:with|by|exactly)[ \t]{1,8})?(?:normal[ \t]{1,8}behaviou?r[ \t]{1,8}with[ \t]{1,8})?/gi;
 
 /** The emission slot's own content: a quoted payload or a shaped marker. */
-const EMISSION_SLOT_VALUE = /^(?:"([^"\n]{2,40})"|'([^'\n]{2,40})'|([A-Z][A-Za-z0-9_-]{1,39})\b)/;
+const EMISSION_SLOT_VALUE = /^(?:"([^"\n]{2,40})"|'([^'\n]{2,40})'|([A-Za-z][A-Za-z0-9_-]{1,39})\b)/;
 
 /**
  * Sentence split that never cuts inside a quoted span: a payload like
@@ -282,7 +309,9 @@ function splitSentencesOutsideQuotes(content: string): string[] {
   let current = "";
   let quote: string | undefined;
   let previous = "";
-  for (const char of content) {
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index]!;
+    const rest = content.slice(index + 1);
     if (quote !== undefined) {
       current += char;
       if (char === quote) quote = undefined;
@@ -298,7 +327,14 @@ function splitSentencesOutsideQuotes(content: string): string[] {
       previous = char;
       continue;
     }
-    if (char === "." || char === "!" || char === "?" || char === "\n") {
+    // A period only ends a sentence when the next character is whitespace or
+    // the end: dots inside URLs, hostnames, decimals, and version strings
+    // ("https://example.com/canary/x to answers") must not split a sentence
+    // that carries both the directive and its payload (#3080).
+    const endsSentence =
+      char === "!" || char === "?" || char === "\n"
+      || (char === "." && !/[^\s]/.test(rest.slice(0, 1)));
+    if (endsSentence) {
       if (current.trim().length > 0) sentences.push(current);
       current = "";
       previous = char;
@@ -362,7 +398,15 @@ function hasOpaqueEmissionTarget(sentence: string): boolean {
       return true;
     }
     const token = match[3];
-    if (token !== undefined && !isOrdinaryToken(token)) return true;
+    if (token === undefined) continue;
+    // An uppercase-initial token is judged by its shape (marker vs acronym
+    // or field name); a single lowercase word is a marker only when it is
+    // not common prose ("begin with pwned" vs "begin with hello"), #3080.
+    if (/^[a-z][-a-z0-9_]*$/.test(token)) {
+      if (token.split(/[-_]+/).every((segment) => ORDINARY_LOWERCASE_WORDS.has(segment))) continue;
+      return true;
+    }
+    if (!isOrdinaryToken(token)) return true;
   }
   return false;
 }
@@ -388,7 +432,22 @@ function findResponseControlDirective(
   // signal, which is what keeps ordinary response prose out of quarantine.
   if (profile === "hardened") return directive;
   // Cue scope is a measured trade; see RESPONSE_CONTROL_CORROBORATORS.
-  if (RESPONSE_CONTROL_CORROBORATORS.some((pattern) => pattern.test(content))) return directive;
+  // Corroborators are sentence-local now that sentence splitting no longer
+  // breaks URLs: a cue in an unrelated sentence ("The fixture value is
+  // CANARY.") cannot corroborate an ordinary directive, while a payload the
+  // directive sentence itself names ("...add https://... to answers...")
+  // still does (#3080).
+  if (
+    splitSentencesOutsideQuotes(content).some(
+      (sentence) =>
+        RESPONSE_CONTROL_PATTERNS.some((pattern) => pattern.test(sentence))
+        && (RESPONSE_CONTROL_CORROBORATORS.some((pattern) => pattern.test(sentence))
+          || hasOpaqueEmissionTarget(sentence)),
+    )
+  ) return directive;
+  // ...unless no sentence boundary exists at all (single-line payloads).
+  if (!/[.!?\n]/.test(content)
+    && RESPONSE_CONTROL_CORROBORATORS.some((pattern) => pattern.test(content))) return directive;
   for (const sentence of splitSentencesOutsideQuotes(content)) {
     if (!RESPONSE_CONTROL_PATTERNS.some((pattern) => pattern.test(sentence))) continue;
     if (hasOpaqueEmissionTarget(sentence)) return directive;
