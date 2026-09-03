@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.69.60",
+  "version": "9.69.61",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -597,7 +597,7 @@
       "boxTopicShiftThreshold": {
         "type": "number",
         "default": 0.35,
-        "description": "Jaccard overlap threshold below which a topic shift seals the current box (0\u20131)."
+        "description": "Jaccard overlap threshold below which a topic shift seals the current box (0–1)."
       },
       "briefing": {
         "type": "object",
@@ -3243,7 +3243,7 @@
       "lifecyclePolicyEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Enable the lifecycle policy engine (hot\u2194cold tier migration, value scoring, decay). Default true since #686 - flipping enables the year-2 retention story by default. Set to false to opt out."
+        "description": "Enable the lifecycle policy engine (hot↔cold tier migration, value scoring, decay). Default true since #686 - flipping enables the year-2 retention story by default. Set to false to opt out."
       },
       "lifecyclePromoteHeatThreshold": {
         "type": "number",
@@ -5099,7 +5099,7 @@
         "minimum": 0,
         "maximum": 1,
         "default": 0.55,
-        "description": "Minimum query\u2194memory token-overlap ratio for direct-answer eligibility. Set to 0 to disable the gate."
+        "description": "Minimum query↔memory token-overlap ratio for direct-answer eligibility. Set to 0 to disable the gate."
       },
       "recallDisclosureEscalation": {
         "type": "string",
@@ -5927,7 +5927,7 @@
           "enabled": {
             "type": "boolean",
             "default": false,
-            "description": "Stamp a `subject` (user|agent) on extracted memories: category defaults (preference/relationship/moment/commitment \u2192 user; procedure/principle/skill \u2192 agent) with an optional extractor override for fact/decision-like facts. Default off - writes stay byte-identical until enabled."
+            "description": "Stamp a `subject` (user|agent) on extracted memories: category defaults (preference/relationship/moment/commitment → user; procedure/principle/skill → agent) with an optional extractor override for fact/decision-like facts. Default off - writes stay byte-identical until enabled."
           }
         }
       },
@@ -6248,7 +6248,7 @@
       "traceWeaverOverlapThreshold": {
         "type": "number",
         "default": 0.4,
-        "description": "Minimum Jaccard topic overlap to assign the same traceId (0\u20131)."
+        "description": "Minimum Jaccard topic overlap to assign the same traceId (0–1)."
       },
       "transcriptEnabled": {
         "type": "boolean",
@@ -6298,12 +6298,12 @@
       "trustScoreMaxMultiplier": {
         "type": "number",
         "default": 1.25,
-        "description": "Upper bound of the trust multiplier mapping [0,1] \u2192 [minMultiplier, maxMultiplier]."
+        "description": "Upper bound of the trust multiplier mapping [0,1] → [minMultiplier, maxMultiplier]."
       },
       "trustScoreMinMultiplier": {
         "type": "number",
         "default": 0.5,
-        "description": "Lower bound of the trust multiplier mapping [0,1] \u2192 [minMultiplier, maxMultiplier]."
+        "description": "Lower bound of the trust multiplier mapping [0,1] → [minMultiplier, maxMultiplier]."
       },
       "trustScoreQuarantine": {
         "type": "boolean",
