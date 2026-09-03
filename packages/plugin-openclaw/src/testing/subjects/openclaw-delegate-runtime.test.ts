@@ -30,6 +30,8 @@ interface DelegateLifecycleState {
 interface DaemonStub {
   port: number;
   calls: RecordedCall[];
+  /** Resolves when the NEXT request for `pathname` arrives. */
+  nextCall: (pathname: string) => Promise<RecordedCall>;
   close: () => Promise<void>;
 }
 
@@ -50,6 +52,7 @@ function recordingApi(): RecordingApi {
 
 async function startDaemonStub(): Promise<DaemonStub> {
   const calls: RecordedCall[] = [];
+  const arrivals: Array<{ pathname: string; resolve: (call: RecordedCall) => void }> = [];
   const server = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (chunk: Buffer) => {
@@ -62,7 +65,12 @@ async function startDaemonStub(): Promise<DaemonStub> {
       } catch {
         body = {};
       }
-      calls.push({ pathname: req.url ?? "", body });
+      const call = { pathname: req.url ?? "", body };
+      calls.push(call);
+      for (const waiter of arrivals.splice(0)) {
+        if (waiter.pathname === call.pathname) waiter.resolve(call);
+        else arrivals.push(waiter);
+      }
       res.setHeader("content-type", "application/json");
       const requestedNamespaces = Array.isArray(body.namespaces) ? body.namespaces : undefined;
       const response =
@@ -106,6 +114,11 @@ async function startDaemonStub(): Promise<DaemonStub> {
   return {
     port: address.port,
     calls,
+    nextCall: (pathname) => {
+      const { promise, resolve } = Promise.withResolvers<RecordedCall>();
+      arrivals.push({ pathname, resolve });
+      return promise;
+    },
     close: () => {
       const closed = Promise.withResolvers<void>();
       server.close(() => closed.resolve());
@@ -200,13 +213,15 @@ const subject: LifecycleSubject<DelegateLifecycleState> = {
   async exercise(state: DelegateLifecycleState, row: MatrixRow): Promise<void> {
     const { sessionKey } = state;
     switch (row.id) {
-      case "explicit-provider-identity":
+      case "explicit-provider-identity": {
         await invoke(
           state,
           "before_prompt_build",
           { prompt: "recall this retained memory" },
           namespaceContext(sessionKey, "team-explicit")
         );
+        // `agent_end` detaches its observe POST; wait for it to reach the daemon.
+        const observeArrived = state.daemon.nextCall("/engram/v1/observe");
         await invoke(
           state,
           "agent_end",
@@ -220,7 +235,9 @@ const subject: LifecycleSubject<DelegateLifecycleState> = {
           },
           namespaceContext(sessionKey, "team-explicit")
         );
+        await observeArrived;
         return;
+      }
       case "sparse-metadata-with-binding":
         await state.namespaceBindings.remember(sessionKey, "team-remembered");
         await invoke(state, "before_prompt_build", { prompt: "recall this retained memory" }, { sessionKey });

@@ -17,7 +17,7 @@ import {
   defaultWorkspaceDir,
 } from "@remnic/core/orchestrator";
 import { beginCodexSubscriptionShutdown, getCodexSubscriptionRunnerForOwner, terminateActiveCodexSubscriptionChildren } from "@remnic/core";
-import { registerTools } from "./tools.js";
+import { buildLegacyMemorySearchToolForPublicShape, registerTools } from "./tools.js";
 import { registerLcmTools } from "@remnic/core/lcm/index";
 import { estimateTokens as estimateLcmTokens } from "@remnic/core/lcm/archive";
 import { registerCli } from "@remnic/core/cli";
@@ -79,6 +79,7 @@ import {
   maybeRegisterDelegateRuntime,
   type DelegateHookApi,
 } from "../packages/plugin-openclaw/src/delegate-runtime.js";
+import { registerEmbeddedTools } from "../packages/plugin-openclaw/src/delegate-tools.js";
 import {
   extractLastTurn,
   extractTextContent,
@@ -1301,12 +1302,25 @@ async function embedBatchWithOpenClawProvider(
 /** SDK capabilities detected at register() time — available to later tasks. */
 let sdkCaps: SdkCapabilities | undefined;
 
+/**
+ * Modes whose register() inspects static surfaces only. OpenClaw's loader
+ * (`resolvePluginRegistrationCapabilities`) accepts capability handlers —
+ * tools, hooks, the memory capability — in `full`, `discovery`, AND
+ * `tool-discovery`, and the agent runtime that serves `openclaw agent` turns
+ * registers in the discovery modes. Treating them as non-runtime skipped
+ * register() there, so that runtime had no tools, no before_prompt_build,
+ * and no agent_end.
+ */
 const NON_RUNTIME_REGISTRATION_MODES = new Set<OpenClawRegistrationMode>([
-  "discovery",
-  "tool-discovery",
   "setup-only",
   "setup-runtime",
   "cli-metadata",
+]);
+
+/** Read-only discovery passes: capability handlers register, filesystem writes stay off. */
+const DISCOVERY_REGISTRATION_MODES = new Set<OpenClawRegistrationMode>([
+  "discovery",
+  "tool-discovery",
 ]);
 
 function isNonRuntimeRegistrationMode(
@@ -1362,9 +1376,15 @@ const pluginDefinition = {
       return;
     }
 
+    // Discovery passes inspect the plugin's surfaces: capability handlers
+    // register, filesystem maintenance stays off.
+    const discoveryPass =
+      typeof sdkCaps.registrationMode === "string" &&
+      DISCOVERY_REGISTRATION_MODES.has(sdkCaps.registrationMode);
     const disableRegisterMigration =
       readEnvVar("REMNIC_DISABLE_REGISTER_MIGRATION") === "1" ||
-      readEnvVar("OPENCLAW_ENGRAM_DISABLE_REGISTER_MIGRATION") === "1";
+      readEnvVar("OPENCLAW_ENGRAM_DISABLE_REGISTER_MIGRATION") === "1" ||
+      discoveryPass;
     if (!disableRegisterMigration) {
       const migrationPromise = ((globalThis as any)[ENGRAM_MIGRATION_PROMISE] ??=
         migrateFromEngram({
@@ -1481,6 +1501,8 @@ const pluginDefinition = {
       shouldSkipRecall: (sk: string) => shouldSkipRecallForSession(sk, cfg),
       cwd: getOpenClawRuntimeWorkspaceDir(api),
       flushOnResetEnabled: cfg.flushOnResetEnabled,
+      openclawToolsEnabled: cfg.openclawToolsEnabled,
+      openclawToolSnippetMaxChars: cfg.openclawToolSnippetMaxChars,
       supportPassportModelRoute: delegateSupportPassportGatewayRoute ?? undefined,
       // Memory-slot capability inputs. Mirrors the embedded derivation: the
       // registration-time runtime agent owns this memory, and QMD is the
@@ -2002,12 +2024,13 @@ const pluginDefinition = {
       await queueDreamSurfaceSync();
     }
 
-    void pruneRecallAuditEntries(
-      recallAuditDir,
-      cfg.recallTranscriptRetentionDays,
-    ).catch((error) => {
-      log.debug(`recall audit prune failed: ${String(error)}`);
-    });
+    // Retention maintenance deletes audit directories: a runtime concern, not
+    // something a read-only discovery pass may do to the memory dir.
+    if (!discoveryPass) {
+      void pruneRecallAuditEntries(recallAuditDir, cfg.recallTranscriptRetentionDays).catch((error) => {
+        log.debug(`recall audit prune failed: ${String(error)}`);
+      });
+    }
     const sessionCommandDescriptors = buildSessionCommandDescriptors(serviceId, {
       toggles: sessionToggleStore,
       getLastRecall: (sessionKey) => orchestrator.getLastRecall(sessionKey),
@@ -5042,21 +5065,40 @@ const pluginDefinition = {
     // CLI commands, by contrast, live in the central plugin registry (not in
     // per-registry api state), so registering them more than once would create
     // duplicate engram command trees. CLI registration stays behind the guard.
-    if (cfg.openclawToolsEnabled !== false && typeof api.registerTool === "function") {
-      api.registerTool(
-        buildMemorySearchTool(orchestrator, {
-          snippetMaxChars: cfg.openclawToolSnippetMaxChars,
-        }) as Record<string, unknown>,
-      );
-      api.registerTool(buildMemoryGetTool(orchestrator) as Record<string, unknown>);
-    }
+    // Both bridge modes register these names through ONE ownership record
+    // (`registerEmbeddedTools` / `registerDelegateTools`): the canonical and
+    // legacy plugin ids register separately against one api and either can
+    // arrive first, including passively. The record registers each name once
+    // and lets the ACTIVE slot owner decide what it executes, so no mode ever
+    // installs a duplicate `memory_search`.
+    //
+    // With the adapters disabled this hands over the LEGACY search
+    // implementation, which is what this owner would have registered on its
+    // own — the disabled adapter must not keep serving searches just because a
+    // delegate sibling registered the name first.
+    const adaptersEnabled = cfg.openclawToolsEnabled !== false;
+    const ownedToolNames = registerEmbeddedTools(api, {
+      enabled: adaptersEnabled,
+      passive: passiveMode,
+      tools: adaptersEnabled
+        ? [
+            buildMemorySearchTool(orchestrator, { snippetMaxChars: cfg.openclawToolSnippetMaxChars }),
+            buildMemoryGetTool(orchestrator),
+          ]
+        : [buildLegacyMemorySearchToolForPublicShape(orchestrator)],
+    });
 
     // OpenClaw's command discovery is driven by registerCommand() entries.
     // `commands.list` is a gateway RPC surface, not a plugin typed hook, so
     // attempting to bind it through api.on() produces an "unknown typed hook"
     // warning on current runtimes.
     const commandApi = api as { registerCommand?: (spec: unknown) => void };
+    // Durable command registration is a runtime concern: a discovery pass is
+    // transient, its registrations are discarded, and claiming the
+    // process-global guard here would make the later full registration skip
+    // them — leaving the deployment with no session commands at all.
     if (
+      !discoveryPass &&
       !passiveMode &&
       cfg.commandsListEnabled &&
       cfg.sessionTogglesEnabled !== false
@@ -5081,6 +5123,8 @@ const pluginDefinition = {
       orchestrator,
       // Host-native, model-inaccessible origin for shared-context tool writes.
       getOpenClawRuntimeAgentId(api),
+      // Names the shared ownership record already carries.
+      ownedToolNames,
     );
     // Register LCM tools when enabled
     if (orchestrator.lcmEngine?.enabled) {
@@ -5092,7 +5136,7 @@ const pluginDefinition = {
 
     // CLI guard is intentionally process-global (not per-serviceId) because CLI
     // commands live in the gateway's central registry.  See CLI_REGISTERED_GUARD.
-    if (!(globalThis as any)[CLI_REGISTERED_GUARD]) {
+    if (!discoveryPass && !(globalThis as any)[CLI_REGISTERED_GUARD]) {
       (globalThis as any)[CLI_REGISTERED_GUARD] = true;
       registerCli(
         api as unknown as Parameters<typeof registerCli>[0],

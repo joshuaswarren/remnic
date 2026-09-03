@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import test from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { Worker } from "node:worker_threads";
 import { initLogger, resetLogger } from "@remnic/core/logger";
 
@@ -22,6 +23,7 @@ import {
   SESSION_NAMESPACE_BINDING_MAX_ENTRIES,
   createFileSessionNamespaceBindingStore,
   createInMemorySessionNamespaceBindingStore,
+  type SessionNamespaceBindingStore,
 } from "@remnic/core/session-namespace-bindings";
 
 /**
@@ -50,6 +52,8 @@ interface RecordedCall {
 interface DaemonStub {
   port: number;
   calls: RecordedCall[];
+  /** Resolves when the NEXT request for `pathname` arrives. */
+  nextCall: (pathname: string) => Promise<RecordedCall>;
   close: () => Promise<void>;
 }
 
@@ -110,6 +114,7 @@ async function startDaemonStub(
   } = {},
 ): Promise<DaemonStub> {
   const calls: RecordedCall[] = [];
+  const arrivals: Array<{ pathname: string; resolve: (call: RecordedCall) => void }> = [];
   let capabilityResponseIndex = 0;
   const server = http.createServer((req, res) => {
     let raw = "";
@@ -124,7 +129,12 @@ async function startDaemonStub(
       } catch {
         // empty/non-JSON bodies stay {}
       }
-      calls.push({ pathname, body });
+      const call = { pathname, body };
+      calls.push(call);
+      for (const waiter of arrivals.splice(0)) {
+        if (waiter.pathname === pathname) waiter.resolve(call);
+        else arrivals.push(waiter);
+      }
       const capabilityResponse =
         pathname === "/engram/v1/capabilities"
           ? options.capabilityResponses?.[capabilityResponseIndex++]
@@ -198,6 +208,11 @@ async function startDaemonStub(
   return {
     port: address.port,
     calls,
+    nextCall: (pathname) => {
+      const { promise, resolve } = Promise.withResolvers<RecordedCall>();
+      arrivals.push({ pathname, resolve });
+      return promise;
+    },
     close: () => {
       const closed = Promise.withResolvers<void>();
       server.close(() => closed.resolve());
@@ -245,6 +260,18 @@ async function invoke(
   const list = api.handlers.get(hook);
   assert.ok(list && list.length === 1, `exactly one handler registered for ${hook}`);
   return await list[0](event, ctx);
+}
+
+/**
+ * `agent_end` returns before its observe POST settles (the turn capture is
+ * detached from the hook), so a test that inspects the daemon's observe
+ * calls waits for the expected number to ARRIVE first.
+ */
+async function observed(stub: DaemonStub, count = 1): Promise<RecordedCall[]> {
+  const observes = () => stub.calls.filter((call) => call.pathname === "/engram/v1/observe");
+  while (observes().length < count) await stub.nextCall("/engram/v1/observe");
+  assert.equal(observes().length, count, `${count} observe call(s) reached the daemon`);
+  return observes();
 }
 
 test("delegate recall injects daemon context under the memory header", async () => {
@@ -406,8 +433,7 @@ test("delegate agent_end observes exactly the last turn's textual messages", asy
       { sessionKey: "session-c" },
     );
 
-    const observe = stub.calls.find((call) => call.pathname === "/engram/v1/observe");
-    assert.ok(observe, "daemon observe route was called");
+    const [observe] = await observed(stub);
     const messages = observe.body.messages as Array<Record<string, unknown>>;
     assert.deepEqual(
       messages,
@@ -586,6 +612,7 @@ test("delegate records a matching default scope as a session rebind", async () =
       },
       { sessionKey, runtime: { agent: { session: { namespace: "team-named" } } } },
     );
+    await observed(stub, 1);
     const defaultScopeContext = { sessionKey, runtime: { agent: { session: {} } } };
     await invoke(
       api,
@@ -617,6 +644,7 @@ test("delegate records a matching default scope as a session rebind", async () =
       },
       { sessionKey },
     );
+    await observed(stub, 3);
 
     const calls = stub.calls.filter((call) =>
       ["/engram/v1/recall", "/engram/v1/observe"].includes(call.pathname),
@@ -891,6 +919,250 @@ test("delegate flushes every namespace observed before a session rebind", async 
   }
 });
 
+test("delegate flushes again when the observe queue outlasts the lifecycle drain", async () => {
+  // Each observe fits its own cap (half the flush budget), but a QUEUE of them
+  // does not: the drain gives up mid-queue, so the turns still in flight would
+  // buffer behind the flush that already ran. A follow-up flush chained behind
+  // the queue is what keeps an ended session's last turns from being stranded.
+  const stub = await startDaemonStub(async (pathname) => {
+    if (pathname === "/engram/v1/observe") {
+      await sleep(350);
+      return { accepted: true };
+    }
+    if (pathname === "/engram/v1/lcm/compaction/flush") return { flushed: true };
+    return { accepted: true };
+  });
+  try {
+    const api = recordingApi();
+    // Drain and per-observe cap are both 500ms: each 350ms observe fits its
+    // own cap, two of them outlast the drain. Wide margins on purpose — this
+    // ordering must not depend on load.
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 1_000 }));
+    const sessionKey = "late-observe-session";
+    for (const turn of ["first", "second"]) {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${turn} turn before the session ends` },
+            { role: "assistant", content: "the turn is captured" },
+          ],
+        },
+        { sessionKey },
+      );
+    }
+    const flushPath = "/engram/v1/lcm/compaction/flush";
+    assert.equal(await invoke(api, "session_end", { sessionKey }), true);
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === flushPath).length,
+      1,
+      "the lifecycle flush proceeds rather than overrunning the host's deadline",
+    );
+    // The follow-up runs once the queue drains, so the late turns are flushed.
+    await stub.nextCall(flushPath);
+    assert.equal(stub.calls.filter((call) => call.pathname === flushPath).length, 2);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate follow-up drains the ended generation even when newer turns arrive", async () => {
+  // A turn observed under the same key after the lifecycle hook returned must
+  // not cancel the deferred flush: the daemon buffers per session, so
+  // abandoning it would strand the ended generation's late turns until some
+  // later lifecycle event. The follow-up drains the whole queue instead.
+  const stub = await startDaemonStub(async (pathname) => {
+    if (pathname === "/engram/v1/observe") {
+      await sleep(350);
+      return { accepted: true };
+    }
+    if (pathname === "/engram/v1/lcm/compaction/flush") return { flushed: true };
+    return { accepted: true };
+  });
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 1_000 }));
+    const sessionKey = "post-reset-session";
+    const observeTurn = async (turn: string): Promise<void> => {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${turn} turn of this session` },
+            { role: "assistant", content: "the turn is captured" },
+          ],
+        },
+        { sessionKey },
+      );
+    };
+    await observeTurn("first");
+    await observeTurn("second");
+    const flushPath = "/engram/v1/lcm/compaction/flush";
+    assert.equal(await invoke(api, "before_reset", { sessionKey }), true);
+    // A new turn under the same key BEFORE the old queue settles.
+    await observeTurn("post-reset");
+    await stub.nextCall(flushPath);
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === flushPath).length,
+      2,
+      "the ended generation is drained rather than discarded",
+    );
+    const observes = stub.calls.filter((call) => call.pathname === "/engram/v1/observe");
+    assert.equal(observes.length, 3, "every turn reached the daemon before the follow-up flush");
+  } finally {
+    await stub.close();
+  }
+});
+
+
+test("a second lifecycle event does not stack a duplicate follow-up drain", async () => {
+  // The follow-up releases its ownership marker before its own flush so that
+  // flush can chain a successor. A lifecycle event arriving while the
+  // successor is queued must NOT schedule a parallel drain: overlapping
+  // follow-ups mean duplicate daemon flush/extraction requests for one
+  // session.
+  const stub = await startDaemonStub(async (pathname) => {
+    if (pathname === "/engram/v1/observe") return new Promise<Record<string, unknown>>(() => {});
+    if (pathname === "/engram/v1/lcm/compaction/flush") return { flushed: true };
+    return { accepted: true };
+  });
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 400 }));
+    const sessionKey = "stacked-followup-session";
+    const observePath = "/engram/v1/observe";
+    const flushPath = "/engram/v1/lcm/compaction/flush";
+    const observeTurn = async (turn: number): Promise<void> => {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture turn ${turn} of this session` },
+            { role: "assistant", content: "the turn is captured" },
+          ],
+        },
+        { sessionKey },
+      );
+    };
+    await observeTurn(0);
+    await observeTurn(1);
+    // Two lifecycle events, each finding a queue it cannot drain in time.
+    assert.equal(await invoke(api, "session_end", { sessionKey }), true);
+    for (let turn = 2; turn <= 5; turn += 1) {
+      const arrived = stub.nextCall(observePath);
+      await observeTurn(turn);
+      await arrived;
+    }
+    assert.equal(await invoke(api, "before_reset", { sessionKey }), true);
+    const lifecycleFlushes = 2;
+    const lastIndexOf = (pathname: string): number =>
+      stub.calls.reduce((found, call, index) => (call.pathname === pathname ? index : found), -1);
+    const deadline = Date.now() + 20_000;
+    while (lastIndexOf(flushPath) < lastIndexOf(observePath) && Date.now() < deadline) {
+      await sleep(50);
+    }
+    const flushes = stub.calls.filter((call) => call.pathname === flushPath).length;
+    // Two lifecycle flushes plus at most one deferred chain link per lifecycle
+    // event — never a fan-out of overlapping drains.
+    assert.ok(flushes >= lifecycleFlushes, `both lifecycle flushes ran (saw ${flushes})`);
+    assert.ok(flushes <= lifecycleFlushes + 2, `no stacked follow-up drains (saw ${flushes})`);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("a stalling batch flush still leaves the per-namespace fallback usable time", async () => {
+  // The batch request is an optimization whose failure path is the singular
+  // flushes. A batch that accepts the connection and stalls must not spend the
+  // whole lifecycle deadline, or that fallback times out too and the ended
+  // session's turns stay buffered.
+  const stub = await startDaemonStub(async (pathname, body) => {
+    if (pathname === "/engram/v1/lcm/compaction/flush") {
+      // The batch shape carries `namespaces`; the singular one does not.
+      if (Array.isArray(body.namespaces)) return new Promise<Record<string, unknown>>(() => {});
+      return { flushed: true };
+    }
+    return { accepted: true };
+  });
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 1_000 }));
+    const sessionKey = "stalling-batch-session";
+    for (const namespace of ["team-first", "team-second"]) {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${namespace} turn of this session` },
+            { role: "assistant", content: "the turn is captured" },
+          ],
+        },
+        { sessionKey, runtime: { agent: { session: { namespace } } } },
+      );
+    }
+    assert.equal(
+      await invoke(api, "session_end", { sessionKey }),
+      true,
+      "the singular fallback flushes still had budget after the batch stalled",
+    );
+    const singular = stub.calls.filter(
+      (call) => call.pathname === "/engram/v1/lcm/compaction/flush" && !Array.isArray(call.body.namespaces),
+    );
+    assert.equal(singular.length, 2, "one fallback flush per remembered namespace");
+  } finally {
+    await stub.close();
+  }
+});
+
+test("a stalling batch-support probe still leaves the fallback flush usable time", async () => {
+  // The `/engram/v1/capabilities` probe is an optimization: one batched flush
+  // instead of one per namespace. A cold probe that stalls to its timeout must
+  // not spend the whole lifecycle deadline, or the individual fallback flush
+  // starts with nothing left and the ended session's turns stay buffered.
+  const stub = await startDaemonStub(async (pathname) => {
+    if (pathname === "/engram/v1/capabilities") return new Promise<Record<string, unknown>>(() => {});
+    if (pathname === "/engram/v1/lcm/compaction/flush") return { flushed: true };
+    return { accepted: true };
+  }, { batchFlush: false });
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 1_000 }));
+    const sessionKey = "stalling-probe-session";
+    // Two remembered namespaces, so the batch probe runs at all.
+    for (const namespace of ["team-first", "team-second"]) {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${namespace} turn of this session` },
+            { role: "assistant", content: "the turn is captured" },
+          ],
+        },
+        { sessionKey, runtime: { agent: { session: { namespace } } } },
+      );
+    }
+    assert.equal(
+      await invoke(api, "session_end", { sessionKey }),
+      true,
+      "the per-namespace fallback flush still had budget after the probe stalled",
+    );
+    const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.equal(flushes.length, 2, "one flush per remembered namespace");
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate batches rebound namespace flushes within one hook deadline", async () => {
   const pendingFlushes: Array<() => void> = [];
   const stub = await startDaemonStub((pathname) => {
@@ -904,7 +1176,10 @@ test("delegate batches rebound namespace flushes within one hook deadline", asyn
   });
   try {
     const api = recordingApi();
-    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 50 }));
+    // Wide enough that the lifecycle drain (half the flush budget) is not the
+    // thing under test here: this case is about batching two rebound
+    // namespaces into ONE flush request.
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 400 }));
     const sessionKey = "concurrent-rebound-session";
 
     for (const namespace of ["team-first", "team-second"]) {
@@ -1777,21 +2052,136 @@ test("delegate preserves legacy bindings while the legacy adapter is active", as
     await stub.close();
   }
 });
-test("delegate passive mode skips memory hooks but keeps the passport model worker", async () => {
+test("delegate passive mode skips memory hooks and capability but keeps the tools and passport model worker", async () => {
   const api = recordingApi() as RecordingApi & {
     services: Array<{ id: string }>;
     registerService(service: { id: string }): void;
   };
   api.services = [];
   api.registerService = (service) => api.services.push(service);
+  const tools: string[] = [];
+  const capabilities: string[] = [];
+  Object.assign(api, {
+    registerTool: (tool: { name: string }) => tools.push(tool.name),
+    registerMemoryCapability: () => capabilities.push("capability"),
+    registerMemoryRuntime: () => capabilities.push("runtime"),
+  });
   registerDelegateRuntime(api, optionsFor(1, {
     passive: true,
     supportPassportModelRoute: { kind: "gateway", invoke: async () => null },
   }));
   assert.equal(api.handlers.size, 0, "passive slot mode must not register hooks");
+  assert.deepEqual(capabilities, [], "passive slot mode must not claim the memory slot");
+  // Embedded parity: the explicit tools stay available in passive mode.
+  assert.deepEqual(tools.sort(), ["memory_get", "memory_search"]);
   assert.deepEqual(api.services.map((service) => service.id), [
     "openclaw-remnic:support-passport-model",
   ]);
+});
+
+test("delegate tools registered by a passive entry follow the active sibling on the same api", async () => {
+  const stub = await startDaemonStub((pathname) => {
+    if (pathname === "/engram/v1/memories/search") {
+      return { query: "rollout", count: 1, results: [{ path: "facts/f.md", score: 0.9, snippet: "we decided to roll out on Monday" }] };
+    }
+    return pathname.startsWith("/engram/v1/memories/fact-1")
+      ? { found: true, memory: { id: "fact-1", content: "x", frontmatter: { id: "fact-1" } } }
+      : { accepted: true };
+  });
+  try {
+    const api = recordingApi();
+    const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
+    Object.assign(api, {
+      registerTool(tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }): void {
+        tools.set(tool.name, tool);
+      },
+    });
+    // The legacy id loads first, passively, with its own (empty) binding store
+    // and a tight snippet cap.
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true, openclawToolSnippetMaxChars: 12 }),
+    );
+    // The canonical id then owns the slot; its hooks update ITS bindings and
+    // its config is the one that counts.
+    const canonicalBindings = createInMemorySessionNamespaceBindingStore();
+    await canonicalBindings.remember("tool-session", "team-alpha");
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, { namespaceBindings: canonicalBindings, openclawToolSnippetMaxChars: 4_000 }),
+    );
+    assert.equal(tools.size, 2, "the tools are registered once per api");
+    // memory_get scopes through the ACTIVE entry's bindings, not the passive
+    // entry's stale store: the bound scope is accepted and reaches the daemon.
+    await tools.get("memory_get")!.execute(
+      "tc-1",
+      { id: "fact-1", namespace: "team-alpha" },
+      undefined,
+      { sessionKey: "tool-session" },
+    );
+    const get = stub.calls.find((call) => call.pathname.startsWith("/engram/v1/memories/fact-1"));
+    assert.ok(get, "the get reached the daemon");
+    assert.equal(new URL(get.pathname, "http://daemon").searchParams.get("namespace"), "team-alpha");
+    const searched = (await tools.get("memory_search")!.execute(
+      "tc-2",
+      { query: "rollout" },
+      undefined,
+      { sessionKey: "tool-session" },
+    )) as { content: Array<{ text: string }> };
+    assert.deepEqual(
+      JSON.parse(searched.content[0]!.text),
+      { results: [{ id: "f", score: 0.9, text: "we decided to roll out on Monday" }], truncated: false },
+      "the snippet cap is the active owner's, not the passive entry's eager one",
+    );
+
+    // An active owner that opts out of the tools makes the sibling-installed
+    // tools inert (the host exposes no unregister).
+    const optedOutApi = recordingApi();
+    const optedOutTools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
+    Object.assign(optedOutApi, {
+      registerTool(tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }): void {
+        optedOutTools.set(tool.name, tool);
+      },
+    });
+    registerDelegateRuntime(optedOutApi, optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true }));
+    registerDelegateRuntime(optedOutApi, optionsFor(stub.port, { openclawToolsEnabled: false }));
+    // The flag is an ADAPTER toggle: `memory_get` goes inert, but a search
+    // surface survives it in both bridge modes.
+    await assert.rejects(
+      optedOutTools.get("memory_get")!.execute("tc-3", { id: "fact-1" }, undefined, { sessionKey: "tool-session" }),
+      /memory_get is disabled: the memory slot owner set openclawToolsEnabled: false/,
+    );
+    assert.ok(optedOutTools.has("memory_search"), "search stays available under the adapter opt-out");
+
+    // The inverse order: the slot owner opts out FIRST. Its record is a
+    // tombstone, so an enabled passive sibling loading afterwards cannot
+    // install the tools around the opt-out.
+    const tombstoneApi = recordingApi();
+    const tombstoneTools: string[] = [];
+    Object.assign(tombstoneApi, { registerTool: (tool: { name: string }) => tombstoneTools.push(tool.name) });
+    registerDelegateRuntime(tombstoneApi, optionsFor(stub.port, { openclawToolsEnabled: false }));
+    registerDelegateRuntime(tombstoneApi, optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true }));
+    assert.deepEqual(
+      tombstoneTools,
+      ["memory_search"],
+      "the adapter opt-out keeps search and is not bypassed into registering memory_get",
+    );
+
+    // And a passive entry that opted out yields to an enabled active sibling,
+    // which installs the tools it never did.
+    const lateApi = recordingApi();
+    const lateTools: string[] = [];
+    Object.assign(lateApi, { registerTool: (tool: { name: string }) => lateTools.push(tool.name) });
+    registerDelegateRuntime(
+      lateApi,
+      optionsFor(stub.port, { serviceId: "openclaw-engram", passive: true, openclawToolsEnabled: false }),
+    );
+    assert.deepEqual(lateTools, ["memory_search"]);
+    registerDelegateRuntime(lateApi, optionsFor(stub.port));
+    assert.deepEqual(lateTools.sort(), ["memory_get", "memory_search"], "the active owner installs the adapter the passive entry skipped");
+  } finally {
+    await stub.close();
+  }
 });
 
 test("delegate honors allowPromptInjection=false but keeps observe/flush", async () => {
@@ -2113,6 +2503,431 @@ test("an OpenClaw 2.0 host (capability, no section builder) gets the hook's own 
   }
 });
 
+test("delegate recall queries with the current user turn, capped so an assembled prompt cannot 413", async () => {
+  const stub = await startDaemonStub(() => ({ context: "ctx" }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, {
+        cleanUserMessage: (text: string) => text.replace(/^\[channel\] /, ""),
+      }),
+    );
+    // A host may hand the hook its whole assembled prompt (system text first,
+    // the operator's turn last). The daemon caps request bodies, so the query
+    // keeps the END of the prompt, where the current turn is.
+    const assembled = `[channel] ${"system preamble ".repeat(500)}what did we decide about the rollout?`;
+    await invoke(api, "before_prompt_build", { prompt: assembled }, { sessionKey: "cap" });
+    const [first] = stub.calls.filter((call) => call.pathname === "/engram/v1/recall");
+    assert.ok(first);
+    const query = String(first.body.query);
+    assert.equal(query.length, 1_500);
+    assert.ok(query.endsWith("what did we decide about the rollout?"), "the tail is kept");
+
+    // The current turn outranks history: `messages` is the transcript BEFORE
+    // this turn, so its last user entry is the previous question.
+    await invoke(
+      api,
+      "before_prompt_build",
+      {
+        prompt: "[channel] the current question",
+        messages: [{ role: "user", content: "the previous question" }],
+      },
+      { sessionKey: "cap" },
+    );
+    const [, second] = stub.calls.filter((call) => call.pathname === "/engram/v1/recall");
+    assert.equal(second?.body.query, "the current question", "envelope stripped, current turn used");
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate agent_end returns before the observe POST settles and flush waits for it", async () => {
+  // A daemon that accepts the connection and never answers must not hold the
+  // host's agent_end hook for the whole observe timeout. The capture is
+  // detached from the hook; a later flush for the same session still waits
+  // for it so the turn is buffered before it is flushed.
+  const observeGate = Promise.withResolvers<void>();
+  const stub = await startDaemonStub(async (pathname) => {
+    if (pathname === "/engram/v1/observe") {
+      await observeGate.promise;
+      return { accepted: 1 };
+    }
+    return { flushed: true };
+  });
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port));
+    const observeArrived = stub.nextCall("/engram/v1/observe");
+    await invoke(
+      api,
+      "agent_end",
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "a question worth remembering" },
+          { role: "assistant", content: "an answer worth remembering" },
+        ],
+      },
+      { sessionKey: "detached" },
+    );
+    await observeArrived;
+    const requestsBeforeFlush = stub.calls.length;
+    const flushing = invoke(api, "before_compaction", {}, { sessionKey: "detached" });
+    // Real time, deliberately: the daemon still holds the observe open, and a
+    // flush that did NOT wait for it would already have probed health and
+    // posted within this window on loopback. No event exists to await for
+    // "nothing happened".
+    await sleep(150);
+    assert.equal(
+      stub.calls.length,
+      requestsBeforeFlush,
+      "the flush issues no request while the session's observe is in flight",
+    );
+    observeGate.resolve();
+    assert.equal(await flushing, true);
+    const order = stub.calls
+      .map((call) => call.pathname)
+      .filter((pathname) => pathname === "/engram/v1/observe" || pathname === "/engram/v1/lcm/compaction/flush");
+    assert.deepEqual(order, ["/engram/v1/observe", "/engram/v1/lcm/compaction/flush"]);
+  } finally {
+    observeGate.resolve();
+    await stub.close();
+  }
+});
+
+test("delegate registers daemon-backed memory_search and memory_get tools when the host exposes registerTool", async () => {
+  const memoryPath = "facts/2026-01-01/fact-1.md";
+  const stub = await startDaemonStub((pathname) => {
+    if (pathname === "/engram/v1/memories/search") {
+      return {
+        query: "rollout",
+        count: 1,
+        results: [
+          { path: memoryPath, score: 0.9, snippet: "we decided to roll out on Monday" },
+          { path: "facts/2026-01-02/fact-2.md", score: 0.4, snippet: "rollout retro" },
+        ],
+      };
+    }
+    if (pathname.startsWith("/engram/v1/memories/malformed")) return { found: true };
+    if (pathname.startsWith("/engram/v1/memories/fact-1")) {
+      return {
+        found: true,
+        namespace: "team-alpha",
+        memory: {
+          id: "fact-1",
+          path: `/home/user/memory/${memoryPath}`,
+          category: "fact",
+          content: "we decided to roll out on Monday",
+          frontmatter: { id: "fact-1", category: "fact", updated: "2026-01-01T00:00:00Z" },
+        },
+      };
+    }
+    return { accepted: true };
+  });
+  try {
+    const api = recordingApi();
+    const registered: string[] = [];
+    const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
+    Object.assign(api, {
+      registerTool(tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }): void {
+        registered.push(tool.name);
+        tools.set(tool.name, tool);
+      },
+    });
+    const namespaceBindings = createInMemorySessionNamespaceBindingStore();
+    registerDelegateRuntime(api, optionsFor(stub.port, { namespaceBindings }));
+    // The legacy plugin id registers on the SAME api; a second `memory_search`
+    // there is a host tool-name conflict, not a second tool.
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, { namespaceBindings, serviceId: "openclaw-engram" }),
+    );
+    assert.deepEqual(registered.sort(), ["memory_get", "memory_search"]);
+
+    const searched = (await tools.get("memory_search")!.execute(
+      "tc-1",
+      { query: "rollout", limit: 1 },
+      undefined,
+      { sessionKey: "tool-session" },
+    )) as { content: Array<{ text: string }> };
+    const search = stub.calls.find((call) => call.pathname === "/engram/v1/memories/search");
+    assert.ok(search, "memory_search POSTs the daemon's ranked search");
+    assert.equal(search.body.query, "rollout");
+    assert.equal(search.body.maxResults, 2, "one extra hit decides `truncated`");
+    // The public active-memory shape the embedded tool returns — and no
+    // absolute path: the manager's `path` names the operator's filesystem.
+    assert.deepEqual(JSON.parse(searched.content[0]!.text), {
+      results: [{ id: "fact-1", score: 0.9, text: "we decided to roll out on Monday" }],
+      truncated: true,
+    });
+    assert.doesNotMatch(searched.content[0]!.text, /\/facts\//, "no filesystem path reaches the model");
+
+    // The session binding decides memory_get's scope; the model may only
+    // restate it. An unbound session reads the daemon default and cannot
+    // name another tenant's namespace to reach a known memory id.
+    await assert.rejects(
+      tools.get("memory_get")!.execute(
+        "tc-2",
+        { id: "fact-1", namespace: "team-other" },
+        undefined,
+        { sessionKey: "tool-session" },
+      ),
+      /does not match the session's memory scope/,
+    );
+    assert.equal(
+      stub.calls.some((call) => call.pathname.startsWith("/engram/v1/memories/fact-1")),
+      false,
+      "a mismatched scope never reaches the daemon",
+    );
+    await namespaceBindings.remember("tool-session", "team-alpha");
+    const got = (await tools.get("memory_get")!.execute(
+      "tc-2",
+      { id: "fact-1", namespace: "team-alpha" },
+      undefined,
+      { sessionKey: "tool-session" },
+    )) as { content: Array<{ text: string }> };
+    const get = stub.calls.find((call) => call.pathname.startsWith("/engram/v1/memories/fact-1"));
+    assert.ok(get, "memory_get reads the daemon's memory route");
+    const getUrl = new URL(get.pathname, "http://daemon");
+    assert.equal(getUrl.pathname, "/engram/v1/memories/fact-1");
+    assert.equal(getUrl.searchParams.get("namespace"), "team-alpha");
+    assert.equal(getUrl.searchParams.get("sessionKey"), "tool-session");
+    assert.deepEqual(JSON.parse(got.content[0]!.text), {
+      id: "fact-1",
+      text: "we decided to roll out on Monday",
+      metadata: { type: "fact", updatedAt: "2026-01-01T00:00:00Z" },
+    });
+    assert.doesNotMatch(got.content[0]!.text, /\/facts\//, "no filesystem path reaches the model");
+
+    await assert.rejects(
+      tools.get("memory_search")!.execute("tc-3", { query: "   " }, undefined, {}),
+      /non-empty query/,
+    );
+    await assert.rejects(tools.get("memory_get")!.execute("tc-4", {}, undefined, {}), /requires an id/);
+    // The daemon caps `query` at 2048 chars AFTER trimming; a longer public
+    // input is trimmed then capped rather than turned into a 400 the embedded
+    // tool never produces.
+    await tools.get("memory_search")!.execute("tc-5", { query: "q".repeat(3_000) }, undefined, {});
+    const longSearch = stub.calls.filter((call) => call.pathname === "/engram/v1/memories/search").at(-1);
+    assert.equal(String(longSearch?.body.query).length, 2_048);
+    await tools.get("memory_search")!.execute("tc-6", { query: `${" ".repeat(2_100)}rollout` }, undefined, {});
+    const padded = stub.calls.filter((call) => call.pathname === "/engram/v1/memories/search").at(-1);
+    assert.equal(padded?.body.query, "rollout", "leading whitespace is trimmed before the cap");
+
+    // memory_get: the daemon caps `memoryId`/`sessionKey` at 512. An id that
+    // long cannot exist, so it is `not_found` (embedded parity) without a
+    // daemon round-trip; an oversized session key is a caller defect.
+    const getCallsBefore = stub.calls.filter((call) => call.pathname.startsWith("/engram/v1/memories/")).length;
+    const longId = (await tools.get("memory_get")!.execute("tc-7", { id: "x".repeat(600) }, undefined, {
+      sessionKey: "tool-session",
+    })) as { content: Array<{ text: string }> };
+    assert.deepEqual(JSON.parse(longId.content[0]!.text), { error: "not_found" });
+    assert.equal(
+      stub.calls.filter((call) => call.pathname.startsWith("/engram/v1/memories/")).length,
+      getCallsBefore,
+      "an impossible id never reaches the daemon",
+    );
+    await assert.rejects(
+      tools.get("memory_get")!.execute("tc-8", { id: "fact-1" }, undefined, { sessionKey: "s".repeat(600) }),
+      /sessionKey exceeds/,
+    );
+
+    // `filters.namespace` is refused outright: the manager resolves the
+    // session scope itself, so a scope validated here could be rebound before
+    // the search runs and answer from another namespace.
+    await assert.rejects(
+      tools.get("memory_search")!.execute(
+        "tc-9",
+        { query: "rollout", filters: { namespace: "team-other" } },
+        undefined,
+        { sessionKey: "tool-session" },
+      ),
+      /filters\.namespace "team-other" is not supported in delegate mode/,
+    );
+    await assert.rejects(
+      tools.get("memory_search")!.execute(
+        "tc-10",
+        { query: "rollout", filters: { namespace: "team-alpha" } },
+        undefined,
+        { sessionKey: "tool-session" },
+      ),
+      /is not supported in delegate mode/,
+      "even restating the bound scope is refused: it cannot be honored atomically",
+    );
+
+    // A host abort is honored before any daemon work starts.
+    await assert.rejects(
+      tools.get("memory_search")!.execute("tc-11", { query: "rollout" }, AbortSignal.abort(), { sessionKey: "tool-session" }),
+      /memory_search aborted/,
+    );
+    // A 2xx without a record is a protocol failure, not a miss (the daemon's
+    // miss is its 404).
+    await assert.rejects(
+      tools.get("memory_get")!.execute("tc-12", { id: "malformed" }, undefined, { sessionKey: "tool-session" }),
+      /2xx without a memory record/,
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("delegate tools honor openclawToolsEnabled, the snippet cap, and normalize fractional limits", async () => {
+  const stub = await startDaemonStub((pathname) => {
+    if (pathname === "/engram/v1/memories/search") {
+      return {
+        query: "rollout",
+        count: 2,
+        results: [
+          { path: "facts/2026-01-01/fact-1.md", score: 0.9, snippet: "we   decided\nto roll out on Monday" },
+          { path: "facts/2026-01-02/fact-2.md", score: 0.4, snippet: "rollout retro" },
+        ],
+      };
+    }
+    if (pathname.startsWith("/engram/v1/memories/slow-fact")) {
+      // Answers, but slower than what the shared budget leaves the GET.
+      return sleep(100).then(() => ({
+        found: true,
+        memory: { id: "slow-fact", content: "x", frontmatter: { id: "slow-fact" } },
+      }));
+    }
+    if (pathname.startsWith("/engram/v1/memories/fact-1")) {
+      return { found: true, memory: { id: "fact-1", content: "x", frontmatter: { id: "fact-1" } } };
+    }
+    return { accepted: true };
+  });
+  try {
+    // Adapter opt-out: embedded parity — the dedicated `memory_get` adapter
+    // goes, the search surface stays.
+    const optedOut = recordingApi();
+    const optedOutRegistered: string[] = [];
+    Object.assign(optedOut, { registerTool: (tool: { name: string }) => optedOutRegistered.push(tool.name) });
+    registerDelegateRuntime(optedOut, optionsFor(stub.port, { openclawToolsEnabled: false }));
+    assert.deepEqual(optedOutRegistered, ["memory_search"], "the adapter opt-out keeps a search surface");
+
+    const api = recordingApi();
+    const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
+    Object.assign(api, {
+      registerTool(tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }): void {
+        tools.set(tool.name, tool);
+      },
+    });
+    registerDelegateRuntime(api, optionsFor(stub.port, { openclawToolSnippetMaxChars: 12 }));
+    assert.deepEqual([...tools.keys()].sort(), ["memory_get", "memory_search"]);
+
+    // A schema-valid fractional limit floors like embedded mode instead of
+    // forwarding a non-integer maxResults the manager rejects.
+    const searched = (await tools.get("memory_search")!.execute(
+      "tc-1",
+      { query: "rollout", limit: 1.5 },
+      undefined,
+      { sessionKey: "tool-session" },
+    )) as { content: Array<{ text: string }> };
+    const search = stub.calls.find((call) => call.pathname === "/engram/v1/memories/search");
+    assert.ok(search);
+    assert.equal(search.body.maxResults, 2, "1.5 floors to 1, plus the truncation probe");
+    // The configured cap (below the daemon's 800) collapses whitespace and
+    // truncates the snippet, as embedded `recallForActiveMemory` does.
+    assert.deepEqual(JSON.parse(searched.content[0]!.text), {
+      results: [{ id: "fact-1", score: 0.9, text: "we decided t" }],
+      truncated: true,
+    });
+
+    // memory_get: the binding lookup and the daemon GET share one budget, so
+    // a slow lookup leaves the GET only what remains rather than a fresh
+    // full timeout.
+    const slowApi = recordingApi();
+    const slowTools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
+    Object.assign(slowApi, {
+      registerTool(tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }): void {
+        slowTools.set(tool.name, tool);
+      },
+    });
+    const bindings = createInMemorySessionNamespaceBindingStore();
+    await bindings.remember("tool-session", "team-alpha");
+    const slowLookup: SessionNamespaceBindingStore = {
+      ...bindings,
+      namespacesFor: async (sessionKey: string) => {
+        // Spends most of the tool's budget, leaving the GET ~50ms of the 300ms
+        // — less than the daemon's 100ms answer, so the shared deadline aborts
+        // it. Given a FRESH 300ms it would resolve instead; both sides of the
+        // contract are decided by a 50ms margin rather than a 1ms residual.
+        await sleep(250);
+        return bindings.namespacesFor(sessionKey);
+      },
+    };
+    registerDelegateRuntime(
+      slowApi,
+      optionsFor(stub.port, { namespaceBindings: slowLookup, recallTimeoutMs: 300 }),
+    );
+    await assert.rejects(
+      slowTools.get("memory_get")!.execute("tc-2", { id: "slow-fact" }, undefined, { sessionKey: "tool-session" }),
+      /deadline exceeded|timeout|abort/i,
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+test("explicit delegate preflight retries the configured interface address after loopback refuses", () => {
+  const local = Object.values(os.networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .find((entry) => entry.family === "IPv4" && !entry.internal);
+  if (local === undefined) return;
+  const prior = { mode: process.env.REMNIC_BRIDGE_MODE, host: process.env.REMNIC_HOST, port: process.env.REMNIC_PORT };
+  process.env.REMNIC_BRIDGE_MODE = "delegate";
+  process.env.REMNIC_HOST = local.address;
+  process.env.REMNIC_PORT = "4318";
+  try {
+    const probed: string[] = [];
+    const probedTimeouts: number[] = [];
+    const handled = maybeRegisterDelegateRuntime(
+      recordingApi(),
+      {
+        serviceId: "openclaw-remnic",
+        configBridgeMode: "delegate",
+        bridgeHealthTimeoutMs: 5_000,
+        passive: false,
+        allowPromptInjection: true,
+        gateHeartbeatTurns: false,
+        recallBudgetChars: 8_000,
+        memoryDir: path.join(os.tmpdir(), "remnic-delegate-nic-fallback"),
+        sessionTogglesEnabled: false,
+        respectBundledActiveMemoryToggle: false,
+        cleanUserMessage: (text: string) => text,
+        hookTimeoutMs: 5_000,
+        shouldSkipRecall: () => false,
+        flushOnResetEnabled: true,
+        capability: TEST_CAPABILITY,
+      },
+      {
+        checkHealth: (host, _port, timeoutMs) => {
+          probed.push(host);
+          probedTimeouts.push(timeoutMs);
+          return host === local.address;
+        },
+        probeAuthorization: async () => ({ state: "authorized", tokenSource: "test" }) as never,
+      },
+    );
+    assert.equal(handled, true, "delegate registered against the configured address");
+    assert.deepEqual(probed, ["127.0.0.1", local.address], "loopback first, then the NIC");
+    assert.equal(probedTimeouts[0], 5_000, "the first dial gets the whole preflight budget");
+    assert.ok(
+      probedTimeouts[1]! <= 5_000 && probedTimeouts[1]! > 0,
+      "the fallback dial gets only what is left of it",
+    );
+  } finally {
+    for (const [key, value] of [
+      ["REMNIC_BRIDGE_MODE", prior.mode],
+      ["REMNIC_HOST", prior.host],
+      ["REMNIC_PORT", prior.port],
+    ] as const) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+  }
+});
+
 test("maybeRegisterDelegateRuntime deduplicates hook binding per api object", async () => {
   const stub = await startDaemonStub(() => ({ context: "ctx" }));
   try {
@@ -2245,8 +3060,7 @@ test("delegate observe cleans user envelopes but not assistant text", async () =
       },
       { sessionKey: "clean" },
     );
-    const observe = stub.calls.find((call) => call.pathname === "/engram/v1/observe");
-    assert.ok(observe, "observe was sent");
+    const [observe] = await observed(stub);
     assert.deepEqual(observe.body.messages, [
       { role: "user", content: "the real question" },
       { role: "assistant", content: "[channel] stays verbatim" },

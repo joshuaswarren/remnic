@@ -174,13 +174,7 @@ test("split-only SDKs receive runtime and flush-plan registrations without unifi
 
 test("non-runtime registration modes do not register runtime hooks or services", async () => {
   await withCapturedRegistration((plugin) => {
-    for (const registrationMode of [
-      "discovery",
-      "tool-discovery",
-      "setup-only",
-      "setup-runtime",
-      "cli-metadata",
-    ] as const) {
+    for (const registrationMode of ["setup-only", "setup-runtime", "cli-metadata"] as const) {
       const capture = captureOpenClawRegistrationApi({ registrationMode });
 
       plugin.register(capture.api);

@@ -18,6 +18,8 @@ function toolText(result: { content: Array<{ type: string; text: string }> }): s
 function buildHarness(options?: {
   identityContinuityEnabled?: boolean;
   continuityIncidentLoggingEnabled?: boolean;
+  openclawToolsEnabled?: boolean;
+  reservedToolNames?: readonly string[];
 }) {
   const tools = new Map<string, RegisteredTool>();
   const incidents = new Map<string, ContinuityIncidentRecord>();
@@ -87,6 +89,7 @@ function buildHarness(options?: {
       sharedContextEnabled: false,
       compoundingEnabled: false,
       identityContinuityEnabled: options?.identityContinuityEnabled === true,
+      openclawToolsEnabled: options?.openclawToolsEnabled !== false,
       continuityIncidentLoggingEnabled: options?.continuityIncidentLoggingEnabled === true,
     },
     qmd: {
@@ -113,7 +116,7 @@ function buildHarness(options?: {
     appendMemoryActionEvent: async () => true,
   };
 
-  registerTools(api as any, orchestrator as any);
+  registerTools(api as any, orchestrator as any, undefined, options?.reservedToolNames);
   return { tools, incidents };
 }
 
@@ -206,4 +209,19 @@ test("continuity_incident_list applies limit after state filtering", async () =>
   const text = toolText(closedOnly);
   assert.match(text, /incident-1/);
   assert.doesNotMatch(text, /incident-2/);
+});
+
+/**
+ * `openclawToolsEnabled: false` makes `registerTools` fall back to the legacy
+ * `memory_search`. When a delegate sibling already registered that name on the
+ * same api and the embedded owner adopted it, registering the legacy one would
+ * be a host tool-name conflict (or would silently replace the adopted
+ * behavior), so a reserved name is left alone.
+ */
+test("the legacy memory_search fallback skips a name already registered on the api", () => {
+  const fallback = buildHarness({ openclawToolsEnabled: false });
+  assert.ok(fallback.tools.has("memory_search"), "the fallback registers legacy search when the name is free");
+
+  const reserved = buildHarness({ openclawToolsEnabled: false, reservedToolNames: ["memory_search"] });
+  assert.equal(reserved.tools.has("memory_search"), false, "a reserved name is not re-registered");
 });

@@ -273,7 +273,159 @@ function formatContinuityLoopSummary(loop: ContinuityImprovementLoop): string {
   return lines.join("\n");
 }
 
-export function registerTools(api: ToolApi, orchestrator: Orchestrator, hostRuntimeAgentId?: string): void {
+/**
+ * The legacy `memory_search` tool: what `registerTools` registers when the
+ * dedicated OpenClaw adapters are disabled. Exported as a value so an
+ * embedded slot owner that adopts an already-registered `memory_search` name
+ * can route it to THIS implementation rather than the adapter its own config
+ * disabled (see `adoptDelegateTools`).
+ */
+export function buildLegacyMemorySearchTool(orchestrator: Orchestrator) {
+  return   {
+    name: "memory_search",
+    label: "Search Memory",
+    description: `Search local memory files using QMD's semantic index. Returns matching memories with snippets and relevance scores.
+
+Returns: Matching memory entries ranked by relevance
+Cost: Free (local index query)
+Speed: Fast
+
+Best for:
+- Finding previously learned facts about the user
+- Checking what you know about a topic
+- Locating past decisions or corrections`,
+  parameters: Type.Object({
+    query: Type.String({
+      description: "Search query — keywords, phrases, or natural language",
+    }),
+    namespace: Type.Optional(
+      Type.String({
+        description:
+          "Optional namespace filter. When set, only returns results under memoryDir/namespaces/<namespace>/ (default namespace uses legacy root).",
+      }),
+    ),
+    maxResults: Type.Optional(
+      Type.Number({
+        description: "Maximum results (default: 8)",
+        minimum: 1,
+        maximum: 50,
+      }),
+    ),
+    collection: Type.Optional(
+      Type.String({
+        description:
+          "QMD collection to search. Omit for memory collection, use 'global' for all collections.",
+      }),
+    ),
+  }),
+    async execute(_toolCallId: string, params: Record<string, unknown>) {
+    const { query, maxResults, collection, namespace } = params as {
+      query: string;
+      maxResults?: number;
+      collection?: string;
+      namespace?: string;
+    };
+
+    const namespaceFilter = namespace && namespace.length > 0 ? namespace : undefined;
+    const resultLimit = normalizeMemorySearchResultLimit(maxResults);
+    const searchCandidates = async (limit: number) =>
+      collection === "global" && !namespaceFilter
+        ? await orchestrator.qmd.searchGlobal(query, limit)
+        : await orchestrator.searchAcrossNamespaces({
+            query,
+            namespaces: namespaceFilter ? [namespaceFilter] : undefined,
+            maxResults: limit,
+            mode: "search",
+          });
+    let candidateLimit = resultLimit;
+    const privateVisibilityCache = new Map<string, boolean>();
+    let candidates = await searchCandidates(candidateLimit);
+    let filtered = await orchestrator.filterPrivateSearchResults(
+      candidates,
+      namespaceFilter ? [namespaceFilter] : [],
+      false,
+      privateVisibilityCache,
+    );
+    while (
+      filtered.length < resultLimit &&
+      candidates.length >= candidateLimit &&
+      candidateLimit < MEMORY_SEARCH_CANDIDATE_CAP
+    ) {
+      const nextCandidateLimit = Math.min(
+        MEMORY_SEARCH_CANDIDATE_CAP,
+        Math.max(candidateLimit + 16, candidateLimit * 2),
+      );
+      if (nextCandidateLimit === candidateLimit) break;
+      const nextCandidates = await searchCandidates(nextCandidateLimit);
+      if (nextCandidates.length <= candidates.length) break;
+      candidateLimit = nextCandidateLimit;
+      candidates = nextCandidates;
+      filtered = await orchestrator.filterPrivateSearchResults(
+        candidates,
+        namespaceFilter ? [namespaceFilter] : [],
+        false,
+        privateVisibilityCache,
+      );
+    }
+    filtered = filtered.slice(0, resultLimit);
+
+    if (filtered.length === 0) {
+      return toolResult(`No memories found matching: "${query}"`);
+    }
+
+    const formatted = filtered
+      .map((r, i) => {
+        const snippet = r.snippet
+          ? r.snippet.slice(0, 800)
+          : "(no preview)";
+        return `### [${i + 1}] ${r.path}\nScore: ${r.score.toFixed(3)}\n\n\`\`\`\n${snippet}\n\`\`\``;
+      })
+      .join("\n\n");
+
+    return toolResult(
+      `## Memory Search: "${query}"\n\n${filtered.length} result(s)\n\n${formatted}`,
+    );
+    },
+  };
+}
+
+/**
+ * The legacy `memory_search` behind the PUBLIC active-memory arguments
+ * (`{ query, limit, filters }`), for handing to the shared tool-ownership
+ * record: a name keeps the schema it was registered with, so an
+ * implementation taking ownership must speak that schema rather than its own
+ * (`maxResults` / `namespace` / `collection`).
+ */
+export function buildLegacyMemorySearchToolForPublicShape(orchestrator: Orchestrator) {
+  const legacy = buildLegacyMemorySearchTool(orchestrator);
+  return {
+    ...legacy,
+    async execute(toolCallId: string, params: Record<string, unknown>) {
+      const filters =
+        params.filters && typeof params.filters === "object"
+          ? (params.filters as Record<string, unknown>)
+          : undefined;
+      return legacy.execute(toolCallId, {
+        query: params.query,
+        ...(typeof params.limit === "number" ? { maxResults: params.limit } : {}),
+        ...(typeof filters?.namespace === "string" ? { namespace: filters.namespace } : {}),
+        ...(typeof filters?.collection === "string" ? { collection: filters.collection } : {}),
+      });
+    },
+  };
+}
+
+export function registerTools(
+  api: ToolApi,
+  orchestrator: Orchestrator,
+  hostRuntimeAgentId?: string,
+  /**
+   * Tool names a sibling entry already registered on this api (see
+   * `adoptDelegateTools`). Re-registering one is a host tool-name conflict, so
+   * the legacy fallback below leaves a taken name alone.
+   */
+  reservedToolNames: readonly string[] = [],
+): void {
   const useDedicatedOpenClawMemoryTools =
     orchestrator.config.openclawToolsEnabled !== false;
   const actionTypes: MemoryActionType[] = [
@@ -400,116 +552,8 @@ export function registerTools(api: ToolApi, orchestrator: Orchestrator, hostRunt
     }
   }
 
-  if (!useDedicatedOpenClawMemoryTools) {
-    api.registerTool(
-      {
-        name: "memory_search",
-        label: "Search Memory",
-        description: `Search local memory files using QMD's semantic index. Returns matching memories with snippets and relevance scores.
-
-Returns: Matching memory entries ranked by relevance
-Cost: Free (local index query)
-Speed: Fast
-
-Best for:
-- Finding previously learned facts about the user
-- Checking what you know about a topic
-- Locating past decisions or corrections`,
-      parameters: Type.Object({
-        query: Type.String({
-          description: "Search query — keywords, phrases, or natural language",
-        }),
-        namespace: Type.Optional(
-          Type.String({
-            description:
-              "Optional namespace filter. When set, only returns results under memoryDir/namespaces/<namespace>/ (default namespace uses legacy root).",
-          }),
-        ),
-        maxResults: Type.Optional(
-          Type.Number({
-            description: "Maximum results (default: 8)",
-            minimum: 1,
-            maximum: 50,
-          }),
-        ),
-        collection: Type.Optional(
-          Type.String({
-            description:
-              "QMD collection to search. Omit for memory collection, use 'global' for all collections.",
-          }),
-        ),
-      }),
-        async execute(_toolCallId, params) {
-        const { query, maxResults, collection, namespace } = params as {
-          query: string;
-          maxResults?: number;
-          collection?: string;
-          namespace?: string;
-        };
-
-        const namespaceFilter = namespace && namespace.length > 0 ? namespace : undefined;
-        const resultLimit = normalizeMemorySearchResultLimit(maxResults);
-        const searchCandidates = async (limit: number) =>
-          collection === "global" && !namespaceFilter
-            ? await orchestrator.qmd.searchGlobal(query, limit)
-            : await orchestrator.searchAcrossNamespaces({
-                query,
-                namespaces: namespaceFilter ? [namespaceFilter] : undefined,
-                maxResults: limit,
-                mode: "search",
-              });
-        let candidateLimit = resultLimit;
-        const privateVisibilityCache = new Map<string, boolean>();
-        let candidates = await searchCandidates(candidateLimit);
-        let filtered = await orchestrator.filterPrivateSearchResults(
-          candidates,
-          namespaceFilter ? [namespaceFilter] : [],
-          false,
-          privateVisibilityCache,
-        );
-        while (
-          filtered.length < resultLimit &&
-          candidates.length >= candidateLimit &&
-          candidateLimit < MEMORY_SEARCH_CANDIDATE_CAP
-        ) {
-          const nextCandidateLimit = Math.min(
-            MEMORY_SEARCH_CANDIDATE_CAP,
-            Math.max(candidateLimit + 16, candidateLimit * 2),
-          );
-          if (nextCandidateLimit === candidateLimit) break;
-          const nextCandidates = await searchCandidates(nextCandidateLimit);
-          if (nextCandidates.length <= candidates.length) break;
-          candidateLimit = nextCandidateLimit;
-          candidates = nextCandidates;
-          filtered = await orchestrator.filterPrivateSearchResults(
-            candidates,
-            namespaceFilter ? [namespaceFilter] : [],
-            false,
-            privateVisibilityCache,
-          );
-        }
-        filtered = filtered.slice(0, resultLimit);
-
-        if (filtered.length === 0) {
-          return toolResult(`No memories found matching: "${query}"`);
-        }
-
-        const formatted = filtered
-          .map((r, i) => {
-            const snippet = r.snippet
-              ? r.snippet.slice(0, 800)
-              : "(no preview)";
-            return `### [${i + 1}] ${r.path}\nScore: ${r.score.toFixed(3)}\n\n\`\`\`\n${snippet}\n\`\`\``;
-          })
-          .join("\n\n");
-
-        return toolResult(
-          `## Memory Search: "${query}"\n\n${filtered.length} result(s)\n\n${formatted}`,
-        );
-        },
-      },
-      { name: "memory_search" },
-    );
+  if (!useDedicatedOpenClawMemoryTools && !reservedToolNames.includes("memory_search")) {
+    api.registerTool(buildLegacyMemorySearchTool(orchestrator) as never, { name: "memory_search" });
   }
 
   api.registerTool(

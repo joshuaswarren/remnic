@@ -10,10 +10,16 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { isIPv6 } from "node:net";
+import {
+  isLoopbackDaemonHost,
+  loopbackForSameHost,
+  normalizeDaemonHost,
+  sameHostDialFallback,
+} from "./bridge-daemon-host.js";
+
+export { isLoopbackDaemonHost, loopbackForSameHost, sameHostDialFallback } from "./bridge-daemon-host.js";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { configPathCandidates, readCompatEnv } from "@remnic/core";
-import { isLoopbackHost } from "@remnic/core/runtime/http-transport.js";
 
 import {
   HEALTH_WORKER_SOURCE,
@@ -71,6 +77,14 @@ interface DaemonEndpointCandidate {
   /** The unit that supplied `authTokenOverride`, so it can be re-read. */
   authTokenUnit?: DaemonUnitSource;
   /**
+   * Same daemon, different dial address: a same-host loopback rewrite and the
+   * configured interface address are aliases of ONE endpoint. They share a
+   * probe allocation so a daemon slower than a half-share is not timed out on
+   * both aliases (the second dial only happens when the first REFUSES, which
+   * costs no time).
+   */
+  aliasGroup: string;
+  /**
    * The credential written in this candidate's own config file, retried when
    * the primary (gateway token store) one is rejected.
    */
@@ -81,6 +95,12 @@ export interface BridgeConfig {
   mode: BridgeMode;
   daemonHost: string;
   daemonPort: number;
+  /**
+   * The configured interface address behind a same-host loopback rewrite,
+   * dialed only when the loopback probe fails: a daemon bound to exactly that
+   * address answers no loopback dial.
+   */
+  daemonHostFallback?: string;
   /**
    * True when this resolution already proved the daemon healthy. `auto` does,
    * as part of its corpus-identity probe; explicit `delegate` does not. Lets
@@ -266,57 +286,6 @@ function isDaemonRunning(): boolean {
   return false;
 }
 
-/**
- * Whether a daemon endpoint names THIS host.
- *
- * Address classification is the shared core helper (`isLoopbackHost`), so
- * `0:0:0:0:0:0:0:1`, `::1`, `::ffff:127.0.0.1`, and `127.x` all resolve
- * alike here and everywhere else — comparing raw strings would leave `auto`
- * embedded beside a reachable same-host daemon just because its config
- * spelled the address differently.
- *
- * A wildcard bind names every interface on this host, so it counts as local —
- * `server.host: "0.0.0.0"` is the documented daemon configuration.
- */
-export function isLoopbackDaemonHost(host: string): boolean {
-  const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
-  if (loopbackForWildcardBind(normalized) !== undefined) return true;
-  return isLoopbackHost(normalized);
-}
-
-/**
- * Collapse an IPv6 literal to its canonical form, or `undefined` when the
- * string is not one. Node's `net.isIPv6` validates; `URL` canonicalizes.
- */
-function canonicalIPv6(value: string): string | undefined {
-  if (!isIPv6(value)) return undefined;
-  try {
-    // The URL parser applies RFC 5952 compression and lowercasing.
-    return new URL(`http://[${value}]`).hostname.replace(/^\[/, "").replace(/\]$/, "");
-  } catch {
-    return value;
-  }
-}
-
-/**
- * A wildcard bind names every interface on THIS host, not a remote one. The
- * documented `server.host: "0.0.0.0"` daemon config would otherwise be
- * classified as remote — leaving `auto` embedded beside a same-host daemon on
- * the same corpus — and is not a portable destination address either, so it is
- * dialed through the matching loopback.
- */
-export function loopbackForWildcardBind(host: string): string | undefined {
-  const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
-  if (normalized === "0.0.0.0") return DEFAULT_HOST;
-  if (canonicalIPv6(normalized) === "::") return "::1";
-  return undefined;
-}
-
-function normalizeDaemonHost(value: string): string {
-  const match = value.trim().match(/^\[(.+)\]$/);
-  return match ? match[1] : value.trim();
-}
-
 function coerceDaemonPort(value: unknown): number | undefined {
   const parsed = typeof value === "string" && value.trim() !== ""
     ? Number(value.trim())
@@ -462,7 +431,7 @@ function shouldProbeDaemonHealth(host: string): boolean {
  */
 function readDaemonHost(): string {
   const resolved = readConfiguredDaemonHost();
-  return loopbackForWildcardBind(resolved) ?? resolved;
+  return loopbackForSameHost(resolved) ?? resolved;
 }
 
 /**
@@ -555,7 +524,8 @@ function daemonEndpointCandidates(
     const resolvedHost = normalizeDaemonHost(
       envHost !== undefined && envHost.trim() !== "" ? envHost : (host ?? DEFAULT_HOST),
     );
-    const dialHost = loopbackForWildcardBind(resolvedHost) ?? resolvedHost;
+    const dialHost = loopbackForSameHost(resolvedHost) ?? resolvedHost;
+    const dialFallback = sameHostDialFallback(resolvedHost);
     const dialPort = envPort ?? port ?? DEFAULT_PORT;
     // Dedupe on the endpoint AND its credential: an inactive service config
     // and a manually launched daemon can share host:port while carrying
@@ -570,45 +540,42 @@ function daemonEndpointCandidates(
     const configToken = configPath === undefined ? undefined : readServerBlock(configPath)?.authToken;
     const fallbackToken =
       configToken !== undefined && configToken !== token ? configToken : undefined;
-    if (
-      candidates.some(
-        (c) =>
-          c.host === dialHost &&
-          c.port === dialPort &&
-          c.token === token &&
-          // The BOUND credential is part of the identity too: when a gateway
-          // token wins for both, two configs on one endpoint resolve the same
-          // primary token but carry different fallbacks, and dropping the
-          // second would leave the daemon's real credential untried.
-          c.fallbackToken === fallbackToken &&
-          // So is the UNIT the credential is re-read from per request: two
-          // units can agree today and diverge on the next rotation.
-          c.authTokenUnit?.unitPath === authTokenUnit?.unitPath &&
-          // And so is the CONFIG, for the same reason: `daemonConfigPath` is
-          // re-read per request, so collapsing two configs that agree today
-          // would keep sending the retained one's token after the other
-          // rotates.
-          c.configPath === configPath,
-      )
-    ) {
-      return;
+    for (const candidateHost of dialFallback === undefined ? [dialHost] : [dialHost, dialFallback]) {
+      if (
+        candidates.some(
+          (c) =>
+            c.host === candidateHost &&
+            c.port === dialPort &&
+            c.token === token &&
+            // The BOUND credential is part of the identity too: when a gateway
+            // token wins for both, two configs on one endpoint resolve the same
+            // primary token but carry different fallbacks, and dropping the
+            // second would leave the daemon's real credential untried.
+            c.fallbackToken === fallbackToken &&
+            // So is the UNIT the credential is re-read from per request: two
+            // units can agree today and diverge on the next rotation.
+            c.authTokenUnit?.unitPath === authTokenUnit?.unitPath &&
+            // And so is the CONFIG, for the same reason: `daemonConfigPath` is
+            // re-read per request, so collapsing two configs that agree today
+            // would keep sending the retained one's token after the other
+            // rotates.
+            c.configPath === configPath,
+        )
+      ) {
+        continue;
+      }
+      candidates.push({
+        host: candidateHost,
+        port: dialPort,
+        configPath,
+        token,
+        aliasGroup: `${resolvedHost}\u0000${dialPort}\u0000${configPath ?? ""}\u0000${token}`,
+        ...(authTokenOverride === undefined ? {} : { authTokenOverride }),
+        ...(authTokenUnit === undefined ? {} : { authTokenUnit }),
+        ...(fallbackToken === undefined ? {} : { fallbackToken }),
+      });
     }
-    candidates.push({
-      host: dialHost,
-      port: dialPort,
-      configPath,
-      token,
-      ...(authTokenOverride === undefined ? {} : { authTokenOverride }),
-      ...(authTokenUnit === undefined ? {} : { authTokenUnit }),
-      ...(fallbackToken === undefined ? {} : { fallbackToken }),
-    });
   };
-  // An env override alone, so a specified environment is dialed first even
-  // when no config file exists. Without one this would inject a bare
-  // default endpoint AHEAD of every config-derived candidate.
-  if ((envHost !== undefined && envHost.trim() !== "") || envPort !== undefined) {
-    add(undefined, undefined);
-  }
   const configOrder = configPathCandidates();
   const envConfigPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH")
     ? configOrder[0]
@@ -750,7 +717,8 @@ export function detectDaemonBridgeMode(options: {
     }
     probeable.push(candidate);
   }
-  let probed = 0;
+  const groupDeadlines = new Map<string, number>();
+  const totalGroups = new Set(probeable.map((candidate) => candidate.aliasGroup)).size;
   for (const {
     host: daemonHost,
     port: daemonPort,
@@ -758,6 +726,7 @@ export function detectDaemonBridgeMode(options: {
     authTokenOverride,
     authTokenUnit,
     fallbackToken,
+    aliasGroup,
   } of probeable) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
@@ -770,19 +739,25 @@ export function detectDaemonBridgeMode(options: {
     // whole budget. Installed-unit candidates deliberately precede cwd/home,
     // so one stale endpoint that accepts a connection and stalls would
     // otherwise eat the entire preflight and the live daemon behind it would
-    // never be dialed. The share is over the endpoints still unprobed, so the
-    // last candidate can still use everything that remains.
-    const perCandidateMs = Math.max(
-      1,
-      Math.ceil(remainingMs / Math.max(1, probeable.length - probed)),
-    );
-    probed += 1;
-    // BOTH attempts share this candidate's slice, so one stalling endpoint
-    // with a fallback credential cannot burn two shares and starve the healthy
-    // daemon behind it. The FIRST attempt gets the whole slice: reserving half
-    // for a retry would cut short a daemon that is merely still warming up,
-    // and a readiness stall is not something a different token fixes.
-    const candidateDeadline = Date.now() + Math.min(remainingMs, perCandidateMs);
+    // never be dialed. The share is over the endpoint GROUPS still unprobed,
+    // so the last group can still use everything that remains — and the
+    // loopback/interface aliases of ONE daemon share a single allocation
+    // instead of halving it, since the second dial only happens when the
+    // first REFUSES (which costs no time).
+    const started = groupDeadlines.get(aliasGroup);
+    if (started === undefined) {
+      const perGroupMs = Math.max(
+        1,
+        Math.ceil(remainingMs / Math.max(1, totalGroups - groupDeadlines.size)),
+      );
+      groupDeadlines.set(aliasGroup, Date.now() + Math.min(remainingMs, perGroupMs));
+    }
+    // BOTH attempts share this group's slice, so one stalling endpoint with a
+    // fallback credential cannot burn two shares and starve the healthy daemon
+    // behind it. The FIRST attempt gets the whole slice: reserving half for a
+    // retry would cut short a daemon that is merely still warming up, and a
+    // readiness stall is not something a different token fixes.
+    const candidateDeadline = groupDeadlines.get(aliasGroup) ?? Date.now();
     // The clock can cross the deadline between deriving it and spending it —
     // trivially so at the supported minimum budget of 1ms. The public probe
     // REJECTS a non-positive budget, and rightly so, but reaching it with one
@@ -954,10 +929,13 @@ export function resolveBridgeMode(
   // can pair this endpoint with another file's token, which the daemon answers
   // with a 401 and the plugin reads as "no daemon".
   const selectedConfig = selectedDaemonConfigPath();
+  const configuredHost = readConfiguredDaemonHost();
+  const fallbackHost = sameHostDialFallback(configuredHost);
   return {
     mode: requested,
-    daemonHost: readDaemonHost(),
+    daemonHost: loopbackForSameHost(configuredHost) ?? configuredHost,
     daemonPort: readDaemonPort(),
+    ...(fallbackHost === undefined ? {} : { daemonHostFallback: fallbackHost }),
     ...(selectedConfig === undefined ? {} : { daemonConfigPath: selectedConfig }),
   };
 }

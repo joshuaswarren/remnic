@@ -118,13 +118,6 @@ export class ProfilingCollector {
     this.enabled = config.enabled;
     this.storageDir = config.storageDir;
     this.maxTraces = Math.max(0, config.maxTraces);
-
-    if (this.enabled) {
-      if (!existsSync(this.storageDir)) {
-        mkdirSync(this.storageDir, { recursive: true });
-        log.debug(`profiling: created storage dir ${this.storageDir}`);
-      }
-    }
   }
 
   get isEnabled(): boolean {
@@ -347,6 +340,13 @@ export class ProfilingCollector {
     const filename = `${trace.kind}-${trace.traceId}.jsonl`;
     const filepath = join(this.storageDir, filename);
     try {
+      // Created on first persist, never at construction: constructing a
+      // collector (plugin registration, a discovery pass, CLI metadata) must
+      // not touch the operator's memory dir when no trace is ever written.
+      if (!existsSync(this.storageDir)) {
+        mkdirSync(this.storageDir, { recursive: true });
+        log.debug(`profiling: created storage dir ${this.storageDir}`);
+      }
       writeFileSync(filepath, JSON.stringify(trace) + "\n", "utf-8");
       log.debug(`profiling: persisted ${filename}`);
     } catch (err) {

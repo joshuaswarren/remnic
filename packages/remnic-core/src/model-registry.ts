@@ -5,7 +5,7 @@
 
 import { log } from "./logger.js";
 import fs from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export interface ModelCapabilities {
   modelId: string;
@@ -116,11 +116,7 @@ export class ModelRegistry {
   private readonly CACHE_TTL_DAYS = 7;
 
   constructor(memoryDir: string) {
-    const registryDir = join(memoryDir, ".registry");
-    if (!fs.existsSync(registryDir)) {
-      fs.mkdirSync(registryDir, { recursive: true });
-    }
-    this.registryPath = join(registryDir, "model-capabilities.json");
+    this.registryPath = join(memoryDir, ".registry", "model-capabilities.json");
     this.data = this.loadRegistry();
   }
 
@@ -140,6 +136,11 @@ export class ModelRegistry {
 
   private saveRegistry(): void {
     try {
+      // Created on first save, never at construction: building a registry
+      // happens on every plugin registration, including read-only discovery
+      // passes, and must not touch the operator's memory dir.
+      const registryDir = dirname(this.registryPath);
+      if (!fs.existsSync(registryDir)) fs.mkdirSync(registryDir, { recursive: true });
       fs.writeFileSync(this.registryPath, JSON.stringify(this.data, null, 2));
     } catch (err) {
       log.warn(`ModelRegistry: failed to save registry: ${err}`);

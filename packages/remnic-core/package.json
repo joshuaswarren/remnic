@@ -2620,6 +2620,16 @@
       "remnic-source": "./src/session-integrity.ts",
       "import": "./dist/session-integrity.js"
     },
+    "./recall-handles": {
+      "types": "./dist/recall-handles.d.ts",
+      "remnic-source": "./src/recall-handles.ts",
+      "import": "./dist/recall-handles.js"
+    },
+    "./recall-handles.js": {
+      "types": "./dist/recall-handles.d.ts",
+      "remnic-source": "./src/recall-handles.ts",
+      "import": "./dist/recall-handles.js"
+    },
     "./session-namespace-bindings": {
       "types": "./dist/session-namespace-bindings.d.ts",
       "remnic-source": "./src/session-namespace-bindings.ts",

@@ -4723,13 +4723,7 @@ test("capability promptBuilder does not fall back to stale Codex thread cache af
 
 test("non-runtime registration modes register zero handlers", async () => {
   const { default: plugin } = await import("../src/index.js");
-  for (const registrationMode of [
-    "discovery",
-    "tool-discovery",
-    "setup-only",
-    "setup-runtime",
-    "cli-metadata",
-  ]) {
+  for (const registrationMode of ["setup-only", "setup-runtime", "cli-metadata"]) {
     const api = buildHandlerCapturingApi(`${registrationMode}-test`, {
       registrationMode,
     });

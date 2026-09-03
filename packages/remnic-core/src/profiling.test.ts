@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test, { describe } from "node:test";
@@ -279,6 +279,25 @@ describe("ProfilingCollector", () => {
       // The fast span should NOT have bottleneck marker.
       const fastLine = lines.find((l) => l.includes("fast") && l.includes("bottleneck"));
       assert.ok(!fastLine, "fast span should not have bottleneck marker");
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test("construction never creates the storage dir; the first persist does", () => {
+    const dir = tempDir();
+    const storageDir = join(dir, "profiling");
+    try {
+      const collector = new ProfilingCollector({ enabled: true, storageDir, maxTraces: 10 });
+      // Constructing a collector happens on every plugin registration, including
+      // read-only discovery passes, so it must not touch the memory dir.
+      assert.equal(existsSync(storageDir), false, "no dir before a trace is written");
+      collector.startTrace("recall", "test-session");
+      collector.startSpan("qmd-search");
+      collector.endSpan("qmd-search");
+      collector.endTrace();
+      assert.equal(existsSync(storageDir), true, "the first persisted trace creates it");
+      assert.equal(readdirSync(storageDir).length, 1);
     } finally {
       cleanup(dir);
     }
