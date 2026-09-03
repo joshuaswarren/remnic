@@ -966,11 +966,11 @@ test("delegate flushes again when the observe queue outlasts the lifecycle drain
   }
 });
 
-test("delegate skips the follow-up flush when a post-lifecycle turn is observed", async () => {
-  // The deferred flush belongs to the generation that ended. A turn observed
-  // under the same key after the lifecycle hook returned must not be swept
-  // into it (nor filed under the ended event's namespace); the next lifecycle
-  // event owns that turn.
+test("delegate follow-up drains the ended generation even when newer turns arrive", async () => {
+  // A turn observed under the same key after the lifecycle hook returned must
+  // not cancel the deferred flush: the daemon buffers per session, so
+  // abandoning it would strand the ended generation's late turns until some
+  // later lifecycle event. The follow-up drains the whole queue instead.
   const stub = await startDaemonStub(async (pathname) => {
     if (pathname === "/engram/v1/observe") {
       await sleep(80);
@@ -1003,12 +1003,14 @@ test("delegate skips the follow-up flush when a post-lifecycle turn is observed"
     assert.equal(await invoke(api, "before_reset", { sessionKey }), true);
     // A new turn under the same key BEFORE the old queue settles.
     await observeTurn("post-reset");
-    await sleep(400);
+    await stub.nextCall(flushPath);
     assert.equal(
       stub.calls.filter((call) => call.pathname === flushPath).length,
-      1,
-      "the follow-up must not flush a generation it does not own",
+      2,
+      "the ended generation is drained rather than discarded",
     );
+    const observes = stub.calls.filter((call) => call.pathname === "/engram/v1/observe");
+    assert.equal(observes.length, 3, "every turn reached the daemon before the follow-up flush");
   } finally {
     await stub.close();
   }

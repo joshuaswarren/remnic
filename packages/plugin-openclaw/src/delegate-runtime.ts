@@ -705,21 +705,28 @@ export function registerDelegateRuntime(
           drainDeadline.promise.then(() => false),
         ]);
         clearTimeout(timer);
-        // One follow-up per session, fenced to the generation that ended: the
-        // chain self-clears when it is the map's current entry, so a map entry
-        // still present after it settles means a POST-lifecycle turn was
-        // observed under the same key. Flushing then would sweep that new
-        // turn into the ended generation (and file its notes under this
-        // event's captured namespace); the next lifecycle event owns it.
+        // One follow-up per session. It drains the whole queue — the captured
+        // generation's late turns AND anything observed after the hook
+        // returned — because the daemon buffers per session, so abandoning the
+        // follow-up would strand the ended generation until some later
+        // lifecycle event that may never come. Flushing a newer turn early is
+        // safe; losing an ended session's turns is not. The flush runs off a
+        // scope-neutral event so its namespaces come from the session's
+        // bindings rather than this event's captured (possibly superseded)
+        // runtime metadata.
         if (!drained && !followUpFlushSessions.has(sessionKey)) {
           followUpFlushSessions.add(sessionKey);
           void pendingObserve
-            .then(() => {
-              if (observeChains.has(sessionKey)) {
-                log.debug(`delegate follow-up flush skipped: ${sessionKey} observed a newer turn`);
-                return false;
+            .then(async () => {
+              // ponytail: 8 rounds is the ceiling — a session observing turns
+              // faster than they drain gets flushed by its next lifecycle
+              // event instead of holding this one open forever.
+              for (let round = 0; round < 8; round += 1) {
+                const queued = observeChains.get(sessionKey);
+                if (queued === undefined) break;
+                await queued;
               }
-              return flushHandler(event, ctx);
+              return flushHandler({ sessionKey }, {});
             })
             .catch((err: unknown) => log.warn(`delegate follow-up flush failed: ${String(err)}`))
             .finally(() => followUpFlushSessions.delete(sessionKey));
