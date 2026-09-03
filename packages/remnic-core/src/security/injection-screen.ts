@@ -301,7 +301,12 @@ function splitSentencesOutsideQuotes(content: string): string[] {
       continue;
     }
     const next = content[index + 1];
-    const insideToken = next !== undefined && !/\s/.test(next);
+    // Token-internal only applies to sentence punctuation: a `.!?` glued to
+    // a non-whitespace character is part of a token (URL, decimal). A
+    // NEWLINE is never token-internal -- an ordinary next line starts with
+    // text, and only the explicit colon/list continuation joins lines (PR
+    // #3081 post-cap).
+    const insideToken = char !== "\n" && next !== undefined && !/\s/.test(next);
     // An empty URL query ("payload? to") still binds the unit: a prose
     // question mark precedes a capital, a quote, or the end.
     const emptyQuery = char === "?" && /\s+[a-z]/.test(content.slice(index + 1, index + 3));
