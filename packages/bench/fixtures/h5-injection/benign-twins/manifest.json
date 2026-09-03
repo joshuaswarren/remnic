@@ -1,0 +1,338 @@
+{
+  "schemaVersion": 1,
+  "suiteVersion": "h5-injection-suite-v3",
+  "stage": "benign",
+  "seed": 71,
+  "variantsPerFamily": 10,
+  "scenarioCount": 40,
+  "templateIds": [
+    "cross-session-01",
+    "cross-session-02",
+    "cross-session-03",
+    "cross-session-04",
+    "cross-session-05",
+    "cross-session-06",
+    "cross-session-07",
+    "cross-session-08",
+    "cross-session-09",
+    "cross-session-10",
+    "minja-01",
+    "minja-02",
+    "minja-03",
+    "minja-04",
+    "minja-05",
+    "minja-06",
+    "minja-07",
+    "minja-08",
+    "minja-09",
+    "minja-10",
+    "sleeper-01",
+    "sleeper-02",
+    "sleeper-03",
+    "sleeper-04",
+    "sleeper-05",
+    "sleeper-06",
+    "sleeper-07",
+    "sleeper-08",
+    "sleeper-09",
+    "sleeper-10",
+    "tool-hijack-01",
+    "tool-hijack-02",
+    "tool-hijack-03",
+    "tool-hijack-04",
+    "tool-hijack-05",
+    "tool-hijack-06",
+    "tool-hijack-07",
+    "tool-hijack-08",
+    "tool-hijack-09",
+    "tool-hijack-10"
+  ],
+  "scenarios": [
+    {
+      "scenarioId": "benign-minja-001",
+      "family": "minja",
+      "templateId": "minja-01",
+      "canaryType": "string",
+      "sha256": "8722f4aac3a80fe26a9444dababeb4a026c5394d064c01bd5bb6cbda6fcdf62c"
+    },
+    {
+      "scenarioId": "benign-minja-002",
+      "family": "minja",
+      "templateId": "minja-02",
+      "canaryType": "string",
+      "sha256": "824e85f839705c9edb6517177bb556234d77b10dc463da553c47606de45f8b6e"
+    },
+    {
+      "scenarioId": "benign-minja-003",
+      "family": "minja",
+      "templateId": "minja-03",
+      "canaryType": "string",
+      "sha256": "a1a743ec864b840f6d4936e9c0c045618f8b4a1e2e61e9a049bddd4d06656936"
+    },
+    {
+      "scenarioId": "benign-minja-004",
+      "family": "minja",
+      "templateId": "minja-04",
+      "canaryType": "string",
+      "sha256": "b85302160615e1eace3854ed8e7458911462bf6e47988913d00cc7285eda33b2"
+    },
+    {
+      "scenarioId": "benign-minja-005",
+      "family": "minja",
+      "templateId": "minja-05",
+      "canaryType": "string",
+      "sha256": "e2f39fab6f07757ef7c08f08c33927eeb6c24133244dfd31284aafbe91d9398c"
+    },
+    {
+      "scenarioId": "benign-minja-006",
+      "family": "minja",
+      "templateId": "minja-06",
+      "canaryType": "string",
+      "sha256": "ec803209b81d5089db71e970513654d4b4a08f219429cecb82e3d64feb493f27"
+    },
+    {
+      "scenarioId": "benign-minja-007",
+      "family": "minja",
+      "templateId": "minja-07",
+      "canaryType": "string",
+      "sha256": "b30ab8caa47e9828443fc8fefa105bcf2d350407408e9a365977dbdd36f6eb8b"
+    },
+    {
+      "scenarioId": "benign-minja-008",
+      "family": "minja",
+      "templateId": "minja-08",
+      "canaryType": "string",
+      "sha256": "1bfacc83acf877f59d75871ea1b7c21af6d188aeba75b935dbb47917fbcd4c12"
+    },
+    {
+      "scenarioId": "benign-minja-009",
+      "family": "minja",
+      "templateId": "minja-09",
+      "canaryType": "string",
+      "sha256": "1ea4f5abc010305a0daac685d00f3b020df5ac3b62bcb0b97d07c6f6cc59721b"
+    },
+    {
+      "scenarioId": "benign-minja-010",
+      "family": "minja",
+      "templateId": "minja-10",
+      "canaryType": "string",
+      "sha256": "d86364ff834a1d35082b063a83dbe360aea53cc3f53cb40add12717045ca45e2"
+    },
+    {
+      "scenarioId": "benign-sleeper-001",
+      "family": "sleeper",
+      "templateId": "sleeper-01",
+      "canaryType": "string",
+      "sha256": "c244045b5717dbef6fe2b2d648f64fce944c93312ae40636840d673d1b617563"
+    },
+    {
+      "scenarioId": "benign-sleeper-002",
+      "family": "sleeper",
+      "templateId": "sleeper-02",
+      "canaryType": "string",
+      "sha256": "5576ecb56838d9e2f937fe40656fe2ed45952dd6d321e1b7a675fade61ecca5c"
+    },
+    {
+      "scenarioId": "benign-sleeper-003",
+      "family": "sleeper",
+      "templateId": "sleeper-03",
+      "canaryType": "string",
+      "sha256": "b7182b58653ee8444c4a44a62b261bb2b9e7b524d1b6a9c4d3d60ac94aed44e7"
+    },
+    {
+      "scenarioId": "benign-sleeper-004",
+      "family": "sleeper",
+      "templateId": "sleeper-04",
+      "canaryType": "string",
+      "sha256": "ccd39baaced0597fb78e206d10c13835760c0c28e1bc50ca7bf039efabb98398"
+    },
+    {
+      "scenarioId": "benign-sleeper-005",
+      "family": "sleeper",
+      "templateId": "sleeper-05",
+      "canaryType": "string",
+      "sha256": "e101a81f98dac55be7183a1329c66be2a9f639b2e2ced60d587410b9f8a28eaf"
+    },
+    {
+      "scenarioId": "benign-sleeper-006",
+      "family": "sleeper",
+      "templateId": "sleeper-06",
+      "canaryType": "string",
+      "sha256": "baa1eaa971cf11af8d8ffc50bc75fff765ceaa053935c33307c11a496fe47a64"
+    },
+    {
+      "scenarioId": "benign-sleeper-007",
+      "family": "sleeper",
+      "templateId": "sleeper-07",
+      "canaryType": "string",
+      "sha256": "d642cbdb34ec31ca74b3c20e4bb8059ca7e8600c50825254191ef46d08d97889"
+    },
+    {
+      "scenarioId": "benign-sleeper-008",
+      "family": "sleeper",
+      "templateId": "sleeper-08",
+      "canaryType": "string",
+      "sha256": "c297652fe574ac6120a8b6cb863f8f5196e7e1d7ed02488873f46ce3897f49d3"
+    },
+    {
+      "scenarioId": "benign-sleeper-009",
+      "family": "sleeper",
+      "templateId": "sleeper-09",
+      "canaryType": "string",
+      "sha256": "3c704a779895c1a04a9e16a33a2cfbbfffe32b4a3f6afb2b46f1183e3c48f027"
+    },
+    {
+      "scenarioId": "benign-sleeper-010",
+      "family": "sleeper",
+      "templateId": "sleeper-10",
+      "canaryType": "string",
+      "sha256": "4ee64d92074686ec8cac0bc3b176b228fe43e3ebd7df57544bb07f009aaaa312"
+    },
+    {
+      "scenarioId": "benign-cross-session-001",
+      "family": "cross-session",
+      "templateId": "cross-session-01",
+      "canaryType": "string",
+      "sha256": "3b8cd686933490d902402389e9a65c17464bad634270766f0ae1e48ba06b3830"
+    },
+    {
+      "scenarioId": "benign-cross-session-002",
+      "family": "cross-session",
+      "templateId": "cross-session-02",
+      "canaryType": "string",
+      "sha256": "4f15026fac732c6adcc3d27cdba6ce747c11979508bf27b3ffac25b4bef8bbd5"
+    },
+    {
+      "scenarioId": "benign-cross-session-003",
+      "family": "cross-session",
+      "templateId": "cross-session-03",
+      "canaryType": "url",
+      "sha256": "c6f0992c0fa8b7bcfe151b6e719f2c08f84f753717edfa14187fd7b9babf11e6"
+    },
+    {
+      "scenarioId": "benign-cross-session-004",
+      "family": "cross-session",
+      "templateId": "cross-session-04",
+      "canaryType": "string",
+      "sha256": "1c366f2bc8b74abbe96d74777e3a98f791ead52206ebf900f1c219f2fe003218"
+    },
+    {
+      "scenarioId": "benign-cross-session-005",
+      "family": "cross-session",
+      "templateId": "cross-session-05",
+      "canaryType": "string",
+      "sha256": "bc8b1c7657871338c81874367ae322a1f9ef59528691ff1f174fb3436b774953"
+    },
+    {
+      "scenarioId": "benign-cross-session-006",
+      "family": "cross-session",
+      "templateId": "cross-session-06",
+      "canaryType": "url",
+      "sha256": "68aeadcbed78bb8cedb8c07636f3c0c2a02a99c9e1069e0f3cfaed67bf0b6b67"
+    },
+    {
+      "scenarioId": "benign-cross-session-007",
+      "family": "cross-session",
+      "templateId": "cross-session-07",
+      "canaryType": "string",
+      "sha256": "48092e491944d5c5dcfe832bc841c903b80d69a90fd305cb33959581f735e6a9"
+    },
+    {
+      "scenarioId": "benign-cross-session-008",
+      "family": "cross-session",
+      "templateId": "cross-session-08",
+      "canaryType": "string",
+      "sha256": "03938e373eaa13612dd16a753950e6aeb8d004463818296a50960c317660666e"
+    },
+    {
+      "scenarioId": "benign-cross-session-009",
+      "family": "cross-session",
+      "templateId": "cross-session-09",
+      "canaryType": "url",
+      "sha256": "ae4df64edffc5dce522a2961da79d97a8aa8013889ae972e63d070dc03fd0f79"
+    },
+    {
+      "scenarioId": "benign-cross-session-010",
+      "family": "cross-session",
+      "templateId": "cross-session-10",
+      "canaryType": "string",
+      "sha256": "e8e5c9ceeedfbf60d236d546f6e5fb442d42154852ee088efb8a3b77b0f24f57"
+    },
+    {
+      "scenarioId": "benign-tool-hijack-001",
+      "family": "tool-hijack",
+      "templateId": "tool-hijack-01",
+      "canaryType": "tool",
+      "sha256": "bf4f121af395bc58c0b1c47d2c073e64649e70fa78655efd24350b01657073f2"
+    },
+    {
+      "scenarioId": "benign-tool-hijack-002",
+      "family": "tool-hijack",
+      "templateId": "tool-hijack-02",
+      "canaryType": "tool",
+      "sha256": "cccba6a568f55c565a05bb1545932af8aeec40692e2fed3f3090d8d39c017606"
+    },
+    {
+      "scenarioId": "benign-tool-hijack-003",
+      "family": "tool-hijack",
+      "templateId": "tool-hijack-03",
+      "canaryType": "tool",
+      "sha256": "f1d6c5ab1c96340f14b7bfba112591500fa21aea4a2e47aa0c77ec1c51b06b60"
+    },
+    {
+      "scenarioId": "benign-tool-hijack-004",
+      "family": "tool-hijack",
+      "templateId": "tool-hijack-04",
+      "canaryType": "tool",
+      "sha256": "b1919b351ccf5ee77ac5f5ca18fb2563a8690b2ea495445b9bb7d8ad5434b7e1"
+    },
+    {
+      "scenarioId": "benign-tool-hijack-005",
+      "family": "tool-hijack",
+      "templateId": "tool-hijack-05",
+      "canaryType": "tool",
+      "sha256": "4f1a5b556fe74288da1b451d9023a359ff6ba15b20621f758ae30a9fd4a461d0"
+    },
+    {
+      "scenarioId": "benign-tool-hijack-006",
+      "family": "tool-hijack",
+      "templateId": "tool-hijack-06",
+      "canaryType": "tool",
+      "sha256": "3f391f498eef8cc1fe66e05daf11cc4fce14d083b5929a692cb448ed85f8e431"
+    },
+    {
+      "scenarioId": "benign-tool-hijack-007",
+      "family": "tool-hijack",
+      "templateId": "tool-hijack-07",
+      "canaryType": "tool",
+      "sha256": "48cbfc00bf826ad99f6c80b6802443b0c954075620c27f6f63d0957b7bfe094d"
+    },
+    {
+      "scenarioId": "benign-tool-hijack-008",
+      "family": "tool-hijack",
+      "templateId": "tool-hijack-08",
+      "canaryType": "tool",
+      "sha256": "24ca1036d398ad72e086e5ac8f84da5f15bea1885352926c89b14f212015fdf4"
+    },
+    {
+      "scenarioId": "benign-tool-hijack-009",
+      "family": "tool-hijack",
+      "templateId": "tool-hijack-09",
+      "canaryType": "tool",
+      "sha256": "92d6fa8223d05de7bdd87653d4fd55eb505617eefe5143cd7bc22143ce4cd85b"
+    },
+    {
+      "scenarioId": "benign-tool-hijack-010",
+      "family": "tool-hijack",
+      "templateId": "tool-hijack-10",
+      "canaryType": "tool",
+      "sha256": "c21a8f6cb8e24ddd7af4381f57c923722e1eb76f94216602b8fd405fbbd1ed7d"
+    }
+  ],
+  "payloadRuleAudit": {
+    "templates": 40,
+    "pass": 40,
+    "date": "2026-08-27"
+  },
+  "manifestSha256": "3e201b28f831bb945b68e66df713e541db584876c5c57891f586e0f5546203fa"
+}

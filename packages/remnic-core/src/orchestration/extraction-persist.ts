@@ -1623,7 +1623,7 @@ export class ExtractionPersistCoordinator {
         entityRef: fact.entityRef,
         validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
       };
-      const { status: injectionScreenStatus, tags: injectionScreenTags } = evaluateInjectionScreen({ content: fact.content, category: writeCategory, structuredAttributes: fact.structuredAttributes, procedureSteps: fact.procedureSteps }, resolveSecurityCapabilities(this.deps.config).injectionScreen);
+      const { status: injectionScreenStatus, tags: injectionScreenTags } = evaluateInjectionScreen({ content: fact.content, category: writeCategory, structuredAttributes: fact.structuredAttributes, procedureSteps: fact.procedureSteps }, resolveSecurityCapabilities(this.deps.config).injectionScreen, resolveSecurityCapabilities(this.deps.config).injectionScreenProfile);
       // #1669 redaction-rule gate: consult BOTH source and target namespace
       // rules before any write. A never-store pattern registered under the
       // source namespace must survive scope-routing to a different target
@@ -2841,12 +2841,12 @@ export class ExtractionPersistCoordinator {
       durableNonFactTouchRecorded = true;
       touchBaseNonFactNamespace();
     };
-    // #1955 review: entity fields recall via entity hints — screened before
-    // entering the index (screenEntityForIndex); withheld fields are logged.
+    // #1955 review: entity fields are screened before entering the index (screenEntityForIndex).
     const entityScreenOn = resolveSecurityCapabilities(this.deps.config).injectionScreen;
+    const entityScreenProfile = resolveSecurityCapabilities(this.deps.config).injectionScreenProfile;
     for (const entity of entities) {
       try {
-        const screened = screenEntityForIndex(entity, entityScreenOn);
+        const screened = screenEntityForIndex(entity, entityScreenOn, entityScreenProfile);
         if (!screened) continue;
         if (screened.withheldRules.length > 0) log.warn(`persistExtraction: injection screen withheld ${screened.withheldRules.length} entity field(s) for "${screened.name}" [${screened.withheldRules.join(", ")}]`);
         if (screened.withheld) continue;
@@ -2874,7 +2874,7 @@ export class ExtractionPersistCoordinator {
       for (const rel of result.relationships.slice(0, 5)) {
         if (!rel.source || !rel.target || !rel.label) continue;
         const relScreen = screenPersistStrings([`${rel.source}\n${rel.label}\n${rel.target}`,
-          `${rel.target}\n${rel.label} (reverse)\n${rel.source}`], entityScreenOn);
+          `${rel.target}\n${rel.label} (reverse)\n${rel.source}`], entityScreenOn, entityScreenProfile);
         if (relScreen.warning) {
           log.warn(`persistExtraction(relationship): ${relScreen.warning}`);
           continue;
@@ -2911,7 +2911,7 @@ export class ExtractionPersistCoordinator {
     }
     // #1955 review: profile + questions render verbatim into model context —
     // screened; questions screen question+context JOINED (routing: #2397).
-    const profileScreen = screenPersistStrings(profileUpdates, entityScreenOn);
+    const profileScreen = screenPersistStrings(profileUpdates, entityScreenOn, entityScreenProfile);
     if (profileScreen.warning) log.warn(`persistExtraction(profile): ${profileScreen.warning}`);
     if (profileScreen.kept.length > 0) {
       await storage.appendToProfile(profileScreen.kept);
@@ -2919,7 +2919,7 @@ export class ExtractionPersistCoordinator {
     }
 
     for (const q of questions) {
-      const qScreen = screenPersistStrings([`${q.question}\n${q.context ?? ""}`], entityScreenOn);
+      const qScreen = screenPersistStrings([`${q.question}\n${q.context ?? ""}`], entityScreenOn, entityScreenProfile);
       if (qScreen.warning) {
         log.warn(`persistExtraction(question): ${qScreen.warning}`);
         continue;
@@ -2934,7 +2934,7 @@ export class ExtractionPersistCoordinator {
     // Persist identity reflection (screened — #1955): durable namespace-local
     // state; identity-ONLY extraction still counts as durable non-fact (NIIly).
     if (resolveRecallEnhancementCapabilities(this.deps.config).identity && result.identityReflection) {
-      const idScreen = screenPersistStrings([result.identityReflection], entityScreenOn);
+      const idScreen = screenPersistStrings([result.identityReflection], entityScreenOn, entityScreenProfile);
       if (idScreen.warning) log.warn(`persistExtraction(identity): ${idScreen.warning}`);
       else {
         try {

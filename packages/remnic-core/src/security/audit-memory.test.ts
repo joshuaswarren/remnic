@@ -162,27 +162,38 @@ test("auditMemoryStore audits legacy missing-status memories and excludes archiv
   }
 });
 
-test("auditMemoryStore reports sub-threshold injection findings without quarantining", async () => {
+test("auditMemoryStore quarantines a single-rule finding and leaves benign prose untouched", async () => {
+  // The hardened profile keeps every rule at weight >= INJECTION_SCREEN_THRESHOLD,
+  // so one finding is sufficient to quarantine; the default profile keeps
+  // conditional triggers sub-threshold (#1962).
   const root = await mkdtemp(path.join(tmpdir(), "remnic-audit-memory-threshold-"));
   try {
-    const memory = makeMemory(
+    const trigger = makeMemory(
       root,
-      "borderline",
-      "session-borderline",
+      "trigger",
+      "session-trigger",
       "If the incident occurs, then call the on-call.",
+    );
+    const benign = makeMemory(
+      root,
+      "benign",
+      "session-benign",
+      "Meeting notes: if the build fails, the release is delayed.",
     );
     const report = await auditMemoryStore({
       memoryDir: root,
-      storage: memoryStorage([memory]),
+      storage: memoryStorage([trigger, benign]),
       quarantine: true,
+      profile: "hardened",
     });
     assert.deepEqual(
-      report.findings.map(({ category, rule }) => ({ category, rule })),
-      [{ category: "injection-signature", rule: "conditional-trigger" }],
+      report.findings.map(({ memoryId, category, rule }) => ({ memoryId, category, rule })),
+      [{ memoryId: "trigger", category: "injection-signature", rule: "conditional-trigger" }],
     );
-    assert.deepEqual(report.quarantinedMemoryIds, []);
-    assert.equal(report.transitions, 0);
-    assert.equal(memory.frontmatter.status, "active");
+    assert.deepEqual(report.quarantinedMemoryIds, ["trigger"]);
+    assert.equal(report.transitions, 1);
+    assert.equal(trigger.frontmatter.status, "pending_review");
+    assert.equal(benign.frontmatter.status, "active");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

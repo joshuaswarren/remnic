@@ -853,7 +853,10 @@ test("resolveLocalLlmCapabilities: result is frozen", () => {
 // SecurityCapabilitySet — gate-parity tests (issue #1523 batch 7).
 // ---------------------------------------------------------------------------
 
-const SECURITY_FIELD_TO_FLAG: Record<keyof SecurityCapabilitySet, string> = {
+// Boolean-flag parity only: `injectionScreenProfile` is an enum projection
+// (#1962), not a gate — its custom->default / named-mode->hardened mapping is
+// pinned in config.test.ts.
+const SECURITY_FIELD_TO_FLAG: Record<Exclude<keyof SecurityCapabilitySet, "injectionScreenProfile">, string> = {
   trustZones: "trustZonesEnabled",
   quarantinePromotion: "quarantinePromotionEnabled",
   memoryPoisoningDefense: "memoryPoisoningDefenseEnabled",

@@ -187,6 +187,18 @@ test("mixed connector identities resolve to unknown origin", () => {
   assert.equal(classifyExtractionOrigin(context), "unknown");
 });
 
+test("trusted originRole preserves tool authority independently of conversation role", () => {
+  const turns: BufferTurn[] = [{
+    role: "user",
+    originRole: "tool",
+    content: "Tool result rendered into conversation context.",
+    timestamp: "2026-01-01T00:00:00Z",
+  }];
+  const context = deriveExtractionOriginContext(turns);
+  assert.equal(context.turnRole, "tool");
+  assert.equal(classifyExtractionOrigin(context), "tool_output");
+});
+
 test("empty import source labels do not create adapter origins", () => {
   const turns: BufferTurn[] = [{
     role: "user",

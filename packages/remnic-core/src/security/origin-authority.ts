@@ -57,6 +57,14 @@ export function classifyOrigin(input: {
 }
 
 export const DEFAULT_UNTRUSTED_ORIGINS: readonly string[] = ["tool_output", "import:*", "unknown"];
+/** Full attacker-controlled boundary used by the packaged defense modes. */
+export const HARDENED_UNTRUSTED_ORIGINS: readonly string[] = [
+  "user",
+  "tool_output",
+  "connector:*",
+  "import:*",
+  "unknown",
+];
 
 /** Match exact origins and prefix wildcards such as connector:* and import:*. */
 export function isUntrustedOrigin(origin: OriginClass, untrustedOrigins: readonly string[]): boolean {
@@ -86,3 +94,5 @@ export function renderAuthorityFence(content: string, origin: OriginClass): stri
     AUTHORITY_FENCE_DELIMITER,
   ].join("\n");
 }
+
+export type { MemoryInjectionDefenseMode } from "./types.js";

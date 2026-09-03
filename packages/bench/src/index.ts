@@ -165,12 +165,8 @@ export {
   resolveBenchmarkProgressLogging,
 } from "./adapters/timeout-guard.js";
 export type { RemnicAdapterOptions } from "./adapters/remnic-adapter.js";
-export {
-  createSyntheticEmailIngestionAdapter,
-} from "./ingestion-adapters/synthetic-email-adapter.js";
-export type {
-  SyntheticEmailIngestionAdapterOptions,
-} from "./ingestion-adapters/synthetic-email-adapter.js";
+export { createSyntheticEmailIngestionAdapter } from "./ingestion-adapters/synthetic-email-adapter.js";
+export type { SyntheticEmailIngestionAdapterOptions } from "./ingestion-adapters/synthetic-email-adapter.js";
 export {
   MEMORY_EVAL_DIMENSIONS,
   MEMORY_EVAL_PUBLIC_LINE,
@@ -270,13 +266,8 @@ export {
   type BenchmarkExecutionProvenance,
 } from "./reporter.js";
 export { resolveBenchmarkRunId } from "./run-identity.js";
-export {
-  createProvider,
-  discoverAllProviders,
-} from "./providers/factory.js";
-export {
-  answerBenchmarkQuestion,
-} from "./answering.js";
+export { createProvider, discoverAllProviders } from "./providers/factory.js";
+export { answerBenchmarkQuestion } from "./answering.js";
 export {
   buildAmaBenchLeaderboardRows,
   serializeJsonl,
@@ -305,9 +296,7 @@ export type {
   AmaBenchDiagnosticVariantSummary,
   SanitizedDiagnosticProvider,
 } from "./benchmarks/published/ama-bench/diagnostics.js";
-export type {
-  LeaderboardArtifactWrite,
-} from "./leaderboard-export.js";
+export type { LeaderboardArtifactWrite } from "./leaderboard-export.js";
 export {
   createGatewayResponder,
   createProviderBackedAmaBenchRecommendedJudge,
@@ -435,7 +424,10 @@ export {
   pairedDeltaConfidenceInterval,
 } from "./stats/bootstrap.js";
 export { cohensD, interpretEffectSize } from "./stats/effect-size.js";
-export { compareResults, getBenchmarkLowerIsBetter } from "./stats/comparison.js";
+export {
+  compareResults,
+  getBenchmarkLowerIsBetter,
+} from "./stats/comparison.js";
 export {
   diagnoseLoComoProfileDelta,
   renderLoComoProfileDeltaMarkdown,
@@ -552,12 +544,8 @@ export {
   loadLoCoMo10,
   loadLongMemEvalS,
 } from "./benchmarks/published/dataset-loader.js";
-export {
-  loadBeamDatasetPreview,
-} from "./benchmarks/published/beam/runner.js";
-export type {
-  BeamDatasetPreview,
-} from "./benchmarks/published/beam/runner.js";
+export { loadBeamDatasetPreview } from "./benchmarks/published/beam/runner.js";
+export type { BeamDatasetPreview } from "./benchmarks/published/beam/runner.js";
 export type {
   DatasetSource,
   LoadedDataset,
@@ -570,9 +558,7 @@ export {
   loadCustomBenchmarkFile,
   parseCustomBenchmark,
 } from "./benchmarks/custom/loader.js";
-export {
-  runCustomBenchmarkFile,
-} from "./benchmarks/custom/runner.js";
+export { runCustomBenchmarkFile } from "./benchmarks/custom/runner.js";
 export type {
   AbstentionRetrievalCase,
   PersonalizationRetrievalCase,
@@ -805,6 +791,23 @@ export type {
 } from "./security/extraction-attack/index.js";
 
 export {
+  analyzeInjectionSuitePublicationRows,
+  analyzeInjectionSuitePublicationRun,
+  analyzeInjectionSuitePublicationUtility,
+  analyzeInjectionSuitePublicationUtilityFile,
+  analyzeInjectionSuiteRun,
+  decideInjectionSuiteCampaign,
+  analyzeInjectionSuiteUtility,
+  H5_PUBLICATION_ANALYSIS_RULE,
+  H5_PUBLICATION_DEFENSE_BASELINES,
+  replayInjectionSuiteStatistics,
+  runInjectionSuiteOnlineAdaptive,
+  runInjectionSuiteUtility,
+  analyzeInjectionSuiteOnlineAdaptiveRun,
+  planOnlineAdaptiveRows,
+  stripCodeFences,
+  DEFAULT_ATTACKER_PROMPT_PATH_GETTER,
+  ONLINE_ADAPTIVE_STAGE,
   executeLocalRow,
   generateFamilyVariants,
   generateSuiteVariants,
@@ -813,7 +816,9 @@ export {
   runInjectionSuiteCliCommand,
   HOST_FAULT_RETRY_LIMIT,
   INJECTION_SUITE_ARMS,
+  INJECTION_SUITE_PUBLICATION_ARMS,
   INJECTION_SUITE_FAMILIES,
+  INJECTION_SUITE_STAGES,
   INJECTION_SUITE_VERSION,
 } from "./security/injection-suite/index.js";
 export type {
@@ -822,7 +827,13 @@ export type {
   InjectionSuiteCliResult,
   InjectionSuiteEpisodeRow,
   InjectionSuiteFamily,
+  InjectionSuiteOnlineAdaptiveInput,
+  InjectionSuiteProductEvidence,
   InjectionSuiteRowIdentity,
+  InjectionSuiteStage,
+  OnlineAdaptiveCorpusLine,
+  OnlineAdaptiveCorpusManifest,
+  OnlineAdaptiveStatistics,
 } from "./security/injection-suite/index.js";
 
 // ---------------------------------------------------------------------------

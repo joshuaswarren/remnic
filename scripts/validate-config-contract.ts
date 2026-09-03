@@ -275,6 +275,9 @@ function main() {
     "dreamsPhases",
     "providerApiKeyResolver",
     "runtimeAuthForModelResolver",
+    // Derived from memoryInjectionDefenseMode at parse time (#1962); a schema
+    // property would be a dead control — no config input is ever read.
+    "injectionScreenProfile",
   ]);
   const expectedSchemaExtra = new Set([
     "dreams",

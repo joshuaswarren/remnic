@@ -1,28 +1,93 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { BENCH_SECURITY_USAGE, parseBenchSecurityArgs } from "./bench-security-commands.js";
+import {
+  BENCH_SECURITY_USAGE,
+  parseBenchSecurityArgs,
+} from "./bench-security-commands.js";
 import { resolveHomeDir } from "./path-utils.js";
 
 test("injection-suite parser requires --seeds and defaults outside the checkout", () => {
-  const parsed = parseBenchSecurityArgs(["injection-suite", "--seeds", "1", "--limit", "2"]);
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--limit",
+    "2",
+  ]);
   assert.ok(!("help" in parsed));
   if ("help" in parsed) return;
   assert.equal(parsed.seeds, 1);
   assert.equal(parsed.limit, 2);
   assert.equal(parsed.variantsPerFamily, 25);
+  assert.equal(parsed.retryAmbiguous, false);
+  assert.equal(parsed.stage, "base");
+  assert.equal(parsed.runKind, "dev");
   assert.equal(
     parsed.outputDir,
-    path.join(resolveHomeDir(), ".remnic", "bench", "results", "h5-injection-suite"),
+    path.join(
+      resolveHomeDir(),
+      ".remnic",
+      "bench",
+      "results",
+      "h5-injection-suite",
+    ),
   );
 });
 
+test("injection-suite parses a targeted attack family", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--family",
+    "sleeper",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.family, "sleeper");
+});
+
 test("injection-suite --run implies resume", () => {
-  const parsed = parseBenchSecurityArgs(["injection-suite", "--seeds", "1", "--run", "/tmp/h5-run"]);
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--run",
+    "/tmp/h5-run",
+  ]);
   assert.ok(!("help" in parsed));
   if ("help" in parsed) return;
   assert.equal(parsed.resume, true);
   assert.equal(parsed.outputDir, "/tmp/h5-run");
+});
+
+test("injection-suite parses explicit ambiguous-request retry", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--run",
+    "/tmp/h5-run",
+    "--retry-ambiguous",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.resume, true);
+  assert.equal(parsed.retryAmbiguous, true);
+});
+
+test("injection-suite rejects ambiguous retry on a new run", () => {
+  assert.throws(
+    () =>
+      parseBenchSecurityArgs([
+        "injection-suite",
+        "--seeds",
+        "1",
+        "--retry-ambiguous",
+      ]),
+    /requires --run or --resume/,
+  );
 });
 
 test("injection-suite parses live executor flags", () => {
@@ -44,19 +109,216 @@ test("injection-suite parses live executor flags", () => {
   assert.equal(parsed.baseUrl, "http://127.0.0.1:11434");
 });
 
+test("injection-suite parses frozen stage and model profile controls", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--stage",
+    "adaptive-r1",
+    "--run-kind",
+    "main",
+    "--model-digest",
+    "a".repeat(64),
+    "--model-context-tokens",
+    "32768",
+    "--dataset-dir",
+    "/tmp/locomo",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.stage, "adaptive-r1");
+  assert.equal(parsed.runKind, "main");
+  assert.equal(parsed.modelDigest, "a".repeat(64));
+  assert.equal(parsed.modelContextTokens, 32768);
+  assert.equal(parsed.datasetDir, "/tmp/locomo");
+});
+
 test("unknown executor is rejected", () => {
   assert.throws(
-    () => parseBenchSecurityArgs(["injection-suite", "--seeds", "1", "--executor", "runpod"]),
+    () =>
+      parseBenchSecurityArgs([
+        "injection-suite",
+        "--seeds",
+        "1",
+        "--executor",
+        "runpod",
+      ]),
     /--executor must be/,
   );
 });
 
 test("unknown security subcommand is rejected", () => {
-  assert.throws(() => parseBenchSecurityArgs(["nope"]), /unknown bench security subcommand/);
+  assert.throws(
+    () => parseBenchSecurityArgs(["nope"]),
+    /unknown bench security subcommand/,
+  );
 });
 
 test("openai-compat help names host-isolated credential env vars", () => {
-  assert.match(BENCH_SECURITY_USAGE, /api\.openai\.com \/ integrate\.api\.nvidia\.com require/);
+  assert.match(
+    BENCH_SECURITY_USAGE,
+    /api\.openai\.com \/ integrate\.api\.nvidia\.com/,
+  );
+  assert.match(
+    BENCH_SECURITY_USAGE,
+    /router\.huggingface\.co require https \+ provider key/,
+  );
   assert.match(BENCH_SECURITY_USAGE, /REMNIC_OPENAI_COMPAT_API_KEY/);
-  assert.match(BENCH_SECURITY_USAGE, /loopback HTTP on 127\.0\.0\.1 or localhost/);
+  assert.match(BENCH_SECURITY_USAGE, /loopback HTTP/);
+});
+
+test("injection-suite parses independent utility pilot controls", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--utility-benchmark",
+    "longmemeval",
+    "--longmemeval-dataset-dir",
+    "/tmp/longmemeval",
+    "--limit",
+    "100",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.deepEqual(parsed.utilityBenchmarks, ["longmemeval"]);
+  assert.equal(parsed.longmemevalDatasetDir, "/tmp/longmemeval");
+  assert.equal(parsed.limit, 100);
+});
+
+test("injection-suite parses frozen publication arms and later adaptive rounds", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--stage",
+    "adaptive-r3",
+    "--arm",
+    "source-authenticated-fencing",
+    "--arm",
+    "layered-fence-quarantine",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.stage, "adaptive-r3");
+  assert.deepEqual(parsed.arms, [
+    "source-authenticated-fencing",
+    "layered-fence-quarantine",
+  ]);
+});
+
+test("injection-suite parses an explicit reproduction seed base", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--seed-base",
+    "907",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.seedBase, 907);
+});
+
+test("injection-suite parses benign-use stage and capture-responses flag", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--stage",
+    "benign-use",
+    "--capture-responses",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.stage, "benign-use");
+  assert.equal(parsed.captureResponses, true);
+  assert.match(BENCH_SECURITY_USAGE, /--capture-responses/);
+  assert.match(BENCH_SECURITY_USAGE, /benign-use/);
+});
+
+test("capture-responses defaults to absent and unknown stages stay rejected", () => {
+  const parsed = parseBenchSecurityArgs(["injection-suite", "--seeds", "1"]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.captureResponses, false);
+  assert.throws(
+    () =>
+      parseBenchSecurityArgs([
+        "injection-suite",
+        "--seeds",
+        "1",
+        "--stage",
+        "benign-plus",
+      ]),
+    /--stage must be/,
+  );
+});
+
+test("injection-suite parses online attacker flags and accepts adaptive-online-r1 stage", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--stage",
+    "adaptive-online-r1",
+    "--arm",
+    "source-authenticated-fencing",
+    "--arm",
+    "layered-fence-quarantine",
+    "--attacker-executor",
+    "openai-compat",
+    "--attacker-model",
+    "attacker-model-3b",
+    "--attacker-base-url",
+    "http://attacker.local",
+    "--attacker-model-digest",
+    "b".repeat(64),
+    "--attacker-iterations",
+    "3",
+    "--attacker-prompt",
+    "/tmp/attacker-prompt.md",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.stage, "adaptive-online-r1");
+  assert.equal(parsed.attackerExecutor, "openai-compat");
+  assert.equal(parsed.attackerModel, "attacker-model-3b");
+  assert.equal(parsed.attackerBaseUrl, "http://attacker.local");
+  assert.equal(parsed.attackerModelDigest, "b".repeat(64));
+  assert.equal(parsed.attackerIterations, 3);
+  assert.equal(parsed.attackerPromptPath, "/tmp/attacker-prompt.md");
+  assert.deepEqual(parsed.arms, [
+    "source-authenticated-fencing",
+    "layered-fence-quarantine",
+  ]);
+  assert.match(BENCH_SECURITY_USAGE, /injection-suite-adaptive-online/);
+  assert.match(BENCH_SECURITY_USAGE, /--attacker-executor/);
+  assert.match(BENCH_SECURITY_USAGE, /--attacker-iterations/);
+});
+
+test("injection-suite rejects unknown attacker executor and iterations count", () => {
+  assert.throws(
+    () =>
+      parseBenchSecurityArgs([
+        "injection-suite",
+        "--seeds",
+        "1",
+        "--attacker-executor",
+        "anthropic",
+      ]),
+    /--attacker-executor must be/,
+  );
+  assert.throws(
+    () =>
+      parseBenchSecurityArgs([
+        "injection-suite",
+        "--seeds",
+        "1",
+        "--attacker-iterations",
+        "0",
+      ]),
+    /--attacker-iterations must be/,
+  );
 });

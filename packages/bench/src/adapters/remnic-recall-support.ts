@@ -1,4 +1,6 @@
+import { renderAuthorityFence, screenCandidateFact } from "@remnic/core";
 import type { BenchRecallSupportAssessment, BenchRecallSupportRequest } from "./types.js";
+
 
 export const DEFAULT_ANSWER_SUPPORT_MIN_COVERAGE = 0.34;
 
@@ -44,6 +46,101 @@ export function shouldIncludeCoreRecallForReplay(options: {
 }): boolean {
   return options.useCoreMemoryPipeline &&
     (options.replayExtractionMode !== "skip" || !options.skipExtractionLcmFirst);
+}
+
+/**
+ * Recall section ids the harness authors as responder guidance (they are
+ * instruction-shaped by design and may quote short evidence snippets the
+ * harness already selected). They are trusted like core memory: never
+ * screened, never fenced. Every other section quotes raw conversation or
+ * derived content and goes through the configured defenses. The security
+ * suite's rows recall only core sections, so this list does not touch them.
+ */
+export const HARNESS_AUTHORED_RECALL_SECTIONS: ReadonlySet<string> = new Set([
+  "core",
+  "contradiction-guidance",
+  "dependency-version",
+  "implementation-targets",
+  "historical-empty",
+  "personal-history-empty",
+]);
+
+/**
+ * A recall section after screening and origin-authority securing, plus the
+ * offset map trace evidence needs: range-bearing receipts (evidence blocks,
+ * summary entries, raw rows) are computed against the pre-securing text, and
+ * `offsetAt` translates such an offset onto the same character in `text`.
+ */
+export interface SecuredBenchRecallSection {
+  text: string;
+  offsetAt: (offset: number) => number;
+}
+
+function unfencedSection(text: string): SecuredBenchRecallSection {
+  return { text, offsetAt: (offset) => offset };
+}
+
+/**
+ * The authority fence prepends two header lines, prefixes every content line
+ * with a quote marker, and appends one closing delimiter line. Derive the
+ * header width and marker length from the fence just rendered so the map
+ * cannot drift from `renderAuthorityFence` output; the recall-trace fencing
+ * tests fail loudly if the fence shape ever changes.
+ */
+function fencedSectionOffsets(content: string, text: string): (offset: number) => number {
+  const headerChars = text.indexOf("\n", text.indexOf("\n") + 1) + 1;
+  const firstLineEnd = content.indexOf("\n");
+  const firstLine = firstLineEnd === -1 ? content : content.slice(0, firstLineEnd);
+  const markerChars = text.indexOf(firstLine, headerChars) - headerChars;
+  return (offset) => {
+    let lines = 0;
+    for (let i = 0; i < offset; i++) {
+      if (content.charCodeAt(i) === 10) lines++;
+    }
+    // Every content line carries its own quote marker, including the line
+    // holding the offset, so the marker count is lines-before plus one.
+    return headerChars + offset + markerChars * (lines + 1);
+  };
+}
+
+export function secureBenchRecallSection(
+  content: string,
+  security: {
+    originAuthorityEnabled: boolean;
+    injectionScreenEnabled: boolean;
+    injectionScreenProfile: "default" | "hardened";
+  },
+  trustedSection: boolean,
+): SecuredBenchRecallSection {
+  if (trustedSection) return unfencedSection(content);
+  if (
+    security.injectionScreenEnabled
+    && screenCandidateFact(content, security.injectionScreenProfile).quarantine
+  ) {
+    return unfencedSection("");
+  }
+  if (!security.originAuthorityEnabled) return unfencedSection(content);
+  const text = renderAuthorityFence(content, "unknown");
+  return { text, offsetAt: fencedSectionOffsets(content, text) };
+}
+
+/**
+ * Rewrite the offset pair named by `startKey`/`endKey` on every receipt from
+ * pre-securing section coordinates into the secured coordinates recorded in
+ * the recall trace. Without it, a fenced section makes every recorded range
+ * point at fence header bytes instead of the quoted content.
+ */
+export function translateSelectionOffsets<T>(
+  receipts: readonly T[],
+  offsetAt: (offset: number) => number,
+  startKey: keyof T,
+  endKey: keyof T,
+): T[] {
+  return receipts.map((receipt) => ({
+    ...receipt,
+    [startKey]: offsetAt(receipt[startKey] as number),
+    [endKey]: offsetAt(receipt[endKey] as number),
+  })) as T[];
 }
 
 function normalizeSupportToken(value: string): string {

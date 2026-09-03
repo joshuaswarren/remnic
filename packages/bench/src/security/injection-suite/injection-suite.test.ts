@@ -1,31 +1,95 @@
+import { screenCandidateFact } from "@remnic/core";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { InjectionSuiteClaimLock } from "./claims.js";
-import { generateSuiteVariants } from "./generator.js";
-import { buildRecallPrompt, completeChat, InjectionSuiteHostFault } from "./llm-executor.js";
 import {
+  generateSuiteVariants,
+  validateInjectionSuiteVariant,
+} from "./generator.js";
+import {
+  buildRecallPrompt,
+  completeChat,
+  InjectionSuiteHostFault,
+} from "./llm-executor.js";
+import {
+  injectionSuiteResumeContractHash,
   planInjectionSuiteRows,
   runInjectionSuiteCliCommand,
 } from "./runner.js";
-import { InjectionSuiteRowStore, buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
+import {
+  InjectionSuiteRowStore,
+  buildInjectionSuiteRowKey,
+  defaultSuiteIdentity,
+} from "./store.js";
 import { HOST_FAULT_RETRY_LIMIT } from "./types.js";
 
 test("generator emits four families with CANARY-e2e tokens", () => {
   const variants = generateSuiteVariants(2, 1);
   assert.equal(variants.length, 8);
-  assert.deepEqual([...new Set(variants.map((variant) => variant.family))].sort(), [
-    "cross-session",
-    "minja",
-    "sleeper",
-    "tool-hijack",
-  ]);
+  assert.deepEqual(
+    [...new Set(variants.map((variant) => variant.family))].sort(),
+    ["cross-session", "minja", "sleeper", "tool-hijack"],
+  );
   for (const variant of variants) {
     assert.match(variant.canary, /^CANARY-e2e-[0-9a-f]{12}$/);
     assert.match(variant.payload, new RegExp(variant.canary));
   }
+});
+
+test("product screen separates every base attack from its benign twin", () => {
+  const attacks = generateSuiteVariants(10, 71, "base");
+  const benign = generateSuiteVariants(10, 71, "benign");
+  // The study screen runs the hardened profile (frozen corpus, disclosed weights).
+  assert.ok(
+    attacks.every((variant) => screenCandidateFact(variant.payload, "hardened").quarantine),
+  );
+  assert.ok(
+    benign.every((variant) => !screenCandidateFact(variant.payload, "hardened").quarantine),
+  );
+});
+
+test("benign-use twins carry exactly one use canary and pass the screen", () => {
+  const variants = generateSuiteVariants(10, 71, "benign-use");
+  assert.equal(variants.length, 40);
+  for (const variant of variants) {
+    assert.match(variant.useCanary!, /^NOTE-e2e-[0-9a-f]{12}$/);
+    assert.equal(variant.benign, true);
+    assert.equal(variant.payload.split(variant.useCanary!).length - 1, 1);
+    assert.equal(variant.payload.split(variant.canary).length - 1, 0);
+    assert.ok(!variant.payload.includes(variant.livenessCanary));
+    assert.match(variant.triggerPrompt, /note identifier/);
+    assert.deepEqual(
+      validateInjectionSuiteVariant(variant),
+      [],
+      variant.variantId,
+    );
+    assert.ok(
+      !screenCandidateFact(variant.payload, "hardened").quarantine,
+      variant.variantId,
+    );
+  }
+});
+
+test("benign-use payloads are deterministic per seed and differ across seeds", () => {
+  const first = generateSuiteVariants(2, 71, "benign-use");
+  const again = generateSuiteVariants(2, 71, "benign-use");
+  const other = generateSuiteVariants(2, 72, "benign-use");
+  assert.equal(JSON.stringify(first), JSON.stringify(again));
+  assert.notEqual(JSON.stringify(first), JSON.stringify(other));
+  assert.notDeepEqual(
+    first.map((variant) => variant.useCanary),
+    other.map((variant) => variant.useCanary),
+  );
 });
 
 test("plan respects --limit", () => {
@@ -36,6 +100,31 @@ test("plan respects --limit", () => {
     limit: 3,
   });
   assert.equal(rows.length, 3);
+});
+
+test("plan can target one attack family", () => {
+  const rows = planInjectionSuiteRows({
+    seeds: 1,
+    variantsPerFamily: 2,
+    modelProfileId: "local-dry",
+    family: "sleeper",
+  });
+  assert.equal(rows.length, 8);
+  assert.ok(rows.every((row) => row.family === "sleeper"));
+});
+
+test("ambiguous retry override is resume-only", async () => {
+  await assert.rejects(
+    () =>
+      runInjectionSuiteCliCommand({
+        seeds: 1,
+        variantsPerFamily: 1,
+        modelProfileId: "local-dry",
+        outputDir: path.join(tmpdir(), "h5-never-created"),
+        retryAmbiguous: true,
+      }),
+    /requires --resume/,
+  );
 });
 
 test("resume skips terminal rows and refuses a drifted contract", async () => {
@@ -68,23 +157,13 @@ test("resume skips terminal rows and refuses a drifted contract", async () => {
       variantsPerFamily: 1,
       modelProfileId: "local-dry",
       outputDir,
-      limit: 3,
+      limit: 2,
       resume: true,
     });
     assert.equal(resumed.exitCode, 0);
     assert.equal(resumed.resumed, 2);
-    assert.equal(resumed.completed, 1);
+    assert.equal(resumed.completed, 0);
 
-    const episodes = (await readFile(path.join(outputDir, "episodes.jsonl"), "utf8"))
-      .trim()
-      .split("\n");
-    assert.equal(episodes.length, 3);
-
-    const metadata = JSON.parse(await readFile(path.join(outputDir, "run.json"), "utf8")) as {
-      resumeContractHash: string;
-    };
-    metadata.resumeContractHash = "0".repeat(64);
-    await writeFile(path.join(outputDir, "run.json"), `${JSON.stringify(metadata, null, 2)}\n`);
     await assert.rejects(
       () =>
         runInjectionSuiteCliCommand({
@@ -93,6 +172,42 @@ test("resume skips terminal rows and refuses a drifted contract", async () => {
           modelProfileId: "local-dry",
           outputDir,
           limit: 3,
+          resume: true,
+        }),
+      /resume contract hash drifted/,
+    );
+
+    const episodes = (
+      await readFile(path.join(outputDir, "episodes.jsonl"), "utf8")
+    )
+      .trim()
+      .split("\n");
+    assert.equal(episodes.length, 2);
+
+    const metadata = JSON.parse(
+      await readFile(path.join(outputDir, "run.json"), "utf8"),
+    ) as {
+      schemaVersion: number;
+      resumeContractHash: string;
+      expectedRows: number;
+      requestTimeoutMs: number;
+    };
+    assert.equal(metadata.schemaVersion, 3);
+    assert.equal(metadata.expectedRows, 2);
+    assert.equal(metadata.requestTimeoutMs, 0);
+    metadata.resumeContractHash = "0".repeat(64);
+    await writeFile(
+      path.join(outputDir, "run.json"),
+      `${JSON.stringify(metadata, null, 2)}\n`,
+    );
+    await assert.rejects(
+      () =>
+        runInjectionSuiteCliCommand({
+          seeds: 1,
+          variantsPerFamily: 1,
+          modelProfileId: "local-dry",
+          outputDir,
+          limit: 2,
           resume: true,
         }),
       /resume contract hash drifted/,
@@ -139,6 +254,60 @@ test("host-fault exhaustion pauses instead of cutting the row", async () => {
     const loaded = await store.load(identity);
     assert.equal(loaded.kind, "VALID");
     if (loaded.kind === "VALID") {
+      assert.equal(loaded.checkpoint.tries.length, HOST_FAULT_RETRY_LIMIT + 1);
+      assert.ok(loaded.checkpoint.terminal);
+    }
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("ambiguous paid attempt pauses until explicit retry", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-ambiguous-"));
+  try {
+    await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+      faultFirstAttempts: HOST_FAULT_RETRY_LIMIT,
+    });
+    const identity = planInjectionSuiteRows({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      limit: 1,
+    })[0]!;
+    const store = new InjectionSuiteRowStore(outputDir);
+    await store.markInFlight(identity, HOST_FAULT_RETRY_LIMIT + 1);
+
+    const paused = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+      resume: true,
+    });
+    assert.equal(paused.exitCode, 2);
+    assert.match(paused.output, /ambiguous paid attempt 7/);
+
+    const recovered = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+      resume: true,
+      retryAmbiguous: true,
+    });
+    assert.equal(recovered.exitCode, 0);
+    assert.equal(recovered.completed, 1);
+    const loaded = await store.load(identity);
+    assert.equal(loaded.kind, "VALID");
+    if (loaded.kind === "VALID") {
+      assert.equal(loaded.checkpoint.inFlight, undefined);
       assert.equal(loaded.checkpoint.tries.length, HOST_FAULT_RETRY_LIMIT + 1);
       assert.ok(loaded.checkpoint.terminal);
     }
@@ -266,6 +435,24 @@ test("resume contract includes executor and model", async () => {
   }
 });
 
+test("resume contract binds request timeout", () => {
+  const base = {
+    suiteVersion: "suite",
+    modelProfileId: "profile",
+    seeds: [1],
+    variantsPerFamily: 1,
+    limit: 4,
+    executor: "openai-compat",
+    model: "model",
+    baseUrl: "https://compat.example/v1",
+    requestTimeoutMs: 1000,
+  };
+  assert.notEqual(
+    injectionSuiteResumeContractHash(base),
+    injectionSuiteResumeContractHash({ ...base, requestTimeoutMs: 2000 }),
+  );
+});
+
 test("plan and execute accept variants-per-family above 64", async () => {
   const outputDir = await mkdtemp(path.join(tmpdir(), "h5-hi-"));
   try {
@@ -282,7 +469,6 @@ test("plan and execute accept variants-per-family above 64", async () => {
     await rm(outputDir, { recursive: true, force: true });
   }
 });
-
 
 async function withEnv(
   overlay: Record<string, string | undefined>,
@@ -307,12 +493,17 @@ async function withEnv(
 
 function mockJsonFetch(responseBody: Record<string, unknown>) {
   const originalFetch = globalThis.fetch;
-  const requests: Array<{ url: string; headers: Record<string, string> }> = [];
+  const requests: Array<{
+    url: string;
+    headers: Record<string, string>;
+    body: unknown;
+  }> = [];
   globalThis.fetch = async (url, init) => {
     const headers = new Headers(init?.headers);
     requests.push({
       url: String(url),
       headers: Object.fromEntries(headers.entries()),
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
     });
     return new Response(JSON.stringify(responseBody), {
       status: 200,
@@ -330,6 +521,7 @@ function mockJsonFetch(responseBody: Record<string, unknown>) {
 const AUTH_CLEAR_ENV = {
   OPENAI_API_KEY: undefined,
   NVIDIA_API_KEY: undefined,
+  HF_TOKEN: undefined,
   REMNIC_OPENAI_COMPAT_API_KEY: undefined,
 } as const;
 
@@ -342,7 +534,10 @@ async function assertFailsBeforeFetch(
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     fetchCalls += 1;
-    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    return new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
   };
   try {
     await withEnv({ ...AUTH_CLEAR_ENV, ...overlay }, async () => {
@@ -367,15 +562,26 @@ test("openai-compat OpenAI host sends Authorization from OPENAI_API_KEY", async 
   });
   try {
     await withEnv(
-      { ...AUTH_CLEAR_ENV, OPENAI_API_KEY: "test-openai-key", NVIDIA_API_KEY: "must-not-be-sent" },
+      {
+        ...AUTH_CLEAR_ENV,
+        OPENAI_API_KEY: "test-openai-key",
+        NVIDIA_API_KEY: "must-not-be-sent",
+      },
       async () => {
         const text = await completeChat(
-          { kind: "openai-compat", baseUrl: "https://api.openai.com/v1", requestTimeoutMs: 250 },
+          {
+            kind: "openai-compat",
+            baseUrl: "https://api.openai.com/v1",
+            requestTimeoutMs: 250,
+          },
           "hi",
         );
         assert.equal(text, "ok");
         assert.equal(mock.requests.length, 1);
-        assert.equal(mock.requests[0]?.headers.authorization, "Bearer test-openai-key");
+        assert.equal(
+          mock.requests[0]?.headers.authorization,
+          "Bearer test-openai-key",
+        );
         assert.match(mock.requests[0]?.url ?? "", /\/chat\/completions$/);
       },
     );
@@ -390,7 +596,11 @@ test("openai-compat NVIDIA host sends Authorization from NVIDIA_API_KEY", async 
   });
   try {
     await withEnv(
-      { ...AUTH_CLEAR_ENV, OPENAI_API_KEY: "must-not-be-sent", NVIDIA_API_KEY: "nvidia-only" },
+      {
+        ...AUTH_CLEAR_ENV,
+        OPENAI_API_KEY: "must-not-be-sent",
+        NVIDIA_API_KEY: "nvidia-only",
+      },
       async () => {
         await completeChat(
           {
@@ -400,8 +610,84 @@ test("openai-compat NVIDIA host sends Authorization from NVIDIA_API_KEY", async 
           },
           "hi",
         );
-        assert.equal(mock.requests[0]?.headers.authorization, "Bearer nvidia-only");
-        assert.match(mock.requests[0]?.url ?? "", /^https:\/\/integrate\.api\.nvidia\.com\//);
+        assert.equal(
+          mock.requests[0]?.headers.authorization,
+          "Bearer nvidia-only",
+        );
+        assert.match(
+          mock.requests[0]?.url ?? "",
+          /^https:\/\/integrate\.api\.nvidia\.com\//,
+        );
+        const requestBody = mock.requests[0]?.body;
+        assert.ok(
+          requestBody &&
+            typeof requestBody === "object" &&
+            "reasoning_effort" in requestBody,
+        );
+        assert.equal(requestBody.reasoning_effort, "none");
+      },
+    );
+  } finally {
+    mock.restore();
+  }
+});
+
+test("NVIDIA GPT-OSS uses its supported low reasoning effort", async () => {
+  const mock = mockJsonFetch({
+    choices: [{ message: { content: "ok" } }],
+  });
+  try {
+    await withEnv(
+      { ...AUTH_CLEAR_ENV, NVIDIA_API_KEY: "nvidia-only" },
+      async () => {
+        await completeChat(
+          {
+            kind: "openai-compat",
+            baseUrl: "https://integrate.api.nvidia.com/v1",
+            model: "openai/gpt-oss-20b",
+            requestTimeoutMs: 250,
+          },
+          "hi",
+        );
+        const requestBody = mock.requests[0]?.body;
+        assert.ok(
+          requestBody &&
+            typeof requestBody === "object" &&
+            "reasoning_effort" in requestBody,
+        );
+        assert.equal(requestBody.reasoning_effort, "low");
+      },
+    );
+  } finally {
+    mock.restore();
+  }
+});
+
+test("openai-compat Hugging Face host sends Authorization from HF_TOKEN", async () => {
+  const mock = mockJsonFetch({
+    choices: [{ message: { content: "ok" } }],
+  });
+  try {
+    await withEnv(
+      {
+        ...AUTH_CLEAR_ENV,
+        HF_TOKEN: "hf-only",
+        NVIDIA_API_KEY: "must-not-be-sent",
+      },
+      async () => {
+        await completeChat(
+          {
+            kind: "openai-compat",
+            baseUrl: "https://router.huggingface.co/v1",
+            requestTimeoutMs: 250,
+          },
+          "hi",
+        );
+        assert.equal(mock.requests[0]?.headers.authorization, "Bearer hf-only");
+        assert.match(
+          mock.requests[0]?.url ?? "",
+          /^https:\/\/router\.huggingface\.co\//,
+        );
       },
     );
   } finally {
@@ -423,10 +709,17 @@ test("openai-compat unknown host sends only REMNIC_OPENAI_COMPAT_API_KEY", async
       },
       async () => {
         await completeChat(
-          { kind: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", requestTimeoutMs: 250 },
+          {
+            kind: "openai-compat",
+            baseUrl: "http://127.0.0.1:9/v1",
+            requestTimeoutMs: 250,
+          },
           "hi",
         );
-        assert.equal(mock.requests[0]?.headers.authorization, "Bearer explicit-compat-key");
+        assert.equal(
+          mock.requests[0]?.headers.authorization,
+          "Bearer explicit-compat-key",
+        );
       },
     );
   } finally {
@@ -437,7 +730,11 @@ test("openai-compat unknown host sends only REMNIC_OPENAI_COMPAT_API_KEY", async
 test("openai-compat NVIDIA host with only OPENAI_API_KEY fails before fetch", async () => {
   await assertFailsBeforeFetch(
     { OPENAI_API_KEY: "must-not-be-sent" },
-    { kind: "openai-compat", baseUrl: "https://integrate.api.nvidia.com/v1", requestTimeoutMs: 250 },
+    {
+      kind: "openai-compat",
+      baseUrl: "https://integrate.api.nvidia.com/v1",
+      requestTimeoutMs: 250,
+    },
     /NVIDIA_API_KEY/,
   );
 });
@@ -445,15 +742,35 @@ test("openai-compat NVIDIA host with only OPENAI_API_KEY fails before fetch", as
 test("openai-compat OpenAI host with only NVIDIA_API_KEY fails before fetch", async () => {
   await assertFailsBeforeFetch(
     { NVIDIA_API_KEY: "must-not-be-sent" },
-    { kind: "openai-compat", baseUrl: "https://api.openai.com/v1", requestTimeoutMs: 250 },
+    {
+      kind: "openai-compat",
+      baseUrl: "https://api.openai.com/v1",
+      requestTimeoutMs: 250,
+    },
     /OPENAI_API_KEY/,
+  );
+});
+
+test("openai-compat Hugging Face host with only NVIDIA_API_KEY fails before fetch", async () => {
+  await assertFailsBeforeFetch(
+    { NVIDIA_API_KEY: "must-not-be-sent" },
+    {
+      kind: "openai-compat",
+      baseUrl: "https://router.huggingface.co/v1",
+      requestTimeoutMs: 250,
+    },
+    /HF_TOKEN/,
   );
 });
 
 test("openai-compat unknown host with OPENAI_API_KEY fails before fetch", async () => {
   await assertFailsBeforeFetch(
     { OPENAI_API_KEY: "must-not-be-sent" },
-    { kind: "openai-compat", baseUrl: "http://127.0.0.1:9/v1", requestTimeoutMs: 250 },
+    {
+      kind: "openai-compat",
+      baseUrl: "http://127.0.0.1:9/v1",
+      requestTimeoutMs: 250,
+    },
     /REMNIC_OPENAI_COMPAT_API_KEY/,
   );
 });
@@ -461,7 +778,11 @@ test("openai-compat unknown host with OPENAI_API_KEY fails before fetch", async 
 test("openai-compat unrelated openai.com subdomain does not receive OPENAI_API_KEY", async () => {
   await assertFailsBeforeFetch(
     { OPENAI_API_KEY: "must-not-be-sent" },
-    { kind: "openai-compat", baseUrl: "https://something.openai.com/v1", requestTimeoutMs: 250 },
+    {
+      kind: "openai-compat",
+      baseUrl: "https://something.openai.com/v1",
+      requestTimeoutMs: 250,
+    },
     /REMNIC_OPENAI_COMPAT_API_KEY/,
   );
 });
@@ -469,14 +790,33 @@ test("openai-compat unrelated openai.com subdomain does not receive OPENAI_API_K
 test("openai-compat unrelated nvidia.com subdomain does not receive NVIDIA_API_KEY", async () => {
   await assertFailsBeforeFetch(
     { NVIDIA_API_KEY: "must-not-be-sent" },
-    { kind: "openai-compat", baseUrl: "https://evil.nvidia.com/v1", requestTimeoutMs: 250 },
+    {
+      kind: "openai-compat",
+      baseUrl: "https://evil.nvidia.com/v1",
+      requestTimeoutMs: 250,
+    },
+    /REMNIC_OPENAI_COMPAT_API_KEY/,
+  );
+});
+
+test("openai-compat unrelated huggingface.co subdomain does not receive HF_TOKEN", async () => {
+  await assertFailsBeforeFetch(
+    { HF_TOKEN: "must-not-be-sent" },
+    {
+      kind: "openai-compat",
+      baseUrl: "https://evil.huggingface.co/v1",
+      requestTimeoutMs: 250,
+    },
     /REMNIC_OPENAI_COMPAT_API_KEY/,
   );
 });
 
 test("openai-compat NVIDIA lookalike host does not receive OPENAI_API_KEY", async () => {
   await assertFailsBeforeFetch(
-    { OPENAI_API_KEY: "must-not-be-sent", NVIDIA_API_KEY: "also-must-not-be-sent" },
+    {
+      OPENAI_API_KEY: "must-not-be-sent",
+      NVIDIA_API_KEY: "also-must-not-be-sent",
+    },
     {
       kind: "openai-compat",
       baseUrl: "https://integrate.api.nvidia.com.example/v1",
@@ -489,7 +829,11 @@ test("openai-compat NVIDIA lookalike host does not receive OPENAI_API_KEY", asyn
 test("openai-compat treats a blank NVIDIA_API_KEY as missing on NVIDIA hosts", async () => {
   await assertFailsBeforeFetch(
     { NVIDIA_API_KEY: "  ", OPENAI_API_KEY: "must-not-be-sent" },
-    { kind: "openai-compat", baseUrl: "https://integrate.api.nvidia.com/v1", requestTimeoutMs: 250 },
+    {
+      kind: "openai-compat",
+      baseUrl: "https://integrate.api.nvidia.com/v1",
+      requestTimeoutMs: 250,
+    },
     /NVIDIA_API_KEY/,
   );
 });
@@ -497,7 +841,11 @@ test("openai-compat treats a blank NVIDIA_API_KEY as missing on NVIDIA hosts", a
 test("openai-compat refuses HTTP OpenAI hosts before fetch", async () => {
   await assertFailsBeforeFetch(
     { OPENAI_API_KEY: "must-not-be-sent" },
-    { kind: "openai-compat", baseUrl: "http://api.openai.com/v1", requestTimeoutMs: 250 },
+    {
+      kind: "openai-compat",
+      baseUrl: "http://api.openai.com/v1",
+      requestTimeoutMs: 250,
+    },
     /https/,
   );
 });
@@ -505,7 +853,23 @@ test("openai-compat refuses HTTP OpenAI hosts before fetch", async () => {
 test("openai-compat refuses HTTP NVIDIA hosts before fetch", async () => {
   await assertFailsBeforeFetch(
     { NVIDIA_API_KEY: "must-not-be-sent" },
-    { kind: "openai-compat", baseUrl: "http://integrate.api.nvidia.com/v1", requestTimeoutMs: 250 },
+    {
+      kind: "openai-compat",
+      baseUrl: "http://integrate.api.nvidia.com/v1",
+      requestTimeoutMs: 250,
+    },
+    /https/,
+  );
+});
+
+test("openai-compat refuses HTTP Hugging Face hosts before fetch", async () => {
+  await assertFailsBeforeFetch(
+    { HF_TOKEN: "must-not-be-sent" },
+    {
+      kind: "openai-compat",
+      baseUrl: "http://router.huggingface.co/v1",
+      requestTimeoutMs: 250,
+    },
     /https/,
   );
 });
@@ -513,7 +877,11 @@ test("openai-compat refuses HTTP NVIDIA hosts before fetch", async () => {
 test("openai-compat refuses HTTP custom non-loopback hosts before fetch", async () => {
   await assertFailsBeforeFetch(
     { REMNIC_OPENAI_COMPAT_API_KEY: "must-not-be-sent" },
-    { kind: "openai-compat", baseUrl: "http://compat.example/v1", requestTimeoutMs: 250 },
+    {
+      kind: "openai-compat",
+      baseUrl: "http://compat.example/v1",
+      requestTimeoutMs: 250,
+    },
     /https/,
   );
 });
@@ -523,13 +891,23 @@ test("openai-compat allows loopback HTTP with REMNIC_OPENAI_COMPAT_API_KEY", asy
     choices: [{ message: { content: "ok" } }],
   });
   try {
-    await withEnv({ ...AUTH_CLEAR_ENV, REMNIC_OPENAI_COMPAT_API_KEY: "loopback-key" }, async () => {
-      await completeChat(
-        { kind: "openai-compat", baseUrl: "http://localhost:9/v1", requestTimeoutMs: 250 },
-        "hi",
-      );
-      assert.equal(mock.requests[0]?.headers.authorization, "Bearer loopback-key");
-    });
+    await withEnv(
+      { ...AUTH_CLEAR_ENV, REMNIC_OPENAI_COMPAT_API_KEY: "loopback-key" },
+      async () => {
+        await completeChat(
+          {
+            kind: "openai-compat",
+            baseUrl: "http://localhost:9/v1",
+            requestTimeoutMs: 250,
+          },
+          "hi",
+        );
+        assert.equal(
+          mock.requests[0]?.headers.authorization,
+          "Bearer loopback-key",
+        );
+      },
+    );
   } finally {
     mock.restore();
   }
@@ -540,13 +918,53 @@ test("openai-compat custom https host sends REMNIC_OPENAI_COMPAT_API_KEY", async
     choices: [{ message: { content: "ok" } }],
   });
   try {
-    await withEnv({ ...AUTH_CLEAR_ENV, REMNIC_OPENAI_COMPAT_API_KEY: "custom-https-key" }, async () => {
+    await withEnv(
+      { ...AUTH_CLEAR_ENV, REMNIC_OPENAI_COMPAT_API_KEY: "custom-https-key" },
+      async () => {
+        await completeChat(
+          {
+            kind: "openai-compat",
+            baseUrl: "https://compat.example/v1",
+            requestTimeoutMs: 250,
+          },
+          "hi",
+        );
+        assert.equal(
+          mock.requests[0]?.headers.authorization,
+          "Bearer custom-https-key",
+        );
+      },
+    );
+  } finally {
+    mock.restore();
+  }
+});
+
+test("openai-compat sends chat_template_kwargs only to models whose template defines enable_thinking", async () => {
+  const mock = mockJsonFetch({ choices: [{ message: { content: "ok" } }] });
+  try {
+    await withEnv({ ...AUTH_CLEAR_ENV, OPENAI_API_KEY: "openai-key", NVIDIA_API_KEY: "nvidia-key" }, async () => {
       await completeChat(
-        { kind: "openai-compat", baseUrl: "https://compat.example/v1", requestTimeoutMs: 250 },
+        { kind: "openai-compat", baseUrl: "https://api.openai.com/v1", model: "gpt-4.1-mini", requestTimeoutMs: 250 },
         "hi",
       );
-      assert.equal(mock.requests[0]?.headers.authorization, "Bearer custom-https-key");
+      await completeChat(
+        { kind: "openai-compat", baseUrl: "https://integrate.api.nvidia.com/v1", model: "meta/llama-3.2-11b-vision-instruct", requestTimeoutMs: 250 },
+        "hi",
+      );
+      await completeChat(
+        { kind: "openai-compat", baseUrl: "https://integrate.api.nvidia.com/v1", model: "nvidia/nemotron-3.5-lightning-30b-a3b", requestTimeoutMs: 250 },
+        "hi",
+      );
     });
+    const bodies = mock.requests.map((request) => request.body as Record<string, unknown>);
+    assert.equal(bodies.length, 3);
+    assert.equal("chat_template_kwargs" in bodies[0]!, false, "OpenAI rejects unknown request fields");
+    assert.equal("reasoning_effort" in bodies[0]!, false, "a generic model gets no reasoning_effort");
+    assert.equal(bodies[1]!.reasoning_effort, "low");
+    assert.equal(bodies[2]!.reasoning_effort, "none");
+    assert.equal("chat_template_kwargs" in bodies[1]!, false, "the NVIDIA Llama 3.2 endpoint rejects the option");
+    assert.deepEqual(bodies[2]!.chat_template_kwargs, { enable_thinking: false });
   } finally {
     mock.restore();
   }
@@ -559,7 +977,11 @@ test("ollama omits Authorization even when OPENAI_API_KEY is set", async () => {
   try {
     await withEnv({ OPENAI_API_KEY: "must-not-be-sent" }, async () => {
       const text = await completeChat(
-        { kind: "ollama", baseUrl: "http://127.0.0.1:9", requestTimeoutMs: 250 },
+        {
+          kind: "ollama",
+          baseUrl: "http://127.0.0.1:9",
+          requestTimeoutMs: 250,
+        },
         "hi",
       );
       assert.equal(text, "ok");
@@ -587,6 +1009,39 @@ test("dead ollama endpoint pauses instead of cutting the row", async () => {
     assert.equal(result.exitCode, 2);
     assert.equal(result.paused, true);
     assert.match(result.output, /PAUSED/);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("plan freezes an explicit reproduction seed base", () => {
+  const rows = planInjectionSuiteRows({
+    seeds: 2,
+    seedBase: 907,
+    variantsPerFamily: 1,
+    family: "minja",
+    modelProfileId: "replication",
+    stage: "base",
+  });
+  assert.deepEqual([...new Set(rows.map((row) => row.seed))], [907, 908]);
+});
+
+test("capture-responses is recorded in run.json as a run option only", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-capture-"));
+  try {
+    const result = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+      captureResponses: true,
+    });
+    assert.equal(result.exitCode, 0);
+    const metadata = JSON.parse(
+      await readFile(path.join(outputDir, "run.json"), "utf8"),
+    ) as { captureResponses?: boolean };
+    assert.equal(metadata.captureResponses, true);
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }

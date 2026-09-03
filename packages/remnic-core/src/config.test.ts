@@ -35,14 +35,39 @@ test("parseConfig memory-poisoning hardening defaults and validation (#1955)", (
   const previousOrigin = process.env.REMNIC_ORIGIN_AUTHORITY_ENABLED;
   const previousInjection = process.env.REMNIC_INJECTION_SCREEN_ENABLED;
   const previousOrigins = process.env.REMNIC_UNTRUSTED_ORIGINS;
+  const previousMode = process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE;
   delete process.env.REMNIC_ORIGIN_AUTHORITY_ENABLED;
   delete process.env.REMNIC_INJECTION_SCREEN_ENABLED;
   delete process.env.REMNIC_UNTRUSTED_ORIGINS;
+  delete process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE;
   try {
     const defaults = parseConfig({});
+    assert.equal(defaults.memoryInjectionDefenseMode, "custom");
     assert.equal(defaults.originAuthorityEnabled, false);
     assert.equal(defaults.injectionScreenEnabled, true);
-    assert.deepEqual(defaults.untrustedOrigins, ["tool_output", "import:*", "unknown"]);
+    assert.equal(defaults.injectionScreenProfile, "default");
+
+    for (const [mode, originAuthorityEnabled, injectionScreenEnabled] of [
+      ["off", false, false],
+      ["fencing", true, false],
+      ["quarantine", false, true],
+      ["layered", true, true],
+    ] as const) {
+      const resolved = parseConfig({ memoryInjectionDefenseMode: mode });
+      assert.equal(resolved.memoryInjectionDefenseMode, mode);
+      assert.equal(resolved.originAuthorityEnabled, originAuthorityEnabled);
+      assert.equal(resolved.injectionScreenEnabled, injectionScreenEnabled);
+      assert.equal(resolved.injectionScreenProfile, "hardened");
+      assert.deepEqual(
+        resolved.untrustedOrigins,
+        ["user", "tool_output", "connector:*", "import:*", "unknown"],
+      );
+    }
+    const customizedMode = parseConfig({
+      memoryInjectionDefenseMode: "fencing",
+      untrustedOrigins: ["tool_output"],
+    });
+    assert.deepEqual(customizedMode.untrustedOrigins, ["tool_output"]);
 
     const configured = parseConfig({
       originAuthorityEnabled: "true",
@@ -83,6 +108,10 @@ test("parseConfig memory-poisoning hardening defaults and validation (#1955)", (
       () => parseConfig({ untrustedOrigins: "unknown" }),
       /untrustedOrigins must be an array of strings/,
     );
+    assert.throws(
+      () => parseConfig({ memoryInjectionDefenseMode: "automatic" }),
+      /memoryInjectionDefenseMode must be/,
+    );
   } finally {
     if (previousOrigin === undefined) delete process.env.REMNIC_ORIGIN_AUTHORITY_ENABLED;
     else process.env.REMNIC_ORIGIN_AUTHORITY_ENABLED = previousOrigin;
@@ -90,6 +119,34 @@ test("parseConfig memory-poisoning hardening defaults and validation (#1955)", (
     else process.env.REMNIC_INJECTION_SCREEN_ENABLED = previousInjection;
     if (previousOrigins === undefined) delete process.env.REMNIC_UNTRUSTED_ORIGINS;
     else process.env.REMNIC_UNTRUSTED_ORIGINS = previousOrigins;
+    if (previousMode === undefined) delete process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE;
+    else process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE = previousMode;
+  }
+});
+
+test("parseConfig honors REMNIC_MEMORY_INJECTION_DEFENSE_MODE when the operator omits the field", () => {
+  const previousMode = process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE;
+  delete process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE;
+  try {
+    process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE = "layered";
+    const resolved = parseConfig({});
+    assert.equal(resolved.memoryInjectionDefenseMode, "layered");
+    assert.equal(resolved.originAuthorityEnabled, true);
+    assert.equal(resolved.injectionScreenEnabled, true);
+    assert.equal(resolved.injectionScreenProfile, "hardened");
+    // A host that materializes the manifest default into cfg while the
+    // operator's raw config omits the key must not shadow the env override.
+    const materialized = parseConfig({ memoryInjectionDefenseMode: "custom" }, {});
+    assert.equal(materialized.memoryInjectionDefenseMode, "layered");
+    // An operator-authored value still outranks the environment.
+    const authored = parseConfig(
+      { memoryInjectionDefenseMode: "fencing" },
+      { memoryInjectionDefenseMode: "fencing" },
+    );
+    assert.equal(authored.memoryInjectionDefenseMode, "fencing");
+  } finally {
+    if (previousMode === undefined) delete process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE;
+    else process.env.REMNIC_MEMORY_INJECTION_DEFENSE_MODE = previousMode;
   }
 });
 
