@@ -1077,6 +1077,51 @@ test("a second lifecycle event does not stack a duplicate follow-up drain", asyn
   }
 });
 
+test("a stalling batch flush still leaves the per-namespace fallback usable time", async () => {
+  // The batch request is an optimization whose failure path is the singular
+  // flushes. A batch that accepts the connection and stalls must not spend the
+  // whole lifecycle deadline, or that fallback times out too and the ended
+  // session's turns stay buffered.
+  const stub = await startDaemonStub(async (pathname, body) => {
+    if (pathname === "/engram/v1/lcm/compaction/flush") {
+      // The batch shape carries `namespaces`; the singular one does not.
+      if (Array.isArray(body.namespaces)) return new Promise<Record<string, unknown>>(() => {});
+      return { flushed: true };
+    }
+    return { accepted: true };
+  });
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 1_000 }));
+    const sessionKey = "stalling-batch-session";
+    for (const namespace of ["team-first", "team-second"]) {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${namespace} turn of this session` },
+            { role: "assistant", content: "the turn is captured" },
+          ],
+        },
+        { sessionKey, runtime: { agent: { session: { namespace } } } },
+      );
+    }
+    assert.equal(
+      await invoke(api, "session_end", { sessionKey }),
+      true,
+      "the singular fallback flushes still had budget after the batch stalled",
+    );
+    const singular = stub.calls.filter(
+      (call) => call.pathname === "/engram/v1/lcm/compaction/flush" && !Array.isArray(call.body.namespaces),
+    );
+    assert.equal(singular.length, 2, "one fallback flush per remembered namespace");
+  } finally {
+    await stub.close();
+  }
+});
+
 test("a stalling batch-support probe still leaves the fallback flush usable time", async () => {
   // The `/engram/v1/capabilities` probe is an optimization: one batched flush
   // instead of one per namespace. A cold probe that stalls to its timeout must
