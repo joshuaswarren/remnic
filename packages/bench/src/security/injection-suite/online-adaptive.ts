@@ -82,6 +82,7 @@ import {
 } from "./types.js";
 import {
   corpusKey,
+  injectionSuiteResumeContractHashForOnline,
   ONLINE_ADAPTIVE_STAGE,
   readJsonlLines,
 } from "./online-adaptive-analysis.js";
@@ -90,6 +91,7 @@ export { ONLINE_ADAPTIVE_STAGE };
 export {
   analyzeInjectionSuiteOnlineAdaptiveRows,
   analyzeInjectionSuiteOnlineAdaptiveRun,
+  injectionSuiteResumeContractHashForOnline,
 } from "./online-adaptive-analysis.js";
 export type {
   OnlineAdaptiveArmAnalysis,
@@ -675,6 +677,20 @@ export async function runInjectionSuiteOnlineAdaptive(
     iterations: input.attackerIterations,
     ...(input.limit === undefined ? {} : { limit: input.limit }),
   });
+  // The unsliced grid size, so a later analysis can tell a limit that
+  // actually truncated the design from one at or above the row count
+  // (#3080). Pure recomputation at freeze time; no effect on the plan.
+  const unslicedPlannedRows = input.limit === undefined
+    ? undefined
+    : planOnlineAdaptiveRows({
+      seeds: input.seeds,
+      ...(input.seedBase === undefined ? {} : { seedBase: input.seedBase }),
+      variantsPerFamily: input.variantsPerFamily,
+      modelProfileId: input.modelProfileId,
+      ...(input.family === undefined ? {} : { family: input.family }),
+      ...(input.arms?.length ? { arms: input.arms } : {}),
+      iterations: input.attackerIterations,
+    }).length;
   const seeds = [...new Set(planned.map((row) => row.seed))];
   const frozen = prepareInjectionSuiteFreeze(input, planned);
   // run.json and the resume contract describe the endpoint that executes
@@ -687,6 +703,7 @@ export async function runInjectionSuiteOnlineAdaptive(
     variantsPerFamily: input.variantsPerFamily,
     family: input.family ?? null,
     limit: input.limit ?? null,
+    ...(input.limit === undefined ? {} : { unslicedPlannedRows }),
     executor: defendedContract.executor,
     model: defendedContract.model,
     baseUrl: defendedContract.baseUrl,
@@ -737,6 +754,7 @@ export async function runInjectionSuiteOnlineAdaptive(
       variantsPerFamily: input.variantsPerFamily,
       family: input.family ?? null,
       limit: input.limit ?? null,
+      ...(unslicedPlannedRows === undefined ? {} : { unslicedPlannedRows }),
       expectedRows: planned.length,
       executor: defendedContract.executor,
       model: defendedContract.model,
@@ -755,6 +773,9 @@ export async function runInjectionSuiteOnlineAdaptive(
       captureResponses: true,
       attackerExecutor: attacker.executor,
       attackerModel: attacker.model,
+      // Persisted so the analyzer can recompute the resume hash exactly as
+      // the runner did (PR #3081 r3); optional, so old runs are unaffected.
+      ...(attacker.baseUrl ? { attackerBaseUrl: attacker.baseUrl } : {}),
       attackerModelDigest: input.attackerModelDigest ?? "unverified",
       attackerPromptSha256,
       attackerIterations: input.attackerIterations,
@@ -1093,66 +1114,4 @@ export async function runInjectionSuiteOnlineAdaptive(
 
 // --- Resume contract ---------------------------------------------------------
 
-export const INJECTION_SUITE_ONLINE_RESUME_CONTRACT =
-  "h5-injection-suite-online-resume-v1";
 
-export function injectionSuiteResumeContractHashForOnline(metadata: {
-  suiteVersion: string;
-  modelProfileId: string;
-  seeds: readonly number[];
-  variantsPerFamily: number;
-  family?: string | null;
-  limit: number | null;
-  executor: string;
-  model: string;
-  baseUrl: string;
-  requestTimeoutMs: number;
-  backend?: string;
-  stage?: string;
-  runKind?: string;
-  modelProfileHash?: string;
-  corpusManifestHash?: string;
-  expectedDesignHash?: string;
-  decisionRuleHash?: string;
-  gitSha?: string;
-  attackerExecutor?: string;
-  attackerModel?: string;
-  attackerBaseUrl?: string;
-  attackerModelDigest?: string;
-  attackerPromptSha256?: string;
-  attackerIterations?: number;
-}): string {
-  return createHash("sha256")
-    .update(
-      JSON.stringify({
-        contract: INJECTION_SUITE_ONLINE_RESUME_CONTRACT,
-        suiteVersion: metadata.suiteVersion,
-        modelProfileId: metadata.modelProfileId,
-        seeds: metadata.seeds,
-        variantsPerFamily: metadata.variantsPerFamily,
-        family: metadata.family ?? null,
-        limit: metadata.limit,
-        executor: metadata.executor,
-        model: metadata.model,
-        baseUrl: metadata.baseUrl,
-        requestTimeoutMs: metadata.requestTimeoutMs,
-        // Folded in only when recorded, so runs frozen before the backend
-        // became part of the identity keep their resume hash (#3079).
-        ...(metadata.backend === undefined ? {} : { backend: metadata.backend }),
-        stage: metadata.stage ?? ONLINE_ADAPTIVE_STAGE,
-        runKind: metadata.runKind ?? "dev",
-        modelProfileHash: metadata.modelProfileHash ?? "",
-        corpusManifestHash: metadata.corpusManifestHash ?? "",
-        expectedDesignHash: metadata.expectedDesignHash ?? "",
-        decisionRuleHash: metadata.decisionRuleHash ?? "",
-        gitSha: metadata.gitSha ?? "",
-        attackerExecutor: metadata.attackerExecutor ?? "",
-        attackerModel: metadata.attackerModel ?? "",
-        attackerBaseUrl: metadata.attackerBaseUrl ?? "",
-        attackerModelDigest: metadata.attackerModelDigest ?? "",
-        attackerPromptSha256: metadata.attackerPromptSha256 ?? "",
-        attackerIterations: metadata.attackerIterations ?? 0,
-      }),
-    )
-    .digest("hex");
-}
