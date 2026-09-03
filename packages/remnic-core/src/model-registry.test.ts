@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -32,6 +32,27 @@ test("calculateContextSizes ignores invalid or tiny override values before budge
       assert.ok(sizes.maxInputChars > 0);
       assert.ok(sizes.maxOutputTokens < 32768);
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("construction never creates the registry dir; the first save does", () => {
+  const dir = mkdtempSync(join(tmpdir(), "remnic-model-registry-"));
+  const registryDir = join(dir, ".registry");
+  try {
+    const registry = new ModelRegistry(dir);
+    // Constructing a registry happens on every plugin registration, including
+    // read-only discovery passes, so it must not touch the memory dir.
+    assert.equal(existsSync(registryDir), false, "no dir before anything is cached");
+    registry.setCapabilities("local-model", {
+      maxPositionEmbeddings: 32_768,
+      contextWindow: 32_768,
+      supportsExtendedContext: false,
+      typicalOutputTokens: 2_048,
+      source: "manual",
+    });
+    assert.equal(existsSync(registryDir), true, "the first cached model creates it");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

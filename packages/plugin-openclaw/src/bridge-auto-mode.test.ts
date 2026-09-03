@@ -18,7 +18,7 @@ import {
   detectDaemonBridgeMode,
   isLoopbackDaemonHost,
   loadDaemonAuth,
-  loopbackForWildcardBind,
+  loopbackForSameHost,
   readDaemonConfigAuthToken,
   readDaemonMemoryDirSync,
   resolveBridgeMode,
@@ -71,10 +71,14 @@ const server = http.createServer((req, res) => {
   // before switching to the real body, the way a daemon that is listening but
   // still warming up behaves.
   const warming = served <= (workerData.warmupResponses ?? 0);
-  res.writeHead(warming ? 503 : workerData.status, { "content-type": "application/json" });
-  res.end(warming ? JSON.stringify({ ok: false, ready: false }) : workerData.body);
+  // \`delayMs\`: answer successfully, but slowly - a daemon that needs more
+  // than a half-share of the preflight budget yet less than the whole.
+  setTimeout(() => {
+    res.writeHead(warming ? 503 : workerData.status, { "content-type": "application/json" });
+    res.end(warming ? JSON.stringify({ ok: false, ready: false }) : workerData.body);
+  }, workerData.delayMs ?? 0);
 });
-server.listen(0, "127.0.0.1", () => {
+server.listen(0, workerData.listenHost ?? "127.0.0.1", () => {
   parentPort.postMessage({ port: server.address().port });
 });
 parentPort.on("message", (message) => {
@@ -89,6 +93,8 @@ async function startHealthStub(
   hang = false,
   requireToken?: string,
   stallBody = false,
+  listenHost?: string,
+  delayMs = 0,
 ): Promise<HealthStub> {
   const worker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(STUB_SOURCE)}`),
@@ -100,6 +106,8 @@ async function startHealthStub(
         hang,
         requireToken,
         stallBody,
+        listenHost,
+        delayMs,
         body: typeof body === "string" ? body : JSON.stringify(body),
       },
     } as ConstructorParameters<typeof Worker>[1] & { type: "module" },
@@ -350,6 +358,40 @@ test("resolveBridgeMode rejects unknown values and names auto in the error", () 
       /Invalid REMNIC_BRIDGE_MODE env override/,
     );
   });
+});
+
+test("auto gives the loopback and interface aliases of one daemon a shared probe budget", async () => {
+  // A same-host interface address is dialed through loopback first, with the
+  // configured address kept as a fallback. Those are two dial addresses for ONE
+  // daemon: budgeting them as two candidates halves the allocation, so a daemon
+  // slower than half the budget times out on both aliases and auto wrongly
+  // selects embedded beside a healthy same-corpus daemon.
+  const local = Object.values(os.networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .find((entry) => entry.family === "IPv4" && !entry.internal);
+  if (local === undefined) return;
+  const stub = await startHealthStub(
+    { ok: true, memoryDir: MEMORY_DIR },
+    200,
+    0,
+    false,
+    undefined,
+    false,
+    // Answer on loopback AND the interface address, like a wildcard bind.
+    "0.0.0.0",
+    // Slower than a half-share of the budget below, faster than the whole.
+    900,
+  );
+  try {
+    const resolved = withDaemonEnv(stub.port, () => {
+      process.env.REMNIC_HOST = local.address;
+      return resolveBridgeMode("auto", { memoryDir: MEMORY_DIR, timeoutMs: 1_500 });
+    });
+    assert.equal(resolved.mode, "delegate");
+    assert.equal(resolved.daemonPort, stub.port);
+  } finally {
+    await stub.close();
+  }
 });
 
 test("auto refuses a non-loopback daemon endpoint", async () => {
@@ -974,12 +1016,75 @@ test("equivalent IPv6 loopback and wildcard spellings are recognized", () => {
   }
   for (const spelling of ["::", "[::]", "0:0:0:0:0:0:0:0", "0.0.0.0"]) {
     assert.equal(isLoopbackDaemonHost(spelling), true, `${spelling} is a wildcard bind`);
-    assert.ok(loopbackForWildcardBind(spelling) !== undefined, `${spelling} dials through loopback`);
+    assert.ok(loopbackForSameHost(spelling) !== undefined, `${spelling} dials through loopback`);
   }
   // Still literal-only: a routable v6 address and a loopback-shaped DNS name
   // must not pass.
   for (const spelling of ["2001:db8::1", "::ffff:10.0.0.1", "127.daemon.example"]) {
     assert.equal(isLoopbackDaemonHost(spelling), false, `${spelling} is not loopback`);
+  }
+});
+
+test("an address assigned to one of this host's interfaces is dialed through loopback", () => {
+  // An operator exports REMNIC_HOST as the machine's own NIC or VIP address.
+  // That names the same daemon loopback reaches, and a gateway fetch to such
+  // an address has been observed to hang, so it is classified as same-host
+  // and dialed through loopback — like a wildcard bind.
+  const local = Object.values(os.networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .find((entry) => entry.family === "IPv4" && !entry.internal);
+  if (local === undefined) return;
+  assert.equal(loopbackForSameHost(local.address), "127.0.0.1", `${local.address} is this host`);
+  assert.equal(isLoopbackDaemonHost(local.address), true);
+  // The same interface spelled as an IPv4-mapped IPv6 literal is still IPv4
+  // traffic on this host: recognized, and dialed on the v4 loopback.
+  assert.equal(loopbackForSameHost(`::ffff:${local.address}`), "127.0.0.1");
+  assert.equal(isLoopbackDaemonHost(`[::ffff:${local.address}]`), true);
+  const resolved = withDaemonEnv(undefined, () => {
+    process.env.REMNIC_HOST = local.address;
+    return resolveBridgeMode("delegate");
+  });
+  assert.equal(resolved.daemonHost, "127.0.0.1", "explicit delegate dials loopback, not the NIC");
+  // A routable address that is NOT on this host stays remote (RFC 5737 TEST-NET-1).
+  assert.equal(loopbackForSameHost("192.0.2.1"), undefined);
+  assert.equal(isLoopbackDaemonHost("192.0.2.1"), false);
+});
+
+test("a daemon bound to one interface address only is reached through the configured address", async () => {
+  // Loopback is dialed first; a daemon that answers only on its own NIC
+  // address refuses that, so the configured address stays available as the
+  // fallback — explicit delegate probes it, auto lists it as a candidate.
+  const local = Object.values(os.networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .find((entry) => entry.family === "IPv4" && !entry.internal);
+  if (local === undefined) return;
+  const stub = await startHealthStub(
+    { ok: true, memoryDir: MEMORY_DIR },
+    200,
+    0,
+    false,
+    undefined,
+    false,
+    local.address,
+  );
+  try {
+    const explicit = withDaemonEnv(stub.port, () => {
+      process.env.REMNIC_HOST = local.address;
+      return resolveBridgeMode("delegate");
+    });
+    assert.equal(explicit.daemonHost, "127.0.0.1");
+    assert.equal(explicit.daemonHostFallback, local.address);
+    assert.equal(checkDaemonHealthSync("127.0.0.1", stub.port, 2_000), false, "loopback refuses");
+    assert.equal(checkDaemonHealthSync(local.address, stub.port, 2_000), true, "the NIC answers");
+
+    const auto = withDaemonEnv(stub.port, () => {
+      process.env.REMNIC_HOST = local.address;
+      return resolveBridgeMode("auto", { memoryDir: MEMORY_DIR, timeoutMs: 5_000 });
+    });
+    assert.equal(auto.mode, "delegate", "auto falls through to the configured address");
+    assert.equal(auto.daemonHost, local.address);
+  } finally {
+    await stub.close();
   }
 });
 

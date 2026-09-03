@@ -11,7 +11,9 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { setTimeout as sleep } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -767,13 +769,7 @@ test("non-runtime registration modes skip all registration", async () => {
   try {
     const { default: plugin } = await import("../src/index.js");
 
-    for (const mode of [
-      "discovery",
-      "tool-discovery",
-      "setup-only",
-      "setup-runtime",
-      "cli-metadata",
-    ]) {
+    for (const mode of ["setup-only", "setup-runtime", "cli-metadata"]) {
       const api = buildNewSdkApi(`${mode}-test`);
       api.registrationMode = mode;
       plugin.register(api as any);
@@ -804,6 +800,81 @@ test("non-runtime registration modes skip all registration", async () => {
   } finally {
     await awaitPendingMigration();
     restoreRegisterMigrationEnv(previousDisableMigration);
+    resetGlobals();
+  }
+});
+
+test("discovery registration modes register capability handlers and skip the migration", async () => {
+  // OpenClaw's loader accepts capability handlers (tools, hooks, memory
+  // capability) in `discovery` and `tool-discovery` exactly as in `full`;
+  // the agent runtime that serves `openclaw agent` turns registers in those
+  // modes. Skipping register() there left it with no tools and no
+  // before_prompt_build / agent_end. Both are read-only discovery passes, so
+  // the one-time engram migration (a filesystem write) stays off.
+  resetGlobals();
+  const previousDisableMigration = process.env[DISABLE_REGISTER_MIGRATION_ENV];
+  delete process.env[DISABLE_REGISTER_MIGRATION_ENV];
+  const fixture = await makeMemoryFixture();
+  // An audit day well past any retention window: runtime registration prunes
+  // it, a read-only discovery pass must not touch it.
+  const expiredAuditDay = path.join(
+    fixture.memoryDir, "state", "plugins", "openclaw-remnic", "transcripts", "2000-01-01",
+  );
+  await mkdir(expiredAuditDay, { recursive: true });
+  try {
+    const { default: plugin } = await import("../src/index.js");
+
+    for (const mode of ["discovery", "tool-discovery"]) {
+      const api = buildNewSdkApi(`${mode}-test`);
+      api.pluginConfig = {
+        qmdEnabled: false,
+        modelSource: "gateway",
+        transcriptEnabled: false,
+        memoryDir: fixture.memoryDir,
+        workspaceDir: fixture.workspaceDir,
+      };
+      api.registrationMode = mode;
+      plugin.register(api as any);
+      // The prune is fire-and-forget with no exposed promise, so a real delay is
+      // the only way to give a (wrongly) started prune time to delete the dir.
+      await sleep(50);
+      assert.ok(existsSync(expiredAuditDay), `${mode} mode must not prune the recall audit dir`);
+      // Durable command/CLI registration belongs to a full pass. A discovery
+      // pass that claimed the process-global guards would leave the later full
+      // registration with no session commands and no CLI.
+      assert.deepEqual(api._registeredCommands, [], `${mode} mode must not register commands`);
+      assert.equal(
+        (globalThis as any)[SESSION_COMMANDS_REGISTERED_GUARD_KEY],
+        undefined,
+        `${mode} mode must not claim the session-command guard`,
+      );
+      assert.equal(
+        (globalThis as any)[CLI_REGISTERED_GUARD_KEY],
+        undefined,
+        `${mode} mode must not claim the CLI guard`,
+      );
+
+      for (const hook of ["before_prompt_build", "agent_end"]) {
+        assert.ok(
+          api._registeredHooks.includes(hook),
+          `expected ${hook} in ${mode} mode, got: ${api._registeredHooks.join(", ")}`,
+        );
+      }
+      assert.ok(
+        api._registeredToolNames.includes("memory_search"),
+        `expected memory_search tool in ${mode} mode`,
+      );
+      assert.equal(
+        (globalThis as any)[MIGRATION_PROMISE_KEY],
+        undefined,
+        `the engram migration must not start in ${mode} mode`,
+      );
+      resetGlobals();
+    }
+  } finally {
+    await awaitPendingMigration();
+    restoreRegisterMigrationEnv(previousDisableMigration);
+    await fixture.cleanup();
     resetGlobals();
   }
 });
