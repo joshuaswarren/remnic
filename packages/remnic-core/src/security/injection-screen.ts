@@ -281,23 +281,31 @@ function splitSentencesOutsideQuotes(content: string): string[] {
   const sentences: string[] = [];
   let current = "";
   let quote: string | undefined;
+  let previous = "";
   for (const char of content) {
     if (quote !== undefined) {
       current += char;
       if (char === quote) quote = undefined;
+      previous = char;
       continue;
     }
-    if (char === '"' || char === "'") {
+    // An apostrophe inside a word is a contraction ("It's"), not an opening
+    // quote: treating it as one merges sentences and lets a marker in a
+    // later sentence corroborate an ordinary directive (PR #3079 post-cap).
+    if (char === '"' || (char === "'" && !/[A-Za-z0-9]/.test(previous))) {
       quote = char;
       current += char;
+      previous = char;
       continue;
     }
     if (char === "." || char === "!" || char === "?" || char === "\n") {
       if (current.trim().length > 0) sentences.push(current);
       current = "";
+      previous = char;
       continue;
     }
     current += char;
+    previous = char;
   }
   if (current.trim().length > 0) sentences.push(current);
   return sentences;
