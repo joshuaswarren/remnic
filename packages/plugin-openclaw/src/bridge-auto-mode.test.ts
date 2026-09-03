@@ -71,8 +71,12 @@ const server = http.createServer((req, res) => {
   // before switching to the real body, the way a daemon that is listening but
   // still warming up behaves.
   const warming = served <= (workerData.warmupResponses ?? 0);
-  res.writeHead(warming ? 503 : workerData.status, { "content-type": "application/json" });
-  res.end(warming ? JSON.stringify({ ok: false, ready: false }) : workerData.body);
+  // \`delayMs\`: answer successfully, but slowly - a daemon that needs more
+  // than a half-share of the preflight budget yet less than the whole.
+  setTimeout(() => {
+    res.writeHead(warming ? 503 : workerData.status, { "content-type": "application/json" });
+    res.end(warming ? JSON.stringify({ ok: false, ready: false }) : workerData.body);
+  }, workerData.delayMs ?? 0);
 });
 server.listen(0, workerData.listenHost ?? "127.0.0.1", () => {
   parentPort.postMessage({ port: server.address().port });
@@ -90,6 +94,7 @@ async function startHealthStub(
   requireToken?: string,
   stallBody = false,
   listenHost?: string,
+  delayMs = 0,
 ): Promise<HealthStub> {
   const worker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(STUB_SOURCE)}`),
@@ -102,6 +107,7 @@ async function startHealthStub(
         requireToken,
         stallBody,
         listenHost,
+        delayMs,
         body: typeof body === "string" ? body : JSON.stringify(body),
       },
     } as ConstructorParameters<typeof Worker>[1] & { type: "module" },
@@ -352,6 +358,40 @@ test("resolveBridgeMode rejects unknown values and names auto in the error", () 
       /Invalid REMNIC_BRIDGE_MODE env override/,
     );
   });
+});
+
+test("auto gives the loopback and interface aliases of one daemon a shared probe budget", async () => {
+  // A same-host interface address is dialed through loopback first, with the
+  // configured address kept as a fallback. Those are two dial addresses for ONE
+  // daemon: budgeting them as two candidates halves the allocation, so a daemon
+  // slower than half the budget times out on both aliases and auto wrongly
+  // selects embedded beside a healthy same-corpus daemon.
+  const local = Object.values(os.networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .find((entry) => entry.family === "IPv4" && !entry.internal);
+  if (local === undefined) return;
+  const stub = await startHealthStub(
+    { ok: true, memoryDir: MEMORY_DIR },
+    200,
+    0,
+    false,
+    undefined,
+    false,
+    // Answer on loopback AND the interface address, like a wildcard bind.
+    "0.0.0.0",
+    // Slower than a half-share of the budget below, faster than the whole.
+    900,
+  );
+  try {
+    const resolved = withDaemonEnv(stub.port, () => {
+      process.env.REMNIC_HOST = local.address;
+      return resolveBridgeMode("auto", { memoryDir: MEMORY_DIR, timeoutMs: 1_500 });
+    });
+    assert.equal(resolved.mode, "delegate");
+    assert.equal(resolved.daemonPort, stub.port);
+  } finally {
+    await stub.close();
+  }
 });
 
 test("auto refuses a non-loopback daemon endpoint", async () => {

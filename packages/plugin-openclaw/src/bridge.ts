@@ -77,6 +77,14 @@ interface DaemonEndpointCandidate {
   /** The unit that supplied `authTokenOverride`, so it can be re-read. */
   authTokenUnit?: DaemonUnitSource;
   /**
+   * Same daemon, different dial address: a same-host loopback rewrite and the
+   * configured interface address are aliases of ONE endpoint. They share a
+   * probe allocation so a daemon slower than a half-share is not timed out on
+   * both aliases (the second dial only happens when the first REFUSES, which
+   * costs no time).
+   */
+  aliasGroup: string;
+  /**
    * The credential written in this candidate's own config file, retried when
    * the primary (gateway token store) one is rejected.
    */
@@ -561,18 +569,13 @@ function daemonEndpointCandidates(
         port: dialPort,
         configPath,
         token,
+        aliasGroup: `${resolvedHost}\u0000${dialPort}\u0000${configPath ?? ""}\u0000${token}`,
         ...(authTokenOverride === undefined ? {} : { authTokenOverride }),
         ...(authTokenUnit === undefined ? {} : { authTokenUnit }),
         ...(fallbackToken === undefined ? {} : { fallbackToken }),
       });
     }
   };
-  // An env override alone, so a specified environment is dialed first even
-  // when no config file exists. Without one this would inject a bare
-  // default endpoint AHEAD of every config-derived candidate.
-  if ((envHost !== undefined && envHost.trim() !== "") || envPort !== undefined) {
-    add(undefined, undefined);
-  }
   const configOrder = configPathCandidates();
   const envConfigPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH")
     ? configOrder[0]
@@ -714,7 +717,8 @@ export function detectDaemonBridgeMode(options: {
     }
     probeable.push(candidate);
   }
-  let probed = 0;
+  const groupDeadlines = new Map<string, number>();
+  const totalGroups = new Set(probeable.map((candidate) => candidate.aliasGroup)).size;
   for (const {
     host: daemonHost,
     port: daemonPort,
@@ -722,6 +726,7 @@ export function detectDaemonBridgeMode(options: {
     authTokenOverride,
     authTokenUnit,
     fallbackToken,
+    aliasGroup,
   } of probeable) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
@@ -734,19 +739,25 @@ export function detectDaemonBridgeMode(options: {
     // whole budget. Installed-unit candidates deliberately precede cwd/home,
     // so one stale endpoint that accepts a connection and stalls would
     // otherwise eat the entire preflight and the live daemon behind it would
-    // never be dialed. The share is over the endpoints still unprobed, so the
-    // last candidate can still use everything that remains.
-    const perCandidateMs = Math.max(
-      1,
-      Math.ceil(remainingMs / Math.max(1, probeable.length - probed)),
-    );
-    probed += 1;
-    // BOTH attempts share this candidate's slice, so one stalling endpoint
-    // with a fallback credential cannot burn two shares and starve the healthy
-    // daemon behind it. The FIRST attempt gets the whole slice: reserving half
-    // for a retry would cut short a daemon that is merely still warming up,
-    // and a readiness stall is not something a different token fixes.
-    const candidateDeadline = Date.now() + Math.min(remainingMs, perCandidateMs);
+    // never be dialed. The share is over the endpoint GROUPS still unprobed,
+    // so the last group can still use everything that remains — and the
+    // loopback/interface aliases of ONE daemon share a single allocation
+    // instead of halving it, since the second dial only happens when the
+    // first REFUSES (which costs no time).
+    const started = groupDeadlines.get(aliasGroup);
+    if (started === undefined) {
+      const perGroupMs = Math.max(
+        1,
+        Math.ceil(remainingMs / Math.max(1, totalGroups - groupDeadlines.size)),
+      );
+      groupDeadlines.set(aliasGroup, Date.now() + Math.min(remainingMs, perGroupMs));
+    }
+    // BOTH attempts share this group's slice, so one stalling endpoint with a
+    // fallback credential cannot burn two shares and starve the healthy daemon
+    // behind it. The FIRST attempt gets the whole slice: reserving half for a
+    // retry would cut short a daemon that is merely still warming up, and a
+    // readiness stall is not something a different token fixes.
+    const candidateDeadline = groupDeadlines.get(aliasGroup) ?? Date.now();
     // The clock can cross the deadline between deriving it and spending it —
     // trivially so at the supported minimum budget of 1ms. The public probe
     // REJECTS a non-positive budget, and rightly so, but reaching it with one
