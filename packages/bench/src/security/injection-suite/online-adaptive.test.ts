@@ -421,6 +421,22 @@ test("a durable corpus line reconciles a marker left by a crash before the attac
   }
 });
 
+test("the runner records the unsliced grid size when a limit is set (#3080)", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-unsliced-"));
+  try {
+    const base = baseVariantFor("minja", 1);
+    const responder = () => ({ text: `ACK ${base.canary} ${base.livenessCanary}`, toolCalls: [], inputTokens: 0, outputTokens: 0, model: "m" });
+    // The fake grid is 2 arms x 1 family x 2 variants x 2 iterations = 8 rows.
+    await runOnlineAdaptiveWithFake({ outputDir: tmp, attackerResponder: responder, defendedResponder: responder, limit: 4 });
+    const run = JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) as { limit: number; unslicedPlannedRows: number; expectedRows: number };
+    assert.equal(run.limit, 4);
+    assert.equal(run.expectedRows, 4, "the frozen design is the sliced plan");
+    assert.equal(run.unslicedPlannedRows, 8, "the unsliced grid size is recorded beside it");
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("the online stage refuses more than one corpus seed", () => {
   assert.throws(
     () => planOnlineAdaptiveRows({ seeds: 2, variantsPerFamily: 1, iterations: 1, seedBase: 71, modelProfileId: "fixture" }),
@@ -637,6 +653,7 @@ interface RunnerE2EConfig {
   resume?: boolean;
   retryAmbiguous?: boolean;
   omitDefendedFlags?: boolean;
+  limit?: number;
 }
 
 async function runOnlineAdaptiveWithFake(
@@ -674,6 +691,7 @@ async function runOnlineAdaptiveWithFake(
         attackerBaseUrl: "http://127.0.0.1:9",
         attackerModel: "fixture-attacker",
         attackerIterations: 1,
+        ...(config.limit === undefined ? {} : { limit: config.limit }),
         attackerPromptPath,
         ...(config.resume ? { resume: true } : {}),
         ...(config.retryAmbiguous ? { retryAmbiguous: true } : {}),
@@ -1143,6 +1161,25 @@ test("a recorded --limit makes a complete-looking smoke run non-estimable", asyn
     const noopLimit = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(noopLimit.rowAccounting?.limitedDesign, false);
     assert.equal(noopLimit.decision.estimable, true, "a non-truncating limit does not mark the run");
+    // A limit ABOVE the grid is the same no-op (limit >= unsliced, r1).
+    await writeFile(
+      path.join(tmp, "run.json"),
+      `${JSON.stringify({ ...run, limit: 5, unslicedPlannedRows: 4 })}\n`,
+      "utf8",
+    );
+    const greaterLimit = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(greaterLimit.rowAccounting?.limitedDesign, false);
+    // An implausible unsliced count (0, a string, below the frozen design)
+    // is treated as absent, so the conservative marking returns (r1).
+    for (const bad of [0, "8", 3, null]) {
+      await writeFile(
+        path.join(tmp, "run.json"),
+        `${JSON.stringify({ ...run, limit: 4, unslicedPlannedRows: bad })}\n`,
+        "utf8",
+      );
+      const distrusted = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+      assert.equal(distrusted.rowAccounting?.limitedDesign, true, `unsliced=${JSON.stringify(bad)} must be distrusted`);
+    }
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

@@ -561,10 +561,19 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   // run analyzes normally (#3080). Legacy runs without the field keep the
   // conservative marking.
   const recordedLimit = metadata.limit ?? 0;
+  // Trust a recorded unsliced count only when it is a plausible grid size:
+  // a positive integer at least as large as the frozen design. Anything
+  // else (0, null, a coerced string, a stale hand edit) is treated as
+  // absent, which keeps the conservative marking (PR #3081 r1).
+  const unsliced =
+    Number.isInteger(metadata.unslicedPlannedRows)
+    && (metadata.unslicedPlannedRows ?? 0) >= design.rows.length
+    && (metadata.unslicedPlannedRows ?? 0) > 0
+      ? metadata.unslicedPlannedRows
+      : undefined;
   const limitedDesign = Number.isInteger(recordedLimit)
     && recordedLimit > 0
-    && (metadata.unslicedPlannedRows === undefined
-      || recordedLimit < metadata.unslicedPlannedRows);
+    && (unsliced === undefined || recordedLimit < unsliced);
   const incomplete =
     limitedDesign ||
     !corpusManifestPresent ||
