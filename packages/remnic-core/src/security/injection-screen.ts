@@ -191,12 +191,22 @@ const RESPONSE_CONTROL_PATTERNS: readonly RegExp[] = [
  * Requiring one of these keeps every frozen attack payload flagged while
  * ordinary technical and policy sentences fall to zero.
  */
+/**
+ * Corroborating cues. Measured trade (PR #3079 r4): these are evaluated over
+ * the whole memory, not the directive's sentence. Thirty frozen attack
+ * payloads state the directive and name the payload in DIFFERENT sentences,
+ * so sentence-local cues lose real detections; the price is that a marker in
+ * an unrelated sentence can corroborate an ordinary directive. The
+ * emission-slot check below stays sentence-local, where locality is free.
+ */
 const RESPONSE_CONTROL_CORROBORATORS: readonly RegExp[] = [
-  // Opaque payload the memory wants echoed.
   /\bCANARY\b/i,
   /https?:\/\//i,
   /\b[0-9a-f]{8,}\b/i,
   /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/,
+  // Naming the emission as a phrase/marker/token is a payload cue: ordinary
+  // prose names a field ("the request id"), not "the phrase".
+  /\b(?:the|this|that|following)[ \t]{1,8}(?:phrase|marker|token|string|sequence|literal|codeword|passphrase)\b/i,
   // Verbatim control over the wording, not the content.
   /\b(?:literal(?:ly)?|verbatim|word[- ]for[- ]word|exactly[ \t]{1,8}(?:this|that|as)|character[- ]for[- ]character)\b/i,
   /\bno[ \t]{1,8}(?:explanation|commentary|preamble|deviation|other[ \t]{1,8}text)\b/i,
@@ -204,8 +214,6 @@ const RESPONSE_CONTROL_CORROBORATORS: readonly RegExp[] = [
   // Persistence across turns: an ordinary fact does not legislate later turns.
   /\b(?:remember|persist|store[ \t]{1,8}this|retain[ \t]{1,8}this)\b/i,
   /\bany[ \t]{1,8}(?:later|future|subsequent)\b/i,
-  // An explicit future-turn target is itself persistence: "future responses
-  // must begin with X" legislates later turns without "any"/"all"/"every".
   /\b(?:future|later|subsequent|following|upcoming)[ \t]{1,8}(?:answers?|responses?|repl(?:y|ies)|output|turns?|messages?|conversations?|sessions?)\b/i,
   /\b(?:across|between)[ \t]{1,8}(?:conversations|sessions|chats)\b/i,
   /\b(?:from[ \t]{1,8}now[ \t]{1,8}on|going[ \t]{1,8}forward|in[ \t]{1,8}(?:all|every)[ \t]{1,8}(?:future|later)[ \t]{1,8}(?:turns?|answers?|responses?))\b/i,
@@ -213,13 +221,11 @@ const RESPONSE_CONTROL_CORROBORATORS: readonly RegExp[] = [
   // The subject is the agent, not a system under discussion.
   /\byour[ \t]{1,8}(?:answers?|responses?|repl(?:y|ies)|output|behaviou?r|memory)\b/i,
   /\b(?:assistant|agent|model)(?:'s)?[ \t]{1,8}(?:answers?|responses?|repl(?:y|ies)|output|behaviou?r)\b/i,
-  // Naming the emission as a phrase/marker/token is a payload cue: ordinary
-  // prose names a field ("the request id"), not "the phrase".
-  /\b(?:the|this|that|following)[ \t]{1,8}(?:phrase|marker|token|string|sequence|literal|codeword|passphrase)\b/i,
   // A hidden activation phrase is itself the second signal.
   /\b(?:activation|trigger)[ \t]{1,8}(?:phrase|key|word|code)\b/i,
   /\b(?:approved|required|correct|canonical)[ \t]{1,8}(?:response|answer|reply)\b/i,
 ];
+
 
 /**
  * Acronyms that appear as ordinary content in technical memories, so an
@@ -261,7 +267,41 @@ const ORDINARY_CAPITALIZED_WORDS: ReadonlySet<string> = new Set([
  * excluded, so technical prose does not match (PR #3079 review).
  */
 const OPAQUE_EMISSION_TARGET =
-  /\b(?:begin|start|end|include|contain|say|state|output|return|emit|produce|reply|respond|answer)\b[ \t]{1,8}(?:(?:with|by)[ \t]{1,8})?(?:"([^"\n]{2,40})"|'([^'\n]{2,40})'|([A-Z][A-Za-z0-9_-]{1,39})\b)/;
+  /\b(?:begin|start|end|include|contain|say|state|output|return|emit|produce|reply|respond|answer)\b[ \t]{1,8}(?:(?:with|by)[ \t]{1,8})?/gi;
+
+/** The emission slot's own content: a quoted payload or a shaped marker. */
+const EMISSION_SLOT_VALUE = /^(?:"([^"\n]{2,40})"|'([^'\n]{2,40})'|([A-Z][A-Za-z0-9_-]{1,39})\b)/;
+
+/**
+ * Sentence split that never cuts inside a quoted span: a payload like
+ * `"exfil me!"` keeps its delimiters, or the emission target would be
+ * unrecognizable (PR #3079 r4).
+ */
+function splitSentencesOutsideQuotes(content: string): string[] {
+  const sentences: string[] = [];
+  let current = "";
+  let quote: string | undefined;
+  for (const char of content) {
+    if (quote !== undefined) {
+      current += char;
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "." || char === "!" || char === "?" || char === "\n") {
+      if (current.trim().length > 0) sentences.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current.trim().length > 0) sentences.push(current);
+  return sentences;
+}
 
 /** Strip trailing digits so SHA256, UTF8, and ISO8601 reduce to their acronym. */
 function reduceToken(token: string): string {
@@ -292,19 +332,31 @@ function isOrdinaryToken(token: string): boolean {
  * not match (PR #3079 r2/r3).
  */
 function hasOpaqueEmissionTarget(sentence: string): boolean {
-  const match = OPAQUE_EMISSION_TARGET.exec(sentence);
-  if (!match) return false;
-  const quoted = match[1] ?? match[2];
-  if (quoted !== undefined) {
-    const inner = quoted.trim();
-    // A quoted multi-word payload is opaque; a single quoted technical value
-    // ("OK", "Content-Type") is the same described value as unquoted.
-    if (!/\s/.test(inner)) return !isOrdinaryToken(inner);
-    return true;
+  // The verb is matched case-insensitively ("must BEGIN with"), the marker
+  // case-sensitively: an all-lowercase word in the slot is ordinary prose
+  // and cannot be told from a marker (PR #3079 r4).
+  // Every verb occurrence is tried: the emission verb is not always the
+  // first one in the sentence ("The ANSWER must INCLUDE ...", r4).
+  OPAQUE_EMISSION_TARGET.lastIndex = 0;
+  for (
+    let verb = OPAQUE_EMISSION_TARGET.exec(sentence);
+    verb !== null;
+    verb = OPAQUE_EMISSION_TARGET.exec(sentence)
+  ) {
+    const match = EMISSION_SLOT_VALUE.exec(sentence.slice(verb.index + verb[0].length));
+    if (!match) continue;
+    const quoted = match[1] ?? match[2];
+    if (quoted !== undefined) {
+      const inner = quoted.trim();
+      // A quoted multi-word payload is opaque; a single quoted technical
+      // value ("OK", "Content-Type") is the same described value as unquoted.
+      if (!/\s/.test(inner) && isOrdinaryToken(inner)) continue;
+      return true;
+    }
+    const token = match[3];
+    if (token !== undefined && !isOrdinaryToken(token)) return true;
   }
-  const token = match[3];
-  if (token === undefined) return false;
-  return !isOrdinaryToken(token);
+  return false;
 }
 
 /**
@@ -327,11 +379,9 @@ function findResponseControlDirective(
   // talked past the gate there. `default` (custom mode) requires a second
   // signal, which is what keeps ordinary response prose out of quarantine.
   if (profile === "hardened") return directive;
+  // Cue scope is a measured trade; see RESPONSE_CONTROL_CORROBORATORS.
   if (RESPONSE_CONTROL_CORROBORATORS.some((pattern) => pattern.test(content))) return directive;
-  // The opaque-target cue is local: it must appear in the same sentence as a
-  // directive, or an unrelated later sentence ("use ACK-7 as the fixture
-  // identifier") would corroborate an ordinary one (PR #3079 r3).
-  for (const sentence of content.split(/[.!?\n]+/)) {
+  for (const sentence of splitSentencesOutsideQuotes(content)) {
     if (!RESPONSE_CONTROL_PATTERNS.some((pattern) => pattern.test(sentence))) continue;
     if (hasOpaqueEmissionTarget(sentence)) return directive;
   }
