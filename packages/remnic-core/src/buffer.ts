@@ -918,6 +918,9 @@ export class SmartBuffer {
             copy.persistProcessedFingerprint = t.persistProcessedFingerprint;
           }
           if (typeof t.sourceConnector === "string") copy.sourceConnector = t.sourceConnector;
+          if (t.originRole === "user" || t.originRole === "assistant" || t.originRole === "tool") {
+            copy.originRole = t.originRole;
+          }
           return copy;
         });
       }

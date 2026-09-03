@@ -2,6 +2,7 @@ import { parseOriginClass } from "../security/origin-authority.js";
 import { normalizeAttributePairs } from "../structured-attributes.js";
 import { buildProcedurePersistBody } from "../procedural/procedure-types.js";
 import { screenCandidateFact } from "../security/injection-screen.js";
+import type { InjectionScreenProfile } from "../security/injection-screen.js";
 import type { EntityStructuredSection } from "../types.js";
 
 export interface InjectionScreenCandidate {
@@ -41,11 +42,12 @@ export function serializeInjectionScreenCandidate(candidate: InjectionScreenCand
 export function evaluateInjectionScreen(
   candidate: InjectionScreenCandidate | string,
   enabled: boolean,
+  profile: InjectionScreenProfile = "default",
 ): InjectionScreenGateResult {
   if (!enabled) return { tags: [] };
   const content =
     typeof candidate === "string" ? candidate : serializeInjectionScreenCandidate(candidate);
-  const result = screenCandidateFact(content);
+  const result = screenCandidateFact(content, profile);
   return {
     status: result.quarantine === true ? "pending_review" : undefined,
     tags: result.quarantine === true
@@ -63,6 +65,7 @@ export function evaluateInjectionScreen(
 export function withholdScreenedStrings(
   values: readonly unknown[],
   enabled: boolean,
+  profile: InjectionScreenProfile = "default",
 ): { kept: string[]; withheldRules: string[] } {
   const kept: string[] = [];
   const withheldRules: string[] = [];
@@ -72,7 +75,7 @@ export function withholdScreenedStrings(
       kept.push(value);
       continue;
     }
-    const screened = screenCandidateFact(value);
+    const screened = screenCandidateFact(value, profile);
     if (screened.quarantine) {
       withheldRules.push(...screened.findings.map((finding) => `injection-screen:${finding.rule}`));
     } else {
@@ -99,20 +102,20 @@ export interface ScreenedEntityWrite {
  * `withheldRules` (entities carry no review status; routing is #2397).
  * Returns null for entities without a usable name/type.
  */
-export function screenEntityForIndex(entity: unknown, enabled: boolean): ScreenedEntityWrite | null {
+export function screenEntityForIndex(entity: unknown, enabled: boolean, profile: InjectionScreenProfile = "default"): ScreenedEntityWrite | null {
   const record = entity as { name?: unknown; type?: unknown; source?: unknown; facts?: unknown; structuredSections?: unknown } | null;
   const name = record?.name;
   const type = record?.type;
   if (typeof name !== "string" || !name.trim() || typeof type !== "string" || !type.trim()) return null;
   // #1955 review: the raw name is emitted as the entity target outside the
   // snippet fence — a flagged name withholds the whole entity from the index.
-  const nameScreen = withholdScreenedStrings([name], enabled);
-  const factScreen = withholdScreenedStrings(Array.isArray(record?.facts) ? record.facts : [], enabled);
+  const nameScreen = withholdScreenedStrings([name], enabled, profile);
+  const factScreen = withholdScreenedStrings(Array.isArray(record?.facts) ? record.facts : [], enabled, profile);
   const rawSections: EntityStructuredSection[] | undefined = Array.isArray(record?.structuredSections)
     ? (record.structuredSections as EntityStructuredSection[])
     : undefined;
   const sectionScreens = enabled && rawSections
-    ? rawSections.map((section) => ({ section, screen: withholdScreenedStrings(section?.facts ?? [], true) }))
+    ? rawSections.map((section) => ({ section, screen: withholdScreenedStrings(section?.facts ?? [], true, profile) }))
     : undefined;
   return {
     name,
@@ -155,8 +158,9 @@ export function screenEntityForIndex(entity: unknown, enabled: boolean): Screene
 export function screenPersistStrings(
   values: readonly string[],
   enabled: boolean,
+  profile: InjectionScreenProfile = "default",
 ): { kept: string[]; warning?: string } {
-  const screen = withholdScreenedStrings(values, enabled);
+  const screen = withholdScreenedStrings(values, enabled, profile);
   return {
     kept: screen.kept,
     ...(screen.withheldRules.length > 0

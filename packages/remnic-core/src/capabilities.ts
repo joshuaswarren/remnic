@@ -20,15 +20,12 @@
  * the CapabilitySet itself (rule 30 governs behavior changes; resolving and
  * threading a capability projection must stay behavior-preserving).
  *
- * Flag-retirement audit (#1780, 2026-07-08): all projected fields across 18
- * capability sets were verified for live consumers. Two dead projections found
- * and removed: recallGraph (RecallEnhancementCapabilitySet — production reads
- * recallGraphEnabled directly via graph-recall.ts) and behaviorLoopAutoTune
- * (ConversationContextCapabilitySet — production reads behaviorLoopAutoTuneEnabled
- * directly via cli.ts). The flags themselves remain alive.
+ * Flag-retirement audit (#1780, 2026-07-08): all projected fields verified for
+ * live consumers; dead projections removed.
  */
 
 import type { PluginConfig } from "./types.js";
+import type { InjectionScreenProfile } from "./security/injection-screen.js";
 
 /**
  * Frozen projection of recall-operation feature gates.
@@ -638,6 +635,8 @@ export interface SecurityCapabilitySet {
   readonly originAuthority: boolean;
   /** `injectionScreenEnabled` — quarantine deterministic injection findings. */
   readonly injectionScreen: boolean;
+  /** Injection-screen profile weighting (#1962). */
+  readonly injectionScreenProfile: InjectionScreenProfile;
   /** `trustZoneRecallEnabled` — restrict recall to trusted zones. */
   readonly trustZoneRecall: boolean;
 }
@@ -645,7 +644,7 @@ export interface SecurityCapabilitySet {
 /** Config projection consumed by {@link resolveSecurityCapabilities}. */
 export type SecurityConfigProjection = Pick<PluginConfig,
   | "trustZonesEnabled" | "quarantinePromotionEnabled" | "memoryPoisoningDefenseEnabled"
-  | "originAuthorityEnabled" | "injectionScreenEnabled" | "trustZoneRecallEnabled">;
+  | "originAuthorityEnabled" | "injectionScreenEnabled" | "injectionScreenProfile" | "trustZoneRecallEnabled">;
 
 /** Resolve the {@link SecurityCapabilitySet} from parsed config. */
 export function resolveSecurityCapabilities(config: SecurityConfigProjection): SecurityCapabilitySet {
@@ -655,6 +654,7 @@ export function resolveSecurityCapabilities(config: SecurityConfigProjection): S
     memoryPoisoningDefense: config.memoryPoisoningDefenseEnabled,
     originAuthority: config.originAuthorityEnabled,
     injectionScreen: config.injectionScreenEnabled,
+    injectionScreenProfile: config.injectionScreenProfile,
     trustZoneRecall: config.trustZoneRecallEnabled,
   });
 }

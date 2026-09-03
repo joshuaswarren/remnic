@@ -52,6 +52,7 @@ import type {
   BenchPhaseControl,
   BenchJudge,
   BenchMemoryAdapter,
+  BenchMemorySnapshot,
   BenchRecallAttribution,
   BenchRecallOptions,
   BenchRecallSupportAssessment,
@@ -72,6 +73,10 @@ import {
   resolveAnswerSupportMinCoverage,
   resolveSkipExtractionLcmFirst,
   shouldIncludeCoreRecallForReplay,
+  HARNESS_AUTHORED_RECALL_SECTIONS,
+  translateSelectionOffsets,
+  secureBenchRecallSection,
+  type SecuredBenchRecallSection,
 } from "./remnic-recall-support.js";
 
 export {
@@ -208,6 +213,11 @@ type BenchOrchestratorState = {
   ownsTempDir: boolean;
   orchestrator: Orchestrator;
   qmdSandbox: BenchQmdSandbox;
+  recallSecurity: {
+    originAuthorityEnabled: boolean;
+    injectionScreenEnabled: boolean;
+    injectionScreenProfile: "default" | "hardened";
+  };
 };
 
 type BenchRecallEngine = {
@@ -422,20 +432,29 @@ async function createBenchOrchestrator(
     qmdPath: qmdSandbox.wrapperPath,
   };
 
-  const orchestrator = new Orchestrator(
-    parseConfig(
-      buildBenchAdapterConfig(mode, commonConfig, overrides, {
-        preserveRuntimeDefaults,
-      }),
-    ),
+  const config = parseConfig(
+    buildBenchAdapterConfig(mode, commonConfig, overrides, {
+      preserveRuntimeDefaults,
+    }),
   );
+  const orchestrator = new Orchestrator(config);
 
   await orchestrator.initialize();
   if (!orchestrator.lcmEngine) {
     throw new Error("Remnic benchmark adapter requires LCM to be enabled.");
   }
 
-  return { tempDir, ownsTempDir, orchestrator, qmdSandbox };
+  return {
+    tempDir,
+    ownsTempDir,
+    orchestrator,
+    qmdSandbox,
+    recallSecurity: {
+      originAuthorityEnabled: config.originAuthorityEnabled,
+      injectionScreenEnabled: config.injectionScreenEnabled,
+      injectionScreenProfile: config.injectionScreenProfile,
+    },
+  };
 }
 
 async function createBenchQmdSandbox(
@@ -1895,6 +1914,8 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           source: "openclaw" as const,
           role: entry.message.role,
           content: entry.message.content,
+          ...(entry.message.originRole ? { originRole: entry.message.originRole } : {}),
+          ...(entry.message.sourceConnector ? { sourceConnector: entry.message.sourceConnector } : {}),
           timestamp:
             entry.timestamp ??
             new Date(batchStartMs + index).toISOString(),
@@ -2026,15 +2047,27 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           );
         }
         const sections: string[] = [];
+        let usedChars = 0;
+        const securedSections: Record<string, SecuredBenchRecallSection> = {};
+        const securedOffsetAt = (sectionId: string): ((offset: number) => number) =>
+          securedSections[sectionId]?.offsetAt ?? ((offset) => offset);
         const appendSection = (
           id: string,
           source: Parameters<BenchRecallTraceRecorder["appendSection"]>[1],
           rendered: string,
-        ): void => {
-          traceRecorder?.appendSection(id, source, rendered.length);
-          sections.push(rendered);
+        ): SecuredBenchRecallSection | null => {
+          const secured = secureBenchRecallSection(
+            rendered,
+            state.recallSecurity,
+            HARNESS_AUTHORED_RECALL_SECTIONS.has(id),
+          );
+          if (!secured.text) return null;
+          securedSections[id] = secured;
+          traceRecorder?.appendSection(id, source, secured.text.length);
+          sections.push(secured.text);
+          usedChars += secured.text.length;
+          return secured;
         };
-        let usedChars = 0;
         const explicitReferences = historicalRecall
           ? []
           : collectExplicitTurnReferences(query);
@@ -2073,7 +2106,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           if (temporalIntervalEvidence) {
             hasTemporalIntervalEvidence = true;
             appendSection("temporal-interval", "derived", temporalIntervalEvidence);
-            usedChars += temporalIntervalEvidence.length;
           }
         }
 
@@ -2087,7 +2119,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           if (dependencyVersionEvidence) {
             hasDependencyVersionEvidence = true;
             appendSection("dependency-version", "derived", dependencyVersionEvidence);
-            usedChars += dependencyVersionEvidence.length;
           }
         }
 
@@ -2101,7 +2132,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             }));
           if (latestQuantitativeEvidence) {
             appendSection("latest-quantitative", "derived", latestQuantitativeEvidence);
-            usedChars += latestQuantitativeEvidence.length;
           }
         }
 
@@ -2115,7 +2145,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           if (userImplementationTargetEvidence) {
             hasUserImplementationTargetEvidence = true;
             appendSection("implementation-targets", "derived", userImplementationTargetEvidence);
-            usedChars += userImplementationTargetEvidence.length;
           }
         }
 
@@ -2140,8 +2169,10 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             }));
         if (exactReferenceEvidence) {
           appendSection("explicit-cue", "explicit-cue", exactReferenceEvidence);
-          traceRecorder?.recordEvidenceSelections("explicit-cue", explicitCueSelections);
-          usedChars += exactReferenceEvidence.length;
+          traceRecorder?.recordEvidenceSelections(
+            "explicit-cue",
+            translateSelectionOffsets(explicitCueSelections, securedOffsetAt("explicit-cue"), "blockStart", "blockEnd"),
+          );
         }
 
         const trajectorySelections: TrajectoryAnalysisLineReceipt[] = [];
@@ -2165,9 +2196,8 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           appendSection("trajectory-analysis", "trajectory-analysis", trajectoryAnalysisEvidence);
           traceRecorder?.recordTrajectorySelections(
             "trajectory-analysis",
-            trajectorySelections,
+            translateSelectionOffsets(trajectorySelections, securedOffsetAt("trajectory-analysis"), "lineStart", "lineEnd"),
           );
-          usedChars += trajectoryAnalysisEvidence.length;
         }
 
         if (
@@ -2220,7 +2250,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           if (coreRecall.trim().length > 0) {
             const section = `## Remnic recall pipeline\n${coreRecall.trim()}`;
             appendSection("core", "core", section);
-            usedChars += section.length;
           }
         }
 
@@ -2232,7 +2261,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               `No historically valid Remnic memories matched this query as of ${recallAsOf}.`,
             ].join("\n");
             appendSection("historical-empty", "derived", section);
-            usedChars += section.length;
           }
         }
 
@@ -2491,9 +2519,8 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               appendSection("direct-temporal", "evidence-pack", section);
               traceRecorder?.recordEvidenceSelections(
                 "direct-temporal",
-                directTemporalSelections,
+                translateSelectionOffsets(directTemporalSelections, securedOffsetAt("direct-temporal"), "blockStart", "blockEnd"),
               );
-              usedChars += section.length;
               remainingSearchBudget = 0;
             }
 
@@ -2503,7 +2530,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             );
             if (contradictionGuidance) {
               appendSection("contradiction-guidance", "derived", contradictionGuidance);
-              usedChars += contradictionGuidance.length;
             }
 
             const searchSelections: EvidencePackSelectionReceipt[] = [];
@@ -2526,9 +2552,8 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               appendSection("search-evidence", "evidence-pack", searchEvidence);
               traceRecorder?.recordEvidenceSelections(
                 "search-evidence",
-                searchSelections,
+                translateSelectionOffsets(searchSelections, securedOffsetAt("search-evidence"), "blockStart", "blockEnd"),
               );
-              usedChars += searchEvidence.length;
             }
           }
         }
@@ -2541,7 +2566,6 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               "No direct evidence found for the requested personal background or previous development projects in this session.",
             ].join("\n");
             appendSection("personal-history-empty", "derived", section);
-            usedChars += section.length;
           }
         }
 
@@ -2560,7 +2584,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             if (summaryCapture) {
               traceRecorder?.recordSummarySelections(
                 "lcm-summary",
-                summaryCapture.selectedSummaries,
+                translateSelectionOffsets(summaryCapture.selectedSummaries, securedOffsetAt("lcm-summary"), "entryStart", "entryEnd"),
               );
             }
           }
@@ -2584,17 +2608,25 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 (message) => `[${message.role}]: ${message.content}`,
               );
               const rawSection = `${prefix}${rows.join("\n")}`;
-              appendSection("raw-messages", "raw-row", rawSection);
-              let rowStart = prefix.length;
-              expanded.forEach((message, index) => {
-                const rowEnd = rowStart + rows[index]!.length;
-                traceRecorder?.recordRawRow(
-                  "raw-messages",
-                  { start: rowStart, end: rowEnd },
-                  message,
-                );
-                rowStart = rowEnd + 1;
-              });
+              // Row ranges are computed on the unsecured section and mapped
+              // through the fence's offset map, so recorded evidence points
+              // at the post-fence body the responder actually sees.
+              const securedRawSection = appendSection("raw-messages", "raw-row", rawSection);
+              if (securedRawSection !== null) {
+                let rowStart = prefix.length;
+                rows.forEach((row, index) => {
+                  const rowEnd = rowStart + row.length;
+                  traceRecorder?.recordRawRow(
+                    "raw-messages",
+                    {
+                      start: securedRawSection.offsetAt(rowStart),
+                      end: securedRawSection.offsetAt(rowEnd),
+                    },
+                    expanded[index]!,
+                  );
+                  rowStart = rowEnd + 1;
+                });
+              }
             }
           }
         }
@@ -2945,6 +2977,40 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         } finally {
           clearTimeout(timer);
         }
+      },
+
+      async inspectSessionMemories(
+        sessionId: string,
+        control?: BenchPhaseControl,
+      ): Promise<BenchMemorySnapshot[]> {
+        throwIfBenchPhaseAborted(control, "inspect memories");
+        sessionId = normalizeBenchSessionId(sessionId);
+        await withBenchPhaseAbort(
+          waitForBenchCoreReplaySession(sessionId),
+          control,
+          "inspect memories",
+        );
+        const source = benchCoreMemorySource(sessionId);
+        const ownedIds = coreSessionMemoryIds.get(sessionId) ?? new Set<string>();
+        const memories = await withBenchPhaseAbort(
+          readBenchCoreMemories(state.orchestrator),
+          control,
+          "inspect memories",
+        );
+        return memories
+          .filter((memory) =>
+            memory.frontmatter.source === source || ownedIds.has(memory.frontmatter.id),
+          )
+          .map((memory) => ({
+            memoryId: memory.frontmatter.id,
+            contentSha256: createHash("sha256").update(memory.content).digest("hex"),
+            contentLength: memory.content.length,
+            origin: typeof memory.frontmatter.origin === "string" ? memory.frontmatter.origin : "unknown",
+            status: typeof memory.frontmatter.status === "string" ? memory.frontmatter.status : "active",
+            category: typeof memory.frontmatter.category === "string" ? memory.frontmatter.category : "unknown",
+            source,
+          }))
+          .sort((left, right) => left.memoryId.localeCompare(right.memoryId));
       },
 
       async getStats(

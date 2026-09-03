@@ -704,6 +704,7 @@
     "memoryDir",
     "memoryExtensionsEnabled",
     "memoryExtensionsRoot",
+    "memoryInjectionDefenseMode",
     "memoryLifecycleLedgerCompactBytes",
     "memoryLifecycleLedgerCompactMinIntervalMs",
     "memoryLinkingEnabled",

@@ -238,10 +238,22 @@ export async function runPublishedHarness(ctx: HarnessContext): Promise<Benchmar
   const answerSupportGate = resolveAnswerSupportGate(ctx.options);
   const trialConcurrency = resolveTrialConcurrency(ctx.options.benchmarkOptions?.trialConcurrency);
   const tasks: TaskResult[] = [];
+  if ((ctx.options.resumeTasks || ctx.options.onTaskStart) && trialConcurrency !== 1) {
+    throw new Error("PublishedBenchmarkHarness: resume hooks require trialConcurrency=1");
+  }
   const pendingPairedAnswerReplays = new Map<TaskResult, PendingPairedAnswerReplay>();
 
   try {
     for await (const plan of toAsyncIterable(ctx.plans)) {
+      const resumedPlanTasks = plan.trials.map((trial) => ctx.options.resumeTasks?.get(trial.taskId));
+      if (resumedPlanTasks.length > 0 && resumedPlanTasks.every(Boolean)) {
+        for (const task of resumedPlanTasks) {
+          if (!task) continue;
+          tasks.push(task);
+          ctx.options.onTaskComplete?.(task, tasks.length, ctx.totalCount);
+        }
+        continue;
+      }
       await ctx.options.system.reset();
       for (const session of plan.ingestSessions) {
         if (session.messages.length > 0) {
@@ -294,6 +306,13 @@ async function executePlanTrials(
 ): Promise<void> {
   if (options.trialConcurrency === 1 || trials.length <= 1) {
     for (const trial of trials) {
+      const resumed = ctx.options.resumeTasks?.get(trial.taskId);
+      if (resumed) {
+        options.tasks.push(resumed);
+        ctx.options.onTaskComplete?.(resumed, options.tasks.length, ctx.totalCount);
+        continue;
+      }
+      ctx.options.onTaskStart?.(trial.taskId);
       appendCompletedTask(
         ctx,
         options.tasks,

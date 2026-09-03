@@ -247,6 +247,53 @@ test("runPublishedHarness resets once per plan and stores every non-empty sessio
   assert.equal(result.config.adapterMode, "direct");
 });
 
+test("runPublishedHarness resumes completed tasks without repeated model calls", async () => {
+  const plans: HarnessPlan[] = [{
+    ingestSessions: [{ sessionId: "resume", messages: [{ role: "user", content: "context" }] }],
+    trials: [
+      { taskId: "resume-1", question: "Q1", expected: "A1", recallSessionIds: ["resume"] },
+      { taskId: "resume-2", question: "Q2", expected: "A2", recallSessionIds: ["resume"] },
+    ],
+  }];
+  const firstSystem = makeFakeSystem();
+  const first = await runPublishedHarness({
+    options: makeOptions(firstSystem.system),
+    metricsSpec: { metrics: ["contains_answer"] },
+    plans,
+  });
+  const completed = new Map(first.results.tasks.map((task) => [task.taskId, task]));
+
+  const resumedSystem = makeFakeSystem();
+  const started: string[] = [];
+  const resumed = await runPublishedHarness({
+    options: makeOptions(resumedSystem.system, {
+      resumeTasks: completed,
+      onTaskStart: (taskId) => { started.push(taskId); },
+      benchmarkOptions: { trialConcurrency: 1 },
+    }),
+    metricsSpec: { metrics: ["contains_answer"] },
+    plans,
+  });
+  assert.deepEqual(started, []);
+  assert.deepEqual(resumed.results.tasks, first.results.tasks);
+  assert.equal(resumedSystem.calls.length, 0);
+
+  const partialSystem = makeFakeSystem();
+  const partialStarted: string[] = [];
+  const partial = await runPublishedHarness({
+    options: makeOptions(partialSystem.system, {
+      resumeTasks: new Map([[first.results.tasks[0]!.taskId, first.results.tasks[0]!]]),
+      onTaskStart: (taskId) => { partialStarted.push(taskId); },
+      benchmarkOptions: { trialConcurrency: 1 },
+    }),
+    metricsSpec: { metrics: ["contains_answer"] },
+    plans,
+  });
+  assert.deepEqual(partialStarted, ["resume-2"]);
+  assert.equal(partial.results.tasks.length, 2);
+  assert.equal(partialSystem.calls.filter((call) => call.kind === "respond").length, 1);
+});
+
 test("runPublishedHarness rejects drain failure before scoring trials", async () => {
   const { system, calls } = makeFakeSystem();
   system.drain = async () => {

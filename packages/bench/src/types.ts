@@ -342,6 +342,13 @@ export interface RunBenchmarkOptions {
   pairedAnswerReplayCache?: PairedAnswerReplayCache;
   /** Called after each task completes for progress logging and partial result tracking. */
   onTaskComplete?: (task: TaskResult, completedCount: number, totalCount?: number) => void;
+  /** Called immediately before a non-resumed task begins its model work. */
+  onTaskStart?: (taskId: string) => void;
+  /**
+   * Runtime-only completed task receipts for crash-safe published-benchmark
+   * resume. Resumed tasks skip model calls; callers persist the receipts.
+   */
+  resumeTasks?: ReadonlyMap<string, TaskResult>;
 }
 
 export interface ResolvedRunBenchmarkOptions extends RunBenchmarkOptions {

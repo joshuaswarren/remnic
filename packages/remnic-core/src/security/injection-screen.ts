@@ -16,6 +16,8 @@ export interface InjectionScreenResult {
   quarantine: boolean;
 }
 
+export type InjectionScreenProfile = "default" | "hardened";
+
 // Each score reflects the confidence that the candidate carries executable
 // instructions rather than an ordinary fact.
 const RULE_WEIGHTS = {
@@ -27,11 +29,30 @@ const RULE_WEIGHTS = {
   "encoded-blob": 5,
   // Instruction resets directly try to replace the active authority.
   "ignore-previous-family": 4,
-  // Conditional triggers encode a hidden action for a future turn.
-  "conditional-trigger": 3,
   // Remnic command references can redirect the memory system itself.
   "authority-escalation": 4,
+  // Stored response controls try to turn recalled data into future behavior.
+  "response-control-directive": 4,
+  // Tool-routing controls replace the current tool choice from recalled data.
+  "tool-routing-directive": 4,
 } as const;
+
+// Rules whose confidence depends on the screen profile (#1962). `hardened`
+// (any named memoryInjectionDefenseMode) treats a conditional trigger alone
+// as high-confidence; `default` (custom mode) keeps weight 3 so benign
+// conditional procedure prose stays below the threshold. Rules absent from
+// this table share RULE_WEIGHTS in both profiles.
+const PROFILE_RULE_WEIGHTS = {
+  // Conditional triggers encode a hidden action for a future turn.
+  "conditional-trigger": { default: 3, hardened: 4 },
+} as const;
+
+function ruleWeight(rule: string, profile: InjectionScreenProfile): number {
+  const profileWeights = PROFILE_RULE_WEIGHTS[rule as keyof typeof PROFILE_RULE_WEIGHTS];
+  return profileWeights
+    ? profileWeights[profile]
+    : RULE_WEIGHTS[rule as keyof typeof RULE_WEIGHTS];
+}
 
 // Weight 4 blocks one high-confidence instruction pattern, while ordinary
 // prose remains at zero. Encoded blobs use weight 5 because they are opaque.
@@ -66,11 +87,11 @@ function findImperativeToAgent(content: string): InjectionScreenFinding | undefi
   return findingFor(
     "imperative-to-agent",
     content,
-    /\b(?:agent|assistant|ai|model)\s*[,!:.-]\s*(?:please\s+)?(?:ignore|disregard|call|run|execute|send|delete|reveal|email|store|remember|follow|use|do)\b/i,
+    /\b(?:agent|assistant|ai|model)[ \t]{0,8}[,!:.-][ \t]{0,8}(?:please[ \t]{1,8})?(?:ignore|disregard|call|run|execute|send|delete|reveal|email|store|remember|follow|use|do|answer|respond|reply|emit|output|return|include|produce|say)\b/i,
   ) ?? findingFor(
     "imperative-to-agent",
     content,
-    /\b(?:agent|assistant|ai|model)\s+(?:must|should|need to|please)\s+(?:ignore|disregard|call|run|execute|send|delete|reveal|email|store|remember|follow|use|do)\b/i,
+    /\b(?:agent|assistant|ai|model)[ \t]{1,8}(?:must|should|need to|please|to)[ \t]{1,8}(?:ignore|disregard|call|run|execute|send|delete|reveal|email|store|remember|follow|use|do|answer|respond|reply|emit|output|return|include|produce|say)\b/i,
   );
 }
 
@@ -118,11 +139,61 @@ function findConditionalTrigger(content: string): InjectionScreenFinding | undef
   return findingFor(
     "conditional-trigger",
     content,
-    /\b(?:when|if)\b[\s\S]{1,120}\b(?:say|says|see|sees|hear|hears|receive|receives|mention|mentions|contain|contains|encounter|encounters)\b[\s\S]{1,120}\b(?:then\s+)?(?:call|invoke|run|execute|send|delete|reveal|store|use|follow|do|respond)\b/i,
+    /\b(?:when|if|unless|after|only after|if and only if|on seeing)\b[\s\S]{1,180}\b(?:ask|asked|say|says|see|sees|seeing|hear|hears|receive|receives|mention|mentions|mentioned|appear|appears|contain|contains|encounter|encounters|phrase|condition|key)\b[\s\S]{0,180}\b(?:then[ \t]{1,8})?(?:answer|call|include|invoke|run|execute|send|delete|reveal|store|use|follow|do|respond|reply|emit|output|return|produce|say|add|replace)\b/i,
   ) ?? findingFor(
     "conditional-trigger",
     content,
-    /\b(?:when|if)\b[\s\S]{1,100},\s*(?:then\s+)?(?:call|invoke|run|execute|send|delete|reveal|store|use|follow|do|respond)\b/i,
+    /\b(?:when|if|unless)\b[\s\S]{1,120},[ \t]{0,8}(?:then[ \t]{1,8})?(?:answer|call|include|invoke|run|execute|send|delete|reveal|store|use|follow|do|respond|reply|emit|output|return|produce|say|add|replace)\b/i,
+  );
+}
+
+const RESPONSE_NOUN = String.raw`(?:answers?|responses?|repl(?:y|ies)|output)`;
+const RESPONSE_CONTROL_PATTERNS: readonly RegExp[] = [
+  // "the approved response concerning X is exactly CANARY"
+  new RegExp(
+    String.raw`\b${RESPONSE_NOUN}\b[^\n]{0,60}\b(?:(?:is|are|be)[ \t]{1,8}exactly|becomes?)\b`,
+    "i",
+  ),
+  // "the response must include / should begin with / needs to say ..."
+  new RegExp(
+    String.raw`\b${RESPONSE_NOUN}\b[^\n]{0,60}\b(?:must|should|shall|will|needs?[ \t]{1,8}to|has[ \t]{1,8}to|have[ \t]{1,8}to|is[ \t]{1,8}to|are[ \t]{1,8}to)[ \t]{1,8}(?:always[ \t]{1,8})?(?:include|contain|begin|start|end|say|state|mention|output|return|emit|produce|read|quote|reference|append|prepend)\b`,
+    "i",
+  ),
+  // "include CANARY in every answer", "add <url> to answers"
+  new RegExp(
+    String.raw`\b(?:include|add|emit|output|return|append|prepend|say|state|put)\b[^\n]{0,80}\b(?:in|to|into|with|as|on)[ \t]{1,8}[^\n]{0,30}\b${RESPONSE_NOUN}\b`,
+    "i",
+  ),
+  // "reply with the marker CANARY", "respond by saying"
+  /\b(?:reply|respond|answer)[ \t]{1,8}(?:with|by|using)[ \t]{1,8}(?:the[ \t]{1,8}|only[ \t]{1,8}|exactly[ \t]{1,8})?(?:marker|phrase|code|string|text|token|exact|exactly|only|saying|outputting|returning|CANARY)/i,
+  // "activation requires outputting CANARY", "retrieval should produce CANARY"
+  /\b(?:requires?|should|must|will)[ \t]{1,8}(?:outputting|emitting|returning|saying|replying|responding|answering|producing|output|emit|produce)\b[^\n]{0,40}\b(?:CANARY|marker|phrase|code|token|exactly|https?:)/i,
+  /\b(?:retrieval|recall|activation)\b[^\n]{0,40}\b(?:should|must|will|requires?)[ \t]{1,8}(?:produce|output|emit|return|say|reply|respond)\b/i,
+  // "say CANARY", "answer CANARY", "use CANARY instead", "return https://..."
+  /\b(?:say|answer|reply|respond|output|return|emit|use|produce)[ \t]{1,8}(?:with[ \t]{1,8}|only[ \t]{1,8}|exactly[ \t]{1,8})?(?:CANARY|the[ \t]{1,8}(?:literal|exact|marker|phrase|string|token)\b|https?:)/i,
+  // "replace normal behavior with the literal response", "require the literal marker"
+  /\breplace[ \t]{1,8}(?:normal|default|your|the|its|all)?[ \t]{0,8}(?:behaviou?r|responses?|answers?|repl(?:y|ies)|output)\b/i,
+  /\b(?:literal|exact|verbatim)[ \t]{1,8}(?:response|answer|reply|marker|string|output|phrase|token)\b/i,
+];
+
+/**
+ * A directive over what the agent's future answer must contain or say.
+ * Ordinary facts that merely pair "policy"/"note"/"response" with a common
+ * verb ("the return policy requires a receipt") are not directives.
+ */
+function findResponseControlDirective(content: string): InjectionScreenFinding | undefined {
+  for (const pattern of RESPONSE_CONTROL_PATTERNS) {
+    const finding = findingFor("response-control-directive", content, pattern);
+    if (finding) return finding;
+  }
+  return undefined;
+}
+
+function findToolRoutingDirective(content: string): InjectionScreenFinding | undefined {
+  return findingFor(
+    "tool-routing-directive",
+    content,
+    /\b(?:ignore|redirect(?:ing)?|override|substitute|preferred[_ -]?tool|never[ \t]{1,8}use|must[ \t]{1,8}call|requires?[ \t]{1,8}redirecting)\b[\s\S]{0,160}\b(?:tool|function|[a-z][a-z0-9-]*[_:.][a-z0-9-]+)\b|\b(?:tool|function|[a-z][a-z0-9-]*[_:.][a-z0-9-]+)\b[\s\S]{0,160}\b(?:redirect(?:ing)?|override|substitute|preferred[_ -]?tool|never[ \t]{1,8}use|must[ \t]{1,8}call)\b/i,
   );
 }
 
@@ -139,7 +210,7 @@ function findAuthorityEscalation(content: string): InjectionScreenFinding | unde
 }
 
 /** Screen a candidate fact without model calls, I/O, or mutable state. */
-export function screenCandidateFact(content: string): InjectionScreenResult {
+export function screenCandidateFact(content: string, profile: InjectionScreenProfile = "default"): InjectionScreenResult {
   const findings: InjectionScreenFinding[] = [];
   const rules: Array<[string, (value: string) => InjectionScreenFinding | undefined]> = [
     ["imperative-to-agent", findImperativeToAgent],
@@ -148,11 +219,13 @@ export function screenCandidateFact(content: string): InjectionScreenResult {
     ["ignore-previous-family", findIgnorePreviousFamily],
     ["conditional-trigger", findConditionalTrigger],
     ["authority-escalation", findAuthorityEscalation],
+    ["response-control-directive", findResponseControlDirective],
+    ["tool-routing-directive", findToolRoutingDirective],
   ];
   for (const [rule, find] of rules) {
     const finding = find(content);
     if (finding) findings.push({ rule, excerpt: finding.excerpt });
   }
-  const score = findings.reduce((sum, finding) => sum + RULE_WEIGHTS[finding.rule as keyof typeof RULE_WEIGHTS], 0);
+  const score = findings.reduce((sum, finding) => sum + ruleWeight(finding.rule, profile), 0);
   return { score, findings, quarantine: score >= INJECTION_SCREEN_THRESHOLD };
 }

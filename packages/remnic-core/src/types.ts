@@ -2664,12 +2664,13 @@ export interface RelevanceFeedback {
 }
 
 /**
- * Trusted connector identity, resolved from the auth boundary.
- * Never user-editable — set by the server from the authenticated connector,
- * not from tool arguments (anti-spoofing).
+ * Trusted source identity and role, resolved from the auth boundary.
+ * Never user-editable — set by the server from authenticated host metadata,
+ * not from tool arguments or model-authored content (anti-spoofing).
  */
 export interface SourceConnectorProvenance {
   sourceConnector?: string;
+  originRole?: "user" | "assistant" | "tool";
 }
 export interface BufferTurn extends SourceConnectorProvenance, BufferTurnOwner, AmbientCaptureProvenance {
   role: "user" | "assistant";

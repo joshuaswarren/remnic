@@ -5,8 +5,9 @@
  * on every try. Multi-host exclusion lives in claims.ts (mkdir lease).
  */
 
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   InjectionSuiteCheckpoint,
@@ -19,13 +20,14 @@ import { INJECTION_SUITE_VERSION } from "./types.js";
 export function buildInjectionSuiteRowKey(identity: InjectionSuiteRowIdentity): string {
   const payload = [
     identity.suiteVersion,
+    identity.stage,
     identity.modelProfileId,
     identity.arm,
     identity.family,
     identity.variantId,
     String(identity.seed),
   ].join("\u0000");
-  return `h5-row-v1-${createHash("sha256").update(payload).digest("hex")}`;
+  return `h5-row-v2-${createHash("sha256").update(payload).digest("hex")}`;
 }
 
 export function canonicalJson(value: unknown): string {
@@ -75,10 +77,45 @@ export class InjectionSuiteRowStore {
         throw new Error("checkpoint identity does not exactly match requested identity");
       }
       if (!Array.isArray(parsed.tries)) throw new Error("checkpoint tries must be an array");
+      if (
+        parsed.inFlight !== undefined
+        && (!Number.isInteger(parsed.inFlight.attempt)
+          || parsed.inFlight.attempt < 1
+          || typeof parsed.inFlight.startedAt !== "string")
+      ) {
+        throw new Error("checkpoint inFlight marker is malformed");
+      }
       return { kind: "VALID", checkpoint: parsed };
     } catch (error) {
       return { kind: "MALFORMED", error: error instanceof Error ? error : new Error(String(error)) };
     }
+  }
+
+  async markInFlight(
+    identity: InjectionSuiteRowIdentity,
+    attempt: number,
+    replaceAmbiguous = false,
+  ): Promise<InjectionSuiteCheckpoint> {
+    if (!Number.isInteger(attempt) || attempt < 1) throw new Error("in-flight attempt must be positive");
+    const existing = await this.load(identity);
+    if (existing.kind === "MALFORMED") throw existing.error;
+    if (existing.kind === "VALID" && existing.checkpoint.terminal) {
+      throw new Error(`Injection-suite row ${existing.checkpoint.rowKey} is terminal and immutable`);
+    }
+    if (existing.kind === "VALID" && existing.checkpoint.inFlight && !replaceAmbiguous) {
+      throw new Error(`Injection-suite row ${existing.checkpoint.rowKey} has an ambiguous in-flight request`);
+    }
+    const checkpoint: InjectionSuiteCheckpoint = {
+      rowKey: buildInjectionSuiteRowKey(identity),
+      identity,
+      tries: existing.kind === "VALID" ? existing.checkpoint.tries : [],
+      inFlight: { attempt, startedAt: new Date().toISOString() },
+    };
+    await writeFileAtomically(
+      this.checkpointPath(identity),
+      `${JSON.stringify(checkpoint, null, 2)}\n`,
+    );
+    return checkpoint;
   }
 
   async commitTry(
@@ -91,6 +128,13 @@ export class InjectionSuiteRowStore {
     if (existing.kind === "VALID" && existing.checkpoint.terminal) {
       throw new Error(`Injection-suite row ${existing.checkpoint.rowKey} is terminal and immutable`);
     }
+    if (
+      existing.kind === "VALID"
+      && existing.checkpoint.inFlight
+      && existing.checkpoint.inFlight.attempt !== entry.attempt
+    ) {
+      throw new Error("completed attempt does not match the in-flight marker");
+    }
     const tries = existing.kind === "VALID" ? [...existing.checkpoint.tries, entry] : [entry];
     const checkpoint: InjectionSuiteCheckpoint = {
       rowKey: buildInjectionSuiteRowKey(identity),
@@ -98,17 +142,18 @@ export class InjectionSuiteRowStore {
       tries,
       ...(terminal ? { terminal } : {}),
     };
-    await mkdir(this.checkpointsDir, { recursive: true });
-    const destination = this.checkpointPath(identity);
-    const tempPath = `${destination}.tmp-${randomUUID()}`;
-    await writeFile(tempPath, `${JSON.stringify(checkpoint, null, 2)}\n`, "utf8");
-    await rename(tempPath, destination);
+    await writeFileAtomically(
+      this.checkpointPath(identity),
+      `${JSON.stringify(checkpoint, null, 2)}\n`,
+    );
     return checkpoint;
   }
 }
 
 export function defaultSuiteIdentity(
-  partial: Omit<InjectionSuiteRowIdentity, "suiteVersion">,
+  partial: Omit<InjectionSuiteRowIdentity, "suiteVersion" | "stage"> & {
+    stage?: InjectionSuiteRowIdentity["stage"];
+  },
 ): InjectionSuiteRowIdentity {
-  return { suiteVersion: INJECTION_SUITE_VERSION, ...partial };
+  return { suiteVersion: INJECTION_SUITE_VERSION, ...partial, stage: partial.stage ?? "base" };
 }

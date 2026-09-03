@@ -597,7 +597,7 @@
       "boxTopicShiftThreshold": {
         "type": "number",
         "default": 0.35,
-        "description": "Jaccard overlap threshold below which a topic shift seals the current box (0–1)."
+        "description": "Jaccard overlap threshold below which a topic shift seals the current box (0\u20131)."
       },
       "briefing": {
         "type": "object",
@@ -3243,7 +3243,7 @@
       "lifecyclePolicyEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Enable the lifecycle policy engine (hot↔cold tier migration, value scoring, decay). Default true since #686 - flipping enables the year-2 retention story by default. Set to false to opt out."
+        "description": "Enable the lifecycle policy engine (hot\u2194cold tier migration, value scoring, decay). Default true since #686 - flipping enables the year-2 retention story by default. Set to false to opt out."
       },
       "lifecyclePromoteHeatThreshold": {
         "type": "number",
@@ -3563,6 +3563,18 @@
         "type": "boolean",
         "default": false,
         "description": "Enable deterministic provenance trust scoring for trust-zone records as the first poisoning-defense surface."
+      },
+      "memoryInjectionDefenseMode": {
+        "type": "string",
+        "enum": [
+          "custom",
+          "off",
+          "fencing",
+          "quarantine",
+          "layered"
+        ],
+        "default": "custom",
+        "description": "Packaged memory-injection defense; custom keeps originAuthorityEnabled and injectionScreenEnabled as set."
       },
       "originAuthorityEnabled": {
         "type": "boolean",
@@ -5087,7 +5099,7 @@
         "minimum": 0,
         "maximum": 1,
         "default": 0.55,
-        "description": "Minimum query↔memory token-overlap ratio for direct-answer eligibility. Set to 0 to disable the gate."
+        "description": "Minimum query\u2194memory token-overlap ratio for direct-answer eligibility. Set to 0 to disable the gate."
       },
       "recallDisclosureEscalation": {
         "type": "string",
@@ -5915,7 +5927,7 @@
           "enabled": {
             "type": "boolean",
             "default": false,
-            "description": "Stamp a `subject` (user|agent) on extracted memories: category defaults (preference/relationship/moment/commitment → user; procedure/principle/skill → agent) with an optional extractor override for fact/decision-like facts. Default off - writes stay byte-identical until enabled."
+            "description": "Stamp a `subject` (user|agent) on extracted memories: category defaults (preference/relationship/moment/commitment \u2192 user; procedure/principle/skill \u2192 agent) with an optional extractor override for fact/decision-like facts. Default off - writes stay byte-identical until enabled."
           }
         }
       },
@@ -6236,7 +6248,7 @@
       "traceWeaverOverlapThreshold": {
         "type": "number",
         "default": 0.4,
-        "description": "Minimum Jaccard topic overlap to assign the same traceId (0–1)."
+        "description": "Minimum Jaccard topic overlap to assign the same traceId (0\u20131)."
       },
       "transcriptEnabled": {
         "type": "boolean",
@@ -6286,12 +6298,12 @@
       "trustScoreMaxMultiplier": {
         "type": "number",
         "default": 1.25,
-        "description": "Upper bound of the trust multiplier mapping [0,1] → [minMultiplier, maxMultiplier]."
+        "description": "Upper bound of the trust multiplier mapping [0,1] \u2192 [minMultiplier, maxMultiplier]."
       },
       "trustScoreMinMultiplier": {
         "type": "number",
         "default": 0.5,
-        "description": "Lower bound of the trust multiplier mapping [0,1] → [minMultiplier, maxMultiplier]."
+        "description": "Lower bound of the trust multiplier mapping [0,1] \u2192 [minMultiplier, maxMultiplier]."
       },
       "trustScoreQuarantine": {
         "type": "boolean",
@@ -7655,8 +7667,7 @@
     },
     "wikiMergeIntoRecall": {
       "label": "Merge External Wikis Into Recall",
-      "advanced": true,
-      "help": "Reserved safety gate. External wiki collections remain on-demand only; true is not supported."
+      "advanced": true
     },
     "qmdMaxResults": {
       "label": "QMD Max Results",
@@ -7823,8 +7834,7 @@
       "help": "Append self-reflections to workspace IDENTITY.md after each extraction"
     },
     "identityContinuityEnabled": {
-      "label": "Identity Continuity",
-      "help": "Enable identity continuity workflows (anchor, incidents, audits)"
+      "label": "Identity Continuity"
     },
     "identityInjectionMode": {
       "label": "Identity Context Mode",
@@ -7863,8 +7873,7 @@
       "help": "Array of {maxBytes, triggerDeltaBytes, triggerDeltaTokens} threshold objects"
     },
     "injectQuestions": {
-      "label": "Inject Questions",
-      "help": "Include the most relevant open question in generated memory context"
+      "label": "Inject Questions"
     },
     "commitmentDecayDays": {
       "label": "Commitment Decay (days)",
@@ -8056,8 +8065,7 @@
     },
     "recallDirectAnswerEligibleTaxonomyBuckets": {
       "label": "Direct-Answer Eligible Taxonomy Buckets",
-      "advanced": true,
-      "help": "Taxonomy category IDs eligible for direct-answer routing."
+      "advanced": true
     },
     "memoryLinkingEnabled": {
       "label": "Memory Linking",
@@ -8250,8 +8258,7 @@
     "localLmsBinDir": {
       "label": "LMS Bin Dir",
       "advanced": true,
-      "placeholder": "/path/to/bin",
-      "help": "Optional bin directory prepended to PATH for LMS CLI execution."
+      "placeholder": "/path/to/bin"
     },
     "localLlmMaxContext": {
       "label": "Local LLM Max Context",
@@ -8325,8 +8332,7 @@
     },
     "objectiveStateRecallEnabled": {
       "label": "Objective-State Recall",
-      "advanced": true,
-      "help": "Add recall-relevant objective-state snapshots to recall context."
+      "advanced": true
     },
     "objectiveStateStoreDir": {
       "label": "Objective-State Store Directory",
@@ -8346,8 +8352,7 @@
     },
     "causalTrajectoryRecallEnabled": {
       "label": "Causal Trajectory Recall",
-      "advanced": true,
-      "help": "Add recall-relevant causal trajectories to recall context."
+      "advanced": true
     },
     "trustZonesEnabled": {
       "label": "Trust Zones",
@@ -8355,8 +8360,7 @@
     },
     "quarantinePromotionEnabled": {
       "label": "Quarantine Promotion",
-      "advanced": true,
-      "help": "Reserve future promotion flows from quarantine into higher-trust zones."
+      "advanced": true
     },
     "trustZoneStoreDir": {
       "label": "Trust-Zone Store Directory",
@@ -8366,18 +8370,21 @@
     },
     "trustZoneRecallEnabled": {
       "label": "Trust-Zone Recall",
-      "advanced": true,
-      "help": "Add recall-relevant working and trusted trust-zone records to recall context."
+      "advanced": true
     },
     "memoryPoisoningDefenseEnabled": {
       "label": "Memory Poisoning Defense",
       "advanced": true,
       "help": "Enable provenance trust scoring in trust-zone status output as the first poisoning-defense signal."
     },
+    "memoryInjectionDefenseMode": {
+      "label": "Memory Injection Defense",
+      "advanced": true,
+      "help": "off, fencing, quarantine, or layered; custom keeps the separate flags."
+    },
     "originAuthorityEnabled": {
       "label": "Origin Authority",
-      "advanced": true,
-      "help": "Fence recall-rendered content from untrusted origins as data-only. Origin metadata is always recorded; this flag gates only the recall-time fence."
+      "advanced": true
     },
     "injectionScreenEnabled": {
       "label": "Injection Screen",
@@ -8386,8 +8393,7 @@
     },
     "untrustedOrigins": {
       "label": "Untrusted Origins",
-      "advanced": true,
-      "help": "Origin classes that receive the recall authority fence."
+      "advanced": true
     },
     "memoryRedTeamBenchEnabled": {
       "label": "Memory Red-Team Benchmarks",
@@ -8395,13 +8401,11 @@
       "help": "Enable operator-facing red-team benchmark pack support and status accounting for poisoning-defense suites."
     },
     "harmonicRetrievalEnabled": {
-      "label": "Harmonic Retrieval",
-      "help": "Enable harmonic retrieval blending over abstraction nodes and cue anchors, including recall-section assembly and harmonic-search diagnostics."
+      "label": "Harmonic Retrieval"
     },
     "abstractionAnchorsEnabled": {
       "label": "Abstraction Anchors",
-      "advanced": true,
-      "help": "Enable typed cue-anchor indexing for abstraction nodes and expose it through cue-anchor status tooling."
+      "advanced": true
     },
     "abstractionNodeStoreDir": {
       "label": "Abstraction-Node Store Directory",
@@ -8410,8 +8414,7 @@
       "help": "Override where abstraction nodes are stored."
     },
     "verifiedRecallEnabled": {
-      "label": "Verified Recall",
-      "help": "Add recall-relevant memory boxes only when their cited source memories verify as non-archived episodes."
+      "label": "Verified Recall"
     },
     "semanticRulePromotionEnabled": {
       "label": "Semantic Rule Promotion",
@@ -8420,43 +8423,35 @@
     },
     "semanticRuleVerificationEnabled": {
       "label": "Semantic Rule Verification",
-      "advanced": true,
-      "help": "Verify promoted semantic rules against their cited source episodes at recall time before surfacing them in recall."
+      "advanced": true
     },
     "semanticConsolidationEnabled": {
       "label": "Semantic Consolidation",
-      "advanced": true,
-      "help": "Enable periodic semantic consolidation of similar memories."
+      "advanced": true
     },
     "semanticConsolidationModel": {
       "label": "Semantic Consolidation Model",
-      "advanced": true,
-      "help": "LLM for consolidation synthesis: 'auto' (primary model), 'fast' (fast local model), or a specific model name."
+      "advanced": true
     },
     "semanticConsolidationThreshold": {
       "label": "Semantic Consolidation Threshold",
-      "advanced": true,
-      "help": "Token overlap threshold (0-1) for grouping similar memories. 0.8=conservative, 0.6=aggressive."
+      "advanced": true
     },
     "semanticConsolidationMinClusterSize": {
       "label": "Semantic Consolidation Min Cluster Size",
-      "advanced": true,
-      "help": "Minimum cluster size before consolidation triggers."
+      "advanced": true
     },
     "semanticConsolidationExcludeCategories": {
       "label": "Semantic Consolidation Exclude Categories",
-      "advanced": true,
-      "help": "Memory categories excluded from semantic consolidation."
+      "advanced": true
     },
     "semanticConsolidationIntervalHours": {
       "label": "Semantic Consolidation Interval (Hours)",
-      "advanced": true,
-      "help": "Hours between automatic consolidation runs (168 = weekly)."
+      "advanced": true
     },
     "semanticConsolidationMaxPerRun": {
       "label": "Semantic Consolidation Max Per Run",
-      "advanced": true,
-      "help": "Max memories to consolidate per run to limit LLM cost."
+      "advanced": true
     },
     "operatorAwareConsolidationEnabled": {
       "label": "Operator-Aware Consolidation",
@@ -8475,13 +8470,11 @@
     },
     "peerProfileReasonerMinInteractions": {
       "label": "Peer Profile Reasoner Min Interactions",
-      "advanced": true,
-      "help": "Minimum new interaction-log entries a peer must accumulate since the previous reasoner run before being processed again. Set to 0 to consider every peer on every run."
+      "advanced": true
     },
     "peerProfileReasonerMaxFieldsPerRun": {
       "label": "Peer Profile Reasoner Max Fields Per Run",
-      "advanced": true,
-      "help": "Hard cap on the total number of profile fields the reasoner will apply across all peers in a single run. Set to 0 to disable applying any fields."
+      "advanced": true
     },
     "peerProfileRecallEnabled": {
       "label": "Peer Profile Recall",
@@ -8495,13 +8488,11 @@
     },
     "creationMemoryEnabled": {
       "label": "Creation Memory",
-      "advanced": true,
-      "help": "Enable creation-memory foundations, including the work-product ledger for explicit outputs agents create."
+      "advanced": true
     },
     "memoryUtilityLearningEnabled": {
       "label": "Utility Learning",
-      "advanced": true,
-      "help": "Enable utility-learning telemetry storage so later slices can learn promotion and ranking weights from downstream outcomes."
+      "advanced": true
     },
     "promotionByOutcomeEnabled": {
       "label": "Promotion By Outcome",
@@ -8510,8 +8501,7 @@
     },
     "commitmentLedgerEnabled": {
       "label": "Commitment Ledger",
-      "advanced": true,
-      "help": "Enable the explicit commitment ledger for promises, follow-ups, deadlines, and unfinished obligations."
+      "advanced": true
     },
     "commitmentLifecycleEnabled": {
       "label": "Commitment Lifecycle",
@@ -8542,8 +8532,7 @@
     },
     "workProductRecallEnabled": {
       "label": "Work-Product Recall",
-      "advanced": true,
-      "help": "Add recall-relevant work-product ledger entries to recall context and expose artifact-recovery search tooling."
+      "advanced": true
     },
     "workProductLedgerDir": {
       "label": "Work-Product Ledger Directory",
@@ -8552,8 +8541,7 @@
       "help": "Override where work-product ledger entries are stored."
     },
     "actionGraphRecallEnabled": {
-      "label": "Action Graph Recall",
-      "help": "Write action-conditioned causal-stage edges from typed trajectory records into the causal graph."
+      "label": "Action Graph Recall"
     },
     "factDeduplicationEnabled": {
       "label": "Fact Deduplication",
@@ -8632,8 +8620,7 @@
       "help": "Write lifecycle metrics snapshots to state/lifecycle-metrics.json"
     },
     "proactiveExtractionEnabled": {
-      "label": "Proactive Extraction",
-      "help": "Enable proactive self-questioning extraction second-pass (v8.3, default off)"
+      "label": "Proactive Extraction"
     },
     "contextCompressionActionsEnabled": {
       "label": "Context Compression Actions",
@@ -8756,12 +8743,10 @@
       "placeholder": "6"
     },
     "entityRelationshipsEnabled": {
-      "label": "Entity Relationships",
-      "help": "Track entity-to-entity relationships during extraction"
+      "label": "Entity Relationships"
     },
     "entityActivityLogEnabled": {
-      "label": "Entity Activity Log",
-      "help": "Log timestamped activity per entity"
+      "label": "Entity Activity Log"
     },
     "entityActivityLogMaxEntries": {
       "label": "Activity Log Max Entries",
@@ -8769,18 +8754,15 @@
       "placeholder": "20"
     },
     "entityAliasesEnabled": {
-      "label": "Entity Aliases",
-      "help": "Store aliases per entity file"
+      "label": "Entity Aliases"
     },
     "entitySummaryEnabled": {
-      "label": "Entity Summaries",
-      "help": "Generate LLM summaries for entities during consolidation"
+      "label": "Entity Summaries"
     },
     "entitySynthesisMaxTokens": {
       "label": "Entity Synthesis Max Tokens",
       "advanced": true,
-      "placeholder": "500",
-      "help": "Max tokens used when refreshing an entity synthesis from its timeline."
+      "placeholder": "500"
     },
     "recallBudgetChars": {
       "label": "Recall Budget (Chars)",
@@ -8790,8 +8772,7 @@
     "recallProfileMaxRatio": {
       "label": "Recall Profile Budget Share",
       "advanced": true,
-      "placeholder": "0.3",
-      "help": "Maximum fraction of the total recall budget available to the behavioral profile. Set to 1 to disable the share cap."
+      "placeholder": "0.3"
     },
     "recallStateViews": {
       "label": "State-Aware Recall Views",

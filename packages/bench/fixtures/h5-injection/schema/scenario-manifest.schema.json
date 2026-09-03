@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "H5 frozen scenario manifest",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "suiteVersion",
+    "stage",
+    "seed",
+    "scenarios",
+    "manifestSha256"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "suiteVersion": {
+      "type": "string"
+    },
+    "stage": {
+      "enum": [
+        "base",
+        "adaptive-r1",
+        "adaptive-r2",
+        "adaptive-r3",
+        "benign",
+        "benign-use"
+      ]
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 40
+    },
+    "manifestSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "additionalProperties": true
+}
