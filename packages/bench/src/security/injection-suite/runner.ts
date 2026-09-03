@@ -27,6 +27,7 @@ import {
   DEFAULT_OLLAMA_BASE_URL,
   DEFAULT_OPENAI_COMPAT_BASE_URL,
   DEFAULT_REQUEST_TIMEOUT_MS,
+  openAiCompatBackend,
 } from "./llm-executor.js";
 import { executeProductLifecycleRow } from "./product-lifecycle.js";
 import {
@@ -62,6 +63,7 @@ export function injectionSuiteResumeContractHash(metadata: {
   model: string;
   baseUrl: string;
   requestTimeoutMs: number;
+  backend?: string;
   stage?: string;
   runKind?: string;
   modelProfileHash?: string;
@@ -84,6 +86,9 @@ export function injectionSuiteResumeContractHash(metadata: {
         model: metadata.model,
         baseUrl: metadata.baseUrl,
         requestTimeoutMs: metadata.requestTimeoutMs,
+        // Folded in only when recorded, so a run frozen before the backend
+        // was part of the identity keeps its existing resume hash (#3079).
+        ...(metadata.backend === undefined ? {} : { backend: metadata.backend }),
         stage: metadata.stage ?? "base",
         runKind: metadata.runKind ?? "dev",
         modelProfileHash: metadata.modelProfileHash ?? "",
@@ -109,18 +114,25 @@ export function resolvedExecutorContract(input: InjectionSuiteCliInput): {
   model: string;
   baseUrl: string;
   requestTimeoutMs: number;
+  /** Resolved OpenAI-compatible backend: it selects non-generic request fields, so it is part of the run identity (#3078). */
+  backend: string;
 } {
   const executor = input.executor ?? "local";
   if (executor === "local") {
-    return { executor, model: "", baseUrl: "", requestTimeoutMs: 0 };
+    return { executor, model: "", baseUrl: "", requestTimeoutMs: 0, backend: "none" };
   }
   const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   if (executor === "openai-compat") {
+    const baseUrl = input.baseUrl ?? DEFAULT_OPENAI_COMPAT_BASE_URL;
     return {
       executor,
       model: input.model ?? DEFAULT_OLLAMA_MODEL,
-      baseUrl: input.baseUrl ?? DEFAULT_OPENAI_COMPAT_BASE_URL,
+      baseUrl,
       requestTimeoutMs,
+      // The backend selects the non-generic request fields, so a run resumed
+      // under a different override is a different experimental condition and
+      // must not reuse checkpoints (#3078, PR #3079 post-cap).
+      backend: openAiCompatBackend(baseUrl),
     };
   }
   return {
@@ -128,6 +140,7 @@ export function resolvedExecutorContract(input: InjectionSuiteCliInput): {
     model: input.model ?? DEFAULT_OLLAMA_MODEL,
     baseUrl: input.baseUrl ?? DEFAULT_OLLAMA_BASE_URL,
     requestTimeoutMs,
+    backend: "native",
   };
 }
 export function planInjectionSuiteRows(input: {
@@ -365,6 +378,7 @@ export async function runInjectionSuiteCliCommand(
     model: contract.model,
     baseUrl: contract.baseUrl,
     requestTimeoutMs: contract.requestTimeoutMs,
+    backend: contract.backend,
     stage: input.stage ?? "base",
     runKind: input.runKind ?? "dev",
     modelProfileHash: frozen.profile.modelProfileHash,

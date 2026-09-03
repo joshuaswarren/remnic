@@ -8,10 +8,13 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  realpathSync,
+  statSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import type { Stats } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -435,6 +438,60 @@ async function runDriftUtility(
 export const UTILITY_CONTRACT_FILE = "utility-contract.json";
 
 /** What a utility checkpoint directory was produced under; a mismatch refuses to reuse it. */
+/**
+ * Content digest of a dataset directory: every regular file's repo-relative
+ * path and sha256, folded in sorted order. A dataset edited in place after a
+ * partial run therefore changes the contract and refuses reuse (#3078).
+ */
+export function datasetDigest(directory: string | undefined): string | null {
+  if (!directory) return null;
+  const root = path.resolve(directory);
+  const files: string[] = [];
+  // Symlinks are followed (the benchmark loaders read through them) with
+  // realpath cycle protection, so a link target edited between partial runs
+  // changes the digest instead of going unnoticed (PR #3079 review).
+  const visited = new Set<string>();
+  const walk = (dir: string): void => {
+    let real: string;
+    try {
+      real = realpathSync(dir);
+    } catch {
+      return;
+    }
+    if (visited.has(real)) return;
+    visited.add(real);
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      const full = path.join(dir, entry.name);
+      if (entry.isFile()) {
+        files.push(full);
+        continue;
+      }
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!entry.isSymbolicLink()) continue;
+      let target: Stats | undefined;
+      try {
+        target = statSync(full);
+      } catch {
+        target = undefined;
+      }
+      if (target?.isFile()) files.push(full);
+      else if (target?.isDirectory()) walk(full);
+    }
+  };
+  walk(root);
+  const digest = createHash("sha256");
+  for (const file of files.sort()) {
+    digest.update(path.relative(root, file).split(path.sep).join("/"));
+    digest.update("\0");
+    digest.update(createHash("sha256").update(readFileSync(file)).digest("hex"));
+    digest.update("\0");
+  }
+  return `sha256:${digest.digest("hex")}:${files.length}`;
+}
+
 export function utilityContract(
   input: InjectionSuiteUtilityRunInput,
   benchmarks: readonly UtilityBenchmark[],
@@ -447,12 +504,20 @@ export function utilityContract(
     modelDigest: input.modelDigest?.trim() || "unverified",
     modelProfileId: input.modelProfileId,
     baseUrl: executor.baseUrl,
+    // The backend selects non-generic request fields, so resuming under a
+    // different override is a different condition (PR #3079 post-cap).
+    backend: executor.backend,
     benchmarks: [...benchmarks],
     seeds: [...UTILITY_SEEDS],
     limit: input.limit ?? null,
     runKind: input.runKind ?? null,
     locomoDatasetDir: input.locomoDatasetDir ?? null,
+    locomoDatasetDigest: benchmarks.includes("locomo") ? datasetDigest(input.locomoDatasetDir) : null,
     longmemevalDatasetDir: input.longmemevalDatasetDir ?? null,
+    longmemevalDatasetDigest: benchmarks.includes("longmemeval")
+      ? datasetDigest(input.longmemevalDatasetDir)
+      : null,
+    driftDatasetDigest: benchmarks.includes("drift-gen") ? datasetDigest(DRIFT_ROOT) : null,
   };
 }
 

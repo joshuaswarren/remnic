@@ -19,6 +19,9 @@ import {
 import {
   buildRecallPrompt,
   completeChat,
+  OPENAI_COMPAT_BACKEND_ENV,
+  openAiCompatBackend,
+  openAiCompatExtensions,
   InjectionSuiteHostFault,
 } from "./llm-executor.js";
 import {
@@ -967,6 +970,65 @@ test("openai-compat sends chat_template_kwargs only to models whose template def
     assert.deepEqual(bodies[2]!.chat_template_kwargs, { enable_thinking: false });
   } finally {
     mock.restore();
+  }
+});
+
+test("non-generic request fields are gated by backend AND model family", () => {
+  // URL inference must not be influenced by an operator override that
+  // happens to be exported in the developer's environment (PR #3079 r3).
+  const previousBackend = process.env[OPENAI_COMPAT_BACKEND_ENV];
+  delete process.env[OPENAI_COMPAT_BACKEND_ENV];
+  try {
+  // NIM reads both extensions; Ollama's /v1 reads reasoning_effort and drops
+  // chat_template_kwargs; an unknown OpenAI-compatible server (LM Studio,
+  // api.openai.com) rejects unknown fields with HTTP 400 and gets neither.
+  const nim = "https://integrate.api.nvidia.com/v1";
+  const ollama = "http://127.0.0.1:11434/v1";
+  const lmstudio = "http://127.0.0.1:1234/v1";
+  const openai = "https://api.openai.com/v1";
+  assert.equal(openAiCompatBackend(nim), "nim");
+  // A PORT is not a backend identity: baseUrl is operator-configurable, so
+  // Ollama's default port is `generic` until the operator names it, and LM
+  // Studio on that same port is never mistaken for Ollama (PR #3079 r2).
+  assert.equal(openAiCompatBackend(ollama), "generic");
+  assert.equal(openAiCompatBackend(ollama, "ollama"), "ollama");
+  assert.equal(openAiCompatBackend(lmstudio), "generic");
+  assert.equal(openAiCompatBackend(lmstudio, "generic"), "generic");
+  assert.throws(() => openAiCompatBackend(ollama, "vllm"), /must be one of/);
+  assert.equal(openAiCompatBackend(openai), "generic");
+  assert.equal(openAiCompatBackend("not a url"), "generic");
+  // A terminal dot is a legal hostname form and is stripped by the token
+  // resolver, so the classifier must agree with it (PR #3079 review).
+  assert.equal(openAiCompatBackend("https://integrate.api.nvidia.com./v1"), "nim");
+
+  // The study's endpoints keep exactly the fields they had.
+  assert.deepEqual(openAiCompatExtensions(nim, "openai/gpt-oss-20b"), { reasoning_effort: "low" });
+  assert.deepEqual(openAiCompatExtensions(nim, "meta/llama-3.2-11b-vision-instruct"), {
+    reasoning_effort: "low",
+  });
+  assert.deepEqual(openAiCompatExtensions(nim, "qwen/qwen3-8b"), {
+    reasoning_effort: "none",
+    chat_template_kwargs: { enable_thinking: false },
+  });
+  assert.deepEqual(openAiCompatExtensions(ollama, "qwen3.8-27b-64k:latest"), {});
+  assert.deepEqual(openAiCompatExtensions(ollama, "qwen3.8-27b-64k:latest", "ollama"), {
+    reasoning_effort: "none",
+  });
+  // A strict backend gets the generic contract even for a thinking model:
+  // this is the LM Studio case that previously failed every request.
+  assert.deepEqual(openAiCompatExtensions(lmstudio, "qwen3.8-27b-64k"), {});
+  assert.deepEqual(openAiCompatExtensions(openai, "gpt-4.1-mini"), {});
+  // A non-thinking model on a capable backend still gets nothing.
+  assert.deepEqual(openAiCompatExtensions(nim, "mistralai/mistral-small"), {});
+    // The environment override is honored when set.
+    process.env[OPENAI_COMPAT_BACKEND_ENV] = "ollama";
+    assert.equal(openAiCompatBackend(ollama), "ollama");
+    assert.deepEqual(openAiCompatExtensions(ollama, "qwen3.8-27b-64k:latest"), {
+      reasoning_effort: "none",
+    });
+  } finally {
+    if (previousBackend === undefined) delete process.env[OPENAI_COMPAT_BACKEND_ENV];
+    else process.env[OPENAI_COMPAT_BACKEND_ENV] = previousBackend;
   }
 });
 
