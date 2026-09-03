@@ -389,6 +389,32 @@ Best for:
   };
 }
 
+/**
+ * The legacy `memory_search` behind the PUBLIC active-memory arguments
+ * (`{ query, limit, filters }`), for handing to the shared tool-ownership
+ * record: a name keeps the schema it was registered with, so an
+ * implementation taking ownership must speak that schema rather than its own
+ * (`maxResults` / `namespace` / `collection`).
+ */
+export function buildLegacyMemorySearchToolForPublicShape(orchestrator: Orchestrator) {
+  const legacy = buildLegacyMemorySearchTool(orchestrator);
+  return {
+    ...legacy,
+    async execute(toolCallId: string, params: Record<string, unknown>) {
+      const filters =
+        params.filters && typeof params.filters === "object"
+          ? (params.filters as Record<string, unknown>)
+          : undefined;
+      return legacy.execute(toolCallId, {
+        query: params.query,
+        ...(typeof params.limit === "number" ? { maxResults: params.limit } : {}),
+        ...(typeof filters?.namespace === "string" ? { namespace: filters.namespace } : {}),
+        ...(typeof filters?.collection === "string" ? { collection: filters.collection } : {}),
+      });
+    },
+  };
+}
+
 export function registerTools(
   api: ToolApi,
   orchestrator: Orchestrator,

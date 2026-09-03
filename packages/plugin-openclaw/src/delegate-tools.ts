@@ -265,9 +265,32 @@ type DelegateToolOwner = {
 };
 
 /**
+ * The metadata a SHARED name is advertised with, independent of which entry
+ * happens to register it first.
+ *
+ * A name registered on the api keeps its schema for the host's lifetime (there
+ * is no unregister), while ownership of what it EXECUTES can change hands. So
+ * the advertised arguments must be the public active-memory shape that every
+ * implementation understands — otherwise a takeover leaves the model calling
+ * one runtime's schema against another runtime's executor. Callers handing an
+ * implementation to the record therefore accept these public params.
+ */
+const SHARED_TOOL_SHAPES: Record<string, { description: string; parameters: unknown }> = {
+  memory_search: {
+    description: "Search Remnic memories for the OpenClaw active-memory surface.",
+    parameters: MemorySearchInputSchema,
+  },
+  memory_get: {
+    description: "Fetch one Remnic memory for the OpenClaw active-memory surface.",
+    parameters: MemoryGetInputSchema,
+  },
+};
+
+/**
  * Register `tools` on the api under the shared ownership record: each name is
- * registered at most once, behind a wrapper that dispatches through
- * `owner.serve`, and the caller's implementations become what those names run.
+ * registered at most once — with the public shape above, behind a wrapper that
+ * dispatches through `owner.serve` — and the caller's implementations become
+ * what those names run.
  */
 function installSharedTools(
   registerTool: (tool: Record<string, unknown>, opts?: { name?: string }) => void,
@@ -278,9 +301,13 @@ function installSharedTools(
   for (const tool of tools) {
     if (owner.installed.has(tool.name)) continue;
     owner.installed.add(tool.name);
+    const shape = SHARED_TOOL_SHAPES[tool.name];
     registerTool(
       {
         ...tool,
+        ...(shape === undefined
+          ? {}
+          : { description: shape.description, parameters: shape.parameters, inputSchema: shape.parameters }),
         execute: async (...args: never[]) => {
           const serving = owner.serve[tool.name] ?? tool;
           if (!owner.enabled && tool.name !== "memory_search") {

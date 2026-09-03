@@ -8,6 +8,7 @@ import {
   registerEmbeddedTools,
 } from "./delegate-tools.js";
 import type { RemnicCapabilityRuntime } from "./memory-capability-types.js";
+import { MemoryGetInputSchema, MemorySearchInputSchema } from "./openclaw-tools/shapes.js";
 
 type Tool = { name: string; execute: (...args: never[]) => Promise<unknown> };
 
@@ -258,4 +259,40 @@ test("a disabled owner serves the implementation it hands over, not the adapter"
     tools.get("memory_get")!.execute(...(["tc-1", { id: "fact-1" }, undefined, {}] as never[])),
     /memory_get is disabled/,
   );
+});
+
+/**
+ * A name keeps the schema it was registered with (there is no unregister),
+ * while ownership of its executor can change hands. The shared record
+ * therefore advertises the PUBLIC active-memory shape whoever registers first,
+ * so a takeover never leaves the model calling one runtime's schema against
+ * another runtime's implementation.
+ */
+test("shared names advertise the public schema regardless of who registers first", () => {
+  const specs = new Map<string, Record<string, unknown>>();
+  const api = {
+    registerTool(tool: Record<string, unknown>) {
+      specs.set(String(tool.name), tool);
+    },
+  };
+  // A legacy-shaped implementation registers first, advertising its own
+  // arguments (`maxResults`, `collection`).
+  const legacyShaped = {
+    name: "memory_search",
+    description: "legacy search",
+    parameters: { type: "object", properties: { query: {}, maxResults: {}, collection: {} } },
+    execute: async () => ({ content: [{ text: "legacy" }] }),
+  };
+  registerEmbeddedTools(api, { enabled: false, passive: true, tools: [legacyShaped as never] });
+  const spec = specs.get("memory_search");
+  assert.ok(spec);
+  assert.equal(spec.parameters, MemorySearchInputSchema, "the public shape is advertised");
+  assert.equal(spec.inputSchema, MemorySearchInputSchema);
+  assert.notEqual(spec.description, "legacy search", "and the public description with it");
+
+  // The delegate entry can then take the name over and its implementation
+  // speaks exactly what is advertised.
+  registerDelegateTools(api, { ...wiringFor("remnic"), enabled: true, passive: false });
+  assert.equal(specs.size, 2, "memory_get is added, memory_search is not re-registered");
+  assert.equal(specs.get("memory_get")?.parameters, MemoryGetInputSchema);
 });

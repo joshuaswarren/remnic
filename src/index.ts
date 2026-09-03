@@ -17,7 +17,7 @@ import {
   defaultWorkspaceDir,
 } from "@remnic/core/orchestrator";
 import { beginCodexSubscriptionShutdown, getCodexSubscriptionRunnerForOwner, terminateActiveCodexSubscriptionChildren } from "@remnic/core";
-import { buildLegacyMemorySearchTool, registerTools } from "./tools.js";
+import { buildLegacyMemorySearchToolForPublicShape, registerTools } from "./tools.js";
 import { registerLcmTools } from "@remnic/core/lcm/index";
 import { estimateTokens as estimateLcmTokens } from "@remnic/core/lcm/archive";
 import { registerCli } from "@remnic/core/cli";
@@ -5085,7 +5085,7 @@ const pluginDefinition = {
             buildMemorySearchTool(orchestrator, { snippetMaxChars: cfg.openclawToolSnippetMaxChars }),
             buildMemoryGetTool(orchestrator),
           ]
-        : [buildLegacyMemorySearchTool(orchestrator)],
+        : [buildLegacyMemorySearchToolForPublicShape(orchestrator)],
     });
 
     // OpenClaw's command discovery is driven by registerCommand() entries.

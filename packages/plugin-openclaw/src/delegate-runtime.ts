@@ -400,7 +400,7 @@ export function registerDelegateRuntime(
   // Detached observe POSTs, per session (see `agent_end`). A flush for the
   // same session waits behind them so a turn is buffered before it is flushed.
   const observeChains = new Map<string, Promise<void>>();
-  /** Session -> the token owning its deferred flush (see the flush handler). */
+  /** Session -> token owning its deferred flush (see the flush handler). */
   const followUpFlushSessions = new Map<string, object>();
   if (promptInjectionEnabled) {
     /**
@@ -704,18 +704,16 @@ export function registerDelegateRuntime(
         ]);
         clearTimeout(timer);
         // One follow-up per session, draining the whole queue — the ended
-        // generation's late turns AND anything observed after the hook
-        // returned, since the daemon buffers per session and abandoning the
-        // follow-up would strand the ended generation until a later lifecycle
-        // event that may never come. Flushing a newer turn early is safe;
-        // losing an ended session's turns is not. It flushes off a
-        // scope-neutral event, so namespaces come from the session's bindings
-        // rather than this event's captured (possibly superseded) metadata.
+        // generation's late turns AND anything observed after the hook, since
+        // the daemon buffers per session and abandoning the follow-up would
+        // strand the ended generation until a lifecycle event that may never
+        // come. Flushing a newer turn early is safe; losing an ended session's
+        // turns is not. It flushes off a scope-neutral event, so namespaces
+        // come from the bindings, not this event's captured metadata.
         if (!drained && !followUpFlushSessions.has(sessionKey)) {
-          // Ownership is a TOKEN, not mere presence: this follow-up releases
-          // the marker before its flush (below), that flush can install a
-          // successor, and an unconditional clear afterwards would let the next
-          // lifecycle event stack a second, overlapping drain on the session.
+              // Ownership is a TOKEN, not mere presence: the release below precedes
+          // the flush, that flush can install a successor, and an
+          // unconditional clear would stack a second overlapping drain.
           const followUp = {};
           followUpFlushSessions.set(sessionKey, followUp);
           const releaseIfOwner = (): void => {
@@ -734,8 +732,8 @@ export function registerDelegateRuntime(
                 await queued;
               }
               // Released BEFORE the flush: when the queue outlasted those
-              // rounds, that flush's own drain must be free to chain the NEXT
-              // follow-up, or the remainder stays buffered past `session_end`.
+              // rounds, that flush's drain must be free to chain the NEXT
+              // follow-up or the remainder stays buffered past `session_end`.
               // Each successor pays a full drain window, so a busy session is
               // rate-limited rather than spun on.
               releaseIfOwner();
@@ -795,7 +793,10 @@ export function registerDelegateRuntime(
             outcome.value.flushed === true,
         );
       };
-      if (namespaces.length <= 1 || (await supportsBatchFlush(remainingTimeout()))) {
+      // The probe is an OPTIMIZATION (one batched request instead of N), so it
+      // gets at most half of what is left: a cold `/engram/v1/capabilities`
+      // stalling out must not hand the fallback flush a spent deadline.
+      if (namespaces.length <= 1 || (await supportsBatchFlush(Math.max(1, Math.floor(remainingBudget() / 2))))) {
         if (namespaces.length <= 1) {
           const response = await flushNamespace(namespaces[0]);
           return response !== null && response.flushed === true;

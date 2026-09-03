@@ -1077,6 +1077,47 @@ test("a second lifecycle event does not stack a duplicate follow-up drain", asyn
   }
 });
 
+test("a stalling batch-support probe still leaves the fallback flush usable time", async () => {
+  // The `/engram/v1/capabilities` probe is an optimization: one batched flush
+  // instead of one per namespace. A cold probe that stalls to its timeout must
+  // not spend the whole lifecycle deadline, or the individual fallback flush
+  // starts with nothing left and the ended session's turns stay buffered.
+  const stub = await startDaemonStub(async (pathname) => {
+    if (pathname === "/engram/v1/capabilities") return new Promise<Record<string, unknown>>(() => {});
+    if (pathname === "/engram/v1/lcm/compaction/flush") return { flushed: true };
+    return { accepted: true };
+  }, { batchFlush: false });
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(api, optionsFor(stub.port, { flushTimeoutMs: 1_000 }));
+    const sessionKey = "stalling-probe-session";
+    // Two remembered namespaces, so the batch probe runs at all.
+    for (const namespace of ["team-first", "team-second"]) {
+      await invoke(
+        api,
+        "agent_end",
+        {
+          success: true,
+          messages: [
+            { role: "user", content: `capture the ${namespace} turn of this session` },
+            { role: "assistant", content: "the turn is captured" },
+          ],
+        },
+        { sessionKey, runtime: { agent: { session: { namespace } } } },
+      );
+    }
+    assert.equal(
+      await invoke(api, "session_end", { sessionKey }),
+      true,
+      "the per-namespace fallback flush still had budget after the probe stalled",
+    );
+    const flushes = stub.calls.filter((call) => call.pathname === "/engram/v1/lcm/compaction/flush");
+    assert.equal(flushes.length, 2, "one flush per remembered namespace");
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate batches rebound namespace flushes within one hook deadline", async () => {
   const pendingFlushes: Array<() => void> = [];
   const stub = await startDaemonStub((pathname) => {
