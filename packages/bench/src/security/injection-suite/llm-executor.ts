@@ -250,6 +250,53 @@ function readToolCalls(value: unknown): InjectionSuiteToolCall[] {
   });
 }
 
+/** Backends whose non-generic request fields are known-accepted, keyed off the endpoint. */
+export type OpenAiCompatBackend = "nim" | "ollama" | "generic";
+
+export function openAiCompatBackend(baseUrl: string): OpenAiCompatBackend {
+  let host: string;
+  let port: string;
+  try {
+    const parsed = new URL(trimTrailingSlashes(baseUrl));
+    host = parsed.hostname.toLowerCase();
+    port = parsed.port;
+  } catch {
+    return "generic";
+  }
+  if (host === "integrate.api.nvidia.com" || host.endsWith(".api.nvidia.com")) return "nim";
+  // Ollama's OpenAI-compatible surface: it honors `reasoning_effort` and
+  // silently drops `chat_template_kwargs` (see local-llm.ts, issue #1996).
+  if (port === "11434") return "ollama";
+  return "generic";
+}
+
+/**
+ * Request fields beyond the generic Chat Completions contract, for one
+ * (endpoint, model) pair. `reasoning_effort` needs a backend that reads it
+ * AND a model that has reasoning to suppress; `chat_template_kwargs` is a
+ * vLLM/NIM extension whose `enable_thinking` only exists in some templates.
+ */
+export function openAiCompatExtensions(
+  baseUrl: string,
+  model: string,
+): Record<string, unknown> {
+  const backend = openAiCompatBackend(baseUrl);
+  if (backend === "generic") return {};
+  const extensions: Record<string, unknown> = {};
+  const lowEffortModel =
+    model.startsWith("openai/gpt-oss-") || model === "meta/llama-3.2-11b-vision-instruct";
+  const thinkingFamily = /qwen|nemotron|deepseek/i.test(model);
+  if (lowEffortModel) extensions.reasoning_effort = "low";
+  else if (thinkingFamily) extensions.reasoning_effort = "none";
+  // The NVIDIA Llama 3.2 endpoint rejects this newer template option, and
+  // Ollama drops it, so only NIM models whose template defines
+  // `enable_thinking` receive it.
+  if (backend === "nim" && /qwen|nemotron/i.test(model)) {
+    extensions.chat_template_kwargs = { enable_thinking: false };
+  }
+  return extensions;
+}
+
 export async function completeChatResult(
   options: InjectionSuiteLlmOptions,
   prompt: string | readonly InjectionSuiteChatMessage[],
@@ -302,21 +349,14 @@ export async function completeChatResult(
         temperature: 0,
         ...(options.seed !== undefined ? { seed: options.seed } : {}),
         max_tokens: 256,
-        // `reasoning_effort` is an OpenAI reasoning-model parameter that NIM
-        // and Ollama accept; strict generic endpoints (LM Studio) reject
-        // unknown fields. Send it only to the model families that use it.
-        ...(model.startsWith("openai/gpt-oss-") || model === "meta/llama-3.2-11b-vision-instruct"
-          ? { reasoning_effort: "low" }
-          : /qwen|nemotron|deepseek/i.test(model)
-            ? { reasoning_effort: "none" }
-            : {}),
-        // `chat_template_kwargs` is a vLLM/NIM extension, not part of the
-        // Chat Completions contract; strict endpoints (api.openai.com, the
-        // NVIDIA Llama 3.2 endpoint) reject it with HTTP 400. Send it only
-        // to models whose chat template defines `enable_thinking`.
-        ...(/qwen|nemotron/i.test(model)
-          ? { chat_template_kwargs: { enable_thinking: false } }
-          : {}),
+        // Non-generic request fields are gated by BOTH the backend and the
+        // model family (#3078): an unknown OpenAI-compatible server (LM
+        // Studio, api.openai.com) rejects unknown fields with HTTP 400, and
+        // the bench runner would classify that as a host fault and retry
+        // forever. Unknown backends therefore receive the generic contract
+        // only. Gating is derived from the endpoint, not probed, so a frozen
+        // run's request shape is reproducible from `run.json`.
+        ...openAiCompatExtensions(base, model),
         ...(tools
           ? {
               tools,

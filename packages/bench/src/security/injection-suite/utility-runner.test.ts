@@ -19,11 +19,12 @@ import {
   createInjectionSuiteBehaviorResponder,
   UTILITY_CONTRACT_FILE,
   assertUtilityContract,
+  datasetDigest,
   runInjectionSuiteUtility,
   isRetryableUtilityFailure,
   providerConfig,
 } from "./utility-runner.js";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { DEFAULT_OLLAMA_MODEL } from "./llm-executor.js";
 
 test("only transport execution failures are retried", () => {
@@ -242,4 +243,37 @@ test("a main utility run is refused without the frozen identity, before any chec
     /--model-digest/,
   );
   assert.equal(existsSync(path.join(dir, "out")), false, "the gate runs before the output directory exists");
+});
+
+test("the utility contract binds to dataset CONTENTS, not just the directory path", async () => {
+  const previous = process.env.REMNIC_OPENAI_COMPAT_API_KEY;
+  process.env.REMNIC_OPENAI_COMPAT_API_KEY = "fixture-key";
+  const dir = mkdtempSync(path.join(os.tmpdir(), "h5-util-dataset-"));
+  const dataset = mkdtempSync(path.join(os.tmpdir(), "h5-locomo-"));
+  try {
+    writeFileSync(path.join(dataset, "questions.jsonl"), '{"id":"q1"}\n');
+    const input = { ...FIXTURE_INPUT, outputDir: dir, locomoDatasetDir: dataset };
+    const before = datasetDigest(dataset);
+    await assertUtilityContract(input, ["locomo"]);
+    await assertUtilityContract(input, ["locomo"]);
+    // Editing the frozen dataset in place changes the digest, so the
+    // partially scored checkpoints are refused instead of mixed (#3078).
+    writeFileSync(path.join(dataset, "questions.jsonl"), '{"id":"q1","edited":true}\n');
+    assert.notEqual(datasetDigest(dataset), before);
+    await assert.rejects(
+      assertUtilityContract(input, ["locomo"]),
+      /different utility contract/,
+    );
+    // Adding a file counts too, and the digest is order-independent.
+    writeFileSync(path.join(dataset, "questions.jsonl"), '{"id":"q1"}\n');
+    assert.equal(datasetDigest(dataset), before, "restoring the bytes restores the digest");
+    writeFileSync(path.join(dataset, "extra.jsonl"), '{"id":"q2"}\n');
+    await assert.rejects(assertUtilityContract(input, ["locomo"]), /different utility contract/);
+    // A benchmark that is not selected contributes no digest, so an
+    // unrelated dataset directory cannot invalidate the contract.
+    assert.equal(datasetDigest(undefined), null);
+  } finally {
+    if (previous === undefined) delete process.env.REMNIC_OPENAI_COMPAT_API_KEY;
+    else process.env.REMNIC_OPENAI_COMPAT_API_KEY = previous;
+  }
 });

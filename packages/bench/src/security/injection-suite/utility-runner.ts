@@ -435,6 +435,36 @@ async function runDriftUtility(
 export const UTILITY_CONTRACT_FILE = "utility-contract.json";
 
 /** What a utility checkpoint directory was produced under; a mismatch refuses to reuse it. */
+/**
+ * Content digest of a dataset directory: every regular file's repo-relative
+ * path and sha256, folded in sorted order. A dataset edited in place after a
+ * partial run therefore changes the contract and refuses reuse (#3078).
+ */
+export function datasetDigest(directory: string | undefined): string | null {
+  if (!directory) return null;
+  const root = path.resolve(directory);
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      const full = path.join(dir, entry.name);
+      // Symlinks are not followed: a link could point outside the frozen
+      // dataset and make the digest depend on unrelated state.
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) files.push(full);
+    }
+  };
+  walk(root);
+  const digest = createHash("sha256");
+  for (const file of files) {
+    digest.update(path.relative(root, file).split(path.sep).join("/"));
+    digest.update("\0");
+    digest.update(createHash("sha256").update(readFileSync(file)).digest("hex"));
+    digest.update("\0");
+  }
+  return `sha256:${digest.digest("hex")}:${files.length}`;
+}
+
 export function utilityContract(
   input: InjectionSuiteUtilityRunInput,
   benchmarks: readonly UtilityBenchmark[],
@@ -452,7 +482,12 @@ export function utilityContract(
     limit: input.limit ?? null,
     runKind: input.runKind ?? null,
     locomoDatasetDir: input.locomoDatasetDir ?? null,
+    locomoDatasetDigest: benchmarks.includes("locomo") ? datasetDigest(input.locomoDatasetDir) : null,
     longmemevalDatasetDir: input.longmemevalDatasetDir ?? null,
+    longmemevalDatasetDigest: benchmarks.includes("longmemeval")
+      ? datasetDigest(input.longmemevalDatasetDir)
+      : null,
+    driftDatasetDigest: benchmarks.includes("drift-gen") ? datasetDigest(DRIFT_ROOT) : null,
   };
 }
 

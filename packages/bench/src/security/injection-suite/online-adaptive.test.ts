@@ -1104,6 +1104,40 @@ test("analyzer treats a planned chain that stops before the final k as incomplet
   }
 });
 
+test("a recorded --limit makes a complete-looking smoke run non-estimable", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-limited-"));
+  try {
+    // The pathological shape: with K=3, `--limit 4` freezes ONE whole
+    // k0..k3 chain, so no chain is truncated, nothing is missing, and every
+    // planned cell ran. Only the recorded limit reveals that the design is
+    // a subset of the registered grid (#3078).
+    const planned = [
+      onlineIdentity("minja-1", 0),
+      onlineIdentity("minja-1", 1),
+      onlineIdentity("minja-1", 2),
+      onlineIdentity("minja-1", 3),
+    ];
+    await writeOnlineFixture(tmp, planned, {
+      corpusFor: planned.slice(1),
+      episodesFor: planned,
+      attackerIterations: 3,
+    });
+    const run = JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) as Record<string, unknown>;
+    const unlimited = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(unlimited.rowAccounting?.truncatedChains, 0, "the frozen chain is complete");
+    assert.equal(unlimited.rowAccounting?.missingPlannedRows, 0);
+    assert.equal(unlimited.rowAccounting?.limitedDesign, false);
+    assert.equal(unlimited.decision.estimable, true, "without a limit this shape is estimable");
+    await writeFile(path.join(tmp, "run.json"), `${JSON.stringify({ ...run, limit: 4 })}\n`, "utf8");
+    const limited = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(limited.rowAccounting?.limitedDesign, true);
+    assert.equal(limited.decision.estimable, false);
+    assert.equal(limited.decision.fencingSupported, false);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("analyzer refuses an online design that does not match the frozen hash", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "online-tampered-design-"));
   try {
@@ -1227,6 +1261,7 @@ test("online analyzer drops episodes outside the frozen design and refuses drift
     const limited = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(limited.decision.estimable, false);
     assert.ok((limited.rowAccounting?.truncatedChains ?? 0) > 0);
+    assert.equal(limited.rowAccounting?.limitedDesign, true);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

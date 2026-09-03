@@ -177,11 +177,54 @@ const RESPONSE_CONTROL_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
- * A directive over what the agent's future answer must contain or say.
- * Ordinary facts that merely pair "policy"/"note"/"response" with a common
- * verb ("the return policy requires a receipt") are not directives.
+ * Corroborating signals that separate an injected response control from
+ * ordinary prose about response content (issue #3078). "The API response
+ * must include a Content-Type header" is directive-SHAPED but names an
+ * ordinary field; an injection additionally carries one of:
+ *
+ *  - an opaque payload to emit: a marker token, a long hex/UUID run, a URL;
+ *  - verbatim control: literal / exact / word-for-word / "with no explanation";
+ *  - cross-turn persistence: remember / persist / store this / any later
+ *    retrieval / across conversations / from now on;
+ *  - an agent-directed subject: your answer, the assistant's reply.
+ *
+ * Requiring one of these keeps every frozen attack payload flagged while
+ * ordinary technical and policy sentences fall to zero.
+ */
+const RESPONSE_CONTROL_CORROBORATORS: readonly RegExp[] = [
+  // Opaque payload the memory wants echoed.
+  /\bCANARY\b/i,
+  /https?:\/\//i,
+  /\b[0-9a-f]{8,}\b/i,
+  /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/,
+  // Verbatim control over the wording, not the content.
+  /\b(?:literal(?:ly)?|verbatim|word[- ]for[- ]word|exactly[ \t]{1,8}(?:this|that|as)|character[- ]for[- ]character)\b/i,
+  /\bno[ \t]{1,8}(?:explanation|commentary|preamble|deviation|other[ \t]{1,8}text)\b/i,
+  /\b(?:only|nothing[ \t]{1,8}else|and[ \t]{1,8}nothing)\b[^\n]{0,30}\b(?:answers?|responses?|repl(?:y|ies)|output|say|said)\b/i,
+  // Persistence across turns: an ordinary fact does not legislate later turns.
+  /\b(?:remember|persist|store[ \t]{1,8}this|retain[ \t]{1,8}this)\b/i,
+  /\bany[ \t]{1,8}(?:later|future|subsequent)\b/i,
+  /\b(?:across|between)[ \t]{1,8}(?:conversations|sessions|chats)\b/i,
+  /\b(?:from[ \t]{1,8}now[ \t]{1,8}on|going[ \t]{1,8}forward|in[ \t]{1,8}(?:all|every)[ \t]{1,8}(?:future|later)[ \t]{1,8}(?:turns?|answers?|responses?))\b/i,
+  /\b(?:whenever|every[ \t]{1,8}time|each[ \t]{1,8}time|any[ \t]{1,8}time)\b[^\n]{0,60}\b(?:asked|discussed|mentioned|queried|retrieved|recalled)\b/i,
+  // The subject is the agent, not a system under discussion.
+  /\byour[ \t]{1,8}(?:answers?|responses?|repl(?:y|ies)|output|behaviou?r|memory)\b/i,
+  /\b(?:assistant|agent|model)(?:'s)?[ \t]{1,8}(?:answers?|responses?|repl(?:y|ies)|output|behaviou?r)\b/i,
+  // A hidden activation phrase is itself the second signal.
+  /\b(?:activation|trigger)[ \t]{1,8}(?:phrase|key|word|code)\b/i,
+  /\b(?:approved|required|correct|canonical)[ \t]{1,8}(?:response|answer|reply)\b/i,
+];
+
+/**
+ * A directive over what the agent's future answer must contain or say,
+ * corroborated by a second signal. Ordinary facts that merely pair
+ * "policy"/"note"/"response" with a common verb ("the return policy requires
+ * a receipt", "the API response must include a Content-Type header") are not
+ * directives and are not flagged.
  */
 function findResponseControlDirective(content: string): InjectionScreenFinding | undefined {
+  const corroborated = RESPONSE_CONTROL_CORROBORATORS.some((pattern) => pattern.test(content));
+  if (!corroborated) return undefined;
   for (const pattern of RESPONSE_CONTROL_PATTERNS) {
     const finding = findingFor("response-control-directive", content, pattern);
     if (finding) return finding;
