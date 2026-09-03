@@ -19,6 +19,7 @@ import {
 import {
   buildRecallPrompt,
   completeChat,
+  OPENAI_COMPAT_BACKEND_ENV,
   openAiCompatBackend,
   openAiCompatExtensions,
   InjectionSuiteHostFault,
@@ -973,6 +974,11 @@ test("openai-compat sends chat_template_kwargs only to models whose template def
 });
 
 test("non-generic request fields are gated by backend AND model family", () => {
+  // URL inference must not be influenced by an operator override that
+  // happens to be exported in the developer's environment (PR #3079 r3).
+  const previousBackend = process.env[OPENAI_COMPAT_BACKEND_ENV];
+  delete process.env[OPENAI_COMPAT_BACKEND_ENV];
+  try {
   // NIM reads both extensions; Ollama's /v1 reads reasoning_effort and drops
   // chat_template_kwargs; an unknown OpenAI-compatible server (LM Studio,
   // api.openai.com) rejects unknown fields with HTTP 400 and gets neither.
@@ -1014,6 +1020,16 @@ test("non-generic request fields are gated by backend AND model family", () => {
   assert.deepEqual(openAiCompatExtensions(openai, "gpt-4.1-mini"), {});
   // A non-thinking model on a capable backend still gets nothing.
   assert.deepEqual(openAiCompatExtensions(nim, "mistralai/mistral-small"), {});
+    // The environment override is honored when set.
+    process.env[OPENAI_COMPAT_BACKEND_ENV] = "ollama";
+    assert.equal(openAiCompatBackend(ollama), "ollama");
+    assert.deepEqual(openAiCompatExtensions(ollama, "qwen3.8-27b-64k:latest"), {
+      reasoning_effort: "none",
+    });
+  } finally {
+    if (previousBackend === undefined) delete process.env[OPENAI_COMPAT_BACKEND_ENV];
+    else process.env[OPENAI_COMPAT_BACKEND_ENV] = previousBackend;
+  }
 });
 
 test("ollama omits Authorization even when OPENAI_API_KEY is set", async () => {

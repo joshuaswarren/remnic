@@ -231,6 +231,26 @@ const ORDINARY_CAPS_TOKENS: ReadonlySet<string> = new Set([
   "TLS", "SSL", "SSH", "DNS", "TCP", "UDP", "IP", "CDN", "CORS", "CSRF", "JWT", "OAUTH",
   "REST", "GRPC", "RPC", "SDK", "CLI", "GUI", "OK", "YES", "NO", "TODO", "FAQ", "PR",
   "CI", "CD", "QA", "UX", "UI", "MIT", "GPL", "EU", "US", "AM", "PM", "FYI", "ETA",
+  // Crypto, encoding, and spec vocabulary (trailing digits are stripped
+  // before this lookup, so SHA256/SHA-256/UTF8/ISO8601/RFC3339 all reduce).
+  "SHA", "MD", "HMAC", "AES", "RSA", "ECDSA", "PBKDF", "BCRYPT", "SCRYPT", "ARGON",
+  "UTF", "ASCII", "BASE", "HEX", "CRC", "GZIP", "ZSTD", "RFC", "ANSI", "IEEE",
+  "SMTP", "IMAP", "LDAP", "SAML", "OIDC", "SSO", "MFA", "TOTP", "ACL", "RBAC",
+  "AWS", "GCP", "GPU", "CPU", "RAM", "SSD", "OS", "VM", "K8S", "NPM", "SEMVER",
+  "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE",
+]);
+
+/**
+ * Capitalized words that open ordinary templates ("replies must begin with
+ * Dear"), so a leading capital alone is not a marker (PR #3079 r3).
+ */
+const ORDINARY_CAPITALIZED_WORDS: ReadonlySet<string> = new Set([
+  "Dear", "Hello", "Hi", "Greetings", "Please", "Thanks", "Thank", "Regards",
+  "Sincerely", "Yes", "No", "True", "False", "Null", "None", "Error", "Warning",
+  "Note", "Summary", "Subject", "Re", "Fwd", "Attention", "Notice", "Draft",
+  "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+  "January", "February", "March", "April", "May", "June", "July", "August",
+  "September", "October", "November", "December",
 ]);
 
 /**
@@ -241,20 +261,50 @@ const ORDINARY_CAPS_TOKENS: ReadonlySet<string> = new Set([
  * excluded, so technical prose does not match (PR #3079 review).
  */
 const OPAQUE_EMISSION_TARGET =
-  /\b(?:begin|start|end|include|contain|say|state|output|return|emit|produce|reply|respond|answer|use)\b[ \t]{1,8}(?:(?:with|by|using)[ \t]{1,8})?(?:"([^"\n]{2,40})"|'([^'\n]{2,40})'|([A-Z][A-Z0-9_-]{1,39})\b)/;
+  /\b(?:begin|start|end|include|contain|say|state|output|return|emit|produce|reply|respond|answer)\b[ \t]{1,8}(?:(?:with|by)[ \t]{1,8})?(?:"([^"\n]{2,40})"|'([^'\n]{2,40})'|([A-Z][A-Za-z0-9_-]{1,39})\b)/;
 
-function hasOpaqueEmissionTarget(content: string): boolean {
-  const match = OPAQUE_EMISSION_TARGET.exec(content);
+/** Strip trailing digits so SHA256, UTF8, and ISO8601 reduce to their acronym. */
+function reduceToken(token: string): string {
+  return token.replace(/[0-9]+$/, "");
+}
+
+/** Is one emission-slot token an ordinary described value rather than a payload? */
+function isOrdinaryToken(token: string): boolean {
+  const segments = token.split(/[-_]+/).filter((segment) => segment.length > 0);
+  if (segments.length === 0) return true;
+  // A hyphenated Title-Case name is a field or header ("Content-Type",
+  // "Cache-Control"), not a marker: markers are all-caps or carry digits.
+  if (segments.length > 1 && segments.every((segment) => /^[A-Z][a-z]+$/.test(segment))) return true;
+  return segments.every((segment) => {
+    if (/^[0-9]+$/.test(segment)) return true;
+    const reduced = reduceToken(segment);
+    if (ORDINARY_CAPS_TOKENS.has(segment) || ORDINARY_CAPS_TOKENS.has(reduced)) return true;
+    return ORDINARY_CAPITALIZED_WORDS.has(segment);
+  });
+}
+
+/**
+ * An opaque token the memory wants echoed verbatim, in the emission slot of
+ * a directive IN THE SAME SENTENCE: "responses must begin with PWNED". A
+ * determiner ("with THE ticket number", "include A Content-Type header")
+ * means the object is a described value; ordinary acronyms, spec vocabulary,
+ * and template openers are excluded, quoted or not, so technical prose does
+ * not match (PR #3079 r2/r3).
+ */
+function hasOpaqueEmissionTarget(sentence: string): boolean {
+  const match = OPAQUE_EMISSION_TARGET.exec(sentence);
   if (!match) return false;
   const quoted = match[1] ?? match[2];
-  if (quoted !== undefined) return true;
+  if (quoted !== undefined) {
+    const inner = quoted.trim();
+    // A quoted multi-word payload is opaque; a single quoted technical value
+    // ("OK", "Content-Type") is the same described value as unquoted.
+    if (!/\s/.test(inner)) return !isOrdinaryToken(inner);
+    return true;
+  }
   const token = match[3];
   if (token === undefined) return false;
-  // A hyphenated token is opaque only if some segment is not an ordinary
-  // acronym or number: `HTTP-200` is a described value, `ACK-7` is a marker.
-  const segments = token.split(/[-_]+/).filter((segment) => segment.length > 0);
-  if (segments.length === 0) return false;
-  return segments.some((segment) => !ORDINARY_CAPS_TOKENS.has(segment) && !/^[0-9]+$/.test(segment));
+  return !isOrdinaryToken(token);
 }
 
 /**
@@ -264,14 +314,26 @@ function hasOpaqueEmissionTarget(content: string): boolean {
  * a receipt", "the API response must include a Content-Type header") are not
  * directives and are not flagged.
  */
-function findResponseControlDirective(content: string): InjectionScreenFinding | undefined {
-  const corroborated =
-    RESPONSE_CONTROL_CORROBORATORS.some((pattern) => pattern.test(content)) ||
-    hasOpaqueEmissionTarget(content);
-  if (!corroborated) return undefined;
-  for (const pattern of RESPONSE_CONTROL_PATTERNS) {
-    const finding = findingFor("response-control-directive", content, pattern);
-    if (finding) return finding;
+function findResponseControlDirective(
+  content: string,
+  profile: InjectionScreenProfile = "default",
+): InjectionScreenFinding | undefined {
+  const directive = RESPONSE_CONTROL_PATTERNS.map((pattern) =>
+    findingFor("response-control-directive", content, pattern),
+  ).find((finding) => finding !== undefined);
+  if (!directive) return undefined;
+  // `hardened` is the profile an operator opts into for strict security: it
+  // keeps the pre-corroboration behavior, so no directive shape can be
+  // talked past the gate there. `default` (custom mode) requires a second
+  // signal, which is what keeps ordinary response prose out of quarantine.
+  if (profile === "hardened") return directive;
+  if (RESPONSE_CONTROL_CORROBORATORS.some((pattern) => pattern.test(content))) return directive;
+  // The opaque-target cue is local: it must appear in the same sentence as a
+  // directive, or an unrelated later sentence ("use ACK-7 as the fixture
+  // identifier") would corroborate an ordinary one (PR #3079 r3).
+  for (const sentence of content.split(/[.!?\n]+/)) {
+    if (!RESPONSE_CONTROL_PATTERNS.some((pattern) => pattern.test(sentence))) continue;
+    if (hasOpaqueEmissionTarget(sentence)) return directive;
   }
   return undefined;
 }
@@ -299,7 +361,9 @@ function findAuthorityEscalation(content: string): InjectionScreenFinding | unde
 /** Screen a candidate fact without model calls, I/O, or mutable state. */
 export function screenCandidateFact(content: string, profile: InjectionScreenProfile = "default"): InjectionScreenResult {
   const findings: InjectionScreenFinding[] = [];
-  const rules: Array<[string, (value: string) => InjectionScreenFinding | undefined]> = [
+  const rules: Array<
+    [string, (value: string, screenProfile: InjectionScreenProfile) => InjectionScreenFinding | undefined]
+  > = [
     ["imperative-to-agent", findImperativeToAgent],
     ["tool-invocation-syntax", findToolInvocationSyntax],
     ["encoded-blob", findEncodedBlob],
@@ -310,7 +374,7 @@ export function screenCandidateFact(content: string, profile: InjectionScreenPro
     ["tool-routing-directive", findToolRoutingDirective],
   ];
   for (const [rule, find] of rules) {
-    const finding = find(content);
+    const finding = find(content, profile);
     if (finding) findings.push({ rule, excerpt: finding.excerpt });
   }
   const score = findings.reduce((sum, finding) => sum + ruleWeight(finding.rule, profile), 0);
