@@ -311,7 +311,7 @@ function splitSentencesOutsideQuotes(content: string): string[] {
     // the unit: a prose question or exclamation mark precedes a capital, a
     // quote, or the end -- never a lowercase continuation (post-cap r5).
     const terminalUrlPunctuation = (char === "?" || char === "!")
-      && /\s+[a-z]/.test(content.slice(index + 1, index + 3));
+      && /\s{1,4}[a-z]/.test(content.slice(index + 1, index + 6));
     const newlineContinues = char === "\n" && /[:\-][ \t]*$/.test(content.slice(Math.max(0, index - 4), index));
     const endsUnit = !insideToken && !terminalUrlPunctuation && !newlineContinues
       && (char === "." || char === "!" || char === "?" || char === "\n");
