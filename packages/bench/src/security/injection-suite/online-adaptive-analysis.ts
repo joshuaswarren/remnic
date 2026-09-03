@@ -637,8 +637,9 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   // frozen design) is itself a tamper signal: it marks the run limited
   // rather than skipping verification, which a cleared `limit` could
   // otherwise ride (post-cap r5).
-  const unslicedPresent = metadata.unslicedPlannedRows !== undefined
-    && metadata.unslicedPlannedRows !== null;
+  // An own-property whose value is null is PRESENT and invalid: a cleared
+  // limit plus an explicit null must not read as absent (post-cap r6).
+  const unslicedPresent = metadata.unslicedPlannedRows !== undefined;
   const recordedUnsliced = unslicedPresent
     && Number.isInteger(metadata.unslicedPlannedRows)
     && (metadata.unslicedPlannedRows ?? 0) >= design.rows.length
@@ -657,12 +658,16 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
     // The runner hashes the digest as "" when absent but persists the
     // "unverified" sentinel; normalize the same way before recomputing, and
     // fold the attacker endpoint only when it was persisted.
-    const expectedHash = injectionSuiteResumeContractHashForOnline({
-      ...metadata,
-      attackerModelDigest:
-        metadata.attackerModelDigest === "unverified" ? "" : metadata.attackerModelDigest,
-    });
-    if (expectedHash !== metadata.resumeContractHash) {
+    // The runner hashed the digest it was given: "" when absent, the literal
+    // "unverified" when explicitly supplied. Both forms are accepted, since
+    // the artifact cannot distinguish them (post-cap r6).
+    const digest = metadata.attackerModelDigest ?? "";
+    const matches = digest === "unverified"
+      ? [digest, ""]
+      : [digest];
+    if (!matches.some((candidate) =>
+      injectionSuiteResumeContractHashForOnline({ ...metadata, attackerModelDigest: candidate })
+        === metadata.resumeContractHash)) {
       unsliced = undefined;
       unslicedUnverifiable = true;
     }

@@ -447,6 +447,23 @@ test("a runner-created no-op limit run analyzes as estimable (round trip, PR #30
     const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
     assert.equal(stats.rowAccounting?.limitedDesign, false, "the runner's own hash must verify in the analyzer");
     assert.equal(stats.decision.estimable, true);
+    // The same round trip with an EXPLICIT "unverified" attacker digest: the
+    // analyzer accepts both hashed forms of the sentinel (post-cap r6).
+    const tmp2 = await mkdtemp(path.join(os.tmpdir(), "online-roundtrip-unverified-"));
+    try {
+      await runOnlineAdaptiveWithFake({
+        outputDir: tmp2,
+        attackerResponder: responder,
+        defendedResponder: responder,
+        limit: 8,
+        attackerModelDigest: "unverified",
+      });
+      const stats2 = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp2);
+      assert.equal(stats2.rowAccounting?.limitedDesign, false, "an explicit unverified digest still verifies");
+      assert.equal(stats2.decision.estimable, true);
+    } finally {
+      await rm(tmp2, { recursive: true, force: true });
+    }
     // Editing the limit to null after the fact must not read as complete.
     const run = JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) as Record<string, unknown>;
     await writeFile(path.join(tmp, "run.json"), `${JSON.stringify({ ...run, limit: null })}\n`, "utf8");
@@ -674,6 +691,7 @@ interface RunnerE2EConfig {
   retryAmbiguous?: boolean;
   omitDefendedFlags?: boolean;
   limit?: number;
+  attackerModelDigest?: string;
 }
 
 async function runOnlineAdaptiveWithFake(
@@ -712,6 +730,7 @@ async function runOnlineAdaptiveWithFake(
         attackerModel: "fixture-attacker",
         attackerIterations: 1,
         ...(config.limit === undefined ? {} : { limit: config.limit }),
+        ...(config.attackerModelDigest === undefined ? {} : { attackerModelDigest: config.attackerModelDigest }),
         attackerPromptPath,
         ...(config.resume ? { resume: true } : {}),
         ...(config.retryAmbiguous ? { retryAmbiguous: true } : {}),
@@ -1242,7 +1261,7 @@ test("a hand-edited unsliced count is distrusted via the resume-contract hash (P
     // The same hole with the limit CLEARED: an implausible PRESENT count
     // (0, a string, below the design) plus limit:null must still mark the
     // run limited -- presence alone is a tamper signal (post-cap r5).
-    for (const bad of [0, "8", 3]) {
+    for (const bad of [0, "8", 3, null]) {
       await writeFile(
         path.join(tmp, "run.json"),
         `${JSON.stringify({ ...run, limit: null, unslicedPlannedRows: bad })}\n`,
