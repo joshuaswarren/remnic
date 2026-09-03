@@ -1,6 +1,6 @@
 {
   "name": "@remnic/import-okf",
-  "version": "9.69.61",
+  "version": "9.69.62",
   "description": "Import an OKF v0.1 knowledge bundle into Remnic memories",
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +26,7 @@
     "provenance": true
   },
   "peerDependencies": {
-    "@remnic/core": "^9.69.61"
+    "@remnic/core": "^9.69.62"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",
