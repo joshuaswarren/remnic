@@ -1215,8 +1215,18 @@ test("online analyzer drops episodes outside the frozen design and refuses drift
     const run = JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) as { variantsPerFamily: number; attackerIterations: number };
     await writeFile(path.join(tmp, "run.json"), `${JSON.stringify({ ...run, variantsPerFamily: 1 })}\n`, "utf8");
     await assert.rejects(analyzeInjectionSuiteOnlineAdaptiveRun(tmp), /variantsPerFamily/);
-    await writeFile(path.join(tmp, "run.json"), `${JSON.stringify({ ...run, attackerIterations: 3 })}\n`, "utf8");
+    await writeFile(path.join(tmp, "run.json"), `${JSON.stringify({ ...run, attackerIterations: 0 })}\n`, "utf8");
     await assert.rejects(analyzeInjectionSuiteOnlineAdaptiveRun(tmp), /attackerIterations/);
+    // A --limit cut leaves a smaller design than run.json declares; that is
+    // reported as incomplete, never thrown (dry-run artifacts stay readable).
+    await writeFile(
+      path.join(tmp, "run.json"),
+      `${JSON.stringify({ ...run, variantsPerFamily: 100, attackerIterations: 3, limit: 2 })}\n`,
+      "utf8",
+    );
+    const limited = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(limited.decision.estimable, false);
+    assert.ok((limited.rowAccounting?.truncatedChains ?? 0) > 0);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

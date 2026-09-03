@@ -505,14 +505,19 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
     designVariantsPerFamily = Math.max(designVariantsPerFamily, online.index);
     designIterations = Math.max(designIterations, online.iteration);
   }
-  if (designVariantsPerFamily !== metadata.variantsPerFamily) {
+  // A `--limit` cut freezes fewer cells than the configured grid, so the
+  // design may be smaller than run.json declares; `truncatedChains` and
+  // `missingPlannedRows` already make such a run non-estimable. Metadata
+  // that claims FEWER cells than were frozen would narrow the scoring
+  // loops and is refused.
+  if (designVariantsPerFamily > metadata.variantsPerFamily) {
     throw new Error(
-      `run.json variantsPerFamily ${metadata.variantsPerFamily} does not match the frozen design (${designVariantsPerFamily}): the frozen run is not analyzable`,
+      `run.json variantsPerFamily ${metadata.variantsPerFamily} is below the frozen design (${designVariantsPerFamily}): the frozen run is not analyzable`,
     );
   }
-  if (designIterations !== (metadata.attackerIterations ?? 3)) {
+  if (designIterations > (metadata.attackerIterations ?? 3)) {
     throw new Error(
-      `run.json attackerIterations ${metadata.attackerIterations ?? 3} does not match the frozen design (${designIterations}): the frozen run is not analyzable`,
+      `run.json attackerIterations ${metadata.attackerIterations ?? 3} is below the frozen design (${designIterations}): the frozen run is not analyzable`,
     );
   }
   for (const row of design.rows) {
