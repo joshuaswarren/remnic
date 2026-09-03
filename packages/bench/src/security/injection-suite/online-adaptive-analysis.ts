@@ -112,6 +112,8 @@ export interface OnlineAdaptiveStatistics {
     truncatedChains?: number;
     /** Episode rows whose key is not in the frozen design; dropped from scoring. */
     unexpectedRows?: number;
+    /** The run recorded a `--limit`, so its design is a subset of the registered grid. */
+    limitedDesign?: boolean;
     /** Lines recorded in online-corpus.jsonl (one per attacker iteration). */
     corpusLines?: number;
     /** Was an online-corpus-manifest.json written? */
@@ -552,7 +554,14 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   const truncatedChains = [...maxPlannedIteration.values()].filter(
     (maxIteration) => maxIteration < finalIteration,
   ).length;
+  // `--limit` freezes a subset of the registered grid, so the run is a
+  // smoke artifact and never estimable, even when the cells it did freeze
+  // are complete (with K=3, `--limit 4` leaves one whole k0..k3 chain and
+  // trips no other counter). `main` forbids `--limit`, so this only labels
+  // dev artifacts honestly (#3078).
+  const limitedDesign = Number.isInteger(metadata.limit) && (metadata.limit ?? 0) > 0;
   const incomplete =
+    limitedDesign ||
     !corpusManifestPresent ||
     !manifestHashVerified ||
     missingPlannedRows > 0 ||
@@ -583,6 +592,7 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
     missingPlannedRows,
     neverGeneratedIterations,
     truncatedChains,
+    limitedDesign,
     unexpectedRows,
     corpusLines: corpusSeenCount,
     corpusManifestPresent,

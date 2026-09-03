@@ -250,6 +250,73 @@ function readToolCalls(value: unknown): InjectionSuiteToolCall[] {
   });
 }
 
+/** Backends whose non-generic request fields are known-accepted. */
+export type OpenAiCompatBackend = "nim" | "ollama" | "generic";
+
+/** Operator override for a backend that cannot be identified from the URL. */
+export const OPENAI_COMPAT_BACKEND_ENV = "REMNIC_BENCH_OPENAI_COMPAT_BACKEND";
+
+/**
+ * Identify the backend behind an OpenAI-compatible endpoint.
+ *
+ * Only the vendor host is inferred, because a host name IS the vendor. A
+ * PORT is not an identity: `baseUrl` is operator-configurable, so LM Studio
+ * on :11434 would be mistaken for Ollama (and 400 on every request) while
+ * Ollama on another port would silently lose its no-thinking setting (PR
+ * #3079 review). Everything else is `generic` — the safe contract — unless
+ * the operator names the backend explicitly.
+ */
+export function openAiCompatBackend(
+  baseUrl: string,
+  override?: string,
+): OpenAiCompatBackend {
+  const named = (override ?? process.env[OPENAI_COMPAT_BACKEND_ENV] ?? "").trim().toLowerCase();
+  if (named === "nim" || named === "ollama" || named === "generic") return named;
+  if (named.length > 0) {
+    throw new InjectionSuiteHostFault(
+      `${OPENAI_COMPAT_BACKEND_ENV} must be one of nim, ollama, generic (got ${named})`,
+    );
+  }
+  let host: string;
+  try {
+    // Terminal dots are legal in a hostname and are stripped by
+    // `resolveOpenAiCompatToken`; classify the same host it authenticates.
+    host = new URL(trimTrailingSlashes(baseUrl)).hostname.toLowerCase().replace(/\.+$/, "");
+  } catch {
+    return "generic";
+  }
+  if (host === "integrate.api.nvidia.com" || host.endsWith(".api.nvidia.com")) return "nim";
+  return "generic";
+}
+
+/**
+ * Request fields beyond the generic Chat Completions contract, for one
+ * (endpoint, model) pair. `reasoning_effort` needs a backend that reads it
+ * AND a model that has reasoning to suppress; `chat_template_kwargs` is a
+ * vLLM/NIM extension whose `enable_thinking` only exists in some templates.
+ */
+export function openAiCompatExtensions(
+  baseUrl: string,
+  model: string,
+  backendOverride?: string,
+): Record<string, unknown> {
+  const backend = openAiCompatBackend(baseUrl, backendOverride);
+  if (backend === "generic") return {};
+  const extensions: Record<string, unknown> = {};
+  const lowEffortModel =
+    model.startsWith("openai/gpt-oss-") || model === "meta/llama-3.2-11b-vision-instruct";
+  const thinkingFamily = /qwen|nemotron|deepseek/i.test(model);
+  if (lowEffortModel) extensions.reasoning_effort = "low";
+  else if (thinkingFamily) extensions.reasoning_effort = "none";
+  // The NVIDIA Llama 3.2 endpoint rejects this newer template option, and
+  // Ollama drops it, so only NIM models whose template defines
+  // `enable_thinking` receive it.
+  if (backend === "nim" && /qwen|nemotron/i.test(model)) {
+    extensions.chat_template_kwargs = { enable_thinking: false };
+  }
+  return extensions;
+}
+
 export async function completeChatResult(
   options: InjectionSuiteLlmOptions,
   prompt: string | readonly InjectionSuiteChatMessage[],
@@ -302,21 +369,14 @@ export async function completeChatResult(
         temperature: 0,
         ...(options.seed !== undefined ? { seed: options.seed } : {}),
         max_tokens: 256,
-        // `reasoning_effort` is an OpenAI reasoning-model parameter that NIM
-        // and Ollama accept; strict generic endpoints (LM Studio) reject
-        // unknown fields. Send it only to the model families that use it.
-        ...(model.startsWith("openai/gpt-oss-") || model === "meta/llama-3.2-11b-vision-instruct"
-          ? { reasoning_effort: "low" }
-          : /qwen|nemotron|deepseek/i.test(model)
-            ? { reasoning_effort: "none" }
-            : {}),
-        // `chat_template_kwargs` is a vLLM/NIM extension, not part of the
-        // Chat Completions contract; strict endpoints (api.openai.com, the
-        // NVIDIA Llama 3.2 endpoint) reject it with HTTP 400. Send it only
-        // to models whose chat template defines `enable_thinking`.
-        ...(/qwen|nemotron/i.test(model)
-          ? { chat_template_kwargs: { enable_thinking: false } }
-          : {}),
+        // Non-generic request fields are gated by BOTH the backend and the
+        // model family (#3078): an unknown OpenAI-compatible server (LM
+        // Studio, api.openai.com) rejects unknown fields with HTTP 400, and
+        // the bench runner would classify that as a host fault and retry
+        // forever. Unknown backends therefore receive the generic contract
+        // only. Gating is derived from the endpoint, not probed, so a frozen
+        // run's request shape is reproducible from `run.json`.
+        ...openAiCompatExtensions(base, model),
         ...(tools
           ? {
               tools,

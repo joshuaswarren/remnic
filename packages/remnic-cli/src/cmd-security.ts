@@ -14,6 +14,7 @@ import {
   resolveRemnicConfigRecord,
   runAuditMemoryCliCommand,
   formatAuditMemoryReport,
+  auditScreenProfile,
 } from "@remnic/core";
 import { resolveConfigPath } from "./config-path.js";
 
@@ -47,6 +48,9 @@ export async function cmdSecurity(rest: string[]): Promise<void> {
       storage: orchestrator.storage,
       since: sinceFlag >= 0 ? rest[sinceFlag + 1] : undefined,
       quarantine: rest.includes("--quarantine"),
+      // Same profile the live write path screens with, and the previous
+      // `default` weighting when that path screens nothing (#3078).
+      profile: auditScreenProfile(config),
     });
     console.log(json ? JSON.stringify(report, null, 2) : formatAuditMemoryReport(report));
   } finally {

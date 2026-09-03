@@ -196,6 +196,8 @@ export interface InjectionSuiteRunMetadata {
   model: string;
   baseUrl: string;
   requestTimeoutMs: number;
+  /** Resolved OpenAI-compatible backend; it selects non-generic request fields (#3078). */
+  backend?: string;
   stage: InjectionSuiteStage;
   runKind: "dev" | "pilot" | "main";
   modelProfileHash: string;

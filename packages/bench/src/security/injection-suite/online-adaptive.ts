@@ -691,6 +691,7 @@ export async function runInjectionSuiteOnlineAdaptive(
     model: defendedContract.model,
     baseUrl: defendedContract.baseUrl,
     requestTimeoutMs: defendedContract.requestTimeoutMs,
+    backend: defendedContract.backend,
     stage: ONLINE_ADAPTIVE_STAGE,
     runKind: input.runKind ?? "dev",
     modelProfileHash: frozen.profile.modelProfileHash,
@@ -741,6 +742,7 @@ export async function runInjectionSuiteOnlineAdaptive(
       model: defendedContract.model,
       baseUrl: defendedContract.baseUrl,
       requestTimeoutMs: defendedContract.requestTimeoutMs,
+      backend: defendedContract.backend,
       stage: ONLINE_ADAPTIVE_STAGE,
       runKind: input.runKind ?? "dev",
       modelProfileHash: frozen.profile.modelProfileHash,
@@ -1105,6 +1107,7 @@ export function injectionSuiteResumeContractHashForOnline(metadata: {
   model: string;
   baseUrl: string;
   requestTimeoutMs: number;
+  backend?: string;
   stage?: string;
   runKind?: string;
   modelProfileHash?: string;
@@ -1133,6 +1136,9 @@ export function injectionSuiteResumeContractHashForOnline(metadata: {
         model: metadata.model,
         baseUrl: metadata.baseUrl,
         requestTimeoutMs: metadata.requestTimeoutMs,
+        // Folded in only when recorded, so runs frozen before the backend
+        // became part of the identity keep their resume hash (#3079).
+        ...(metadata.backend === undefined ? {} : { backend: metadata.backend }),
         stage: metadata.stage ?? ONLINE_ADAPTIVE_STAGE,
         runKind: metadata.runKind ?? "dev",
         modelProfileHash: metadata.modelProfileHash ?? "",

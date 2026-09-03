@@ -1,6 +1,7 @@
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { screenCandidateFact } from "./injection-screen.js";
 import type { InjectionScreenProfile } from "./injection-screen.js";
+import { resolveSecurityCapabilities, type SecurityConfigProjection } from "../capabilities.js";
 import { inferMemoryStatus, isArchivedMemoryPath, toMemoryPathRel } from "../memory-lifecycle-ledger-utils.js";
 import { parseStrictCliDate } from "../training-export/date-parse.js";
 
@@ -204,6 +205,19 @@ function writeBurstStats(groups: Map<string, MemoryFile[]>): AuditMemoryReport["
     threshold: summary.threshold,
     anomalousGroups,
   };
+}
+
+/**
+ * The screen profile an audit sweep must use, resolved through the shared
+ * security capability plan (#1523) rather than read off config (#3078). The
+ * sweep matches the live write path, so a memory this deployment would
+ * quarantine on write does not survive once stored; a deployment with the
+ * screen DISABLED keeps the `default` weighting, because the sweep must
+ * never be stricter than the configured write path.
+ */
+export function auditScreenProfile(config: SecurityConfigProjection): InjectionScreenProfile {
+  const capabilities = resolveSecurityCapabilities(config);
+  return capabilities.injectionScreen ? capabilities.injectionScreenProfile : "default";
 }
 
 export async function auditMemoryStore(options: AuditMemoryStoreOptions): Promise<AuditMemoryReport> {

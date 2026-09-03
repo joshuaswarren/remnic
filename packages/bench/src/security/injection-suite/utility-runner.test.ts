@@ -19,11 +19,12 @@ import {
   createInjectionSuiteBehaviorResponder,
   UTILITY_CONTRACT_FILE,
   assertUtilityContract,
+  datasetDigest,
   runInjectionSuiteUtility,
   isRetryableUtilityFailure,
   providerConfig,
 } from "./utility-runner.js";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { DEFAULT_OLLAMA_MODEL } from "./llm-executor.js";
 
 test("only transport execution failures are retried", () => {
@@ -216,6 +217,20 @@ test("a utility output directory is bound to its execution contract", async () =
       /different utility contract/,
       "new weights behind the same served name must not reuse the checkpoints",
     );
+    // The resolved backend selects non-generic request fields, so resuming
+    // under a different override is a different condition (PR #3079).
+    const previousBackend = process.env.REMNIC_BENCH_OPENAI_COMPAT_BACKEND;
+    process.env.REMNIC_BENCH_OPENAI_COMPAT_BACKEND = "ollama";
+    try {
+      await assert.rejects(
+        assertUtilityContract(input, ["locomo", "drift-gen"]),
+        /different utility contract/,
+        "a backend override must not reuse checkpoints from another backend",
+      );
+    } finally {
+      if (previousBackend === undefined) delete process.env.REMNIC_BENCH_OPENAI_COMPAT_BACKEND;
+      else process.env.REMNIC_BENCH_OPENAI_COMPAT_BACKEND = previousBackend;
+    }
     // Checkpoints from before the contract existed are refused rather than reused.
     const legacy = mkdtempSync(path.join(os.tmpdir(), "h5-util-legacy-"));
     mkdirSync(path.join(legacy, "utility-checkpoints"), { recursive: true });
@@ -242,4 +257,62 @@ test("a main utility run is refused without the frozen identity, before any chec
     /--model-digest/,
   );
   assert.equal(existsSync(path.join(dir, "out")), false, "the gate runs before the output directory exists");
+});
+
+test("the utility contract binds to dataset CONTENTS, not just the directory path", async () => {
+  const previous = process.env.REMNIC_OPENAI_COMPAT_API_KEY;
+  process.env.REMNIC_OPENAI_COMPAT_API_KEY = "fixture-key";
+  const dir = mkdtempSync(path.join(os.tmpdir(), "h5-util-dataset-"));
+  const dataset = mkdtempSync(path.join(os.tmpdir(), "h5-locomo-"));
+  try {
+    writeFileSync(path.join(dataset, "questions.jsonl"), '{"id":"q1"}\n');
+    const input = { ...FIXTURE_INPUT, outputDir: dir, locomoDatasetDir: dataset };
+    const before = datasetDigest(dataset);
+    await assertUtilityContract(input, ["locomo"]);
+    await assertUtilityContract(input, ["locomo"]);
+    // Editing the frozen dataset in place changes the digest, so the
+    // partially scored checkpoints are refused instead of mixed (#3078).
+    writeFileSync(path.join(dataset, "questions.jsonl"), '{"id":"q1","edited":true}\n');
+    assert.notEqual(datasetDigest(dataset), before);
+    await assert.rejects(
+      assertUtilityContract(input, ["locomo"]),
+      /different utility contract/,
+    );
+    // Adding a file counts too, and the digest is order-independent.
+    writeFileSync(path.join(dataset, "questions.jsonl"), '{"id":"q1"}\n');
+    assert.equal(datasetDigest(dataset), before, "restoring the bytes restores the digest");
+    writeFileSync(path.join(dataset, "extra.jsonl"), '{"id":"q2"}\n');
+    await assert.rejects(assertUtilityContract(input, ["locomo"]), /different utility contract/);
+    // A benchmark that is not selected contributes no digest, so an
+    // unrelated dataset directory cannot invalidate the contract.
+    assert.equal(datasetDigest(undefined), null);
+    // The loaders read THROUGH symlinks, so the digest must too: editing a
+    // link target must change the contract (PR #3079 review).
+    const external = mkdtempSync(path.join(os.tmpdir(), "h5-locomo-ext-"));
+    writeFileSync(path.join(external, "real.json"), '{"v":1}\n');
+    symlinkSync(path.join(external, "real.json"), path.join(dataset, "linked.json"));
+    const withLink = datasetDigest(dataset);
+    writeFileSync(path.join(external, "real.json"), '{"v":2}\n');
+    assert.notEqual(datasetDigest(dataset), withLink, "a retargeted symlink changes the digest");
+    // A directory symlink is traversed, so files below it are hashed: an
+    // in-place edit under the link and a retarget to different contents are
+    // both visible, and a cycle does not hang the walk (PR #3079 r2).
+    const externalDir = mkdtempSync(path.join(os.tmpdir(), "h5-locomo-dir-"));
+    const otherDir = mkdtempSync(path.join(os.tmpdir(), "h5-locomo-dir2-"));
+    writeFileSync(path.join(externalDir, "shard.json"), '{"s":1}\n');
+    writeFileSync(path.join(otherDir, "shard.json"), '{"s":99}\n');
+    symlinkSync(externalDir, path.join(dataset, "shard"));
+    const withDirLink = datasetDigest(dataset);
+    writeFileSync(path.join(externalDir, "shard.json"), '{"s":2}\n');
+    assert.notEqual(datasetDigest(dataset), withDirLink, "an edit below a directory link changes the digest");
+    const withEdit = datasetDigest(dataset);
+    rmSync(path.join(dataset, "shard"));
+    symlinkSync(otherDir, path.join(dataset, "shard"));
+    assert.notEqual(datasetDigest(dataset), withEdit, "a retarget to different contents changes the digest");
+    symlinkSync(dataset, path.join(otherDir, "loop"));
+    assert.ok(datasetDigest(dataset)?.startsWith("sha256:"), "a symlink cycle terminates");
+  } finally {
+    if (previous === undefined) delete process.env.REMNIC_OPENAI_COMPAT_API_KEY;
+    else process.env.REMNIC_OPENAI_COMPAT_API_KEY = previous;
+  }
 });
