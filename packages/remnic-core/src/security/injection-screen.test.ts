@@ -229,8 +229,6 @@ test("response-control-directive requires a corroborating signal, so ordinary re
     // #3081 post-cap).
     "The response must include a Content-Type header\nThe fixture value is CANARY.",
     "The answer must include citations\nCANARY",
-    // Terminal URL punctuation with a lowercase continuation is part of the
-    // URL, not a sentence end (post-cap r5).
   ];
   // `default` (custom mode, the shipped default) must not hide these; the
   // opt-in `hardened` profile deliberately still flags the directive shape,

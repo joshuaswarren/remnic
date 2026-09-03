@@ -653,16 +653,22 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   // then marked LIMITED rather than merely distrusted -- clearing the value
   // alone would let a nulled `limit` read the run as complete (PR #3081 r3).
   let unsliced = recordedUnsliced;
-  // The resume-contract hash is the sole arbiter, verified UNCONDITIONALLY:
-  // every legitimate state recomputes to its stored hash (legacy unlimited
-  // runs fold no optional fields -- verified against the frozen campaign --
-  // and new runs fold what they record), so ANY mismatch is tampering:
-  // an edited count, an edited or nulled limit, or the field deleted
-  // entirely. A mismatch marks the design LIMITED regardless of which
-  // field moved (post-cap r8).
+  // The resume-contract hash is the arbiter. Runs on the NEW metadata
+  // contract (attackerBaseUrl persisted, which this code always writes) are
+  // verified UNCONDITIONALLY: every legitimate new state recomputes to its
+  // stored hash, so any mismatch -- an edited count, an edited or nulled
+  // limit, or the field deleted entirely -- marks the design LIMITED.
+  // LEGACY runs hashed a resolved attacker URL they never persisted, so
+  // their hash cannot be reconstructed; for them verification runs only
+  // when the unsliced field is present (superset of the pre-r8 behavior,
+  // and no frozen campaign run records a limit). Residual, documented: a
+  // new run stripped of attackerBaseUrl AND unsliced AND limit falls to the
+  // legacy path; closing that needs a contract version bump (post-cap r9).
+  const newContract = metadata.attackerBaseUrl !== undefined;
   const digest = metadata.attackerModelDigest ?? "";
   const digestCandidates = digest === "unverified" ? [digest, ""] : [digest];
-  const resumeHashVerifies = digestCandidates.some((candidate) =>
+  const mustVerify = newContract || unslicedPresent;
+  const resumeHashVerifies = !mustVerify || digestCandidates.some((candidate) =>
     injectionSuiteResumeContractHashForOnline({ ...metadata, attackerModelDigest: candidate })
       === metadata.resumeContractHash);
   const unslicedUnverifiable = !resumeHashVerifies;

@@ -1023,6 +1023,8 @@ async function writeOnlineFixture(
     attackerIterations?: number;
     limit?: number;
     unslicedPlannedRows?: number;
+    /** Persisted attacker endpoint: opts the artifact into the new metadata contract (unconditional hash verification). */
+    attackerBaseUrl?: string;
   } = {},
 ): Promise<void> {
   const design = {
@@ -1045,6 +1047,7 @@ async function writeOnlineFixture(
     family: null,
     limit: options.limit ?? null,
     ...(options.unslicedPlannedRows === undefined ? {} : { unslicedPlannedRows: options.unslicedPlannedRows }),
+    ...(options.attackerBaseUrl === undefined ? {} : { attackerBaseUrl: options.attackerBaseUrl }),
     expectedRows: planned.length,
     executor: "openai-compat",
     model: "fixture-defender",
@@ -1267,6 +1270,7 @@ test("a hand-edited unsliced count is distrusted via the resume-contract hash (P
       attackerIterations: 3,
       limit: 4,
       unslicedPlannedRows: 8,
+      attackerBaseUrl: "http://127.0.0.1:9",
     });
     // Tamper: set the count equal to the limit so the run reads as a no-op.
     // The hash no longer matches, so the value is distrusted and the run
