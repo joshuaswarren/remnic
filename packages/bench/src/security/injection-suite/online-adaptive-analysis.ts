@@ -634,24 +634,37 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   // a positive integer at least as large as the frozen design. Anything
   // else (0, null, a coerced string, a stale hand edit) is treated as
   // absent, which keeps the conservative marking (PR #3081 r1).
-  let unsliced =
-    Number.isInteger(metadata.unslicedPlannedRows)
+  const recordedUnsliced = Number.isInteger(metadata.unslicedPlannedRows)
     && (metadata.unslicedPlannedRows ?? 0) >= design.rows.length
     && (metadata.unslicedPlannedRows ?? 0) > 0
-      ? metadata.unslicedPlannedRows
-      : undefined;
+    ? metadata.unslicedPlannedRows
+    : undefined;
   // The value decides whether a limit truncated the design, so it is
   // tamper-evident: whenever it is recorded, the resume-contract hash must
-  // have been computed WITH it. A hand-edited count (stale, coerced, or
-  // set equal to the limit to dodge the marking) breaks the hash and the
-  // value is distrusted (#3080, PR #3081 r2).
-  if (unsliced !== undefined && metadata.limit !== null && metadata.limit !== undefined) {
-    const expectedHash = injectionSuiteResumeContractHashForOnline(metadata);
-    if (expectedHash !== metadata.resumeContractHash) unsliced = undefined;
+  // verify. A hand-edited count (stale, coerced, set equal to the limit, or
+  // paired with an edited `limit`/`null`) breaks the hash, and the run is
+  // then marked LIMITED rather than merely distrusted -- clearing the value
+  // alone would let a nulled `limit` read the run as complete (PR #3081 r3).
+  let unsliced = recordedUnsliced;
+  let unslicedUnverifiable = false;
+  if (recordedUnsliced !== undefined) {
+    // The runner hashes the digest as "" when absent but persists the
+    // "unverified" sentinel; normalize the same way before recomputing, and
+    // fold the attacker endpoint only when it was persisted.
+    const expectedHash = injectionSuiteResumeContractHashForOnline({
+      ...metadata,
+      attackerModelDigest:
+        metadata.attackerModelDigest === "unverified" ? "" : metadata.attackerModelDigest,
+    });
+    if (expectedHash !== metadata.resumeContractHash) {
+      unsliced = undefined;
+      unslicedUnverifiable = true;
+    }
   }
   const limitedDesign = Number.isInteger(recordedLimit)
     && recordedLimit > 0
-    && (unsliced === undefined || recordedLimit < unsliced);
+    && (unsliced === undefined || recordedLimit < unsliced)
+    || unslicedUnverifiable;
   const incomplete =
     limitedDesign ||
     !corpusManifestPresent ||

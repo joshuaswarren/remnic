@@ -200,6 +200,8 @@ export interface InjectionSuiteRunMetadata {
   backend?: string;
   /** Row count the grid WOULD have had before `--limit` sliced it (#3080): lets an analyzer tell a truncating limit from a no-op one. */
   unslicedPlannedRows?: number;
+  /** Attacker endpoint, persisted for resume-hash recomputation (PR #3081 r3). */
+  attackerBaseUrl?: string;
   stage: InjectionSuiteStage;
   runKind: "dev" | "pilot" | "main";
   modelProfileHash: string;

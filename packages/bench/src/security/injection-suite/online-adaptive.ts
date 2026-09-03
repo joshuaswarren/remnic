@@ -773,6 +773,9 @@ export async function runInjectionSuiteOnlineAdaptive(
       captureResponses: true,
       attackerExecutor: attacker.executor,
       attackerModel: attacker.model,
+      // Persisted so the analyzer can recompute the resume hash exactly as
+      // the runner did (PR #3081 r3); optional, so old runs are unaffected.
+      ...(attacker.baseUrl ? { attackerBaseUrl: attacker.baseUrl } : {}),
       attackerModelDigest: input.attackerModelDigest ?? "unverified",
       attackerPromptSha256,
       attackerIterations: input.attackerIterations,

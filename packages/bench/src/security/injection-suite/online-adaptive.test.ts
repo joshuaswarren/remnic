@@ -437,6 +437,26 @@ test("the runner records the unsliced grid size when a limit is set (#3080)", as
   }
 });
 
+test("a runner-created no-op limit run analyzes as estimable (round trip, PR #3081 r3)", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-roundtrip-"));
+  try {
+    const base = baseVariantFor("minja", 1);
+    const responder = () => ({ text: `ACK ${base.canary} ${base.livenessCanary}`, toolCalls: [], inputTokens: 0, outputTokens: 0, model: "m" });
+    // The fake grid is 8 rows; a limit of 8 freezes all of it.
+    await runOnlineAdaptiveWithFake({ outputDir: tmp, attackerResponder: responder, defendedResponder: responder, limit: 8 });
+    const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(stats.rowAccounting?.limitedDesign, false, "the runner's own hash must verify in the analyzer");
+    assert.equal(stats.decision.estimable, true);
+    // Editing the limit to null after the fact must not read as complete.
+    const run = JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) as Record<string, unknown>;
+    await writeFile(path.join(tmp, "run.json"), `${JSON.stringify({ ...run, limit: null })}\n`, "utf8");
+    const nulled = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(nulled.rowAccounting?.limitedDesign, true, "an unverifiable count with a nulled limit stays limited");
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("the online stage refuses more than one corpus seed", () => {
   assert.throws(
     () => planOnlineAdaptiveRows({ seeds: 2, variantsPerFamily: 1, iterations: 1, seedBase: 71, modelProfileId: "fixture" }),
@@ -1007,7 +1027,12 @@ async function writeOnlineFixture(
     ...baseMetadata,
     resumeContractHash: options.unslicedPlannedRows === undefined
       ? "0".repeat(64)
-      : injectionSuiteResumeContractHashForOnline(baseMetadata),
+      // Mirror the runner: the digest sentinel is hashed as "" and the
+      // attacker endpoint folds in when present.
+      : injectionSuiteResumeContractHashForOnline({
+        ...baseMetadata,
+        attackerModelDigest: "",
+      }),
   };
   await writeFile(
     path.join(tmp, "run.json"),

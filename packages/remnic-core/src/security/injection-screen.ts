@@ -308,10 +308,12 @@ function splitSentencesOutsideQuotes(content: string): string[] {
     // "Responses must include:\nCANARY" and its Markdown-list form are a
     // single directive with its payload (PR #3081 r1).
     const newlineEndsUnit = !/[:\-]\s*$/.test(current);
+    // `?` and `!` follow the same rule as `.`: inside a token they are part
+    // of it (a URL query, "https://x/p?mode=y"), and only end the unit when
+    // followed by whitespace or the end (PR #3081 r3).
     const endsSentence =
-      char === "!" || char === "?"
-      || (char === "\n" && newlineEndsUnit)
-      || (char === "." && !/[^\s]/.test(rest.slice(0, 1)));
+      ((char === "!" || char === "?" || char === ".") && !/[^\s]/.test(rest.slice(0, 1)))
+      || (char === "\n" && newlineEndsUnit);
     if (endsSentence) {
       if (current.trim().length > 0) sentences.push(current);
       current = "";
