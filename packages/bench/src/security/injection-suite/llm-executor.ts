@@ -258,7 +258,9 @@ export function openAiCompatBackend(baseUrl: string): OpenAiCompatBackend {
   let port: string;
   try {
     const parsed = new URL(trimTrailingSlashes(baseUrl));
-    host = parsed.hostname.toLowerCase();
+    // Terminal dots are legal in a hostname and are stripped by
+    // `resolveOpenAiCompatToken`; classify the same host it authenticates.
+    host = parsed.hostname.toLowerCase().replace(/\.+$/, "");
     port = parsed.port;
   } catch {
     return "generic";

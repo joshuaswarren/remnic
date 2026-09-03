@@ -204,6 +204,9 @@ const RESPONSE_CONTROL_CORROBORATORS: readonly RegExp[] = [
   // Persistence across turns: an ordinary fact does not legislate later turns.
   /\b(?:remember|persist|store[ \t]{1,8}this|retain[ \t]{1,8}this)\b/i,
   /\bany[ \t]{1,8}(?:later|future|subsequent)\b/i,
+  // An explicit future-turn target is itself persistence: "future responses
+  // must begin with X" legislates later turns without "any"/"all"/"every".
+  /\b(?:future|later|subsequent|following|upcoming)[ \t]{1,8}(?:answers?|responses?|repl(?:y|ies)|output|turns?|messages?|conversations?|sessions?)\b/i,
   /\b(?:across|between)[ \t]{1,8}(?:conversations|sessions|chats)\b/i,
   /\b(?:from[ \t]{1,8}now[ \t]{1,8}on|going[ \t]{1,8}forward|in[ \t]{1,8}(?:all|every)[ \t]{1,8}(?:future|later)[ \t]{1,8}(?:turns?|answers?|responses?))\b/i,
   /\b(?:whenever|every[ \t]{1,8}time|each[ \t]{1,8}time|any[ \t]{1,8}time)\b[^\n]{0,60}\b(?:asked|discussed|mentioned|queried|retrieved|recalled)\b/i,

@@ -985,6 +985,9 @@ test("non-generic request fields are gated by backend AND model family", () => {
   assert.equal(openAiCompatBackend(lmstudio), "generic");
   assert.equal(openAiCompatBackend(openai), "generic");
   assert.equal(openAiCompatBackend("not a url"), "generic");
+  // A terminal dot is a legal hostname form and is stripped by the token
+  // resolver, so the classifier must agree with it (PR #3079 review).
+  assert.equal(openAiCompatBackend("https://integrate.api.nvidia.com./v1"), "nim");
 
   // The study's endpoints keep exactly the fields they had.
   assert.deepEqual(openAiCompatExtensions(nim, "openai/gpt-oss-20b"), { reasoning_effort: "low" });

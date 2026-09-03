@@ -24,7 +24,7 @@ import {
   isRetryableUtilityFailure,
   providerConfig,
 } from "./utility-runner.js";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { DEFAULT_OLLAMA_MODEL } from "./llm-executor.js";
 
 test("only transport execution failures are retried", () => {
@@ -272,6 +272,23 @@ test("the utility contract binds to dataset CONTENTS, not just the directory pat
     // A benchmark that is not selected contributes no digest, so an
     // unrelated dataset directory cannot invalidate the contract.
     assert.equal(datasetDigest(undefined), null);
+    // The loaders read THROUGH symlinks, so the digest must too: editing a
+    // link target must change the contract (PR #3079 review).
+    const external = mkdtempSync(path.join(os.tmpdir(), "h5-locomo-ext-"));
+    writeFileSync(path.join(external, "real.json"), '{"v":1}\n');
+    symlinkSync(path.join(external, "real.json"), path.join(dataset, "linked.json"));
+    const withLink = datasetDigest(dataset);
+    writeFileSync(path.join(external, "real.json"), '{"v":2}\n');
+    assert.notEqual(datasetDigest(dataset), withLink, "a retargeted symlink changes the digest");
+    // A directory symlink is not walked (cycle safety) but its target path
+    // is folded in, so repointing it is still visible.
+    const externalDir = mkdtempSync(path.join(os.tmpdir(), "h5-locomo-dir-"));
+    const otherDir = mkdtempSync(path.join(os.tmpdir(), "h5-locomo-dir2-"));
+    symlinkSync(externalDir, path.join(dataset, "shard"));
+    const withDirLink = datasetDigest(dataset);
+    rmSync(path.join(dataset, "shard"));
+    symlinkSync(otherDir, path.join(dataset, "shard"));
+    assert.notEqual(datasetDigest(dataset), withDirLink, "a repointed directory link changes the digest");
   } finally {
     if (previous === undefined) delete process.env.REMNIC_OPENAI_COMPAT_API_KEY;
     else process.env.REMNIC_OPENAI_COMPAT_API_KEY = previous;

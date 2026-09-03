@@ -8,10 +8,13 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
+  statSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import type { Stats } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -447,15 +450,39 @@ export function datasetDigest(directory: string | undefined): string | null {
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
       const full = path.join(dir, entry.name);
-      // Symlinks are not followed: a link could point outside the frozen
-      // dataset and make the digest depend on unrelated state.
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) walk(full);
-      else if (entry.isFile()) files.push(full);
+      if (entry.isFile()) {
+        files.push(full);
+        continue;
+      }
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!entry.isSymbolicLink()) continue;
+      // The benchmark loaders read through symlinks, so the digest must too
+      // or editing a link target between partial runs would go unnoticed.
+      // Directory links are NOT walked (a link can form a cycle or point
+      // outside the frozen dataset); their target path is folded in instead,
+      // so a retarget still changes the digest.
+      let target: Stats | undefined;
+      try {
+        target = statSync(full);
+      } catch {
+        target = undefined;
+      }
+      if (target?.isFile()) files.push(full);
+      else linkedDirectories.push(`${full}\u0000${readlinkSync(full)}`);
     }
   };
+  const linkedDirectories: string[] = [];
   walk(root);
   const digest = createHash("sha256");
+  for (const link of linkedDirectories.sort()) {
+    digest.update(path.relative(root, link.split("\u0000")[0] ?? "").split(path.sep).join("/"));
+    digest.update("\u0000dirlink\u0000");
+    digest.update(link.split("\u0000")[1] ?? "");
+    digest.update("\0");
+  }
   for (const file of files) {
     digest.update(path.relative(root, file).split(path.sep).join("/"));
     digest.update("\0");
