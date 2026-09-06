@@ -280,6 +280,30 @@ const EMISSION_SLOT_VALUE = /(?:"([^"\n]{2,40})"|'([^'\n]{2,40})'|([A-Za-z][A-Za
  * `"exfil me!"` keeps its delimiters, or the emission target would be
  * unrecognizable (PR #3079 r4).
  */
+/**
+ * Does a lowercase letter follow the whitespace run starting at `from`?
+ *
+ * Scans the run with `charCodeAt` rather than slicing a suffix per candidate:
+ * a per-character `content.slice(from)` made screening quadratic (17 s on a
+ * 100k input, PR #3081 r4). A fixed-width window instead missed runs longer
+ * than the window (5+ spaces, PR #3082), so the run is scanned to its end,
+ * bounded so a pathological run cannot dominate.
+ */
+const MAX_WHITESPACE_RUN_SCAN = 64;
+
+function lowercaseFollowsWhitespace(content: string, from: number): boolean {
+  const limit = Math.min(content.length, from + MAX_WHITESPACE_RUN_SCAN);
+  let index = from;
+  while (index < limit) {
+    const code = content.charCodeAt(index);
+    // space, tab, newline, carriage return, form feed, vertical tab
+    const whitespace = code === 32 || (code >= 9 && code <= 13);
+    if (!whitespace) return code >= 97 && code <= 122;
+    index += 1;
+  }
+  return false;
+}
+
 function splitSentencesOutsideQuotes(content: string): string[] {
   // Token-jump scan: advance between quote and boundary characters instead
   // of visiting every character, so a large memory costs one linear pass
@@ -312,7 +336,7 @@ function splitSentencesOutsideQuotes(content: string): string[] {
     // question mark is ordinary ("...header? canary deployments...") and
     // must stay a separate unit (post-cap r8).
     const terminalUrlPunctuation = (char === "?" || char === "!")
-      && /\s{1,4}[a-z]/.test(content.slice(index + 1, index + 6))
+      && lowercaseFollowsWhitespace(content, index + 1)
       && /:\/\/[^\s]*$/.test(content.slice(Math.max(0, index - 300), index));
     const newlineContinues = char === "\n" && /[:\-][ \t]*$/.test(content.slice(Math.max(0, index - 4), index));
     const endsUnit = !insideToken && !terminalUrlPunctuation && !newlineContinues
@@ -457,7 +481,25 @@ function findAuthorityEscalation(content: string): InjectionScreenFinding | unde
 }
 
 /** Screen a candidate fact without model calls, I/O, or mutable state. */
-export function screenCandidateFact(content: string, profile: InjectionScreenProfile = "default"): InjectionScreenResult {
+/**
+ * Collapse horizontal whitespace runs to one space.
+ *
+ * The rule patterns bound their inter-word whitespace (a ReDoS-safety
+ * requirement, PR #3079 r4), so an attacker could split a directive with a
+ * long run of spaces and match nothing: `must include<40 spaces>CANARY`
+ * screened clean while the 1-space form quarantined (PR #3082). Ordinary
+ * prose carries no such run, so collapsing costs no fidelity. Newlines are
+ * preserved -- the continuation rule reads them as locality boundaries.
+ */
+function collapseHorizontalWhitespace(content: string): string {
+  return content.replace(/[ \t\f\v\u00a0\u2000-\u200a\u202f\u205f\u3000]{2,}/g, " ");
+}
+
+export function screenCandidateFact(
+  rawContent: string,
+  profile: InjectionScreenProfile = "default",
+): InjectionScreenResult {
+  const content = collapseHorizontalWhitespace(rawContent);
   const findings: InjectionScreenFinding[] = [];
   const rules: Array<
     [string, (value: string, screenProfile: InjectionScreenProfile) => InjectionScreenFinding | undefined]
