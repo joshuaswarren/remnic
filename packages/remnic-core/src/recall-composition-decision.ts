@@ -31,8 +31,9 @@ export interface DecideRecallContextCompositionInput {
   /** Mid-recall backend degradations (#3082). Absent on the healthy path. */
   backendDegradations?: readonly SearchDegradation[];
   /**
-   * When false, `backend_unavailable` is the QMD-disabled skip marker, not
-   * an outage. Default true so unit tests that pass degradations stay honest.
+   * When false, `{ backend: "qmd", code: "backend_unavailable" }` is the
+   * QMD-disabled/noop skip marker, not an outage. Other backends still count.
+   * Default true so unit tests that pass degradations stay honest.
    */
   qmdExpected?: boolean;
 }
@@ -80,7 +81,7 @@ export function decideRecallContextComposition(
   const observed = input.backendDegradations ?? [];
   const qmdExpected = input.qmdExpected !== false;
   const fatal = fatalSearchDegradations(observed).filter(
-    (d) => qmdExpected || d.code !== "backend_unavailable",
+    (d) => qmdExpected || d.backend !== "qmd" || d.code !== "backend_unavailable",
   );
   if (fatal.length > 0 && input.context.trim().length === 0) {
     const missing = composeMissingMemoryContext({

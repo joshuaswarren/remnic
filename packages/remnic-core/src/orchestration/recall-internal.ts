@@ -130,9 +130,9 @@ export class RecallInternalCoordinator {
     lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.deps.config),
   ): Promise<string> {
     const recallStart = Date.now();
-    // This recall's QMD degradations (#1536/#3082). Slice from start so a reused sink cannot poison later calls.
-    const backendDegradations: SearchDegradation[] = options.degradationSink ?? [];
-    const thisRecallDegradationStart = backendDegradations.length;
+    // Per-recall QMD degradations (#1536/#3082). Local array so overlapping
+    // recalls that share a sink cannot mark each other failed.
+    const backendDegradations: SearchDegradation[] = [];
     // Issue #680 — historical recall.  Parse `options.asOf` once at the
     // top of the recall so each boost-pass uses identical filter logic.
     // Invalid values are rejected at input boundaries (CLI / HTTP / MCP)
@@ -4962,9 +4962,12 @@ export class RecallInternalCoordinator {
         compactContext: compactRecallContextFromBuckets(sectionBuckets),
         footer: curiosityFooter,
         maxChars: recallBudgetChars,
-        backendDegradations: backendDegradations.slice(thisRecallDegradationStart),
-        qmdExpected: resolveQmdCapabilities(this.deps.config).qmd,
+        backendDegradations,
+        qmdExpected: resolveQmdCapabilities(this.deps.config).qmd && this.deps.config.searchBackend === "qmd",
       });
+    if (options.degradationSink) {
+      for (const d of backendDegradations) options.degradationSink.push(d);
+    }
     notifyContextComposition(options.onContextComposition, composition, (err) => {
       log.warn("recall: context composition observer failed open", err);
     });

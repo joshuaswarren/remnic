@@ -79,6 +79,18 @@ test("#3082 QMD-disabled backend_unavailable is not an outage", () => {
   assert.equal("degradation" in composition, false);
 });
 
+test("#3082 non-QMD backend_unavailable is still an outage when QMD is off", () => {
+  const { composition, context } = decideRecallContextComposition({
+    context: "",
+    maxChars: 512,
+    qmdExpected: false,
+    backendDegradations: [{ backend: "remote", code: "backend_unavailable" }],
+  });
+
+  assert.equal(composition.degradation?.state, "missing");
+  assert.equal(composition.degradation?.reason, "backend-unavailable");
+  assert.match(context, /memory context unavailable/i);
+});
 test("#3082 timeout plus budget clip still reports backend-unavailable", () => {
   const longContext = "A remembered deployment decision. ".repeat(40).trim();
   const { composition, truncated } = decideRecallContextComposition({
