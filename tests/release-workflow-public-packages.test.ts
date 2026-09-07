@@ -102,29 +102,35 @@ test("release workflow verifies the OpenClaw ClawHub packlist after build", asyn
   );
 });
 
-test("release workflow treats known ClawHub backend read limits as nonfatal", async () => {
+test("ClawHub publish script treats known transient backend failures as nonfatal after retries", async () => {
   const workflow = await readFile(".github/workflows/release-and-publish.yml", "utf8");
+  const catchUp = await readFile(".github/workflows/clawhub-publish.yml", "utf8");
+  const script = await readFile("scripts/clawhub-publish.sh", "utf8");
 
+  assert.match(workflow, /Publish OpenClaw plugin to ClawHub[\s\S]*bash scripts\/clawhub-publish\.sh/);
+  assert.match(catchUp, /ref: refs\/tags\/\$\{\{ inputs\.tag \}\}[\s\S]*bash scripts\/clawhub-publish\.sh/);
   assert.match(
-    workflow,
+    script,
     /Too many bytes read in a single function execution/,
-    "release workflow must recognize ClawHub's Convex read-limit backend failure",
+    "script must recognize ClawHub's Convex read-limit backend failure",
+  );
+  assert.match(
+    script,
+    /Your request couldn't be completed\\\. Try again later/,
+    "script must recognize ClawHub's rate-limit 'Try again later' failure",
   );
   assert.ok(
-    !workflow.includes("syncPackage[A-Za-z]*SearchDigests?"),
-    "release workflow must select the nonfatal path on the Convex read-limit string alone, " +
+    !script.includes("syncPackage[A-Za-z]*SearchDigests?"),
+    "script must select the nonfatal path on the Convex read-limit string alone, " +
       "without requiring the internal syncPackage...SearchDigest stack frame",
   );
+  assert.match(script, /sleep "\$\{CLAWHUB_PUBLISH_BACKOFF_SECONDS\}"/, "transient failures must be retried with backoff");
   assert.match(
-    workflow,
-    /ClawHub publish hit its backend read limit[\s\S]*exit 0/,
-    "known external ClawHub backend read-limit failures should not block GitHub release creation after npm publish",
+    script,
+    /ClawHub publish hit its backend read limit or rate limit[\s\S]*exit 0/,
+    "known transient ClawHub failures should not fail the release after npm publish",
   );
-  assert.match(
-    workflow,
-    /rm -f "\$\{publish_log\}"\n            exit "\$\{publish_status\}"/,
-    "unknown ClawHub publish failures must remain fatal",
-  );
+  assert.match(script, /\n  exit "\$\{publish_status\}"\n/, "unknown ClawHub publish failures must remain fatal");
 });
 
 test("@remnic/server build verifies declared bin artifacts", async () => {

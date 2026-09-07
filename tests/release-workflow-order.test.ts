@@ -80,7 +80,8 @@ test("release workflow derives publish metadata after package bump commits", () 
   assert.match(workflow, /NEW_VERSION: \$\{\{ steps\.release_metadata\.outputs\.new_version \}\}/);
   assert.match(workflow, /tag_name: \$\{\{ steps\.release_metadata\.outputs\.tag_name \}\}/);
   assert.match(workflow, /VERSION="\$\{\{ steps\.release_metadata\.outputs\.new_version \}\}"/);
-  assert.match(workflow, /--source-ref "\$\{\{ steps\.release_metadata\.outputs\.tag_name \}\}"/);
+  assert.match(workflow, /SOURCE_REF: \$\{\{ steps\.release_metadata\.outputs\.tag_name \}\}/);
+  assert.match(readFileSync("scripts/clawhub-publish.sh", "utf8"), /--source-ref "\$\{SOURCE_REF\}"/);
 });
 
 test("release workflow rejects version overrides that reuse existing tags before mutation", () => {
@@ -111,10 +112,11 @@ test("release workflow fails existing tags with incomplete npm publication", () 
 });
 
 test("release workflow pins publish tooling", () => {
+  const clawhubScript = readFileSync("scripts/clawhub-publish.sh", "utf8");
   assert.doesNotMatch(workflow, /npm install -g npm@latest/);
-  assert.doesNotMatch(workflow, /npm install -g clawhub@latest/);
+  assert.doesNotMatch(clawhubScript, /npm install -g clawhub@latest/);
   assert.match(workflow, /npm install -g npm@11\.16\.0/);
-  assert.match(workflow, /npm install -g clawhub@0\.18\.0/);
+  assert.match(clawhubScript, /npm install -g clawhub@0\.18\.0/);
 });
 
 test("release workflow pins GitHub SSH host keys for deploy-key pushes", () => {
