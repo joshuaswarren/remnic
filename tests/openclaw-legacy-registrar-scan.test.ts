@@ -15,7 +15,10 @@ const FILES = [
 ];
 
 test("OpenClaw 1.x-only registrars are never called as api.registerX( (ClawHub inspector scan)", () => {
-  const pattern = new RegExp(String.raw`\bapi\s*\)?\s*\.\s*(${LEGACY_ONLY.join("|")})\s*(?:\?\.)?\s*\(`);
+  // Receiver forms: `api.`, `(api).`, `(api as X).`, `(<X>api).` — TypeScript
+  // erases the casts, so all of them emit `api.registerX(` in dist.
+  const receiver = String.raw`(?:\bapi|\(\s*api\s*\)|\(\s*api\s+as\s+[^)]+\)|\(\s*<[^>]+>\s*api\s*\))`;
+  const pattern = new RegExp(String.raw`${receiver}\s*\??\.\s*(${LEGACY_ONLY.join("|")})\s*(?:\?\.)?\s*\(`);
   for (const file of FILES) {
     // Drop `//` line comments; the inspector strips comments too, and this
     // keeps prose mentioning the seams from tripping the guard.

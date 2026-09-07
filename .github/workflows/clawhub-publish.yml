@@ -50,6 +50,17 @@ jobs:
           ref: refs/tags/${{ inputs.tag }}
           persist-credentials: false
 
+      - name: Verify the tag carries the build helpers
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          for f in scripts/ensure-core-build.mjs scripts/verify-openclaw-clawpack.mjs packages/plugin-openclaw/package.json; do
+            if [ ! -f "$f" ]; then
+              echo "::error::${TAG} predates ${f}; this workflow only republishes tags built by the current release pipeline."
+              exit 1
+            fi
+          done
+
       - name: Install pnpm
         uses: pnpm/action-setup@v4
 
