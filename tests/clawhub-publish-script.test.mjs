@@ -22,7 +22,8 @@ function run({ failures, message }) {
   };
   stub("npm", "exit 0");
   stub("git", 'echo deadbeef');
-  stub("pnpm", `touch "$5/plugin-1.2.3.tgz"`);
+  // Create the tarball where the script looks for it (its pack_dir), not by argv position.
+  stub("pnpm", `mkdir -p "$RUNNER_TEMP/clawhub-openclaw-pack" && touch "$RUNNER_TEMP/clawhub-openclaw-pack/plugin-1.2.3.tgz"`);
   stub(
     "clawhub",
     `case "$1 $2" in

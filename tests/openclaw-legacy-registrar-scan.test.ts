@@ -17,7 +17,9 @@ const FILES = [
 test("OpenClaw 1.x-only registrars are never called as api.registerX( (ClawHub inspector scan)", () => {
   const pattern = new RegExp(String.raw`\bapi\s*\)?\s*\.\s*(${LEGACY_ONLY.join("|")})\s*(?:\?\.)?\s*\(`);
   for (const file of FILES) {
-    const source = readFileSync(file, "utf8");
+    // Drop `//` line comments; the inspector strips comments too, and this
+    // keeps prose mentioning the seams from tripping the guard.
+    const source = readFileSync(file, "utf8").replace(/^\s*\/\/.*$/gm, "");
     const match = pattern.exec(source);
     assert.equal(match, null, `${file}: '${match?.[0]}' would be flagged by ClawHub's unknown-registration-name check`);
   }

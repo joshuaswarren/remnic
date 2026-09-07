@@ -102,13 +102,37 @@ test("release workflow verifies the OpenClaw ClawHub packlist after build", asyn
   );
 });
 
+function assertOrdered(haystack: string, first: string, second: string, message: string): void {
+  const a = haystack.indexOf(first);
+  const b = haystack.indexOf(second, a + first.length);
+  assert.ok(a !== -1 && b !== -1, message);
+}
+
 test("ClawHub publish script treats known transient backend failures as nonfatal after retries", async () => {
   const workflow = await readFile(".github/workflows/release-and-publish.yml", "utf8");
   const catchUp = await readFile(".github/workflows/clawhub-publish.yml", "utf8");
   const script = await readFile("scripts/clawhub-publish.sh", "utf8");
 
-  assert.match(workflow, /Publish OpenClaw plugin to ClawHub[\s\S]*bash scripts\/clawhub-publish\.sh/);
-  assert.match(catchUp, /ref: refs\/tags\/\$\{\{ inputs\.tag \}\}[\s\S]*bash scripts\/clawhub-publish\.sh/);
+  assertOrdered(
+    workflow,
+    "Publish OpenClaw plugin to ClawHub",
+    "bash scripts/clawhub-publish.sh",
+    "release workflow must run the ClawHub publish through the shared script",
+  );
+  // The catch-up workflow checks out a historical tag that predates the
+  // helper, so it must stash the helper from the workflow's own ref first.
+  assertOrdered(
+    catchUp,
+    'cp scripts/clawhub-publish.sh "${RUNNER_TEMP}/clawhub-publish.sh"',
+    "ref: refs/tags/${{ inputs.tag }}",
+    "catch-up workflow must preserve the helper before checking out the tag",
+  );
+  assertOrdered(
+    catchUp,
+    "ref: refs/tags/${{ inputs.tag }}",
+    'bash "${RUNNER_TEMP}/clawhub-publish.sh"',
+    "catch-up workflow must run the preserved helper against the tagged source",
+  );
   assert.match(
     script,
     /Too many bytes read in a single function execution/,
@@ -119,15 +143,17 @@ test("ClawHub publish script treats known transient backend failures as nonfatal
     /Your request couldn't be completed\\\. Try again later/,
     "script must recognize ClawHub's rate-limit 'Try again later' failure",
   );
-  assert.ok(
-    !script.includes("syncPackage[A-Za-z]*SearchDigests?"),
+  assert.doesNotMatch(
+    script,
+    /syncPackage\w{0,64}SearchDigest/,
     "script must select the nonfatal path on the Convex read-limit string alone, " +
       "without requiring the internal syncPackage...SearchDigest stack frame",
   );
   assert.match(script, /sleep "\$\{CLAWHUB_PUBLISH_BACKOFF_SECONDS\}"/, "transient failures must be retried with backoff");
-  assert.match(
+  assertOrdered(
     script,
-    /ClawHub publish hit its backend read limit or rate limit[\s\S]*exit 0/,
+    "ClawHub publish hit its backend read limit or rate limit",
+    "exit 0",
     "known transient ClawHub failures should not fail the release after npm publish",
   );
   assert.match(script, /\n  exit "\$\{publish_status\}"\n/, "unknown ClawHub publish failures must remain fatal");

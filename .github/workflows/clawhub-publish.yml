@@ -34,6 +34,16 @@ jobs:
             exit 1
           fi
 
+      # The tag may predate scripts/clawhub-publish.sh, so take the helper from
+      # the ref this workflow runs on, then replace the worktree with the tag.
+      - name: Checkout workflow source for the publish helper
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Preserve publish helper
+        run: cp scripts/clawhub-publish.sh "${RUNNER_TEMP}/clawhub-publish.sh"
+
       - name: Checkout tagged release source
         uses: actions/checkout@v4
         with:
@@ -68,4 +78,4 @@ jobs:
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
           SOURCE_REF: ${{ inputs.tag }}
-        run: bash scripts/clawhub-publish.sh
+        run: bash "${RUNNER_TEMP}/clawhub-publish.sh"

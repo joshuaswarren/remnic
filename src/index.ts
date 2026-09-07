@@ -3799,8 +3799,8 @@ const pluginDefinition = {
       // narrowed view and bound to locals so ClawHub's static `api.register*(`
       // scan does not flag these guarded calls as breakages on 2.0 hosts.
       const legacyMemoryApi = api as unknown as {
-        registerMemoryRuntime?: (runtime: typeof remnicMemoryRuntime) => void;
-        registerMemoryFlushPlan?: (resolver: typeof remnicMemoryFlushPlanResolver) => void;
+        registerMemoryRuntime?: (runtime: RemnicCapabilityRuntime) => void;
+        registerMemoryFlushPlan?: (resolver: () => MemoryFlushPlan) => void;
       };
       const registerRuntime = legacyMemoryApi.registerMemoryRuntime;
       const registerFlushPlan = legacyMemoryApi.registerMemoryFlushPlan;
