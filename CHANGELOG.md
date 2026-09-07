@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.68] — 2026-09-07
+
 ### Fixed
 
 - Release workflow's ClawHub publish now lives in `scripts/clawhub-publish.sh`, retries ClawHub's transient rate-limit/read-limit errors with backoff, and skips with a notice (instead of failing the release after npm and the GitHub release already succeeded) when they persist. New `clawhub-publish.yml` workflow re-runs that publish for an existing release tag.
