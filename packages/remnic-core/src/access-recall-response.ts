@@ -221,15 +221,28 @@ export async function assembleRecallResponse(
     const admittedIds = new Set(results.map((r) => r.id));
     const droppedAny = beforeIds.some((id) => !admittedIds.has(id));
     if (droppedAny) {
+      const priorDegradation = effectiveComposition.degradation;
       const filteredContext = results
         .map((result) => result.content || result.preview)
         .filter((s) => s.length > 0)
         .join("\n\n");
-      effectiveComposition = boundRecallContextComposition({
+      const rebuilt = boundRecallContextComposition({
         context: filteredContext,
         footer: effectiveComposition.footer,
         maxChars: deps.orchestrator.config.recallBudgetChars,
       });
+      effectiveComposition =
+        priorDegradation?.reason === "backend-unavailable"
+          ? {
+              ...rebuilt,
+              degradation: {
+                state: rebuilt.context.trim().length === 0 ? "missing" as const : "degraded" as const,
+                reason: "backend-unavailable" as const,
+                detail: priorDegradation.detail,
+                ...(rebuilt.degradation?.budget ? { budget: rebuilt.degradation.budget } : {}),
+              },
+            }
+          : rebuilt;
       effectiveContext = composeRecallContext(effectiveComposition);
     }
   }
@@ -291,8 +304,7 @@ export async function assembleRecallResponse(
   }
 
   const retrievalFailure =
-    effectiveComposition.degradation?.state === "missing" &&
-    effectiveComposition.degradation.reason === "backend-unavailable"
+    effectiveComposition.degradation?.reason === "backend-unavailable"
       ? {
           reason: "backend_unavailable" as const,
           detail: effectiveComposition.degradation.detail ?? "backend_unavailable",

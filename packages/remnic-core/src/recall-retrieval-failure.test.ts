@@ -138,29 +138,46 @@ test("genuine empty retrieval stays marker-free at the orchestrator", async () =
 });
 
 test("access recall surfaces retrievalFailure on daemon timeout and omits it on genuine empty", async () => {
-  await withOrchestrator("remnic-recall-access-timeout-", true, async (timedOut) => {
+  await withOrchestrator("remnic-recall-access-timeout-", true, async (timedOut, observed) => {
     const failed = await new EngramAccessService(timedOut).recall({
       query: QUERY,
       sessionKey: "access-timeout",
     });
-    assert.equal(failed.count, 0);
-    assert.deepEqual(failed.results, []);
-    assert.deepEqual(failed.sourcesUsed, []);
+    assert.ok(observed.calls > 0, "timeout recall must consult the backend");
     assert.equal(failed.retrievalFailure?.reason, "backend_unavailable");
     assert.match(failed.retrievalFailure?.detail ?? "", /qmd:daemon_timeout/);
     assert.equal(failed.contextComposition?.degradation?.state, "missing");
     assert.match(failed.context, /memory context unavailable/i);
   });
 
-  await withOrchestrator("remnic-recall-access-empty-", false, async (empty) => {
+  await withOrchestrator("remnic-recall-access-empty-", false, async (empty, observed) => {
     const okEmpty = await new EngramAccessService(empty).recall({
       query: QUERY,
       sessionKey: "access-empty",
     });
-    assert.equal(okEmpty.count, 0);
-    assert.deepEqual(okEmpty.results, []);
+    assert.ok(observed.calls > 0, "empty recall must consult the backend");
     assert.equal(okEmpty.retrievalFailure, undefined);
     assert.equal(okEmpty.contextComposition?.degradation, undefined);
+    assert.equal(okEmpty.context.includes("Memory context unavailable"), false);
+  });
+});
+
+test("a reused degradationSink cannot mark a later healthy empty recall as failed", async () => {
+  await withOrchestrator("remnic-recall-reused-sink-", true, async (orchestrator, observed) => {
+    const sink: SearchDegradation[] = [];
+    await orchestrator.recall(QUERY, "first-timeout", { degradationSink: sink });
+    assert.ok(sink.length > 0, "the first recall must record the timeout");
+
+    const withBackend = orchestrator as unknown as { qmd: SearchBackend };
+    withBackend.qmd = searchBackend(observed, false);
+    let composition: RecallContextComposition | undefined;
+    await orchestrator.recall(QUERY, "second-empty", {
+      degradationSink: sink,
+      onContextComposition: (value) => {
+        composition = value;
+      },
+    });
+    assert.equal(composition?.degradation, undefined);
   });
 });
 

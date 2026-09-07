@@ -67,6 +67,32 @@ test("#3082 daemon_timeout with recalled context keeps results and marks degrade
   assert.equal(truncated, false);
 });
 
+test("#3082 QMD-disabled backend_unavailable is not an outage", () => {
+  const { composition, context } = decideRecallContextComposition({
+    context: "",
+    maxChars: 512,
+    qmdExpected: false,
+    backendDegradations: [{ backend: "qmd", code: "backend_unavailable", detail: "qmd disabled" }],
+  });
+
+  assert.equal(context, "");
+  assert.equal("degradation" in composition, false);
+});
+
+test("#3082 timeout plus budget clip still reports backend-unavailable", () => {
+  const longContext = "A remembered deployment decision. ".repeat(40).trim();
+  const { composition, truncated } = decideRecallContextComposition({
+    context: longContext,
+    maxChars: 80,
+    backendDegradations: [{ backend: "qmd", code: "daemon_timeout", detail: "no response in 8000ms" }],
+  });
+
+  assert.equal(composition.degradation?.reason, "backend-unavailable");
+  assert.match(composition.degradation?.detail ?? "", /qmd:daemon_timeout/);
+  assert.ok(composition.degradation?.budget, "budget accounting stays on the overlay");
+  assert.equal(truncated, true);
+});
+
 test("#2972 compact form from section buckets is preferred over clipping", () => {
   const longOne = "full-form entry one with a long body ".repeat(6).trim();
   const longTwo = "full-form entry two with a long body ".repeat(6).trim();
