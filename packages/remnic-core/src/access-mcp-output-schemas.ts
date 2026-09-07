@@ -102,6 +102,10 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     results: T_ARRAY,
     fallbackUsed: T_BOOLEAN,
     sourcesUsed: T_ARRAY,
+    retrievalFailure: objectSchema({
+      reason: T_STRING,
+      detail: T_STRING,
+    }),
   }),
   recall_explain: objectSchema({
     found: T_BOOLEAN,

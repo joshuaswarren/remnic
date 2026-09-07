@@ -445,6 +445,7 @@ export interface EngramAccessRecallResponse {
   context: string;
   /** Request-local split used by adapters that must re-render a tighter prompt budget. */
   contextComposition?: RecallContextComposition;
+  retrievalFailure?: { reason: "backend_unavailable"; detail: string };
   count: number;
   memoryIds: string[];
   results: EngramAccessMemorySummary[];

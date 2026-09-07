@@ -55,6 +55,38 @@ export function reportSearchDegradation(
   }
 }
 
+/**
+ * Codes that mean the search backend could NOT answer, so an empty
+ * result set carries no information (issue #3082 / recall_why #3033).
+ * `vector_tier_unavailable` is excluded on purpose: the lexical tier
+ * still answered, so the result set is degraded but real.
+ */
+export const FATAL_SEARCH_DEGRADATION_CODES: Readonly<
+  Partial<Record<SearchDegradation["code"], true>>
+> = Object.freeze({
+  backend_unavailable: true,
+  backend_error: true,
+  daemon_timeout: true,
+  daemon_loading: true,
+  subprocess_error: true,
+  deadline_exceeded: true,
+  remote_error: true,
+});
+
+export function fatalSearchDegradations(
+  degradations: readonly SearchDegradation[],
+): SearchDegradation[] {
+  return degradations.filter((d) => FATAL_SEARCH_DEGRADATION_CODES[d.code] === true);
+}
+
+export function describeSearchDegradations(
+  degradations: readonly SearchDegradation[],
+): string {
+  return degradations
+    .map((d) => `${d.backend}:${d.code}${d.detail !== undefined ? ` (${d.detail})` : ""}`)
+    .join("; ");
+}
+
 export function resolveEnsureCollectionArgs(
   collectionOrExecution?: string | SearchExecutionOptions,
   execution?: SearchExecutionOptions

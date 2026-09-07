@@ -130,11 +130,9 @@ export class RecallInternalCoordinator {
     lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.deps.config),
   ): Promise<string> {
     const recallStart = Date.now();
-    // Backend degradations observed by this recall's QMD searches (#1536):
-    // collected via the execution-options observer and attached to the
-    // LastRecallSnapshot after it is recorded, so surfaces can distinguish
-    // "no matches" from "backend could not answer" (CLAUDE.md rule 34).
-    const backendDegradations: SearchDegradation[] = options.degradationSink ?? [];
+    // Per-recall QMD degradations (#1536/#3082). Local array so overlapping
+    // recalls that share a sink cannot mark each other failed.
+    const backendDegradations: SearchDegradation[] = [];
     // Issue #680 — historical recall.  Parse `options.asOf` once at the
     // top of the recall so each boost-pass uses identical filter logic.
     // Invalid values are rejected at input boundaries (CLI / HTTP / MCP)
@@ -4964,7 +4962,12 @@ export class RecallInternalCoordinator {
         compactContext: compactRecallContextFromBuckets(sectionBuckets),
         footer: curiosityFooter,
         maxChars: recallBudgetChars,
+        backendDegradations,
+        qmdExpected: this.deps.config.searchBackend !== "noop" && (this.deps.config.searchBackend !== "qmd" || resolveQmdCapabilities(this.deps.config).qmd),
       });
+    if (options.degradationSink) {
+      for (const d of backendDegradations) options.degradationSink.push(d);
+    }
     notifyContextComposition(options.onContextComposition, composition, (err) => {
       log.warn("recall: context composition observer failed open", err);
     });
