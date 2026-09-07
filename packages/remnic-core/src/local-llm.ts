@@ -125,7 +125,7 @@ function isLmStudioNativeModelsResponse(value: unknown): boolean {
  * Provides privacy-preserving, cost-effective LLM operations with
  * graceful fallback to cloud providers when local LLM is unavailable.
  */
-export type LocalLlmType = "lmstudio" | "ollama" | "mlx" | "vllm" | "llamacpp" | "generic";
+export type LocalLlmType = "litellm" | "lmstudio" | "ollama" | "mlx" | "vllm" | "llamacpp" | "generic";
 
 /**
  * Backends known to honor `chat_template_kwargs: { enable_thinking: false }`
@@ -169,6 +169,19 @@ interface LocalServerConfig {
 }
 
 const LOCAL_SERVERS: LocalServerConfig[] = [
+  // LiteLLM must be recognised before the llama.cpp probe: on a LiteLLM proxy
+  // `GET /health` runs a live completion against EVERY deployment in its
+  // pool, so a once-a-minute 2 s probe turns into a permanent load
+  // generator on the backends (4,600 probe completions in 12 h observed).
+  // `GET /` is auth-gated on LiteLLM and answers the JSON string
+  // "LiteLLM: RUNNING".
+  {
+    type: "litellm",
+    defaultPort: 4000,
+    healthEndpoint: "/",
+    modelsEndpoint: "/v1/models",
+    detectFn: (resp) => typeof resp === "string" && resp.includes("LiteLLM"),
+  },
   {
     type: "ollama",
     defaultPort: 11434,
@@ -435,6 +448,16 @@ export class LocalLlmClient {
     // is down (issue #2210). Tracked separately so a loaded daemon cannot cache
     // itself into a blackout.
     let sawAbortedProbe = false;
+    // Several server shapes share a probe URL (LiteLLM and Ollama both use
+    // `/`); fetch each URL once per pass.
+    const probed = new Map<string, ProbeFetchResult>();
+    const probeOnce = async (url: string): Promise<ProbeFetchResult> => {
+      const cached = probed.get(url);
+      if (cached) return cached;
+      const result = await this.fetchWithTimeout(url, 2000, undefined, signal);
+      probed.set(url, result);
+      return result;
+    };
 
     // Try to detect which server type is running
     if (signal?.aborted) return false;
@@ -442,7 +465,7 @@ export class LocalLlmClient {
       const healthUrl = `${probeBaseUrl}${serverConfig.healthEndpoint}`;
       log.debug(`checking ${serverConfig.type} at ${healthUrl}`);
 
-      const result = await this.fetchWithTimeout(healthUrl, 2000, undefined, signal);
+      const result = await probeOnce(healthUrl);
       if (result.aborted) sawAbortedProbe = true;
       if (signal?.aborted) return false;
       if (result.ok && serverConfig.detectFn(result.data)) {
