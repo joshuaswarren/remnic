@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.64] — 2026-09-07
+
 ### Fixed
 
 - `recall` no longer flattens a QMD daemon timeout into a genuine empty result. A mid-recall fatal search degradation (`daemon_timeout`, `backend_unavailable`, and the other outage codes `recall_why` already treats as fatal) now returns `retrievalFailure: { reason: "backend_unavailable", detail }` plus `contextComposition.degradation` naming the cause (`qmd:daemon_timeout`), instead of `count: 0` / `results: []` / `sourcesUsed: []` with no marker. Honest no-match stays marker-free (#3082).
