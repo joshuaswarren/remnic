@@ -15,6 +15,11 @@ import {
   RECALL_CONTEXT_SEPARATOR,
   type RecallContextComposition,
 } from "./recall-context-composition.js";
+import {
+  describeSearchDegradations,
+  fatalSearchDegradations,
+  type SearchDegradation,
+} from "./search/port.js";
 
 export type RecallCompositionChunk = string | { readonly content: string };
 
@@ -23,6 +28,14 @@ export interface DecideRecallContextCompositionInput {
   compactContext?: string;
   footer?: string;
   maxChars: number;
+  /** Mid-recall backend degradations (#3082). Absent on the healthy path. */
+  backendDegradations?: readonly SearchDegradation[];
+  /**
+   * When false, `{ backend: "qmd", code: "backend_unavailable" }` is the
+   * QMD-disabled/noop skip marker, not an outage. Other backends still count.
+   * Default true so unit tests that pass degradations stay honest.
+   */
+  qmdExpected?: boolean;
 }
 
 export interface DecidedRecallContextComposition {
@@ -65,18 +78,54 @@ export function compactRecallContextFromBuckets(
 export function decideRecallContextComposition(
   input: DecideRecallContextCompositionInput,
 ): DecidedRecallContextComposition {
-  const composition = boundRecallContextComposition({
+  const observed = input.backendDegradations ?? [];
+  const qmdExpected = input.qmdExpected !== false;
+  const fatal = fatalSearchDegradations(observed).filter(
+    (d) => qmdExpected || d.backend !== "qmd" || d.code !== "backend_unavailable",
+  );
+  if (fatal.length > 0 && input.context.trim().length === 0) {
+    const missing = composeMissingMemoryContext({
+      detail: describeSearchDegradations(fatal),
+    });
+    const composition = input.footer
+      ? { ...missing, footer: input.footer }
+      : missing;
+    return {
+      composition,
+      context: composeRecallContext(composition),
+      truncated: false,
+    };
+  }
+  const bounded = boundRecallContextComposition({
     context: input.context,
     footer: input.footer,
     maxChars: input.maxChars,
     compactContext: input.compactContext,
   });
+  if (fatal.length === 0) {
+    return {
+      composition: bounded,
+      context: composeRecallContext(bounded),
+      truncated:
+        bounded.degradation?.reason === "budget-clipped" ||
+        bounded.degradation?.reason === "budget-compacted",
+    };
+  }
+  const composition = {
+    ...bounded,
+    degradation: {
+      state: "degraded" as const,
+      reason: "backend-unavailable" as const,
+      detail: describeSearchDegradations(fatal),
+      ...(bounded.degradation?.budget ? { budget: bounded.degradation.budget } : {}),
+    },
+  };
   return {
     composition,
     context: composeRecallContext(composition),
     truncated:
-      composition.degradation?.reason === "budget-clipped" ||
-      composition.degradation?.reason === "budget-compacted",
+      bounded.degradation?.reason === "budget-clipped" ||
+      bounded.degradation?.reason === "budget-compacted",
   };
 }
 

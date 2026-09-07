@@ -27,28 +27,12 @@ import {
   type RecallWhyReport,
 } from "./recall-why.js";
 import { summarizeRecallWhy } from "./recall-why-renderer.js";
-import type { SearchDegradation } from "./search/port.js";
+import {
+  describeSearchDegradations,
+  fatalSearchDegradations,
+  type SearchDegradation,
+} from "./search/port.js";
 import type { MemoryFile, MemoryStatus } from "./types.js";
-
-/**
- * Degradation codes that mean the search backend could NOT answer, so an
- * empty pipeline carries no information. `vector_tier_unavailable` is
- * excluded on purpose: the lexical tier still answered, so the result set
- * is degraded but real.
- */
-const FATAL_DEGRADATION_CODES: Partial<Record<SearchDegradation["code"], true>> = {
-  backend_unavailable: true,
-  backend_error: true,
-  daemon_timeout: true,
-  daemon_loading: true,
-  subprocess_error: true,
-  deadline_exceeded: true,
-  remote_error: true,
-};
-
-function describeDegradations(degradations: readonly SearchDegradation[]): string {
-  return degradations.map((d) => `${d.backend}:${d.code}${d.detail !== undefined ? ` (${d.detail})` : ""}`).join("; ");
-}
 
 export interface RecallWhyRequest {
   query: string;
@@ -139,15 +123,15 @@ export async function runRecallWhy(deps: RecallWhyServiceDeps, request: RecallWh
           ...(options.abortSignal !== undefined ? { abortSignal: options.abortSignal } : {}),
           degradationSink: degradations,
         });
-        const fatal = degradations.filter((d) => FATAL_DEGRADATION_CODES[d.code] === true);
+        const fatal = fatalSearchDegradations(degradations);
         if (fatal.length > 0) {
-          return { ok: false, reason: "backend_unavailable", detail: describeDegradations(fatal) };
+          return { ok: false, reason: "backend_unavailable", detail: describeSearchDegradations(fatal) };
         }
         return { ok: true, snapshot: captured.snapshot };
       } catch (err) {
         // Cancellation is the caller's decision, not a backend outage.
         if (err instanceof Error && err.name === "AbortError") throw err;
-        const observed = degradations.length > 0 ? `${describeDegradations(degradations)}; ` : "";
+        const observed = degradations.length > 0 ? `${describeSearchDegradations(degradations)}; ` : "";
         return {
           ok: false,
           reason: "backend_unavailable",
