@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.67] — 2026-09-07
+
 ### Fixed
 
 - Local-LLM backend detection recognises a LiteLLM proxy from `GET /` and no longer probes `GET /health`, which on LiteLLM runs a live completion against every deployment in the pool once per probe.
