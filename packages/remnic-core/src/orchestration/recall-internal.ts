@@ -4963,7 +4963,7 @@ export class RecallInternalCoordinator {
         footer: curiosityFooter,
         maxChars: recallBudgetChars,
         backendDegradations,
-        qmdExpected: resolveQmdCapabilities(this.deps.config).qmd && this.deps.config.searchBackend === "qmd",
+        qmdExpected: this.deps.config.searchBackend !== "noop" && (this.deps.config.searchBackend !== "qmd" || resolveQmdCapabilities(this.deps.config).qmd),
       });
     if (options.degradationSink) {
       for (const d of backendDegradations) options.degradationSink.push(d);

@@ -18,6 +18,7 @@ import type { RecallDisclosure, RecallPlanMode } from "./types.js";
 import { displaySafeRecallSnapshot } from "./orchestration/recall-result-formatter.js";
 import {
   boundRecallContextComposition,
+  composeMissingMemoryContext,
   composeRecallContext,
   type RecallContextComposition,
 } from "./recall-context-composition.js";
@@ -233,15 +234,17 @@ export async function assembleRecallResponse(
       });
       effectiveComposition =
         priorDegradation?.reason === "backend-unavailable"
-          ? {
-              ...rebuilt,
-              degradation: {
-                state: rebuilt.context.trim().length === 0 ? "missing" as const : "degraded" as const,
-                reason: "backend-unavailable" as const,
-                detail: priorDegradation.detail,
-                ...(rebuilt.degradation?.budget ? { budget: rebuilt.degradation.budget } : {}),
-              },
-            }
+          ? rebuilt.context.trim().length === 0
+            ? composeMissingMemoryContext({ detail: priorDegradation.detail })
+            : {
+                ...rebuilt,
+                degradation: {
+                  state: "degraded" as const,
+                  reason: "backend-unavailable" as const,
+                  detail: priorDegradation.detail,
+                  ...(rebuilt.degradation?.budget ? { budget: rebuilt.degradation.budget } : {}),
+                },
+              }
           : rebuilt;
       effectiveContext = composeRecallContext(effectiveComposition);
     }
