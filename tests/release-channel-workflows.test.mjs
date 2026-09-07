@@ -141,7 +141,7 @@ test("the release-discipline gate runs as a standard pull_request workflow", () 
  * Update these literals only in a PR that deliberately changes CI ordering.
  */
 const EXPECTED_JOB_GRAPHS = Object.freeze({
-  "release-and-publish.yml": { "release-tests": [], release: ["release-tests"] },
+  "release-and-publish.yml": { "release-tests": [], release: ["release-tests"], "bootstrap-publish": [] },
   "changelog-guard.yml": { "changelog-guard": [] },
   "release-promote.yml": { promote: [] },
 });
