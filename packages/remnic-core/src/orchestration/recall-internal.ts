@@ -4964,6 +4964,7 @@ export class RecallInternalCoordinator {
         compactContext: compactRecallContextFromBuckets(sectionBuckets),
         footer: curiosityFooter,
         maxChars: recallBudgetChars,
+        backendDegradations,
       });
     notifyContextComposition(options.onContextComposition, composition, (err) => {
       log.warn("recall: context composition observer failed open", err);

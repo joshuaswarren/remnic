@@ -15,6 +15,11 @@ import {
   RECALL_CONTEXT_SEPARATOR,
   type RecallContextComposition,
 } from "./recall-context-composition.js";
+import {
+  describeSearchDegradations,
+  fatalSearchDegradations,
+  type SearchDegradation,
+} from "./search/port.js";
 
 export type RecallCompositionChunk = string | { readonly content: string };
 
@@ -23,6 +28,8 @@ export interface DecideRecallContextCompositionInput {
   compactContext?: string;
   footer?: string;
   maxChars: number;
+  /** Mid-recall backend degradations (#3082). Absent on the healthy path. */
+  backendDegradations?: readonly SearchDegradation[];
 }
 
 export interface DecidedRecallContextComposition {
@@ -65,12 +72,37 @@ export function compactRecallContextFromBuckets(
 export function decideRecallContextComposition(
   input: DecideRecallContextCompositionInput,
 ): DecidedRecallContextComposition {
-  const composition = boundRecallContextComposition({
+  const fatal = fatalSearchDegradations(input.backendDegradations ?? []);
+  if (fatal.length > 0 && input.context.trim().length === 0) {
+    const missing = composeMissingMemoryContext({
+      detail: describeSearchDegradations(fatal),
+    });
+    const composition = input.footer
+      ? { ...missing, footer: input.footer }
+      : missing;
+    return {
+      composition,
+      context: composeRecallContext(composition),
+      truncated: false,
+    };
+  }
+  const bounded = boundRecallContextComposition({
     context: input.context,
     footer: input.footer,
     maxChars: input.maxChars,
     compactContext: input.compactContext,
   });
+  const composition =
+    fatal.length > 0 && bounded.degradation === undefined
+      ? {
+          ...bounded,
+          degradation: {
+            state: "degraded" as const,
+            reason: "backend-unavailable" as const,
+            detail: describeSearchDegradations(fatal),
+          },
+        }
+      : bounded;
   return {
     composition,
     context: composeRecallContext(composition),

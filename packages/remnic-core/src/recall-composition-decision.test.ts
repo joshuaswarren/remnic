@@ -30,6 +30,43 @@ test("#2972 empty recall stays marker-free", () => {
   assert.equal("degradation" in composition, false);
 });
 
+test("#3082 empty context plus daemon_timeout is missing, not a genuine empty", () => {
+  const { composition, context } = decideRecallContextComposition({
+    context: "",
+    maxChars: 512,
+    backendDegradations: [{ backend: "qmd", code: "daemon_timeout", detail: "no response in 8000ms" }],
+  });
+
+  assert.equal(composition.degradation?.state, "missing");
+  assert.equal(composition.degradation?.reason, "backend-unavailable");
+  assert.match(composition.degradation?.detail ?? "", /qmd:daemon_timeout/);
+  assert.match(context, /memory context unavailable/i);
+});
+
+test("#3082 vector_tier_unavailable on empty context is not an outage", () => {
+  const { composition, context } = decideRecallContextComposition({
+    context: "",
+    maxChars: 512,
+    backendDegradations: [{ backend: "qmd", code: "vector_tier_unavailable" }],
+  });
+
+  assert.equal(context, "");
+  assert.equal("degradation" in composition, false);
+});
+
+test("#3082 daemon_timeout with recalled context keeps results and marks degraded", () => {
+  const { composition, truncated } = decideRecallContextComposition({
+    context: "A remembered deployment decision.",
+    maxChars: 512,
+    backendDegradations: [{ backend: "qmd", code: "daemon_timeout", detail: "cold-tier timed out" }],
+  });
+
+  assert.equal(composition.context, "A remembered deployment decision.");
+  assert.equal(composition.degradation?.state, "degraded");
+  assert.equal(composition.degradation?.reason, "backend-unavailable");
+  assert.equal(truncated, false);
+});
+
 test("#2972 compact form from section buckets is preferred over clipping", () => {
   const longOne = "full-form entry one with a long body ".repeat(6).trim();
   const longTwo = "full-form entry two with a long body ".repeat(6).trim();

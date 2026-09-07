@@ -290,6 +290,15 @@ export async function assembleRecallResponse(
     }
   }
 
+  const retrievalFailure =
+    effectiveComposition.degradation?.state === "missing" &&
+    effectiveComposition.degradation.reason === "backend-unavailable"
+      ? {
+          reason: "backend_unavailable" as const,
+          detail: effectiveComposition.degradation.detail ?? "backend_unavailable",
+        }
+      : undefined;
+
   return {
     response: {
       query,
@@ -297,6 +306,7 @@ export async function assembleRecallResponse(
       namespace: effectiveNamespace,
       context: effectiveContext,
       contextComposition: effectiveComposition,
+      ...(retrievalFailure ? { retrievalFailure } : {}),
       count: filterTags && filterTags.length > 0
         ? results.length
         : (snapshot?.memoryIds.length ?? results.length),
