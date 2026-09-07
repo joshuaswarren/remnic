@@ -1,0 +1,92 @@
+name: ClawHub Publish
+
+# Catch-up publish of @remnic/plugin-openclaw to ClawHub for an EXISTING release
+# tag whose npm + GitHub release already succeeded but whose best-effort ClawHub
+# step was skipped by a transient ClawHub backend error. Builds from the tagged
+# commit only; never bumps versions, pushes, or touches npm.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag (e.g. v9.69.66)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clawhub-publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Validate tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if ! [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag must look like vX.Y.Z (got '${TAG}')"
+            exit 1
+          fi
+
+      # The tag may predate scripts/clawhub-publish.sh, so take the helper from
+      # the ref this workflow runs on, then replace the worktree with the tag.
+      - name: Checkout workflow source for the publish helper
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Preserve publish helper
+        run: cp scripts/clawhub-publish.sh "${RUNNER_TEMP}/clawhub-publish.sh"
+
+      - name: Checkout tagged release source
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+
+      - name: Verify the tag carries the build helpers
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          for f in scripts/ensure-core-build.mjs scripts/verify-openclaw-clawpack.mjs packages/plugin-openclaw/package.json; do
+            if [ ! -f "$f" ]; then
+              echo "::error::${TAG} predates ${f}; this workflow only republishes tags built by the current release pipeline."
+              exit 1
+            fi
+          done
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules
+        run: pnpm rebuild better-sqlite3
+
+      - name: Build all packages
+        run: |
+          node scripts/ensure-core-build.mjs
+          pnpm -r --filter '!@remnic/core' --filter '!remnic-workspace' run build
+          pnpm run build
+
+      - name: Verify OpenClaw ClawHub artifact packlist
+        run: pnpm run verify:openclaw-clawpack
+
+      - name: Publish OpenClaw plugin to ClawHub
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+          SOURCE_REF: ${{ inputs.tag }}
+        run: bash "${RUNNER_TEMP}/clawhub-publish.sh"
