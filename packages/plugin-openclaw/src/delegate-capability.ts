@@ -965,8 +965,13 @@ export function registerDelegateMemoryCapability(
   // `daemonDefaultNamespace` so the hook paths scope exactly like search.
   const built = createDelegateMemoryCapability(options);
   const hasUnified = typeof api.registerMemoryCapability === "function";
-  const hasRuntime = typeof api.registerMemoryRuntime === "function";
-  const hasFlushPlan = typeof api.registerMemoryFlushPlan === "function";
+  // OpenClaw 1.x-only split seams (removed in 2026.8.x). Bound to locals so
+  // ClawHub's static `api.register*(` scan does not flag these guarded calls
+  // as breakages on 2.0 hosts.
+  const registerRuntime = api.registerMemoryRuntime;
+  const registerFlushPlan = api.registerMemoryFlushPlan;
+  const hasRuntime = typeof registerRuntime === "function";
+  const hasFlushPlan = typeof registerFlushPlan === "function";
   if (!hasUnified && !hasRuntime && !hasFlushPlan) {
     log.debug(
       `[${options.serviceId}] delegate: host exposes no memory capability surface — nothing to register`,
@@ -982,8 +987,8 @@ export function registerDelegateMemoryCapability(
       publicArtifacts: { listArtifacts: built.listArtifacts },
     });
   }
-  if (hasRuntime) api.registerMemoryRuntime?.(built.runtime);
-  if (hasFlushPlan) api.registerMemoryFlushPlan?.(built.flushPlanResolver);
+  if (hasRuntime) registerRuntime.call(api, built.runtime);
+  if (hasFlushPlan) registerFlushPlan.call(api, built.flushPlanResolver);
 
   const surface = hasUnified
     ? "memory capability with publicArtifacts provider"

@@ -696,70 +696,8 @@ jobs:
       - name: Publish OpenClaw plugin to ClawHub
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
-          CLAWHUB_OWNER: "remnic"
-          CLAWHUB_PACKAGE_NAME: "@remnic/plugin-openclaw"
-          NPM_PACKAGE_NAME: "@remnic/plugin-openclaw"
-          NPM_PACKAGE_PATH: "packages/plugin-openclaw"
-        run: |
-          if [ -z "${CLAWHUB_TOKEN:-}" ]; then
-            echo "::notice title=ClawHub publish skipped::CLAWHUB_TOKEN secret is not configured."
-            exit 0
-          fi
-
-          npm install -g clawhub@0.18.0
-          clawhub login --token "${CLAWHUB_TOKEN}" --no-browser
-
-          package_version="$(node -p "require('./${NPM_PACKAGE_PATH}/package.json').version")"
-          if clawhub package inspect "${CLAWHUB_PACKAGE_NAME}" --version "${package_version}" --json >/dev/null 2>&1; then
-            echo "::notice title=ClawHub publish skipped::${CLAWHUB_PACKAGE_NAME}@${package_version} is already published."
-            exit 0
-          fi
-
-          pack_dir="${RUNNER_TEMP}/clawhub-openclaw-pack"
-          rm -rf "${pack_dir}"
-          mkdir -p "${pack_dir}"
-          pnpm --filter "${NPM_PACKAGE_NAME}" pack --pack-destination "${pack_dir}"
-          tarball="$(find "${pack_dir}" -maxdepth 1 -name '*.tgz' -print -quit)"
-          if [ -z "${tarball}" ]; then
-            echo "No ${NPM_PACKAGE_NAME} tarball produced" >&2
-            exit 1
-          fi
-
-          source_commit="$(git rev-parse HEAD)"
-          publish_log="$(mktemp)"
-          if clawhub package publish "${tarball}" \
-            --family code-plugin \
-            --name "${CLAWHUB_PACKAGE_NAME}" \
-            --owner "${CLAWHUB_OWNER}" \
-            --display-name "Remnic OpenClaw Plugin" \
-            --version "${package_version}" \
-            --host-targets openclaw \
-            --source-repo "${GITHUB_REPOSITORY}" \
-            --source-ref "${{ steps.release_metadata.outputs.tag_name }}" \
-            --source-commit "${source_commit}" \
-            --source-path "${NPM_PACKAGE_PATH}" \
-            --changelog "Publish ${CLAWHUB_PACKAGE_NAME}@${package_version} from the GitHub release workflow." \
-            --json >"${publish_log}" 2>&1; then
-            cat "${publish_log}"
-            rm -f "${publish_log}"
-          else
-            publish_status=$?
-            cat "${publish_log}"
-            if grep -q "publisher does not exist on ClawHub" "${publish_log}"; then
-              echo "::notice title=ClawHub publish skipped::The authenticated ClawHub account is not provisioned as a package publisher yet."
-              rm -f "${publish_log}"
-              exit 0
-            fi
-            if grep -q "Too many bytes read in a single function execution" "${publish_log}"; then
-              echo "::notice title=ClawHub publish skipped::ClawHub publish hit its backend read limit. npm and GitHub release publication already completed; retry the ClawHub publish after ClawHub fixes or clears the limit."
-              rm -f "${publish_log}"
-              exit 0
-            fi
-            rm -f "${publish_log}"
-            exit "${publish_status}"
-          fi
-
-          clawhub package rescan "${CLAWHUB_PACKAGE_NAME}" --yes --json || true
+          SOURCE_REF: ${{ steps.release_metadata.outputs.tag_name }}
+        run: bash scripts/clawhub-publish.sh
 
   bootstrap-publish:
     # One-time npm bootstrap for package names that do not exist on the
