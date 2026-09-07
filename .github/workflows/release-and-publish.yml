@@ -10,6 +10,10 @@ on:
         description: 'Exact version to publish (e.g. 9.0.0). Skips auto-bump when set.'
         required: false
         type: string
+      bootstrap_tag:
+        description: 'One-time npm bootstrap: publish never-published @remnic packages from an existing vX.Y.Z release tag. Skips all normal release jobs; hardcoded allowlist only.'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -22,7 +26,7 @@ concurrency:
 
 jobs:
   release-tests:
-    if: github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]' && inputs.bootstrap_tag == ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -71,7 +75,7 @@ jobs:
 
   release:
     needs: release-tests
-    if: github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]' && inputs.bootstrap_tag == ''
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -756,3 +760,134 @@ jobs:
           fi
 
           clawhub package rescan "${CLAWHUB_PACKAGE_NAME}" --yes --json || true
+
+  bootstrap-publish:
+    # One-time npm bootstrap for package names that do not exist on the
+    # registry yet: npm's publish API answers E404 when an automation
+    # identity may not CREATE a name, so trusted publishing (OIDC) can never
+    # mint a first version. This job publishes ONLY the hardcoded allowlist
+    # mirrored in scripts/npm-bootstrap-check.mjs, built from an existing
+    # immutable release tag, using the temporary NPM_BOOTSTRAP_TOKEN secret.
+    # It never bumps versions, commits, pushes, or moves dist-tags, and it
+    # cannot run for push events; normal release behavior is unchanged.
+    if: github.actor != 'github-actions[bot]' && github.event_name == 'workflow_dispatch' && inputs.bootstrap_tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Validate bootstrap tag
+        id: bootstrap_tag
+        env:
+          BOOTSTRAP_TAG: ${{ inputs.bootstrap_tag }}
+          VERSION_OVERRIDE: ${{ inputs.version_override }}
+        run: |
+          if [ -n "${VERSION_OVERRIDE}" ]; then
+            echo "::error title=Conflicting inputs::version_override and bootstrap_tag are mutually exclusive."
+            exit 1
+          fi
+          if ! [[ "${BOOTSTRAP_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Invalid bootstrap tag::${BOOTSTRAP_TAG} must match vX.Y.Z exactly."
+            exit 1
+          fi
+          echo "tag=${BOOTSTRAP_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout workflow source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Stage bootstrap classifier outside the published tree
+        run: cp scripts/npm-bootstrap-check.mjs "${RUNNER_TEMP}/npm-bootstrap-check.mjs"
+
+      - name: Checkout bootstrap tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.bootstrap_tag.outputs.tag }}
+          path: release-src
+
+      - name: Verify tagged source
+        env:
+          TAG: ${{ steps.bootstrap_tag.outputs.tag }}
+        run: |
+          ACTUAL_TAG="$(git -C release-src describe --exact-match --tags HEAD)"
+          if [ "${ACTUAL_TAG}" != "${TAG}" ]; then
+            echo "::error title=Tag mismatch::release-src is at ${ACTUAL_TAG}, expected ${TAG}."
+            exit 1
+          fi
+          ROOT_VERSION="$(node -p "require('./release-src/package.json').version")"
+          if [ "v${ROOT_VERSION}" != "${TAG}" ]; then
+            echo "::error title=Version mismatch::tagged root package.json is ${ROOT_VERSION}, tag is ${TAG#v}."
+            exit 1
+          fi
+          echo "::notice::Bootstrap source verified: ${TAG} at $(git -C release-src rev-parse HEAD)."
+
+      - name: Classify bootstrap targets against npm
+        # Fail fast on drift or unclassifiable registry state before spending
+        # minutes on install/build; the publish step re-classifies each
+        # target immediately before publishing.
+        run: node "${RUNNER_TEMP}/npm-bootstrap-check.mjs" --root release-src
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
+          cache-dependency-path: release-src/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: release-src
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules
+        working-directory: release-src
+        run: pnpm rebuild better-sqlite3
+
+      - name: Build all packages
+        working-directory: release-src
+        run: |
+          node scripts/ensure-core-build.mjs
+          pnpm -r --filter '!@remnic/core' --filter '!remnic-workspace' run build
+          pnpm run build
+
+      - name: Bootstrap absent packages to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "::error title=Missing secret::NPM_BOOTSTRAP_TOKEN is not configured; bootstrap cannot publish."
+            exit 1
+          fi
+          publish_log="$(mktemp)"
+          trap 'rm -f "$publish_log"' EXIT
+          for target in @remnic/connector-reitti @remnic/connector-x @remnic/import-okf; do
+            set +e
+            node "${RUNNER_TEMP}/npm-bootstrap-check.mjs" --root release-src --package "${target}"
+            status=$?
+            set -e
+            case "${status}" in
+              0)
+                echo "Publishing bootstrap target ${target} from release-src..."
+                if (cd "release-src/packages/${target#@remnic/}" && pnpm publish --access public --provenance --no-git-checks --tag alpha --ignore-scripts) >"$publish_log" 2>&1; then
+                  cat "$publish_log"
+                  echo "::notice::Published ${target} (first version; alpha dist-tag)."
+                else
+                  publish_status=$?
+                  cat "$publish_log"
+                  echo "::error title=Bootstrap publish failed::${target} — inspect the log above."
+                  exit "${publish_status}"
+                fi
+                ;;
+              3)
+                echo "::notice::Skipping ${target}: exact version already published (idempotent retry)."
+                ;;
+              *)
+                echo "::error title=Bootstrap target refused::${target} could not be classified for a first publish (exit ${status})."
+                exit "${status}"
+                ;;
+            esac
+          done
+          echo "::notice::Bootstrap dispatch complete: absent names published to the alpha dist-tag; already-published exact versions skipped."
