@@ -3,7 +3,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
 
-import { LocalLlmClient } from "./local-llm.js";
+import { LocalLlmClient, orderedLocalServers } from "./local-llm.js";
 import type { PluginConfig } from "./types.js";
 
 /**
@@ -34,22 +34,14 @@ function createConfig(localLlmUrl: string): PluginConfig {
   } as unknown as PluginConfig;
 }
 
-async function startLiteLlmShapedServer(): Promise<{ url: string; paths: string[]; close(): Promise<void> }> {
+async function startServer(
+  handle: (path: string, res: http.ServerResponse) => void,
+): Promise<{ url: string; paths: string[]; close(): Promise<void> }> {
   const paths: string[] = [];
   const server = http.createServer((req, res) => {
-    paths.push(req.url ?? "");
-    if (req.url === "/") {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify("LiteLLM: RUNNING"));
-      return;
-    }
-    if (req.url === "/v1/models") {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ data: [{ id: "test-local-model" }] }));
-      return;
-    }
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ healthy_endpoints: [], unhealthy_endpoints: [] }));
+    const path = req.url ?? "";
+    paths.push(path);
+    handle(path, res);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
@@ -60,6 +52,19 @@ async function startLiteLlmShapedServer(): Promise<{ url: string; paths: string[
   };
 }
 
+function json(res: http.ServerResponse, body: unknown): void {
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+function startLiteLlmShapedServer() {
+  return startServer((path, res) => {
+    if (path === "/") return json(res, "LiteLLM: RUNNING");
+    if (path === "/v1/models") return json(res, { data: [{ id: "test-local-model" }] });
+    json(res, { healthy_endpoints: [], unhealthy_endpoints: [] });
+  });
+}
+
 test("a LiteLLM proxy is detected from GET / and /health is never probed", async () => {
   const server = await startLiteLlmShapedServer();
   try {
@@ -68,6 +73,34 @@ test("a LiteLLM proxy is detected from GET / and /health is never probed", async
     assert.equal(client.getDetectedType(), "litellm");
     assert.ok(!server.paths.includes("/health"), `probe hit /health: ${server.paths.join(", ")}`);
     assert.equal(server.paths.filter((p) => p === "/").length, 1, "GET / must be fetched once per pass");
+  } finally {
+    await server.close();
+  }
+});
+
+test("LiteLLM is probed first even when the port matches llama.cpp or vLLM", () => {
+  for (const port of [8080, 8000, 11434, 1234, 4000]) {
+    const order = orderedLocalServers(`http://127.0.0.1:${port}/v1`).map((s) => s.type);
+    assert.equal(order[0], "litellm", `port ${port}: ${order.join(" > ")}`);
+  }
+  const llamaFirst = orderedLocalServers("http://127.0.0.1:8080/v1").map((s) => s.type);
+  assert.equal(llamaFirst[1], "llamacpp", "port priority still applies after LiteLLM");
+});
+
+test("a root response is fetched once even when a later detector matches it", async () => {
+  const server = await startServer((path, res) => {
+    if (path === "/") {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("Ollama is running");
+      return;
+    }
+    json(res, {});
+  });
+  try {
+    const client = new LocalLlmClient(createConfig(server.url));
+    assert.equal(await client.checkAvailability(), true);
+    assert.equal(client.getDetectedType(), "ollama");
+    assert.equal(server.paths.filter((p) => p === "/").length, 1, `paths: ${server.paths.join(", ")}`);
   } finally {
     await server.close();
   }

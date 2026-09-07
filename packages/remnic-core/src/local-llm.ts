@@ -160,7 +160,7 @@ const THINKING_SUPPRESSED_OPERATIONS: ReadonlySet<string> = new Set([
   "hourly_summary_extended",
 ]);
 
-interface LocalServerConfig {
+export interface LocalServerConfig {
   type: LocalLlmType;
   defaultPort: number;
   healthEndpoint: string;
@@ -168,20 +168,21 @@ interface LocalServerConfig {
   detectFn: (response: unknown) => boolean;
 }
 
+// LiteLLM must be recognised before the llama.cpp / vLLM probes: on a LiteLLM
+// proxy `GET /health` runs a live completion against EVERY deployment in its
+// pool, so a once-a-minute 2 s probe turns into a permanent load generator on
+// the backends (4,600 probe completions in 12 h observed). `GET /` is
+// auth-gated on LiteLLM and answers the JSON string "LiteLLM: RUNNING".
+const LITELLM_SERVER: LocalServerConfig = {
+  type: "litellm",
+  defaultPort: 4000,
+  healthEndpoint: "/",
+  modelsEndpoint: "/v1/models",
+  detectFn: (resp) => typeof resp === "string" && resp.includes("LiteLLM"),
+};
+
 const LOCAL_SERVERS: LocalServerConfig[] = [
-  // LiteLLM must be recognised before the llama.cpp probe: on a LiteLLM proxy
-  // `GET /health` runs a live completion against EVERY deployment in its
-  // pool, so a once-a-minute 2 s probe turns into a permanent load
-  // generator on the backends (4,600 probe completions in 12 h observed).
-  // `GET /` is auth-gated on LiteLLM and answers the JSON string
-  // "LiteLLM: RUNNING".
-  {
-    type: "litellm",
-    defaultPort: 4000,
-    healthEndpoint: "/",
-    modelsEndpoint: "/v1/models",
-    detectFn: (resp) => typeof resp === "string" && resp.includes("LiteLLM"),
-  },
+  LITELLM_SERVER,
   {
     type: "ollama",
     defaultPort: 11434,
@@ -219,17 +220,24 @@ const LOCAL_SERVERS: LocalServerConfig[] = [
   },
 ];
 
-function orderedLocalServers(configuredBaseUrl: string): LocalServerConfig[] {
+/**
+ * Probe order for a configured base URL. Entries whose default port matches
+ * the URL's explicit port go first, except that the LiteLLM entry always
+ * leads: its `GET /` probe is harmless on every server shape, while the
+ * llama.cpp / vLLM `GET /health` probe is a pool-wide completion on LiteLLM.
+ * Exported for tests.
+ */
+export function orderedLocalServers(configuredBaseUrl: string): LocalServerConfig[] {
   const configuredPort = explicitPortFromUrl(configuredBaseUrl);
   if (configuredPort === null) return LOCAL_SERVERS;
-  const matching = LOCAL_SERVERS.filter(
-    (serverConfig) => serverConfig.defaultPort === configuredPort,
-  );
+  const rest = LOCAL_SERVERS.filter((serverConfig) => serverConfig !== LITELLM_SERVER);
+  const matching = rest.filter((serverConfig) => serverConfig.defaultPort === configuredPort);
   if (matching.length === 0) return LOCAL_SERVERS;
   const matchingTypes = new Set(matching.map((serverConfig) => serverConfig.type));
   return [
+    LITELLM_SERVER,
     ...matching,
-    ...LOCAL_SERVERS.filter((serverConfig) => !matchingTypes.has(serverConfig.type)),
+    ...rest.filter((serverConfig) => !matchingTypes.has(serverConfig.type)),
   ];
 }
 
