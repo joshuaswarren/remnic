@@ -770,7 +770,7 @@ jobs:
     # immutable release tag, using the temporary NPM_BOOTSTRAP_TOKEN secret.
     # It never bumps versions, commits, pushes, or moves dist-tags, and it
     # cannot run for push events; normal release behavior is unchanged.
-    if: github.actor != 'github-actions[bot]' && github.event_name == 'workflow_dispatch' && inputs.bootstrap_tag != ''
+    if: github.actor != 'github-actions[bot]' && github.event_name == 'workflow_dispatch' && inputs.bootstrap_tag != '' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -788,12 +788,23 @@ jobs:
             echo "::error title=Invalid bootstrap tag::${BOOTSTRAP_TAG} must match vX.Y.Z exactly."
             exit 1
           fi
+          # One-time bootstrap: only an approved tag→commit pair may publish.
+          # Anything else is rejected; this is not a generic release path.
+          case "${BOOTSTRAP_TAG}" in
+            v9.69.64) EXPECTED_SHA="70e8607d63f86d4a2410610e97753575aecf075b" ;;
+            *)
+              echo "::error title=Untrusted bootstrap tag::${BOOTSTRAP_TAG} is not an approved bootstrap source."
+              exit 1
+              ;;
+          esac
           echo "tag=${BOOTSTRAP_TAG}" >> "$GITHUB_OUTPUT"
+          echo "expected_sha=${EXPECTED_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout workflow source
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Stage bootstrap classifier outside the published tree
         run: cp scripts/npm-bootstrap-check.mjs "${RUNNER_TEMP}/npm-bootstrap-check.mjs"
@@ -804,10 +815,12 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.bootstrap_tag.outputs.tag }}
           path: release-src
+          persist-credentials: false
 
       - name: Verify tagged source
         env:
           TAG: ${{ steps.bootstrap_tag.outputs.tag }}
+          EXPECTED_SHA: ${{ steps.bootstrap_tag.outputs.expected_sha }}
         run: |
           ACTUAL_TAG="$(git -C release-src describe --exact-match --tags HEAD)"
           if [ "${ACTUAL_TAG}" != "${TAG}" ]; then
@@ -819,7 +832,12 @@ jobs:
             echo "::error title=Version mismatch::tagged root package.json is ${ROOT_VERSION}, tag is ${TAG#v}."
             exit 1
           fi
-          echo "::notice::Bootstrap source verified: ${TAG} at $(git -C release-src rev-parse HEAD)."
+          ACTUAL_SHA="$(git -C release-src rev-parse HEAD)"
+          if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]; then
+            echo "::error title=Untrusted tag target::${TAG} resolves to ${ACTUAL_SHA}, approved source is ${EXPECTED_SHA}."
+            exit 1
+          fi
+          echo "::notice::Bootstrap source verified: ${TAG} at ${ACTUAL_SHA}."
 
       - name: Classify bootstrap targets against npm
         # Fail fast on drift or unclassifiable registry state before spending
@@ -864,30 +882,27 @@ jobs:
           publish_log="$(mktemp)"
           trap 'rm -f "$publish_log"' EXIT
           for target in @remnic/connector-reitti @remnic/connector-x @remnic/import-okf; do
-            set +e
-            node "${RUNNER_TEMP}/npm-bootstrap-check.mjs" --root release-src --package "${target}"
-            status=$?
-            set -e
-            case "${status}" in
-              0)
-                echo "Publishing bootstrap target ${target} from release-src..."
-                if (cd "release-src/packages/${target#@remnic/}" && pnpm publish --access public --provenance --no-git-checks --tag alpha --ignore-scripts) >"$publish_log" 2>&1; then
-                  cat "$publish_log"
-                  echo "::notice::Published ${target} (first version; alpha dist-tag)."
-                else
-                  publish_status=$?
-                  cat "$publish_log"
-                  echo "::error title=Bootstrap publish failed::${target} — inspect the log above."
-                  exit "${publish_status}"
-                fi
-                ;;
-              3)
-                echo "::notice::Skipping ${target}: exact version already published (idempotent retry)."
-                ;;
-              *)
-                echo "::error title=Bootstrap target refused::${target} could not be classified for a first publish (exit ${status})."
-                exit "${status}"
-                ;;
-            esac
+            target_dir="release-src/packages/${target#@remnic/}"
+            target_version="$(node -p "require('./${target_dir}/package.json').version")"
+            # Retry-safe re-checks run with the token stripped from the env;
+            # only the pinned pnpm publish below ever holds it.
+            if env -u NODE_AUTH_TOKEN npm view "${target}@${target_version}" version >/dev/null 2>&1; then
+              echo "::notice::Skipping ${target}@${target_version}: exact version already published (idempotent retry)."
+              continue
+            fi
+            if env -u NODE_AUTH_TOKEN npm view "${target}" version >/dev/null 2>&1; then
+              echo "::error title=Bootstrap target refused::${target} exists at a different version; first-publish scope exceeded."
+              exit 1
+            fi
+            echo "Publishing bootstrap target ${target}@${target_version}..."
+            if (cd "${target_dir}" && pnpm publish --access public --provenance --no-git-checks --tag alpha --ignore-scripts --registry=https://registry.npmjs.org) >"$publish_log" 2>&1; then
+              cat "$publish_log"
+              echo "::notice::Published ${target}@${target_version} (first version; alpha dist-tag)."
+            else
+              publish_status=$?
+              cat "$publish_log"
+              echo "::error title=Bootstrap publish failed::${target} — inspect the log above."
+              exit "${publish_status}"
+            fi
           done
           echo "::notice::Bootstrap dispatch complete: absent names published to the alpha dist-tag; already-published exact versions skipped."

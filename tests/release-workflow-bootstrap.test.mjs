@@ -51,6 +51,7 @@ test("normal release jobs never run in bootstrap mode", () => {
   assert.match(condition, /github\.event_name == 'workflow_dispatch'/);
   assert.match(condition, /inputs\.bootstrap_tag != ''/);
   assert.match(condition, /github\.actor != 'github-actions\[bot\]'/);
+  assert.match(condition, /github\.ref == 'refs\/heads\/main'/, "token-bearing job must only run from main");
 });
 
 test("bootstrap validates the tag before checkout and never interpolates the raw input", () => {
@@ -64,9 +65,12 @@ test("bootstrap validates the tag before checkout and never interpolates the raw
   assert.match(validate.run, /\[\[ "\$\{BOOTSTRAP_TAG\}" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]/, "tag must match vX.Y.Z on the whole string");
   assert.doesNotMatch(validate.run, /grep -Eq/, "line-oriented grep must not validate a potentially multiline value");
   assert.equal(validate.env.BOOTSTRAP_TAG, "${{ inputs.bootstrap_tag }}", "input must reach bash via env");
+  assert.match(validate.run, /v9\.69\.64\) EXPECTED_SHA="70e8607d63f86d4a2410610e97753575aecf075b"/, "only the approved tag→commit pair may bootstrap");
+  assert.match(validate.run, /not an approved bootstrap source/, "any other tag value must be rejected");
   const checkout = steps[checkoutIndex];
   assert.equal(checkout.with.ref, "${{ steps.bootstrap_tag.outputs.tag }}");
   assert.equal(checkout.with.path, "release-src");
+  assert.equal(checkout.with["persist-credentials"], false, "checkout must not persist credentials");
   for (const step of steps) {
     assert.doesNotMatch(step.run ?? "", /\$\{\{ ?inputs\.bootstrap_tag/, "raw input must never be interpolated into run scripts");
   }
@@ -77,6 +81,7 @@ test("bootstrap source is a separate immutable checkout, built and published fro
   const workflowCheckout = steps.find((step) => step.name === "Checkout workflow source");
   assert.ok(workflowCheckout, "trusted workflow source must be checked out for the classifier");
   assert.equal(workflowCheckout.with.ref, "${{ github.sha }}");
+  assert.equal(workflowCheckout.with["persist-credentials"], false, "checkout must not persist credentials");
   const stage = steps.find((step) => /Stage bootstrap classifier/.test(step.name));
   assert.ok(stage, "classifier must be staged before the tag replaces the workspace tree");
   assert.match(stage.run, /cp scripts\/npm-bootstrap-check\.mjs "\$\{RUNNER_TEMP\}/);
@@ -87,10 +92,11 @@ test("bootstrap source is a separate immutable checkout, built and published fro
     .join("\n");
   assert.match(runs, /git -C release-src describe --exact-match --tags HEAD/);
   assert.match(runs, /require\('\.\/release-src\/package\.json'\)\.version/);
-  // The helper only ever runs from RUNNER_TEMP with an explicit source root;
-  // the tagged tree has no copy of it, and nothing may fall back to the
-  // (absent) tag-tree path.
-  assert.match(runs, /npm-bootstrap-check\.mjs"? --root release-src --package/);
+  const verify = steps.find((step) => step.name === "Verify tagged source");
+  assert.ok(verify, "tagged source verification step must exist");
+  assert.equal(verify.env.EXPECTED_SHA, "${{ steps.bootstrap_tag.outputs.expected_sha }}");
+  assert.match(verify.run, /"\$\{ACTUAL_SHA\}" != "\$\{EXPECTED_SHA\}"/, "checkout SHA must equal the approved commit");
+  assert.match(runs, /npm-bootstrap-check\.mjs"? --root release-src/);
   for (const step of steps) {
     if (/Stage bootstrap classifier/.test(step.name)) continue;
     assert.doesNotMatch(step.run ?? "", /(?<!\$\{RUNNER_TEMP\}\/)npm-bootstrap-check\.mjs/, `${step.name} must use the staged RUNNER_TEMP classifier`);
@@ -108,7 +114,8 @@ test("NPM_BOOTSTRAP_TOKEN appears once, in the publish step, with scripts disabl
   const publish = steps.find((step) => step.name === PUBLISH_STEP);
   assert.ok(publish, "publish step must exist");
   assert.equal(publish.env.NODE_AUTH_TOKEN, "${{ secrets.NPM_BOOTSTRAP_TOKEN }}");
-  assert.match(publish.run, /pnpm publish --access public --provenance --no-git-checks --tag alpha --ignore-scripts/);
+  assert.match(publish.run, /pnpm publish --access public --provenance --no-git-checks --tag alpha --ignore-scripts --registry=https:\/\/registry\.npmjs\.org/);
+  assert.match(publish.run, /env -u NODE_AUTH_TOKEN npm view/, "pre-publish re-checks must run without the token");
   for (const step of steps) {
     if (step.name === PUBLISH_STEP) continue;
     assert.doesNotMatch(JSON.stringify(step.env ?? {}), /NODE_AUTH_TOKEN/, `${step.name} must not see publish credentials`);
@@ -181,4 +188,22 @@ test("classifier refuses version drift against the tagged root without touching 
   );
   assert.equal(result.status, 1);
   assert.match(result.stderr, /version drift/);
+});
+
+test("classifier refuses a publishConfig registry override without touching the network", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "npm-bootstrap-check-"));
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "remnic", version: "9.69.64" }));
+  const dir = path.join(root, "packages/connector-reitti");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    path.join(dir, "package.json"),
+    JSON.stringify({ name: "@remnic/connector-reitti", version: "9.69.64", publishConfig: { registry: "https://registry.example.test" } }),
+  );
+  const result = spawnSync(
+    process.execPath,
+    [path.join(REPO_ROOT, CLASSIFIER), "--root", root, "--package", "@remnic/connector-reitti"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /registry override/);
 });

@@ -38,6 +38,7 @@ export const BOOTSTRAP_TARGETS = Object.freeze([
 
 const E404 = /npm error code E404/;
 const NPM_VIEW_TIMEOUT_MS = 30_000;
+const NPMJS_REGISTRY = "https://registry.npmjs.org";
 
 /**
  * Pure classification from two `npm view` outcomes. `version` is
@@ -80,6 +81,9 @@ function targetVersion(root, rootVersion, target) {
   }
   if (manifest.version !== rootVersion) {
     fail(`version drift: ${target.dir} is ${manifest.version}, tagged root is ${rootVersion}`);
+  }
+  if (manifest.publishConfig?.registry && manifest.publishConfig.registry !== NPMJS_REGISTRY) {
+    fail(`registry override: ${target.dir} publishConfig.registry is ${manifest.publishConfig.registry}, refusing to send credentials anywhere but ${NPMJS_REGISTRY}`);
   }
   return manifest.version;
 }
