@@ -22,6 +22,13 @@ import {
   type LocalLlmChatCompletionOptions,
   type LocalLlmChatCompletionResult,
 } from "./local-llm-helpers.js";
+import {
+  isObjectRecord,
+  orderedLocalServers,
+  type LocalLlmType,
+} from "./local-llm-servers.js";
+
+export type { LocalLlmType } from "./local-llm-servers.js";
 
 /** Trim trailing slash characters without backtracking regex. */
 function trimTrailingSlashes(s: string): string {
@@ -32,21 +39,6 @@ function trimTrailingSlashes(s: string): string {
 
 function stripTrailingV1Path(s: string): string {
   return s.endsWith("/v1") ? s.slice(0, -3) : s;
-}
-
-function explicitPortFromUrl(s: string): number | null {
-  try {
-    const parsed = new URL(s);
-    if (!parsed.port) return null;
-    const port = Number(parsed.port);
-    return Number.isInteger(port) ? port : null;
-  } catch {
-    return null;
-  }
-}
-
-function isObjectRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function isLlamaCppPropsResponse(value: unknown): boolean {
@@ -119,15 +111,6 @@ function isLmStudioNativeModelsResponse(value: unknown): boolean {
 }
 
 /**
- * Local LLM client for OpenAI-compatible endpoints (LM Studio, Ollama, MLX, etc.)
- *
- * Based on openclaw-tactician's provider detection patterns for consistency.
- * Provides privacy-preserving, cost-effective LLM operations with
- * graceful fallback to cloud providers when local LLM is unavailable.
- */
-export type LocalLlmType = "litellm" | "lmstudio" | "ollama" | "mlx" | "vllm" | "llamacpp" | "generic";
-
-/**
  * Backends known to honor `chat_template_kwargs: { enable_thinking: false }`
  * on OpenAI-compatible `/v1/chat/completions`.  LM Studio, vLLM, and
  * llama.cpp forward this field to the jinja chat template, where thinking-capable
@@ -160,87 +143,6 @@ const THINKING_SUPPRESSED_OPERATIONS: ReadonlySet<string> = new Set([
   "hourly_summary_extended",
 ]);
 
-export interface LocalServerConfig {
-  type: LocalLlmType;
-  defaultPort: number;
-  healthEndpoint: string;
-  modelsEndpoint: string;
-  detectFn: (response: unknown) => boolean;
-}
-
-// LiteLLM must be recognised before the llama.cpp / vLLM probes: on a LiteLLM
-// proxy `GET /health` runs a live completion against EVERY deployment in its
-// pool, so a once-a-minute 2 s probe turns into a permanent load generator on
-// the backends (4,600 probe completions in 12 h observed). `GET /` is
-// auth-gated on LiteLLM and answers the JSON string "LiteLLM: RUNNING".
-const LITELLM_SERVER: LocalServerConfig = {
-  type: "litellm",
-  defaultPort: 4000,
-  healthEndpoint: "/",
-  modelsEndpoint: "/v1/models",
-  detectFn: (resp) => typeof resp === "string" && resp.includes("LiteLLM"),
-};
-
-const LOCAL_SERVERS: LocalServerConfig[] = [
-  LITELLM_SERVER,
-  {
-    type: "ollama",
-    defaultPort: 11434,
-    healthEndpoint: "/",
-    modelsEndpoint: "/api/tags",
-    detectFn: (resp) => typeof resp === "string" && resp.includes("Ollama"),
-  },
-  {
-    type: "llamacpp",
-    defaultPort: 8080,
-    healthEndpoint: "/health",
-    modelsEndpoint: "/v1/models",
-    detectFn: (resp) => isObjectRecord(resp) && resp.status === "ok",
-  },
-  {
-    type: "mlx",
-    defaultPort: 8080,
-    healthEndpoint: "/v1/models",
-    modelsEndpoint: "/v1/models",
-    detectFn: (resp) => isObjectRecord(resp) && Array.isArray(resp.data),
-  },
-  {
-    type: "lmstudio",
-    defaultPort: 1234,
-    healthEndpoint: "/v1/models",
-    modelsEndpoint: "/v1/models",
-    detectFn: (resp) => isObjectRecord(resp) && Array.isArray(resp.data),
-  },
-  {
-    type: "vllm",
-    defaultPort: 8000,
-    healthEndpoint: "/health",
-    modelsEndpoint: "/v1/models",
-    detectFn: (resp) => resp === "" || (isObjectRecord(resp) && !("status" in resp)),
-  },
-];
-
-/**
- * Probe order for a configured base URL. Entries whose default port matches
- * the URL's explicit port go first, except that the LiteLLM entry always
- * leads: its `GET /` probe is harmless on every server shape, while the
- * llama.cpp / vLLM `GET /health` probe is a pool-wide completion on LiteLLM.
- * Exported for tests.
- */
-export function orderedLocalServers(configuredBaseUrl: string): LocalServerConfig[] {
-  const configuredPort = explicitPortFromUrl(configuredBaseUrl);
-  if (configuredPort === null) return LOCAL_SERVERS;
-  const rest = LOCAL_SERVERS.filter((serverConfig) => serverConfig !== LITELLM_SERVER);
-  const matching = rest.filter((serverConfig) => serverConfig.defaultPort === configuredPort);
-  if (matching.length === 0) return LOCAL_SERVERS;
-  const matchingTypes = new Set(matching.map((serverConfig) => serverConfig.type));
-  return [
-    LITELLM_SERVER,
-    ...matching,
-    ...rest.filter((serverConfig) => !matchingTypes.has(serverConfig.type)),
-  ];
-}
-
 export interface LocalModelInfo {
   id: string;
   contextWindow?: number;
@@ -265,6 +167,13 @@ type LocalLlmBackendState = {
   untilMs: number;
   reason: string;
 };
+/**
+ * Local LLM client for OpenAI-compatible endpoints (LM Studio, Ollama, MLX, etc.)
+ *
+ * Based on openclaw-tactician's provider detection patterns for consistency.
+ * Provides privacy-preserving, cost-effective LLM operations with
+ * graceful fallback to cloud providers when local LLM is unavailable.
+ */
 export class LocalLlmClient {
   private config: PluginConfig;
   private isAvailable: boolean | null = null;

@@ -3,7 +3,8 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
 
-import { LocalLlmClient, orderedLocalServers } from "./local-llm.js";
+import { LocalLlmClient } from "./local-llm.js";
+import { orderedLocalServers } from "./local-llm-servers.js";
 import type { PluginConfig } from "./types.js";
 
 /**
