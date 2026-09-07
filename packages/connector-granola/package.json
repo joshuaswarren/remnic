@@ -1,6 +1,6 @@
 {
   "name": "@remnic/connector-granola",
-  "version": "9.69.66",
+  "version": "9.69.67",
   "description": "Granola meeting-notes connector for Remnic — pull, clean, and remember meeting transcripts and notes",
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +26,7 @@
     "provenance": true
   },
   "peerDependencies": {
-    "@remnic/core": "^9.69.66"
+    "@remnic/core": "^9.69.67"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",
