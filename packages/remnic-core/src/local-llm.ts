@@ -22,6 +22,13 @@ import {
   type LocalLlmChatCompletionOptions,
   type LocalLlmChatCompletionResult,
 } from "./local-llm-helpers.js";
+import {
+  isObjectRecord,
+  orderedLocalServers,
+  type LocalLlmType,
+} from "./local-llm-servers.js";
+
+export type { LocalLlmType } from "./local-llm-servers.js";
 
 /** Trim trailing slash characters without backtracking regex. */
 function trimTrailingSlashes(s: string): string {
@@ -32,21 +39,6 @@ function trimTrailingSlashes(s: string): string {
 
 function stripTrailingV1Path(s: string): string {
   return s.endsWith("/v1") ? s.slice(0, -3) : s;
-}
-
-function explicitPortFromUrl(s: string): number | null {
-  try {
-    const parsed = new URL(s);
-    if (!parsed.port) return null;
-    const port = Number(parsed.port);
-    return Number.isInteger(port) ? port : null;
-  } catch {
-    return null;
-  }
-}
-
-function isObjectRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function isLlamaCppPropsResponse(value: unknown): boolean {
@@ -119,15 +111,6 @@ function isLmStudioNativeModelsResponse(value: unknown): boolean {
 }
 
 /**
- * Local LLM client for OpenAI-compatible endpoints (LM Studio, Ollama, MLX, etc.)
- *
- * Based on openclaw-tactician's provider detection patterns for consistency.
- * Provides privacy-preserving, cost-effective LLM operations with
- * graceful fallback to cloud providers when local LLM is unavailable.
- */
-export type LocalLlmType = "lmstudio" | "ollama" | "mlx" | "vllm" | "llamacpp" | "generic";
-
-/**
  * Backends known to honor `chat_template_kwargs: { enable_thinking: false }`
  * on OpenAI-compatible `/v1/chat/completions`.  LM Studio, vLLM, and
  * llama.cpp forward this field to the jinja chat template, where thinking-capable
@@ -160,66 +143,6 @@ const THINKING_SUPPRESSED_OPERATIONS: ReadonlySet<string> = new Set([
   "hourly_summary_extended",
 ]);
 
-interface LocalServerConfig {
-  type: LocalLlmType;
-  defaultPort: number;
-  healthEndpoint: string;
-  modelsEndpoint: string;
-  detectFn: (response: unknown) => boolean;
-}
-
-const LOCAL_SERVERS: LocalServerConfig[] = [
-  {
-    type: "ollama",
-    defaultPort: 11434,
-    healthEndpoint: "/",
-    modelsEndpoint: "/api/tags",
-    detectFn: (resp) => typeof resp === "string" && resp.includes("Ollama"),
-  },
-  {
-    type: "llamacpp",
-    defaultPort: 8080,
-    healthEndpoint: "/health",
-    modelsEndpoint: "/v1/models",
-    detectFn: (resp) => isObjectRecord(resp) && resp.status === "ok",
-  },
-  {
-    type: "mlx",
-    defaultPort: 8080,
-    healthEndpoint: "/v1/models",
-    modelsEndpoint: "/v1/models",
-    detectFn: (resp) => isObjectRecord(resp) && Array.isArray(resp.data),
-  },
-  {
-    type: "lmstudio",
-    defaultPort: 1234,
-    healthEndpoint: "/v1/models",
-    modelsEndpoint: "/v1/models",
-    detectFn: (resp) => isObjectRecord(resp) && Array.isArray(resp.data),
-  },
-  {
-    type: "vllm",
-    defaultPort: 8000,
-    healthEndpoint: "/health",
-    modelsEndpoint: "/v1/models",
-    detectFn: (resp) => resp === "" || (isObjectRecord(resp) && !("status" in resp)),
-  },
-];
-
-function orderedLocalServers(configuredBaseUrl: string): LocalServerConfig[] {
-  const configuredPort = explicitPortFromUrl(configuredBaseUrl);
-  if (configuredPort === null) return LOCAL_SERVERS;
-  const matching = LOCAL_SERVERS.filter(
-    (serverConfig) => serverConfig.defaultPort === configuredPort,
-  );
-  if (matching.length === 0) return LOCAL_SERVERS;
-  const matchingTypes = new Set(matching.map((serverConfig) => serverConfig.type));
-  return [
-    ...matching,
-    ...LOCAL_SERVERS.filter((serverConfig) => !matchingTypes.has(serverConfig.type)),
-  ];
-}
-
 export interface LocalModelInfo {
   id: string;
   contextWindow?: number;
@@ -244,6 +167,13 @@ type LocalLlmBackendState = {
   untilMs: number;
   reason: string;
 };
+/**
+ * Local LLM client for OpenAI-compatible endpoints (LM Studio, Ollama, MLX, etc.)
+ *
+ * Based on openclaw-tactician's provider detection patterns for consistency.
+ * Provides privacy-preserving, cost-effective LLM operations with
+ * graceful fallback to cloud providers when local LLM is unavailable.
+ */
 export class LocalLlmClient {
   private config: PluginConfig;
   private isAvailable: boolean | null = null;
@@ -435,6 +365,16 @@ export class LocalLlmClient {
     // is down (issue #2210). Tracked separately so a loaded daemon cannot cache
     // itself into a blackout.
     let sawAbortedProbe = false;
+    // Several server shapes share a probe URL (LiteLLM and Ollama both use
+    // `/`); fetch each URL once per pass.
+    const probed = new Map<string, ProbeFetchResult>();
+    const probeOnce = async (url: string): Promise<ProbeFetchResult> => {
+      const cached = probed.get(url);
+      if (cached) return cached;
+      const result = await this.fetchWithTimeout(url, 2000, undefined, signal);
+      probed.set(url, result);
+      return result;
+    };
 
     // Try to detect which server type is running
     if (signal?.aborted) return false;
@@ -442,7 +382,7 @@ export class LocalLlmClient {
       const healthUrl = `${probeBaseUrl}${serverConfig.healthEndpoint}`;
       log.debug(`checking ${serverConfig.type} at ${healthUrl}`);
 
-      const result = await this.fetchWithTimeout(healthUrl, 2000, undefined, signal);
+      const result = await probeOnce(healthUrl);
       if (result.aborted) sawAbortedProbe = true;
       if (signal?.aborted) return false;
       if (result.ok && serverConfig.detectFn(result.data)) {
