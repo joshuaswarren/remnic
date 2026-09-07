@@ -79,13 +79,21 @@ test("a LiteLLM proxy is detected from GET / and /health is never probed", async
   }
 });
 
-test("LiteLLM is probed first even when the port matches llama.cpp or vLLM", () => {
-  for (const port of [8080, 8000, 11434, 1234, 4000]) {
-    const order = orderedLocalServers(`http://127.0.0.1:${port}/v1`).map((s) => s.type);
-    assert.equal(order[0], "litellm", `port ${port}: ${order.join(" > ")}`);
+test("LiteLLM is probed before any /health probe on every port; other orders are unchanged", () => {
+  for (const port of [8080, 8000, 11434, 1234, 4000, null]) {
+    const url = port === null ? "http://127.0.0.1/v1" : `http://127.0.0.1:${port}/v1`;
+    const order = orderedLocalServers(url);
+    const types = order.map((s) => s.type);
+    const litellmAt = types.indexOf("litellm");
+    const firstHealth = order.findIndex((s) => s.healthEndpoint === "/health");
+    assert.ok(litellmAt !== -1 && litellmAt < firstHealth, `${url}: ${types.join(" > ")}`);
   }
-  const llamaFirst = orderedLocalServers("http://127.0.0.1:8080/v1").map((s) => s.type);
-  assert.equal(llamaFirst[1], "llamacpp", "port priority still applies after LiteLLM");
+  // Port-matched shapes with harmless probes keep the lead they had before.
+  assert.equal(orderedLocalServers("http://127.0.0.1:1234/v1")[0]?.type, "lmstudio");
+  assert.equal(orderedLocalServers("http://127.0.0.1:11434/v1")[0]?.type, "ollama");
+  // LiteLLM displaces the port-matched llama.cpp / vLLM /health probes.
+  assert.deepEqual(orderedLocalServers("http://127.0.0.1:8080/v1").map((s) => s.type).slice(0, 3), ["litellm", "llamacpp", "mlx"]);
+  assert.deepEqual(orderedLocalServers("http://127.0.0.1:8000/v1").map((s) => s.type).slice(0, 2), ["litellm", "vllm"]);
 });
 
 test("a root response is fetched once even when a later detector matches it", async () => {
