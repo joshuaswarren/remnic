@@ -115,7 +115,8 @@ test("NPM_BOOTSTRAP_TOKEN appears once, in the publish step, with scripts disabl
   assert.ok(publish, "publish step must exist");
   assert.equal(publish.env.NODE_AUTH_TOKEN, "${{ secrets.NPM_BOOTSTRAP_TOKEN }}");
   assert.match(publish.run, /pnpm publish --access public --provenance --no-git-checks --tag alpha --ignore-scripts --registry=https:\/\/registry\.npmjs\.org/);
-  assert.match(publish.run, /env -u NODE_AUTH_TOKEN npm view/, "pre-publish re-checks must run without the token");
+  assert.match(publish.run, /env -u NODE_AUTH_TOKEN node "\$\{RUNNER_TEMP\}\/npm-bootstrap-check\.mjs" --root release-src --package/, "pre-publish re-checks must reuse the fail-closed classifier without the token");
+  assert.match(publish.run, /case "\$\{status\}" in[\s\S]*exit "\$\{status\}"/, "non-publish and non-skip classifier outcomes must abort the run");
   for (const step of steps) {
     if (step.name === PUBLISH_STEP) continue;
     assert.doesNotMatch(JSON.stringify(step.env ?? {}), /NODE_AUTH_TOKEN/, `${step.name} must not see publish credentials`);
