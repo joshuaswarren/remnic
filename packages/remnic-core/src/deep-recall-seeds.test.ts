@@ -51,3 +51,38 @@ test("seed search forwards the cancellation signal and the capped limit to the r
   assert.equal(captured?.execution?.signal, controller.signal, "the transport signal reaches the search router");
   assert.equal(resolverCalls, 2, "each returned hit is resolved per hit");
 });
+
+test("resolve-miss drops the hit instead of admitting the bare docid (issue #3087)", async () => {
+  const resolvedPaths: string[] = [];
+  const router: DeepRecallSeedRouter = {
+    async searchAcrossNamespaces() {
+      return [
+        { path: "entities/company-x.md", docid: "foreign-doc-42", score: 0.7 },
+        { path: "facts/2026-09-12/fact-good.md", docid: "doc-good", score: 0.6 },
+        { path: "", docid: "doc-nopath", score: 0.5 },
+      ];
+    },
+  };
+  const searchSeed = createDeepRecallSeedSearch({
+    namespace: "ns_3087",
+    storage: { dir: "/synthetic/ns_3087", readMemoryByPath: async () => null },
+    router,
+    resolver: {
+      async readQmdResultMemory(resultPath) {
+        resolvedPaths.push(resultPath);
+        return resultPath === "facts/2026-09-12/fact-good.md"
+          ? { frontmatter: { id: "fact-good-123" } }
+          : null;
+      },
+    },
+  });
+
+  const seeds = await searchSeed("company x", 3);
+
+  assert.deepEqual(
+    seeds,
+    [{ memoryId: "fact-good-123", score: 0.6 }],
+    "a hit the resolver cannot resolve is dropped, never admitted by its bare docid",
+  );
+  assert.ok(!resolvedPaths.includes(""), "an empty path is skipped before the resolver");
+});
