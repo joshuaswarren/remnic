@@ -125,6 +125,10 @@ import { applySemanticMergeAtPersist, runMergedTargetPostEffects, writeMergedVer
 import { buildMergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
 import { persistMergedTargetThreadEpisode } from "./semantic-merge-commit-effects.js";
 import { ExtractionAnchorSnapshot } from "./extraction-anchor-snapshot.js";
+import {
+  applyInlineCitation as applyInlineCitationToContent,
+  normalizeStoredHashSource as normalizeStoredHashSourceContent,
+} from "./extraction-persist-citation.js";
 
 export class ExtractionPersistCoordinator {
   constructor(
@@ -145,26 +149,12 @@ export class ExtractionPersistCoordinator {
     sourceContext?: ExtractionSourceContext,
     baseNamespace?: string,
     scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
-    /** Verbatim source turn text the facts were extracted from (faithfulness gate #1576). */
     sourceText?: string,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.deps.config),
     lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.deps.config),
   ): Promise<{ persistedIds: string[]; memoryPathById: Map<string, string> }> {
-    // Inline source attribution (issue #369). When enabled, every extracted
-    // fact is rewritten to carry a compact provenance tag inside its body so
-    // the citation survives hostile memory text, copy/paste, and LLM quoting.
-    // The helper is a no-op when the feature flag is off, so legacy pipelines
-    // see zero behavioral change.
     const citationEnabled = resolvePipelineProcessingCapabilities(this.deps.config).inlineSourceAttribution === true;
     const citationTemplate = this.deps.config.inlineSourceAttributionFormat;
-    // #1909: the main-path fact writes defer their per-fact fact-hash-index flush
-    // to the orchestrator's end-of-persist reconciling batch save ONLY when fact
-    // deduplication is enabled (with it off, contentHashIndexForStorage() returns
-    // null and the batch save is a no-op, so the write must save immediately).
-    // Round 11: there is NO fact-hashes.ready marker anymore — the fact-hash
-    // index is ALWAYS rebuilt from the corpus on restart (see
-    // ensureFactHashIndexAuthoritative), so a deferred write, crash, or
-    // multi-process interleave is safe by construction with no marker to guard.
     const factDedupEnabled = resolveRecallAuxiliaryCapabilities(this.deps.config).factDeduplication;
     const harmonicConstructionEnabled = resolveCapabilities(this.deps.config).harmonicRetrieval;
     const harmonicAnchorsEnabled =
@@ -182,40 +172,16 @@ export class ExtractionPersistCoordinator {
     let harmonicSourceOrder = 0;
     const promotedCopyProbe = createBatchPromotedCopyProbe(this.deps.config, this.deps.getStorageRouter, scopeProfileWritePlan); // #2330 finding F: one promoted-copy scan per namespace per batch
 
-  // Canonicalize stored content for dedup comparison: strip citations
-  // (using the same template), sanitize, then normalize whitespace.
-  const normalizeStoredHashSource = (raw: string): string =>
-    ContentHashIndex.normalizeContent(
-      sanitizeMemoryContent(
-        citationEnabled && hasCitationForTemplate(raw, citationTemplate)
-          ? stripCitationForTemplate(raw, citationTemplate)
-          : raw,
-      ).text,
-    );
-    // The stable fields (agent, session) are computed once; `ts` is intentionally
-    // omitted here and added fresh per invocation so each fact in a large batch
-    // gets its own insertion timestamp rather than sharing a single batch-start time.
+    const normalizeStoredHashSource = (raw: string): string =>
+      normalizeStoredHashSourceContent(raw, citationEnabled, citationTemplate);
     const citationContextBase: Omit<CitationContext, "ts"> = citationEnabled
       ? {
           agent: sourceContext?.principal,
           session: sourceContext?.sessionKey,
         }
       : {};
-    const applyInlineCitation = (content: string): string => {
-      if (!citationEnabled) return content;
-      if (typeof content !== "string" || content.length === 0) return content;
-      // Build a fresh CitationContext per call so `ts` reflects the actual
-      // insertion time of each individual fact rather than the batch-start time.
-      const citationContext: CitationContext = {
-        ...citationContextBase,
-        ts: new Date().toISOString(),
-      };
-      // `attachCitation` already calls `hasCitationForTemplate` internally and
-      // is a no-op when the content already carries a citation (default or
-      // custom template).  The outer check was redundant and has been removed
-      // to avoid a maintenance hazard where the two guard paths could diverge.
-      return attachCitation(content, citationContext, citationTemplate);
-    };
+    const applyInlineCitation = (content: string): string =>
+      applyInlineCitationToContent(content, citationEnabled, citationTemplate, citationContextBase);
     const persistedIds: string[] = [];
     const memoryPathById = new Map<string, string>();
     const anchorSnapshots = new ExtractionAnchorSnapshot({
