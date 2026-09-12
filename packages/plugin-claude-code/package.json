@@ -1,6 +1,6 @@
 {
   "name": "@remnic/plugin-claude-code",
-  "version": "9.69.72",
+  "version": "9.69.73",
   "description": "Remnic memory plugin for Claude Code — hooks, skills, MCP integration",
   "type": "module",
   "license": "MIT",
