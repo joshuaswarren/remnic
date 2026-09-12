@@ -242,7 +242,7 @@ async function writeFact(memoryDir: string): Promise<void> {
   await writeFile(path.join(factsDir, "standing-fact.md"), `${fact.join("\n")}\n`, "utf-8");
 }
 
-test("zero-diff: recall output is byte-identical with the flag off vs on (pre-wiring)", async () => {
+test("recall injects the standing memory block when the flag is on", async () => {
   const off = await makeOrchestrator();
   const on = await makeOrchestrator({ recallStandingBlock: true });
   try {
@@ -250,8 +250,8 @@ test("zero-diff: recall output is byte-identical with the flag off vs on (pre-wi
     await writeFact(on.memoryDir);
     const outOff = await off.orchestrator.recall("how do deploys go out", "sess-standing-off");
     const outOn = await on.orchestrator.recall("how do deploys go out", "sess-standing-on");
-    assert.equal(outOn, outOff, "recall must not change until the wiring slice lands");
-    assert.ok(!outOn.includes("## Standing Memory (Remnic)"), "no standing block in recall output");
+    assert.ok(!outOff.includes("## Standing Memory (Remnic)"), "flag off keeps recall unchanged");
+    assert.ok(outOn.includes("## Standing Memory (Remnic)"), "flag on injects the standing block");
     assert.ok(outOn.includes("blue pipeline"), "sanity: the fact is recalled");
   } finally {
     await off.orchestrator.destroy();

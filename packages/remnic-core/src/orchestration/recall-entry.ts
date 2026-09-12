@@ -24,6 +24,7 @@ import { stateViewPacketActive } from "../recall-state-view-anchors.js";
 import { resultStateViewKey, stateViewPacketKeys } from "../recall-state-view.js";
 import { applyRecallStateViews } from "../recall-state-view-wire.js";
 import { composeRecallContext } from "../recall-context-composition.js";
+import { prefixStandingMemoryBlock } from "../standing-memory-recall.js";
 import {
   notifyContextComposition,
   recallFailureComposition,
@@ -196,7 +197,7 @@ export class RecallEntryCoordinator {
         }
       }
 
-      return recallResult;
+      return prefixStandingMemoryBlock(recallResult, this.deps.config);
     } catch (err) {
       this.deps.logRecallFailure(err);
       // endTrace() is safe here: if no trace is active (disabled or already
