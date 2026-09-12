@@ -46,7 +46,13 @@ export function renderStandingMemoryBlock(config: PluginConfig, entries: Standin
   }
 }
 
-export function prefixStandingMemoryBlock(recallResult: string, standingText: string): string {
+export function prefixStandingMemoryBlock(
+  recallResult: string,
+  standingText: string,
+  budgetChars?: number,
+): string {
   if (standingText.length === 0) return recallResult;
-  return `${standingText}\n\n${recallResult}`;
+  const combined = `${standingText}\n\n${recallResult}`;
+  if (!budgetChars || budgetChars <= 0 || combined.length <= budgetChars) return combined;
+  return combined.slice(0, budgetChars);
 }

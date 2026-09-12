@@ -187,7 +187,7 @@ export class RecallEntryCoordinator {
       const recallPromise = this.deps.recallInternal(prompt, sessionKey, recallOptions, caps, graphCaps);
       const RECALL_TIMEOUT_MS = this.deps.config.recallOuterTimeoutMs ?? 75_000;
       if (RECALL_TIMEOUT_MS <= 0) {
-        return prefixStandingMemoryBlock(await recallPromise, standingText);
+        return prefixStandingMemoryBlock(await recallPromise, standingText, this.deps.config.recallBudgetChars);
       }
 
       let timeoutHandle: NodeJS.Timeout | null = null;
@@ -223,7 +223,7 @@ export class RecallEntryCoordinator {
         }
       }
 
-      return prefixStandingMemoryBlock(recallResult, standingText);
+      return prefixStandingMemoryBlock(recallResult, standingText, this.deps.config.recallBudgetChars);
     } catch (err) {
       this.deps.logRecallFailure(err);
       this.deps.profiler.endTrace();
