@@ -1,5 +1,5 @@
 {
-  "id": "openclaw-engram",
+  "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
   "version": "9.69.72",
   "kind": "memory",
@@ -5012,6 +5012,11 @@
         "default": 2048,
         "description": "Hard character budget for the standing memory block. Pinned lines that cannot fit refuse the build rather than truncate."
       },
+      "directorySidecarsEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Populate per-directory overview sidecars on memory writes and attach neighborhood abstracts during recall (issue #3088). Default false."
+      },
       "recallRecognitionTier": {
         "type": "boolean",
         "default": false,
@@ -8783,6 +8788,11 @@
       "label": "Standing Memory Block",
       "advanced": true,
       "help": "Byte-stable pinned-memory index placed before per-turn recall to keep the LLM prefix cache warm (issue #2971)."
+    },
+    "directorySidecarsEnabled": {
+      "label": "Directory Sidecars",
+      "advanced": true,
+      "help": "Write per-directory overview.md sidecars and use them in recall drill-down (issue #3088)."
     },
     "standingBlockFreshDays": {
       "label": "Standing Block Fresh Window",

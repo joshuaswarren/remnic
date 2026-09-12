@@ -70,6 +70,16 @@ export function parseDirectorySidecarsEnabled(raw: unknown): boolean {
   return coerceBooleanLike(raw, "directorySidecarsEnabled") === true;
 }
 
+const sidecarEnabledByDir = new Map<string, boolean>();
+
+export function setDirectorySidecarsEnabledForDir(memoryDir: string, enabled: boolean): void {
+  sidecarEnabledByDir.set(path.resolve(memoryDir), enabled === true);
+}
+
+export function isDirectorySidecarsEnabledForDir(memoryDir: string): boolean {
+  return sidecarEnabledByDir.get(path.resolve(memoryDir)) === true;
+}
+
 /** Basenames never treated as child memories (ours plus OKF's reserved ones). */
 const RESERVED_CHILD_BASENAMES: Readonly<Record<string, true>> = Object.freeze({
   ...OKF_RESERVED_BASENAMES,
