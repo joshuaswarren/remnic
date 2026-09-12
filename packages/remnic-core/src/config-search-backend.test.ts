@@ -10,6 +10,8 @@ test("#3097 parseSearchBackend rejects builtin and unknown values", () => {
   assert.equal(parseSearchBackend("noop"), "noop");
   assert.throws(() => parseSearchBackend("builtin"), /must be one of: qmd, remote, noop, lancedb, meilisearch, orama/);
   assert.throws(() => parseSearchBackend("jsno"), /must be one of:/);
+  assert.throws(() => parseSearchBackend(null), /must be one of:/);
+  assert.throws(() => parseSearchBackend(1n), /must be one of:/);
 });
 
 test("#3097 parseConfig rejects searchBackend=builtin instead of coercing", () => {
