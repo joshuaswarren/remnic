@@ -24,7 +24,9 @@ test("CodeQL analyze continues on GitHub 503", () => {
 test("pr-merge-ready treats ai-reviewers, analyze, Kilo, and CodeRabbit as informational", () => {
   const source = readFileSync(new URL("../scripts/pr-merge-ready.sh", import.meta.url), "utf8");
   assert.match(source, /gate_name" == "ai-reviewers"/);
-  assert.match(source, /Kilo Code Review/);
-  assert.match(source, /CodeRabbit/);
+  assert.match(
+    source,
+    /gate_name" == "Kilo Code Review" \|\| "\$gate_name" == "CodeRabbit"/,
+  );
   assert.match(source, /REST PUT/);
 });
