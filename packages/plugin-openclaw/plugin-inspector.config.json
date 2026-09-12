@@ -29,8 +29,7 @@
       ],
       "registrations": [
         "registerTool",
-        "registerService",
-        "registerMemoryPromptSection"
+        "registerService"
       ],
       "manifestContracts": [
         "tools"

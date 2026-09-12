@@ -27,3 +27,23 @@ test("OpenClaw 1.x-only registrars are never called as api.registerX( (ClawHub i
     assert.equal(match, null, `${file}: '${match?.[0]}' would be flagged by ClawHub's unknown-registration-name check`);
   }
 });
+
+// ClawHub's publish gate fails any inspector-fixture registrar missing from
+// the target OpenClaw. `registerMemoryPromptSection` was removed in OpenClaw
+// 2.0 (2026.8.1), so listing it in plugin-inspector.config.json expected
+// registrations breaks every plugin-openclaw publish.
+const REMOVED_IN_OPENCLAW_2 = ["registerMemoryPromptSection"];
+
+test("inspector expected registrations list no registrar removed in OpenClaw 2.0", () => {
+  const file = "packages/plugin-openclaw/plugin-inspector.config.json";
+  const config = JSON.parse(readFileSync(file, "utf8")) as {
+    plugin?: { expect?: { registrations?: string[] } };
+  };
+  const names = config.plugin?.expect?.registrations ?? [];
+  const blocked = REMOVED_IN_OPENCLAW_2.filter((name) => names.includes(name));
+  assert.deepEqual(
+    blocked,
+    [],
+    `${file}: ${blocked.join(", ")} was removed in OpenClaw 2.0; listing it fails ClawHub's unknown-registration-name gate`,
+  );
+});
