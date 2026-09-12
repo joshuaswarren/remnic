@@ -230,6 +230,7 @@ async function writeFact(memoryDir: string): Promise<void> {
     `created: ${now}`,
     `updated: ${now}`,
     "source: extraction",
+    "origin: user",
     "confidence: 0.8",
     "confidenceTier: high",
     "tags: []",

@@ -21,17 +21,15 @@ export interface StandingMemorySource {
     origin?: unknown;
   };
 }
+
 export function memoriesToStandingEntries(memories: readonly StandingMemorySource[]): StandingMemoryEntry[] {
   const entries: StandingMemoryEntry[] = [];
   for (const memory of memories) {
     const id = String(memory.frontmatter.id ?? memory.id ?? memory.path ?? "");
-    if (
-      memory.frontmatter.origin != null &&
-      isUntrustedOrigin(parseOriginClass(memory.frontmatter.origin), DEFAULT_UNTRUSTED_ORIGINS)
-    ) {
+    if (!id) continue;
+    if (isUntrustedOrigin(parseOriginClass(memory.frontmatter.origin), DEFAULT_UNTRUSTED_ORIGINS)) {
       continue;
     }
-    if (!id) continue;
     const description =
       memory.content
         .split("\n")
@@ -67,7 +65,8 @@ export function prefixStandingMemoryBlock(
   budgetChars?: number,
 ): string {
   if (standingText.length === 0) return recallResult;
+  if (budgetChars === 0) return recallResult;
   const combined = `${standingText}\n\n${recallResult}`;
-  if (!budgetChars || budgetChars <= 0 || combined.length <= budgetChars) return combined;
+  if (!budgetChars || combined.length <= budgetChars) return combined;
   return combined.slice(0, budgetChars);
 }

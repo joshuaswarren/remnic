@@ -15,7 +15,7 @@ test("#3089 standing block is omitted when recallStandingBlock is off", () => {
     {
       id: "fact-1",
       content: "The blue pipeline is the only deploy path.",
-      frontmatter: { id: "fact-1", pinned: true },
+      frontmatter: { id: "fact-1", pinned: true, origin: "user" },
     },
   ]);
   const recall = "per-turn recall";
