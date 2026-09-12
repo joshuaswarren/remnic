@@ -1,3 +1,8 @@
+import {
+  DEFAULT_UNTRUSTED_ORIGINS,
+  isUntrustedOrigin,
+  parseOriginClass,
+} from "./security/origin-authority.js";
 import type { PluginConfig } from "./types.js";
 import {
   buildStandingMemoryBlock,
@@ -16,6 +21,12 @@ export function memoriesToStandingEntries(memories: readonly StandingMemorySourc
   const entries: StandingMemoryEntry[] = [];
   for (const memory of memories) {
     const id = String(memory.frontmatter.id ?? memory.id ?? memory.path ?? "");
+    if (
+      memory.frontmatter.origin != null &&
+      isUntrustedOrigin(parseOriginClass(memory.frontmatter.origin), DEFAULT_UNTRUSTED_ORIGINS)
+    ) {
+      continue;
+    }
     if (!id) continue;
     const description =
       memory.content
