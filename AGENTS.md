@@ -524,7 +524,7 @@ Established from multi-issue batch runs. Each row documents a repeatable frictio
 
 | Friction | Resolution |
 |---|---|
-| `omp` hangs at startup blocking on stdin | Route input from `/dev/null` — `omp --mode text < /dev/null`. The CLI's `readPipedInput` blocks on piped stdin indefinitely |
+| `omp` hangs at startup blocking on stdin | Use `bash scripts/omp-print.sh` (redirects stdin from `/dev/null`). Bare `omp --mode text` / hub-started omp with a pipe never EOFs: `readPipedInput` blocks indefinitely |
 | `task` subagents fail with `403 Access denied` for the model | The default subagent model may not have quota; override via explicit model selection in the spawner |
 | Background omp processes killed by shell job control | Use `setsid` + `disown` (or `nohup setsid`) to detach from the shell process group. Bare `&` does not survive the bash tool's job-reaping |
 | GraphQL rate limit exhausted by `gh issue edit` / `gh issue view --json` / `gh pr view --json` | Prefer REST: `gh api repos/.../issues/<n>`, `gh api repos/.../pulls/<n>/reviews`, `gh api repos/.../pulls/<n>/comments`. REST has a separate 5000-requests/hour budget |
