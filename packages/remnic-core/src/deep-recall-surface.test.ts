@@ -870,8 +870,8 @@ test("deep recall seeds resolve collection-qualified paths when namespaces are d
           path: rawPath,
           score: 0.5 + index / 10,
         })),
-        // A foreign-collection hit stays unresolvable: it keeps its docid and
-        // still seeds the working set, but never hydrates into the graph.
+        // A foreign-collection hit is unresolvable: skip it. Admitting the
+        // bare docid would violate the foreign-collection guard (#3087).
         { docid: "hash-doc-foreign", path: "foreign-coll/facts/2026-08-01/fact-1.md", score: 0.9 },
       ],
     };
@@ -885,15 +885,12 @@ test("deep recall seeds resolve collection-qualified paths when namespaces are d
 
     assert.deepEqual(
       seeds.map((seed) => seed.memoryId),
-      [
-        ...rawPaths.map(() => "mem-seed-1"),
-        "hash-doc-foreign",
-      ],
-      "every collection-qualified raw path form must resolve to the frontmatter id; only a foreign collection keeps its docid",
+      rawPaths.map(() => "mem-seed-1"),
+      "every collection-qualified raw path form must resolve to the frontmatter id; a foreign collection is dropped",
     );
     assert.deepEqual(
       seeds.map((seed) => seed.score),
-      [0.5, 0.6, 0.7, 0.8, 0.9],
+      [0.5, 0.6, 0.7, 0.8],
       "resolution must not disturb the hit scores",
     );
   } finally {
