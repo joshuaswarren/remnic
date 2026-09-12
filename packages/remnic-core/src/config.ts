@@ -26,6 +26,7 @@ import type {
   TrustWeights,
 } from "./types.js";
 import { parseBackgroundGeneration } from "./background-generation-config.js";
+import { parseSearchBackend } from "./config-search-backend.js";
 import { parseLocalLlmConfig } from "./local-llm-config.js";
 import { parseConvergeConfig } from "./converge-config.js";
 import { parseExternalWikiRecallGuard } from "./external-wiki-guard.js";
@@ -3173,9 +3174,7 @@ export function parseConfig(
         : 500,
 
     // Search backend abstraction
-    searchBackend: (["qmd", "remote", "noop", "lancedb", "meilisearch", "orama"] as const).includes(cfg.searchBackend as any)
-      ? (cfg.searchBackend as "qmd" | "remote" | "noop" | "lancedb" | "meilisearch" | "orama")
-      : "qmd",
+    searchBackend: parseSearchBackend(cfg.searchBackend),
     remoteSearchBaseUrl: typeof cfg.remoteSearchBaseUrl === "string" ? cfg.remoteSearchBaseUrl : undefined,
     remoteSearchApiKey: typeof cfg.remoteSearchApiKey === "string" ? cfg.remoteSearchApiKey : undefined,
     remoteSearchTimeoutMs: typeof cfg.remoteSearchTimeoutMs === "number" ? cfg.remoteSearchTimeoutMs : 30_000,
