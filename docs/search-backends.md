@@ -62,6 +62,10 @@ qmd update && qmd embed
 }
 ```
 
+Standalone daemon config accepts these keys at the top level **or** under a
+`remnic` (or legacy `engram`) block. Nested `remnic.searchBackend` /
+`remnic.qmdEnabled` win when both shapes are set.
+
 When QMD `2.5.3` is installed, Remnic uses the newer capability set when
 available: `qmd doctor` diagnostics, version-matched skill metadata, structured
 MCP `lex`/`vec`/`hyde` searches, candidate-limit forwarding, rerank toggles,
