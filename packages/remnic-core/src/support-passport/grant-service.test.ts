@@ -29,6 +29,7 @@ import {
   readPrivateFileNoFollow,
   removePrivateFilesNoFollow,
   requirePrivateFileDescriptorRoot,
+  withPrivateDirectoryNoFollow,
   writePrivateFileAtomicallyNoFollow,
 } from "./private-file.js";
 
@@ -2865,15 +2866,7 @@ test("the grant store rejects a symlinked grant directory", async () => {
   }
 });
 
-test("private file operations select supported directory access strategies", () => {
-  assert.throws(
-    () =>
-      requirePrivateFileDescriptorRoot(
-        "win32",
-        "private file directory cannot be pinned",
-      ),
-    /private file directory cannot be pinned/,
-  );
+test("private file operations select supported directory access strategies", async () => {
   assert.equal(
     requirePrivateFileDescriptorRoot("linux", "unreachable"),
     "/proc/self/fd",
@@ -2882,6 +2875,28 @@ test("private file operations select supported directory access strategies", () 
     requirePrivateFileDescriptorRoot("darwin", "unreachable"),
     "/dev/fd",
   );
+  assert.throws(
+    () => requirePrivateFileDescriptorRoot("sunos", "unreachable"),
+    /unreachable/,
+  );
+
+  // win32 has no POSIX directory-fd root; pinning degrades to the resolved
+  // stable path while the no-follow ancestor walk and containment asserts stay.
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-win32-"));
+  try {
+    const target = path.join(root, "state", "memory");
+    await mkdir(target, { recursive: true });
+    const pinned = await withPrivateDirectoryNoFollow(
+      root,
+      target,
+      "private file directory cannot be pinned",
+      async (pinnedDirectory) => pinnedDirectory,
+      "win32",
+    );
+    assert.equal(pinned, path.resolve(target));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("private directory creation syncs every verified parent entry", async () => {
@@ -3105,25 +3120,35 @@ test("the grant store rejects a symlink alias in the configured memory root", as
   }
 });
 
-test("Windows private-file operations fail before mutation", async () => {
+test("Windows private-file operations pin without a POSIX descriptor root", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-win32-"));
   try {
     const directory = path.join(root, "state", "support-passport", "grants");
-    const filePath = path.join(directory, "grant.json");
     const errorMessage = "private Windows file operation failed";
+    await ensurePrivateDirectoryNoFollow(root, directory, errorMessage, undefined, true, "win32");
+    assert.equal((await lstat(directory)).isDirectory(), true);
+
+    const liveParent = path.join(root, "live");
+    const parkedParent = path.join(root, "parked");
+    const outside = path.join(root, "outside");
+    await mkdir(liveParent);
+    await mkdir(path.join(outside, "memory"), { recursive: true });
+    await renameSync(liveParent, parkedParent);
+    await symlink(outside, liveParent, "dir");
+
     await assert.rejects(
-      ensurePrivateDirectoryNoFollow(root, directory, errorMessage, undefined, true, "win32"),
-      new RegExp(errorMessage)
-    );
-    assert.equal(
-      await lstat(directory).then(
-        () => true,
-        () => false
+      ensurePrivateDirectoryNoFollow(
+        root,
+        path.join(liveParent, "memory"),
+        errorMessage,
+        undefined,
+        true,
+        "win32",
       ),
-      false
+      new RegExp(errorMessage),
     );
     assert.equal(
-      await lstat(filePath).then(
+      await lstat(path.join(outside, "memory", "state")).then(
         () => true,
         () => false
       ),

@@ -104,6 +104,7 @@ export async function resolvePrivateDirectoryPath(
   errorMessage: string,
   platform: NodeJS.Platform = process.platform
 ): Promise<string> {
+  if (pinsDirectoriesByPath(platform)) return path.resolve(directory);
   const descriptorRoot = requirePrivateFileDescriptorRoot(platform, errorMessage);
   const pinnedPath = path.join(descriptorRoot, String(handle.fd));
   const metadata = await stat(pinnedPath);
@@ -125,6 +126,10 @@ export function requirePrivateFileDescriptorRoot(platform: NodeJS.Platform, erro
   throw new Error(errorMessage);
 }
 
+function pinsDirectoriesByPath(platform: NodeJS.Platform): boolean {
+  return platform === "win32";
+}
+
 async function openStableDirectoryFromRoot(
   trustedRoot: string,
   directory: string,
@@ -140,7 +145,7 @@ async function openStableDirectoryFromRoot(
   const root = path.resolve(trustedRoot);
   const target = path.resolve(directory);
   assertContainedPath(root, target, errorMessage);
-  requirePrivateFileDescriptorRoot(platform, errorMessage);
+  if (!pinsDirectoriesByPath(platform)) requirePrivateFileDescriptorRoot(platform, errorMessage);
   const relative = path.relative(root, target);
   const components = relative === "" ? [] : relative.split(path.sep);
   const handles: FileHandle[] = [];
@@ -149,7 +154,7 @@ async function openStableDirectoryFromRoot(
     let current = await openDirectoryNoFollow(root, errorMessage);
     handles.push(current.handle);
     for (const component of components) {
-      const pinnedParent = await resolvePrivateDirectoryPath(currentPath, current.handle, current.opened, errorMessage);
+      const pinnedParent = await resolvePrivateDirectoryPath(currentPath, current.handle, current.opened, errorMessage, platform);
       const child = await openDirectoryNoFollow(path.join(pinnedParent, component), errorMessage);
       handles.push(child.handle);
       assertStableDirectory(current.before, current.opened, await lstat(currentPath), errorMessage);
@@ -186,7 +191,7 @@ export async function ensurePrivateDirectoryNoFollow(
   const target = path.resolve(directory);
   assertContainedPath(root, target, errorMessage);
   const relative = path.relative(root, target);
-  requirePrivateFileDescriptorRoot(platform, errorMessage);
+  if (!pinsDirectoriesByPath(platform)) requirePrivateFileDescriptorRoot(platform, errorMessage);
   const components = relative === "" ? [] : relative.split(path.sep);
   const handles: FileHandle[] = [];
   let currentPath = root;
@@ -194,7 +199,7 @@ export async function ensurePrivateDirectoryNoFollow(
     let current = await openDirectoryNoFollow(root, errorMessage);
     handles.push(current.handle);
     for (const component of components) {
-      const pinnedParent = await resolvePrivateDirectoryPath(currentPath, current.handle, current.opened, errorMessage);
+      const pinnedParent = await resolvePrivateDirectoryPath(currentPath, current.handle, current.opened, errorMessage, platform);
       const childPath = path.join(pinnedParent, component);
       let created = false;
       try {
@@ -393,10 +398,12 @@ export async function appendPrivateFileInPinnedDirectory(
   errorMessage: string,
   platform: NodeJS.Platform = process.platform
 ): Promise<void> {
-  const descriptorRoot = requirePrivateFileDescriptorRoot(platform, errorMessage);
   const resolvedDirectory = path.resolve(pinnedDirectory);
-  const descriptor = path.relative(descriptorRoot, resolvedDirectory);
-  if (!/^\d+$/.test(descriptor)) throw new Error(errorMessage);
+  if (!pinsDirectoriesByPath(platform)) {
+    const descriptorRoot = requirePrivateFileDescriptorRoot(platform, errorMessage);
+    const descriptor = path.relative(descriptorRoot, resolvedDirectory);
+    if (!/^\d+$/.test(descriptor)) throw new Error(errorMessage);
+  }
   const before = await stat(resolvedDirectory);
   if (!before.isDirectory()) throw new Error(errorMessage);
   let directoryHandle: FileHandle | undefined;
