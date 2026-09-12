@@ -238,6 +238,12 @@ export class TurnIngestionCoordinator {
        */
       principalOverride?: string;
       /**
+       * Forward the observe surface's resolved scope-profile write plan so
+       * autoPromote gates see a plan instead of treating "explicit write
+       * namespace, no plan" as non-promotable (#3051). Mirrors force-flush.
+       */
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
+      /**
        * Persist the authenticated principal that owns the replay session.
        * Access observe supplies this from the transport auth boundary; replay
        * and import callers leave it unset.
@@ -335,6 +341,7 @@ export class TurnIngestionCoordinator {
               abortSignal: options.abortSignal,
               writeNamespaceOverride: options.writeNamespaceOverride,
               principalOverride: options.principalOverride,
+              scopeProfileWritePlan: options.scopeProfileWritePlan,
               onTaskSettled: (err) => (err ? reject(err) : resolve()),
             }).catch(reject);
           }),

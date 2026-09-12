@@ -864,14 +864,10 @@ export class AccessObserveWriteSurface {
         const principalOverride =
           typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined;
         // Fire-and-forget: queue extraction in the background so the HTTP
-        // response returns immediately. LCM archival (above) is also
-        // enqueue-only; extraction involves LLM calls that can take
-        // minutes under load and should not block the caller.
+        // response returns immediately; extraction LLM calls can take minutes.
         //
-        // Backpressure: the orchestrator's own extraction queue already
-        // limits concurrency (one extraction at a time per session via
-        // queueBufferedExtraction). Fire-and-forget here just decouples
-        // the HTTP response from the queue drain.
+        // Backpressure: the orchestrator's queue limits extraction concurrency
+        // (one per session); this just decouples the HTTP response from the drain.
         if (!observePreparation.isCancelled()) {
           try {
             const observeAbortController = new AbortController();
@@ -879,6 +875,7 @@ export class AccessObserveWriteSurface {
               archiveLcm: false,
               writeNamespaceOverride,
               principalOverride,
+              scopeProfileWritePlan: scope.scopeProfilePlan,
               abortSignal: observeAbortController.signal,
               ...(typeof request.authenticatedPrincipal === "string" && request.authenticatedPrincipal.trim().length > 0
                 ? { sessionOwnerPrincipal: request.authenticatedPrincipal.trim() }
