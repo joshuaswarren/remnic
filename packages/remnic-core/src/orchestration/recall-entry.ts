@@ -23,8 +23,12 @@ import type { IdentityInjectionMode, PluginConfig, QmdSearchResult } from "../ty
 import { stateViewPacketActive } from "../recall-state-view-anchors.js";
 import { resultStateViewKey, stateViewPacketKeys } from "../recall-state-view.js";
 import { applyRecallStateViews } from "../recall-state-view-wire.js";
-import { composeRecallContext } from "../recall-context-composition.js";
-import { prefixStandingMemoryBlock } from "../standing-memory-recall.js";
+import { composeRecallContext, type RecallContextComposition } from "../recall-context-composition.js";
+import {
+  memoriesToStandingEntries,
+  prefixStandingMemoryBlock,
+  renderStandingMemoryBlock,
+} from "../standing-memory-recall.js";
 import {
   notifyContextComposition,
   recallFailureComposition,
@@ -152,16 +156,38 @@ export class RecallEntryCoordinator {
       return lockedMsg;
     }
 
-    // Keep outer recall timeout above worst-case serialized hybrid search:
-    // QMD subprocess BM25 (30s) + vector (30s) can consume ~60s under contention.
+    let standingText = "";
+    if (this.deps.config.recallStandingBlock) {
+      try {
+        const memories = await this.deps.storage.readAllMemories();
+        standingText = renderStandingMemoryBlock(
+          this.deps.config,
+          memoriesToStandingEntries(memories),
+        );
+      } catch (err) {
+        log.warn(`standing memory block skipped: ${err}`);
+      }
+    }
+    const innerObserver = options.onContextComposition;
+    const recallOptions = {
+      ...options,
+      abortSignal: abortController.signal,
+      onContextComposition:
+        standingText.length > 0
+          ? (composition: RecallContextComposition) =>
+              innerObserver?.({
+                ...composition,
+                context: composition.context
+                  ? `${standingText}\n\n${composition.context}`
+                  : standingText,
+              })
+          : innerObserver,
+    };
     try {
-      const recallPromise = this.deps.recallInternal(prompt, sessionKey, {
-        ...options,
-        abortSignal: abortController.signal,
-      }, caps, graphCaps);
+      const recallPromise = this.deps.recallInternal(prompt, sessionKey, recallOptions, caps, graphCaps);
       const RECALL_TIMEOUT_MS = this.deps.config.recallOuterTimeoutMs ?? 75_000;
       if (RECALL_TIMEOUT_MS <= 0) {
-        return await recallPromise;
+        return prefixStandingMemoryBlock(await recallPromise, standingText);
       }
 
       let timeoutHandle: NodeJS.Timeout | null = null;
@@ -197,18 +223,19 @@ export class RecallEntryCoordinator {
         }
       }
 
-      return prefixStandingMemoryBlock(recallResult, this.deps.config);
+      return prefixStandingMemoryBlock(recallResult, standingText);
     } catch (err) {
       this.deps.logRecallFailure(err);
-      // endTrace() is safe here: if no trace is active (disabled or already
-      // closed by recallInternal's try/finally), it returns null immediately.
       this.deps.profiler.endTrace();
-      // Caller-cancelled recalls stay quiet: the failure was the caller's
-      // abort, not a recall degradation (issue #2972 contract).
       const missing = options.abortSignal?.aborted
         ? null
         : recallFailureComposition(err);
       if (!missing) return "";
+      if (standingText.length > 0) {
+        missing.context = missing.context
+          ? `${standingText}\n\n${missing.context}`
+          : standingText;
+      }
       notifyContextComposition(options.onContextComposition, missing, (observerErr) => {
         log.warn("recall: context composition observer failed open", observerErr);
       });

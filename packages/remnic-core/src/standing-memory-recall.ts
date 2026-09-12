@@ -1,27 +1,52 @@
 import type { PluginConfig } from "./types.js";
-import { buildStandingMemoryBlock, type StandingMemoryEntry } from "./standing-memory-block.js";
+import {
+  buildStandingMemoryBlock,
+  lintStandingBlockVolatility,
+  type StandingMemoryEntry,
+} from "./standing-memory-block.js";
 
-export function prefixStandingMemoryBlock(recallResult: string, config: PluginConfig): string {
-  if (!config.recallStandingBlock) return recallResult;
+export interface StandingMemorySource {
+  id?: string;
+  path?: string;
+  content: string;
+  frontmatter: Record<string, unknown>;
+}
+
+export function memoriesToStandingEntries(memories: readonly StandingMemorySource[]): StandingMemoryEntry[] {
   const entries: StandingMemoryEntry[] = [];
-  for (const line of recallResult.split("\n")) {
-    let description = line.trim();
-    if (description.startsWith("- ")) description = description.slice(2).trim();
-    if (description.startsWith("#") || description.length < 8) continue;
-    if (/\d{4}-\d{2}-\d{2}/.test(description) || /\d{1,2}:\d{2}/.test(description)) continue;
-    entries.push({ id: `standing-${entries.length}`, description: description.slice(0, 200) });
+  for (const memory of memories) {
+    const id = String(memory.frontmatter.id ?? memory.id ?? memory.path ?? "");
+    if (!id) continue;
+    const description =
+      memory.content
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.length > 0 && !line.startsWith("#") && !line.startsWith("---")) ?? "";
+    if (description.length < 8) continue;
+    if (lintStandingBlockVolatility(description).length > 0) continue;
+    const pinned = memory.frontmatter.pinned === true;
+    const lastChangedAt =
+      typeof memory.frontmatter.updated === "string" ? memory.frontmatter.updated : undefined;
+    entries.push({ id, description: description.slice(0, 200), pinned, lastChangedAt });
   }
-  if (entries.length === 0) return recallResult;
+  return entries;
+}
+
+export function renderStandingMemoryBlock(config: PluginConfig, entries: StandingMemoryEntry[]): string {
+  if (!config.recallStandingBlock || entries.length === 0) return "";
   try {
-    const block = buildStandingMemoryBlock({
+    return buildStandingMemoryBlock({
       entries,
       nowMs: Date.now(),
       maxChars: config.standingBlockMaxChars,
       freshDays: config.standingBlockFreshDays,
-    });
-    if (block.text.length === 0) return recallResult;
-    return `${block.text}\n\n${recallResult}`;
+    }).text;
   } catch {
-    return recallResult;
+    return "";
   }
+}
+
+export function prefixStandingMemoryBlock(recallResult: string, standingText: string): string {
+  if (standingText.length === 0) return recallResult;
+  return `${standingText}\n\n${recallResult}`;
 }
