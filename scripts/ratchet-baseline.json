@@ -52,7 +52,7 @@
       "packages/remnic-core/src/native-knowledge.ts": 1843,
       "packages/remnic-core/src/offline-sync.ts": 2646,
       "packages/remnic-core/src/operator-toolkit.ts": 2501,
-      "packages/remnic-core/src/orchestration/extraction-persist.ts": 3031,
+      "packages/remnic-core/src/orchestration/extraction-persist.ts": 2997,
       "packages/remnic-core/src/orchestration/recall-internal.ts": 5344,
       "packages/remnic-core/src/orchestration/recall-search-pipeline.ts": 1719,
       "packages/remnic-core/src/orchestrator.ts": 3977,
