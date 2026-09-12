@@ -52,6 +52,10 @@ test("every merge to main publishes to the alpha dist-tag", () => {
   // Provenance and the pnpm-over-npm requirement (issue #403) survive the change.
   assert.doesNotMatch(workspacePublish.run, /pnpm publish(?![^\n]*--provenance)/);
   assert.match(raw, /npm install -g npm@11\.16\.0/);
+  // The one-time npm bootstrap surface (issue #3103) is deleted: no
+  // bootstrap job, no bootstrap_tag dispatch input, no NPM_BOOTSTRAP_TOKEN.
+  assert.ok(!Object.hasOwn(workflow.jobs ?? {}, "bootstrap-publish"), "bootstrap-publish job must stay deleted");
+  assert.doesNotMatch(raw, /bootstrap_tag|NPM_BOOTSTRAP_TOKEN/);
 });
 
 test("the promote workflow is dispatch-only and moves dist-tags without republishing", () => {
@@ -141,7 +145,7 @@ test("the release-discipline gate runs as a standard pull_request workflow", () 
  * Update these literals only in a PR that deliberately changes CI ordering.
  */
 const EXPECTED_JOB_GRAPHS = Object.freeze({
-  "release-and-publish.yml": { "release-tests": [], release: ["release-tests"], "bootstrap-publish": [] },
+  "release-and-publish.yml": { "release-tests": [], release: ["release-tests"] },
   "changelog-guard.yml": { "changelog-guard": [] },
   "release-promote.yml": { promote: [] },
 });
