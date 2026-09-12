@@ -122,7 +122,12 @@ test("the skip report states its scope so smoke mode never claims full coverage"
 
 test("#3060 windows-smoke job timeout is above the 25-minute cancel cap", () => {
   const yaml = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  const match = /windows-smoke:[\s\S]*?timeout-minutes:\s*(\d+)/.exec(yaml);
-  assert.ok(match, "ci.yml must declare windows-smoke timeout-minutes");
+  const start = yaml.indexOf("\n  windows-smoke:");
+  assert.ok(start >= 0, "ci.yml must declare a windows-smoke job");
+  const rest = yaml.slice(start + 1);
+  const nextJob = rest.search(/\n  [A-Za-z][A-Za-z0-9_-]*:/);
+  const job = nextJob === -1 ? rest : rest.slice(0, nextJob);
+  const match = /timeout-minutes:\s*(\d+)/.exec(job);
+  assert.ok(match, "windows-smoke job must declare timeout-minutes");
   assert.ok(Number(match[1]) > 25, `windows-smoke timeout-minutes must be > 25, got ${match[1]}`);
 });
