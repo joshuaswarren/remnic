@@ -14,9 +14,13 @@ export interface StandingMemorySource {
   id?: string;
   path?: string;
   content: string;
-  frontmatter: Record<string, unknown>;
+  frontmatter: {
+    id?: unknown;
+    pinned?: unknown;
+    updated?: unknown;
+    origin?: unknown;
+  };
 }
-
 export function memoriesToStandingEntries(memories: readonly StandingMemorySource[]): StandingMemoryEntry[] {
   const entries: StandingMemoryEntry[] = [];
   for (const memory of memories) {
