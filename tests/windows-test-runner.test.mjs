@@ -119,3 +119,10 @@ test("the skip report states its scope so smoke mode never claims full coverage"
   assert.match(scoped, /per scripts\/windows-skip-list\.json within the curated smoke subset:/);
   assert.ok(scoped.includes(ENTRY.file), "scoped report must still name the skipped file");
 });
+
+test("#3060 windows-smoke job timeout is above the 25-minute cancel cap", () => {
+  const yaml = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const match = /windows-smoke:[\s\S]*?timeout-minutes:\s*(\d+)/.exec(yaml);
+  assert.ok(match, "ci.yml must declare windows-smoke timeout-minutes");
+  assert.ok(Number(match[1]) > 25, `windows-smoke timeout-minutes must be > 25, got ${match[1]}`);
+});

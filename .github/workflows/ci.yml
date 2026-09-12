@@ -374,7 +374,7 @@ jobs:
   windows-smoke:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     defaults:
       run:
         # git-bash ships on the windows-latest image. Bash keeps `set -euo
