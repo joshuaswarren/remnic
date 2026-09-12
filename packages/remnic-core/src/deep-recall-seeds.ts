@@ -15,7 +15,9 @@
  * and the two forms it cannot decode (`qmd:///`, a leading `/`) are stripped
  * for one retry. A hit with no path is dropped: its namespace membership
  * cannot be verified, and a bare docid from a foreign collection must never
- * enter the working set as a resolved memory.
+ * enter the working set as a resolved memory. A hit with a path that still
+ * fails to resolve is dropped for the same reason: the resolver miss leaves
+ * the docid as the only identity, and a docid is not a memory id.
  *
  * An unavailable namespace backend (or a missing collection) contributes an
  * empty result set and reports itself only through `execution.onDegradation`,
@@ -127,9 +129,8 @@ export function createDeepRecallSeedSearch(deps: {
     const seeds: DeepRecallSeedHit[] = [];
     for (const hit of hits) {
       if (typeof hit.path !== "string" || hit.path.length === 0) continue;
-      const memoryId =
-        (await resolveSeedMemoryId(deps.resolver, deps.storage, deps.namespace, hit.path)) ?? hit.docid;
-      if (typeof memoryId !== "string" || memoryId.length === 0) continue;
+      const memoryId = await resolveSeedMemoryId(deps.resolver, deps.storage, deps.namespace, hit.path);
+      if (memoryId === null) continue;
       seeds.push({
         memoryId,
         score: typeof hit.score === "number" && Number.isFinite(hit.score) ? hit.score : 0,
