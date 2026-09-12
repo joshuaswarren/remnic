@@ -37,6 +37,7 @@ import { PendingObserveExtractionTracker } from "./access-observe-helpers.js";
 
 import { tokenCapabilityStore } from "./access-token-capabilities.js";
 import { resolveAuthorizedNamespaceWritablePreflight } from "./access-namespace-preflight.js";
+import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { StorageManager } from "./storage.js";
 import type { EngramAccessObserveRequest } from "./access-service.js";
@@ -67,6 +68,7 @@ interface ObserveProbe {
     sessionKeys: string[];
     writeNamespaceOverride?: string;
     principalOverride?: string;
+    scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
   }>;
   objectiveStateNamespaces: string[];
 }
@@ -125,12 +127,17 @@ function makeObserveProbe(overrides: Partial<PluginConfig> = {}): ObserveProbe {
     },
     ingestReplayBatch: async (
       turns: Array<{ sessionKey: string }>,
-      options: { writeNamespaceOverride?: string; principalOverride?: string } = {},
+      options: {
+        writeNamespaceOverride?: string;
+        principalOverride?: string;
+        scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
+      } = {},
     ) => {
       extractionCalls.push({
         sessionKeys: turns.map((t) => t.sessionKey),
         writeNamespaceOverride: options.writeNamespaceOverride,
         principalOverride: options.principalOverride,
+        scopeProfileWritePlan: options.scopeProfileWritePlan,
       });
     },
   } as unknown as Orchestrator;
@@ -1212,4 +1219,64 @@ test("#1501 memorySearch collection names stay constrained to active scope profi
     /collection is not namespace-scoped/,
   );
   assert.equal(searchedNamespaces, null);
+});
+
+test("#3051 observe forwards the resolved scope-profile write plan to extraction (autoPromote userGlobal)", async () => {
+  const probe = makeObserveProbe({
+    namespacePolicies: [
+      { name: "pi-observer", readPrincipals: ["pi-observer"], writePrincipals: ["pi-observer"] },
+      { name: "pi-observer-global", readPrincipals: ["pi-observer"], writePrincipals: ["pi-observer"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-observer:", principal: "pi-observer" }],
+    scopeProfiles: {
+      userGlobalProfile: {
+        readOrder: ["userGlobal"],
+        writeDefault: "userGlobal",
+        promotionTargets: ["userGlobal"],
+        userGlobal: { namespaceTemplate: "pi-observer-global" },
+        autoPromote: {
+          enabled: true,
+          targets: ["userGlobal"],
+          categories: ["fact", "correction", "decision", "preference"],
+          minConfidenceTier: "explicit",
+        },
+      },
+    },
+    defaultScopeProfile: "userGlobalProfile",
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  const res = await service.observe(
+    observeRequest({
+      sessionKey: "pi-observer:abc123",
+      authenticatedPrincipal: "pi-observer",
+    }),
+  );
+
+  assert.ok(probe.extractionCalls.length >= 1);
+  assert.equal(probe.extractionCalls[0].writeNamespaceOverride, res.effectiveNamespace);
+  assert.ok(
+    probe.extractionCalls[0].scopeProfileWritePlan,
+    "namespaces ON + scope profile: ingestReplayBatch must receive the resolved plan, or autoPromote gates never fire",
+  );
+  assert.equal(probe.extractionCalls[0].scopeProfileWritePlan?.profileId, "userGlobalProfile");
+  assert.equal(probe.extractionCalls[0].scopeProfileWritePlan?.writeNamespace, res.effectiveNamespace);
+});
+
+test("#3051 observe omits the scope-profile write plan when namespaces are disabled", async () => {
+  const probe = makeObserveProbe({
+    namespacesEnabled: false,
+    namespacePolicies: [],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  await service.observe(observeRequest({}));
+
+  assert.ok(probe.extractionCalls.length >= 1);
+  assert.equal(
+    probe.extractionCalls[0].scopeProfileWritePlan,
+    undefined,
+    "single-store mode must not receive a scope-profile write plan",
+  );
 });

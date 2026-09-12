@@ -2987,6 +2987,8 @@ export class Orchestrator {
        * `principalOverride` (issue #570 PR 4).
        */
       principalOverride?: string;
+      /** Forward the observe surface's resolved scope-profile write plan (#3051). */
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
       /** Persist the authenticated session owner on buffered turns. */
       sessionOwnerPrincipal?: string;
     } = {},
