@@ -14,18 +14,20 @@ async function writeConfig(content: string): Promise<{ filePath: string; cleanup
   return { filePath, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
-test("#3096 top-level-only qmdEnabled/searchBackend do not resolve to noop", async () => {
+test("#3096 top-level-only searchBackend/qmdEnabled aliases are not parseConfig defaults", async () => {
   const { filePath, cleanup } = await writeConfig(
     JSON.stringify({
-      qmdEnabled: true,
-      searchBackend: "qmd",
+      qmdEnabled: false,
+      searchBackend: "noop",
     }),
   );
   try {
     const loaded = loadConfigFile(filePath);
+    assert.equal(loaded.remnic.searchBackend, "noop");
+    assert.equal(loaded.remnic.qmdEnabled, false);
     const parsed = parseConfig(loaded.remnic);
-    assert.equal(parsed.searchBackend, "qmd");
-    assert.equal(parsed.qmdEnabled, true);
+    assert.equal(parsed.searchBackend, "noop");
+    assert.equal(parsed.qmdEnabled, false);
   } finally {
     await cleanup();
   }
