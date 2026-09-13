@@ -85,8 +85,8 @@ export async function runLcmCompactionFlushHttp({
       authenticatedPrincipal: resolveRequestPrincipal(),
       ...(abortSignal !== undefined ? { abortSignal } : {}),
     });
-    abortSignal?.throwIfAborted();
     recordWriteRateLimitHit();
+    abortSignal?.throwIfAborted();
     return result;
   }
   const resolutionOutcomes = await Promise.allSettled(
@@ -144,8 +144,8 @@ export async function runLcmCompactionFlushHttp({
       ? { status: "fulfilled", namespace: requestedNamespace, result: serviceOutcome.value }
       : { status: "rejected", namespace: requestedNamespace };
   });
-  abortSignal?.throwIfAborted();
   recordWriteRateLimitHit();
+  abortSignal?.throwIfAborted();
   return {
     enabled: results.every((result) => result.status === "fulfilled" && result.result.enabled !== false),
     flushed: results.every((result) => result.status === "fulfilled" && result.result.flushed !== false),

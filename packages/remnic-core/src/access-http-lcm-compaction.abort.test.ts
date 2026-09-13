@@ -32,6 +32,7 @@ test("#3077 aborted LCM flush does not start compaction", async () => {
 
 test("#3077 aborted batch LCM flush rethrows instead of settling", async () => {
   const abort = new AbortController();
+  let hits = 0;
   await assert.rejects(
     () =>
       runLcmCompactionFlushHttp({
@@ -47,7 +48,7 @@ test("#3077 aborted batch LCM flush rethrows instead of settling", async () => {
         },
         ensureWriteRateLimitAvailable() {},
         recordWriteRateLimitHit() {
-          throw new Error("must not record a write after abort");
+          hits += 1;
         },
         resolveNamespace: (namespace) => namespace,
         resolveRequestPrincipal: () => undefined,
@@ -55,4 +56,5 @@ test("#3077 aborted batch LCM flush rethrows instead of settling", async () => {
       }),
     (err: unknown) => err instanceof Error && err.name === "AbortError",
   );
+  assert.equal(hits, 1);
 });
