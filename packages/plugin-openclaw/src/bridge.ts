@@ -384,6 +384,7 @@ export function checkDaemonHealthSync(
     timeoutMs,
     path: LIVENESS_PATH,
     fallbackPath: LEGACY_HEALTH_PATH,
+    authToken: "",
   }).ok;
 }
 

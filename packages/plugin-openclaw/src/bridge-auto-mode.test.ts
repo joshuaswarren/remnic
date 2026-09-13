@@ -47,8 +47,6 @@ const server = http.createServer((req, res) => {
   // \`hang\`: accept the connection and never answer, so the probe must burn its
   // whole timeout - the only way to observe a shared preflight deadline.
   if (workerData.hang) return;
-  // \`requireToken\`: answer 401 for anything else, the way a daemon rejects a
-  // stale credential.
   if (workerData.requireToken) {
     const auth = req.headers.authorization;
     if (auth !== \`Bearer \${workerData.requireToken}\`) {
@@ -56,6 +54,11 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ error: "unauthorized" }));
       return;
     }
+  }
+  if (workerData.rejectBearer && req.headers.authorization) {
+    res.writeHead(401, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "unauthorized" }));
+    return;
   }
   served += 1;
   // \`stallBody\`: send the headers and a partial body, then drop the socket.
@@ -95,6 +98,7 @@ async function startHealthStub(
   stallBody = false,
   listenHost?: string,
   delayMs = 0,
+  rejectBearer = false,
 ): Promise<HealthStub> {
   const worker = new Worker(
     new URL(`data:text/javascript,${encodeURIComponent(STUB_SOURCE)}`),
@@ -108,6 +112,7 @@ async function startHealthStub(
         stallBody,
         listenHost,
         delayMs,
+        rejectBearer,
         body: typeof body === "string" ? body : JSON.stringify(body),
       },
     } as ConstructorParameters<typeof Worker>[1] & { type: "module" },
@@ -661,6 +666,23 @@ test("a daemon that never opens its readiness gate stays unhealthy", async () =>
     await stub.close();
   }
 });
+
+test("#3077 liveness probe does not send a bearer token", async () => {
+  const stub = await startHealthStub({ ok: true }, 200, 0, false, undefined, false, undefined, 0, true);
+  const prior = process.env.REMNIC_AUTH_TOKEN;
+  process.env.REMNIC_AUTH_TOKEN = "should-not-be-sent";
+  try {
+    assert.equal(
+      withDaemonEnv(stub.port, () => checkDaemonHealthSync("127.0.0.1", stub.port, 2_000)),
+      true,
+    );
+  } finally {
+    if (prior === undefined) Reflect.deleteProperty(process.env, "REMNIC_AUTH_TOKEN");
+    else process.env.REMNIC_AUTH_TOKEN = prior;
+    await stub.close();
+  }
+});
+
 
 test("host and port come from ONE config file, never spliced across two", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "remnic-split-config-"));
