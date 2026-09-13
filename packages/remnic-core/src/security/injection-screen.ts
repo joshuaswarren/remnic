@@ -404,10 +404,18 @@ function hasOpaqueEmissionTarget(sentence: string): boolean {
     const token = match[3];
     if (token === undefined) continue;
     // Uppercase-initial tokens are judged by shape (marker vs acronym or
-    // field name). Lowercase words are NOT admitted as markers: ordinary
-    // English is open-ended ("must include citations"), so absence from a
-    // finite wordlist is not positive marker evidence (#3080, PR #3081 r1).
-    if (/^[a-z]/.test(token)) continue;
+    // field name). Lowercase slots need positive evidence in the slot
+    // itself (#3093): `pwned` is a canary, like CANARY, not a sentence-wide cue.
+    if (/^[a-z]/.test(token)) {
+      if (
+        token === "pwned" &&
+        /\b(?:begin|start|end)\b/i.test(verb[0]) &&
+        /^\s*(?:$|[.!?;:'"])/.test(sentence.slice(match.index + match[0].length))
+      ) {
+        return true;
+      }
+      continue;
+    }
     if (!isOrdinaryToken(token)) return true;
   }
   return false;
