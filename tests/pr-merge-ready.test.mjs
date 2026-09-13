@@ -326,11 +326,19 @@ test("treats a red ai-reviewers or analyze check as informational", async () => 
   });
 });
 
-test("blocks on a pending head check", async () => {
-  await withStubs("pending_check", async (env) => {
+test("waits on a pending head check without merging", async () => {
+  await withStubs("pending_check", async (env, { ghLog, gitLog }) => {
     const result = run(env, []);
     assert.equal(result.status, 1, `${result.stderr}\n${result.stdout}`);
-    assert.match(result.stdout, /ci: in_progress\/- \(RED\)/);
+    assert.match(result.stdout, /ci: in_progress\/- \(WAITING\)/);
+    assert.match(result.stdout, /verdict:\s+WAITING/);
+    assert.match(result.stderr, /gates not satisfied/);
+    assert.doesNotMatch(await readLog(ghLog), /merge:/);
+    assert.equal(await readLog(gitLog), "");
+
+    const check = run(env, ["--check"]);
+    assert.equal(check.status, 3, `${check.stderr}\n${check.stdout}`);
+    assert.match(check.stdout, /verdict:\s+WAITING/);
   });
 });
 
