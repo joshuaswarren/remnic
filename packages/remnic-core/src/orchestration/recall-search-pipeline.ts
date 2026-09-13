@@ -315,7 +315,7 @@ export class RecallSearchPipelineCoordinator {
       320,
       Math.max(fetchLimit, qmdFetchLimit * 5),
     );
-    const qmdRecallBudgetMs = this.deps.config.recallEnrichmentDeadlineMs ?? 25_000;
+    const qmdRecallBudgetMs = this.deps.config.recallEnrichmentDeadlineMs ?? 60_000;
     const qmdRecallBudgetEnabled = qmdRecallBudgetMs > 0;
     const startedAtMs = Date.now();
     let lastPrimaryResultCount = 0;

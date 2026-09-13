@@ -1221,11 +1221,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "qmdDaemonTimeoutMs",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "qmdRecallCacheMaxEntries",
     "issue": "#1990"
   },

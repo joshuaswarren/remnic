@@ -165,7 +165,7 @@ export class RecallInternalCoordinator {
     const recallSectionDeadlineMs = this.deps.config.recallCoreDeadlineMs ?? 75_000;
     const recallOuterTimeoutMs = this.deps.config.recallOuterTimeoutMs ?? 75_000;
     const enrichmentSectionDeadlineMs =
-      this.deps.config.recallEnrichmentDeadlineMs ?? 25_000;
+      this.deps.config.recallEnrichmentDeadlineMs ?? 60_000;
     // Wrap entire recall body in try/finally so profiling trace is always closed,
     // even on unexpected exceptions (e.g., throwIfRecallAborted, phase-1 errors).
     try {

@@ -63,7 +63,7 @@ export function parseQmdSearchStrategy(value: unknown): "hybrid" | "lex-vec" | "
 // Issue #1335. Reject non-numeric / non-integer timeouts rather than silently
 // coercing them (gotcha #51), then clamp valid integers to the documented bounds.
 export function parseQmdDaemonTimeoutMs(value: unknown): number {
-  if (value === undefined || value === null) return 8_000;
+  if (value === undefined || value === null) return 60_000;
   const coerced = coerceNumber(value);
   if (coerced === undefined || !Number.isInteger(coerced)) {
     throw new Error(
