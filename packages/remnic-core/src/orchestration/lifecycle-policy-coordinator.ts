@@ -261,12 +261,17 @@ export class LifecyclePolicyCoordinator {
     }
 
     const history = this.deps.getHandleHistory?.();
-    await runSeedGraduationPass({
+    const graduation = await runSeedGraduationPass({
       memories: allMemories,
       storage,
       config: this.config.seedGraduation,
       recalledBySession: history ? (sessionKey) => history.recent(sessionKey) : undefined,
     });
+    if (graduation.promoted > 0) {
+      await this.deps.saveContentHashIndexes().catch((err) =>
+        log.warn(`content-hash index save failed during seed graduation: ${err}`),
+      );
+    }
 
     // Report how many memories had frontmatter rewritten so callers can record a
     // catalog write touch for lifecycle-only passes (codex NR-tS).

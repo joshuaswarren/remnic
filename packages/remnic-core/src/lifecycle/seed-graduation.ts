@@ -132,6 +132,10 @@ function isEvidenceStatus(status: MemoryStatus | undefined): boolean {
   return status === undefined || status === "active" || status === "pending_review";
 }
 
+function isGraduationEvidence(memory: MemoryFile): boolean {
+  return isEvidenceStatus(memory.frontmatter.status) && memory.frontmatter.verificationState !== "disputed";
+}
+
 function hasLineageLink(seed: MemoryFile, evidence: MemoryFile): boolean {
   const seedLineage = seed.frontmatter.lineage;
   if (seedLineage !== undefined && seedLineage.includes(evidence.frontmatter.id)) return true;
@@ -279,7 +283,7 @@ export function evaluateSeedGraduation(
     const candidateCreated = createdMs(candidate);
     if (!Number.isFinite(seedCreated) || !Number.isFinite(candidateCreated)) continue;
     if (candidateCreated <= seedCreated) continue;
-    if (!isEvidenceStatus(candidate.frontmatter.status)) continue;
+    if (!isGraduationEvidence(candidate)) continue;
     const candidateText = stripAttributesSuffix(candidate.content);
     if (hasNegationWord(candidateText) !== seedNegated) {
       // Polarity-flipped restatement of the seed's core content is a
@@ -417,7 +421,7 @@ export async function runSeedGraduationPass(
     return { evaluated: 0, promoted: 0, held: 0, contradictionHeld: 0, echoSuppressed: 0, disabled: true };
   }
   const corpus = excludeSupportPassportPrivateMemories(input.memories);
-  const evidencePool = corpus.filter((memory) => isEvidenceStatus(memory.frontmatter.status));
+  const evidencePool = corpus.filter((memory) => isGraduationEvidence(memory));
 
   let promoted = 0;
   let held = 0;
@@ -427,6 +431,7 @@ export async function runSeedGraduationPass(
 
   for (const seed of corpus) {
     if (seed.frontmatter.status !== "pending_review") continue;
+    if (seed.frontmatter.verificationState === "disputed") continue;
     // Tombstone-blocked rows need revokeTombstone first; the promotion
     // method refuses them anyway, so skip before evaluating.
     if (seed.frontmatter.blockedBy !== undefined) continue;
