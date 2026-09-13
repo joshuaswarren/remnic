@@ -407,7 +407,13 @@ function hasOpaqueEmissionTarget(sentence: string): boolean {
     // field name). Lowercase slots need positive evidence in the slot
     // itself (#3093): `pwned` is a canary, like CANARY, not a sentence-wide cue.
     if (/^[a-z]/.test(token)) {
-      if (token === "pwned" && /\b(?:begin|start|end)\b/i.test(verb[0])) return true;
+      if (
+        token === "pwned" &&
+        /\b(?:begin|start|end)\b/i.test(verb[0]) &&
+        /^[\s.!?,"']*$/.test(sentence.slice(match.index + match[0].length))
+      ) {
+        return true;
+      }
       continue;
     }
     if (!isOrdinaryToken(token)) return true;

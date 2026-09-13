@@ -226,6 +226,7 @@ test("response-control-directive requires a corroborating signal, so ordinary re
     "Answers must start with yes.",
     "Replies must end with newline.",
     "The incident response must include forensic evidence when a host is pwned.",
+    "The incident response must begin with pwned hosts isolated from the network.",
     // An ordinary next line is its own locality unit: a cue there must not
     // corroborate this one, and the reverse must not quarantine prose (PR
     // #3081 post-cap).
