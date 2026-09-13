@@ -19,6 +19,7 @@ export interface StandingMemorySource {
     pinned?: unknown;
     updated?: unknown;
     origin?: unknown;
+    status?: unknown;
   };
 }
 
@@ -28,6 +29,9 @@ export function memoriesToStandingEntries(memories: readonly StandingMemorySourc
     const id = String(memory.frontmatter.id ?? memory.id ?? memory.path ?? "");
     if (!id) continue;
     if (isUntrustedOrigin(parseOriginClass(memory.frontmatter.origin), DEFAULT_UNTRUSTED_ORIGINS)) {
+      continue;
+    }
+    if (typeof memory.frontmatter.status === "string" && memory.frontmatter.status !== "active") {
       continue;
     }
     const description =

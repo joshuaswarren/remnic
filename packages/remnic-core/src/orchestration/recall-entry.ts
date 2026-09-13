@@ -158,7 +158,7 @@ export class RecallEntryCoordinator {
 
     let standingText = "";
     const standingBudget = options.budgetCharsOverride ?? this.deps.config.recallBudgetChars;
-    if (this.deps.config.recallStandingBlock && !namespacesEnabled && standingBudget !== 0) {
+    if (this.deps.config.recallStandingBlock && !namespacesEnabled && standingBudget !== 0 && !options.asOf) {
       try {
         const memories = await this.deps.storage.readAllMemories({
           abortSignal: abortController.signal,
