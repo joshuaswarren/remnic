@@ -375,13 +375,24 @@ export function checkDaemonHealthSync(
   port: number,
   timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
 ): boolean {
-  // Same hazard as the capture probe: a non-finite budget reaches
-  // `Atomics.wait` as an unbounded wait on the caller's main thread.
   assertProbeBudget(timeoutMs);
-  return probeDaemonSync({
+  const deadline = Date.now() + timeoutMs;
+  const anonymous = probeDaemonSync({
     host,
     port,
     timeoutMs,
+    path: LIVENESS_PATH,
+    fallbackPath: LEGACY_HEALTH_PATH,
+    authToken: "",
+  });
+  if (anonymous.ok || anonymous.rejectedAuth === true) return true;
+  if (anonymous.failure === "network") return false;
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return false;
+  return probeDaemonSync({
+    host,
+    port,
+    timeoutMs: remaining,
     path: LIVENESS_PATH,
     fallbackPath: LEGACY_HEALTH_PATH,
   }).ok;
