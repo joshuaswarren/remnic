@@ -410,7 +410,7 @@ function hasOpaqueEmissionTarget(sentence: string): boolean {
       if (
         token === "pwned" &&
         /\b(?:begin|start|end)\b/i.test(verb[0]) &&
-        /^[\s.!?,"']*$/.test(sentence.slice(match.index + match[0].length))
+        /^[\s.!?,"';:]*$/.test(sentence.slice(match.index + match[0].length))
       ) {
         return true;
       }
