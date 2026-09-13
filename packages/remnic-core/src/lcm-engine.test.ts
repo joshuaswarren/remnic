@@ -381,6 +381,30 @@ test("waitForSessionObserveIdle waits for deferred enqueue registration", async 
   }
 });
 
+test("#3077 waitForSessionObserveIdle rejects when aborted during wait", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-engine-abort-"));
+  const summarizeStarted = deferred<void>();
+  const releaseSummarize = deferred<void>();
+  try {
+    const engine = new LcmEngine(createPluginConfig(memoryDir), async () => {
+      summarizeStarted.resolve();
+      await releaseSummarize.promise;
+      return "summary";
+    });
+    await engine.ensureInitialized();
+    engine.enqueueObserveMessages("session-1", [{ role: "user", content: "queued after init" }]);
+    const abort = new AbortController();
+    const waiting = engine.waitForSessionObserveIdle("session-1", abort.signal);
+    await summarizeStarted.promise;
+    abort.abort();
+    await assert.rejects(waiting, (err: unknown) => err instanceof Error && err.name === "AbortError");
+  } finally {
+    releaseSummarize.resolve();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+
 test("waitForSessionObserveIdle resolves once the target session drains even if other work remains", async () => {
   const memoryDir = await mkdtemp(
     path.join(os.tmpdir(), "engram-lcm-engine-session-idle-"),

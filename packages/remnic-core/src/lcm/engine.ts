@@ -42,6 +42,18 @@ function positiveInteger(value: unknown, fallback: number, min = 1): number {
   return Math.max(min, Math.floor(value));
 }
 
+function abortOnSignal(abortSignal: AbortSignal | undefined, work: Promise<void>): Promise<void> {
+  if (abortSignal === undefined) return work;
+  abortSignal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(abortSignal.reason instanceof Error ? abortSignal.reason : new DOMException("Aborted", "AbortError"));
+    };
+    abortSignal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => abortSignal.removeEventListener("abort", onAbort));
+  });
+}
+
 export function extractLcmConfig(cfg: PluginConfig): LcmEngineConfig {
   return {
     enabled: (cfg as any).lcmEnabled === true,
@@ -284,14 +296,16 @@ export class LcmEngine {
     await this.observeQueue?.whenIdle();
   }
 
-  async waitForSessionObserveIdle(sessionId: string): Promise<void> {
+  async waitForSessionObserveIdle(sessionId: string, abortSignal?: AbortSignal): Promise<void> {
+    abortSignal?.throwIfAborted();
     if (!this.config.enabled || this.closed) return;
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
     if (!normalizedSessionId) return;
     await this.ensureInitialized();
+    abortSignal?.throwIfAborted();
     if (this.closed) return;
-    await this.waitForPendingObserveInitIdle(normalizedSessionId);
-    await this.observeQueue?.whenSessionIdle(normalizedSessionId);
+    await abortOnSignal(abortSignal, this.waitForPendingObserveInitIdle(normalizedSessionId));
+    await abortOnSignal(abortSignal, this.observeQueue?.whenSessionIdle(normalizedSessionId) ?? Promise.resolve());
   }
 
   private reservePendingObserveInit(sessionId: string): void {
@@ -404,12 +418,15 @@ export class LcmEngine {
   }
 
   /** Flush pending summaries before compaction (called from before_compaction hook). */
-  async preCompactionFlush(sessionId: string): Promise<void> {
+  async preCompactionFlush(sessionId: string, abortSignal?: AbortSignal): Promise<void> {
+    abortSignal?.throwIfAborted();
     if (!this.config.enabled) return;
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
     if (!normalizedSessionId) return;
     await this.ensureInitialized();
-    await this.waitForSessionObserveIdle(normalizedSessionId);
+    abortSignal?.throwIfAborted();
+    await this.waitForSessionObserveIdle(normalizedSessionId, abortSignal);
+    abortSignal?.throwIfAborted();
 
     try {
       await this.summarizer!.summarizeIncremental(normalizedSessionId);
