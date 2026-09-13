@@ -70,7 +70,7 @@ export interface QmdClientOptions {
   qmdSubprocessStrategy?: QmdSubprocessStrategy;
   /** Override automatic qmd fallback probes; defaults to known install paths. */
   qmdFallbackPaths?: string[];
-  /** Per-call daemon search timeout in ms; default 8000. Issue #1335. */
+  /** Per-call daemon search timeout in ms; default 60000. Issue #1335/#3098. */
   qmdDaemonTimeoutMs?: number;
 }
 
@@ -152,9 +152,9 @@ export type { QmdStatusReport } from "./qmd-status.js";
 
 const QMD_TIMEOUT_MS = 30_000;
 // Daemon timeout for search calls. Keep under RECALL_TIMEOUT_MS (75s) so a slow
-// daemon fails fast. Default only — override via `qmdDaemonTimeoutMs` (#1335).
-// Keep ≥ 5s for normal post-load searches to complete reliably.
-const QMD_DAEMON_TIMEOUT_MS = 8_000;
+// daemon fails fast. Default only — override via `qmdDaemonTimeoutMs` (#1335/#3098).
+// 60s covers multi-GB cold indexes that 8s missed; operators can still set 8s.
+const QMD_DAEMON_TIMEOUT_MS = 60_000;
 const QMD_UPDATE_BACKOFF_MS = 15 * 60 * 1000; // 15m
 const QMD_EMBED_BACKOFF_MS = 60 * 60 * 1000; // 60m
 const QMD_CLI_WARN_THROTTLE_MS = 15 * 60 * 1000; // 15m
