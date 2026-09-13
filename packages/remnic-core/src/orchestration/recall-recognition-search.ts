@@ -133,6 +133,10 @@ export async function fetchQmdMemoryResultsWithRecognitionSwap(
   );
 }
 
+export function recognitionHitScore(rankOffset: number): number {
+  return 1 / (1 + rankOffset);
+}
+
 async function hitsFromIds(
   namespace: string,
   storage: RecognitionStorage,
@@ -152,7 +156,7 @@ async function hitsFromIds(
       docid: `${namespace}:${rel}`,
       namespace,
       path: rel,
-      score: ids.length - offset,
+      score: recognitionHitScore(offset),
       snippet: descriptionById.get(id) ?? id,
     });
   }

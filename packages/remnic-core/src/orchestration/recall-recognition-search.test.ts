@@ -15,6 +15,7 @@ import test from "node:test";
 import { saveRecognitionIndex, type RecognitionIndex } from "../recall-recognition-tier.js";
 import {
   fetchQmdMemoryResultsWithRecognitionSwap,
+  recognitionHitScore,
   type RecognitionSearchDeps,
 } from "./recall-recognition-search.js";
 import type { QmdSearchResult } from "../types.js";
@@ -29,6 +30,13 @@ function indexOf(ids: string[]): RecognitionIndex {
     entries: ids.map((id) => ({ id, description: `trigger for ${id}` })),
   };
 }
+
+test("#3117 recognition hit scores stay on the retrieval 0-1 scale", () => {
+  assert.equal(recognitionHitScore(0), 1);
+  assert.ok(recognitionHitScore(1) < 1);
+  assert.ok(recognitionHitScore(1) > recognitionHitScore(2));
+  assert.ok(recognitionHitScore(99) > 0);
+});
 
 async function tmpDir(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), "remnic-recognition-search-"));
