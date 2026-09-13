@@ -212,16 +212,23 @@ else
     GATE_NAMES=$((GATE_NAMES + 1))
     gate_green=""
     gate_first=""
+    gate_pending=""
     while IFS= read -r state_line; do
       [[ -n "$state_line" ]] || continue
       [[ -n "$gate_first" ]] || gate_first="$state_line"
       case "$state_line" in
         completed/success|completed/neutral|completed/skipped) gate_green="${state_line#completed/}" ;;
+        in_progress/*|queued/*|pending/*) gate_pending=1 ;;
       esac
     done <<< "${CHECK_STATE_LINES[$gate_name]}"
-    if [[ -n "$gate_green" ]]; then
+    if [[ "$gate_name" == "CodeRabbit" && -n "$gate_pending" ]]; then
+      GATE_FAILURES+=("check:${gate_name}(${gate_first:-none})")
+      GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (RED)"$'\n'
+    elif [[ -n "$gate_green" ]]; then
       GATE_LINES+="  ${gate_name}: ${gate_green}"$'\n'
     elif [[ "$gate_name" == "ai-reviewers" || "$gate_name" == "analyze" || "$gate_name" == "Kilo Code Review" ]]; then
+      GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (informational)"$'\n'
+    elif [[ "$gate_name" == "CodeRabbit" ]]; then
       GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (informational)"$'\n'
     else
       GATE_FAILURES+=("check:${gate_name}(${gate_first:-none})")
