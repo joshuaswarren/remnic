@@ -660,8 +660,12 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   // generation (the frozen campaign set); they hashed a resolved attacker
   // URL they never persisted, so verification runs only when unsliced or
   // attackerBaseUrl is present.
+  const generationPresent = Object.hasOwn(metadata, "contractGeneration");
   const generationBound =
-    Number.isInteger(metadata.contractGeneration) && (metadata.contractGeneration ?? 0) >= 1;
+    generationPresent &&
+    Number.isInteger(metadata.contractGeneration) &&
+    (metadata.contractGeneration ?? 0) >= 1;
+  const generationInvalid = generationPresent && !generationBound;
   const newContract = metadata.attackerBaseUrl !== undefined;
   const digest = metadata.attackerModelDigest ?? "";
   const digestCandidates = digest === "unverified" ? [digest, ""] : [digest];
@@ -674,7 +678,8 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   const limitedDesign = Number.isInteger(recordedLimit)
     && recordedLimit > 0
     && (unsliced === undefined || recordedLimit < unsliced)
-    || unslicedUnverifiable;
+    || unslicedUnverifiable
+    || generationInvalid;
   const incomplete =
     limitedDesign ||
     !corpusManifestPresent ||
