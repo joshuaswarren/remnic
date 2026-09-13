@@ -2598,6 +2598,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const memory = memories.find((entry) => entry.frontmatter.id === id);
     if (!memory) return false;
     if (memory.frontmatter.status !== "pending_review") return false;
+    if (memory.frontmatter.verificationState === "disputed") return false;
     // Tombstone-blocked rows need revokeTombstone first (issue #1579 OcuDx/Ocu1l).
     if (memory.frontmatter.blockedBy) return false;
     return this.writeMemoryFrontmatter(memory, {
