@@ -248,8 +248,7 @@ import {
   sealedWriteToLegacyArgs,
   type SealedMemoryEnvelope,
 } from "./write-envelope.js";
-// stripCitation import removed: legacy rebuild fallback was replaced by a
-// skip-with-warning strategy (Finding 1 — Uhol).  See ensureFactHashIndexAuthoritative.
+import { isDirectorySidecarsEnabledForDir, refreshDirectorySidecarsAfterWrite } from "./directory-sidecars.js";
 type SharedVersionKind = "memory-status" | "artifact-write" | "cold-write" | "memory-corpus" | "entity-mutation";
 
 type OfflineSyncDigestCacheEntry = {
@@ -3973,25 +3972,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return { id, tombstoneBlocked, ...(fm.blockedBy ? { blockedBy: fm.blockedBy } : {}), memory: { path: filePath, frontmatter: fm, content: sanitized.text } };
   }
 
-  /**
-   * Sealed-envelope write entry point (issue #1989 PR2).
-   *
-   * Byte-identity with `writeMemory` is BY DELEGATION: the envelope-owned
-   * fields are unpacked into the exact `writeMemory` arguments a legacy
-   * caller would have passed, so the persisted output is produced by the
-   * same code path. The composer's `persistedBody` was assembled with the
-   * same `assemblePersistedBody` helper `writeMemory` uses, so fingerprints
-   * derived from the envelope match the stored body (§13).
-   *
-   * Differences from a raw `writeMemory` call are REJECTIONS, not silent
-   * changes: the composer enforces tag/attribute caps, strict validAt, and
-   * plain-object attributes that the legacy path never validated.
-   *
-   * `envelope.ttl` maps to `expiresAt` verbatim; converting duration
-   * expressions (`"90d"`) to instants remains the access layer's job (PR3).
-   * `envelope.sourceReason` is access-layer metadata with no frontmatter
-   * field and is deliberately not persisted here.
-   */
+  /** Sealed-envelope write entry point (issue #1989 PR2). */
   async writeSealedMemory(envelope: SealedMemoryEnvelope, extras: SealedWriteExtras = {}) {
     if (!isSealedMemoryEnvelope(envelope)) {
       throw new Error(
@@ -3999,7 +3980,17 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       );
     }
     const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras);
-    return this.writeMemory(category, content, options as WriteMemoryOptions);
+    const result = await this.writeMemory(category, content, options as WriteMemoryOptions);
+    try {
+      await refreshDirectorySidecarsAfterWrite(
+        this.dir,
+        result.memory?.path ?? "",
+        isDirectorySidecarsEnabledForDir(this.dir),
+      );
+    } catch (err) {
+      log.warn(`directory sidecar refresh failed after write: ${err}`);
+    }
+    return result;
   }
 
   async hasFactContentHash(content: string): Promise<boolean> {

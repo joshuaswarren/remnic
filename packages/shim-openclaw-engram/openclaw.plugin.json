@@ -597,7 +597,7 @@
       "boxTopicShiftThreshold": {
         "type": "number",
         "default": 0.35,
-        "description": "Jaccard overlap threshold below which a topic shift seals the current box (0–1)."
+        "description": "Jaccard overlap threshold below which a topic shift seals the current box (0\u20131)."
       },
       "briefing": {
         "type": "object",
@@ -3243,7 +3243,7 @@
       "lifecyclePolicyEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Enable the lifecycle policy engine (hot↔cold tier migration, value scoring, decay). Default true since #686 - flipping enables the year-2 retention story by default. Set to false to opt out."
+        "description": "Enable the lifecycle policy engine (hot\u2194cold tier migration, value scoring, decay). Default true since #686 - flipping enables the year-2 retention story by default. Set to false to opt out."
       },
       "lifecyclePromoteHeatThreshold": {
         "type": "number",
@@ -5099,7 +5099,7 @@
         "minimum": 0,
         "maximum": 1,
         "default": 0.55,
-        "description": "Minimum query↔memory token-overlap ratio for direct-answer eligibility. Set to 0 to disable the gate."
+        "description": "Minimum query\u2194memory token-overlap ratio for direct-answer eligibility. Set to 0 to disable the gate."
       },
       "recallDisclosureEscalation": {
         "type": "string",
@@ -5927,7 +5927,7 @@
           "enabled": {
             "type": "boolean",
             "default": false,
-            "description": "Stamp a `subject` (user|agent) on extracted memories: category defaults (preference/relationship/moment/commitment → user; procedure/principle/skill → agent) with an optional extractor override for fact/decision-like facts. Default off - writes stay byte-identical until enabled."
+            "description": "Stamp a `subject` (user|agent) on extracted memories: category defaults (preference/relationship/moment/commitment \u2192 user; procedure/principle/skill \u2192 agent) with an optional extractor override for fact/decision-like facts. Default off - writes stay byte-identical until enabled."
           }
         }
       },
@@ -6248,7 +6248,7 @@
       "traceWeaverOverlapThreshold": {
         "type": "number",
         "default": 0.4,
-        "description": "Minimum Jaccard topic overlap to assign the same traceId (0–1)."
+        "description": "Minimum Jaccard topic overlap to assign the same traceId (0\u20131)."
       },
       "transcriptEnabled": {
         "type": "boolean",
@@ -6298,12 +6298,12 @@
       "trustScoreMaxMultiplier": {
         "type": "number",
         "default": 1.25,
-        "description": "Upper bound of the trust multiplier mapping [0,1] → [minMultiplier, maxMultiplier]."
+        "description": "Upper bound of the trust multiplier mapping [0,1] \u2192 [minMultiplier, maxMultiplier]."
       },
       "trustScoreMinMultiplier": {
         "type": "number",
         "default": 0.5,
-        "description": "Lower bound of the trust multiplier mapping [0,1] → [minMultiplier, maxMultiplier]."
+        "description": "Lower bound of the trust multiplier mapping [0,1] \u2192 [minMultiplier, maxMultiplier]."
       },
       "trustScoreQuarantine": {
         "type": "boolean",
@@ -7562,6 +7562,11 @@
             "description": "\"off\" (default) generates content as before. \"shadow\" requests spans and content for telemetry only and persists generated content. \"on\" persists materialized frame+span content, falling back per fact when a span fails validation. Unrecognized values are rejected."
           }
         }
+      },
+      "directorySidecarsEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Populate per-directory overview sidecars on memory writes and attach neighborhood abstracts during recall (issue #3088). Default false."
       }
     }
   },
@@ -8833,6 +8838,11 @@
       "label": "Boost Reasoning Traces on Problem-Solving Queries",
       "advanced": true,
       "help": "Promote stored reasoning_trace memories to the top of recall results when the incoming query reads like a problem-solving ask. Default off; enable after benchmarking."
+    },
+    "directorySidecarsEnabled": {
+      "label": "Directory Sidecars",
+      "advanced": true,
+      "help": "Write per-directory overview.md sidecars and use them in recall drill-down (issue #3088)."
     }
   },
   "commandAliases": [

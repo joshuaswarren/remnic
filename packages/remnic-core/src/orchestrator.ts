@@ -143,6 +143,7 @@ import { WorkspaceOpsCoordinator } from "./orchestration/workspace-ops.js";
 import { NamespaceReadFanoutCoordinator } from "./orchestration/namespace-read-fanout.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { RecallEntryCoordinator } from "./orchestration/recall-entry.js";
+import { setDirectorySidecarsEnabledForDir } from "./directory-sidecars.js";
 import { SessionContextCoordinator, type SessionFlushOptions } from "./orchestration/session-context.js";
 import { drainRecallWrites, trackRecallWrite } from "./orchestration/recall-background-writes.js";
 import { XrayCaptureQueue } from "./orchestration/xray-capture-queue.js";
@@ -1971,6 +1972,13 @@ export class Orchestrator {
   async initialize(): Promise<void> {
     this.extractionQueueCoordinator.resumeAccepting();
     await this.orchestratorInitCoordinator.initialize();
+    {
+      const memoryDir = this.storage?.dir;
+      if (typeof memoryDir === "string" && memoryDir.length > 0) {
+        const { directorySidecarsEnabled } = this.config;
+        setDirectorySidecarsEnabledForDir(memoryDir, directorySidecarsEnabled);
+      }
+    }
     if (isDependencyPropagationEnabled(this.config)) {
       this._dependencyPropagationRecovery = this.dependencyPropagationDelivery
         .recover()

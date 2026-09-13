@@ -70,6 +70,22 @@ export function parseDirectorySidecarsEnabled(raw: unknown): boolean {
   return coerceBooleanLike(raw, "directorySidecarsEnabled") === true;
 }
 
+const sidecarEnabledByDir = new Map<string, boolean>();
+
+export function setDirectorySidecarsEnabledForDir(memoryDir: string, enabled: boolean): void {
+  sidecarEnabledByDir.set(path.resolve(memoryDir), enabled === true);
+}
+
+export function isDirectorySidecarsEnabledForDir(memoryDir: string): boolean {
+  let dir = path.resolve(memoryDir);
+  for (;;) {
+    if (sidecarEnabledByDir.has(dir)) return sidecarEnabledByDir.get(dir) === true;
+    const parent = path.dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
+
 /** Basenames never treated as child memories (ours plus OKF's reserved ones). */
 const RESERVED_CHILD_BASENAMES: Readonly<Record<string, true>> = Object.freeze({
   ...OKF_RESERVED_BASENAMES,
@@ -512,13 +528,18 @@ export async function applyDirectorySidecarDrillDown<T extends DirectorySidecarH
   memoryDir: string,
   query: string,
   hits: readonly T[],
-  options: { enabled?: boolean; namespace?: string } = {},
+  options: { enabled?: boolean; namespace?: string; namespaces?: readonly string[] } = {},
 ): Promise<T[]> {
-  if (options.enabled !== true) return [...hits];
-  const matches = await findDirectorySidecarsForQuery(memoryDir, query, {
-    namespace: options.namespace,
-    refresh: false,
-  });
+  if (options.enabled !== true) return hits as T[];
+  const namespaces = options.namespaces;
+  if (namespaces !== undefined && namespaces.length === 0) return hits as T[];
+  const scopes = namespaces && namespaces.length > 0 ? namespaces : [options.namespace];
+  const matchLists = await Promise.all(
+    scopes.map((namespace) =>
+      findDirectorySidecarsForQuery(memoryDir, query, { namespace, refresh: false }),
+    ),
+  );
+  const matches = matchLists.flat();
   const fresh = matches.filter((match) => match.fresh && match.abstract.length > 0);
   if (fresh.length === 0) return [...hits];
   return hits.map((hit) => {
