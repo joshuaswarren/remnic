@@ -337,7 +337,7 @@ test("waits on a pending head check without merging", async () => {
     assert.equal(await readLog(gitLog), "");
 
     const check = run(env, ["--check"]);
-    assert.equal(check.status, 2, `${check.stderr}\n${check.stdout}`);
+    assert.equal(check.status, 3, `${check.stderr}\n${check.stdout}`);
     assert.match(check.stdout, /verdict:\s+WAITING/);
   });
 });

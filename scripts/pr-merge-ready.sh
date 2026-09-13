@@ -20,7 +20,8 @@ set -euo pipefail
 #    auto-closes the PR (hit on #2434).
 #
 # `--check` prints the plan (evidence + intended actions) without acting.
-# Exit 0 on success, 1 when a gate or merge step blocks, 2 on usage errors.
+# Exit 0 on success, 1 when a gate or merge step blocks, 2 on usage errors,
+# 3 when `--check` is waiting on in-progress required checks.
 
 # Resolve the real gh binary when a tool-manager wrapper appears first on PATH.
 resolve_mise_gh() {
@@ -214,12 +215,14 @@ else
     gate_green=""
     gate_first=""
     gate_pending=""
+    gate_failed=""
     while IFS= read -r state_line; do
       [[ -n "$state_line" ]] || continue
       [[ -n "$gate_first" ]] || gate_first="$state_line"
       case "$state_line" in
         completed/success|completed/neutral|completed/skipped) gate_green="${state_line#completed/}" ;;
         in_progress/*|queued/*|pending/*) gate_pending=1 ;;
+        completed/failure|completed/cancelled|completed/timed_out|completed/action_required|completed/stale) gate_failed=1 ;;
       esac
     done <<< "${CHECK_STATE_LINES[$gate_name]}"
     if [[ "$gate_name" == "CodeRabbit" && -n "$gate_pending" ]]; then
@@ -231,6 +234,9 @@ else
       GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (informational)"$'\n'
     elif [[ "$gate_name" == "CodeRabbit" ]]; then
       GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (informational)"$'\n'
+    elif [[ -n "$gate_failed" ]]; then
+      GATE_FAILURES+=("check:${gate_name}(${gate_first:-none})")
+      GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (RED)"$'\n'
     elif [[ -n "$gate_pending" ]]; then
       GATE_WAITING+=("check:${gate_name}(${gate_first:-none})")
       GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (WAITING)"$'\n'
@@ -329,7 +335,7 @@ if [[ "$DRY_RUN" == true ]]; then
     exit 0
   fi
   if [[ "$GATES_WAITING" == true ]]; then
-    exit 2
+    exit 3
   fi
   exit 1
 fi
