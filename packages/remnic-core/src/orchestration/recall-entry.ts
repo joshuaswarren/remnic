@@ -157,15 +157,20 @@ export class RecallEntryCoordinator {
     }
 
     let standingText = "";
-    const standingBudget = options.budgetCharsOverride ?? this.deps.config.recallBudgetChars;
-    if (this.deps.config.recallStandingBlock && !namespacesEnabled && standingBudget !== 0 && !options.asOf && !options.sourceConnector) {
+    const standingBudget =
+      typeof options.budgetCharsOverride === "number" &&
+      Number.isInteger(options.budgetCharsOverride) &&
+      options.budgetCharsOverride >= 0
+        ? options.budgetCharsOverride
+        : this.deps.config.recallBudgetChars;
+    if (this.deps.config.recallStandingBlock && !namespacesEnabled && standingBudget !== 0 && !options.asOf) {
       try {
         const memories = await this.deps.storage.readAllMemories({
           abortSignal: abortController.signal,
         });
         standingText = renderStandingMemoryBlock(
           this.deps.config,
-          memoriesToStandingEntries(memories),
+          memoriesToStandingEntries(memories, { requestingConnector: options.sourceConnector }),
         );
       } catch (err) {
         log.warn(`standing memory block skipped: ${err}`);

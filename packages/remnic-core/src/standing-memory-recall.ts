@@ -20,10 +20,15 @@ export interface StandingMemorySource {
     updated?: unknown;
     origin?: unknown;
     status?: unknown;
+    toolScoped?: unknown;
+    sourceConnector?: unknown;
   };
 }
 
-export function memoriesToStandingEntries(memories: readonly StandingMemorySource[]): StandingMemoryEntry[] {
+export function memoriesToStandingEntries(
+  memories: readonly StandingMemorySource[],
+  opts: { requestingConnector?: string } = {},
+): StandingMemoryEntry[] {
   const entries: StandingMemoryEntry[] = [];
   for (const memory of memories) {
     const id = String(memory.frontmatter.id ?? memory.id ?? memory.path ?? "");
@@ -32,6 +37,12 @@ export function memoriesToStandingEntries(memories: readonly StandingMemorySourc
       continue;
     }
     if (typeof memory.frontmatter.status === "string" && memory.frontmatter.status !== "active") {
+      continue;
+    }
+    const requestingConnector = opts.requestingConnector?.trim();
+    const memoryConnector =
+      typeof memory.frontmatter.sourceConnector === "string" ? memory.frontmatter.sourceConnector.trim() : "";
+    if (memory.frontmatter.toolScoped === true && memoryConnector && requestingConnector && memoryConnector !== requestingConnector) {
       continue;
     }
     const description =
