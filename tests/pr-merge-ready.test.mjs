@@ -102,19 +102,24 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/pulls/7/reviews" ]]; then
   exit 0
 fi
 
+if [[ "$*" == *"/dismissals"* ]]; then
+  id=""
+  message=""
+  for a in "$@"; do
+    case "$a" in
+      */reviews/*/dismissals)
+        id="\${a##*/reviews/}"
+        id="\${id%/dismissals}"
+        ;;
+      message=*) message="\${a#message=}" ;;
+    esac
+  done
+  log "dismiss|\$id|\$message"
+  printf '{}\\n'
+  exit 0
+fi
+
 if [[ "$1 $2" == "api graphql" ]]; then
-  if [[ "$*" == *dismissPullRequestReview* ]]; then
-    id="" message=""
-    for a in "$@"; do
-      case "$a" in
-        id=*) id="\${a#id=}" ;;
-        message=*) message="\${a#message=}" ;;
-      esac
-    done
-    log "dismiss|$id|$message"
-    printf '{}\\n'
-    exit 0
-  fi
   if [[ "$GH_STUB_SCENARIO" == "unresolved_thread" ]]; then
     printf '3\\t1\\tfalse\\t\\n'
   else
