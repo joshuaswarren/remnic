@@ -77,7 +77,13 @@ export function setDirectorySidecarsEnabledForDir(memoryDir: string, enabled: bo
 }
 
 export function isDirectorySidecarsEnabledForDir(memoryDir: string): boolean {
-  return sidecarEnabledByDir.get(path.resolve(memoryDir)) === true;
+  let dir = path.resolve(memoryDir);
+  for (;;) {
+    if (sidecarEnabledByDir.get(dir) === true) return true;
+    const parent = path.dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
 }
 
 /** Basenames never treated as child memories (ours plus OKF's reserved ones). */
@@ -522,13 +528,18 @@ export async function applyDirectorySidecarDrillDown<T extends DirectorySidecarH
   memoryDir: string,
   query: string,
   hits: readonly T[],
-  options: { enabled?: boolean; namespace?: string } = {},
+  options: { enabled?: boolean; namespace?: string; namespaces?: readonly string[] } = {},
 ): Promise<T[]> {
   if (options.enabled !== true) return [...hits];
-  const matches = await findDirectorySidecarsForQuery(memoryDir, query, {
-    namespace: options.namespace,
-    refresh: false,
-  });
+  const namespaces = options.namespaces;
+  if (namespaces !== undefined && namespaces.length === 0) return [...hits];
+  const scopes = namespaces && namespaces.length > 0 ? namespaces : [options.namespace];
+  const matchLists = await Promise.all(
+    scopes.map((namespace) =>
+      findDirectorySidecarsForQuery(memoryDir, query, { namespace, refresh: false }),
+    ),
+  );
+  const matches = matchLists.flat();
   const fresh = matches.filter((match) => match.fresh && match.abstract.length > 0);
   if (fresh.length === 0) return [...hits];
   return hits.map((hit) => {
