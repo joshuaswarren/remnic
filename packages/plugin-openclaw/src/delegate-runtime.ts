@@ -499,13 +499,11 @@ export function registerDelegateRuntime(
     // connection and never answers would otherwise hold the host's agent_end
     // for the whole observe timeout on every turn; the turn capture is not
     // worth that, and its result feeds nothing the host waits for. Per-session
-    // chaining keeps turns in order and lets a flush wait behind them. That
-    // wait draws on the flush deadline, so an observe gets at most HALF of
-    // it: the drain can always outwait the observe (nothing lands after the
-    // session's final flush), and the flush keeps the other half for its own
-    // requests rather than inheriting a ~1ms remainder from a slow observe.
+    // chaining keeps turns in order and lets a flush wait behind them. The
+    // drain still uses half the flush budget; the observe POST itself uses
+    // `observeTimeoutMs` so a slow accept is not cut to the drain half.
     const observe = async (): Promise<void> => {
-      const observeDeadline = Date.now() + Math.min(options.observeTimeoutMs, options.flushTimeoutMs / 2);
+      const observeDeadline = Date.now() + Math.max(1, options.observeTimeoutMs);
       const observeRemaining = (): number => observeDeadline - Date.now();
       try {
         await postJson(
