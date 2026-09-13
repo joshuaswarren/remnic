@@ -85,6 +85,7 @@ export async function runLcmCompactionFlushHttp({
       authenticatedPrincipal: resolveRequestPrincipal(),
       ...(abortSignal !== undefined ? { abortSignal } : {}),
     });
+    abortSignal?.throwIfAborted();
     recordWriteRateLimitHit();
     return result;
   }
