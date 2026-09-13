@@ -4,8 +4,8 @@
  *
  * Legacy compatibility wrapper for the canonical remnic CLI.
  */
-const { resolve } = require("node:path");
-const { existsSync } = require("node:fs");
+const { dirname, resolve } = require("node:path");
+const { existsSync, readFileSync } = require("node:fs");
 const { execFileSync } = require("node:child_process");
 const { constants: osConstants } = require("node:os");
 
@@ -18,57 +18,74 @@ function exitCodeForSignal(signal) {
   return typeof signalNumber === "number" ? 128 + signalNumber : 1;
 }
 
-function resolveLocalTsx() {
-  const tsxCandidates = [
-    resolve(cwd, "../node_modules/.bin/tsx"),
-    resolve(cwd, "../../../node_modules/.bin/tsx"),
+function tsxPackageJsonCandidates(binDir = cwd) {
+  return [
+    resolve(binDir, "../node_modules/tsx/package.json"),
+    resolve(binDir, "../../../node_modules/tsx/package.json"),
   ];
-  return tsxCandidates.find((c) => existsSync(c));
 }
 
-try {
+function resolveLocalTsx(
+  binDir = cwd,
+  exists = existsSync,
+  readFile = readFileSync,
+) {
+  for (const pkgPath of tsxPackageJsonCandidates(binDir)) {
+    if (!exists(pkgPath)) continue;
+    let bin;
+    try {
+      const pkg = JSON.parse(readFile(pkgPath, "utf8"));
+      bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin && pkg.bin.tsx;
+    } catch {
+      continue;
+    }
+    if (typeof bin !== "string" || bin.length === 0) continue;
+    const cli = resolve(dirname(pkgPath), bin);
+    if (exists(cli)) return cli;
+  }
+  return undefined;
+}
+
+function runCli() {
   if (existsSync(distEntry)) {
-    // Production: run built ESM output with Node directly
-    execFileSync(
-      process.execPath,
-      [distEntry, ...process.argv.slice(2)],
-      {
-        stdio: "inherit",
-        env: { ...process.env, REMNIC_CLI_BIN: "1", ENGRAM_CLI_BIN: "1" },
-      },
-    );
-  } else {
-    // Development: run TypeScript source via tsx
-    const hasSrcEntry = existsSync(srcEntry);
-    const tsxCmd = hasSrcEntry ? resolveLocalTsx() : undefined;
-    if (!tsxCmd) {
-      if (hasSrcEntry) {
-        throw new Error(
-          `tsx runtime is missing for source CLI entrypoint: ${srcEntry}. Install dependencies or rebuild @remnic/cli.`,
-        );
-      }
+    execFileSync(process.execPath, [distEntry, ...process.argv.slice(2)], {
+      stdio: "inherit",
+      env: { ...process.env, REMNIC_CLI_BIN: "1", ENGRAM_CLI_BIN: "1" },
+    });
+    return;
+  }
+  const hasSrcEntry = existsSync(srcEntry);
+  const tsxCli = hasSrcEntry ? resolveLocalTsx() : undefined;
+  if (!tsxCli) {
+    if (hasSrcEntry) {
       throw new Error(
-        `built CLI entrypoint is missing: ${distEntry}. Rebuild or reinstall @remnic/cli.`,
+        `tsx runtime is missing for source CLI entrypoint: ${srcEntry}. Install dependencies or rebuild @remnic/cli.`,
       );
     }
-    execFileSync(
-      tsxCmd,
-      [srcEntry, ...process.argv.slice(2)],
-      {
-        stdio: "inherit",
-        env: { ...process.env, REMNIC_CLI_BIN: "1", ENGRAM_CLI_BIN: "1" },
-      },
+    throw new Error(
+      `built CLI entrypoint is missing: ${distEntry}. Rebuild or reinstall @remnic/cli.`,
     );
   }
-} catch (err) {
-  // execFileSync throws on non-zero exit — propagate the child's exit code.
-  if (err.status != null) {
-    process.exitCode = err.status;
-  } else if (err.signal) {
-    process.exitCode = exitCodeForSignal(err.signal);
-    process.kill(process.pid, err.signal);
-  } else {
-    process.stderr.write(`Fatal: ${err.message}\n`);
-    process.exitCode = 1;
+  execFileSync(process.execPath, [tsxCli, srcEntry, ...process.argv.slice(2)], {
+    stdio: "inherit",
+    env: { ...process.env, REMNIC_CLI_BIN: "1", ENGRAM_CLI_BIN: "1" },
+  });
+}
+
+if (require.main === module) {
+  try {
+    runCli();
+  } catch (err) {
+    if (err.status != null) {
+      process.exitCode = err.status;
+    } else if (err.signal) {
+      process.exitCode = exitCodeForSignal(err.signal);
+      process.kill(process.pid, err.signal);
+    } else {
+      process.stderr.write(`Fatal: ${err.message}\n`);
+      process.exitCode = 1;
+    }
   }
 }
+
+module.exports = { tsxPackageJsonCandidates, resolveLocalTsx };
