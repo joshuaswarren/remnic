@@ -43,6 +43,7 @@ import {
   parseStandingBlockFreshDays,
   parseStandingBlockMaxChars,
 } from "./standing-memory-block.js";
+import { parseDirectorySidecarsEnabled } from "./directory-sidecars.js";
 import { parseRecognitionIndexMaxEntries, parseRecallRecognitionTier } from "./recall-recognition-tier.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
 import { parseExtractionFields } from "./extraction-span-config.js";
@@ -1962,12 +1963,10 @@ export function parseConfig(
     // Recall state views (issue #1952). Default false; exact false/0/"false"
     // disable (parseRecallStateViews → coerceBooleanLike).
     recallStateViews: parseRecallStateViews(cfg.recallStateViews),
-    // Prefix-cache-stable standing memory block (issue #2971). Default
-    // false, and nothing on the recall path reads these keys until the
-    // server wiring slice lands — pre-wiring behavior is byte-identical.
     recallStandingBlock: parseRecallStandingBlock(cfg.recallStandingBlock),
     standingBlockFreshDays: parseStandingBlockFreshDays(cfg.standingBlockFreshDays),
     standingBlockMaxChars: parseStandingBlockMaxChars(cfg.standingBlockMaxChars),
+    directorySidecarsEnabled: parseDirectorySidecarsEnabled(cfg.directorySidecarsEnabled),
     // Full-index recognition tier (issue #2975). Default false; nothing on the
     // recall path reads these keys until the wiring slice lands.
     recallRecognitionTier: parseRecallRecognitionTier(cfg.recallRecognitionTier),

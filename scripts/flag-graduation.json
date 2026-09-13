@@ -231,6 +231,12 @@
       "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
     },
     {
+      "flag": "directorySidecarsEnabled",
+      "addedIn": "9.69.68",
+      "issue": 3088,
+      "graduationCriterion": "Sidecar write refresh and recall drill-down stay off-default until a 7-day soak shows no write amplification or recall-quality regression, and no open `regression` issue names the flag."
+    },
+    {
       "flag": "enrichmentAutoOnCreate",
       "addedIn": "<=9.69.55",
       "issue": 3032,

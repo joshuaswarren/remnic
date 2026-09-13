@@ -22,6 +22,7 @@ import { abortError } from "../abort-error.js";
 import { type CapabilitySet, type GraphConstructionCapabilitySet, resolveCapabilities, resolveConversationContextCapabilities, resolveGraphConstructionCapabilities, resolveIndexingCapabilities, resolveMemoryLifecycleCapabilities, resolveNamespaceCapabilities, resolvePipelineProcessingCapabilities, resolveQmdCapabilities, resolveRecallEnhancementCapabilities } from "../capabilities.js";
 import { EmbeddingFallback } from "../embedding-fallback.js";
 import { StorageManager } from "../index.js";
+import { applyDirectorySidecarDrillDown, isDirectorySidecarsEnabledForDir } from "../directory-sidecars.js";
 import { inferIntentFromText, intentCompatibilityScore } from "../intent.js";
 import { log } from "../logger.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
@@ -342,9 +343,6 @@ export class RecallSearchPipelineCoordinator {
     const debugSearchOptions = backendHonorsQmdSearchSignals
       ? resolvedSearchOptions
       : undefined;
-    // Cross-lingual recall (#2197): lexical tiers cannot match a query whose
-    // dominant script differs from the corpus's, whatever the page fill.
-    // Supplement with the embedding-fallback tier ONCE, before widening.
     const crossScriptVectorHits = options.crossScript
       ? await this.searchEmbeddingFallback(prompt, fetchLimit)
       : [];
@@ -517,7 +515,7 @@ export class RecallSearchPipelineCoordinator {
       if (filteredResults.length >= qmdFetchLimit) {
         const capped = filteredResults.slice(0, qmdFetchLimit);
         await emitDebugSnapshot(capped, fetchLimit);
-        return capped;
+        return await applyDirectorySidecarDrillDown(this.deps.storage?.dir ?? "", prompt, capped, { enabled: Boolean(this.deps.storage?.dir) && isDirectorySidecarsEnabledForDir(this.deps.storage.dir), namespaces: options.namespacesEnabled ? options.recallNamespaces ?? [] : undefined });
       }
       if (filteredResults.length > bestFiltered.length) {
         bestFiltered = filteredResults;
@@ -526,7 +524,7 @@ export class RecallSearchPipelineCoordinator {
       // hits). Keep widening until the backend itself underfills the page.
       if (primaryResults.length < fetchLimit) {
         await emitDebugSnapshot(filteredResults, fetchLimit);
-        return filteredResults;
+        return await applyDirectorySidecarDrillDown(this.deps.storage?.dir ?? "", prompt, filteredResults, { enabled: Boolean(this.deps.storage?.dir) && isDirectorySidecarsEnabledForDir(this.deps.storage.dir), namespaces: options.namespacesEnabled ? options.recallNamespaces ?? [] : undefined });
       }
       if (fetchLimit >= maxFetchLimit) {
         break;
@@ -538,7 +536,7 @@ export class RecallSearchPipelineCoordinator {
 
     const capped = bestFiltered.slice(0, qmdFetchLimit);
     await emitDebugSnapshot(capped, fetchLimit);
-    return capped;
+    return await applyDirectorySidecarDrillDown(this.deps.storage?.dir ?? "", prompt, capped, { enabled: Boolean(this.deps.storage?.dir) && isDirectorySidecarsEnabledForDir(this.deps.storage.dir), namespaces: options.namespacesEnabled ? options.recallNamespaces ?? [] : undefined });
   }
 
   async searchEmbeddingFallback(
