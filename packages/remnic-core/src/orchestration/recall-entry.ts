@@ -242,9 +242,7 @@ export class RecallEntryCoordinator {
         : recallFailureComposition(err);
       if (!missing) return "";
       if (standingText.length > 0) {
-        missing.context = missing.context
-          ? `${standingText}\n\n${missing.context}`
-          : standingText;
+        missing.context = prefixStandingMemoryBlock(missing.context ?? "", standingText, standingBudget);
       }
       notifyContextComposition(options.onContextComposition, missing, (observerErr) => {
         log.warn("recall: context composition observer failed open", observerErr);
