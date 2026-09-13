@@ -512,3 +512,20 @@ test("#3007 sidecar ancestry refuses a symlinked memory root", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("#3090 sidecar ancestry refuses a symlink above the category root", () => {
+  const root = store();
+  try {
+    const outside = path.join(root, "outside");
+    mkdirSync(path.join(outside, "alpha", "facts", "2026-01-01"), { recursive: true });
+    writeFileSync(path.join(outside, "alpha", "facts", "2026-01-01", "fact.md"), "x");
+    mkdirSync(path.join(root, "namespaces"));
+    symlinkSync(outside, path.join(root, "namespaces", "alpha"));
+    assert.deepEqual(
+      directorySidecarAncestry(root, "namespaces/alpha/facts/2026-01-01/fact.md"),
+      [],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

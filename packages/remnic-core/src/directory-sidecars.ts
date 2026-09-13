@@ -342,6 +342,15 @@ export function directorySidecarAncestry(memoryDir: string, changedPath: string)
   const rel = path.relative(root, abs);
   if (rel.startsWith("..") || path.isAbsolute(rel)) return [];
   const parts = rel.split(path.sep).filter(Boolean);
+  let cursor = root;
+  for (const part of parts) {
+    cursor = path.join(cursor, part);
+    try {
+      if (lstatSync(cursor).isSymbolicLink()) return [];
+    } catch {
+      return [];
+    }
+  }
   const dirParts = isRealDirectory(abs) ? parts : parts.slice(0, -1);
   let categoryAt = -1;
   if (dirParts[0] === "namespaces" && dirParts.length >= 3 && CATEGORY_ROOTS.has(dirParts[2] ?? "")) {
