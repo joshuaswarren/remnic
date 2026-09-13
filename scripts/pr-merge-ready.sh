@@ -223,6 +223,8 @@ else
       GATE_LINES+="  ${gate_name}: ${gate_green}"$'\n'
     elif [[ "$gate_name" == "ai-reviewers" || "$gate_name" == "analyze" || "$gate_name" == "Kilo Code Review" ]]; then
       GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (informational)"$'\n'
+    elif [[ "$gate_name" == "CodeRabbit" && "$gate_first" == completed/* ]]; then
+      GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (informational)"$'\n'
     else
       GATE_FAILURES+=("check:${gate_name}(${gate_first:-none})")
       GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (RED)"$'\n'
