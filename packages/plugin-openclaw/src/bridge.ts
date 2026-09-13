@@ -376,6 +376,7 @@ export function checkDaemonHealthSync(
   timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
 ): boolean {
   assertProbeBudget(timeoutMs);
+  const deadline = Date.now() + timeoutMs;
   const anonymous = probeDaemonSync({
     host,
     port,
@@ -386,10 +387,12 @@ export function checkDaemonHealthSync(
   });
   if (anonymous.ok || anonymous.rejectedAuth === true) return true;
   if (anonymous.failure === "network") return false;
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return false;
   return probeDaemonSync({
     host,
     port,
-    timeoutMs,
+    timeoutMs: remaining,
     path: LIVENESS_PATH,
     fallbackPath: LEGACY_HEALTH_PATH,
   }).ok;
