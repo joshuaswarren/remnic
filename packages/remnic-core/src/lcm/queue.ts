@@ -101,8 +101,9 @@ export class LcmWorkQueue {
     if (!this.pending.has(sessionId) && !this.inFlightSessions.has(sessionId)) return;
     await new Promise<void>((resolve, reject) => {
       const onAbort = (): void => {
-        const current = this.sessionIdleWaiters.get(sessionId) ?? [];
-        this.sessionIdleWaiters.set(sessionId, current.filter((waiter) => waiter !== resolve));
+        const remaining = (this.sessionIdleWaiters.get(sessionId) ?? []).filter((waiter) => waiter !== resolve);
+        if (remaining.length === 0) this.sessionIdleWaiters.delete(sessionId);
+        else this.sessionIdleWaiters.set(sessionId, remaining);
         reject(abortSignal?.reason instanceof Error ? abortSignal.reason : new DOMException("Aborted", "AbortError"));
       };
       const waiters = this.sessionIdleWaiters.get(sessionId) ?? [];

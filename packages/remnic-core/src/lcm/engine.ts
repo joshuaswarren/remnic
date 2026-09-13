@@ -341,8 +341,9 @@ export class LcmEngine {
       if (!this.pendingObserveInitCounts.has(sessionId)) return;
       await new Promise<void>((resolve, reject) => {
         const onAbort = (): void => {
-          const current = this.pendingObserveInitWaiters.get(sessionId) ?? [];
-          this.pendingObserveInitWaiters.set(sessionId, current.filter((waiter) => waiter !== resolve));
+          const remaining = (this.pendingObserveInitWaiters.get(sessionId) ?? []).filter((waiter) => waiter !== resolve);
+          if (remaining.length === 0) this.pendingObserveInitWaiters.delete(sessionId);
+          else this.pendingObserveInitWaiters.set(sessionId, remaining);
           reject(abortSignal?.reason instanceof Error ? abortSignal.reason : new DOMException("Aborted", "AbortError"));
         };
         const waiters = this.pendingObserveInitWaiters.get(sessionId) ?? [];
