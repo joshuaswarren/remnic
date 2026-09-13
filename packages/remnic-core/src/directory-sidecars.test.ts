@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +10,7 @@ import {
   DIRECTORY_SIDECAR_MARKER,
   NEIGHBORHOOD_ABSTRACT_LABEL,
   applyDirectorySidecarDrillDown,
+  directorySidecarAncestry,
   findDirectorySidecarsForQuery,
   loadDirectorySidecar,
   parseDirectorySidecarsEnabled,
@@ -494,6 +495,19 @@ test("drill-down prefers the most specific matching directory", async () => {
     );
     assert.match(out[0].snippet, /2026-01-02/);
     assert.doesNotMatch(out[0].snippet, /Guide star/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("#3007 sidecar ancestry refuses a symlinked memory root", () => {
+  const root = store();
+  try {
+    const facts = path.join(root, "facts");
+    mkdirSync(facts);
+    const linked = path.join(root, "linked-root");
+    symlinkSync(root, linked);
+    assert.deepEqual(directorySidecarAncestry(linked, "facts/2026-01-01/fact.md"), []);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

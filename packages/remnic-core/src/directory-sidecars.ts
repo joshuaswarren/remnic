@@ -337,6 +337,7 @@ function childAbstractsFromDisk(dir: string): Map<string, string> {
  */
 export function directorySidecarAncestry(memoryDir: string, changedPath: string): string[] {
   const root = path.resolve(memoryDir);
+  if (!isRealDirectory(root)) return [];
   const abs = path.isAbsolute(changedPath) ? path.resolve(changedPath) : path.resolve(root, changedPath);
   const rel = path.relative(root, abs);
   if (rel.startsWith("..") || path.isAbsolute(rel)) return [];
@@ -351,7 +352,9 @@ export function directorySidecarAncestry(memoryDir: string, changedPath: string)
   if (categoryAt === -1) return [];
   const dirs: string[] = [];
   for (let i = dirParts.length; i > categoryAt; i--) {
-    dirs.push(path.join(root, ...dirParts.slice(0, i)));
+    const dir = path.join(root, ...dirParts.slice(0, i));
+    if (!isRealDirectory(dir)) return [];
+    dirs.push(dir);
   }
   return dirs;
 }
