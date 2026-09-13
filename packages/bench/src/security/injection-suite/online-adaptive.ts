@@ -82,15 +82,16 @@ import {
 } from "./types.js";
 import {
   corpusKey,
+  INJECTION_SUITE_ONLINE_CONTRACT_GENERATION,
   injectionSuiteResumeContractHashForOnline,
   ONLINE_ADAPTIVE_STAGE,
   readJsonlLines,
 } from "./online-adaptive-analysis.js";
-
 export { ONLINE_ADAPTIVE_STAGE };
 export {
   analyzeInjectionSuiteOnlineAdaptiveRows,
   analyzeInjectionSuiteOnlineAdaptiveRun,
+  INJECTION_SUITE_ONLINE_CONTRACT_GENERATION,
   injectionSuiteResumeContractHashForOnline,
 } from "./online-adaptive-analysis.js";
 export type {
@@ -722,6 +723,7 @@ export async function runInjectionSuiteOnlineAdaptive(
     attackerModelDigest: input.attackerModelDigest ?? "",
     attackerPromptSha256,
     attackerIterations: input.attackerIterations,
+    contractGeneration: INJECTION_SUITE_ONLINE_CONTRACT_GENERATION,
   });
 
   const existing = await readRunMetadata(input.outputDir);
@@ -776,6 +778,7 @@ export async function runInjectionSuiteOnlineAdaptive(
       // Persisted so the analyzer can recompute the resume hash exactly as
       // the runner did (PR #3081 r3); optional, so old runs are unaffected.
       ...(attacker.baseUrl ? { attackerBaseUrl: attacker.baseUrl } : {}),
+      contractGeneration: INJECTION_SUITE_ONLINE_CONTRACT_GENERATION,
       attackerModelDigest: input.attackerModelDigest ?? "unverified",
       attackerPromptSha256,
       attackerIterations: input.attackerIterations,
