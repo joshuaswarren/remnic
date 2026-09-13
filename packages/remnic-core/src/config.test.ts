@@ -708,8 +708,8 @@ test("parseConfig qmdSubprocessStrategy defaults to query (honors QMD query inte
   }
 });
 
-test("parseConfig qmdDaemonTimeoutMs defaults to 8000 and clamps valid integers", () => {
-  assert.equal(parseConfig({}).qmdDaemonTimeoutMs, 8_000);
+test("parseConfig qmdDaemonTimeoutMs defaults to 60000 and clamps valid integers", () => {
+  assert.equal(parseConfig({}).qmdDaemonTimeoutMs, 60_000);
   assert.equal(parseConfig({ qmdDaemonTimeoutMs: 20_000 }).qmdDaemonTimeoutMs, 20_000);
   assert.equal(parseConfig({ qmdDaemonTimeoutMs: "20000" }).qmdDaemonTimeoutMs, 20_000);
   // Below floor clamps up; above ceiling clamps down.
