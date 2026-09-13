@@ -42,6 +42,7 @@ export interface LcmCompactionFlushRunnerOptions {
   resolveNamespace: (namespace?: string) => string | undefined;
   defaultNamespace?: string;
   resolveRequestPrincipal: () => string | undefined;
+  abortSignal?: AbortSignal;
 }
 
 type LcmCompactionFlushBatchResult =
@@ -70,7 +71,9 @@ export async function runLcmCompactionFlushHttp({
   resolveNamespace,
   defaultNamespace,
   resolveRequestPrincipal,
+  abortSignal,
 }: LcmCompactionFlushRunnerOptions): Promise<LcmCompactionFlushHttpResult> {
+  abortSignal?.throwIfAborted();
   ensureWriteRateLimitAvailable();
   const requestedNamespaces = body.namespaces;
   if (requestedNamespaces === undefined) {
@@ -80,6 +83,7 @@ export async function runLcmCompactionFlushHttp({
       ...(body.cwd !== undefined ? { cwd: body.cwd } : {}),
       ...(body.projectTag !== undefined ? { projectTag: body.projectTag } : {}),
       authenticatedPrincipal: resolveRequestPrincipal(),
+      ...(abortSignal !== undefined ? { abortSignal } : {}),
     });
     recordWriteRateLimitHit();
     return result;
@@ -106,6 +110,7 @@ export async function runLcmCompactionFlushHttp({
       uniqueResolvedNamespaces.push(outcome.value);
     }
   }
+  abortSignal?.throwIfAborted();
   const serviceOutcomes = await Promise.allSettled(
     uniqueResolvedNamespaces.map(({ namespace }) =>
       service.lcmCompactionFlush({
@@ -114,6 +119,7 @@ export async function runLcmCompactionFlushHttp({
         ...(body.cwd !== undefined ? { cwd: body.cwd } : {}),
         ...(body.projectTag !== undefined ? { projectTag: body.projectTag } : {}),
         authenticatedPrincipal: resolveRequestPrincipal(),
+        ...(abortSignal !== undefined ? { abortSignal } : {}),
       })
     )
   );
