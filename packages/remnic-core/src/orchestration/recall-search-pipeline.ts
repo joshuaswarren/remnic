@@ -515,7 +515,7 @@ export class RecallSearchPipelineCoordinator {
       if (filteredResults.length >= qmdFetchLimit) {
         const capped = filteredResults.slice(0, qmdFetchLimit);
         await emitDebugSnapshot(capped, fetchLimit);
-        return await applyDirectorySidecarDrillDown(this.deps.storage.dir, prompt, capped, { enabled: isDirectorySidecarsEnabledForDir(this.deps.storage.dir), namespaces: options.namespacesEnabled ? options.recallNamespaces ?? [] : undefined });
+        return await applyDirectorySidecarDrillDown(this.deps.storage?.dir ?? "", prompt, capped, { enabled: Boolean(this.deps.storage?.dir) && isDirectorySidecarsEnabledForDir(this.deps.storage.dir), namespaces: options.namespacesEnabled ? options.recallNamespaces ?? [] : undefined });
       }
       if (filteredResults.length > bestFiltered.length) {
         bestFiltered = filteredResults;
@@ -524,7 +524,7 @@ export class RecallSearchPipelineCoordinator {
       // hits). Keep widening until the backend itself underfills the page.
       if (primaryResults.length < fetchLimit) {
         await emitDebugSnapshot(filteredResults, fetchLimit);
-        return await applyDirectorySidecarDrillDown(this.deps.storage.dir, prompt, filteredResults, { enabled: isDirectorySidecarsEnabledForDir(this.deps.storage.dir), namespaces: options.namespacesEnabled ? options.recallNamespaces ?? [] : undefined });
+        return await applyDirectorySidecarDrillDown(this.deps.storage?.dir ?? "", prompt, filteredResults, { enabled: Boolean(this.deps.storage?.dir) && isDirectorySidecarsEnabledForDir(this.deps.storage.dir), namespaces: options.namespacesEnabled ? options.recallNamespaces ?? [] : undefined });
       }
       if (fetchLimit >= maxFetchLimit) {
         break;
@@ -536,7 +536,7 @@ export class RecallSearchPipelineCoordinator {
 
     const capped = bestFiltered.slice(0, qmdFetchLimit);
     await emitDebugSnapshot(capped, fetchLimit);
-    return await applyDirectorySidecarDrillDown(this.deps.storage.dir, prompt, capped, { enabled: isDirectorySidecarsEnabledForDir(this.deps.storage.dir), namespaces: options.namespacesEnabled ? options.recallNamespaces ?? [] : undefined });
+    return await applyDirectorySidecarDrillDown(this.deps.storage?.dir ?? "", prompt, capped, { enabled: Boolean(this.deps.storage?.dir) && isDirectorySidecarsEnabledForDir(this.deps.storage.dir), namespaces: options.namespacesEnabled ? options.recallNamespaces ?? [] : undefined });
   }
 
   async searchEmbeddingFallback(
