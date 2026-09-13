@@ -16,32 +16,68 @@ const engramBin = join(packageBinDir, "engram.cjs");
 
 const requireBin = createRequire(import.meta.url);
 
-test("#3038 tsx candidates prefer tsx.cmd on win32 and skip the bash shim", () => {
+test("#3038 source wrappers resolve tsx JS CLI and ignore .bin shims", () => {
   for (const sourceBin of [remnicBin, engramBin]) {
-    const { tsxShimNames, localTsxCandidates, resolveLocalTsx } = requireBin(sourceBin);
-    assert.deepEqual(tsxShimNames("win32"), ["tsx.cmd"]);
-    assert.deepEqual(tsxShimNames("linux"), ["tsx"]);
-    assert.deepEqual(tsxShimNames("darwin"), ["tsx"]);
-
+    const { tsxPackageJsonCandidates, resolveLocalTsx } = requireBin(sourceBin);
     const binDir = "/pkg/bin";
-    const win = localTsxCandidates(binDir, "win32");
-    assert.deepEqual(win, [
-      resolve(binDir, "../node_modules/.bin/tsx.cmd"),
-      resolve(binDir, "../../../node_modules/.bin/tsx.cmd"),
-    ]);
-    const posix = localTsxCandidates(binDir, "linux");
-    assert.deepEqual(posix, [
-      resolve(binDir, "../node_modules/.bin/tsx"),
-      resolve(binDir, "../../../node_modules/.bin/tsx"),
+    assert.deepEqual(tsxPackageJsonCandidates(binDir), [
+      resolve(binDir, "../node_modules/tsx/package.json"),
+      resolve(binDir, "../../../node_modules/tsx/package.json"),
     ]);
 
+    const pkgPath = resolve(binDir, "../node_modules/tsx/package.json");
+    const cliPath = resolve(binDir, "../node_modules/tsx/dist/cli.mjs");
     const bashShim = resolve(binDir, "../node_modules/.bin/tsx");
     const cmdShim = resolve(binDir, "../node_modules/.bin/tsx.cmd");
-    const existsBashOnly = (p: string) => p === bashShim;
-    const existsBoth = (p: string) => p === bashShim || p === cmdShim;
-    assert.equal(resolveLocalTsx(binDir, "win32", existsBashOnly), undefined);
-    assert.equal(resolveLocalTsx(binDir, "win32", existsBoth), cmdShim);
-    assert.equal(resolveLocalTsx(binDir, "linux", existsBashOnly), bashShim);
+    const files = new Map<string, string>([
+      [pkgPath, JSON.stringify({ bin: "./dist/cli.mjs" })],
+      [cliPath, ""],
+      [bashShim, ""],
+      [cmdShim, ""],
+    ]);
+    const exists = (p: string) => files.has(p);
+    const readFile = (p: string) => files.get(p) ?? "";
+    assert.equal(resolveLocalTsx(binDir, exists, readFile), cliPath);
+    files.delete(pkgPath);
+    files.delete(cliPath);
+    assert.equal(resolveLocalTsx(binDir, exists, readFile), undefined);
+  }
+});
+
+test("#3038 source entry launches tsx via node, not a .bin shim", async () => {
+  for (const sourceBin of [remnicBin, engramBin]) {
+    const tempRoot = await mkdtemp(join(tmpdir(), "remnic-cli-tsx-js-"));
+    try {
+      const tempBinDir = join(tempRoot, "bin");
+      const tempSrcDir = join(tempRoot, "src");
+      const tsxDist = join(tempRoot, "node_modules", "tsx", "dist");
+      const binShimDir = join(tempRoot, "node_modules", ".bin");
+      await mkdir(tempBinDir, { recursive: true });
+      await mkdir(tempSrcDir, { recursive: true });
+      await mkdir(tsxDist, { recursive: true });
+      await mkdir(binShimDir, { recursive: true });
+
+      const tempBin = join(tempBinDir, "wrapper.cjs");
+      await copyFile(sourceBin, tempBin);
+      await writeFile(join(tempSrcDir, "index.ts"), "process.exit(0);\n");
+      await writeFile(
+        join(tempRoot, "node_modules", "tsx", "package.json"),
+        JSON.stringify({ bin: "./dist/cli.mjs" }),
+      );
+      await writeFile(
+        join(tsxDist, "cli.mjs"),
+        "process.stdout.write(`tsx-js:${process.argv[1]}\\n`);\n",
+      );
+      await writeFile(join(binShimDir, "tsx"), "#!/bin/sh\nexit 99\n");
+      await writeFile(join(binShimDir, "tsx.cmd"), "@exit 99\n");
+
+      const result = spawnSync(process.execPath, [tempBin], { encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /tsx-js:/);
+      assert.match(result.stdout, /cli\.mjs/);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   }
 });
 

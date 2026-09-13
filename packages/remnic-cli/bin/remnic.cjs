@@ -4,8 +4,8 @@
  *
  * Canonical wrapper for the built ESM CLI entry point.
  */
-const { resolve } = require("node:path");
-const { existsSync } = require("node:fs");
+const { dirname, resolve } = require("node:path");
+const { existsSync, readFileSync } = require("node:fs");
 const { execFileSync } = require("node:child_process");
 const { constants: osConstants } = require("node:os");
 
@@ -18,29 +18,32 @@ function exitCodeForSignal(signal) {
   return typeof signalNumber === "number" ? 128 + signalNumber : 1;
 }
 
-function tsxShimNames(platform = process.platform) {
-  return platform === "win32" ? ["tsx.cmd"] : ["tsx"];
-}
-
-function localTsxCandidates(binDir = cwd, platform = process.platform) {
-  const names = tsxShimNames(platform);
-  const roots = [
-    resolve(binDir, "../node_modules/.bin"),
-    resolve(binDir, "../../../node_modules/.bin"),
+function tsxPackageJsonCandidates(binDir = cwd) {
+  return [
+    resolve(binDir, "../node_modules/tsx/package.json"),
+    resolve(binDir, "../../../node_modules/tsx/package.json"),
   ];
-  const out = [];
-  for (const root of roots) {
-    for (const name of names) out.push(resolve(root, name));
-  }
-  return out;
 }
 
 function resolveLocalTsx(
   binDir = cwd,
-  platform = process.platform,
   exists = existsSync,
+  readFile = readFileSync,
 ) {
-  return localTsxCandidates(binDir, platform).find((c) => exists(c));
+  for (const pkgPath of tsxPackageJsonCandidates(binDir)) {
+    if (!exists(pkgPath)) continue;
+    let bin;
+    try {
+      const pkg = JSON.parse(readFile(pkgPath, "utf8"));
+      bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin && pkg.bin.tsx;
+    } catch {
+      continue;
+    }
+    if (typeof bin !== "string" || bin.length === 0) continue;
+    const cli = resolve(dirname(pkgPath), bin);
+    if (exists(cli)) return cli;
+  }
+  return undefined;
 }
 
 function runCli() {
@@ -52,8 +55,8 @@ function runCli() {
     return;
   }
   const hasSrcEntry = existsSync(srcEntry);
-  const tsxCmd = hasSrcEntry ? resolveLocalTsx() : undefined;
-  if (!tsxCmd) {
+  const tsxCli = hasSrcEntry ? resolveLocalTsx() : undefined;
+  if (!tsxCli) {
     if (hasSrcEntry) {
       throw new Error(
         `tsx runtime is missing for source CLI entrypoint: ${srcEntry}. Install dependencies or rebuild @remnic/cli.`,
@@ -63,7 +66,7 @@ function runCli() {
       `built CLI entrypoint is missing: ${distEntry}. Rebuild or reinstall @remnic/cli.`,
     );
   }
-  execFileSync(tsxCmd, [srcEntry, ...process.argv.slice(2)], {
+  execFileSync(process.execPath, [tsxCli, srcEntry, ...process.argv.slice(2)], {
     stdio: "inherit",
     env: { ...process.env, REMNIC_CLI_BIN: "1" },
   });
@@ -85,4 +88,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { tsxShimNames, localTsxCandidates, resolveLocalTsx };
+module.exports = { tsxPackageJsonCandidates, resolveLocalTsx };
