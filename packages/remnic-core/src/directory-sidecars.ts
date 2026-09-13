@@ -530,9 +530,9 @@ export async function applyDirectorySidecarDrillDown<T extends DirectorySidecarH
   hits: readonly T[],
   options: { enabled?: boolean; namespace?: string; namespaces?: readonly string[] } = {},
 ): Promise<T[]> {
-  if (options.enabled !== true) return [...hits];
+  if (options.enabled !== true) return hits as T[];
   const namespaces = options.namespaces;
-  if (namespaces !== undefined && namespaces.length === 0) return [...hits];
+  if (namespaces !== undefined && namespaces.length === 0) return hits as T[];
   const scopes = namespaces && namespaces.length > 0 ? namespaces : [options.namespace];
   const matchLists = await Promise.all(
     scopes.map((namespace) =>
