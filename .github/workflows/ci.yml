@@ -374,7 +374,7 @@ jobs:
   windows-smoke:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     defaults:
       run:
         # git-bash ships on the windows-latest image. Bash keeps `set -euo
@@ -418,14 +418,14 @@ jobs:
       # `mktemp -d "$RUNNER_TEMP/..."` would silently run in the repo root.
       #
       # Ordered before the core suite on purpose: it is seconds of work, and the
-      # suite is the step that can exhaust the 25-minute budget.
+      # suite is the step that can exhaust the 45-minute budget.
       - name: CLI smoke
         run: node scripts/windows-cli-smoke.mjs
 
       # Runs the curated Windows-risk subset from scripts/windows-smoke-list.json
       # (native SQLite binding, path handling). The FULL @remnic/core suite no
-      # longer fits the free-tier 25-minute Windows runner cap, so a full run
-      # can never go green here; without this cap the job burns 25 minutes of
+      # longer fits the 45-minute Windows runner budget, so a full run
+      # can never go green here; without this cap the job burns 45 minutes of
       # allocation on every PR and always cancels. The full suite remains
       # runnable by hand: `node scripts/windows-test-runner.mjs` (no --smoke),
       # governed by scripts/windows-skip-list.json as before — a Windows
