@@ -733,9 +733,40 @@ export async function runInjectionSuiteOnlineAdaptive(
     );
   }
   if (existing && existing.resumeContractHash !== resumeContractHash) {
-    throw new Error(
-      "resume contract hash drifted; refusing to continue this run",
-    );
+    const legacyHash = Object.hasOwn(existing, "contractGeneration")
+      ? null
+      : injectionSuiteResumeContractHashForOnline({
+          suiteVersion: INJECTION_SUITE_VERSION,
+          modelProfileId: input.modelProfileId,
+          seeds,
+          variantsPerFamily: input.variantsPerFamily,
+          family: input.family ?? null,
+          limit: input.limit ?? null,
+          ...(input.limit === undefined ? {} : { unslicedPlannedRows }),
+          executor: defendedContract.executor,
+          model: defendedContract.model,
+          baseUrl: defendedContract.baseUrl,
+          requestTimeoutMs: defendedContract.requestTimeoutMs,
+          backend: defendedContract.backend,
+          stage: ONLINE_ADAPTIVE_STAGE,
+          runKind: input.runKind ?? "dev",
+          modelProfileHash: frozen.profile.modelProfileHash,
+          corpusManifestHash: frozen.corpusManifestHash,
+          expectedDesignHash: frozen.expectedDesignHash,
+          decisionRuleHash: frozen.decisionRuleHash,
+          gitSha: frozen.gitSha,
+          attackerExecutor: attacker.executor,
+          attackerModel: attacker.model,
+          attackerBaseUrl: attacker.baseUrl,
+          attackerModelDigest: input.attackerModelDigest ?? "",
+          attackerPromptSha256,
+          attackerIterations: input.attackerIterations,
+        });
+    if (legacyHash === null || existing.resumeContractHash !== legacyHash) {
+      throw new Error(
+        "resume contract hash drifted; refusing to continue this run",
+      );
+    }
   }
 
   await mkdir(input.outputDir, { recursive: true });
