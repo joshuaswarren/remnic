@@ -143,6 +143,7 @@ export async function runLcmCompactionFlushHttp({
       ? { status: "fulfilled", namespace: requestedNamespace, result: serviceOutcome.value }
       : { status: "rejected", namespace: requestedNamespace };
   });
+  abortSignal?.throwIfAborted();
   recordWriteRateLimitHit();
   return {
     enabled: results.every((result) => result.status === "fulfilled" && result.result.enabled !== false),

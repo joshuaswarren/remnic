@@ -29,3 +29,30 @@ test("#3077 aborted LCM flush does not start compaction", async () => {
   );
   assert.equal(calls, 0);
 });
+
+test("#3077 aborted batch LCM flush rethrows instead of settling", async () => {
+  const abort = new AbortController();
+  await assert.rejects(
+    () =>
+      runLcmCompactionFlushHttp({
+        body: { sessionKey: "sess-1", namespaces: ["ns-a", "ns-b"] },
+        service: {
+          async lcmCompactionFlush() {
+            abort.abort();
+            return { enabled: true, flushed: true, sessionKey: "sess-1", namespace: "ns-a" };
+          },
+          async lcmCompactionRecord() {
+            throw new Error("unused");
+          },
+        },
+        ensureWriteRateLimitAvailable() {},
+        recordWriteRateLimitHit() {
+          throw new Error("must not record a write after abort");
+        },
+        resolveNamespace: (namespace) => namespace,
+        resolveRequestPrincipal: () => undefined,
+        abortSignal: abort.signal,
+      }),
+    (err: unknown) => err instanceof Error && err.name === "AbortError",
+  );
+});

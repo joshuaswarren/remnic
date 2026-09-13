@@ -42,7 +42,7 @@ function positiveInteger(value: unknown, fallback: number, min = 1): number {
   return Math.max(min, Math.floor(value));
 }
 
-function abortOnSignal(abortSignal: AbortSignal | undefined, work: Promise<void>): Promise<void> {
+function abortOnSignal<T>(abortSignal: AbortSignal | undefined, work: Promise<T>): Promise<T> {
   if (abortSignal === undefined) return work;
   abortSignal.throwIfAborted();
   return new Promise((resolve, reject) => {
@@ -429,8 +429,9 @@ export class LcmEngine {
     abortSignal?.throwIfAborted();
 
     try {
-      await this.summarizer!.summarizeIncremental(normalizedSessionId);
+      await abortOnSignal(abortSignal, this.summarizer!.summarizeIncremental(normalizedSessionId));
     } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") throw err;
       log.debug(`LCM pre-compaction flush error: ${err}`);
     }
   }
