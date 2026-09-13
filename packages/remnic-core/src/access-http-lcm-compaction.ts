@@ -77,17 +77,20 @@ export async function runLcmCompactionFlushHttp({
   ensureWriteRateLimitAvailable();
   const requestedNamespaces = body.namespaces;
   if (requestedNamespaces === undefined) {
-    const result = await service.lcmCompactionFlush({
-      sessionKey: body.sessionKey,
-      namespace: resolveNamespace(body.namespace),
-      ...(body.cwd !== undefined ? { cwd: body.cwd } : {}),
-      ...(body.projectTag !== undefined ? { projectTag: body.projectTag } : {}),
-      authenticatedPrincipal: resolveRequestPrincipal(),
-      ...(abortSignal !== undefined ? { abortSignal } : {}),
-    });
-    recordWriteRateLimitHit();
-    abortSignal?.throwIfAborted();
-    return result;
+    try {
+      const result = await service.lcmCompactionFlush({
+        sessionKey: body.sessionKey,
+        namespace: resolveNamespace(body.namespace),
+        ...(body.cwd !== undefined ? { cwd: body.cwd } : {}),
+        ...(body.projectTag !== undefined ? { projectTag: body.projectTag } : {}),
+        authenticatedPrincipal: resolveRequestPrincipal(),
+        ...(abortSignal !== undefined ? { abortSignal } : {}),
+      });
+      abortSignal?.throwIfAborted();
+      return result;
+    } finally {
+      recordWriteRateLimitHit();
+    }
   }
   const resolutionOutcomes = await Promise.allSettled(
     requestedNamespaces.map(async (requestedNamespace) => {
