@@ -683,6 +683,19 @@ test("#3077 liveness probe does not send a bearer token", async () => {
   }
 });
 
+test("#3077 liveness treats an anonymous 401 as a live daemon", async () => {
+  const stub = await startHealthStub({ ok: true }, 200, 0, false, "daemon-token");
+  try {
+    assert.equal(
+      withDaemonEnv(stub.port, () => checkDaemonHealthSync("127.0.0.1", stub.port, 2_000)),
+      true,
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
+
 
 test("host and port come from ONE config file, never spliced across two", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "remnic-split-config-"));
