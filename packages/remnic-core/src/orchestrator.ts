@@ -1973,8 +1973,11 @@ export class Orchestrator {
     this.extractionQueueCoordinator.resumeAccepting();
     await this.orchestratorInitCoordinator.initialize();
     {
-      const { directorySidecarsEnabled } = this.config;
-      setDirectorySidecarsEnabledForDir(this.storage.dir, directorySidecarsEnabled);
+      const memoryDir = this.storage?.dir;
+      if (typeof memoryDir === "string" && memoryDir.length > 0) {
+        const { directorySidecarsEnabled } = this.config;
+        setDirectorySidecarsEnabledForDir(memoryDir, directorySidecarsEnabled);
+      }
     }
     if (isDependencyPropagationEnabled(this.config)) {
       this._dependencyPropagationRecovery = this.dependencyPropagationDelivery
