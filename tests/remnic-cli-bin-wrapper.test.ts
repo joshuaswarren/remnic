@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { constants } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { constants as osConstants, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -12,6 +13,37 @@ const packageBinDir = join(repoRoot, "packages", "remnic-cli", "bin");
 const remnicCliPackageJson = join(repoRoot, "packages", "remnic-cli", "package.json");
 const remnicBin = join(packageBinDir, "remnic.cjs");
 const engramBin = join(packageBinDir, "engram.cjs");
+
+const requireBin = createRequire(import.meta.url);
+
+test("#3038 tsx candidates prefer tsx.cmd on win32 and skip the bash shim", () => {
+  for (const sourceBin of [remnicBin, engramBin]) {
+    const { tsxShimNames, localTsxCandidates, resolveLocalTsx } = requireBin(sourceBin);
+    assert.deepEqual(tsxShimNames("win32"), ["tsx.cmd"]);
+    assert.deepEqual(tsxShimNames("linux"), ["tsx"]);
+    assert.deepEqual(tsxShimNames("darwin"), ["tsx"]);
+
+    const binDir = "/pkg/bin";
+    const win = localTsxCandidates(binDir, "win32");
+    assert.deepEqual(win, [
+      resolve(binDir, "../node_modules/.bin/tsx.cmd"),
+      resolve(binDir, "../../../node_modules/.bin/tsx.cmd"),
+    ]);
+    const posix = localTsxCandidates(binDir, "linux");
+    assert.deepEqual(posix, [
+      resolve(binDir, "../node_modules/.bin/tsx"),
+      resolve(binDir, "../../../node_modules/.bin/tsx"),
+    ]);
+
+    const bashShim = resolve(binDir, "../node_modules/.bin/tsx");
+    const cmdShim = resolve(binDir, "../node_modules/.bin/tsx.cmd");
+    const existsBashOnly = (p: string) => p === bashShim;
+    const existsBoth = (p: string) => p === bashShim || p === cmdShim;
+    assert.equal(resolveLocalTsx(binDir, "win32", existsBashOnly), undefined);
+    assert.equal(resolveLocalTsx(binDir, "win32", existsBoth), cmdShim);
+    assert.equal(resolveLocalTsx(binDir, "linux", existsBashOnly), bashShim);
+  }
+});
 
 test("@remnic/cli package test script includes linked root tests", async () => {
   const raw = await readFile(remnicCliPackageJson, "utf8");
