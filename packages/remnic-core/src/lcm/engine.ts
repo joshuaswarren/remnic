@@ -431,7 +431,7 @@ export class LcmEngine {
     try {
       await abortOnSignal(abortSignal, this.summarizer!.summarizeIncremental(normalizedSessionId));
     } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") throw err;
+      if (abortSignal?.aborted) throw err;
       log.debug(`LCM pre-compaction flush error: ${err}`);
     }
   }
