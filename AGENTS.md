@@ -529,6 +529,8 @@ Established from multi-issue batch runs. Each row documents a repeatable frictio
 | Background omp processes killed by shell job control | Use `setsid` + `disown` (or `nohup setsid`) to detach from the shell process group. Bare `&` does not survive the bash tool's job-reaping |
 | GraphQL rate limit exhausted by `gh issue edit` / `gh issue view --json` / `gh pr view --json` | Prefer REST: `gh api repos/.../issues/<n>`, `gh api repos/.../pulls/<n>/reviews`, `gh api repos/.../pulls/<n>/comments`. REST has a separate 5000-requests/hour budget |
 | `scripts/dev-worktree.sh` is a shell script | Invoke as `bash scripts/dev-worktree.sh`, never `node scripts/dev-worktree.sh` |
+| Sync daemon health probes hang against a local HTTP stub | The probe uses `Atomics.wait` on the calling thread. The stub must run on a worker; a main-thread `http.createServer` never accepts |
+| `pr-merge-ready --check` reports BLOCKED while shards are still running | Verdict is `WAITING` (exit 3) when remaining required checks are `in_progress`/`queued`/`pending`. `BLOCKED` is failed checks, unresolved threads, thread-read failures, or current-head `CHANGES_REQUESTED` |
 
 
 ## Mechanical Stream Rules (`.omp/rules/`)
