@@ -369,6 +369,13 @@ elif [[ "$merge_out" == *"503"* || "$merge_out" == *"502"* || "$merge_out" == *"
   fi
 fi
 if [[ "$merge_ok" != true && "$already_merged" != true ]]; then
+  merged_state="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state --jq .state 2>/dev/null || true)"
+  if [[ "$merged_state" == "MERGED" ]]; then
+    printf '[pr-merge] PR already MERGED after a 5xx merge response; skipping --admin.\n'
+    already_merged=true
+  fi
+fi
+if [[ "$merge_ok" != true && "$already_merged" != true ]]; then
   current_head="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
   if [[ "$current_head" != "$HEAD_SHA" ]]; then
     printf '[pr-merge] FAIL: head moved after verification (%s != %s); refusing --admin retry.\n' \
