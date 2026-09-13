@@ -892,13 +892,7 @@ export interface MaybeRegisterDelegateDeps {
 export function maybeRegisterDelegateRuntime(
   api: DelegateHookApi,
   options: MaybeRegisterDelegateOptions,
-  deps: MaybeRegisterDelegateDeps = {
-    checkHealth: checkDaemonHealthSync,
-    checkCorpus: (host, port, timeoutMs, memoryDir) => {
-      const probe = readDaemonMemoryDirSync(host, port, timeoutMs);
-      return probe.memoryDir === undefined || daemonServesCorpus(memoryDir, probe.memoryDir);
-    },
-  },
+  deps: MaybeRegisterDelegateDeps = { checkHealth: checkDaemonHealthSync },
 ): boolean {
   // BEFORE any health-dependent resolution: if this service already has
   // delegate hooks on this api, they are still attached (OpenClaw exposes no
@@ -1013,12 +1007,22 @@ export function maybeRegisterDelegateRuntime(
     // a loopback that accepts and stalls must not let the fallback spend the
     // documented total again.
     const preflightDeadline = Date.now() + bridgeHealthTimeoutMs;
+    const corpusOk =
+      deps.checkCorpus ??
+      ((host, port, timeoutMs, memoryDir) => {
+        const probe = readDaemonMemoryDirSync(host, port, timeoutMs, bridge.daemonConfigPath);
+        return (
+          probe.healthy === true &&
+          probe.memoryDir !== undefined &&
+          daemonServesCorpus(memoryDir, probe.memoryDir)
+        );
+      });
     const healthyHost = hosts.find((host, index) => {
       const remaining = index === 0 ? bridgeHealthTimeoutMs : preflightDeadline - Date.now();
       if (!(remaining > 0 && deps.checkHealth(host, bridge.daemonPort, remaining))) return false;
-      if (index === 0 && hosts.length > 1 && deps.checkCorpus !== undefined) {
+      if (index === 0 && hosts.length > 1) {
         const corpusRemaining = preflightDeadline - Date.now();
-        if (corpusRemaining > 0 && !deps.checkCorpus(host, bridge.daemonPort, corpusRemaining, options.memoryDir)) {
+        if (corpusRemaining > 0 && !corpusOk(host, bridge.daemonPort, corpusRemaining, options.memoryDir)) {
           return false;
         }
       }
