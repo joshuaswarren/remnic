@@ -2598,13 +2598,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const memory = memories.find((entry) => entry.frontmatter.id === id);
     if (!memory) return false;
     if (memory.frontmatter.status !== "pending_review") return false;
+    if (memory.frontmatter.verificationState === "disputed") return false;
     // Tombstone-blocked rows need revokeTombstone first (issue #1579 OcuDx/Ocu1l).
     if (memory.frontmatter.blockedBy) return false;
-    return this.writeMemoryFrontmatter(memory, {
+    return this.writeMemoryFrontmatterIfUnchanged(memory, {
       status: "active",
-      // Keep frontmatter confidence in step with the re-scored trust —
-      // new smart writes persist trust as confidence, and a promoted
-      // row must not keep its stale borderline value.
       ...(typeof confidence === "number" && Number.isFinite(confidence)
         ? { confidence: Math.min(1, Math.max(0, confidence)) }
         : {}),

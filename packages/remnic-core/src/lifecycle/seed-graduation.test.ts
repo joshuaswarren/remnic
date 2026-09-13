@@ -39,6 +39,7 @@ function fakeMemory(overrides: {
   created: string;
   source?: string;
   status?: MemoryFrontmatter["status"];
+  verificationState?: MemoryFrontmatter["verificationState"];
   structuredAttributes?: Record<string, string>;
   lineage?: string[];
 }): MemoryFile {
@@ -55,6 +56,7 @@ function fakeMemory(overrides: {
       confidenceTier: "inferred",
       tags: [],
       status: overrides.status,
+      verificationState: overrides.verificationState,
       structuredAttributes: overrides.structuredAttributes,
       lineage: overrides.lineage,
     },
@@ -369,6 +371,20 @@ test("an independent negated restatement holds the seed even with enough corrobo
   assert.ok(decision.reasons.includes("contradiction-observed:1"));
 });
 
+test("#3118 disputed evidence cannot corroborate a seed", () => {
+  const seed = seedMemory({ id: "seed-1" });
+  const disputed = fakeMemory({
+    id: "ev-1",
+    content: RESTATE_TEXT,
+    created: "2026-08-02T10:00:00.000Z",
+    source: "wearable:limitless",
+    verificationState: "disputed",
+  });
+  const decision = evaluateSeedGraduation(seed, [disputed], { config: ENABLED });
+  assert.equal(decision.decision, "hold");
+  assert.equal(decision.corroborationCount, 0);
+});
+
 test("a negated seed restated positively is held (polarity symmetry)", () => {
   const seed = seedMemory({ id: "seed-1", content: CONTRADICT_TEXT });
   const positive = fakeMemory({
@@ -542,6 +558,34 @@ test("pass: independent corroboration promotes the seed in place with audit attr
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("#3118 disputed seed is skipped by the graduation pass", async () => {
+  const { storage, dir } = makeStorage();
+  try {
+    const seedWrite = await storage.writeMemory("fact", SEED_TEXT, {
+      source: "wearable:bee",
+      status: "pending_review",
+    });
+    await storage.writeMemory("fact", RESTATE_TEXT, {
+      source: "wearable:limitless",
+    });
+    const seed = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === seedWrite.id);
+    assert.ok(seed);
+    await storage.writeMemoryFrontmatter(seed, { verificationState: "disputed" });
+    const summary = await runSeedGraduationPass({
+      memories: await storage.readAllMemories(),
+      storage,
+      config: ENABLED,
+    });
+    assert.equal(summary.evaluated, 0);
+    assert.equal(summary.promoted, 0);
+    const held = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === seedWrite.id);
+    assert.equal(held?.frontmatter.status, "pending_review");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 
 test("pass: contradiction during the window holds the seed in place", async () => {
   const { storage, dir } = makeStorage();
@@ -727,6 +771,86 @@ test("lifecycle pass: enabled independent corroboration promotes through the pol
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("#3118 lifecycle pass reindexes after a graduation", async () => {
+  const { storage, dir } = makeStorage();
+  try {
+    await storage.writeMemory("fact", SEED_TEXT, {
+      source: "wearable:bee",
+      status: "pending_review",
+    });
+    await storage.writeMemory("fact", RESTATE_TEXT, {
+      source: "wearable:limitless",
+    });
+    const config = parseConfig({
+      memoryDir: dir,
+      seedGraduation: { enabled: true, minCorroborations: 1 },
+    });
+    const deps = coordinatorDeps(storage, config);
+    let saves = 0;
+    deps.saveContentHashIndexes = async () => {
+      saves += 1;
+    };
+    await new LifecyclePolicyCoordinator(deps).runLifecyclePolicyPass(
+      await storage.readAllMemories(),
+      storage,
+    );
+    assert.equal(saves, 1, "graduation must persist content-hash indexes");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("#3118 index-save failure does not unwind a completed graduation", async () => {
+  const { storage, dir } = makeStorage();
+  try {
+    await storage.writeMemory("fact", SEED_TEXT, {
+      source: "wearable:bee",
+      status: "pending_review",
+    });
+    await storage.writeMemory("fact", RESTATE_TEXT, {
+      source: "wearable:limitless",
+    });
+    const config = parseConfig({
+      memoryDir: dir,
+      seedGraduation: { enabled: true, minCorroborations: 1 },
+    });
+    const deps = coordinatorDeps(storage, config);
+    deps.saveContentHashIndexes = async () => {
+      throw new Error("index write failed");
+    };
+    await new LifecyclePolicyCoordinator(deps).runLifecyclePolicyPass(
+      await storage.readAllMemories(),
+      storage,
+    );
+    const seed = (await storage.readAllMemories()).find(
+      (memory) => memory.frontmatter.source === "wearable:bee",
+    );
+    assert.equal(seed?.frontmatter.status, "active", "graduation stays durable if reindex fails");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#3118 promoteWearableMemory refuses a concurrently disputed seed", async () => {
+  const { storage, dir } = makeStorage();
+  try {
+    const seedWrite = await storage.writeMemory("fact", SEED_TEXT, {
+      source: "wearable:bee",
+      status: "pending_review",
+    });
+    const seed = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === seedWrite.id);
+    assert.ok(seed);
+    await storage.writeMemoryFrontmatter(seed, { verificationState: "disputed" });
+    assert.equal(await storage.promoteWearableMemory(seedWrite.id, { graduatedBy: "independent-corroboration" }), false);
+    const held = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === seedWrite.id);
+    assert.equal(held?.frontmatter.status, "pending_review");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 
 test("lifecycle pass: recall-handle history suppresses echo corroboration", async () => {
   const { storage, dir } = makeStorage();
