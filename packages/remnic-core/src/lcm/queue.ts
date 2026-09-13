@@ -96,13 +96,19 @@ export class LcmWorkQueue {
     });
   }
 
-  async whenSessionIdle(sessionId: string): Promise<void> {
-    if (!this.pending.has(sessionId) && !this.inFlightSessions.has(sessionId))
-      return;
-    await new Promise<void>((resolve) => {
+  async whenSessionIdle(sessionId: string, abortSignal?: AbortSignal): Promise<void> {
+    abortSignal?.throwIfAborted();
+    if (!this.pending.has(sessionId) && !this.inFlightSessions.has(sessionId)) return;
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = (): void => {
+        const current = this.sessionIdleWaiters.get(sessionId) ?? [];
+        this.sessionIdleWaiters.set(sessionId, current.filter((waiter) => waiter !== resolve));
+        reject(abortSignal?.reason instanceof Error ? abortSignal.reason : new DOMException("Aborted", "AbortError"));
+      };
       const waiters = this.sessionIdleWaiters.get(sessionId) ?? [];
       waiters.push(resolve);
       this.sessionIdleWaiters.set(sessionId, waiters);
+      abortSignal?.addEventListener("abort", onAbort, { once: true });
     });
   }
 

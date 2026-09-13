@@ -304,8 +304,8 @@ export class LcmEngine {
     await this.ensureInitialized();
     abortSignal?.throwIfAborted();
     if (this.closed) return;
-    await abortOnSignal(abortSignal, this.waitForPendingObserveInitIdle(normalizedSessionId));
-    await abortOnSignal(abortSignal, this.observeQueue?.whenSessionIdle(normalizedSessionId) ?? Promise.resolve());
+    await this.waitForPendingObserveInitIdle(normalizedSessionId, abortSignal);
+    await this.observeQueue?.whenSessionIdle(normalizedSessionId, abortSignal) ?? Promise.resolve();
   }
 
   private reservePendingObserveInit(sessionId: string): void {
@@ -335,13 +335,20 @@ export class LcmEngine {
     this.pendingObserveInitCounts.set(sessionId, count - 1);
   }
 
-  private async waitForPendingObserveInitIdle(sessionId?: string): Promise<void> {
+  private async waitForPendingObserveInitIdle(sessionId?: string, abortSignal?: AbortSignal): Promise<void> {
+    abortSignal?.throwIfAborted();
     if (sessionId) {
       if (!this.pendingObserveInitCounts.has(sessionId)) return;
-      await new Promise<void>((resolve) => {
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = (): void => {
+          const current = this.pendingObserveInitWaiters.get(sessionId) ?? [];
+          this.pendingObserveInitWaiters.set(sessionId, current.filter((waiter) => waiter !== resolve));
+          reject(abortSignal?.reason instanceof Error ? abortSignal.reason : new DOMException("Aborted", "AbortError"));
+        };
         const waiters = this.pendingObserveInitWaiters.get(sessionId) ?? [];
         waiters.push(resolve);
         this.pendingObserveInitWaiters.set(sessionId, waiters);
+        abortSignal?.addEventListener("abort", onAbort, { once: true });
       });
       return;
     }
