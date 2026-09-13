@@ -176,3 +176,22 @@ test("LcmWorkQueue waits for a specific session without waiting for unrelated id
   assert.equal(sessionIdleResolved, true);
   await queue.whenIdle();
 });
+
+test("#3077 whenSessionIdle abort unregisters the waiter", async () => {
+  const blocker = deferred();
+  const queue = new LcmWorkQueue({
+    concurrency: 1,
+    worker: async () => {
+      await blocker.promise;
+    },
+  });
+  queue.enqueue("blocked", [{ role: "user", content: "hold" }]);
+  await Promise.resolve();
+  const abort = new AbortController();
+  const waiting = queue.whenSessionIdle("blocked", abort.signal);
+  abort.abort();
+  await assert.rejects(waiting, (err: unknown) => err instanceof Error && err.name === "AbortError");
+  blocker.resolve();
+  await queue.whenIdle();
+  await queue.whenSessionIdle("blocked");
+});

@@ -5,6 +5,7 @@ export interface EngramAccessLcmCompactionFlushRequest extends CodingScopedWrite
   sessionKey: string;
   namespace?: string;
   authenticatedPrincipal?: string;
+  abortSignal?: AbortSignal;
 }
 
 export interface EngramAccessLcmCompactionFlushResponse {

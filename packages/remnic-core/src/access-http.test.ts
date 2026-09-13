@@ -216,7 +216,8 @@ test("HTTP batch LCM flush isolates namespace failures and charges one write quo
       sessionKey: string;
       authenticatedPrincipal?: string;
     }) => {
-      calls.push(request);
+      const { sessionKey, namespace, authenticatedPrincipal } = request;
+      calls.push({ sessionKey, namespace, authenticatedPrincipal });
       if (request.namespace === "team-b")
         throw new Error("team-b flush failed");
       return { enabled: true, flushed: true };
@@ -405,7 +406,8 @@ test("HTTP batch LCM flush deduplicates aliases after effective namespace resolu
       sessionKey: string;
       authenticatedPrincipal?: string;
     }) => {
-      calls.push(request);
+      const { sessionKey, namespace, authenticatedPrincipal } = request;
+      calls.push({ sessionKey, namespace, authenticatedPrincipal });
       return { enabled: true, flushed: true };
     },
   } as unknown as EngramAccessService;

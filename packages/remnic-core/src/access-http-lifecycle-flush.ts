@@ -35,6 +35,7 @@ export async function maybeHandleLifecycleFlush(
       resolveNamespace: deps.resolveNamespace,
       defaultNamespace: deps.defaultNamespace,
       resolveRequestPrincipal: deps.resolveRequestPrincipal,
+      abortSignal,
     });
     deps.respondJson(response);
     return true;
