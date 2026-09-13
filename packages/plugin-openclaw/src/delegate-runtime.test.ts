@@ -2928,6 +2928,67 @@ test("explicit delegate preflight retries the configured interface address after
   }
 });
 
+test("#3077 explicit delegate skips loopback when it serves a foreign corpus", () => {
+  const local = Object.values(os.networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .find((entry) => entry.family === "IPv4" && !entry.internal);
+  if (local === undefined) return;
+  const prior = { mode: process.env.REMNIC_BRIDGE_MODE, host: process.env.REMNIC_HOST, port: process.env.REMNIC_PORT };
+  const memoryDir = path.join(os.tmpdir(), "remnic-delegate-foreign-corpus");
+  process.env.REMNIC_BRIDGE_MODE = "delegate";
+  process.env.REMNIC_HOST = local.address;
+  process.env.REMNIC_PORT = "4318";
+  try {
+    const probed: string[] = [];
+    const handled = maybeRegisterDelegateRuntime(
+      recordingApi(),
+      {
+        serviceId: "openclaw-remnic",
+        configBridgeMode: "delegate",
+        bridgeHealthTimeoutMs: 5_000,
+        passive: false,
+        allowPromptInjection: true,
+        gateHeartbeatTurns: false,
+        recallBudgetChars: 8_000,
+        memoryDir,
+        sessionTogglesEnabled: false,
+        respectBundledActiveMemoryToggle: false,
+        cleanUserMessage: (text: string) => text,
+        hookTimeoutMs: 5_000,
+        shouldSkipRecall: () => false,
+        flushOnResetEnabled: true,
+        capability: TEST_CAPABILITY,
+      },
+      {
+        checkHealth: (host) => {
+          probed.push(`health:${host}`);
+          return true;
+        },
+        checkCorpus: (host, port, timeoutMs, dir) => {
+          assert.equal(port, 4318);
+          assert.ok(timeoutMs > 0 && timeoutMs <= 5_000);
+          assert.equal(dir, memoryDir);
+          probed.push(`corpus:${host}`);
+          return host !== "127.0.0.1";
+        },
+        probeAuthorization: async () => ({ state: "authorized", tokenSource: "test" }) as never,
+      },
+    );
+    assert.equal(handled, true);
+    assert.deepEqual(probed, ["health:127.0.0.1", "corpus:127.0.0.1", `health:${local.address}`]);
+  } finally {
+    for (const [key, value] of [
+      ["REMNIC_BRIDGE_MODE", prior.mode],
+      ["REMNIC_HOST", prior.host],
+      ["REMNIC_PORT", prior.port],
+    ] as const) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+  }
+});
+
+
 test("maybeRegisterDelegateRuntime deduplicates hook binding per api object", async () => {
   const stub = await startDaemonStub(() => ({ context: "ctx" }));
   try {
