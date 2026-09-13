@@ -4379,8 +4379,8 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     const lcmSessionKey =
       lcmSessionKeyForNamespace(scope.writeNamespace, request.sessionKey, this.orchestrator.config.defaultNamespace) ??
       request.sessionKey;
-    await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey);
-    await this.orchestrator.lcmEngine.preCompactionFlush(lcmSessionKey);
+    await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey, request.abortSignal);
+    await this.orchestrator.lcmEngine.preCompactionFlush(lcmSessionKey, request.abortSignal);
     return {
       enabled: true,
       flushed: true,

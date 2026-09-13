@@ -42,6 +42,18 @@ function positiveInteger(value: unknown, fallback: number, min = 1): number {
   return Math.max(min, Math.floor(value));
 }
 
+function abortOnSignal<T>(abortSignal: AbortSignal | undefined, work: Promise<T>): Promise<T> {
+  if (abortSignal === undefined) return work;
+  abortSignal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(abortSignal.reason instanceof Error ? abortSignal.reason : new DOMException("Aborted", "AbortError"));
+    };
+    abortSignal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => abortSignal.removeEventListener("abort", onAbort));
+  });
+}
+
 export function extractLcmConfig(cfg: PluginConfig): LcmEngineConfig {
   return {
     enabled: (cfg as any).lcmEnabled === true,
@@ -284,14 +296,16 @@ export class LcmEngine {
     await this.observeQueue?.whenIdle();
   }
 
-  async waitForSessionObserveIdle(sessionId: string): Promise<void> {
+  async waitForSessionObserveIdle(sessionId: string, abortSignal?: AbortSignal): Promise<void> {
+    abortSignal?.throwIfAborted();
     if (!this.config.enabled || this.closed) return;
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
     if (!normalizedSessionId) return;
     await this.ensureInitialized();
+    abortSignal?.throwIfAborted();
     if (this.closed) return;
-    await this.waitForPendingObserveInitIdle(normalizedSessionId);
-    await this.observeQueue?.whenSessionIdle(normalizedSessionId);
+    await this.waitForPendingObserveInitIdle(normalizedSessionId, abortSignal);
+    await this.observeQueue?.whenSessionIdle(normalizedSessionId, abortSignal) ?? Promise.resolve();
   }
 
   private reservePendingObserveInit(sessionId: string): void {
@@ -321,13 +335,25 @@ export class LcmEngine {
     this.pendingObserveInitCounts.set(sessionId, count - 1);
   }
 
-  private async waitForPendingObserveInitIdle(sessionId?: string): Promise<void> {
+  private async waitForPendingObserveInitIdle(sessionId?: string, abortSignal?: AbortSignal): Promise<void> {
+    abortSignal?.throwIfAborted();
     if (sessionId) {
       if (!this.pendingObserveInitCounts.has(sessionId)) return;
-      await new Promise<void>((resolve) => {
+      await new Promise<void>((resolve, reject) => {
+        const finish = (): void => {
+          abortSignal?.removeEventListener("abort", onAbort);
+          resolve();
+        };
+        const onAbort = (): void => {
+          const remaining = (this.pendingObserveInitWaiters.get(sessionId) ?? []).filter((waiter) => waiter !== finish);
+          if (remaining.length === 0) this.pendingObserveInitWaiters.delete(sessionId);
+          else this.pendingObserveInitWaiters.set(sessionId, remaining);
+          reject(abortSignal?.reason instanceof Error ? abortSignal.reason : new DOMException("Aborted", "AbortError"));
+        };
         const waiters = this.pendingObserveInitWaiters.get(sessionId) ?? [];
-        waiters.push(resolve);
+        waiters.push(finish);
         this.pendingObserveInitWaiters.set(sessionId, waiters);
+        abortSignal?.addEventListener("abort", onAbort, { once: true });
       });
       return;
     }
@@ -404,16 +430,20 @@ export class LcmEngine {
   }
 
   /** Flush pending summaries before compaction (called from before_compaction hook). */
-  async preCompactionFlush(sessionId: string): Promise<void> {
+  async preCompactionFlush(sessionId: string, abortSignal?: AbortSignal): Promise<void> {
+    abortSignal?.throwIfAborted();
     if (!this.config.enabled) return;
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
     if (!normalizedSessionId) return;
     await this.ensureInitialized();
-    await this.waitForSessionObserveIdle(normalizedSessionId);
+    abortSignal?.throwIfAborted();
+    await this.waitForSessionObserveIdle(normalizedSessionId, abortSignal);
+    abortSignal?.throwIfAborted();
 
     try {
-      await this.summarizer!.summarizeIncremental(normalizedSessionId);
+      await abortOnSignal(abortSignal, this.summarizer!.summarizeIncremental(normalizedSessionId));
     } catch (err) {
+      if (abortSignal?.aborted) throw err;
       log.debug(`LCM pre-compaction flush error: ${err}`);
     }
   }

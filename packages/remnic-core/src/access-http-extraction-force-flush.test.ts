@@ -119,13 +119,17 @@ test("HTTP lifecycle flush preserves the scoped LCM compaction route", async () 
       sessionKey: "pi:session-1",
       namespace: "team-project",
     });
-    assert.deepEqual(requests, [{
+    const [request] = requests;
+    assert.ok(request);
+    assert.equal(request.abortSignal instanceof AbortSignal, true);
+    const { abortSignal: _abortSignal, ...rest } = request;
+    assert.deepEqual(rest, {
       sessionKey: "pi:session-1",
       namespace: "team-project",
       cwd: "/workspace/project",
       projectTag: "Acme/Webshop",
       authenticatedPrincipal: undefined,
-    }]);
+    });
   } finally {
     await server.stop();
   }
