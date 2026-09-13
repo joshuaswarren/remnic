@@ -1,5 +1,5 @@
 {
-  "note": "Curated subset for the PR windows-smoke job. The full @remnic/core suite (766 files) no longer fits the free-tier 25-minute Windows runner cap (issue #3034), so pull-request runs execute only the files below: the native SQLite binding and the path-handling surfaces most likely to break on Windows. The full suite remains available by running scripts/windows-test-runner.mjs without --smoke. Keep this list small enough to finish well inside the budget; add a file only when it guards a real Windows failure mode.",
+  "note": "Curated subset for the PR windows-smoke job. The full @remnic/core suite (766 files) no longer fits the 45-minute Windows runner budget (issue #3034/#3060), so pull-request runs execute only the files below: the native SQLite binding and the path-handling surfaces most likely to break on Windows. The full suite remains available by running scripts/windows-test-runner.mjs without --smoke. Keep this list small enough to finish well inside the budget; add a file only when it guards a real Windows failure mode.",
   "files": [
     "packages/remnic-core/src/runtime/better-sqlite.test.ts",
     "packages/remnic-core/src/native-binding-hint.test.ts",
