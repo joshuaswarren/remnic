@@ -9,8 +9,8 @@ set -euo pipefail
 #    green conclusion (success/neutral/skipped), no CHANGES_REQUESTED review
 #    targets the current head, and the GraphQL unresolved-thread count is 0.
 #    Prints an evidence block (head SHA, per-gate conclusion, thread count).
-# 2. Dismiss CHANGES_REQUESTED reviews whose commit is not the head SHA, with
-#    a reason string, via the GraphQL dismissPullRequestReview mutation.
+# 2. Dismiss CHANGES_REQUESTED reviews whose commit is not the head SHA via
+#    REST PUT .../reviews/{id}/dismissals (GraphQL dismiss 500'd on 2026-09-13).
 # 3. Attempt `gh pr merge <n> --squash`. If GitHub refuses while every verified
 #    precondition still held (head unchanged), retry once with `--admin` and
 #    log why: GitHub can leave mergeStateStatus BLOCKED after a dismissal even
@@ -152,11 +152,7 @@ REVIEW_THREADS_QUERY='query($owner: String!, $name: String!, $pr: Int!, $after: 
   }
 }'
 
-DISMISS_MUTATION='mutation($id: ID!, $message: String!) {
-  dismissPullRequestReview(input: {pullRequestReviewId: $id, message: $message}) {
-    pullRequestReview { state }
-  }
-}'
+
 
 DISMISS_REASON="Stale CHANGES_REQUESTED on a superseded commit (does not target the current head); head checks are green and review threads are resolved. Dismissed by scripts/pr-merge-ready.sh (issue #2440)."
 
@@ -263,7 +259,7 @@ fi
 # otherwise the --admin fallback could bulldoze a standing review verdict.
 CURRENT_HEAD_BLOCKING=0
 STALE_REVIEWS=()
-if ! reviews_raw=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate --jq '.[] | select(.state == "CHANGES_REQUESTED") | [(.node_id // "-"), (.user.login // "-"), (.commit_id // "-")] | @tsv' 2>/dev/null); then
+if ! reviews_raw=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate --jq '.[] | select(.state == "CHANGES_REQUESTED") | [(.id|tostring), (.user.login // "-"), (.commit_id // "-")] | @tsv' 2>/dev/null); then
   GATE_FAILURES+=("api:reviews")
   reviews_raw=""
 else
@@ -323,7 +319,7 @@ fi
 
 if [[ "$DRY_RUN" == true ]]; then
   printf 'plan (--check, no actions taken):\n'
-  printf '  1. dismiss %s stale CHANGES_REQUESTED review(s) via GraphQL with reason:\n' "${#STALE_REVIEWS[@]}"
+  printf '  1. dismiss %s stale CHANGES_REQUESTED review(s) via REST with reason:\n' "${#STALE_REVIEWS[@]}"
   for stale in "${STALE_REVIEWS[@]}"; do
     IFS=$'\t' read -r node_id login commit <<< "$stale"
     printf '     - %s (%s, commit %s != head %s)\n' "$node_id" "$login" "${commit:0:7}" "${HEAD_SHA:0:7}"
@@ -348,11 +344,11 @@ fi
 # ---- step 2: dismiss stale CHANGES_REQUESTED reviews ----
 
 for stale in "${STALE_REVIEWS[@]}"; do
-  IFS=$'\t' read -r node_id login commit <<< "$stale"
+  IFS=$'\t' read -r review_id login commit <<< "$stale"
   printf '[pr-merge] dismissing stale CHANGES_REQUESTED from %s (commit %s != head %s)...\n' \
     "$login" "${commit:0:7}" "${HEAD_SHA:0:7}"
-  if ! dismiss_out=$(gh api graphql -f query="$DISMISS_MUTATION" -f id="$node_id" -f message="$DISMISS_REASON" 2>&1); then
-    printf '[pr-merge] FAIL: dismissal of %s failed: %s\n' "$node_id" "$dismiss_out" >&2
+  if ! dismiss_out=$(gh api -X PUT "repos/${REPO}/pulls/${PR_NUMBER}/reviews/${review_id}/dismissals" -f message="$DISMISS_REASON" 2>&1); then
+    printf '[pr-merge] FAIL: dismissal of %s failed: %s\n' "$review_id" "$dismiss_out" >&2
     exit 1
   fi
 done
@@ -366,10 +362,17 @@ if merge_out=$(gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --match-head-com
   merge_ok=true
 elif [[ "$merge_out" == *"already been merged"* || "$merge_out" == *"already merged"* ]]; then
   already_merged=true
-elif [[ "$merge_out" == *"503"* || "$merge_out" == *"No server is currently available"* ]]; then
-  printf '[pr-merge] GraphQL merge hit a GitHub 503; retrying via REST PUT.\n'
-  if merge_out=$(gh api -X PUT "repos/${REPO}/pulls/${PR_NUMBER}/merge" -f merge_method=squash 2>&1); then
+elif [[ "$merge_out" == *"503"* || "$merge_out" == *"502"* || "$merge_out" == *"Server Error"* || "$merge_out" == *"No server is currently available"* ]]; then
+  printf '[pr-merge] GraphQL merge hit a GitHub 5xx; retrying via REST PUT.\n'
+  if merge_out=$(gh api -X PUT "repos/${REPO}/pulls/${PR_NUMBER}/merge" -f merge_method=squash -f sha="$HEAD_SHA" 2>&1); then
     merge_ok=true
+  fi
+fi
+if [[ "$merge_ok" != true && "$already_merged" != true ]]; then
+  merged_state="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state --jq .state 2>/dev/null || true)"
+  if [[ "$merged_state" == "MERGED" ]]; then
+    printf '[pr-merge] PR already MERGED after a 5xx merge response; skipping --admin.\n'
+    already_merged=true
   fi
 fi
 if [[ "$merge_ok" != true && "$already_merged" != true ]]; then
