@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -513,7 +513,7 @@ test("#3007 sidecar ancestry refuses a symlinked memory root", () => {
   }
 });
 
-test("#3090 sidecar ancestry refuses a symlink above the category root", () => {
+test("#3090 sidecar ancestry refuses a symlink above the category root", async () => {
   const root = store();
   try {
     const outside = path.join(root, "outside");
@@ -521,10 +521,14 @@ test("#3090 sidecar ancestry refuses a symlink above the category root", () => {
     writeFileSync(path.join(outside, "alpha", "facts", "2026-01-01", "fact.md"), "x");
     mkdirSync(path.join(root, "namespaces"));
     symlinkSync(outside, path.join(root, "namespaces", "alpha"));
-    assert.deepEqual(
-      directorySidecarAncestry(root, "namespaces/alpha/facts/2026-01-01/fact.md"),
-      [],
+    const report = await refreshDirectorySidecarsAfterWrite(
+      root,
+      "namespaces/alpha/facts/2026-01-01/fact.md",
+      true,
     );
+    assert.deepEqual(report, { written: [], removed: [] });
+    assert.equal(existsSync(path.join(outside, "alpha", "facts", "overview.md")), false);
+    assert.equal(existsSync(path.join(outside, "alpha", "facts", "2026-01-01", "overview.md")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

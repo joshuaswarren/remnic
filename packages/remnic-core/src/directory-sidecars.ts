@@ -343,11 +343,12 @@ export function directorySidecarAncestry(memoryDir: string, changedPath: string)
   if (rel.startsWith("..") || path.isAbsolute(rel)) return [];
   const parts = rel.split(path.sep).filter(Boolean);
   let cursor = root;
-  for (const part of parts) {
-    cursor = path.join(cursor, part);
+  for (let i = 0; i < parts.length; i++) {
+    cursor = path.join(cursor, parts[i] ?? "");
     try {
       if (lstatSync(cursor).isSymbolicLink()) return [];
     } catch {
+      if (i === parts.length - 1) break;
       return [];
     }
   }
