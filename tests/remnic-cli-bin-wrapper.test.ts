@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { constants } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { constants as osConstants, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -12,6 +13,73 @@ const packageBinDir = join(repoRoot, "packages", "remnic-cli", "bin");
 const remnicCliPackageJson = join(repoRoot, "packages", "remnic-cli", "package.json");
 const remnicBin = join(packageBinDir, "remnic.cjs");
 const engramBin = join(packageBinDir, "engram.cjs");
+
+const requireBin = createRequire(import.meta.url);
+
+test("#3038 source wrappers resolve tsx JS CLI and ignore .bin shims", () => {
+  for (const sourceBin of [remnicBin, engramBin]) {
+    const { tsxPackageJsonCandidates, resolveLocalTsx } = requireBin(sourceBin);
+    const binDir = "/pkg/bin";
+    assert.deepEqual(tsxPackageJsonCandidates(binDir), [
+      resolve(binDir, "../node_modules/tsx/package.json"),
+      resolve(binDir, "../../../node_modules/tsx/package.json"),
+    ]);
+
+    const pkgPath = resolve(binDir, "../node_modules/tsx/package.json");
+    const cliPath = resolve(binDir, "../node_modules/tsx/dist/cli.mjs");
+    const bashShim = resolve(binDir, "../node_modules/.bin/tsx");
+    const cmdShim = resolve(binDir, "../node_modules/.bin/tsx.cmd");
+    const files = new Map<string, string>([
+      [pkgPath, JSON.stringify({ bin: "./dist/cli.mjs" })],
+      [cliPath, ""],
+      [bashShim, ""],
+      [cmdShim, ""],
+    ]);
+    const exists = (p: string) => files.has(p);
+    const readFile = (p: string) => files.get(p) ?? "";
+    assert.equal(resolveLocalTsx(binDir, exists, readFile), cliPath);
+    files.delete(pkgPath);
+    files.delete(cliPath);
+    assert.equal(resolveLocalTsx(binDir, exists, readFile), undefined);
+  }
+});
+
+test("#3038 source entry launches tsx via node, not a .bin shim", async () => {
+  for (const sourceBin of [remnicBin, engramBin]) {
+    const tempRoot = await mkdtemp(join(tmpdir(), "remnic-cli-tsx-js-"));
+    try {
+      const tempBinDir = join(tempRoot, "bin");
+      const tempSrcDir = join(tempRoot, "src");
+      const tsxDist = join(tempRoot, "node_modules", "tsx", "dist");
+      const binShimDir = join(tempRoot, "node_modules", ".bin");
+      await mkdir(tempBinDir, { recursive: true });
+      await mkdir(tempSrcDir, { recursive: true });
+      await mkdir(tsxDist, { recursive: true });
+      await mkdir(binShimDir, { recursive: true });
+
+      const tempBin = join(tempBinDir, "wrapper.cjs");
+      await copyFile(sourceBin, tempBin);
+      await writeFile(join(tempSrcDir, "index.ts"), "process.exit(0);\n");
+      await writeFile(
+        join(tempRoot, "node_modules", "tsx", "package.json"),
+        JSON.stringify({ bin: "./dist/cli.mjs" }),
+      );
+      await writeFile(
+        join(tsxDist, "cli.mjs"),
+        "process.stdout.write(`tsx-js:${process.argv[1]}\\n`);\n",
+      );
+      await writeFile(join(binShimDir, "tsx"), "#!/bin/sh\nexit 99\n");
+      await writeFile(join(binShimDir, "tsx.cmd"), "@exit 99\n");
+
+      const result = spawnSync(process.execPath, [tempBin], { encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /tsx-js:/);
+      assert.match(result.stdout, /cli\.mjs/);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  }
+});
 
 test("@remnic/cli package test script includes linked root tests", async () => {
   const raw = await readFile(remnicCliPackageJson, "utf8");
