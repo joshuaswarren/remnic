@@ -4720,7 +4720,7 @@
         "minimum": 1000,
         "maximum": 120000,
         "default": 60000,
-        "description": "Per-call timeout (ms) for QMD daemon searches. Default 60000; raise (e.g. 20000) to give CPU-only HyDE queries more headroom before the daemon call times out."
+        "description": "Per-call timeout (ms) for QMD daemon searches. Default 60000; raise to 120000 for very large cold indexes."
       },
       "qmdDaemonUrl": {
         "type": "string",
@@ -5119,7 +5119,7 @@
       },
       "recallEnrichmentDeadlineMs": {
         "type": "number",
-        "default": 25000,
+        "default": 60000,
         "description": "Default deadline in ms recorded for enrichment recall sections."
       },
       "recallGraphDamping": {

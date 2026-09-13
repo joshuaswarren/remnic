@@ -8,7 +8,7 @@ test("parseConfig applies recall timeout and qmd recall cache defaults", () => {
 
   assert.equal(config.recallOuterTimeoutMs, 75_000);
   assert.equal(config.recallCoreDeadlineMs, 75_000);
-  assert.equal(config.recallEnrichmentDeadlineMs, 25_000);
+  assert.equal(config.recallEnrichmentDeadlineMs, 60_000);
   assert.equal(config.qmdRecallCacheTtlMs, 60_000);
   assert.equal(config.qmdRecallCacheStaleTtlMs, 10 * 60_000);
   assert.equal(config.qmdRecallCacheMaxEntries, 128);

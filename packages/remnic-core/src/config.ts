@@ -3127,7 +3127,7 @@ export function parseConfig(
     recallEnrichmentDeadlineMs:
       typeof cfg.recallEnrichmentDeadlineMs === "number"
         ? Math.max(0, Math.floor(cfg.recallEnrichmentDeadlineMs))
-        : 25_000,
+        : 60_000,
     recallPipeline: recallPipelineConfig.pipeline,
     recallMmrEnabled: cfg.recallMmrEnabled !== false,
     recallMmrLambda:
