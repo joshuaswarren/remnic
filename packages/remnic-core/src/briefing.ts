@@ -19,6 +19,7 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { log } from "./logger.js";
+import { withBriefingFollowupTimeout } from "./briefing-followup-timeout.js";
 import { extractJsonCandidates } from "./json-extract.js";
 import { drainPassiveCorrectionNotifications } from "./correction/passive-correction-notifications.js";
 import { excludeSupportPassportPrivateMemories } from "./support-passport/card-projection.js";
@@ -846,10 +847,6 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
 
   const activeThreads = buildActiveThreads(focusedMemories);
   const recentEntities = buildRecentEntities(allEntities, window, focus);
-  // TODO(#370): openCommitments only covers memories inside the lookback window.
-  // Still-open commitments (pending tag, commitment category) that pre-date the
-  // window are silently omitted. A separate query over allMemories filtered to
-  // open-status entries would surface these. Deferred to avoid scope creep here.
   const openCommitments = buildOpenCommitments(focusedMemories);
 
   const calendarLoadResult = options.calendarSource
@@ -882,11 +879,13 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
         model: options.model ?? BRIEFING_FOLLOWUP_DEFAULT_MODEL,
         baseURL: options.openaiBaseUrl,
       });
-      const generated = await generator({
-        sections: sectionsBase,
-        windowLabel: window.label,
-        maxFollowups,
-      });
+      const generated = await withBriefingFollowupTimeout(
+        generator({
+          sections: sectionsBase,
+          windowLabel: window.label,
+          maxFollowups,
+        }),
+      );
       followups = generated.slice(0, maxFollowups);
     } catch (err) {
       const errMsg = stringifyError(err);
