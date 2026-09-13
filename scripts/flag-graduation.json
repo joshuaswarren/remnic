@@ -657,6 +657,12 @@
       "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
     },
     {
+      "flag": "recallStandingBlock",
+      "addedIn": "9.69.68",
+      "issue": 3089,
+      "graduationCriterion": "Prefix-cache-stable standing-block injection shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
+    },
+    {
       "flag": "recallTranscriptsEnabled",
       "addedIn": "<=9.69.55",
       "issue": 3032,
