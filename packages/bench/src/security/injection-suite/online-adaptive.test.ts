@@ -1340,7 +1340,7 @@ test("#3084 generation-bound full-strip stays limited; legacy stays estimable", 
     assert.equal(generationBound.rowAccounting?.limitedDesign, true, "generation keeps verification after a full strip");
     assert.equal(generationBound.decision.estimable, false);
     for (const bad of [0, 1.5, "1"]) {
-      const tampered = { ...stripped, limit: null, contractGeneration: bad };
+      const tampered: Record<string, unknown> = { ...stripped, limit: null, contractGeneration: bad };
       tampered.resumeContractHash = injectionSuiteResumeContractHashForOnline(tampered as never);
       await writeFile(path.join(tmp, "run.json"), `${JSON.stringify(tampered)}\n`, "utf8");
       const invalid = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
