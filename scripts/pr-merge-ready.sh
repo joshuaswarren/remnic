@@ -221,11 +221,14 @@ else
         in_progress/*|queued/*|pending/*) gate_pending=1 ;;
       esac
     done <<< "${CHECK_STATE_LINES[$gate_name]}"
-    if [[ -n "$gate_green" ]]; then
+    if [[ "$gate_name" == "CodeRabbit" && -n "$gate_pending" ]]; then
+      GATE_FAILURES+=("check:${gate_name}(${gate_first:-none})")
+      GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (RED)"$'\n'
+    elif [[ -n "$gate_green" ]]; then
       GATE_LINES+="  ${gate_name}: ${gate_green}"$'\n'
     elif [[ "$gate_name" == "ai-reviewers" || "$gate_name" == "analyze" || "$gate_name" == "Kilo Code Review" ]]; then
       GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (informational)"$'\n'
-    elif [[ "$gate_name" == "CodeRabbit" && -z "$gate_pending" ]]; then
+    elif [[ "$gate_name" == "CodeRabbit" ]]; then
       GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (informational)"$'\n'
     else
       GATE_FAILURES+=("check:${gate_name}(${gate_first:-none})")
