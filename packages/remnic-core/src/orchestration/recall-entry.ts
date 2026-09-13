@@ -172,17 +172,24 @@ export class RecallEntryCoordinator {
       }
     }
     const innerObserver = options.onContextComposition;
+    const innerBudget =
+      standingText.length > 0 && standingBudget && standingBudget > 0
+        ? Math.max(0, standingBudget - standingText.length - 2)
+        : options.budgetCharsOverride;
     const recallOptions = {
       ...options,
       abortSignal: abortController.signal,
+      budgetCharsOverride: innerBudget,
       onContextComposition:
         standingText.length > 0
           ? (composition: RecallContextComposition) =>
               innerObserver?.({
                 ...composition,
-                context: composition.context
-                  ? `${standingText}\n\n${composition.context}`
-                  : standingText,
+                context: prefixStandingMemoryBlock(
+                  composition.context ?? "",
+                  standingText,
+                  standingBudget,
+                ),
               })
           : innerObserver,
     };
