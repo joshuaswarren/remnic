@@ -404,10 +404,23 @@ function hasOpaqueEmissionTarget(sentence: string): boolean {
     const token = match[3];
     if (token === undefined) continue;
     // Uppercase-initial tokens are judged by shape (marker vs acronym or
-    // field name). Lowercase words are NOT admitted as markers: ordinary
-    // English is open-ended ("must include citations"), so absence from a
-    // finite wordlist is not positive marker evidence (#3080, PR #3081 r1).
-    if (/^[a-z]/.test(token)) continue;
+    // field name). Lowercase slots need positive evidence, not absence
+    // from a wordlist (#3093): a prefix/suffix verb names a token to echo,
+    // while include/contain name described content ("must include
+    // citations"). Template openers already live in
+    // ORDINARY_CAPITALIZED_WORDS.
+    if (/^[a-z]/.test(token)) {
+      if (!/\b(?:begin|start|end)\b/i.test(verb[0])) continue;
+      // A determiner means the object is a described value, not a payload
+      // ("begin with the ticket number").
+      if (/^(?:the|a|an)$/.test(token)) continue;
+      const titled = token.replace(
+        /(^|[-_])([a-z])/g,
+        (_whole, sep: string, letter: string) => `${sep}${letter.toUpperCase()}`,
+      );
+      if (isOrdinaryToken(titled)) continue;
+      return true;
+    }
     if (!isOrdinaryToken(token)) return true;
   }
   return false;
