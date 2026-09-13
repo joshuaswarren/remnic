@@ -2934,6 +2934,7 @@ test("#3077 explicit delegate skips loopback when it serves a foreign corpus", (
     .find((entry) => entry.family === "IPv4" && !entry.internal);
   if (local === undefined) return;
   const prior = { mode: process.env.REMNIC_BRIDGE_MODE, host: process.env.REMNIC_HOST, port: process.env.REMNIC_PORT };
+  const memoryDir = path.join(os.tmpdir(), "remnic-delegate-foreign-corpus");
   process.env.REMNIC_BRIDGE_MODE = "delegate";
   process.env.REMNIC_HOST = local.address;
   process.env.REMNIC_PORT = "4318";
@@ -2949,7 +2950,7 @@ test("#3077 explicit delegate skips loopback when it serves a foreign corpus", (
         allowPromptInjection: true,
         gateHeartbeatTurns: false,
         recallBudgetChars: 8_000,
-        memoryDir: path.join(os.tmpdir(), "remnic-delegate-foreign-corpus"),
+        memoryDir,
         sessionTogglesEnabled: false,
         respectBundledActiveMemoryToggle: false,
         cleanUserMessage: (text: string) => text,
@@ -2963,7 +2964,10 @@ test("#3077 explicit delegate skips loopback when it serves a foreign corpus", (
           probed.push(`health:${host}`);
           return true;
         },
-        checkCorpus: (host) => {
+        checkCorpus: (host, port, timeoutMs, dir) => {
+          assert.equal(port, 4318);
+          assert.ok(timeoutMs > 0 && timeoutMs <= 5_000);
+          assert.equal(dir, memoryDir);
           probed.push(`corpus:${host}`);
           return host !== "127.0.0.1";
         },

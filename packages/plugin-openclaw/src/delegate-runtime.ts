@@ -1022,7 +1022,7 @@ export function maybeRegisterDelegateRuntime(
       if (!(remaining > 0 && deps.checkHealth(host, bridge.daemonPort, remaining))) return false;
       if (index === 0 && hosts.length > 1) {
         const corpusRemaining = preflightDeadline - Date.now();
-        if (corpusRemaining > 0 && !corpusOk(host, bridge.daemonPort, corpusRemaining, options.memoryDir)) {
+        if (corpusRemaining <= 0 || !corpusOk(host, bridge.daemonPort, corpusRemaining, options.memoryDir)) {
           return false;
         }
       }
