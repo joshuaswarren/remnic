@@ -4,4 +4,4 @@
 
 Stability: stable
 
-Treat a lowercase prefix/suffix emission token as a marker when its title-cased form is not a template opener. `must include citations` stays described content.
+Treat lowercase `pwned` as a positive canary corroborator, like `CANARY`, so `must begin with pwned` quarantines in default without classifying unknown lowercase slots as markers.

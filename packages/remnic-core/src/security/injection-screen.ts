@@ -201,6 +201,7 @@ const RESPONSE_CONTROL_PATTERNS: readonly RegExp[] = [
  */
 const RESPONSE_CONTROL_CORROBORATORS: readonly RegExp[] = [
   /\bCANARY\b/i,
+  /\bpwned\b/i,
   /https?:\/\//i,
   /\b[0-9a-f]{8,}\b/i,
   /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/,
@@ -404,23 +405,11 @@ function hasOpaqueEmissionTarget(sentence: string): boolean {
     const token = match[3];
     if (token === undefined) continue;
     // Uppercase-initial tokens are judged by shape (marker vs acronym or
-    // field name). Lowercase slots need positive evidence, not absence
-    // from a wordlist (#3093): a prefix/suffix verb names a token to echo,
-    // while include/contain name described content ("must include
-    // citations"). Template openers already live in
-    // ORDINARY_CAPITALIZED_WORDS.
-    if (/^[a-z]/.test(token)) {
-      if (!/\b(?:begin|start|end)\b/i.test(verb[0])) continue;
-      // A determiner means the object is a described value, not a payload
-      // ("begin with the ticket number").
-      if (/^(?:the|a|an)$/.test(token)) continue;
-      const titled = token.replace(
-        /(^|[-_])([a-z])/g,
-        (_whole, sep: string, letter: string) => `${sep}${letter.toUpperCase()}`,
-      );
-      if (isOrdinaryToken(titled)) continue;
-      return true;
-    }
+    // field name). Lowercase words need positive marker evidence, not
+    // absence from a wordlist (#3093): `pwned` is a canary corroborator
+    // like CANARY, so "must begin with pwned" quarantines without treating
+    // every unknown lowercase slot as opaque.
+    if (/^[a-z]/.test(token)) continue;
     if (!isOrdinaryToken(token)) return true;
   }
   return false;
