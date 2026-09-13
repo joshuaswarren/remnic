@@ -337,10 +337,21 @@ function childAbstractsFromDisk(dir: string): Map<string, string> {
  */
 export function directorySidecarAncestry(memoryDir: string, changedPath: string): string[] {
   const root = path.resolve(memoryDir);
+  if (!isRealDirectory(root)) return [];
   const abs = path.isAbsolute(changedPath) ? path.resolve(changedPath) : path.resolve(root, changedPath);
   const rel = path.relative(root, abs);
   if (rel.startsWith("..") || path.isAbsolute(rel)) return [];
   const parts = rel.split(path.sep).filter(Boolean);
+  let cursor = root;
+  for (let i = 0; i < parts.length; i++) {
+    cursor = path.join(cursor, parts[i] ?? "");
+    try {
+      if (lstatSync(cursor).isSymbolicLink()) return [];
+    } catch {
+      if (i === parts.length - 1) break;
+      return [];
+    }
+  }
   const dirParts = isRealDirectory(abs) ? parts : parts.slice(0, -1);
   let categoryAt = -1;
   if (dirParts[0] === "namespaces" && dirParts.length >= 3 && CATEGORY_ROOTS.has(dirParts[2] ?? "")) {
@@ -351,7 +362,9 @@ export function directorySidecarAncestry(memoryDir: string, changedPath: string)
   if (categoryAt === -1) return [];
   const dirs: string[] = [];
   for (let i = dirParts.length; i > categoryAt; i--) {
-    dirs.push(path.join(root, ...dirParts.slice(0, i)));
+    const dir = path.join(root, ...dirParts.slice(0, i));
+    if (!isRealDirectory(dir)) return [];
+    dirs.push(dir);
   }
   return dirs;
 }
