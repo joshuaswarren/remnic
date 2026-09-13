@@ -201,7 +201,6 @@ const RESPONSE_CONTROL_PATTERNS: readonly RegExp[] = [
  */
 const RESPONSE_CONTROL_CORROBORATORS: readonly RegExp[] = [
   /\bCANARY\b/i,
-  /\bpwned\b/i,
   /https?:\/\//i,
   /\b[0-9a-f]{8,}\b/i,
   /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/,
@@ -405,11 +404,12 @@ function hasOpaqueEmissionTarget(sentence: string): boolean {
     const token = match[3];
     if (token === undefined) continue;
     // Uppercase-initial tokens are judged by shape (marker vs acronym or
-    // field name). Lowercase words need positive marker evidence, not
-    // absence from a wordlist (#3093): `pwned` is a canary corroborator
-    // like CANARY, so "must begin with pwned" quarantines without treating
-    // every unknown lowercase slot as opaque.
-    if (/^[a-z]/.test(token)) continue;
+    // field name). Lowercase slots need positive evidence in the slot
+    // itself (#3093): `pwned` is a canary, like CANARY, not a sentence-wide cue.
+    if (/^[a-z]/.test(token)) {
+      if (token === "pwned" && /\b(?:begin|start|end)\b/i.test(verb[0])) return true;
+      continue;
+    }
     if (!isOrdinaryToken(token)) return true;
   }
   return false;
