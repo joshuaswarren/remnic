@@ -19,6 +19,8 @@ test("#3088 sidecar enable walks up from namespace storage roots", () => {
   const nested = `${root}/namespaces/team-a`;
   setDirectorySidecarsEnabledForDir(root, true);
   assert.equal(isDirectorySidecarsEnabledForDir(nested), true);
+  setDirectorySidecarsEnabledForDir(nested, false);
+  assert.equal(isDirectorySidecarsEnabledForDir(nested), false);
   assert.equal(isDirectorySidecarsEnabledForDir("/tmp/other-memory"), false);
 });
 

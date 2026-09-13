@@ -3981,11 +3981,15 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
     const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras);
     const result = await this.writeMemory(category, content, options as WriteMemoryOptions);
-    await refreshDirectorySidecarsAfterWrite(
-      this.dir,
-      result.memory?.path ?? "",
-      isDirectorySidecarsEnabledForDir(this.dir),
-    );
+    try {
+      await refreshDirectorySidecarsAfterWrite(
+        this.dir,
+        result.memory?.path ?? "",
+        isDirectorySidecarsEnabledForDir(this.dir),
+      );
+    } catch (err) {
+      log.warn(`directory sidecar refresh failed after write: ${err}`);
+    }
     return result;
   }
 

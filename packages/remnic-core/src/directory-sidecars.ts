@@ -79,7 +79,7 @@ export function setDirectorySidecarsEnabledForDir(memoryDir: string, enabled: bo
 export function isDirectorySidecarsEnabledForDir(memoryDir: string): boolean {
   let dir = path.resolve(memoryDir);
   for (;;) {
-    if (sidecarEnabledByDir.get(dir) === true) return true;
+    if (sidecarEnabledByDir.has(dir)) return sidecarEnabledByDir.get(dir) === true;
     const parent = path.dirname(dir);
     if (parent === dir) return false;
     dir = parent;
