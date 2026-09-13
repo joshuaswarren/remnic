@@ -202,6 +202,8 @@ export interface InjectionSuiteRunMetadata {
   unslicedPlannedRows?: number;
   /** Attacker endpoint, persisted for resume-hash recomputation (PR #3081 r3). */
   attackerBaseUrl?: string;
+  /** Hash-bound metadata generation. Absence is the closed legacy set (#3084). */
+  contractGeneration?: number;
   stage: InjectionSuiteStage;
   runKind: "dev" | "pilot" | "main";
   modelProfileHash: string;

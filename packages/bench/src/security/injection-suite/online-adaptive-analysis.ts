@@ -407,6 +407,8 @@ async function readCorpusManifest(runDir: string): Promise<{
 }
 
 export const INJECTION_SUITE_ONLINE_RESUME_CONTRACT = "h5-injection-suite-online-resume-v1";
+/** Hash-bound metadata generation. Absence is the closed legacy set (#3084). */
+export const INJECTION_SUITE_ONLINE_CONTRACT_GENERATION = 1;
 
 export function injectionSuiteResumeContractHashForOnline(metadata: {
   suiteVersion: string;
@@ -434,6 +436,7 @@ export function injectionSuiteResumeContractHashForOnline(metadata: {
   attackerModelDigest?: string;
   attackerPromptSha256?: string;
   attackerIterations?: number;
+  contractGeneration?: number;
 }): string {
   return createHash("sha256")
     .update(
@@ -469,6 +472,9 @@ export function injectionSuiteResumeContractHashForOnline(metadata: {
         attackerModelDigest: metadata.attackerModelDigest ?? "",
         attackerPromptSha256: metadata.attackerPromptSha256 ?? "",
         attackerIterations: metadata.attackerIterations ?? 0,
+        ...(metadata.contractGeneration === undefined
+          ? {}
+          : { contractGeneration: metadata.contractGeneration }),
       }),
     )
     .digest("hex");
@@ -646,28 +652,24 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
     && (metadata.unslicedPlannedRows ?? 0) > 0
     ? metadata.unslicedPlannedRows
     : undefined;
+  let unsliced = recordedUnsliced;
   // The value decides whether a limit truncated the design, so it is
   // tamper-evident: whenever it is recorded, the resume-contract hash must
-  // verify. A hand-edited count (stale, coerced, set equal to the limit, or
-  // paired with an edited `limit`/`null`) breaks the hash, and the run is
-  // then marked LIMITED rather than merely distrusted -- clearing the value
-  // alone would let a nulled `limit` read the run as complete (PR #3081 r3).
-  let unsliced = recordedUnsliced;
-  // The resume-contract hash is the arbiter. Runs on the NEW metadata
-  // contract (attackerBaseUrl persisted, which this code always writes) are
-  // verified UNCONDITIONALLY: every legitimate new state recomputes to its
-  // stored hash, so any mismatch -- an edited count, an edited or nulled
-  // limit, or the field deleted entirely -- marks the design LIMITED.
-  // LEGACY runs hashed a resolved attacker URL they never persisted, so
-  // their hash cannot be reconstructed; for them verification runs only
-  // when the unsliced field is present (superset of the pre-r8 behavior,
-  // and no frozen campaign run records a limit). Residual, documented: a
-  // new run stripped of attackerBaseUrl AND unsliced AND limit falls to the
-  // legacy path; closing that needs a contract version bump (post-cap r9).
+  // verify. Generation >= 1 (#3084) is hash-bound: every optional field
+  // participates and absence is verifiable. LEGACY artifacts have no
+  // generation (the frozen campaign set); they hashed a resolved attacker
+  // URL they never persisted, so verification runs only when unsliced or
+  // attackerBaseUrl is present.
+  const generationPresent = Object.hasOwn(metadata, "contractGeneration");
+  const generationBound =
+    generationPresent &&
+    Number.isInteger(metadata.contractGeneration) &&
+    (metadata.contractGeneration ?? 0) >= 1;
+  const generationInvalid = generationPresent && !generationBound;
   const newContract = metadata.attackerBaseUrl !== undefined;
   const digest = metadata.attackerModelDigest ?? "";
   const digestCandidates = digest === "unverified" ? [digest, ""] : [digest];
-  const mustVerify = newContract || unslicedPresent;
+  const mustVerify = generationBound || newContract || unslicedPresent;
   const resumeHashVerifies = !mustVerify || digestCandidates.some((candidate) =>
     injectionSuiteResumeContractHashForOnline({ ...metadata, attackerModelDigest: candidate })
       === metadata.resumeContractHash);
@@ -676,7 +678,8 @@ export async function analyzeInjectionSuiteOnlineAdaptiveRun(
   const limitedDesign = Number.isInteger(recordedLimit)
     && recordedLimit > 0
     && (unsliced === undefined || recordedLimit < unsliced)
-    || unslicedUnverifiable;
+    || unslicedUnverifiable
+    || generationInvalid;
   const incomplete =
     limitedDesign ||
     !corpusManifestPresent ||

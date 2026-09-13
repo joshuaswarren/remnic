@@ -29,6 +29,7 @@ import type {
 import {
   type OnlineAdaptiveCorpusLine,
   buildOnlineAdaptiveAttackerInput,
+  INJECTION_SUITE_ONLINE_CONTRACT_GENERATION,
   injectionSuiteResumeContractHashForOnline,
   onlineAdaptiveRejectionReason,
   onlineVariantFromBase,
@@ -1025,6 +1026,8 @@ async function writeOnlineFixture(
     unslicedPlannedRows?: number;
     /** Persisted attacker endpoint: opts the artifact into the new metadata contract (unconditional hash verification). */
     attackerBaseUrl?: string;
+    /** Hash-bound generation. Absence is the closed legacy set (#3084). */
+    contractGeneration?: number;
   } = {},
 ): Promise<void> {
   const design = {
@@ -1048,6 +1051,7 @@ async function writeOnlineFixture(
     limit: options.limit ?? null,
     ...(options.unslicedPlannedRows === undefined ? {} : { unslicedPlannedRows: options.unslicedPlannedRows }),
     ...(options.attackerBaseUrl === undefined ? {} : { attackerBaseUrl: options.attackerBaseUrl }),
+    ...(options.contractGeneration === undefined ? {} : { contractGeneration: options.contractGeneration }),
     expectedRows: planned.length,
     executor: "openai-compat",
     model: "fixture-defender",
@@ -1304,6 +1308,64 @@ test("a hand-edited unsliced count is distrusted via the resume-contract hash (P
     }
   } finally {
     await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("#3084 generation-bound full-strip stays limited; legacy stays estimable", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "online-generation-"));
+  try {
+    const planned = [
+      onlineIdentity("minja-1", 0),
+      onlineIdentity("minja-1", 1),
+      onlineIdentity("minja-1", 2),
+      onlineIdentity("minja-1", 3),
+    ];
+    await writeOnlineFixture(tmp, planned, {
+      corpusFor: planned.slice(1),
+      episodesFor: planned,
+      attackerIterations: 3,
+      limit: 4,
+      unslicedPlannedRows: 8,
+      attackerBaseUrl: "http://127.0.0.1:9",
+      contractGeneration: INJECTION_SUITE_ONLINE_CONTRACT_GENERATION,
+    });
+    const run = JSON.parse(await readFile(path.join(tmp, "run.json"), "utf8")) as Record<string, unknown>;
+    const { attackerBaseUrl: _url, unslicedPlannedRows: _rows, ...stripped } = run;
+    await writeFile(
+      path.join(tmp, "run.json"),
+      `${JSON.stringify({ ...stripped, limit: null })}\n`,
+      "utf8",
+    );
+    const generationBound = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+    assert.equal(generationBound.rowAccounting?.limitedDesign, true, "generation keeps verification after a full strip");
+    assert.equal(generationBound.decision.estimable, false);
+    for (const bad of [0, 1.5, "1"]) {
+      const tampered: Record<string, unknown> = { ...stripped, limit: null, contractGeneration: bad };
+      tampered.resumeContractHash = injectionSuiteResumeContractHashForOnline(tampered as never);
+      await writeFile(path.join(tmp, "run.json"), `${JSON.stringify(tampered)}\n`, "utf8");
+      const invalid = await analyzeInjectionSuiteOnlineAdaptiveRun(tmp);
+      assert.equal(invalid.rowAccounting?.limitedDesign, true, `present invalid contractGeneration=${JSON.stringify(bad)} stays limited`);
+    }
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+
+  const legacy = await mkdtemp(path.join(os.tmpdir(), "online-legacy-"));
+  try {
+    const planned = [
+      onlineIdentity("minja-1", 0),
+      onlineIdentity("minja-1", 1),
+    ];
+    await writeOnlineFixture(legacy, planned, {
+      corpusFor: planned.slice(1),
+      episodesFor: planned,
+      attackerIterations: 1,
+    });
+    const stats = await analyzeInjectionSuiteOnlineAdaptiveRun(legacy);
+    assert.equal(stats.rowAccounting?.limitedDesign, false, "a legacy artifact without generation stays estimable");
+    assert.equal(stats.decision.estimable, true);
+  } finally {
+    await rm(legacy, { recursive: true, force: true });
   }
 });
 
