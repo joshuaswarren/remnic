@@ -26,6 +26,7 @@ test("pr-merge-ready treats completed CodeRabbit as informational and pending as
   assert.match(source, /gate_name" == "ai-reviewers"/);
   assert.match(source, /gate_name" == "analyze"/);
   assert.match(source, /gate_name" == "Kilo Code Review"/);
-  assert.match(source, /gate_name" == "CodeRabbit" && "\$gate_first" == completed\/\*/);
+  assert.match(source, /gate_name" == "CodeRabbit" && -z "\$gate_pending"/);
+  assert.match(source, /in_progress\/\*|queued\/\*|pending\/\*/);
   assert.match(source, /REST PUT/);
 });
