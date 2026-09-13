@@ -192,6 +192,7 @@ if ! pr_meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid,headRefN
 fi
 IFS=$'\t' read -r HEAD_SHA BRANCH PR_STATE MERGE_STATE <<< "$pr_meta"
 GATE_FAILURES=()
+GATE_WAITING=()
 GATE_LINES=""
 GATE_NAMES=0
 if ! check_runs_raw=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs" --paginate --jq '.check_runs[] | [.name, (.status // "-"), (.conclusion // "-"), (.head_sha // "-")] | @tsv' 2>/dev/null); then
@@ -230,6 +231,9 @@ else
       GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (informational)"$'\n'
     elif [[ "$gate_name" == "CodeRabbit" ]]; then
       GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (informational)"$'\n'
+    elif [[ -n "$gate_pending" ]]; then
+      GATE_WAITING+=("check:${gate_name}(${gate_first:-none})")
+      GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (WAITING)"$'\n'
     else
       GATE_FAILURES+=("check:${gate_name}(${gate_first:-none})")
       GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (RED)"$'\n'
@@ -270,7 +274,9 @@ fi
 [[ "$PR_STATE" == "OPEN" ]] || GATE_FAILURES+=("state:${PR_STATE}")
 
 GATES_OK=true
-[[ ${#GATE_FAILURES[@]} -eq 0 && "$THREAD_UNRESOLVED" -eq 0 && "$THREADS_READ_FAILED" == false ]] || GATES_OK=false
+[[ ${#GATE_FAILURES[@]} -eq 0 && ${#GATE_WAITING[@]} -eq 0 && "$THREAD_UNRESOLVED" -eq 0 && "$THREADS_READ_FAILED" == false ]] || GATES_OK=false
+GATES_WAITING=false
+[[ ${#GATE_FAILURES[@]} -eq 0 && ${#GATE_WAITING[@]} -gt 0 && "$THREAD_UNRESOLVED" -eq 0 && "$THREADS_READ_FAILED" == false && "$CURRENT_HEAD_BLOCKING" -eq 0 ]] && GATES_WAITING=true
 
 printf '== pr-merge-ready #%s (%s) ==\n' "$PR_NUMBER" "$REPO"
 printf 'head:            %s\n' "$HEAD_SHA"
@@ -295,8 +301,16 @@ if [[ ${#GATE_FAILURES[@]} -gt 0 ]]; then
     printf '  - %s\n' "$failure"
   done
 fi
+if [[ ${#GATE_WAITING[@]} -gt 0 ]]; then
+  printf 'waiting:\n'
+  for waiting in "${GATE_WAITING[@]}"; do
+    printf '  - %s\n' "$waiting"
+  done
+fi
 if [[ "$GATES_OK" == true ]]; then
   printf 'verdict:         READY\n'
+elif [[ "$GATES_WAITING" == true ]]; then
+  printf 'verdict:         WAITING\n'
 else
   printf 'verdict:         BLOCKED\n'
 fi
@@ -313,6 +327,9 @@ if [[ "$DRY_RUN" == true ]]; then
   printf '  3. poll state until MERGED, then git push origin --delete %s\n' "$BRANCH"
   if [[ "$GATES_OK" == true ]]; then
     exit 0
+  fi
+  if [[ "$GATES_WAITING" == true ]]; then
+    exit 2
   fi
   exit 1
 fi
