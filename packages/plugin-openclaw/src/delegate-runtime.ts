@@ -60,10 +60,12 @@ import {
   checkDaemonHealthSync,
   daemonUrl,
   parseOpenClawBridgeConfig,
+  readDaemonMemoryDirSync,
   resolveBridgeMode,
   requestedDelegate,
   resolveRequestedBridgeMode,
 } from "./bridge.js";
+import { daemonServesCorpus } from "./memory-read-scope.js";
 import { REMNIC_OPENCLAW_LEGACY_PLUGIN_ID } from "./plugin-id.js";
 import {
   extractLastTurn,
@@ -874,7 +876,12 @@ const delegateAuthorizationPreflightServices = new WeakMap<object, Set<string>>(
 export interface MaybeRegisterDelegateDeps {
   /** Injectable liveness preflight — defaults to the bridge's worker-backed sync probe. */
   checkHealth: (host: string, port: number, timeoutMs: number) => boolean;
-  /** Injectable authorization preflight for standalone daemon compatibility. */
+  /**
+   * When loopback and a configured NIC both answer, reject the first host if it
+   * serves a different corpus than `memoryDir`. Tests omit this to keep the
+   * liveness mock as the only network seam.
+   */
+  checkCorpus?: (host: string, port: number, timeoutMs: number, memoryDir: string) => boolean;
   probeAuthorization?: (
     target: DelegateDaemonTarget,
     namespace: string,
@@ -885,7 +892,13 @@ export interface MaybeRegisterDelegateDeps {
 export function maybeRegisterDelegateRuntime(
   api: DelegateHookApi,
   options: MaybeRegisterDelegateOptions,
-  deps: MaybeRegisterDelegateDeps = { checkHealth: checkDaemonHealthSync },
+  deps: MaybeRegisterDelegateDeps = {
+    checkHealth: checkDaemonHealthSync,
+    checkCorpus: (host, port, timeoutMs, memoryDir) => {
+      const probe = readDaemonMemoryDirSync(host, port, timeoutMs);
+      return probe.memoryDir === undefined || daemonServesCorpus(memoryDir, probe.memoryDir);
+    },
+  },
 ): boolean {
   // BEFORE any health-dependent resolution: if this service already has
   // delegate hooks on this api, they are still attached (OpenClaw exposes no
@@ -1002,7 +1015,14 @@ export function maybeRegisterDelegateRuntime(
     const preflightDeadline = Date.now() + bridgeHealthTimeoutMs;
     const healthyHost = hosts.find((host, index) => {
       const remaining = index === 0 ? bridgeHealthTimeoutMs : preflightDeadline - Date.now();
-      return remaining > 0 && deps.checkHealth(host, bridge.daemonPort, remaining);
+      if (!(remaining > 0 && deps.checkHealth(host, bridge.daemonPort, remaining))) return false;
+      if (index === 0 && hosts.length > 1 && deps.checkCorpus !== undefined) {
+        const corpusRemaining = preflightDeadline - Date.now();
+        if (corpusRemaining > 0 && !deps.checkCorpus(host, bridge.daemonPort, corpusRemaining, options.memoryDir)) {
+          return false;
+        }
+      }
+      return true;
     });
     if (healthyHost !== undefined && healthyHost !== bridge.daemonHost) {
       log.info(
