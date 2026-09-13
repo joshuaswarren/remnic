@@ -163,7 +163,7 @@ Remnic automatically prefers the shared MCP session when available and falls bac
 | `qmdQueryRerankEnabled` | `true` | Set `false` to pass QMD's rerank-disable flag when supported |
 | `qmdSearchStrategy` | `hybrid` | Daemon search plan: `hybrid` (lex+vec+hyde), `lex-vec`, or `lex`. See tuning note below |
 | `qmdSubprocessStrategy` | `query` | CLI fallback command: `query` (LLM expansion + rerank) or `search` (BM25-only) |
-| `qmdDaemonTimeoutMs` | `60000` | Per-call daemon search timeout in ms (1000–120000). 8s was too tight for multi-GB cold indexes; 60s stays under the 75s recall outer timeout. Raise to `120000` for very large indexes. |
+| `qmdDaemonTimeoutMs` | `60000` | Per-call daemon search timeout in ms (1000–120000). Default 60s matches `recallEnrichmentDeadlineMs`. Default `recallOuterTimeoutMs` is 75s and still caps the whole recall; a 120s daemon timeout also needs those two budgets raised. |
 
 ### Tuning daemon latency on CPU-only models
 
