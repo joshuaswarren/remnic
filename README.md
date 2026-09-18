@@ -8,7 +8,7 @@
 
 Open-source, local-first memory and context for AI agents. One memory store, every agent.
 
-Remnic is local-first agent memory used across OpenClaw, Claude Code, Codex, and other hosts. Published `@remnic/*` packages recorded **802,902** npm downloads in the last-month window **2026-08-18..2026-09-16** (npm downloads API, summed 2026-09-18). Sep 2026 OSS program applications cited ~1,001,000 monthly installs; a Remnic-side refresh on 2026-09-09 measured 965,349 for 2026-08-08..2026-09-06. The project is MIT licensed, with the full source and proof surface on GitHub.
+Remnic is local-first agent memory used across OpenClaw, Claude Code, Codex, and other hosts. Published `@remnic/*` packages together saw ~803k npm downloads in the last 30 days (measured 2026-09-18; npm last-month window 2026-08-18..2026-09-16). Early-September OSS program materials cited ~1.0M monthly installs on an earlier window; that figure is historical application context, not a current live total. The project is MIT licensed, with the full source and proof surface on GitHub.
 
 Website: **[remnic.ai](https://remnic.ai)** - guide library, comparisons, benchmarks, and changelog.
 
