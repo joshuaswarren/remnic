@@ -1,10 +1,14 @@
 # Remnic
 
 [![npm version](https://img.shields.io/npm/v/@remnic/cli)](https://www.npmjs.com/package/@remnic/cli)
+[![npm monthly downloads](https://img.shields.io/npm/dm/@remnic/cli)](https://www.npmjs.com/package/@remnic/cli)
+[![@remnic/* last-month downloads](https://img.shields.io/badge/%40remnic%2F*-~803k%20last--month-informational)](https://www.npmjs.com/search?q=%40remnic)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink)](https://github.com/sponsors/joshuaswarren)
 
 Open-source, local-first memory and context for AI agents. One memory store, every agent.
+
+Remnic is local-first agent memory used across OpenClaw, Claude Code, Codex, and other hosts. Published `@remnic/*` packages recorded **802,902** npm downloads in the last-month window **2026-08-18..2026-09-16** (npm downloads API, summed 2026-09-18). Sep 2026 OSS program applications cited ~1,001,000 monthly installs; a Remnic-side refresh on 2026-09-09 measured 965,349 for 2026-08-08..2026-09-06. The project is MIT licensed, with the full source and proof surface on GitHub.
 
 Website: **[remnic.ai](https://remnic.ai)** - guide library, comparisons, benchmarks, and changelog.
 
