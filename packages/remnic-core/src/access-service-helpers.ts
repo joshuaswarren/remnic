@@ -20,6 +20,7 @@ export interface EngramAccessExtractionForceFlushRequest extends CodingScopedWri
   sessionKey: string;
   namespace?: string;
   authenticatedPrincipal?: string;
+  /** Budget in milliseconds FROM NOW (not an absolute epoch); converted at the force-flush entry (#3140). */
   deadlineMs?: number;
   abortSignal?: AbortSignal;
   /** Internal HTTP hook invoked at the durable commit boundary. */
