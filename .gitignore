@@ -95,3 +95,5 @@ output/playwright/
 
 # Partially-broken local node_modules copy from an interrupted install (issue #2050 worktree)
 .node_modules.partial-broken/
+.turbo/
+.turbo/

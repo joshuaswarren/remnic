@@ -42,6 +42,7 @@ import {
 import { parseFlexibleIsoTimestamp } from "../utils/iso-timestamp.js";
 import { tagPersistedMemories } from "../location/tagging.js";
 import { log } from "../logger.js";
+import { emitExtractionLlmFailureError, recordExtractionLlmFailure, recordExtractionLlmSuccess } from "../extraction-llm-health.js";
 import type { PluginConfig, BufferTurn, ExtractionResult, MetaState, ExtractionFailureClass } from "../types.js";
 import type { TierMigrationCycleSummary } from "../recall-state.js";
 
@@ -946,6 +947,18 @@ export class ExtractionRunCoordinator {
       typeof result.extractionFailure === "string" && result.extractionFailure.trim().length > 0
         ? result.extractionFailure
         : undefined;
+    // Issue #3140: surface extraction-LLM outages on /health and as an
+    // ERROR-level deduplicated event instead of debug-only lines. Records on
+    // every completed attempt so a later success clears the failure.
+    if (extractionFailure) {
+      recordExtractionLlmFailure(extractionFailure);
+      emitExtractionLlmFailureError(extractionFailure, result.extractionFailureClass);
+    } else if (result.extractionSkippedReason !== undefined) {
+      // Prefiltered batch: no LLM was contacted, so we cannot confirm or deny
+      // reachability. Do not clear the outage state.
+    } else {
+      recordExtractionLlmSuccess();
+    }
     let recordedRetryFailure = false;
     // Record failure into backoff/breaker state, or heal on success. Runs for
     // every result path (empty and durable), before the fail-closed throw, so a

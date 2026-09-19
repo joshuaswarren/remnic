@@ -19,6 +19,7 @@
  * the verdict never diverges across code paths.
  */
 import { coerceBool, coerceNumber } from "./connectors/coerce.js";
+import { getExtractionLlmHealth } from "./extraction-llm-health.js";
 import { log } from "./logger.js";
 import type { OperatorDoctorCheck } from "./operator-doctor-types.js";
 import type { PluginConfig } from "./types.js";
@@ -121,6 +122,15 @@ export interface ExtractionLivenessStatus {
   degradedReason: string | null;
   watermarkPending?: boolean;
   watermarkScope: "aggregate";
+  /**
+   * Extraction-LLM availability (issue #3140): outcome of the last extraction
+   * attempt. `lastFailureReason` is non-null exactly while `llmReachable` is
+   * false. Populated by the daemon-wide status readers (`/health`, doctor,
+   * stats), not by the pure evaluators below.
+   */
+  llmReachable?: boolean;
+  lastFailureReason?: string | null;
+  lastFailureAt?: string | null;
 }
 
 interface ExtractionLivenessOrchestratorLike {
@@ -380,7 +390,9 @@ export async function computeExtractionLivenessStatus(
     nowMs,
   });
   throttle?.maybeWarn(status, config.staleWindowMs, nowMs);
-  return status;
+  // Extraction-LLM availability (#3140): a silent no_models / LLM-unreachable
+  // outage must be visible on /health (and doctor/stats) without debug logs.
+  return { ...status, ...getExtractionLlmHealth() };
 }
 
 /**

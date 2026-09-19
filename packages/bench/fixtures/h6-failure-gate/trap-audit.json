@@ -1,0 +1,542 @@
+{
+  "schemaVersion": 1,
+  "modelProfileId": "h6-qwen35-35b-48k-nothink-q4km-v2",
+  "modelProfileHash": "2de9f2e21e693e61fba51b5c96f4c20496cd27aad37e89af210aef8192aef0a4",
+  "modelDigest": "3460ffeede5453ead027dbd2f821b12ad0aa3de54630971993babdb2165221f7",
+  "datasetInventoryHash": "687615b5f7ff46977d268a03e30018070f7d0bec9d01e04da2d0c723e59a5b27",
+  "harnessSourceHash": "3fbbc9d41e34903695641fedf9111412cf001b72fcff1b1cf9623437ff774d9c",
+  "decisionRuleHash": "39952d6301ed690d5ee176b309a3f938207b5cc28303c4bc2670842434b954f2",
+  "thresholds": {
+    "minimumTrappedRate": 0.3,
+    "minimumNonFixedRate": 0.5,
+    "maximumInvalidRows": 0,
+    "requireCompleteRows": true
+  },
+  "passed": true,
+  "metrics": {
+    "totalTasks": 30,
+    "completedRows": 30,
+    "trappedCount": 14,
+    "trappedRate": 0.4666666666666667,
+    "nonFixedCount": 17,
+    "nonFixedRate": 0.5666666666666667,
+    "fixedCount": 13,
+    "unfixedCount": 3,
+    "invalidCount": 0,
+    "missingCount": 0,
+    "passed": true
+  },
+  "rows": [
+    {
+      "taskId": "h6-task-01",
+      "variantId": "h6-task-01-v1",
+      "rowKey": "h6-row-v1-a24b4f1e8ccfa1a9b2764cadd835b34071cf8bec511408f87ed168461829e52b",
+      "finalState": "TRAPPED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 77798,
+      "tokens": {
+        "input": 20007,
+        "output": 768,
+        "total": 20775,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-02",
+      "variantId": "h6-task-02-v1",
+      "rowKey": "h6-row-v1-91a3c9eedf8b2124a02f7684218d57636f8ef8e73ef43b0909d112cd0f5cbc4a",
+      "finalState": "FIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 57557,
+      "tokens": {
+        "input": 20300,
+        "output": 694,
+        "total": 20994,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-03",
+      "variantId": "h6-task-03-v1",
+      "rowKey": "h6-row-v1-9566e4434f960275eb70f903aea5dd2cf8ada5b09139556df9c8936fcf8f3e7e",
+      "finalState": "TRAPPED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 45381,
+      "tokens": {
+        "input": 26332,
+        "output": 646,
+        "total": 26978,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-04",
+      "variantId": "h6-task-04-v1",
+      "rowKey": "h6-row-v1-f2b4c2af64484df05ab7f136b52e82b9312702608a49779fb0589b47750dd17d",
+      "finalState": "FIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 47555,
+      "tokens": {
+        "input": 16040,
+        "output": 625,
+        "total": 16665,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-05",
+      "variantId": "h6-task-05-v1",
+      "rowKey": "h6-row-v1-a1966e211d18015b623396d78363c4a8871504996d189dfcda305664bc4dfa72",
+      "finalState": "TRAPPED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 59989,
+      "tokens": {
+        "input": 19968,
+        "output": 680,
+        "total": 20648,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-06",
+      "variantId": "h6-task-06-v1",
+      "rowKey": "h6-row-v1-f5d829a228cfdd9325053e90cc364c93858c4eb7295bb7dffe2bae077111a3fa",
+      "finalState": "FIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 61350,
+      "tokens": {
+        "input": 20484,
+        "output": 658,
+        "total": 21142,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-07",
+      "variantId": "h6-task-07-v1",
+      "rowKey": "h6-row-v1-7c8546412bbb557a6edc43048f9fe9680f6f7c5003c586576d2e38c376e0ecb5",
+      "finalState": "TRAPPED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 58685,
+      "tokens": {
+        "input": 21607,
+        "output": 895,
+        "total": 22502,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-08",
+      "variantId": "h6-task-08-v1",
+      "rowKey": "h6-row-v1-6029a023ab71c2f9532a815e311425eae953e08e5d7c10b7a00eaced38c4ce7a",
+      "finalState": "FIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 55900,
+      "tokens": {
+        "input": 21135,
+        "output": 742,
+        "total": 21877,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-09",
+      "variantId": "h6-task-09-v1",
+      "rowKey": "h6-row-v1-f98cd1bc297c66328e106caa8556ba95f2ec04c5cb4cc49f8ef9fc2082a1645d",
+      "finalState": "TRAPPED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 56070,
+      "tokens": {
+        "input": 21651,
+        "output": 946,
+        "total": 22597,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-10",
+      "variantId": "h6-task-10-v1",
+      "rowKey": "h6-row-v1-d238315ed3f786217c24509f77d01afad3617ef1c3fde7d4d72bb608bcd5b92d",
+      "finalState": "UNFIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 93856,
+      "tokens": {
+        "input": 21049,
+        "output": 884,
+        "total": 21933,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-11",
+      "variantId": "h6-task-11-v1",
+      "rowKey": "h6-row-v1-46335e4b5d4da8fe9134e452305dc92711dc740502e58370b0f9fb62d6692293",
+      "finalState": "TRAPPED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 67095,
+      "tokens": {
+        "input": 20334,
+        "output": 775,
+        "total": 21109,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-12",
+      "variantId": "h6-task-12-v1",
+      "rowKey": "h6-row-v1-8179809eadaee66448dd7a01f3742313de9062042d775a09b97c6117c1de4a11",
+      "finalState": "FIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 69232,
+      "tokens": {
+        "input": 27617,
+        "output": 591,
+        "total": 28208,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-13",
+      "variantId": "h6-task-13-v1",
+      "rowKey": "h6-row-v1-92f2d10bef9bc5d5663419f5e8fae7bd5bf8d08ded596ba3f38ad1568f63ef52",
+      "finalState": "TRAPPED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 63661,
+      "tokens": {
+        "input": 26864,
+        "output": 614,
+        "total": 27478,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-14",
+      "variantId": "h6-task-14-v1",
+      "rowKey": "h6-row-v1-e3a9643b16c8bd82b6935d335bab831b4aafe9b3f11b7f71ee2e2d71b8fc67f6",
+      "finalState": "FIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 61733,
+      "tokens": {
+        "input": 21598,
+        "output": 840,
+        "total": 22438,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-15",
+      "variantId": "h6-task-15-v1",
+      "rowKey": "h6-row-v1-487718ac27152aca1bf8013dd9fab29aa30270b8fece9bc70d7cc02f1d99420b",
+      "finalState": "TRAPPED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 81654,
+      "tokens": {
+        "input": 26588,
+        "output": 605,
+        "total": 27193,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-16",
+      "variantId": "h6-task-16-v1",
+      "rowKey": "h6-row-v1-9a15169f71b675f08996f670bd62a349b77fe845fff86f396ee8c84ba8d8d5d0",
+      "finalState": "FIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 52669,
+      "tokens": {
+        "input": 24005,
+        "output": 816,
+        "total": 24821,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-17",
+      "variantId": "h6-task-17-v1",
+      "rowKey": "h6-row-v1-e150c3b50c111fcd3542c6c822f2425324345246c7a3b4a845b5198b09d9e708",
+      "finalState": "TRAPPED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 52081,
+      "tokens": {
+        "input": 21097,
+        "output": 914,
+        "total": 22011,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-18",
+      "variantId": "h6-task-18-v1",
+      "rowKey": "h6-row-v1-c854db9a59ee93e6ad9a4a10f5e824642d341d35307eb76d43287ff6e6844391",
+      "finalState": "FIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 61156,
+      "tokens": {
+        "input": 20180,
+        "output": 621,
+        "total": 20801,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-19",
+      "variantId": "h6-task-19-v1",
+      "rowKey": "h6-row-v1-a7d23ac5a7bf61de13c14e8c8b8e2808cbf4f12d1004f7aa3eaa84d7e9c1e671",
+      "finalState": "TRAPPED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 48552,
+      "tokens": {
+        "input": 20398,
+        "output": 598,
+        "total": 20996,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-20",
+      "variantId": "h6-task-20-v1",
+      "rowKey": "h6-row-v1-88676cec87a763cd522af963d0b8757f1109050f008e096b20429db4d2d162a9",
+      "finalState": "FIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 65442,
+      "tokens": {
+        "input": 20888,
+        "output": 757,
+        "total": 21645,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-21",
+      "variantId": "h6-task-21-v1",
+      "rowKey": "h6-row-v1-d3089757fd830bc79a48ce043218a5e87385d3314ae5eb374c1bb951180ee892",
+      "finalState": "TRAPPED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 103833,
+      "tokens": {
+        "input": 27604,
+        "output": 1227,
+        "total": 28831,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-22",
+      "variantId": "h6-task-22-v1",
+      "rowKey": "h6-row-v1-99a2ff33815a68a49ddc33f84bc3de5ba7e2c804061e883237a6b569f839ff71",
+      "finalState": "FIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 90980,
+      "tokens": {
+        "input": 23906,
+        "output": 826,
+        "total": 24732,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-23",
+      "variantId": "h6-task-23-v1",
+      "rowKey": "h6-row-v1-0802c7700afda5df9f32233f5fc6a7be45c2f21a6f65c60ab65b9c08f225b435",
+      "finalState": "TRAPPED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 65832,
+      "tokens": {
+        "input": 20735,
+        "output": 906,
+        "total": 21641,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-24",
+      "variantId": "h6-task-24-v1",
+      "rowKey": "h6-row-v1-4c76e607b839fd83af53735ec783fea30f1bbe4157828859dfd85eaa01ac54b6",
+      "finalState": "FIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 93062,
+      "tokens": {
+        "input": 28820,
+        "output": 1585,
+        "total": 30405,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-25",
+      "variantId": "h6-task-25-v1",
+      "rowKey": "h6-row-v1-8db5aa97486fc3708ee0b826b59cb8642cdca5ee4baa10d532f07692e36e7978",
+      "finalState": "TRAPPED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 75109,
+      "tokens": {
+        "input": 20054,
+        "output": 736,
+        "total": 20790,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-26",
+      "variantId": "h6-task-26-v1",
+      "rowKey": "h6-row-v1-8b18f30eb6a4bbb0a9caeeb6f80dbafbc7377ae2d204d88ea7491b672ff50061",
+      "finalState": "UNFIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 82520,
+      "tokens": {
+        "input": 20009,
+        "output": 1257,
+        "total": 21266,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-27",
+      "variantId": "h6-task-27-v1",
+      "rowKey": "h6-row-v1-f25381136dc0d156a75ecd6efe6f37686adc3e527592668d8a1bae08f7389b38",
+      "finalState": "UNFIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 45212,
+      "tokens": {
+        "input": 19930,
+        "output": 630,
+        "total": 20560,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-28",
+      "variantId": "h6-task-28-v1",
+      "rowKey": "h6-row-v1-0f1f8f54816b1853acaaabf6709b7b92385c7bd13665da5d6a21578972facfb9",
+      "finalState": "FIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 95259,
+      "tokens": {
+        "input": 23904,
+        "output": 907,
+        "total": 24811,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-29",
+      "variantId": "h6-task-29-v1",
+      "rowKey": "h6-row-v1-54aac1517cbaa947ab8410e8c01888bc8604b23db6992fdcb156ce2f0e421c4f",
+      "finalState": "TRAPPED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 49395,
+      "tokens": {
+        "input": 23309,
+        "output": 780,
+        "total": 24089,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    },
+    {
+      "taskId": "h6-task-30",
+      "variantId": "h6-task-30-v1",
+      "rowKey": "h6-row-v1-85c06f2197279745e3f1040ab3065aa852af3060021c754b4d3b29bf44f6fd16",
+      "finalState": "FIXED",
+      "status": "VALID",
+      "tryCount": 1,
+      "durationMs": 65612,
+      "tokens": {
+        "input": 20324,
+        "output": 686,
+        "total": 21010,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "reasoningOutput": 0
+      }
+    }
+  ],
+  "artifactHash": "5ded8b904397c8cfe9ef10a529ffd32da4230544039c2849139d82d766328c84"
+}
