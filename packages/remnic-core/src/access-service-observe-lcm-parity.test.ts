@@ -433,14 +433,13 @@ test("#2128: successful LCM flush does not bind per-call project context", async
 test("#2128: extraction force-flush uses observe's scoped target even when LCM is disabled", async () => {
   const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);
-  const deadlineMs = Date.now() + 10_000;
   const abortController = new AbortController();
   probe.lcmEngine.enabled = false;
 
   const response = await service.extractionForceFlush({
     sessionKey: "pi-geek:force-flush",
     projectTag: "Acme/Webshop",
-    deadlineMs,
+    deadlineMs: 10_000,
     abortSignal: abortController.signal,
     authenticatedPrincipal: "pi-geek",
   });
@@ -460,7 +459,11 @@ test("#2128: extraction force-flush uses observe's scoped target even when LCM i
     false,
     "force-flush must let the orchestrator discover all session buffer keys",
   );
-  assert.equal(call.options.extractionDeadlineMs, deadlineMs);
+  // #3140: the duration budget arrives at the orchestrator as an absolute deadline.
+  assert.ok(
+    (call.options.extractionDeadlineMs ?? 0) >= Date.now() + 9_000,
+    "the orchestrator deadline is the duration converted at force-flush entry",
+  );
   assert.equal(call.options.failOnExtractionFailure, true);
   assert.equal(call.options.abortSignal, abortController.signal);
   assert.equal(call.options.writeNamespaceOverride, expectedNamespace);
@@ -573,7 +576,7 @@ test("#2128: pending extraction barriers stay isolated by authenticated principa
     sessionKey,
     namespace: "team",
     authenticatedPrincipal: "alice",
-    deadlineMs: Date.now() + 500,
+    deadlineMs: 500,
   });
   await new Promise<void>((resolve) => setImmediate(resolve));
   pending.get("alice")?.();
@@ -583,7 +586,7 @@ test("#2128: pending extraction barriers stay isolated by authenticated principa
     sessionKey,
     namespace: "team",
     authenticatedPrincipal: "bob",
-    deadlineMs: Date.now() + 500,
+    deadlineMs: 500,
   });
   pending.get("bob")?.();
   assert.equal((await bobFlush).flushed, true);
@@ -600,7 +603,7 @@ test("#2128: chained observes remain behind one force-flush barrier", async () =
   const sessionKey = "chained-observes";
 
   await service.observe(observeRequest({ sessionKey, skipExtraction: false }));
-  const flushPromise = service.extractionForceFlush({ sessionKey, deadlineMs: Date.now() + 500 });
+  const flushPromise = service.extractionForceFlush({ sessionKey, deadlineMs: 500 });
   await new Promise<void>((resolve) => setImmediate(resolve));
   await service.observe(observeRequest({ sessionKey, skipExtraction: false }));
   assert.equal(resolvers.length, 2);
@@ -669,7 +672,7 @@ test("#2128: force-flush deadline cancels the pending observe extraction", async
     await assert.rejects(
       service.extractionForceFlush({
         sessionKey,
-        deadlineMs: Date.now() + 25,
+        deadlineMs: 25,
       }),
       (error: unknown) =>
         error instanceof EngramAccessInputError &&
@@ -893,7 +896,7 @@ test("#2128: post-flush retained cleanup is best effort and receives lifecycle g
     },
   };
   const service = new EngramAccessService(probe.orch);
-  const deadlineMs = Date.now() + 10_000;
+  const deadlineMs = 10_000;
 
   const response = await service.extractionForceFlush({
     sessionKey: "pi-geek:cleanup-best-effort",
@@ -903,11 +906,15 @@ test("#2128: post-flush retained cleanup is best effort and receives lifecycle g
   });
 
   assert.equal(response.flushed, true);
-  assert.deepEqual(cleanupCalls, [{
-    sessionKey: "pi-geek:cleanup-best-effort",
-    ownerPrincipal: "pi-geek",
-    options: { abortSignal: abortController.signal, deadlineMs },
-  }]);
+  assert.equal(cleanupCalls.length, 1);
+  // #3140: cleanup receives the duration converted to an absolute deadline.
+  assert.equal(cleanupCalls[0]?.sessionKey, "pi-geek:cleanup-best-effort");
+  assert.equal(cleanupCalls[0]?.ownerPrincipal, "pi-geek");
+  assert.equal(cleanupCalls[0]?.options?.abortSignal, abortController.signal);
+  assert.ok(
+    (cleanupCalls[0]?.options?.deadlineMs ?? 0) >= Date.now() + 9_000,
+    "cleanup deadline is the duration converted at force-flush entry",
+  );
 });
 
 test("#2128: post-flush retained cleanup stops on abort or deadline", async (t) => {
@@ -982,7 +989,11 @@ test("#2128: post-flush retained cleanup stops on abort or deadline", async (t) 
     /replay extraction deadline exceeded \(retained_turn_cleanup\)/,
   );
 });
-test("#2206: an expired force-flush deadline stops before scope resolution", async () => {
+test("#3140: a duration deadline reaches scope resolution and aborts it when it elapses", async () => {
+  // Regression for issue #3140: `deadlineMs` is a BUDGET from now. The old
+  // absolute-epoch reading compared a relative value (e.g. 30000) against
+  // Date.now(), so a live-session force flush was rejected INSTANTLY with
+  // `replay extraction deadline exceeded (scope_resolution)` before any work.
   const probe = makeParityProbe({ namespacesEnabled: false } as Partial<PluginConfig>);
   const service = new EngramAccessService(probe.orch);
   let scopeResolutionStarted = false;
@@ -991,17 +1002,23 @@ test("#2206: an expired force-flush deadline stops before scope resolution", asy
   };
   internals.resolveMemoryScopePlan = async () => {
     scopeResolutionStarted = true;
-    throw new Error("scope resolution must not start");
+    return new Promise<never>(() => {});
   };
 
+  const started = Date.now();
   await assert.rejects(
     service.extractionForceFlush({
-      sessionKey: "expired-scope-resolution",
-      deadlineMs: 1,
+      sessionKey: "duration-deadline-scope-resolution",
+      deadlineMs: 30,
     }),
     /scope_resolution/,
   );
-  assert.equal(scopeResolutionStarted, false);
+  assert.equal(scopeResolutionStarted, true, "the budget lets scope resolution start");
+  assert.ok(
+    Date.now() - started >= 25,
+    "the flush waits out the budget instead of failing instantly",
+  );
+  assert.equal(probe.extractionForceFlushCalls.length, 0);
 });
 
 test("#2206: abort during scope resolution cancels pre-resolution observe preparations", async () => {
@@ -1089,8 +1106,10 @@ test("#2206: scope-resolution deadline cancels preparations by raw projectTag an
         await observeScopeGate;
         return resolveMemoryScopePlan(request);
       }
+      // Blocked scope work, as a live session's pending observe preparations
+      // would hold it (#3140): the duration budget elapses while it hangs.
       flushScopeStarted = true;
-      throw new Error("scope resolution must not start");
+      return new Promise<never>(() => {});
     };
 
     const observe = service.observe(observeRequest({
@@ -1104,12 +1123,12 @@ test("#2206: scope-resolution deadline cancels preparations by raw projectTag an
       service.extractionForceFlush({
         sessionKey: "pi-geek:raw-hint-deadline",
         authenticatedPrincipal: "pi-geek",
-        deadlineMs: Date.now() - 1,
+        deadlineMs: 1,
         ...rawHintCase,
       }),
       /scope_resolution/,
     );
-    assert.equal(flushScopeStarted, false);
+    assert.equal(flushScopeStarted, true);
     releaseObserveScope();
     const response = await observe;
     assert.equal(response.extractionQueued, false);
@@ -1132,12 +1151,19 @@ test("#2128: aborted or expired extraction force-flush never touches a buffer", 
       }),
     /extraction force-flush aborted/,
   );
+  // #3140: the expired-at-entry scenario is gone (durations always start in
+  // the future); a TINY budget elapsing while scope work is blocked still
+  // rejects with the same error and never reaches the buffer.
+  const internals = service as unknown as {
+    resolveMemoryScopePlan: (request: unknown) => Promise<never>;
+  };
+  internals.resolveMemoryScopePlan = async () => new Promise<never>(() => {});
   await assert.rejects(
     () =>
       service.extractionForceFlush({
         sessionKey: "pi-geek:expired-flush",
         authenticatedPrincipal: "pi-geek",
-        deadlineMs: Date.now() - 1,
+        deadlineMs: 1,
       }),
     (error: unknown) =>
       error instanceof EngramAccessInputError &&
@@ -1167,13 +1193,19 @@ test("#2128: self-deps wires force-flush cancellation into the observe tracker",
     cancellations.push({ sessionKey, principal, namespace });
   };
 
+  // #3140: a tiny budget elapsing while scope work is blocked still cancels
+  // the pending observe preparations via the same deadline hook.
+  const internals = service as unknown as {
+    resolveMemoryScopePlan: (request: unknown) => Promise<never>;
+  };
+  internals.resolveMemoryScopePlan = async () => new Promise<never>(() => {});
   await assert.rejects(
     () =>
       service.extractionForceFlush({
         sessionKey: "pi-geek:cancel-hook",
         namespace: "pi-geek",
         authenticatedPrincipal: "pi-geek",
-        deadlineMs: Date.now() - 1,
+        deadlineMs: 1,
       }),
     (error: unknown) =>
       error instanceof EngramAccessInputError &&
@@ -1198,7 +1230,7 @@ test("#2128: late extraction deadline is surfaced as an access input error", asy
       service.extractionForceFlush({
         sessionKey: "pi-geek:late-deadline",
         authenticatedPrincipal: "pi-geek",
-        deadlineMs: Date.now() + 10_000,
+        deadlineMs: 10_000,
       }),
     (error: unknown) =>
       error instanceof EngramAccessInputError &&

@@ -278,7 +278,7 @@ Request fields:
 - `namespace` (string, optional) — target namespace
 - `cwd` (string, optional) — working directory used for project scope resolution
 - `projectTag` (string, optional) — project tag used for project scope resolution
-- `deadlineMs` (number, optional) — absolute deadline in Unix milliseconds
+- `deadlineMs` (number, optional) — budget in milliseconds from now; the flush aborts if it elapses before draining
 
 Response (HTTP 200):
 

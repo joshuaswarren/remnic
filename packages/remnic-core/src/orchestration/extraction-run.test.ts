@@ -28,6 +28,8 @@ import type { ExtractionEngine } from "../extraction.js";
 import type { ThreadingManager } from "../threading.js";
 import type { BufferTurn, ExtractionResult, ExtractionFailureClass, PluginConfig } from "../types.js";
 import type { TierMigrationCycleSummary } from "../recall-state.js";
+import { log } from "../logger.js";
+import { getExtractionLlmHealth, resetExtractionLlmHealthForTests } from "../extraction-llm-health.js";
 
 // ---------------------------------------------------------------------------
 // Result factories
@@ -1279,6 +1281,58 @@ test("extraction liveness (#2223): a provider failure does not advance lastExtra
     assert.equal(after.lastExtractionAt, baselineWatermark, "failure must not stamp lastExtractionAt");
     assert.equal(after.extractionCount, baselineCount, "failure must not increment extractionCount");
   } finally {
+    await h.cleanup();
+  }
+});
+
+test("#3140: a failed flush records the LLM health failure and emits one deduplicated ERROR", async () => {
+  const h = await makeHarness();
+  resetExtractionLlmHealthForTests();
+  const errors: string[] = [];
+  const originalError = log.error;
+  log.error = (message: unknown) => {
+    errors.push(String(message));
+  };
+  try {
+    const coord = h.newCoordinator();
+    h.setRespond(() => failureResult("provider_retryable"));
+
+    await h.run(coord, "failed-flush-one");
+    const first = getExtractionLlmHealth();
+    assert.equal(first.llmReachable, false);
+    assert.equal(first.lastFailureReason, "synthetic_provider_retryable");
+
+    // A second failing flush updates the timestamp but must NOT emit a second
+    // ERROR for the same reason inside the dedup window.
+    await h.run(coord, "failed-flush-two");
+    assert.equal(errors.length, 1, "one deduplicated ERROR per reason per window");
+    assert.match(errors[0]!, /synthetic_provider_retryable/);
+    assert.match(errors[0]!, /buffer retained for retry/);
+  } finally {
+    log.error = originalError;
+    resetExtractionLlmHealthForTests();
+    await h.cleanup();
+  }
+});
+
+test("#3140: a successful flush heals the recorded LLM health", async () => {
+  const h = await makeHarness();
+  resetExtractionLlmHealthForTests();
+  try {
+    const coord = h.newCoordinator();
+    h.setRespond(() => failureResult("provider_retryable"));
+    await h.run(coord, "flush-that-fails");
+
+    h.setRespond(() => successResult());
+    await h.run(coord, "flush-that-succeeds");
+
+    assert.deepEqual(getExtractionLlmHealth(), {
+      llmReachable: true,
+      lastFailureReason: null,
+      lastFailureAt: null,
+    });
+  } finally {
+    resetExtractionLlmHealthForTests();
     await h.cleanup();
   }
 });
