@@ -1,7 +1,8 @@
 import { sharedContextMcpTools } from "./access-mcp-shared-context-tools.js";
 import { randomUUID } from "node:crypto";
 import {
-  MCP_ADMIN_OPS_MIGRATED_OPERATIONS, MCP_ADMIN_OPS_TOOLS,
+  MCP_ADMIN_OPS_MIGRATED_OPERATIONS,
+  MCP_ADMIN_OPS_TOOLS,
   MCP_GIT_CONTEXT_SCHEMA_PROPS_IGNORED,
 } from "./access-mcp-admin-tools.js";
 import { readFile } from "node:fs/promises";
@@ -10,7 +11,12 @@ import type { Readable, Writable } from "node:stream";
 // (memory_get / memory_search / memory_store) as a side effect; callTool
 // dispatches migrated tools through the registry (issue #1525).
 import { type OperationName, getOperation } from "./access-boundary.js";
-import { assertOperationAllowed, capabilityAllowsOp, enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
+import {
+  assertOperationAllowed,
+  capabilityAllowsOp,
+  enforceNamespaceAllowList,
+  tokenCapabilityStore,
+} from "./access-token-capabilities.js";
 import {
   type ActionConfidenceRequest,
   type CapsuleExportRequest,
@@ -53,9 +59,14 @@ import {
   withToolAliases,
 } from "./access-mcp-tool-names.js";
 import { MCP_READ_ONLY_TOOL_SUFFIXES } from "./mcp-read-only-tools.js";
-import { MEETINGS_MCP_TOOLS } from "./meetings/mcp-tools.js"; import { DEEP_RECALL_MCP_TOOLS } from "./deep-recall-mcp-tools.js"; import { RECALL_NAVIGATION_MCP_TOOLS } from "./recall-navigation-mcp-tools.js"; import { MEMORY_BROWSE_MCP_TOOLS } from "./memory-browse-mcp-tools.js";
+import { MEETINGS_MCP_TOOLS } from "./meetings/mcp-tools.js";
+import { DEEP_RECALL_MCP_TOOLS } from "./deep-recall-mcp-tools.js";
+import { RECALL_NAVIGATION_MCP_TOOLS } from "./recall-navigation-mcp-tools.js";
+import { MEMORY_BROWSE_MCP_TOOLS } from "./memory-browse-mcp-tools.js";
 import { WEARABLES_MCP_TOOLS } from "./wearables/mcp-tools.js";
-import { WHO_KNOWS_MCP_TOOLS } from "./who-knows.js"; import { LOCATION_MCP_TOOLS } from "./location/mcp-tools.js"; import { STANDUP_MCP_TOOLS } from "./standup/mcp-tools.js";
+import { WHO_KNOWS_MCP_TOOLS } from "./who-knows.js";
+import { LOCATION_MCP_TOOLS } from "./location/mcp-tools.js";
+import { STANDUP_MCP_TOOLS } from "./standup/mcp-tools.js";
 import { RECALL_WHY_MCP_TOOLS } from "./access-recall-diagnostics.js";
 import { PROMOTION_CANDIDATES_MCP_TOOLS } from "./memory-subject.js";
 import { EXTERNAL_WIKI_MCP_TOOLS } from "./external-wiki-mcp-tools.js";
@@ -170,13 +181,26 @@ export const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = 
   // Fully migrated through the strict-schema boundary (#1668).
   "engram.recall": "recall",
   "engram.recall_explain": "recall_explain",
-  "engram.set_coding_context": "set_coding_context", "engram.recall_tier_explain": "recall_tier_explain",
-  "engram.recall_xray": "recall_xray", "engram.recall_why": "recall_why", "engram.who_knows": "who_knows", "engram.promotion_candidates": "promotion_candidates",
-  "engram.wearables_status": "wearables_status", "engram.wearables_sync": "wearables_sync",
-  "engram.location_status": "location_status", "engram.location_check": "location_check", "engram.location_sync": "location_sync",
-  "engram.location_backfill": "location_backfill", "engram.location_day": "location_day",
-  "engram.transcript_day": "transcript_day", "engram.transcript_search": "transcript_search",
-  "engram.transcript_memories": "transcript_memories", "engram.meetings_list": "meetings_list", "engram.meetings_get": "meetings_get", "engram.meetings_build": "meetings_build", "engram.standup": "standup",
+  "engram.set_coding_context": "set_coding_context",
+  "engram.recall_tier_explain": "recall_tier_explain",
+  "engram.recall_xray": "recall_xray",
+  "engram.recall_why": "recall_why",
+  "engram.who_knows": "who_knows",
+  "engram.promotion_candidates": "promotion_candidates",
+  "engram.wearables_status": "wearables_status",
+  "engram.wearables_sync": "wearables_sync",
+  "engram.location_status": "location_status",
+  "engram.location_check": "location_check",
+  "engram.location_sync": "location_sync",
+  "engram.location_backfill": "location_backfill",
+  "engram.location_day": "location_day",
+  "engram.transcript_day": "transcript_day",
+  "engram.transcript_search": "transcript_search",
+  "engram.transcript_memories": "transcript_memories",
+  "engram.meetings_list": "meetings_list",
+  "engram.meetings_get": "meetings_get",
+  "engram.meetings_build": "meetings_build",
+  "engram.standup": "standup",
   "engram.action_confidence": "action_confidence",
   "engram.chatgpt_memory_inspector": "chatgpt_memory_inspector",
   "engram.day_summary": "day_summary",
@@ -187,7 +211,8 @@ export const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = 
   "engram.entity_synthesis_run": "entity_synthesis_run",
   "engram.procedure_mining_run": "procedure_mining_run",
   "engram.pattern_reinforcement_run": "pattern_reinforcement_run",
-  "engram.procedural_stats": "procedural_stats", "engram.procedure_library_maintenance": "procedure_library_maintenance",
+  "engram.procedural_stats": "procedural_stats",
+  "engram.procedure_library_maintenance": "procedure_library_maintenance",
   "engram.memory_timeline": "memory_timeline",
   "engram.suggestion_submit": "suggestion_submit",
   "engram.entity_get": "entity_get",
@@ -249,7 +274,14 @@ export const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = 
   "engram.console_state": "console_state",
   "engram.dreams_status": "dreams_status",
   "engram.dreams_run": "dreams_run",
-  ...SUPPORT_PASSPORT_MCP_MIGRATED_OPERATIONS, ...MCP_ADMIN_OPS_MIGRATED_OPERATIONS, "engram.deep_recall": "deep_recall", "engram.memory_expand": "memory_expand", "engram.memory_traverse": "memory_traverse", "engram.memory_ls": "memory_ls", "engram.memory_tree": "memory_tree", "engram.memory_find": "memory_find",
+  ...SUPPORT_PASSPORT_MCP_MIGRATED_OPERATIONS,
+  ...MCP_ADMIN_OPS_MIGRATED_OPERATIONS,
+  "engram.deep_recall": "deep_recall",
+  "engram.memory_expand": "memory_expand",
+  "engram.memory_traverse": "memory_traverse",
+  "engram.memory_ls": "memory_ls",
+  "engram.memory_tree": "memory_tree",
+  "engram.memory_find": "memory_find",
   "engram.memory_chat": "chat_message",
 };
 
@@ -570,7 +602,8 @@ export class EngramMcpServer {
             },
             stateView: {
               type: "boolean",
-              description: "Opt in to state-aware recall views (issue #1952); ORs with the recallStateViews config flag.",
+              description:
+                "Opt in to state-aware recall views (issue #1952); ORs with the recallStateViews config flag.",
             },
           },
           required: ["query"],
@@ -690,7 +723,15 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      ...WEARABLES_MCP_TOOLS, ...MEETINGS_MCP_TOOLS, ...WHO_KNOWS_MCP_TOOLS, ...PROMOTION_CANDIDATES_MCP_TOOLS, ...LOCATION_MCP_TOOLS, ...STANDUP_MCP_TOOLS, ...DEEP_RECALL_MCP_TOOLS, ...(service.recallNavigationEnabled !== false ? RECALL_NAVIGATION_MCP_TOOLS : []), ...MEMORY_BROWSE_MCP_TOOLS,
+      ...WEARABLES_MCP_TOOLS,
+      ...MEETINGS_MCP_TOOLS,
+      ...WHO_KNOWS_MCP_TOOLS,
+      ...PROMOTION_CANDIDATES_MCP_TOOLS,
+      ...LOCATION_MCP_TOOLS,
+      ...STANDUP_MCP_TOOLS,
+      ...DEEP_RECALL_MCP_TOOLS,
+      ...(service.recallNavigationEnabled !== false ? RECALL_NAVIGATION_MCP_TOOLS : []),
+      ...MEMORY_BROWSE_MCP_TOOLS,
       ...RECALL_WHY_MCP_TOOLS,
       ...(service.supportPassportEnabled ? SUPPORT_PASSPORT_MCP_TOOLS : []),
       {
@@ -1089,7 +1130,11 @@ export class EngramMcpServer {
             namespace: { type: "string" },
             cwd: { type: "string", description: "Working directory for auto git-context resolution." },
             projectTag: { type: "string", description: "Project tag for non-git project scoping." },
-            deadlineMs: { type: "number", minimum: 0 },
+            deadlineMs: {
+              type: "number",
+              minimum: 0,
+              description: "Budget in milliseconds from now; the flush aborts when it elapses.",
+            },
           },
           required: ["sessionKey"],
           additionalProperties: false,
@@ -1375,7 +1420,12 @@ export class EngramMcpServer {
               description:
                 "QMD collection. With namespaces enabled, omitted, base, and 'global' searches stay scoped to readable namespaces; namespace-derived collections require matching namespace access.",
             },
-            mode: { type: "string", enum: ["search", "hybrid", "bm25", "vector"], description: "Ranking mode; omitted uses the backend default. Not supported with 'collection' on a flat corpus." },
+            mode: {
+              type: "string",
+              enum: ["search", "hybrid", "bm25", "vector"],
+              description:
+                "Ranking mode; omitted uses the backend default. Not supported with 'collection' on a flat corpus.",
+            },
           },
           required: ["query"],
           additionalProperties: false,
@@ -1587,9 +1637,16 @@ export class EngramMcpServer {
                 type: "object",
                 properties: {
                   since: { type: "string", description: "Lookback window (e.g. 'yesterday', '3d', '1w', '24h')." },
-                  focus: { type: "string", description: "Optional focus filter (e.g. 'person:Jane Doe', 'project:remnic-core', 'topic:retrieval')." },
+                  focus: {
+                    type: "string",
+                    description:
+                      "Optional focus filter (e.g. 'person:Jane Doe', 'project:remnic-core', 'topic:retrieval').",
+                  },
                   namespace: { type: "string" },
-                  includeLocation: { type: "boolean", description: "Opt-in: append matched location place names (location gates apply)." },
+                  includeLocation: {
+                    type: "boolean",
+                    description: "Opt-in: append matched location place names (location gates apply).",
+                  },
                   format: { type: "string", enum: ["markdown", "json"] },
                   maxFollowups: {
                     type: "number",
@@ -2256,9 +2313,10 @@ export class EngramMcpServer {
       // token's ops allow-list via the same map callTool uses. Unrestricted
       // tokens (ops axis absent) see everything; unmapped tool ⇒ "" ⇒ hidden.
       const caps = tokenCapabilityStore.getStore();
-      const tools = caps?.ops === undefined
-        ? this.tools
-        : this.tools.filter((t) => capabilityAllowsOp(caps, MCP_MIGRATED_OPERATIONS[toLegacyToolName(t.name)] ?? ""));
+      const tools =
+        caps?.ops === undefined
+          ? this.tools
+          : this.tools.filter((t) => capabilityAllowsOp(caps, MCP_MIGRATED_OPERATIONS[toLegacyToolName(t.name)] ?? ""));
       return { jsonrpc: "2.0", id, result: { tools } };
     }
     if (method === "resources/list") {
@@ -2370,7 +2428,7 @@ export class EngramMcpServer {
           options?.enforceWriteQuota,
           options?.recordWriteCommit,
           options?.sourceConnector,
-          options?.abortSignal,
+          options?.abortSignal
         );
         if (isReadOnlyToolName(name)) {
           throwMcpAbort(options?.abortSignal, "MCP request aborted before response");
@@ -2588,7 +2646,7 @@ export class EngramMcpServer {
     enforceWriteQuota?: () => void | Promise<void>,
     recordWriteCommit?: () => void,
     sourceConnector?: string,
-    abortSignal?: AbortSignal,
+    abortSignal?: AbortSignal
   ): Promise<unknown> {
     const migrated = MCP_MIGRATED_OPERATIONS[toLegacyToolName(name)];
     if (!migrated) {
@@ -2604,8 +2662,7 @@ export class EngramMcpServer {
       const visible = this.tools
         .filter(
           (t) =>
-            caps?.ops === undefined
-            || capabilityAllowsOp(caps, MCP_MIGRATED_OPERATIONS[toLegacyToolName(t.name)] ?? ""),
+            caps?.ops === undefined || capabilityAllowsOp(caps, MCP_MIGRATED_OPERATIONS[toLegacyToolName(t.name)] ?? "")
         )
         .map((t) => t.name);
       throw new Error(unknownToolError(name, visible));
@@ -2641,7 +2698,7 @@ export class EngramMcpServer {
         enforceNamespaceAllowList(
           tokenCapabilityStore.getStore(),
           scope?.namespace,
-          this.service.configRef?.defaultNamespace,
+          this.service.configRef?.defaultNamespace
         );
       }
       const chatResult = await processChatMessage({
@@ -2689,7 +2746,12 @@ export class EngramMcpServer {
       service: this.service,
       authenticatedPrincipal: effectivePrincipal,
       ...(enforceWriteQuota || recordWriteCommit
-        ? { hooks: { ...(enforceWriteQuota ? { enforceWriteQuota } : {}), ...(recordWriteCommit ? { recordWriteCommit } : {}) } }
+        ? {
+            hooks: {
+              ...(enforceWriteQuota ? { enforceWriteQuota } : {}),
+              ...(recordWriteCommit ? { recordWriteCommit } : {}),
+            },
+          }
         : {}),
       ...(sourceConnector ? { sourceConnector } : {}),
       ...(abortSignal ? { abortSignal } : {}),

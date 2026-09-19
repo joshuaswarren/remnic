@@ -34,6 +34,14 @@ export async function extractionForceFlush(
   if (request.deadlineMs !== undefined && (!Number.isFinite(request.deadlineMs) || request.deadlineMs < 0)) {
     throw new EngramAccessInputError("deadlineMs must be a finite non-negative number");
   }
+  // `deadlineMs` is a BUDGET from now, not an absolute epoch (issue #3140):
+  // callers passing a natural relative value (e.g. 30000) were instantly
+  // rejected with `replay extraction deadline exceeded (scope_resolution)`
+  // because the raw duration was compared against Date.now(). Convert once
+  // here; every phase below and the orchestrator flush keep absolute deadlines.
+  const deadlineAt = typeof request.deadlineMs === "number"
+    ? (request.deadlineMs > 1e11 ? request.deadlineMs : Date.now() + request.deadlineMs)
+    : undefined;
 
   const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
   throwIfAborted(request.abortSignal, "extraction force-flush aborted");
@@ -87,7 +95,7 @@ export async function extractionForceFlush(
         () => deps.resolveMemoryScopePlan(request),
         {
           abortSignal: request.abortSignal,
-          extractionDeadlineMs: request.deadlineMs,
+          extractionDeadlineMs: deadlineAt,
           reason: "access_force_flush",
           deadlineStage: "scope_resolution",
           onDeadline: cancelBeforeScopeResolution,
@@ -107,7 +115,7 @@ export async function extractionForceFlush(
     };
     if (request.abortSignal?.aborted) cancelScopedPendingObserveExtractions();
     throwIfAborted(request.abortSignal, "extraction force-flush aborted");
-    if (typeof request.deadlineMs === "number" && request.deadlineMs <= Date.now()) {
+    if (deadlineAt !== undefined && deadlineAt <= Date.now()) {
       cancelScopedPendingObserveExtractions();
       throw new EngramAccessInputError("extraction force-flush deadline exceeded before buffer drain");
     }
@@ -119,7 +127,7 @@ export async function extractionForceFlush(
           reason: "access_force_flush",
           abortSignal: request.abortSignal,
           failOnExtractionFailure: true,
-          extractionDeadlineMs: request.deadlineMs,
+          extractionDeadlineMs: deadlineAt,
           writeNamespaceOverride: scope.writeNamespace,
           principalOverride:
             typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined,
@@ -128,7 +136,7 @@ export async function extractionForceFlush(
         }),
       {
         abortSignal: request.abortSignal,
-        extractionDeadlineMs: request.deadlineMs,
+        extractionDeadlineMs: deadlineAt,
         reason: "access_force_flush",
         deadlineStage: "buffer_drain",
         onDeadline: cancelScopedPendingObserveExtractions,
@@ -154,7 +162,7 @@ export async function extractionForceFlush(
           ),
         {
           abortSignal: request.abortSignal,
-          extractionDeadlineMs: request.deadlineMs,
+          extractionDeadlineMs: deadlineAt,
           reason: "access_force_flush",
           deadlineStage: "pending_observe_extraction",
           onDeadline: () => {
@@ -172,11 +180,11 @@ export async function extractionForceFlush(
           () =>
             buffer.clearRetainedTurnsForSession(request.sessionKey, namespacesEnabled ? scope.principal : undefined, {
               abortSignal: request.abortSignal,
-              deadlineMs: request.deadlineMs,
+              deadlineMs: deadlineAt,
             }),
           {
             abortSignal: request.abortSignal,
-            extractionDeadlineMs: request.deadlineMs,
+            extractionDeadlineMs: deadlineAt,
             reason: "access_force_flush",
             deadlineStage: "retained_turn_cleanup",
           }

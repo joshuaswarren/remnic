@@ -511,11 +511,11 @@ test("health surfaces extraction liveness as degraded when the buffer is non-emp
     assert.equal(health.extraction.oldestBufferedTurnAgeMs, 10_000);
     assert.ok(
       health.extraction.degradedReason !== null && health.extraction.degradedReason.length > 0,
-      "degraded reason is populated",
+      "degraded reason is populated"
     );
     const scopedHealth = await tokenCapabilityStore.run(
       { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["default"] },
-      () => service.health(),
+      () => service.health()
     );
     assert.equal(scopedHealth.extraction.lastExtractionAt, null);
     assert.equal(scopedHealth.extraction.degraded, true);
@@ -562,7 +562,7 @@ test("health reports extraction liveness ok when the buffer is empty (nothing to
     assert.equal(health.extraction.lastExtractionAt, oldTs);
     const scopedHealth = await tokenCapabilityStore.run(
       { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["default"] },
-      () => service.health(),
+      () => service.health()
     );
     assert.equal(scopedHealth.extraction.degraded, health.extraction.degraded);
     assert.equal(scopedHealth.extraction.lastExtractionAt, null);
@@ -685,7 +685,7 @@ test("health reports extraction liveness degraded when the buffer read fails (§
     assert.match(health.extraction.degradedReason ?? "", /buffer file corrupt/);
     const scopedHealth = await tokenCapabilityStore.run(
       { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["default"] },
-      () => service.health(),
+      () => service.health()
     );
     assert.equal(scopedHealth.extraction.lastExtractionAt, null);
     assert.match(scopedHealth.extraction.degradedReason ?? "", /extraction buffer unreadable/);
@@ -722,12 +722,48 @@ test("health reports extraction liveness degraded when the watermark (meta) read
     assert.match(health.extraction.degradedReason ?? "", /meta\.json unreadable/);
     const scopedHealth = await tokenCapabilityStore.run(
       { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["default"] },
-      () => service.health(),
+      () => service.health()
     );
     assert.equal(scopedHealth.extraction.lastExtractionAt, null);
     assert.match(scopedHealth.extraction.degradedReason ?? "", /extraction watermark unreadable/);
     assert.doesNotMatch(scopedHealth.extraction.degradedReason ?? "", /meta\.json unreadable/);
   } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("health surfaces extraction-LLM availability and last failure reason (#3140)", async () => {
+  const {
+    getExtractionLlmHealth,
+    recordExtractionLlmFailure,
+    recordExtractionLlmSuccess,
+    resetExtractionLlmHealthForTests,
+  } = await import("./extraction-llm-health.js");
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-llm-"));
+  const makeService = () =>
+    new EngramAccessService({
+      config: parseConfig({ memoryDir }),
+      qmd: makeQmd({}),
+      async getStorage() {
+        return { dir: memoryDir };
+      },
+    } as unknown as Orchestrator);
+  try {
+    resetExtractionLlmHealthForTests();
+    recordExtractionLlmFailure("no_models", Date.now());
+    const unhealthy = await makeService().health();
+    assert.equal(unhealthy.extraction.llmReachable, false);
+    assert.equal(unhealthy.extraction.lastFailureReason, "no_models");
+    assert.equal(unhealthy.extraction.lastFailureAt, getExtractionLlmHealth().lastFailureAt);
+
+    // A recovered extractor reads reachable with no stale reason.
+    recordExtractionLlmSuccess();
+    const healthy = await makeService().health();
+    assert.equal(healthy.extraction.llmReachable, true);
+    assert.equal(healthy.extraction.lastFailureReason, null);
+    assert.equal(healthy.extraction.lastFailureAt, null);
+  } finally {
+    resetExtractionLlmHealthForTests();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });

@@ -1,0 +1,60 @@
+/**
+ * Recovery reconciliation for a replayed consolidation merge.
+ *
+ * The durable {@link DependencyPropagationMergeJob} carries the primary merge
+ * mutation (survivor absorbs the superseded set; dependents are repointed),
+ * which is replayed upstream on crash recovery / namespace sync. This module
+ * reconciles that mutation's *index effects* to match a normal consolidation
+ * pass — reindex the survivor (refresh survivor index visibility) then deindex
+ * every superseded memory (remove stale index visibility). The survivor is
+ * reindexed FIRST so a concurrent recall never observes it absent while its
+ * superseded peers are still visible, mirroring the consolidation MERGE order.
+ *
+ * Failed index work keeps recovery RETRYABLE: any rejection from the injected
+ * {@link DependencyPropagationReplayPort} is captured and returned as status
+ * "retryable" rather than marking the job safely complete, so the next recovery
+ * pass can finish the reconciliation. This module never imports an index
+ * backend — all work flows through the injected port.
+ *
+ * Extracted from the delivery module so the recovery state transition lives
+ * alongside its own concern; the delivery class delegates here, keeping its
+ * public `replay` behavior and exported types unchanged.
+ */
+import type {
+  DependencyPropagationMergeJob,
+  DependencyPropagationReplayPort,
+  DependencyPropagationReplayResult,
+} from "./dependency-propagation-delivery.js";
+
+/**
+ * Reconcile the index effects of one replayed consolidation merge.
+ *
+ * Reindexes the survivor, then deindexes the superseded set (skipped when
+ * empty). Any rejection is captured into a "retryable" result so the durable
+ * job stays pending for the next recovery pass instead of being marked safely
+ * complete.
+ *
+ * Pure with respect to {@link DependencyPropagationDelivery}: it holds no state
+ * and depends only on its arguments, so it is safe to call directly from tests
+ * or the delivery's delegate.
+ */
+export async function reconcileReplayedMerge(
+  job: DependencyPropagationMergeJob,
+  port: DependencyPropagationReplayPort,
+): Promise<DependencyPropagationReplayResult> {
+  try {
+    await port.reindex(job.survivorId);
+    if (job.supersededIds.length > 0) {
+      await port.deindex(job.supersededIds);
+    }
+    return { status: "reconciled", jobKey: job.jobKey };
+  } catch (err) {
+    // Failed index work keeps recovery retryable — do NOT mark the job as
+    // safely complete. The durable job stays pending for the next replay.
+    return {
+      status: "retryable",
+      jobKey: job.jobKey,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
