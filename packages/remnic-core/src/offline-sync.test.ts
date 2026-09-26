@@ -401,6 +401,14 @@ test("offline sync push-side default excludes live LCM sqlite but apply-side sti
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/lcm.sqlite-shm"), true);
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/lcm.sqlite-wal"), true);
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/last_qmd_recall.json"), true);
+    // Sharded embedding index files (#3146) are remote-authoritative like
+    // the legacy single-file index.
+    assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/embeddings/shard-0003.json"), true);
+    assert.equal(
+      shouldPreferIncomingOfflineRuntimeFile("namespaces/team/state/embeddings/shard-0042.json"),
+      true,
+    );
+    assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/embeddings/other.json"), false);
 
     // buildOfflineSyncSnapshotForPaths still rejects explicitly excluded
     // paths so callers cannot bypass the default exclude via path lists.

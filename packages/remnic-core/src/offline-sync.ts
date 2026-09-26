@@ -765,10 +765,14 @@ const ABSENT_INCOMING_RUNTIME_DELETE_FILES = new Set([
   "lcm.sqlite-wal",
 ]);
 
+// Sharded embedding index (#3146): remote-authoritative like embeddings.json.
+const EMBEDDING_SHARD_FILE_PATTERN = /^shard-\d{4}\.json$/;
+
 export function shouldPreferIncomingOfflineRuntimeFile(relPosix: string): boolean {
   const parts = relPosix.split("/");
   const basename = parts[parts.length - 1] ?? "";
-  return isCanonicalRuntimeStatePath(parts) && REMOTE_AUTHORITATIVE_RUNTIME_STATE_FILES.has(basename);
+  return isCanonicalRuntimeStatePath(parts) &&
+    (REMOTE_AUTHORITATIVE_RUNTIME_STATE_FILES.has(basename) || EMBEDDING_SHARD_FILE_PATTERN.test(basename));
 }
 
 function shouldDeleteAbsentIncomingOfflineRuntimeFile(relPosix: string): boolean {
