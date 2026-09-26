@@ -341,17 +341,18 @@ export function registerDelegateRuntime(
       const promptDeadline = Date.now() + Math.min(options.hookTimeoutMs, options.recallTimeoutMs);
       const promptRemaining = (): number => promptDeadline - Date.now();
       try {
-        if (options.shouldSkipRecall(sessionKey)) {
-          log.debug(`delegate recall skipped: cron policy excludes ${sessionKey}`);
-          return undefined;
-        }
         // Sessions keyed as spawned subagents skip unsolicited recall: the
         // hook payload exposes no deeper isolation discriminator, and
         // injecting distilled memory behind the host's back defeats
         // fresh-eyes isolation (issue #3142). Upstream classifies these
-        // keys as background sessions.
+        // keys as background sessions. Checked first so both injection
+        // paths log the same reason for the same key.
         if (await isSubagentSessionKeyDetected(sessionKey)) {
           log.debug(`delegate recall skipped: subagent session ${sessionKey}`);
+          return undefined;
+        }
+        if (options.shouldSkipRecall(sessionKey)) {
+          log.debug(`delegate recall skipped: cron policy excludes ${sessionKey}`);
           return undefined;
         }
         const runtimeAgent = (ctx?.runtime as Record<string, unknown> | undefined)
