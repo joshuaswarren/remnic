@@ -36,9 +36,29 @@ test("isSubagentSessionKey is false for missing or empty hook context keys", () 
   assert.equal(isSubagentSessionKey(sessionKeyFrom({}, {})), false, "missing ctx falls back to the default session, which is not a spawn child");
 });
 
-test("isSubagentSessionKeyDetected falls back to the mirror when the host package is absent", async () => {
+test("isSubagentSessionKeyDetected agrees with the mirrored grammar in any environment", async () => {
+  const fixtures = [
+    "agent:reviewer:subagent:abc123",
+    "subagent:worker",
+    "agent:main:main",
+    "agent:generalist:cron:nightly-sync",
+    "default",
+    "",
+  ];
+  // Deterministic in both host-installed and host-free environments: the
+  // detector must answer exactly the mirrored grammar whichever helper is
+  // active, and when the host SDK resolves, it must agree with the mirror.
+  for (const key of fixtures) {
+    assert.equal(await isSubagentSessionKeyDetected(key), isSubagentSessionKey(key));
+  }
   const routing = await openClawRoutingModule();
-  assert.equal(routing, undefined, "host-free environments resolve no routing SDK");
-  assert.equal(await isSubagentSessionKeyDetected("agent:reviewer:subagent:abc123"), true);
-  assert.equal(await isSubagentSessionKeyDetected("agent:main:main"), false);
+  if (routing?.isSubagentSessionKey) {
+    for (const key of fixtures) {
+      assert.equal(
+        routing.isSubagentSessionKey(key),
+        isSubagentSessionKey(key),
+        `upstream helper disagrees with the mirrored grammar for ${JSON.stringify(key)}`,
+      );
+    }
+  }
 });
