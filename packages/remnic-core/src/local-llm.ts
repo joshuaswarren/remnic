@@ -141,6 +141,7 @@ const THINKING_SUPPRESSED_OPERATIONS: ReadonlySet<string> = new Set([
   "day_summary",
   "hourly_summary",
   "hourly_summary_extended",
+  "correction-classify",
 ]);
 
 export interface LocalModelInfo {

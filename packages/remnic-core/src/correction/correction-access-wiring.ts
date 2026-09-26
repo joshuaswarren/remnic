@@ -30,6 +30,7 @@ import { writeFileAtomically } from "../maintenance/atomic-file.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { MemoryFile, MemoryStatus, PluginConfig } from "../types.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
+import { extractJsonCandidates } from "../json-extract.js";
 import { supersessionKeysForFact } from "../temporal-supersession.js";
 import { computeContentHash } from "../content-hash.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
@@ -1010,10 +1011,21 @@ function parseClassifyResponse(
   raw: string,
   candidates: PlannerCandidate[],
 ): LlmClassificationResult {
+  // #3134: models frequently fence their JSON (```json … ```). Walk the shared
+  // candidate chain (stripCodeFences + balanced-block scan) before giving up —
+  // mirrors the #1514 briefing precedent. The fallback stays byte-identical.
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
+  let parsedOk = false;
+  for (const candidate of extractJsonCandidates(raw)) {
+    try {
+      parsed = JSON.parse(candidate);
+      parsedOk = true;
+      break;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  if (!parsedOk) {
     return fallbackClassification(candidates, "LLM returned non-JSON response");
   }
   if (!parsed || typeof parsed !== "object") {
