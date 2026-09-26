@@ -1,0 +1,14 @@
+[extend]
+useDefault = true
+
+# Frozen H6 benchmark row IDs from #3141, not credentials. Require both the
+# receipt path and a complete rowKey-only line; all other secrets still scan.
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "H6 trap-audit benchmark row IDs"
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"rowKey"\s*:\s*"h6-[a-z0-9-]{71}",?\s*$''']
+paths = ['''(^|/)trap-audit\.json$''']

@@ -21,6 +21,12 @@ export function extractJsonCandidates(text: string): string[] {
   const cleaned = stripCodeFences(trimmed);
   const candidates: string[] = [];
 
+  // Verbatim balanced blocks FIRST: stripCodeFences rewrites every ``` pair, so
+  // a stripped candidate can parse while carrying altered content (e.g. a
+  // patch value that embeds an inner code block). A string-aware balanced scan
+  // of the unstripped text yields the payload unmodified; stripped candidates
+  // remain as later fallbacks for shapes the raw scan cannot cut.
+  candidates.push(...scanBalancedJsonBlocks(trimmed));
   if (cleaned.length > 0) candidates.push(cleaned);
   candidates.push(...scanBalancedJsonBlocks(cleaned));
 

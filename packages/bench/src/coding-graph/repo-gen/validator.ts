@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { compareCodePoints } from "../../codepoint-order.js";
 import {
@@ -34,6 +34,7 @@ export {
 
 import {
   H6BenchmarkDatasetSchema,
+  H6_FROZEN_EVIDENCE_PATHS,
   H6_FROZEN_INVENTORY_HASH,
   H6_FROZEN_SPLITS,
   H6_TRAP_IDS,
@@ -1056,6 +1057,24 @@ export async function writeH6FixtureBundle(
           errorOnExist: true,
           force: false,
         });
+      }
+      for (const evidence of H6_FROZEN_EVIDENCE_PATHS) {
+        const evidenceSource = join(absoluteOutputDir, evidence);
+        const evidenceDetails = await optionalLstat(evidenceSource);
+        if (!evidenceDetails) continue;
+        const evidenceTarget = join(stagingDir, evidence);
+        if (evidenceDetails.isDirectory()) {
+          await cp(evidenceSource, evidenceTarget, {
+            recursive: true,
+            errorOnExist: true,
+            force: false,
+          });
+        } else if (evidenceDetails.isFile()) {
+          await mkdir(dirname(evidenceTarget), { recursive: true });
+          await copyFile(evidenceSource, evidenceTarget);
+        } else {
+          throw new Error(`Frozen evidence artifact is not a regular file or directory: ${evidence}`);
+        }
       }
       backupDir = join(
         dirname(absoluteOutputDir),

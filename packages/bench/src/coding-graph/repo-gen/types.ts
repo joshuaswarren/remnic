@@ -43,6 +43,29 @@ export const H6_FROZEN_SPLITS = Object.freeze({
   ]),
 } satisfies Readonly<Record<DatasetSplit, readonly string[]>>);
 
+// Committed evidence inside the fixture tree that the dataset generator does
+// not produce and must never overwrite: the preregistered timing decision
+// rule (path pinned by packages/bench/preregistration/h6-timing-rerun.md),
+// the first-run trap audit, and the six pre-v1 task corpora kept as raw
+// evidence. writeH6FixtureBundle preserves these byte-for-byte when
+// replacing the tree.
+export const H6_FROZEN_EVIDENCE_PATHS = Object.freeze([
+  "decision-rule-timing.json",
+  "trap-audit.json",
+  "tasks/task_01_cache_invalidation",
+  "tasks/task_02_async_queue",
+  "tasks/task_03_token_bucket",
+  "tasks/task_04_event_emitter",
+  "tasks/task_05_trie_search",
+  "tasks/task_06_connection_pool",
+] as const);
+
+export function isFrozenEvidencePath(fixturePath: string): boolean {
+  return H6_FROZEN_EVIDENCE_PATHS.some(
+    (evidence) => fixturePath === evidence || fixturePath.startsWith(`${evidence}/`),
+  );
+}
+
 export const TrapFingerprintV1Schema = z.object({
   version: z.literal(1),
   trapId: z.enum(H6_TRAP_IDS),
