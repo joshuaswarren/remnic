@@ -50,6 +50,32 @@ test("#3134 prose-wrapped fenced response with trailing prose parses", () => {
   assert.equal(result.actions.length, 1);
 });
 
+test("#3134 bare JSON with an inner markdown code block keeps its patch content verbatim", () => {
+  const patch = "```\nconst fixed = true;\n```";
+  const result = parseClassifyResponse(
+    JSON.stringify({
+      classification: "wrong",
+      confidence: 0.8,
+      actions: [{ kind: "edit", memoryId: "m1", patch }],
+    }),
+    CANDIDATES
+  );
+  assert.equal(result.fallback, undefined, "valid bare JSON must not degrade to the fallback");
+  assert.deepEqual(result.actions, [{ kind: "edit", memoryId: "m1", patch }], "inner code-block delimiters must survive verbatim");
+});
+
+test("#3134 outer-fenced JSON with an inner code block parses with the patch verbatim", () => {
+  const patch = "```py\nprint(\"fixed\")\n```";
+  const inner = JSON.stringify({
+    classification: "wrong",
+    confidence: 0.8,
+    actions: [{ kind: "edit", memoryId: "m1", patch }],
+  });
+  const result = parseClassifyResponse(["```json", inner, "```"].join("\n"), CANDIDATES);
+  assert.equal(result.fallback, undefined, "an outer fence plus an inner code block must not degrade to the fallback");
+  assert.deepEqual(result.actions, [{ kind: "edit", memoryId: "m1", patch }], "inner code-block delimiters must survive verbatim");
+});
+
 test("#3134 genuinely non-JSON response still returns the deterministic fallback", () => {
   const result = parseClassifyResponse("I'm sorry, I cannot classify that request.", CANDIDATES);
   assert.deepEqual(result, {

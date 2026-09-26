@@ -1014,15 +1014,23 @@ function parseClassifyResponse(
   // #3134: models frequently fence their JSON (```json … ```). Walk the shared
   // candidate chain (stripCodeFences + balanced-block scan) before giving up —
   // mirrors the #1514 briefing precedent. The fallback stays byte-identical.
+  // Raw parse runs FIRST: stripCodeFences rewrites any ``` pair, so a bare
+  // payload whose patch/replacement embeds an inner code block would parse
+  // with altered content (or fail outright) if stripped before parsing.
   let parsed: unknown;
   let parsedOk = false;
-  for (const candidate of extractJsonCandidates(raw)) {
-    try {
-      parsed = JSON.parse(candidate);
-      parsedOk = true;
-      break;
-    } catch {
-      // Try the next candidate.
+  try {
+    parsed = JSON.parse(raw);
+    parsedOk = true;
+  } catch {
+    for (const candidate of extractJsonCandidates(raw)) {
+      try {
+        parsed = JSON.parse(candidate);
+        parsedOk = true;
+        break;
+      } catch {
+        // Try the next candidate.
+      }
     }
   }
   if (!parsedOk) {
