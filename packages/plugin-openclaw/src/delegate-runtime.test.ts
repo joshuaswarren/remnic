@@ -3158,6 +3158,47 @@ test("delegate recall honors the cron-skip policy", async () => {
   }
 });
 
+test("delegate recall never injects into spawned subagent sessions (#3142)", async () => {
+  const stub = await startDaemonStub(() => ({ context: "fresh-eyes contamination" }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, {
+        // The guard must be intrinsic to the runtime, not an artifact of the
+        // wiring's cron/subagent skip predicate being passed in.
+        shouldSkipRecall: () => false,
+      }),
+    );
+    const spawnChild = await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "review this diff with fresh eyes" },
+      { sessionKey: "agent:reviewer:subagent:abc123" },
+    );
+    assert.equal(spawnChild, undefined, "spawn-child session gets no injection");
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/recall").length,
+      0,
+      "daemon recall never attempted for a spawn-child session",
+    );
+    const main = (await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "what did we decide about the rollout?" },
+      { sessionKey: "agent:main:main" },
+    )) as Record<string, unknown>;
+    assert.ok(main, "main sessions still recall normally");
+    assert.equal(
+      stub.calls.filter((call) => call.pathname === "/engram/v1/recall").length,
+      1,
+      "exactly the main-session recall reached the daemon",
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
 test("delegate flushOnResetEnabled=false skips reset and session_end flush", () => {
   const api = recordingApi();
   registerDelegateRuntime(api, optionsFor(1, { flushOnResetEnabled: false }));

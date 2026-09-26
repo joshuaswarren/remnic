@@ -79,6 +79,7 @@ import {
   maybeRegisterDelegateRuntime,
   type DelegateHookApi,
 } from "../packages/plugin-openclaw/src/delegate-runtime.js";
+import { isSubagentSessionKeyDetected } from "../packages/plugin-openclaw/src/delegate-hook-fields.js";
 import { registerEmbeddedTools } from "../packages/plugin-openclaw/src/delegate-tools.js";
 import {
   extractLastTurn,
@@ -3027,6 +3028,18 @@ const pluginDefinition = {
         log.debug(
           `${hookLabel}: cron allowlist match=${matchedPattern ? "yes" : "no"} pattern=${matchedPattern ?? "none"}`,
         );
+      }
+
+      // Sessions keyed as spawned subagents skip unsolicited recall: the
+      // hook exposes no deeper isolation discriminator, and injecting
+      // memory behind the host's back defeats fresh-eyes isolation
+      // (issue #3142). Upstream classifies these keys as background
+      // sessions.
+      if (await isSubagentSessionKeyDetected(sessionKey)) {
+        log.debug(
+          `${hookLabel}: skip recall for spawned-subagent session ${sessionKey}`,
+        );
+        return;
       }
 
       if (shouldSkipRecallForSession(sessionKey, cfg)) {

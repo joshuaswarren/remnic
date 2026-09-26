@@ -314,3 +314,9 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
 declare module "openclaw/plugin-sdk/memory-core" {
   export { MemoryPromptSectionBuilder } from "openclaw/plugin-sdk";
 }
+
+declare module "openclaw/plugin-sdk/routing" {
+  export function isSubagentSessionKey(
+    sessionKey: string | undefined | null,
+  ): boolean;
+}

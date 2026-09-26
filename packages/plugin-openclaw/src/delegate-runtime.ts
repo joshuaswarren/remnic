@@ -107,7 +107,9 @@ export interface DelegateRuntimeOptions {
   cleanUserMessage: (text: string) => string;
   /** Passed as the hook registration timeout (embedded initGateTimeoutMs). */
   hookTimeoutMs: number;
-  /** Embedded parity: `shouldSkipRecallForSession` (cron recall policy). */
+  /** Embedded parity: `shouldSkipRecallForSession` (cron recall policy, per
+   * `cronRecallMode`). Sessions keyed as spawned subagents are excluded in
+   * this runtime regardless of this predicate (issue #3142). */
   shouldSkipRecall: (sessionKey: string) => boolean;
   /** Embedded parity (issue #569): working dir for daemon git-context scoping. */
   cwd?: string;
@@ -168,6 +170,7 @@ import {
 } from "./delegate-http.js";
 import {
   cwdFrom,
+  isSubagentSessionKeyDetected,
   lifecycleSessionKeyFrom,
   readContextComposition,
   recallQueryFrom,
@@ -338,6 +341,16 @@ export function registerDelegateRuntime(
       const promptDeadline = Date.now() + Math.min(options.hookTimeoutMs, options.recallTimeoutMs);
       const promptRemaining = (): number => promptDeadline - Date.now();
       try {
+        // Sessions keyed as spawned subagents skip unsolicited recall: the
+        // hook payload exposes no deeper isolation discriminator, and
+        // injecting distilled memory behind the host's back defeats
+        // fresh-eyes isolation (issue #3142). Upstream classifies these
+        // keys as background sessions. Checked first so both injection
+        // paths log the same reason for the same key.
+        if (await isSubagentSessionKeyDetected(sessionKey)) {
+          log.debug(`delegate recall skipped: subagent session ${sessionKey}`);
+          return undefined;
+        }
         if (options.shouldSkipRecall(sessionKey)) {
           log.debug(`delegate recall skipped: cron policy excludes ${sessionKey}`);
           return undefined;
