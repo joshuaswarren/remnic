@@ -1013,6 +1013,10 @@ function parseClassifyResponse(
 ): LlmClassificationResult {
   // Correction plans can mutate memory: accept one schema-valid, verbatim
   // response, never an arbitrary example or a fence-rewritten patch payload.
+  // The response envelope gates candidacy; actions need only ≥1 valid entry
+  // (an empty list is fine, an all-malformed list is unusable). Malformed
+  // siblings are dropped after selection, so one bad action cannot discard
+  // the whole plan; distinct eligible responses stay ambiguous (fail closed).
   const responses = new Map<string, Record<string, unknown>>();
   let sawJson = false;
   for (const candidate of new Set([raw.trim(), ...extractJsonCandidates(raw)])) {
@@ -1025,10 +1029,17 @@ function parseClassifyResponse(
       if (!isClassification(value.classification) ||
           typeof value.confidence !== "number" || !Number.isFinite(value.confidence) ||
           value.confidence < 0 || value.confidence > 1 || !Array.isArray(value.actions)) continue;
-      for (const action of value.actions) validateCorrectionAction(action);
-      responses.set(JSON.stringify(value), value);
+      const hasUsable = value.actions.some((action) => {
+        try {
+          validateCorrectionAction(action);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (hasUsable || value.actions.length === 0) responses.set(JSON.stringify(value), value);
     } catch {
-      // Keep scanning after malformed JSON or actions, not after mere syntax success.
+      // Keep scanning after malformed JSON, not after mere syntax success.
     }
   }
   if (responses.size !== 1) {

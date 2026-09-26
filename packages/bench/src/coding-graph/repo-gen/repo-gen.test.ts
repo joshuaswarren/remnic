@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -12,6 +12,7 @@ import { regenerateH6Fixtures } from "../../../fixtures/h6-failure-gate/generato
 import { H6BenchmarkDatasetSchema, H6_TRAP_IDS } from "./types.js";
 import {
   H6_TASK_JSON_SCHEMA,
+  isFrozenEvidencePath,
   loadCommittedH6BenchmarkDataset,
   resolveCommittedH6FixtureDirectory,
   evaluateTaskState,
@@ -126,9 +127,28 @@ test("regeneration writes all committed fixture artifacts byte-for-byte", async 
     await regenerateH6Fixtures(tempDir);
     const regenerated = await generatedTreeInventory(tempDir);
     const committed = (await generatedTreeInventory(fixtureRoot)).filter(
-      ([path]) => !path.startsWith("generator/"),
+      ([path]) => !path.startsWith("generator/") && !isFrozenEvidencePath(path),
     );
     assert.deepEqual(regenerated, committed);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("regeneration preserves frozen evidence artifacts in place", async () => {
+  const fixtureRoot = fileURLToPath(
+    new URL("../../../fixtures/h6-failure-gate/", import.meta.url),
+  );
+  const tempDir = await mkdtemp(join(tmpdir(), "h6-regeneration-evidence-"));
+
+  try {
+    await cp(fixtureRoot, tempDir, { recursive: true });
+    await writeH6FixtureBundle(tempDir, await loadCommittedH6BenchmarkDataset());
+
+    assert.deepEqual(
+      (await generatedTreeInventory(tempDir)).filter(([path]) => isFrozenEvidencePath(path)),
+      (await generatedTreeInventory(fixtureRoot)).filter(([path]) => isFrozenEvidencePath(path)),
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

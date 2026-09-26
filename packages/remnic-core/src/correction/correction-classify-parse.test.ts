@@ -136,6 +136,40 @@ test("#3145 skips malformed correction actions before a valid response", () => {
   assert.deepEqual(result.actions, [{ kind: "edit", memoryId: "m1", patch: "m1 corrected content" }]);
 });
 
+test("#3145 keeps the usable action when a sibling action is malformed", () => {
+  const mixed = JSON.stringify({
+    classification: "outdated",
+    confidence: 0.8,
+    actions: [
+      { kind: "edit", memoryId: "m1", patch: "m1 corrected content" },
+      { kind: "invented-action" },
+    ],
+  });
+  const result = parseClassifyResponse(mixed, CANDIDATES);
+  assert.equal(result.fallback, undefined, "one malformed sibling must not discard the whole plan");
+  assert.deepEqual(result.actions, [{ kind: "edit", memoryId: "m1", patch: "m1 corrected content" }]);
+  assert.equal(
+    result.warnings.filter((w) => w.startsWith("dropped malformed action")).length,
+    1,
+    "exactly the malformed sibling is dropped with a warning",
+  );
+});
+
+test("#3145 a partially valid draft is ambiguous against a distinct valid draft", () => {
+  const partialDraft = JSON.stringify({
+    classification: "outdated",
+    confidence: 0.8,
+    actions: [
+      { kind: "edit", memoryId: "m1", patch: "partial example" },
+      { kind: "invented-action" },
+    ],
+  });
+  const result = parseClassifyResponse(partialDraft + "\n" + CLASSIFY_JSON, CANDIDATES);
+  assert.equal(result.fallback, true);
+  assert.equal(result.confidence, 0);
+  assert.deepEqual(result.actions, []);
+});
+
 test("#3145 an unrelated standalone object never becomes a plausible correction", () => {
   const result = parseClassifyResponse("{}", CANDIDATES);
   assert.equal(result.fallback, true);
