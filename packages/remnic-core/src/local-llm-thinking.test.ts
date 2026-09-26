@@ -356,3 +356,15 @@ test("request-level thinking override leaves short extraction thinking enabled (
   }
   assert.equal("reasoning_effort" in (bodies[0] ?? {}), false);
 });
+
+test("disableThinking injects chat_template_kwargs for correction classify (#3134)", async () => {
+  const client = new LocalLlmClient(createConfig());
+  primeClient(client, { thinking: true, detected: "lmstudio" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client, "correction-classify");
+  } finally {
+    restore();
+  }
+  assert.deepEqual(bodies[0]?.chat_template_kwargs, { enable_thinking: false });
+});

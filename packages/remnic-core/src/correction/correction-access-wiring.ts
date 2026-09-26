@@ -30,6 +30,7 @@ import { writeFileAtomically } from "../maintenance/atomic-file.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { MemoryFile, MemoryStatus, PluginConfig } from "../types.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
+import { extractJsonCandidates } from "../json-extract.js";
 import { supersessionKeysForFact } from "../temporal-supersession.js";
 import { computeContentHash } from "../content-hash.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
@@ -1010,16 +1011,43 @@ function parseClassifyResponse(
   raw: string,
   candidates: PlannerCandidate[],
 ): LlmClassificationResult {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return fallbackClassification(candidates, "LLM returned non-JSON response");
+  // Correction plans can mutate memory: accept one schema-valid, verbatim
+  // response, never an arbitrary example or a fence-rewritten patch payload.
+  // The response envelope gates candidacy; actions need only ≥1 valid entry
+  // (an empty list is fine, an all-malformed list is unusable). Malformed
+  // siblings are dropped after selection, so one bad action cannot discard
+  // the whole plan; distinct eligible responses stay ambiguous (fail closed).
+  const responses = new Map<string, Record<string, unknown>>();
+  let sawJson = false;
+  for (const candidate of new Set([raw.trim(), ...extractJsonCandidates(raw)])) {
+    if (!raw.includes(candidate)) continue;
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      sawJson = true;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      const value = parsed as Record<string, unknown>;
+      if (!isClassification(value.classification) ||
+          typeof value.confidence !== "number" || !Number.isFinite(value.confidence) ||
+          value.confidence < 0 || value.confidence > 1 || !Array.isArray(value.actions)) continue;
+      const hasUsable = value.actions.some((action) => {
+        try {
+          validateCorrectionAction(action);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (hasUsable || value.actions.length === 0) responses.set(JSON.stringify(value), value);
+    } catch {
+      // Keep scanning after malformed JSON, not after mere syntax success.
+    }
   }
-  if (!parsed || typeof parsed !== "object") {
-    return fallbackClassification(candidates, "LLM returned non-object response");
+  if (responses.size !== 1) {
+    return fallbackClassification(candidates, responses.size > 1
+      ? "LLM returned ambiguous correction responses"
+      : sawJson ? "LLM returned invalid correction response" : "LLM returned non-JSON response");
   }
-  const obj = parsed as Record<string, unknown>;
+  const obj = responses.values().next().value as Record<string, unknown>;
   const classification = isClassification(obj.classification) ? obj.classification : "outdated";
   const confidence = typeof obj.confidence === "number" ? Math.min(1, Math.max(0, obj.confidence)) : 0.5;
   const rawActions = Array.isArray(obj.actions) ? obj.actions : [];
