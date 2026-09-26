@@ -115,10 +115,18 @@ async function writeLegacyIndex(memoryDir: string, index: LegacyIndexFile): Prom
   return raw.length;
 }
 
+interface ShardHeader {
+  file: string;
+  provider?: string;
+  model?: string;
+  entries: Record<string, IndexEntry>;
+}
+
 interface CollectedIndex {
   legacy: LegacyIndexFile | null;
   legacyRaw: string | null;
   shardFiles: string[];
+  shards: ShardHeader[];
   backupFiles: string[];
   stagingDirs: string[];
   merged: Record<string, IndexEntry>;
@@ -130,6 +138,7 @@ async function collectIndex(memoryDir: string): Promise<CollectedIndex> {
     legacy: null,
     legacyRaw: null,
     shardFiles: [],
+    shards: [],
     backupFiles: [],
     stagingDirs: [],
     merged: {},
@@ -162,6 +171,7 @@ async function collectIndex(memoryDir: string): Promise<CollectedIndex> {
     if (!/^shard-\d{4}\.json$/.test(name)) continue;
     out.shardFiles.push(name);
     const parsed = JSON.parse(await readFile(path.join(memoryDir, SHARD_DIR_REL, name), "utf-8"));
+    out.shards.push({ file: name, provider: parsed.provider, model: parsed.model, entries: parsed.entries });
     Object.assign(out.merged, parsed.entries as Record<string, IndexEntry>);
   }
   // Single-generation rule: a legacy file beside a published shard
@@ -712,6 +722,239 @@ test("mutations reject a mixed-identity generation and a malformed shard instead
         err.name === "EmbeddingIndexStorageError" && /malformed embedding index shard/.test(err.message),
     );
     assert.equal(await readFile(path.join(shardDir, "shard-0001.json"), "utf-8"), malformed);
+  } finally {
+    for (const fn of cleanup.reverse()) fn();
+    unregister();
+    clearHostEmbeddingProvidersForTest();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("identity change on a sharded generation publishes a complete replacement (host to openai fallback)", async () => {
+  const memoryDir = await tmpMemoryDir("remnic-emb3146-replace-openai-");
+  const unregister = registerHostEmbeddingProvider(memoryDir, HOST_PROVIDER_STUB);
+  const cleanup: Array<() => void> = [];
+  try {
+    // Sharded generation with the OLD host identity.
+    const shardDir = path.join(memoryDir, SHARD_DIR_REL);
+    await mkdir(shardDir, { recursive: true });
+    await writeFile(
+      path.join(shardDir, "shard-0000.json"),
+      JSON.stringify({
+        version: 1,
+        provider: "host",
+        model: "host-model",
+        entries: { "mem-h1": { vector: [1, 0], path: "facts/h1.md" } },
+      }),
+      "utf-8",
+    );
+    await writeFile(
+      path.join(shardDir, "shard-0007.json"),
+      JSON.stringify({
+        version: 1,
+        provider: "host",
+        model: "host-model",
+        entries: { "mem-h2": { vector: [0, 1], path: "facts/h2.md" } },
+      }),
+      "utf-8",
+    );
+
+    // Host embeds fail (HOST_PROVIDER_STUB returns null), so indexing falls
+    // back to OpenAI — the legitimate replacement path.
+    const fallback = new EmbeddingFallback(stubConfig(memoryDir));
+    cleanup.push(installEmbedFetch([vectorOf(3), vectorOf(3)]));
+    await fallback.indexFile("mem-o1", "openai fact", path.join(memoryDir, "facts", "o1.md"));
+
+    const collected = await collectIndex(memoryDir);
+    assert.ok(collected.shardFiles.length > 0);
+    for (const shard of collected.shards) {
+      assert.equal(shard.provider, "openai", `shard ${shard.file} must carry the replacement identity`);
+      assert.equal(shard.model, "text-embedding-3-small");
+    }
+    assert.deepEqual(Object.keys(collected.merged).sort(), ["mem-o1"], "replacement discards the obsolete generation");
+
+    // Reload in a fresh instance and follow up with another write.
+    const fresh = new EmbeddingFallback(stubConfig(memoryDir));
+    const results = await (async () => {
+      const r = await fresh.search("reload check", 5);
+      return r;
+    })();
+    assert.deepEqual(results.map((r) => r.id), ["mem-o1"]);
+    await fresh.indexFile("mem-o2", "second openai fact", path.join(memoryDir, "facts", "o2.md"));
+    const after = await collectIndex(memoryDir);
+    for (const shard of after.shards) {
+      assert.equal(shard.provider, "openai");
+    }
+    assert.equal(after.merged["mem-o2"] !== undefined, true);
+    assert.equal(after.stagingDirs.length, 0);
+  } finally {
+    for (const fn of cleanup.reverse()) fn();
+    unregister();
+    clearHostEmbeddingProvidersForTest();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("identity change to a new host model replaces the generation and keeps it writable", async () => {
+  const memoryDir = await tmpMemoryDir("remnic-emb3146-replace-model-");
+  const unregister = registerHostEmbeddingProvider(memoryDir, {
+    id: "host-test",
+    model: "host-model-v2",
+    async embed() {
+      return [1, 0];
+    },
+  });
+  const cleanup: Array<() => void> = [];
+  try {
+    const shardDir = path.join(memoryDir, SHARD_DIR_REL);
+    await mkdir(shardDir, { recursive: true });
+    await writeFile(
+      path.join(shardDir, "shard-0003.json"),
+      JSON.stringify({
+        version: 1,
+        provider: "host",
+        model: "host-model-v1",
+        entries: { "mem-v1": { vector: [1, 0], path: "facts/v1.md" } },
+      }),
+      "utf-8",
+    );
+
+    const fallback = new EmbeddingFallback(stubConfig(memoryDir));
+    cleanup.push(installEmbedFetch([[1, 0]]));
+    await fallback.indexFile("mem-v2", "v2 fact", path.join(memoryDir, "facts", "v2.md"));
+
+    const collected = await collectIndex(memoryDir);
+    for (const shard of collected.shards) {
+      assert.equal(shard.provider, "host");
+      assert.equal(shard.model, "host-model-v2");
+    }
+    assert.deepEqual(Object.keys(collected.merged).sort(), ["mem-v2"]);
+
+    const fresh = new EmbeddingFallback(stubConfig(memoryDir));
+    const results = await fresh.search("reload", 5);
+    assert.deepEqual(results.map((r) => r.id), ["mem-v2"]);
+  } finally {
+    for (const fn of cleanup.reverse()) fn();
+    unregister();
+    clearHostEmbeddingProvidersForTest();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("injected replacement failures preserve the old generation until the replacement is valid", async () => {
+  const memoryDir = await tmpMemoryDir("remnic-emb3146-replace-fail-");
+  const unregister = registerHostEmbeddingProvider(memoryDir, HOST_PROVIDER_STUB);
+  const cleanup: Array<() => void> = [];
+  const stateDir = path.join(memoryDir, "state");
+  try {
+    const shardDir = path.join(memoryDir, SHARD_DIR_REL);
+    await mkdir(shardDir, { recursive: true });
+    const oldShard = JSON.stringify({
+      version: 1,
+      provider: "host",
+      model: "host-model",
+      entries: { "mem-h1": { vector: [1, 0], path: "facts/h1.md" } },
+    });
+    await writeFile(path.join(shardDir, "shard-0000.json"), oldShard, "utf-8");
+
+    // (a) Serialization failure while staging the replacement: the huge
+    // entry overflows its shard, throwing BEFORE any destructive step.
+    await withEnv({ [LIMIT_ENV]: "2000" }, async () => {
+      const fallback = new EmbeddingFallback(stubConfig(memoryDir));
+      cleanup.push(installEmbedFetch([vectorOf(300), vectorOf(3)]));
+      await assert.rejects(
+        fallback.indexFile("mem-huge", "huge fact", path.join(memoryDir, "facts", "huge.md")),
+        (err: NodeJS.ErrnoException) => err.name === "EmbeddingIndexCapacityError",
+      );
+      assert.equal(await readFile(path.join(shardDir, "shard-0000.json"), "utf-8"), oldShard, "old generation must survive a staging failure");
+      assert.equal((await collectIndex(memoryDir)).stagingDirs.length, 0, "staging must be rolled back");
+      // Recall honestly reports nothing: the surviving generation still has
+      // the host identity, which this config's openai query cannot serve.
+      assert.deepEqual(await fallback.search("after failure", 5), []);
+      // A normal write re-attempts the replacement and succeeds.
+      await fallback.indexFile("mem-ok", "ok fact", path.join(memoryDir, "facts", "ok.md"));
+      const replaced = await collectIndex(memoryDir);
+      assert.ok(replaced.shards.length > 0);
+      for (const shard of replaced.shards) {
+        assert.equal(shard.provider, "openai");
+      }
+      assert.equal(replaced.merged["mem-ok"] !== undefined, true);
+    });
+
+    // (b) Write failure while staging an IDENTITY replacement (state dir
+    // read-only blocks the staging mkdir): old generation intact, then
+    // recovery and a successful replacement after permissions return.
+    await withEnv({ [LIMIT_ENV]: "2000" }, async () => {
+      // Back to a host-identity generation so the next write is a
+      // replacement (staging lives under the state dir).
+      await rm(shardDir, { recursive: true, force: true });
+      await mkdir(shardDir, { recursive: true });
+      await writeFile(path.join(shardDir, "shard-0000.json"), oldShard, "utf-8");
+
+      const fallback = new EmbeddingFallback(stubConfig(memoryDir));
+      cleanup.push(installEmbedFetch([vectorOf(3), vectorOf(3)]));
+      await chmod(stateDir, 0o500);
+      await assert.rejects(
+        fallback.indexFile("mem-blocked", "blocked fact", path.join(memoryDir, "facts", "blocked.md")),
+        (err: NodeJS.ErrnoException) => (err as NodeJS.ErrnoException).code === "EACCES",
+      );
+      await chmod(stateDir, 0o755);
+      assert.equal(await readFile(path.join(shardDir, "shard-0000.json"), "utf-8"), oldShard, "old generation must survive an I/O failure");
+      assert.equal((await collectIndex(memoryDir)).stagingDirs.length, 0, "staging must be rolled back");
+      assert.deepEqual(await fallback.search("after io failure", 5), []);
+      await fallback.indexFile("mem-after", "after fact", path.join(memoryDir, "facts", "after.md"));
+      assert.equal((await collectIndex(memoryDir)).merged["mem-after"] !== undefined, true);
+    });
+  } finally {
+    await chmod(stateDir, 0o755).catch(() => undefined);
+    for (const fn of cleanup.reverse()) fn();
+    unregister();
+    clearHostEmbeddingProvidersForTest();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a restart inside the replacement rename gap rolls back to the old generation, not stale legacy", async () => {
+  const memoryDir = await tmpMemoryDir("remnic-emb3146-gap-");
+  const unregister = registerHostEmbeddingProvider(memoryDir, HOST_PROVIDER_STUB);
+  const cleanup: Array<() => void> = [];
+  try {
+    // Crash state: the publish rename never ran. The former (openai)
+    // generation sits in the fixed transaction backup, the published
+    // directory is gone, and a stale pre-migration legacy file lurks beside
+    // them trying to resurrect old vectors.
+    const backupDir = path.join(memoryDir, "state", "embeddings.pre-replace.tmp");
+    await mkdir(backupDir, { recursive: true });
+    await writeFile(
+      path.join(backupDir, "shard-0000.json"),
+      JSON.stringify(buildIndex({ "mem-old": entryOf(2, "facts/old.md") })),
+      "utf-8",
+    );
+    await mkdir(path.join(memoryDir, "state"), { recursive: true });
+    await writeFile(
+      path.join(memoryDir, LEGACY_REL),
+      JSON.stringify(buildIndex({ "mem-stale": entryOf(2, "facts/stale.md") })),
+      "utf-8",
+    );
+
+    // First read recovers the former generation before layout selection.
+    const fallback = new EmbeddingFallback(stubConfig(memoryDir));
+    cleanup.push(installEmbedFetch([[0.1, 0.2], vectorOf(3)]));
+    const results = await fallback.search("after restart", 5);
+    assert.deepEqual(results.map((r) => r.id), ["mem-old"], "old vectors must be recovered, not the stale legacy file");
+
+    // Recovery is durable: the published generation is back in place.
+    const collected = await collectIndex(memoryDir);
+    assert.ok(collected.shardFiles.length > 0, "former generation restored to the published position");
+    assert.equal(collected.legacy?.entries["mem-stale"] !== undefined, true, "fixture assumption: stray legacy still on disk");
+    assert.equal(collected.merged["mem-stale"], undefined, "stray legacy must not merge over the recovered generation");
+
+    // A mutation proceeds normally against the recovered generation.
+    await fallback.indexFile("mem-new", "new fact", path.join(memoryDir, "facts", "new.md"));
+    const after = await collectIndex(memoryDir);
+    assert.ok(after.shardFiles.length > 0);
+    assert.equal(after.merged["mem-new"] !== undefined, true);
+    assert.equal(after.merged["mem-old"] !== undefined, true);
   } finally {
     for (const fn of cleanup.reverse()) fn();
     unregister();

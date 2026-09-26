@@ -155,6 +155,16 @@ function shardFileName(shardIndex: number): string {
 }
 
 /**
+ * Fixed transaction backup path for identity replacements. A fixed (not
+ * per-process) name is what makes the rename gap recoverable: whatever
+ * process restarts after a crash finds the demoted former generation here
+ * and rolls it back into place.
+ */
+function replacementBackupPath(shardDir: string): string {
+  return path.join(path.dirname(shardDir), "embeddings.pre-replace.tmp");
+}
+
+/**
  * Stable FNV-1a shard assignment: an entry always hashes to the same shard,
  * so an update or removal never needs a manifest to find its file.
  */
@@ -197,16 +207,53 @@ export class EmbeddingIndexFileStore {
    * merges again.
    */
   async detectLayout(): Promise<IndexLayout> {
+    // An interrupted identity replacement leaves the published directory
+    // absent with the fixed transaction backup still on disk (the publish
+    // rename never completed). Roll the former generation back BEFORE layout
+    // selection: its vectors stay authoritative and a stray legacy file
+    // cannot resurrect over them (issue #3146 review).
+    let shardDirPresent = false;
     try {
       await stat(this.shardDir);
-      return "sharded";
+      shardDirPresent = true;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
         // The pointer exists but cannot be stat'ed — fail towards the
         // published generation so its readers surface the I/O error.
         return "sharded";
       }
+      if (await this.rollbackInterruptedReplacement()) {
+        log.warn(
+          `embedding index: recovered interrupted replacement; former generation restored from ${replacementBackupPath(this.shardDir)}`,
+        );
+        await this.recordIndexStatus({
+          lastReadRecovery: {
+            ts: new Date().toISOString(),
+            message: "interrupted identity replacement rolled back to the former generation",
+          },
+        });
+      }
     }
+    if (shardDirPresent) return "sharded";
+    return this.legacyOrEmptyLayout();
+  }
+
+  /**
+   * Roll the fixed transaction backup back into the published position.
+   * Returns true when a rollback happened.
+   */
+  private async rollbackInterruptedReplacement(): Promise<boolean> {
+    const backupPath = replacementBackupPath(this.shardDir);
+    try {
+      await stat(backupPath);
+    } catch {
+      return false;
+    }
+    await rename(backupPath, this.shardDir);
+    return true;
+  }
+
+  private async legacyOrEmptyLayout(): Promise<IndexLayout> {
     try {
       await stat(this.indexPath);
       return "legacy";
@@ -388,6 +435,20 @@ export class EmbeddingIndexFileStore {
 
     if (layout === "sharded") {
       const limit = resolveIndexFileCharLimit();
+      // An identity change on a published generation (a sharded host index
+      // replaced by a fallback provider, or a host-model change) must
+      // publish a COMPLETE replacement: the dirty-shard fast path would
+      // rewrite only the touched shard under the new identity and leave the
+      // former identity's shards in place — a mixed generation that every
+      // later load rejects (codex P1, PR #3148).
+      const diskIdentity = await this.identityFromDisk();
+      const identityChanged =
+        diskIdentity !== null &&
+        (diskIdentity.provider !== index.provider || diskIdentity.model !== index.model);
+      if (identityChanged) {
+        await this.publishReplacementGeneration(index, groups, limit);
+        return;
+      }
       const dirtyShards = opts.touchedIds?.length
         ? new Set(opts.touchedIds.map((id) => shardIndexOf(id, SHARD_COUNT)))
         : null;
@@ -455,6 +516,55 @@ export class EmbeddingIndexFileStore {
       this.indexPath,
       `${this.indexPath}.pre-migration.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     ).catch(() => undefined);
+  }
+
+  /**
+   * Replace a published generation wholesale after a provider/model identity
+   * change (replacement semantics — the former entries are obsolete by
+   * definition). Crash-safe by the same construction as the migration: the
+   * COMPLETE new-identity set is staged and validated first (old bytes are
+   * not touched until staging succeeds), the published directory is renamed
+   * aside atomically as a recovery artifact, and the staging dir is
+   * published with a single atomic rename. No rename ever targets a
+   * non-empty directory, and a crash at any point converges to one valid
+   * single generation on the next write.
+   */
+  private async publishReplacementGeneration(
+    index: EmbeddingIndexFile,
+    groups: Map<number, Record<string, EmbeddingIndexEntry>>,
+    limit: number,
+  ): Promise<void> {
+    const stateDir = path.dirname(this.indexPath);
+    const stagingDir = path.join(
+      stateDir,
+      `embeddings.staging.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    await mkdir(stagingDir, { recursive: true });
+    try {
+      for (const [shardIndex, entries] of groups) {
+        if (Object.keys(entries).length === 0) continue;
+        await this.writeAtomicFile(
+          path.join(stagingDir, shardFileName(shardIndex)),
+          this.serializeShard(index, shardIndex, entries, limit),
+        );
+      }
+      // Demote the former generation to the FIXED transaction backup, then
+      // publish the replacement. If the publish rename fails, roll the
+      // former generation back into place; if the process dies in the gap,
+      // detectLayout() performs the same rollback on next use.
+      const backupPath = replacementBackupPath(this.shardDir);
+      await rm(backupPath, { recursive: true, force: true });
+      await rename(this.shardDir, backupPath);
+      try {
+        await rename(stagingDir, this.shardDir);
+      } catch (err) {
+        await rename(backupPath, this.shardDir).catch(() => undefined);
+        throw err;
+      }
+    } catch (err) {
+      await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      throw err;
+    }
   }
 
   /** Remove staging dirs orphaned by crashed migrations; never this process's own. */
