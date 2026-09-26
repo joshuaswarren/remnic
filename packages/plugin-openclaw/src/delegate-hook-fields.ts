@@ -31,6 +31,59 @@ export function sessionKeyFrom(
   return "default";
 }
 
+/**
+ * Mirrors upstream OpenClaw `isSubagentSessionKey`
+ * (src/sessions/session-key-utils.ts): identifies sessions whose key marks
+ * them as spawned subagents — `agent:<agentId>:subagent:<runId>`, or a bare
+ * `subagent:<...>` head on non-agent-scoped keys, with a case-insensitive
+ * marker. Upstream classifies these keys as background `"subagent"`
+ * sessions (src/gateway/session-classification.ts). The hook payload exposes
+ * no deeper isolation discriminator, so every such session skips unsolicited
+ * memory injection (issue #3142).
+ */
+export function isSubagentSessionKey(sessionKey: string | undefined | null): boolean {
+  const raw = typeof sessionKey === "string" ? sessionKey.trim() : "";
+  if (!raw) return false;
+  if (raw.toLowerCase().startsWith("subagent:")) return true;
+  if (raw.slice(0, 6).toLowerCase() !== "agent:") return false;
+  const restStart = raw.indexOf(":", 6);
+  if (restStart === -1) return false;
+  const agentId = raw.slice(6, restStart).trim();
+  const rest = raw.slice(restStart + 1);
+  if (!agentId || !rest || rest.startsWith(":")) return false;
+  return rest.toLowerCase().startsWith("subagent:");
+}
+
+type OpenClawRoutingModule = {
+  isSubagentSessionKey?: (sessionKey: string | undefined | null) => boolean;
+};
+
+let openClawRoutingModulePromise: Promise<OpenClawRoutingModule | undefined> | undefined;
+
+/**
+ * The host supplies `openclaw` as a peer dependency and host-free dev/test
+ * environments do not install it, so the upstream helper is probed lazily
+ * instead of imported statically — a static import would fail plugin load and
+ * host-free test runs outright on resolution misses. The public subpath has
+ * exported `isSubagentSessionKey` since upstream 2026.3, so every supported
+ * host resolves the probe; the mirrored local predicate only covers misses.
+ */
+export function openClawRoutingModule(): Promise<OpenClawRoutingModule | undefined> {
+  openClawRoutingModulePromise ??= import(
+    "openclaw/plugin-sdk/routing"
+  ).catch(() => undefined);
+  return openClawRoutingModulePromise;
+}
+
+/** Upstream `isSubagentSessionKey` when the host provides it; the mirrored
+ * local predicate otherwise (same grammar, tested against upstream fixtures). */
+export async function isSubagentSessionKeyDetected(
+  sessionKey: string | undefined | null,
+): Promise<boolean> {
+  const routing = await openClawRoutingModule();
+  return (routing?.isSubagentSessionKey ?? isSubagentSessionKey)(sessionKey);
+}
+
 export function lifecycleSessionKeyFrom(
   event: Record<string, unknown>,
   ctx: Record<string, unknown>,
