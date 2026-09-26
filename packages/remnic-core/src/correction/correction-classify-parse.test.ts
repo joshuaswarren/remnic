@@ -111,3 +111,34 @@ test("#3134 bare JSON object with no actions still parses without fallback", () 
   assert.equal(result.classification, "incomplete");
   assert.equal(result.actions.length, 0);
 });
+
+test("#3145 skips unrelated JSON objects before the correction response", () => {
+  const result = parseClassifyResponse("Example: {}\nAnswer: " + CLASSIFY_JSON, CANDIDATES);
+  assert.equal(result.fallback, undefined);
+  assert.equal(result.classification, "wrong");
+  assert.equal(result.actions.length, 1);
+});
+
+test("#3145 rejects ambiguous valid correction drafts instead of choosing an example", () => {
+  const other = JSON.stringify({ classification: "outdated", confidence: 0.99,
+    actions: [{ kind: "edit", memoryId: "m1", patch: "wrong example" }] });
+  const result = parseClassifyResponse(other + "\nActual answer: " + CLASSIFY_JSON, CANDIDATES);
+  assert.equal(result.fallback, true);
+  assert.equal(result.confidence, 0);
+  assert.deepEqual(result.actions, []);
+});
+
+test("#3145 skips malformed correction actions before a valid response", () => {
+  const malformed = JSON.stringify({ classification: "wrong", confidence: 0.9,
+    actions: [{ kind: "invented-action" }] });
+  const result = parseClassifyResponse(malformed + "\n" + CLASSIFY_JSON, CANDIDATES);
+  assert.equal(result.fallback, undefined);
+  assert.deepEqual(result.actions, [{ kind: "edit", memoryId: "m1", patch: "m1 corrected content" }]);
+});
+
+test("#3145 an unrelated standalone object never becomes a plausible correction", () => {
+  const result = parseClassifyResponse("{}", CANDIDATES);
+  assert.equal(result.fallback, true);
+  assert.equal(result.confidence, 0);
+  assert.deepEqual(result.actions, []);
+});

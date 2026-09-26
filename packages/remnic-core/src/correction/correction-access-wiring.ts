@@ -1011,35 +1011,32 @@ function parseClassifyResponse(
   raw: string,
   candidates: PlannerCandidate[],
 ): LlmClassificationResult {
-  // #3134: models frequently fence their JSON (```json … ```). Walk the shared
-  // candidate chain (stripCodeFences + balanced-block scan) before giving up —
-  // mirrors the #1514 briefing precedent. The fallback stays byte-identical.
-  // Raw parse runs FIRST: stripCodeFences rewrites any ``` pair, so a bare
-  // payload whose patch/replacement embeds an inner code block would parse
-  // with altered content (or fail outright) if stripped before parsing.
-  let parsed: unknown;
-  let parsedOk = false;
-  try {
-    parsed = JSON.parse(raw);
-    parsedOk = true;
-  } catch {
-    for (const candidate of extractJsonCandidates(raw)) {
-      try {
-        parsed = JSON.parse(candidate);
-        parsedOk = true;
-        break;
-      } catch {
-        // Try the next candidate.
-      }
+  // Correction plans can mutate memory: accept one schema-valid, verbatim
+  // response, never an arbitrary example or a fence-rewritten patch payload.
+  const responses = new Map<string, Record<string, unknown>>();
+  let sawJson = false;
+  for (const candidate of new Set([raw.trim(), ...extractJsonCandidates(raw)])) {
+    if (!raw.includes(candidate)) continue;
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      sawJson = true;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      const value = parsed as Record<string, unknown>;
+      if (!isClassification(value.classification) ||
+          typeof value.confidence !== "number" || !Number.isFinite(value.confidence) ||
+          value.confidence < 0 || value.confidence > 1 || !Array.isArray(value.actions)) continue;
+      for (const action of value.actions) validateCorrectionAction(action);
+      responses.set(JSON.stringify(value), value);
+    } catch {
+      // Keep scanning after malformed JSON or actions, not after mere syntax success.
     }
   }
-  if (!parsedOk) {
-    return fallbackClassification(candidates, "LLM returned non-JSON response");
+  if (responses.size !== 1) {
+    return fallbackClassification(candidates, responses.size > 1
+      ? "LLM returned ambiguous correction responses"
+      : sawJson ? "LLM returned invalid correction response" : "LLM returned non-JSON response");
   }
-  if (!parsed || typeof parsed !== "object") {
-    return fallbackClassification(candidates, "LLM returned non-object response");
-  }
-  const obj = parsed as Record<string, unknown>;
+  const obj = responses.values().next().value as Record<string, unknown>;
   const classification = isClassification(obj.classification) ? obj.classification : "outdated";
   const confidence = typeof obj.confidence === "number" ? Math.min(1, Math.max(0, obj.confidence)) : 0.5;
   const rawActions = Array.isArray(obj.actions) ? obj.actions : [];
