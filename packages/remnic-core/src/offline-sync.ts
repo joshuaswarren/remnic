@@ -41,6 +41,7 @@ import {
   type EmbeddingGenerationTransactionIo,
   type EmbeddingGenerationTransactionResult,
 } from "./offline-sync-embedding-generation.js";
+import { withEmbeddingGenerationLock, withEmbeddingGenerationLockIter } from "./embedding-generation-lock.js";
 import {
   isCanonicalRuntimeStatePath,
   shouldDeleteAbsentIncomingOfflineRuntimeFile,
@@ -862,6 +863,10 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
       if (skipGenerationPaths?.has(relPosix)) continue;
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
+        if (isEmbeddingGenerationDirPath(relPosix)) {
+          yield* withEmbeddingGenerationLockIter(path.dirname(abs), () => walk(abs));
+          continue;
+        }
         yield* walk(abs);
         continue;
       }
@@ -1018,6 +1023,10 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
       if (omission?.omittedPaths.has(relPosix)) continue;
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
+        if (isEmbeddingGenerationDirPath(relPosix)) {
+          await withEmbeddingGenerationLock(path.dirname(abs), () => walk(abs));
+          continue;
+        }
         await walk(abs);
         continue;
       }
@@ -1665,6 +1674,7 @@ export async function applyOfflineSyncSnapshot(options: {
         incomingMarkerPresent: false,
         incomingShardStates: new Map(),
         incomingBuffers,
+        baseStates: baseMap,
         io: {
           readFile: options.readFile,
           writeStagingFile: options.writeStagingFile,
@@ -1691,6 +1701,7 @@ export async function applyOfflineSyncSnapshot(options: {
           .map((state) => [state.path, state]),
       ),
       incomingBuffers,
+      baseStates: baseMap,
       io: {
         readFile: options.readFile,
         writeStagingFile: options.writeStagingFile,
@@ -1749,8 +1760,9 @@ export async function applyOfflineSyncSnapshot(options: {
     transactionResults.push(await applyEmbeddingGenerationRemoval({
       root,
       shardDirRel: shardDir,
-      io: { deleteFile: options.deleteFile },
+      io: { deleteFile: options.deleteFile, readFile: options.readFile },
       deletionMtimeByPath,
+      baseStates: baseMap,
       now: Date.now(),
     }));
   }
@@ -1759,6 +1771,10 @@ export async function applyOfflineSyncSnapshot(options: {
   let generationUpserted = 0;
   let generationDeleted = 0;
   for (const result of transactionResults) {
+    if (result.deferredLocalDivergence) {
+      for (const relPath of result.handledPaths) deferredPaths.add(relPath);
+      continue;
+    }
     generationUpserted += result.upserted;
     generationDeleted += result.deleted;
     // Base bookkeeping is applied DIRECTLY here: converted shards (legacy

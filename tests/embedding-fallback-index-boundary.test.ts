@@ -1109,6 +1109,9 @@ test("a failed persistence invalidates the cache and the retry actually reaches 
     await withEnv({ [LIMIT_ENV]: "100000" }, async () => {
       const fallback = new EmbeddingFallback(stubConfig(memoryDir));
       cleanup.push(installEmbedFetch([vectorOf(3), queryVec, vectorOf(3), queryVec]));
+      // Keep the lock directory available so this tests persistence failure,
+      // not an unrelated failure to create the mutation lock.
+      await mkdir(path.join(stateDir, ".offline-sync", "locks"), { recursive: true });
       await chmod(stateDir, 0o500);
       if (!(await chmodDeniesWrites(stateDir, 0o500))) {
         t.skip("directory permission enforcement unavailable (root or Windows)");

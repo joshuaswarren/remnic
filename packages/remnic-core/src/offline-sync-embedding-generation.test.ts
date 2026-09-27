@@ -29,10 +29,12 @@ import {
   shardIndexOf,
 } from "./embedding-index-storage.js";
 import {
+  applyEmbeddingGenerationRemoval,
   applyEmbeddingGenerationTransaction,
   computeOmittedEmbeddingGenerationPaths,
   embeddingGenerationMembership,
 } from "./offline-sync-embedding-generation.js";
+import { withEmbeddingGenerationLock } from "./embedding-generation-lock.js";
 import { respondOfflineSnapshotStream } from "./access-http-offline-stream.js";
 import {
   OFFLINE_SYNC_SNAPSHOT_FORMAT,
@@ -1623,4 +1625,384 @@ test("generation deferral includes added and removed shards but not initial impo
   assert.deepEqual(divergedEmbeddingGenerationDeferrals({
     baseFiles: [], incomingFiles: [existing], currentFiles: [added],
   }), []);
+});
+
+test("removing the last sharded entry propagates an explicit empty generation without a shared base", async () => {
+  const source = await tempDir("remnic-last-shard-source");
+  const receiver = await tempDir("remnic-last-shard-receiver");
+  try {
+    const old = indexFile("openai", "m", { last: { path: "facts/last.md", vector: [1] } });
+    await write(source, trueShardRel("last"), serializeIndex(old));
+    await write(receiver, trueShardRel("last"), serializeIndex(old));
+    const store = new EmbeddingIndexFileStore(
+      path.join(source, "state/embeddings.json"),
+      path.join(source, "state/embeddings"),
+      path.join(source, "state/embedding-fallback-status.json"),
+    );
+    await store.persist(indexFile("openai", "m", {}), { touchedIds: ["last"] });
+    assert.deepEqual(await readGenerationEntries(source), {});
+    const snapshot = await buildOfflineSyncSnapshot({ root: source, sourceId: "source", includeContent: true });
+    await applyOfflineSyncSnapshot({ root: receiver, snapshot });
+    assert.deepEqual(await readGenerationEntries(receiver), {}, "an empty source must clear stale receiver vectors without shared-base evidence");
+    assert.ok(snapshot.files.some((file) => file.path.startsWith("state/embeddings/")), "empty generation must have transport-visible evidence");
+  } finally {
+    await rm(source, { recursive: true, force: true });
+    await rm(receiver, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Codex P1 — cross-process generation mutation lock (writer vs swap races)
+// ---------------------------------------------------------------------------
+
+test("a concurrent locked writer during staging survives the sync swap", async () => {
+  const localRoot = await tempDir("remnic-3148-staging-writer");
+  try {
+    const keptBody = serializeIndex(indexFile("openai", "m2", { kept: { path: "p", vector: [0] } }));
+    await write(localRoot, "state/embeddings/shard-0000.json", keptBody);
+    const safeRoot: SafeArchiveRoot = await prepareSafeArchiveRoot(localRoot, "test", "root");
+    const stateDirAbs = path.join(localRoot, "state");
+    const incomingBuffers = new Map<string, Buffer>();
+    incomingBuffers.set(
+      trueShardRel("neu"),
+      Buffer.from(serializeIndex(indexFile("openai", "m2", { neu: { path: "p", vector: [1] } }))),
+    );
+    let writer: Promise<void> | undefined;
+    await applyEmbeddingGenerationTransaction({
+      root: safeRoot,
+      shardDirRel: "state/embeddings",
+      incomingShardPaths: [trueShardRel("neu")],
+      incomingMarker: null,
+      incomingMarkerPresent: false,
+      incomingShardStates: new Map(),
+      incomingBuffers,
+      baseStates: new Map([["state/embeddings/shard-0000.json", { sha256: createHash("sha256").update(keptBody).digest("hex") }]]),
+      io: {
+        // A lock-taking daemon mutation racing the staging window must block
+        // until the swap finished and then land IN the published generation —
+        // never be discarded by the directory swap.
+        writeStagingFile: async ({ filePath, content }) => {
+          await writeFile(filePath, content);
+          if (writer) return;
+          writer = withEmbeddingGenerationLock(stateDirAbs, async () => {
+            await writeFile(
+              path.join(localRoot, "state/embeddings/shard-0099.json"),
+              serializeIndex(indexFile("openai", "m2", { late: { path: "p", vector: [9] } })),
+            );
+          });
+        },
+        readStagingFile: async ({ filePath }) => readFile(filePath),
+      },
+      now: 1,
+    });
+    await Promise.race([
+      writer,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("writer deadlocked on the generation lock")), 15_000)),
+    ]);
+    assert.ok(
+      (await readdir(path.join(localRoot, "state/embeddings"))).includes("shard-0099.json"),
+      "the concurrent locked writer's shard must survive the sync swap",
+    );
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+test("a streamed generation capture never mixes a concurrent swap (codex P1)", async () => {
+  const root = await tempDir("remnic-3148-stream-swap");
+  try {
+    const old0 = serializeIndex(indexFile("openai", "m1", { old0: { path: "p", vector: [0] } }));
+    const old1 = serializeIndex(indexFile("openai", "m1", { old1: { path: "p", vector: [1] } }));
+    await write(root, "state/embeddings/shard-0000.json", old0);
+    await write(root, "state/embeddings/shard-0001.json", old1);
+    const oldSha = (body: string) => createHash("sha256").update(body).digest("hex");
+    const safeRoot: SafeArchiveRoot = await prepareSafeArchiveRoot(root, "test", "root");
+    const stateDirAbs = path.join(root, "state");
+
+    // A whole-generation swap: kept shard name with NEW bytes plus a
+    // new-only shard — exactly the overlap that used to look like a valid
+    // partial generation.
+    const idForShard = (target: number): string => {
+      for (let k = 0; k < 10_000; k += 1) {
+        if (shardIndexOf(`id${k}`, 64) === target) return `id${k}`;
+      }
+      throw new Error("no id found");
+    };
+    const shardName = (target: number): string => `state/embeddings/shard-${String(target).padStart(4, "0")}.json`;
+    const [id0, id1, id2] = [idForShard(0), idForShard(1), idForShard(2)];
+    const new0 = serializeIndex(indexFile("openai", "m2", { [id0]: { path: "p", vector: [10] } }));
+    const new1 = serializeIndex(indexFile("openai", "m2", { [id1]: { path: "p", vector: [11] } }));
+    const new2 = serializeIndex(indexFile("openai", "m2", { [id2]: { path: "p", vector: [12] } }));
+    const incomingBuffers = new Map<string, Buffer>([
+      [shardName(0), Buffer.from(new0)],
+      [shardName(1), Buffer.from(new1)],
+      [shardName(2), Buffer.from(new2)],
+    ]);
+    let swapPublished = false;
+    let swapError: unknown = undefined;
+    let swap: Promise<void> | undefined;
+    let firstShardRead = false;
+    const records = [];
+    for await (const record of iterateOfflineSyncSnapshotFileRecords({
+      root,
+      includeContent: true,
+      readFile: async ({ filePath }) => {
+        if (!firstShardRead && filePath.endsWith("shard-0000.json")) {
+          firstShardRead = true;
+          // Launch the swap, then hold this read until the swap PUBLISHED
+          // (pre-fix) or its bounded wait expires (post-fix, the capture
+          // holds the lock so the swap cannot publish mid-iteration).
+          swap = applyEmbeddingGenerationTransaction({
+            root: safeRoot,
+            shardDirRel: "state/embeddings",
+            incomingShardPaths: [...incomingBuffers.keys()].sort(),
+            incomingMarker: null,
+            incomingMarkerPresent: false,
+            incomingShardStates: new Map(),
+            incomingBuffers,
+            baseStates: new Map(),
+            io: {},
+            now: 1,
+          }).then(
+            () => {
+              swapPublished = true;
+            },
+            (err) => {
+              swapError = err;
+              swapPublished = true;
+            },
+          );
+          const deadline = Date.now() + 1500;
+          while (!swapPublished && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          return Buffer.from(old0);
+        }
+        return readFile(filePath);
+      },
+    })) {
+      records.push(record);
+    }
+    await Promise.race([
+      swap,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("swap deadlocked on the generation lock")), 15_000)),
+    ]);
+    assert.equal(swapError, undefined);
+
+    // The captured census must be EXACTLY the old complete generation —
+    // never a mix of the old and swapped generations.
+    const captured = new Map(
+      records
+        .filter((record) => record.path.startsWith("state/embeddings/"))
+        .map((record) => [record.path, record.sha256] as const),
+    );
+    assert.deepEqual([...captured.keys()].sort(), [
+      "state/embeddings/shard-0000.json",
+      "state/embeddings/shard-0001.json",
+    ]);
+    assert.equal(captured.get("state/embeddings/shard-0000.json"), oldSha(old0));
+    assert.equal(captured.get("state/embeddings/shard-0001.json"), oldSha(old1));
+    void swapError;
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a local divergence discovered under the lock defers the whole generation", async () => {
+  const localRoot = await tempDir("remnic-3148-stale-census-divergence");
+  try {
+    const baseBody = serializeIndex(indexFile("openai", "m2", { base: { path: "p", vector: [0] } }));
+    await write(localRoot, "state/embeddings/shard-0000.json", baseBody);
+    const safeRoot: SafeArchiveRoot = await prepareSafeArchiveRoot(localRoot, "test", "root");
+    const divergedBody = serializeIndex(indexFile("openai", "m2", { daemon: { path: "p", vector: [7] } }));
+    // The daemon indexed after the early census: disk now diverges from the
+    // shared base, while the incoming record still equals the base.
+    await writeFile(path.join(localRoot, "state/embeddings/shard-0000.json"), divergedBody);
+    const incomingBuffers = new Map<string, Buffer>();
+    incomingBuffers.set(trueShardRel("neu"), Buffer.from(serializeIndex(indexFile("openai", "m2", { neu: { path: "p", vector: [1] } }))));
+    const result = await applyEmbeddingGenerationTransaction({
+      root: safeRoot,
+      shardDirRel: "state/embeddings",
+      incomingShardPaths: [trueShardRel("neu"), "state/embeddings/shard-0000.json"],
+      incomingMarker: null,
+      incomingMarkerPresent: false,
+      incomingShardStates: new Map([
+        [
+          "state/embeddings/shard-0000.json",
+          { path: "state/embeddings/shard-0000.json", sha256: createHash("sha256").update(baseBody).digest("hex"), bytes: Buffer.byteLength(baseBody), mtimeMs: 1 },
+        ],
+      ]),
+      incomingBuffers,
+      baseStates: new Map([["state/embeddings/shard-0000.json", { sha256: createHash("sha256").update(baseBody).digest("hex") }]]),
+      io: {},
+      now: 1,
+    });
+    assert.equal(result.deferredLocalDivergence, true, "the generation must defer, not publish over local work");
+    assert.equal(result.upserted, 0);
+    assert.ok(result.handledPaths.has(trueShardRel("neu")));
+    assert.ok(result.handledPaths.has("state/embeddings/shard-0000.json"));
+    assert.equal(
+      await readUtf8(localRoot, "state/embeddings/shard-0000.json"),
+      divergedBody,
+      "the daemon's diverged bytes must be preserved",
+    );
+    const stateDir = await readdir(path.join(localRoot, "state"));
+    assert.equal(
+      stateDir.some((name) => name.startsWith("embeddings.staging.tmp-")),
+      false,
+    );
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Codex P1 round 2 — fresh under-lock census (contentful incoming, added
+// shards, whole-generation deletion)
+// ---------------------------------------------------------------------------
+
+test("contentful incoming over a stale census defers instead of discarding the daemon mutation", async () => {
+  const localRoot = await tempDir("remnic-3148-contentful-stale");
+  try {
+    const baseBody = serializeIndex(indexFile("openai", "m2", { base: { path: "p", vector: [0] } }));
+    await write(localRoot, "state/embeddings/shard-0000.json", baseBody);
+    const safeRoot: SafeArchiveRoot = await prepareSafeArchiveRoot(localRoot, "test", "root");
+    // The daemon indexed AFTER the census: disk diverges from the shared
+    // base, while the incoming record STILL equals the base (contentful).
+    const divergedBody = serializeIndex(indexFile("openai", "m2", { daemon: { path: "p", vector: [7] } }));
+    await writeFile(path.join(localRoot, "state/embeddings/shard-0000.json"), divergedBody);
+    const incomingBuffers = new Map<string, Buffer>();
+    incomingBuffers.set(
+      "state/embeddings/shard-0000.json",
+      Buffer.from(baseBody),
+    );
+    incomingBuffers.set(
+      "state/embeddings/shard-0001.json",
+      Buffer.from(serializeIndex(indexFile("openai", "m2", { fresh: { path: "p", vector: [1] } }))),
+    );
+    const result = await applyEmbeddingGenerationTransaction({
+      root: safeRoot,
+      shardDirRel: "state/embeddings",
+      incomingShardPaths: ["state/embeddings/shard-0000.json", "state/embeddings/shard-0001.json"],
+      incomingMarker: null,
+      incomingMarkerPresent: false,
+      incomingShardStates: new Map([
+        ["state/embeddings/shard-0000.json", { path: "state/embeddings/shard-0000.json", sha256: createHash("sha256").update(baseBody).digest("hex"), bytes: Buffer.byteLength(baseBody), mtimeMs: 1 }],
+        ["state/embeddings/shard-0001.json", { path: "state/embeddings/shard-0001.json", sha256: createHash("sha256").update(incomingBuffers.get("state/embeddings/shard-0001.json")!).digest("hex"), bytes: incomingBuffers.get("state/embeddings/shard-0001.json")!.byteLength, mtimeMs: 1 }],
+      ]),
+      incomingBuffers,
+      baseStates: new Map([["state/embeddings/shard-0000.json", { sha256: createHash("sha256").update(baseBody).digest("hex") }]]),
+      io: {},
+      now: 1,
+    });
+    assert.equal(result.deferredLocalDivergence, true, "contentful incoming must defer on under-lock divergence too");
+    assert.equal(result.upserted, 0);
+    assert.equal(
+      await readUtf8(localRoot, "state/embeddings/shard-0000.json"),
+      divergedBody,
+      "the daemon's diverged bytes must be preserved",
+    );
+    assert.equal(await existsQuiet(localRoot, "state/embeddings/shard-0001.json"), false, "nothing may be published for a deferred generation");
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+test("a daemon-only added shard defers the whole generation under the lock", async () => {
+  const localRoot = await tempDir("remnic-3148-added-shard");
+  try {
+    const baseBody = serializeIndex(indexFile("openai", "m2", { base: { path: "p", vector: [0] } }));
+    await write(localRoot, "state/embeddings/shard-0000.json", baseBody);
+    const addedBody = serializeIndex(indexFile("openai", "m2", { added: { path: "p", vector: [8] } }));
+    await write(localRoot, "state/embeddings/shard-0050.json", addedBody);
+    const safeRoot: SafeArchiveRoot = await prepareSafeArchiveRoot(localRoot, "test", "root");
+    const incomingBuffers = new Map<string, Buffer>();
+    incomingBuffers.set(
+      "state/embeddings/shard-0000.json",
+      Buffer.from(serializeIndex(indexFile("openai", "m2", { moved: { path: "p", vector: [3] } }))),
+    );
+    const result = await applyEmbeddingGenerationTransaction({
+      root: safeRoot,
+      shardDirRel: "state/embeddings",
+      incomingShardPaths: ["state/embeddings/shard-0000.json"],
+      incomingMarker: null,
+      incomingMarkerPresent: false,
+      incomingShardStates: new Map(),
+      incomingBuffers,
+      baseStates: new Map([["state/embeddings/shard-0000.json", { sha256: createHash("sha256").update(baseBody).digest("hex") }]]),
+      io: {},
+      now: 1,
+    });
+    assert.equal(result.deferredLocalDivergence, true, "a locally added shard must defer the generation");
+    assert.equal(
+      await readUtf8(localRoot, "state/embeddings/shard-0050.json"),
+      addedBody,
+      "the daemon-added shard must survive the deferred swap",
+    );
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+test("a whole remote deletion defers when the live generation diverged from the base", async () => {
+  const localRoot = await tempDir("remnic-3148-removal-divergence");
+  try {
+    const base0 = serializeIndex(indexFile("openai", "m2", { base0: { path: "p", vector: [0] } }));
+    const base1 = serializeIndex(indexFile("openai", "m2", { base1: { path: "p", vector: [1] } }));
+    await write(localRoot, "state/embeddings/shard-0000.json", base0);
+    await write(localRoot, "state/embeddings/shard-0001.json", base1);
+    const safeRoot: SafeArchiveRoot = await prepareSafeArchiveRoot(localRoot, "test", "root");
+    // The daemon re-indexed shard-0000 after the census.
+    const diverged0 = serializeIndex(indexFile("openai", "m2", { daemon0: { path: "p", vector: [7] } }));
+    await writeFile(path.join(localRoot, "state/embeddings/shard-0000.json"), diverged0);
+    const result = await applyEmbeddingGenerationRemoval({
+      root: safeRoot,
+      shardDirRel: "state/embeddings",
+      io: { deleteFile: async () => {} },
+      deletionMtimeByPath: new Map([
+        ["state/embeddings/shard-0000.json", 2],
+        ["state/embeddings/shard-0001.json", 2],
+      ]),
+      baseStates: new Map([
+        ["state/embeddings/shard-0000.json", { sha256: createHash("sha256").update(base0).digest("hex") }],
+        ["state/embeddings/shard-0001.json", { sha256: createHash("sha256").update(base1).digest("hex") }],
+      ]),
+      now: 1,
+    });
+    assert.equal(result.deferredLocalDivergence, true, "the removal must defer on under-lock divergence");
+    assert.equal(result.deleted, 0);
+    assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0000.json"), diverged0);
+    assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0001.json"), base1);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+test("encrypted generation removal compares plaintext census against the shared base", async () => {
+  const root = await tempDir("remnic-3148-encrypted-removal");
+  try {
+    const storage = new StorageManager(root);
+    await storage.setSecureStoreKeyAndWait(randomBytes(32), true);
+    const relPath = "state/embeddings/shard-0000.json";
+    const filePath = path.join(root, relPath);
+    const content = Buffer.from(serializeIndex(indexFile("openai", "m", {})));
+    await storage.writeOfflineSyncStagingFile(filePath, content, { aadFilePath: filePath });
+    assert.notDeepEqual(await readFile(filePath), content, "fixture is encrypted at rest");
+    const sha256 = createHash("sha256").update(content).digest("hex");
+    const snapshot: OfflineSyncSnapshot = {
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT, schemaVersion: 1,
+      createdAt: "2026-09-27T00:00:00.000Z", sourceId: "remote",
+      includeTranscripts: true, files: [],
+      deletions: [{ path: relPath, mtimeMs: 1 }],
+    };
+    const result = await applyOfflineSyncSnapshot({
+      root, snapshot, baseFiles: [{ path: relPath, sha256, bytes: content.length, mtimeMs: 1 }],
+      readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+      deleteFile: async () => {},
+    });
+    assert.equal(result.deleted, 1, "unchanged encrypted generation should be removed");
+    assert.deepEqual(await readdir(path.join(root, "state/embeddings")), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

@@ -77,6 +77,13 @@ const DEFAULT_OPENAI_MODEL = "text-embedding-3-small";
  * The class name is kept for backward compatibility — `EmbeddingTimeoutError`
  * now signals "lookup backend unavailable" rather than strictly "timed out".
  */
+import {
+  assertEmbeddingGenerationLockHeld,
+  embeddingGenerationLockPath,
+  withEmbeddingGenerationLock,
+  type EmbeddingGenerationLockSection,
+} from "./embedding-generation-lock.js";
+
 export class EmbeddingTimeoutError extends Error {
   override readonly name = "EmbeddingTimeoutError" as const;
   constructor(message: string) {
@@ -171,8 +178,15 @@ export class EmbeddingFallback {
   private loadedFromDisk = false;
   private mutationQueue: Promise<void> = Promise.resolve();
 
+  /** The canonical state dir scoping this fallback's generation mutation lock. */
+  private readonly generationStateDir: string;
+  private readonly generationLockPath: string;
+  private lockSection: EmbeddingGenerationLockSection | null = null;
+
   constructor(private readonly config: PluginConfig, storeIo?: EmbeddingIndexStoreIo) {
     const stateDir = path.join(config.memoryDir, "state");
+    this.generationStateDir = stateDir;
+    this.generationLockPath = embeddingGenerationLockPath(stateDir);
     this.store = new EmbeddingIndexFileStore(
       path.join(stateDir, "embeddings.json"),
       path.join(stateDir, "embeddings"),
@@ -436,27 +450,38 @@ export class EmbeddingFallback {
   private enqueueIndexMutation<T>(mutation: () => Promise<T>): Promise<T> {
     const run = this.mutationQueue
       .catch(() => undefined)
-      .then(async () => {
-        // Recover an interrupted replacement BEFORE the mutation's identity
-        // probes and existence checks: a deletion no-op must not skip
-        // persistence while the published generation sits in the rename-gap
-        // backup, and insertions must load the restored vectors rather than
-        // a fresh empty index (issue #3148, codex round 3).
-        let recovered = false;
-        try {
-          recovered = await this.store.recoverIfInterrupted();
-        } catch (err) {
-          // Record the recovery failure durably BEFORE rejecting the
-          // mutation: the write-outcome try below is never reached.
-          await this.store.recordIndexWriteOutcome(err).catch(() => undefined);
-          throw err;
-        }
-        if (recovered) {
-          this.loaded = null;
-          this.loadedFromDisk = false;
-        }
-        return mutation();
-      });
+      .then(() =>
+        withEmbeddingGenerationLock(this.generationStateDir, async (section) => {
+          this.lockSection = section;
+          try {
+            // A peer process may have persisted while this process did not
+            // hold the generation lock: drop any cached index so the
+            // mutation loads the real disk state (codex P1).
+            this.loaded = null;
+            this.loadedFromDisk = false;
+            // Recover an interrupted replacement BEFORE the mutation's identity
+            // probes and existence checks: a deletion no-op must not skip
+            // persistence while the published generation sits in the rename-gap
+            // backup, and insertions must load the restored vectors rather than
+            // a fresh empty index (issue #3148, codex round 3).
+            let recovered = false;
+            try {
+              recovered = await this.store.recoverIfInterrupted(this.generationFence());
+            } catch (err) {
+              // Record the recovery failure durably BEFORE rejecting the
+              // mutation: the write-outcome try below is never reached.
+              await this.store.recordIndexWriteOutcome(err).catch(() => undefined);
+              throw err;
+            }
+            if (recovered) {
+              this.loaded = null;
+              this.loadedFromDisk = false;
+            }
+            return await mutation();
+          } finally {
+            this.lockSection = null;
+          }
+        }));
     this.mutationQueue = run.then(
       () => undefined,
       () => undefined,
@@ -739,6 +764,24 @@ export class EmbeddingFallback {
    * propagate it and fail closed. This.loaded is only ever assigned a fully
    * validated generation.
    */
+  /**
+   * A fence the store calls immediately before destructive writes: reasserts
+   * THIS section's lock ownership after potentially long serialization.
+   * Fail closed when no section is held — persisting unsynchronized would
+   * reintroduce the lost-update race.
+   */
+  private generationFence(): () => Promise<void> {
+    const section = this.lockSection;
+    if (!section) {
+      return async () => {
+        throw new EmbeddingIndexStorageError(
+          "embedding index mutation attempted outside the generation lock; refusing to publish",
+        );
+      };
+    }
+    return () => assertEmbeddingGenerationLockHeld(this.generationLockPath, section);
+  }
+
   private async loadIndex(provider: ProviderConfig): Promise<EmbeddingIndexFile> {
     if (this.loaded && this.loaded.provider === provider.type && this.loaded.model === provider.model) {
       return this.loaded;
@@ -819,7 +862,7 @@ export class EmbeddingFallback {
     opts: { touchedIds?: readonly string[]; memoryId?: string } = {},
   ): Promise<void> {
     try {
-      await this.store.persist(index, opts);
+      await this.store.persist(index, { ...opts, fence: this.generationFence() });
     } catch (err) {
       this.loaded = null;
       this.loadedFromDisk = false;

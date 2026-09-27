@@ -18,6 +18,7 @@ import { constants as bufferConstants } from "node:buffer";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { log } from "./logger.js";
 import { readEnvVar } from "./runtime/env.js";
+import type { EmbeddingGenerationFence } from "./embedding-generation-lock.js";
 
 export type EmbeddingProviderType = "openai" | "local" | "host";
 
@@ -461,7 +462,7 @@ export class EmbeddingIndexFileStore {
    * (published directory absent); callers must invalidate any cached index
    * view when this returns true.
    */
-  async recoverIfInterrupted(): Promise<boolean> {
+  async recoverIfInterrupted(fence?: EmbeddingGenerationFence): Promise<boolean> {
     // Only the rename gap (published directory absent) is recoverable. When
     // the directory is present - including after a crash that followed a
     // successful publish - the generation on disk is already authoritative
@@ -479,6 +480,8 @@ export class EmbeddingIndexFileStore {
     const backupPath = replacementBackupPath(this.shardDir);
     if (!(await this.replacementBackupExists())) return false;
     await this.assertBackupNotSymlink(backupPath);
+    // The rollback rename is destructive: reassert lock ownership first.
+    await fence?.();
     await rename(backupPath, this.shardDir);
     log.warn(
       `embedding index: recovered interrupted replacement; former generation restored from ${backupPath}`,
@@ -646,7 +649,12 @@ export class EmbeddingIndexFileStore {
    */
   async persist(
     index: EmbeddingIndexFile,
-    opts: { touchedIds?: readonly string[]; memoryId?: string } = {},
+    opts: {
+      touchedIds?: readonly string[];
+      memoryId?: string;
+      /** Reasserts mutation-lock ownership immediately before each destructive write (after serialization). */
+      fence?: EmbeddingGenerationFence;
+    } = {},
   ): Promise<void> {
     const stateDir = path.dirname(this.indexPath);
     await mkdir(stateDir, { recursive: true });
@@ -668,11 +676,19 @@ export class EmbeddingIndexFileStore {
       // former identity's shards in place — a mixed generation that every
       // later load rejects (codex P1, PR #3148).
       const diskIdentity = await this.identityFromDisk();
+      if (groups.size === 0) {
+        // An empty directory has no transport-visible deletion evidence.
+        // Publish a valid empty shard so a peer without a shared base also
+        // replaces its stale generation rather than preserving old vectors.
+        groups.set(0, {});
+        await this.publishReplacementGeneration(index, groups, limit, opts.fence);
+        return;
+      }
       const identityChanged =
         diskIdentity !== null &&
         (diskIdentity.provider !== index.provider || diskIdentity.model !== index.model);
       if (identityChanged) {
-        await this.publishReplacementGeneration(index, groups, limit);
+        await this.publishReplacementGeneration(index, groups, limit, opts.fence);
         return;
       }
       const dirtyShards = opts.touchedIds?.length
@@ -687,6 +703,9 @@ export class EmbeddingIndexFileStore {
           shardIndex,
           body: serializeEmbeddingShard(index, shardIndex, groups.get(shardIndex)!, limit),
         }));
+      // Serialization is done: reassert lock ownership immediately before
+      // the destructive live-generation writes.
+      await opts.fence?.();
       for (const payload of payloads) {
         await this.writeAtomicFile(
           path.join(this.shardDir, shardFileName(payload.shardIndex)),
@@ -712,6 +731,9 @@ export class EmbeddingIndexFileStore {
     }
     const limit = resolveIndexFileCharLimit();
     if (whole !== null && whole.length <= limit) {
+      // Serialized above: reassert lock ownership immediately before the
+      // destructive atomic write.
+      await opts.fence?.();
       await this.writeAtomicFile(this.indexPath, whole);
       return;
     }
@@ -727,7 +749,7 @@ export class EmbeddingIndexFileStore {
     try {
       await this.stageShardSet(stagingDir, index, groups, limit);
       // Atomic publish: the directory appearing IS the layout marker.
-      await this.publishSwappedGeneration(stagingDir);
+      await this.publishSwappedGeneration(stagingDir, opts.fence);
     } catch (err) {
       await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
       throw err;
@@ -750,6 +772,7 @@ export class EmbeddingIndexFileStore {
     index: EmbeddingIndexFile,
     groups: Map<number, Record<string, EmbeddingIndexEntry>>,
     limit: number,
+    fence?: EmbeddingGenerationFence,
   ): Promise<void> {
     const stateDir = path.dirname(this.indexPath);
     const stagingDir = path.join(
@@ -759,7 +782,7 @@ export class EmbeddingIndexFileStore {
     await mkdir(stagingDir, { recursive: true });
     try {
       await this.stageShardSet(stagingDir, index, groups, limit);
-      await this.publishSwappedGeneration(stagingDir);
+      await this.publishSwappedGeneration(stagingDir, fence);
     } catch (err) {
       await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
       throw err;
@@ -778,7 +801,6 @@ export class EmbeddingIndexFileStore {
     limit: number,
   ): Promise<void> {
     const payloads = [...groups]
-      .filter(([, entries]) => Object.keys(entries).length > 0)
       .map(([shardIndex, entries]) => ({
         shardIndex,
         body: serializeEmbeddingShard(index, shardIndex, entries, limit),
@@ -803,7 +825,7 @@ export class EmbeddingIndexFileStore {
    * stays the authoritative one-way layout marker). The fixed backup is
    * symlink-checked first (round 5).
    */
-  async removePublishedGeneration(): Promise<void> {
+  async removePublishedGeneration(fence?: EmbeddingGenerationFence): Promise<void> {
     const backupPath = replacementBackupPath(this.shardDir);
     await this.assertBackupNotSymlink(backupPath);
     await rm(backupPath, { recursive: true, force: true });
@@ -820,7 +842,7 @@ export class EmbeddingIndexFileStore {
       path.join(path.dirname(this.shardDir), "embeddings.staging.tmp-empty-"),
     );
     try {
-      await this.publishSwappedGeneration(emptyStaging);
+      await this.publishSwappedGeneration(emptyStaging, fence);
     } catch (err) {
       await rm(emptyStaging, { recursive: true, force: true }).catch(() => undefined);
       throw err;
@@ -838,13 +860,18 @@ export class EmbeddingIndexFileStore {
    * generation transaction (issue #3148, round 4) so there is exactly one
    * swap state machine. Staging-dir cleanup stays with the caller.
    */
-  async publishSwappedGeneration(stagingDir: string): Promise<void> {
+  async publishSwappedGeneration(stagingDir: string, fence?: EmbeddingGenerationFence): Promise<void> {
     // The replacement is published: the backup is obsolete disk. A cleanup
     // failure is non-fatal (the next replacement removes it) but must stay
     // visible.
     const backupPath = replacementBackupPath(this.shardDir);
     await this.assertBackupNotSymlink(backupPath);
     await rm(backupPath, { recursive: true, force: true });
+    // Reassert mutation-lock ownership immediately before the destructive
+    // renames: serialization/staging may have blocked long enough for a
+    // peer to stale-break the lock, and publishing now would clobber the
+    // peer's write.
+    await fence?.();
     let demoted = false;
     try {
       await stat(this.shardDir);
