@@ -1709,6 +1709,7 @@ export async function applyOfflineSyncSnapshot(options: {
       root,
       shardDirRel: shardDir,
       io: { deleteFile: options.deleteFile },
+      deletionMtimeByPath,
       now: Date.now(),
     }));
   }
