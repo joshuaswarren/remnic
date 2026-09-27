@@ -1140,3 +1140,122 @@ test("a failed persistence invalidates the cache and the retry actually reaches 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Codex PRRT_kwDORJXyws6mZ72p / Z72r / Z8qS — recall must load one COMPLETE
+// generation under the mutation lock; symlinked members fail closed; a lock
+// acquisition failure records the existing durable write diagnostic once.
+// ---------------------------------------------------------------------------
+
+test("recall never serves entries from a generation swapped in mid-load", async () => {
+  const memoryDir = await tmpMemoryDir("remnic-emb3146-recall-swap-");
+  const unregister = registerHostEmbeddingProvider(memoryDir, HOST_PROVIDER_STUB);
+  const cleanup: Array<() => void> = [];
+  try {
+    // Generation A: two shards, two searchable entries with distinctive ids.
+    const idA = ["mem-a1", "mem-a2"];
+    const shardDir = path.join(memoryDir, SHARD_DIR_REL);
+    await mkdir(shardDir, { recursive: true });
+    for (const id of idA) {
+      await writeFile(
+        path.join(shardDir, shardName(id)),
+        JSON.stringify(buildIndex({ [id]: entryOf(3, `a/${id}.md`) })),
+        "utf-8",
+      );
+    }
+    // The A shard read SECOND by the loader (sorted names).
+    const readOrder = [shardName(idA[0]), shardName(idA[1])].sort();
+    const secondShard = readOrder[1];
+    // A peer mutation whose entry lands in THAT shard (overlap => the old
+    // unsynchronized loader would serve a mixed generation).
+    let swapId = "";
+    for (let k = 0; k < 5000; k += 1) {
+      const candidate = `swap-b-${k}`;
+      if (shardName(candidate) === secondShard) {
+        swapId = candidate;
+        break;
+      }
+    }
+    assert.ok(swapId, "fixture assumption: an overlapping swap id must exist");
+
+    let swapPublished = false;
+    let sawSecondShardRead = false;
+    const storeIo = {
+      readUtf8: async (filePath: string): Promise<string> => {
+        if (filePath.endsWith(secondShard) && !sawSecondShardRead) {
+          sawSecondShardRead = true;
+          // Launch the peer mutation, then hold THIS read until the mutation
+          // PUBLISHED (pre-fix) or its bounded wait expires (post-fix: the
+          // recall load holds the lock, so the mutation cannot publish
+          // mid-read and the capture stays one complete generation).
+          cleanup.push(installEmbedFetch([[0.4, 0.4]]));
+          const mutation = fallbackIndexFile();
+          const deadline = Date.now() + 1500;
+          while (!swapPublished && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+          void mutation;
+          return await readFile(filePath, "utf-8");
+        }
+        return await readFile(filePath, "utf-8");
+      },
+      writeUtf8: async (filePath: string, contents: string) => {
+        await writeFile(filePath, contents, "utf-8");
+      },
+    };
+    function fallbackIndexFile(): Promise<void> {
+      const fallback = new EmbeddingFallback(stubConfig(memoryDir), storeIo);
+      const done = fallback
+        .indexFile(swapId, "peer mutation content", `b/${swapId}.md`)
+        .then(() => {
+          swapPublished = true;
+        });
+      cleanup.push(() => {
+        done.catch(() => undefined);
+      });
+      return done;
+    }
+
+    const fallback = new EmbeddingFallback(stubConfig(memoryDir), storeIo);
+    cleanup.push(installEmbedFetch([[0.1, 0.2, 0.3]]));
+    const results = await fallback.search("needle", 20);
+
+    const ids = results.map((r) => r.id).sort();
+    assert.deepEqual(ids, ["mem-a1", "mem-a2"], "recall must serve exactly the generation it loaded, never a mix");
+    assert.equal(sawSecondShardRead, true, "fixture assumption: the second shard must have been read");
+  } finally {
+    for (const fn of cleanup.reverse()) fn();
+    unregister();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a mutation failing to acquire the generation lock records the existing durable diagnostic once", async () => {
+  const memoryDir = await tmpMemoryDir("remnic-emb3146-lock-diag-");
+  try {
+    const shardDir = path.join(memoryDir, SHARD_DIR_REL);
+    await mkdir(shardDir, { recursive: true });
+    await writeFile(
+      path.join(shardDir, shardName("mem-diag")),
+      JSON.stringify(buildIndex({ "mem-diag": entryOf(2, "facts/diag.md") })),
+      "utf-8",
+    );
+    // Simulate an immediate filesystem acquisition failure: the locks dir
+    // denies creating the lock file (same pattern as the chmod fixtures).
+    const locksDir = path.join(memoryDir, "state", ".offline-sync", "locks");
+    await mkdir(locksDir, { recursive: true });
+    if (!(await chmodDeniesWrites(locksDir, 0o500))) {
+      return; // root/container: permission bits ignored — nothing to prove
+    }
+    const fallback = new EmbeddingFallback(stubConfig(memoryDir));
+    await assert.rejects(() => fallback.removeFromIndex("mem-diag"));
+    const status = JSON.parse(
+      await readFile(path.join(memoryDir, STATUS_REL), "utf-8"),
+    ) as { failureCount: number; lastWriteFailure?: { message: string } };
+    assert.equal(status.failureCount, 1, "exactly one durable diagnostic per lock failure");
+    assert.match(status.lastWriteFailure?.message ?? "", /mutation lock/);
+  } finally {
+    await chmod(path.join(memoryDir, "state", ".offline-sync", "locks"), 0o755).catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

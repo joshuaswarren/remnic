@@ -15,7 +15,7 @@
  */
 import path from "node:path";
 import { constants as bufferConstants } from "node:buffer";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { log } from "./logger.js";
 import { readEnvVar } from "./runtime/env.js";
 import type { EmbeddingGenerationFence } from "./embedding-generation-lock.js";
@@ -403,9 +403,18 @@ export class EmbeddingIndexFileStore {
     // persist() — a write — so read paths never race an in-flight
     // replacement with a recovery rename (issue #3148 review).
     try {
-      await stat(this.shardDir);
+      // lstat, NOT stat: a symlinked generation directory must be rejected
+      // outright — following it would read or write OUTSIDE the state
+      // directory through the link (codex PRRT_kwDORJXyws6mZ72r).
+      const info = await lstat(this.shardDir);
+      if (info.isSymbolicLink()) {
+        throw new EmbeddingIndexStorageError(
+          `embedding index shard directory is a symlink; refusing to read or write through it: ${this.shardDir}`,
+        );
+      }
       return "sharded";
     } catch (err) {
+      if (err instanceof EmbeddingIndexStorageError) throw err;
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
         // The pointer exists but cannot be stat'ed — fail towards the
         // published generation so its readers surface the I/O error.
@@ -587,7 +596,43 @@ export class EmbeddingIndexFileStore {
    * and is reported through the returned outcome (mutation paths fail
    * closed on it; read-only paths fail open and record the reason).
    */
+  /**
+   * Read/mutation boundary for any generation member or the legacy marker
+   * (codex PRRT_kwDORJXyws6mZ72r): a symlinked member is rejected outright
+   * and its real target must stay inside the canonical state directory —
+   * following a planted link would read or write outside the memory root.
+   * Runs BEFORE the secure IO so storage-backed reads are covered too.
+   */
+  private async assertGenerationFileNotSymlinked(filePath: string): Promise<void> {
+    const info = await lstat(filePath).catch((err) => {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw new EmbeddingIndexStorageError(
+        `cannot lstat embedding index file ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+    const stateDir = path.dirname(this.shardDir);
+    // Containment must be checked even when the member itself is a regular
+    // file: a SYMLINKED GENERATION DIRECTORY lets reads through to whatever
+    // path the link resolves to — a regular file in a linked dir is still
+    // outside the memory root and must be rejected.
+    const real = await realpath(filePath).catch(() => null);
+    if (real) {
+      const scope = await realpath(stateDir).catch(() => stateDir);
+      const rel = path.relative(scope, real);
+      if (rel.startsWith("..") || path.isAbsolute(rel)) {
+        throw new EmbeddingIndexStorageError(
+          `embedding index file escapes the state directory via symlink; refusing: ${filePath} -> ${real}`,
+        );
+      }
+    }
+    if (!info || !info.isSymbolicLink()) return;
+    throw new EmbeddingIndexStorageError(
+      `embedding index file is a symlink; refusing to read or write through it: ${filePath}`,
+    );
+  }
+
   async readFileAt(filePath: string): Promise<ManagedIndexRead> {
+    await this.assertGenerationFileNotSymlinked(filePath);
     const hardLimit = resolveIndexHardReadCharLimit();
     let size = 0;
     try {
@@ -866,11 +911,14 @@ export class EmbeddingIndexFileStore {
     // visible.
     const backupPath = replacementBackupPath(this.shardDir);
     await this.assertBackupNotSymlink(backupPath);
+    // Cheap ownership check before the destructive backup cleanup: a peer
+    // stale-break would otherwise see the backup vanish under it before we
+    // even reach the live renames (Kilo PRRT_kwDORJXyws6mZ8i5).
+    await fence?.();
     await rm(backupPath, { recursive: true, force: true });
-    // Reassert mutation-lock ownership immediately before the destructive
-    // renames: serialization/staging may have blocked long enough for a
-    // peer to stale-break the lock, and publishing now would clobber the
-    // peer's write.
+    // Second ownership check immediately before the live renames: any
+    // delay between the cleanup and the rename still allows a stale-break,
+    // and publishing now would clobber the peer's write.
     await fence?.();
     let demoted = false;
     try {

@@ -80,6 +80,7 @@ const DEFAULT_OPENAI_MODEL = "text-embedding-3-small";
 import {
   assertEmbeddingGenerationLockHeld,
   embeddingGenerationLockPath,
+  EmbeddingGenerationLockUnavailableError,
   withEmbeddingGenerationLock,
   type EmbeddingGenerationLockSection,
 } from "./embedding-generation-lock.js";
@@ -298,6 +299,8 @@ export class EmbeddingFallback {
     try {
       const diskIdentity = await this.readIndexIdentityFromDisk();
       if (diskIdentity && !sameIndexIdentity(diskIdentity, queryResult.provider)) {
+        // The provider swap needs a NETWORK embed: run it OUTSIDE the
+        // generation lock, then re-verify the identity under the lock below.
         const diskProvider = await this.resolveFallbackProviderForIndexIdentity(diskIdentity);
         if (diskProvider) {
           const diskQueryResult = await this.embedForSearch(query, diskProvider, options);
@@ -317,7 +320,24 @@ export class EmbeddingFallback {
         }
       }
 
-      const index = await this.loadIndex(active.provider);
+      // Cold load only (cache miss): the complete shard enumeration + read
+      // happens under the generation mutation lock so a concurrent swap can
+      // never leave a cached SUBSET of the generation (codex
+      // PRRT_kwDORJXyws6mZ72p). Warm cached searches stay lock-free.
+      let index: EmbeddingIndexFile;
+      try {
+        index = await this.loadIndexUnderGenerationLock(active.provider);
+      } catch (err) {
+        if (err instanceof EmbeddingGenerationLockUnavailableError) {
+          // Existing read diagnostic, recorded once per failed load; recall
+          // itself fails open.
+          await this.store.recordIndexStatusForLoad(
+            `generation mutation lock unavailable: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          return [];
+        }
+        throw err;
+      }
       const ids = Object.keys(index.entries);
       if (ids.length === 0) return [];
 
@@ -375,7 +395,7 @@ export class EmbeddingFallback {
     });
     if (!result) return;
 
-    await this.enqueueIndexMutation(async () => {
+    await this.enqueueIndexMutation(memoryId, async () => {
       try {
         const existing = await this.readIndexIdentityFromDisk();
         if (
@@ -407,7 +427,7 @@ export class EmbeddingFallback {
     const provider = await this.resolveProvider();
     if (!provider) return;
 
-    await this.enqueueIndexMutation(async () => {
+    await this.enqueueIndexMutation(memoryId, async () => {
       const providers = [provider];
       const diskIdentity = await this.readIndexIdentityFromDisk();
       if (
@@ -447,7 +467,7 @@ export class EmbeddingFallback {
     });
   }
 
-  private enqueueIndexMutation<T>(mutation: () => Promise<T>): Promise<T> {
+  private enqueueIndexMutation<T>(memoryId: string | undefined, mutation: () => Promise<T>): Promise<T> {
     const run = this.mutationQueue
       .catch(() => undefined)
       .then(() =>
@@ -481,6 +501,15 @@ export class EmbeddingFallback {
           } finally {
             this.lockSection = null;
           }
+        }).catch(async (err) => {
+          // A lock ACQUISITION failure never reaches the mutation closure's
+          // own write-outcome recording. Route it through the existing
+          // durable diagnostic exactly once (codex PRRT_kwDORJXyws6mZ8qS);
+          // in-lock failures were already recorded by the closure.
+          if (err instanceof EmbeddingGenerationLockUnavailableError) {
+            await this.store.recordIndexWriteOutcome(err, memoryId).catch(() => undefined);
+          }
+          throw err;
         }));
     this.mutationQueue = run.then(
       () => undefined,
@@ -780,6 +809,34 @@ export class EmbeddingFallback {
       };
     }
     return () => assertEmbeddingGenerationLockHeld(this.generationLockPath, section);
+  }
+
+  /**
+   * Cache-warm path: a normal search serves the in-memory index WITHOUT the
+   * lock (pre-existing staleness semantics: a peer swap between searches is
+   * refreshed by the next cold load). On a cache miss the COMPLETE load runs
+   * under the generation mutation lock so the enumeration + shard reads see
+   * exactly one generation. The identity is re-checked under the lock on the
+   * cold path; the caller has already performed any provider-swap embed
+   * outside the lock.
+   */
+  private async loadIndexUnderGenerationLock(provider: ProviderConfig): Promise<EmbeddingIndexFile> {
+    if (this.loaded && this.loadedFromDisk) return this.loaded;
+    return await withEmbeddingGenerationLock(this.generationStateDir, async () => {
+      // Another in-process consumer may have warmed the cache while this
+      // call waited on the lock.
+      if (this.loaded && this.loadedFromDisk) return this.loaded;
+      // Re-check the on-disk identity UNDER the lock: a peer swap during the
+      // caller's embed means the cold load must fail open, never serve a
+      // mixed generation (codex PRRT_kwDORJXyws6mZ72p).
+      const diskIdentity = await this.store.identityFromDisk();
+      if (diskIdentity && !sameIndexIdentity(diskIdentity, provider)) {
+        throw new EmbeddingIndexStorageError(
+          `embedding index identity swapped to ${diskIdentity.provider}/${diskIdentity.model} during the cold load; failing open`,
+        );
+      }
+      return await this.loadIndex(provider);
+    });
   }
 
   private async loadIndex(provider: ProviderConfig): Promise<EmbeddingIndexFile> {

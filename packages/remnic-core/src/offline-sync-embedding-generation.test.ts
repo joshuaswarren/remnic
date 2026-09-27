@@ -1992,16 +1992,160 @@ test("encrypted generation removal compares plaintext census against the shared 
     const snapshot: OfflineSyncSnapshot = {
       format: OFFLINE_SYNC_SNAPSHOT_FORMAT, schemaVersion: 1,
       createdAt: "2026-09-27T00:00:00.000Z", sourceId: "remote",
-      includeTranscripts: true, files: [],
+      includeTranscripts: true,
+      files: [{ path: "facts/other.md", sha256: createHash("sha256").update("fact").digest("hex"), bytes: 4, mtimeMs: 1, contentBase64: Buffer.from("fact").toString("base64") }],
       deletions: [{ path: relPath, mtimeMs: 1 }],
     };
+    await write(root, "facts/other.md", "fact");
     const result = await applyOfflineSyncSnapshot({
-      root, snapshot, baseFiles: [{ path: relPath, sha256, bytes: content.length, mtimeMs: 1 }],
+      root, snapshot, baseFiles: [
+        { path: relPath, sha256, bytes: content.length, mtimeMs: 1 },
+        { path: "facts/other.md", sha256: createHash("sha256").update("fact").digest("hex"), bytes: 4, mtimeMs: 1 },
+      ],
       readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
       deleteFile: async () => {},
     });
     assert.equal(result.deleted, 1, "unchanged encrypted generation should be removed");
     assert.deepEqual(await readdir(path.join(root, "state/embeddings")), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("late whole-generation deferral retains a locally deleted base-only shard", async () => {
+  const root = await tempDir("remnic-3148-late-base-only");
+  try {
+    const member0 = "state/embeddings/shard-0000.json";
+    const member1 = "state/embeddings/shard-0001.json";
+    const body = serializeIndex(indexFile("openai", "m", {}));
+    await write(root, member0, body);
+    const baseFiles = [member0, member1].map((member) => ({
+      path: member, sha256: createHash("sha256").update(body).digest("hex"),
+      bytes: Buffer.byteLength(body), mtimeMs: 1,
+    }));
+    const snapshot: OfflineSyncSnapshot = {
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT, schemaVersion: 1,
+      createdAt: "2026-09-27T00:00:00.000Z", sourceId: "remote",
+      includeTranscripts: true,
+      files: [{ ...baseFiles[0], contentBase64: Buffer.from(body).toString("base64") }],
+    };
+    // The initial census still saw both shards, but a daemon deleted member1
+    // before the transaction took the generation lock.
+    const result = await applyOfflineSyncSnapshot({ root, snapshot, baseFiles, currentFiles: baseFiles });
+    assert.ok(result.nextBaseFiles.some((file) => file.path === member1), "the deferred base-only member must not disappear from the shared base");
+    assert.equal(result.deleted, 0);
+    assert.equal(await readUtf8(root, member0), body);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("streamed omission header fails closed when an excluded shard appears after header construction", async () => {
+  const root = await tempDir("remnic-3148-omission-race");
+  try {
+    await write(root, "state/embeddings/shard-0000.json", serializeIndex(indexFile("openai", "m", {})));
+    const { buildEmbeddingAwareSnapshotStream } = await import("./offline-sync-snapshot-stream.js");
+    const build = await buildEmbeddingAwareSnapshotStream({
+      root, namespace: "test", includeContent: true, includeTranscripts: true,
+      readFile: async ({ filePath }) => readFile(filePath),
+      readFileDigest: async ({ filePath }) => {
+        const bytes = await readFile(filePath);
+        return { sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length };
+      },
+      excludeFile: async () => false,
+      userExcludeRegexps: [/shard-0003[.]json$/], deletions: [],
+    });
+    assert.equal(build.omittedEmbeddingGenerationDirs, undefined);
+    await write(root, "state/embeddings/shard-0003.json", serializeIndex(indexFile("openai", "m", {})));
+    await assert.rejects(async () => { for await (const _file of build.files) { /* consume */ } }, /became partially excluded/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("post-publish marker cleanup failure preserves committed base and retries", async () => {
+  const root = await tempDir("remnic-3148-marker-retry");
+  const remote = await tempDir("remnic-3148-marker-retry-remote");
+  try {
+    const marker = "state/embeddings.json";
+    const shard = "state/embeddings/shard-0000.json";
+    await write(root, marker, serializeIndex(indexFile("openai", "m", {})));
+    await write(remote, shard, serializeIndex(indexFile("openai", "m", {})));
+    const base = (await buildOfflineSyncSnapshot({ root, sourceId: "local", includeContent: false })).files;
+    const snapshot = await buildOfflineSyncSnapshot({ root: remote, sourceId: "remote", includeContent: true });
+    let fail = true;
+    const io = {
+      writeStagingFile: async ({ filePath, content }: { filePath: string; content: Buffer }) => writeFile(filePath, content),
+      readStagingFile: async ({ filePath }: { filePath: string }) => readFile(filePath),
+      deleteFile: async ({ filePath }: { filePath: string }) => {
+        if (fail) throw new Error("transient delete failure");
+        await rm(filePath, { force: true });
+      },
+    };
+    const first = await applyOfflineSyncSnapshot({ root, snapshot, baseFiles: base, ...io });
+    assert.ok(first.nextBaseFiles.some((file) => file.path === shard), "committed shard must enter shared base");
+    assert.ok(first.nextBaseFiles.some((file) => file.path === marker), "failed marker cleanup must remain retryable");
+    fail = false;
+    const retry = await applyOfflineSyncSnapshot({ root, snapshot, baseFiles: first.nextBaseFiles, ...io });
+    assert.equal(await existsQuiet(root, marker), false);
+    assert.equal(retry.nextBaseFiles.some((file) => file.path === marker), false);
+    assert.ok(retry.nextBaseFiles.some((file) => file.path === shard));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(remote, { recursive: true, force: true });
+  }
+});
+
+test("a slow stream consumer does not hold the writer lock across records", async () => {
+  const root = await tempDir("remnic-3148-slow-stream");
+  try {
+    const shard0 = "state/embeddings/shard-0000.json";
+    const shard1 = "state/embeddings/shard-0001.json";
+    await write(root, shard0, serializeIndex(indexFile("openai", "m", {})));
+    await write(root, shard1, serializeIndex(indexFile("openai", "m", {})));
+    const records = iterateOfflineSyncSnapshotFileRecords({ root, includeContent: true })[Symbol.asyncIterator]();
+    const first = await records.next();
+    assert.equal(first.value?.path, shard0);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        withEmbeddingGenerationLock(path.join(root, "state"), async () => {
+          await writeFile(path.join(root, shard1), serializeIndex(indexFile("openai", "m2", {})));
+        }),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("writer blocked by slow network consumer")), 1000); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    await assert.rejects(() => records.next(), /generation changed while streaming/);
+    await records.return?.(undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an omitted generation remains omitted when a new shard appears after the header", async () => {
+  const root = await tempDir("remnic-3148-omitted-late-shard");
+  try {
+    const body = serializeIndex(indexFile("openai", "m", {}));
+    await write(root, "state/embeddings/shard-0000.json", body);
+    await write(root, "state/embeddings/shard-0003.json", body);
+    const { buildEmbeddingAwareSnapshotStream } = await import("./offline-sync-snapshot-stream.js");
+    const build = await buildEmbeddingAwareSnapshotStream({
+      root, namespace: "test", includeContent: true, includeTranscripts: true,
+      readFile: async ({ filePath }) => readFile(filePath),
+      readFileDigest: async ({ filePath }) => {
+        const content = await readFile(filePath);
+        return { sha256: createHash("sha256").update(content).digest("hex"), bytes: content.length };
+      },
+      excludeFile: async () => false,
+      userExcludeRegexps: [/shard-0003[.]json$/], deletions: [],
+    });
+    assert.deepEqual(build.omittedEmbeddingGenerationDirs, ["state/embeddings"]);
+    await write(root, "state/embeddings/shard-0004.json", body);
+    const files = [];
+    for await (const file of build.files) files.push(file.path);
+    assert.deepEqual(files, [], "no late shard may leak into an omitted generation");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

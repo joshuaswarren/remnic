@@ -30,6 +30,7 @@ import {
   EMBEDDING_SHARD_DIR_BASENAME,
   applyEmbeddingGenerationRemoval,
   applyEmbeddingGenerationTransaction,
+  assertEmbeddingGenerationStillIncluded,
   computeOmittedEmbeddingGenerationPaths,
   detectIncomingEmbeddingGenerations,
   divergedEmbeddingGenerationDeferrals,
@@ -848,7 +849,7 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
         })).omittedPaths
       : undefined);
 
-  async function* walk(dirAbs: string): AsyncIterable<OfflineSyncFileRecord> {
+  async function* walk(dirAbs: string, includeContent = options.includeContent === true): AsyncIterable<OfflineSyncFileRecord> {
     throwIfOfflineSyncAborted(options.signal);
     let entries = await readdir(dirAbs, { withFileTypes: true });
     entries = entries.sort((left, right) => left.name.localeCompare(right.name));
@@ -864,10 +865,13 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
         if (isEmbeddingGenerationDirPath(relPosix)) {
-          yield* withEmbeddingGenerationLockIter(path.dirname(abs), () => walk(abs));
+          yield* withEmbeddingGenerationLockIter(path.dirname(abs), (content) => walk(abs, content), includeContent,
+            () => assertEmbeddingGenerationStillIncluded(root.abs, relPosix, options.excludeFile,
+              (rel) => shouldExcludePushRelPath(rel, includeTranscripts, options.userExcludeRegexps),
+              []));
           continue;
         }
-        yield* walk(abs);
+        yield* walk(abs, includeContent);
         continue;
       }
       if (!entry.isFile()) continue;
@@ -880,7 +884,7 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
         root,
         relPath: relPosix,
         filePath: abs,
-        includeContent: options.includeContent === true,
+        includeContent,
         readFile: options.readFile,
         readFileDigest: options.readFileDigest,
         signal: options.signal,
@@ -1024,7 +1028,12 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
         if (isEmbeddingGenerationDirPath(relPosix)) {
-          await withEmbeddingGenerationLock(path.dirname(abs), () => walk(abs));
+          await withEmbeddingGenerationLock(path.dirname(abs), async () => {
+            await assertEmbeddingGenerationStillIncluded(root.abs, relPosix, options.excludeFile,
+              (rel) => shouldExcludePushRelPath(rel, includeTranscripts, options.userExcludeRegexps),
+              (normalizedDeletions ?? []).map((deletion) => deletion.path));
+            await walk(abs);
+          });
           continue;
         }
         await walk(abs);
@@ -1624,10 +1633,7 @@ export async function applyOfflineSyncSnapshot(options: {
     }
   }
   const transactionResults: EmbeddingGenerationTransactionResult[] = [];
-  // A snapshot that BOTH carries members of a generation and lists that
-  // generation as omitted is self-contradictory (producer race or
-  // corruption): fail closed instead of publishing a lone shard and
-  // deleting the rest of the local generation (codex round 6).
+  // Included and omitted cannot describe the same generation.
   for (const shardDir of generationDirs) {
     if (omittedGenerationDirs.has(shardDir)) {
       throw new EmbeddingIndexStorageError(
@@ -1733,12 +1739,7 @@ export async function applyOfflineSyncSnapshot(options: {
       (relPath) => embeddingGenerationMembership(relPath)?.shardDir === shardDir,
     );
     if (localMembers.length === 0) continue;
-    // Remote-absence evidence, either form (codex round 6 P1):
-    //   - tombstones: the snapshot's deletion revisions cover every member; or
-    //   - shared base: a base member is absent from the incoming snapshot.
-    // A wholly-local generation (no base, no tombstones) is preserved. When
-    // removal fires it covers the WHOLE generation as one unit — base
-    // members and local-only extras alike — never a partial delete.
+    // Tombstone or shared-base absence authorizes whole-generation removal.
     const baseMembers = localMembers.filter((relPath) => baseMap.has(relPath));
     // Tombstone evidence is satisfied by the members the REMOTE knew: the
     // remote cannot tombstone local-only extras or an inert legacy marker,
@@ -1773,15 +1774,14 @@ export async function applyOfflineSyncSnapshot(options: {
   for (const result of transactionResults) {
     if (result.deferredLocalDivergence) {
       for (const relPath of result.handledPaths) deferredPaths.add(relPath);
+      const member = embeddingGenerationMembership(result.handledPaths.values().next().value ?? "");
+      if (member) deferredGenerationDirs.add(member.shardDir);
       continue;
     }
     generationUpserted += result.upserted;
     generationDeleted += result.deleted;
-    // Base bookkeeping is applied DIRECTLY here: converted shards (legacy
-    // marker -> sharded layout) create local paths that appear in none of
-    // the base/incoming/current maps, so the union loop would never visit
-    // them and the persisted base would silently lose the authoritative
-    // shards (codex round 6, P1).
+    for (const relPath of result.handledPaths) transactionHandled.add(relPath);
+    // Record converted shard paths directly; they may not be in any input map.
     for (const [relPath, state] of result.writtenStates) {
       nextBase.set(relPath, state);
       transactionHandled.add(relPath);

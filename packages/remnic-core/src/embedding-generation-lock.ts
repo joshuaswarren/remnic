@@ -53,6 +53,14 @@ export class EmbeddingGenerationLockLostError extends Error {
   }
 }
 
+/** The generation lock could not be acquired; callers fail closed and report it. */
+export class EmbeddingGenerationLockUnavailableError extends Error {
+  constructor(lockPath: string, reason: "timeout" | "error") {
+    super(`embedding generation: could not acquire the mutation lock for ${lockPath} (${reason})`);
+    this.name = "EmbeddingGenerationLockUnavailableError";
+  }
+}
+
 /**
  * The lock file path for the generation whose canonical state dir is
  * `absoluteStateDir` (physical path; e.g. `<memoryRoot>/state` or
@@ -91,67 +99,43 @@ export function withEmbeddingGenerationLock<T>(
   return serializeMutations(lockPath, () =>
     withHeldFileLock(lockPath, { staleMs: LOCK_STALE_MS, maxWaitMs: LOCK_MAX_WAIT_MS }, (acquired, lock) => {
       if (!acquired) {
-        throw new Error(
-          `embedding generation: could not acquire the mutation lock for ${lockPath} within ${LOCK_MAX_WAIT_MS}ms — another process holds it`
-        );
+        throw new EmbeddingGenerationLockUnavailableError(lockPath, lock.failure ?? "error");
       }
       return fn(lock);
     })
   );
 }
 
-/**
- * Hold the generation mutation lock while STREAMING `make()`'s records, one
- * at a time — never buffering the whole generation in memory. The lock is
- * acquired before the first record is pulled and released when the consumer
- * drains, breaks, or the capture fails, so a concurrent writer either lands
- * entirely before the capture or entirely after it: a swap can never turn a
- * streamed enumeration into a valid-looking partial generation. Acquisition
- * failure is surfaced to the consumer (fail closed).
- */
-export async function* withEmbeddingGenerationLockIter<T>(
+/** Capture a complete bounded digest census under lock, then stream outside
+ * the lock. If any member changes, throw rather than emit a complete subset. */
+export async function* withEmbeddingGenerationLockIter<T extends { path: string; sha256: string; bytes: number }>(
   absoluteStateDir: string,
-  make: () => AsyncIterable<T>
+  make: (includeContent: boolean) => AsyncIterable<T>,
+  includeContent: boolean,
+  verify?: () => Promise<void>
 ): AsyncIterable<T> {
   const lockPath = embeddingGenerationLockPath(absoluteStateDir);
-  let start!: (lock: EmbeddingGenerationLockSection) => void;
-  let fail!: (err: unknown) => void;
-  const acquired = new Promise<EmbeddingGenerationLockSection>((resolve, reject) => {
-    start = resolve;
-    fail = reject;
-  });
-  let finishGate = () => {};
-  const finished = new Promise<void>((resolve) => {
-    finishGate = resolve;
-  });
-  const holder = serializeMutations(lockPath, () =>
-    withHeldFileLock(lockPath, { staleMs: LOCK_STALE_MS, maxWaitMs: LOCK_MAX_WAIT_MS }, async (acquired, lock) => {
-      if (!acquired) {
-        throw new Error(
-          `embedding generation: could not acquire the mutation lock for ${lockPath} within ${LOCK_MAX_WAIT_MS}ms — another process holds it`
-        );
-      }
-      start(lock);
-      await finished;
-    })
-  );
-  holder.catch((err) => {
-    fail(err);
-    finishGate();
-  });
-  const it = make()[Symbol.asyncIterator]();
-  try {
-    const section = await acquired;
-    while (true) {
+  // Capture only bounded metadata under the lock, never large content or
+  // network backpressure. Every emitted record must match this complete
+  // generation census; a concurrent swap/dirty write aborts the stream.
+  const baseline = await withEmbeddingGenerationLock(absoluteStateDir, async (section) => {
+    await verify?.();
+    const records: Array<{ path: string; sha256: string; bytes: number }> = [];
+    for await (const record of make(false)) {
       await assertEmbeddingGenerationLockHeld(lockPath, section);
-      const next = await it.next();
-      await assertEmbeddingGenerationLockHeld(lockPath, section);
-      if (next.done) break;
-      yield next.value;
+      records.push({ path: record.path, sha256: record.sha256, bytes: record.bytes });
     }
-  } finally {
-    finishGate();
-    await it.return?.(undefined).catch(() => undefined);
-    await holder.catch(() => undefined);
+    return records;
+  });
+  let count = 0;
+  for await (const record of make(includeContent)) {
+    const expected = baseline[count++];
+    if (!expected || expected.path !== record.path || expected.sha256 !== record.sha256 || expected.bytes !== record.bytes) {
+      throw new Error(`embedding generation changed while streaming ${absoluteStateDir}; retry the snapshot`);
+    }
+    yield record;
+  }
+  if (count !== baseline.length) {
+    throw new Error(`embedding generation changed while streaming ${absoluteStateDir}; retry the snapshot`);
   }
 }

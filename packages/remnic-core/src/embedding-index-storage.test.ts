@@ -10,8 +10,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
-import { EmbeddingIndexFileStore } from "./embedding-index-storage.js";
+import { lstat, mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { EmbeddingIndexFileStore, EmbeddingIndexStorageError } from "./embedding-index-storage.js";
 
 const SHARD_FILE = JSON.stringify({
   version: 1,
@@ -147,5 +147,99 @@ test("misplaced shard entries record read diagnostics before failing closed", as
     assert.equal(await readFile(path.join(root, "state/embeddings/shard-0000.json"), "utf-8"), SHARD_FILE);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Codex PRRT_kwDORJXyws6mZ72r — symlinked generation dir / members are
+// rejected at read and mutation boundaries; planted links must never serve
+// or write through to paths outside the state directory.
+// ---------------------------------------------------------------------------
+
+test("a symlinked embedding shard directory is rejected at the layout and read boundaries", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb-symlink-dir-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-emb-symlink-outside-"));
+  try {
+    // Use a shard whose entry id hashes to the same shard name so a
+    // successful parse would otherwise validate; the symlink boundary must
+    // throw BEFORE any shard membership check.
+    const shardNameForId = (id: string): string => {
+      let h = 0x811c9dc5;
+      for (let i = 0; i < id.length; i++) {
+        h ^= id.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+      }
+      return `shard-${String(h % 64).padStart(4, "0")}.json`;
+    };
+    const fixtureId = "mem-old";
+    const fixtureShard = shardNameForId(fixtureId);
+    await mkdir(path.join(outside, "embeddings"), { recursive: true });
+    await writeFile(
+      path.join(outside, "embeddings", fixtureShard),
+      JSON.stringify({
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: { [fixtureId]: { vector: [1, 0], path: "facts/old.md" } },
+      }),
+      "utf-8",
+    );
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    await symlink(path.join(outside, "embeddings"), path.join(stateDir, "embeddings"), "dir");
+    assert.equal((await (await import("node:fs/promises")).lstat(path.join(stateDir, "embeddings"))).isSymbolicLink(), true, "fixture assumption: state/embeddings must be a symlink");
+    const store = newStore(memoryDir);
+
+    await assert.rejects(
+      () => store.detectLayout(),
+      (err: unknown) => err instanceof EmbeddingIndexStorageError && /symlink/.test(err.message),
+    );
+    await assert.rejects(
+      () => store.readShardGenerationInto({}),
+      (err: unknown) => err instanceof EmbeddingIndexStorageError && /symlink/.test(err.message),
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked shard member pointing outside the state dir is rejected on read", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb-symlink-mem-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-emb-symlink-mem-out-"));
+  try {
+    const shardDir = path.join(memoryDir, "state", "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    const fixtureId = "mem-old";
+    let h = 0x811c9dc5;
+    for (let i = 0; i < fixtureId.length; i++) {
+      h ^= fixtureId.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    const fixtureShard = `shard-${String(h % 64).padStart(4, "0")}.json`;
+    await writeFile(
+      path.join(outside, "planted.json"),
+      JSON.stringify({
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: { [fixtureId]: { vector: [1, 0], path: "facts/old.md" } },
+      }),
+      "utf-8",
+    );
+    await symlink(
+      path.join(outside, "planted.json"),
+      path.join(shardDir, fixtureShard),
+    );
+    const store = newStore(memoryDir);
+    await assert.rejects(
+      () => store.readShardGenerationInto({}),
+      (err: unknown) =>
+        err instanceof EmbeddingIndexStorageError &&
+        (/symlink/.test(err.message) || /escapes the state directory/.test(err.message)),
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });

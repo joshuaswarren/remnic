@@ -244,6 +244,14 @@ async function hydratedIncomingBuffer(
  * every shard) through the configured secure IO — the fresh in-lock census
  * the stale pre-lock apply census cannot be trusted for (codex P1).
  */
+/** Scope the shared vault base to this physical embedding generation. */
+function baseStatesForGeneration(
+  base: ReadonlyMap<string, { sha256: string }> | undefined,
+  shardDirRel: string,
+): Map<string, { sha256: string }> {
+  return new Map([...base ?? []].filter(([relPath]) => embeddingGenerationMembership(relPath)?.shardDir === shardDirRel));
+}
+
 async function censusGenerationState(
   io: EmbeddingGenerationTransactionIo,
   root: SafeArchiveRoot,
@@ -315,8 +323,8 @@ export async function applyEmbeddingGenerationTransaction(
     // matches the shared base — a concurrent daemon mutation must never be
     // silently discarded by the swap.
     // No shared base (fresh catch-up) = no divergence semantics to protect.
-    if (input.baseStates && input.baseStates.size > 0) {
-      const baseStates = input.baseStates;
+    const baseStates = baseStatesForGeneration(input.baseStates, shardDirRel);
+    if (baseStates.size > 0) {
       const localCensus = await censusGenerationState(io, root, markerRel, markerAbs, shardDirAbs, shardDirRel);
       const baseArr = [...baseStates].map(([relPath, state]) => ({ path: relPath, sha256: state.sha256 }));
       const censusArr = [...localCensus].map(([relPath, sha256]) => ({ path: relPath, sha256 }));
@@ -483,25 +491,26 @@ export async function applyEmbeddingGenerationTransaction(
       }
       const removedPaths = new Set<string>(localShardRels.filter((rel) => !published.has(rel)));
       let deleted = removedPaths.size;
+      let markerCleanupFailed = false;
       if ((await pathExists(markerAbs)) && !input.incomingMarker && !input.incomingMarkerPresent) {
-        // A sharded incoming generation replaces the local legacy generation
-        // wholesale: the demoted marker is stale bytes beside a published
-        // directory that never reads it. Remove it through the same delete
-        // hook the per-file deletion path uses.
-        if (io.deleteFile) {
-          await io.deleteFile({ root: root.abs, path: markerRel, filePath: markerAbs });
-        } else {
-          await rm(markerAbs, { force: true });
+        // Publication is already committed. Keep its base advancement even if
+        // marker cleanup fails, retaining the marker in base for a retry.
+        try {
+          if (io.deleteFile) await io.deleteFile({ root: root.abs, path: markerRel, filePath: markerAbs });
+          else await rm(markerAbs, { force: true });
+          removedPaths.add(markerRel);
+          deleted += 1;
+        } catch (err) {
+          markerCleanupFailed = true;
+          log.warn(`embedding generation ${shardDirRel}: marker cleanup deferred after publish: ${err}`);
         }
-        removedPaths.add(markerRel);
-        deleted += 1;
       }
       return {
         upserted: published.size,
         deleted,
         writtenStates,
         removedPaths,
-        handledPaths: new Set([...published.keys(), ...removedPaths]),
+        handledPaths: new Set([...published.keys(), ...removedPaths, ...(markerCleanupFailed ? [markerRel] : [])]),
       };
     } catch (err) {
       await rm(stagingAbs, { recursive: true, force: true }).catch(() => undefined);
@@ -604,12 +613,26 @@ export async function computeOmittedEmbeddingGenerationPaths(
     }
     if (excludedMembers.length === 0) continue;
     omittedDirs.push(shardDirRel);
+    omittedPaths.add(shardDirRel); // skip new shards after the omission header
     for (const relPath of memberRels) omittedPaths.add(relPath);
   }
   return { omittedPaths, omittedDirs };
 }
 
-/** True when `relPath` belongs to a generation the push omitted. */
+/** Reject an exclusion introduced after the snapshot header was computed. */
+export async function assertEmbeddingGenerationStillIncluded(
+  rootAbs: string, shardDirRel: string, excludeFile: OfflineSyncExcludeFile | undefined,
+  isExcludedRelPath: (relPath: string) => boolean, tombstonedPaths: readonly string[],
+): Promise<void> {
+  const current = await computeOmittedEmbeddingGenerationPaths({ rootAbs, excludeFile, isExcludedRelPath, tombstonedPaths });
+  if (current.omittedDirs.includes(shardDirRel)) {
+    throw new EmbeddingIndexStorageError(
+      `embedding generation ${shardDirRel} became partially excluded during snapshot capture; retry with a fresh omission header`,
+    );
+  }
+}
+
+/** True when a path belongs to a generation the push omitted. */
 export function isPathInOmittedEmbeddingGeneration(relPath: string, omittedDirs: ReadonlySet<string>): boolean {
   const membership = embeddingGenerationMembership(relPath);
   return membership !== null && omittedDirs.has(membership.shardDir);
@@ -744,15 +767,16 @@ export async function applyEmbeddingGenerationRemoval(
     // indexed, added, or removed members), DEFER the removal — the local
     // work survives and a later sync re-evaluates with a fresh base.
     // No shared base (fresh catch-up) = no divergence semantics to protect.
-    if (input.baseStates && input.baseStates.size > 0) {
+    const baseStates = baseStatesForGeneration(input.baseStates, shardDirRel);
+    if (baseStates.size > 0) {
       const localCensus = await censusGenerationState(io, root, markerRel, markerAbs, shardDirAbs, shardDirRel);
-      const baseArr = [...input.baseStates].map(([relPath, state]) => ({ path: relPath, sha256: state.sha256 }));
+      const baseArr = [...baseStates].map(([relPath, state]) => ({ path: relPath, sha256: state.sha256 }));
       const censusArr = [...localCensus].map(([relPath, sha256]) => ({ path: relPath, sha256 }));
       const changedSinceBase =
         censusArr.some((member) => {
           // A MODIFIED member must also defer: removing the generation would
           // erase the daemon's rewrite, not just the remote's stale copy.
-          const baseSha = input.baseStates!.get(member.path)?.sha256;
+          const baseSha = baseStates.get(member.path)?.sha256;
           return baseSha === undefined || baseSha !== member.sha256;
         }) || baseArr.some((member) => !localCensus.has(member.path));
       if (changedSinceBase) {
