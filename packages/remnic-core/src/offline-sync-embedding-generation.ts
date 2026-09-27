@@ -617,36 +617,39 @@ export async function applyEmbeddingGenerationRemoval(
   await store.removePublishedGeneration();
   const removedPaths = new Set(localShardRels);
   let deleted = removedPaths.size;
-  if (await pathExists(markerAbs)) {
-    if (io.deleteFile) {
-      await io.deleteFile({ root: root.abs, path: markerRel, filePath: markerAbs });
-    } else {
-      await rm(markerAbs, { force: true });
-    }
+  const markerPresent = await pathExists(markerAbs);
+  if (markerPresent) {
     removedPaths.add(markerRel);
     deleted += 1;
   }
   // Preserve the replicated tombstones through the configured hooks AFTER
   // the atomic publication: raw removal must not lose the deletion
   // revisions, or a downstream sync without base evidence retains stale
-  // entries. The storage hook tolerates already-absent paths.
-  if (io.deleteFile && input.deletionMtimeByPath) {
-    let firstError: unknown = null;
-    for (const relPath of removedPaths) {
+  // entries. EVERY member (shards and marker) is recorded exactly ONCE with
+  // the remote revision when known, so a first hook call without a revision
+  // is never overwritten by an older replicated one. The storage hook
+  // tolerates already-absent paths.
+  let firstError: unknown = null;
+  for (const relPath of removedPaths) {
+    const memberAbs = relPath === markerRel ? markerAbs : await resolveSafeArchiveTarget(root, relPath);
+    const mtimeMs = input.deletionMtimeByPath?.get(relPath) ?? input.now;
+    if (io.deleteFile) {
       try {
         await io.deleteFile({
           root: root.abs,
           path: relPath,
           filePath: await resolveSafeArchiveTarget(root, relPath),
-          mtimeMs: input.deletionMtimeByPath.get(relPath) ?? input.now,
+          mtimeMs,
         });
       } catch (err) {
         firstError ??= err;
-        log.warn(\`embedding generation removal: tombstone recording failed for \${relPath}: \${err instanceof Error ? err.message : String(err)}\`);
+        log.warn(`embedding generation removal: tombstone recording failed for ${relPath}: ${err instanceof Error ? err.message : String(err)}`);
       }
+    } else if (relPath === markerRel && markerPresent) {
+      await rm(markerAbs, { force: true });
     }
-    if (firstError) throw firstError;
   }
+  if (firstError) throw firstError;
   return {
     upserted: 0,
     deleted,

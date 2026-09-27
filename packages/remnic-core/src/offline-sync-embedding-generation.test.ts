@@ -1182,7 +1182,12 @@ test("a remotely deleted generation is removed as one atomic transaction", async
     const result = await applyOfflineSyncSnapshot({
       root: localRoot,
       snapshot,
-      deleteFile: async (target) => { recorded.push(target.path); },
+      // Emulate the real storage hook contract: the hook DELETES the file
+      // and records the replicated tombstone.
+      deleteFile: async (target) => {
+        recorded.push(target.path);
+        await rm(path.join(localRoot, ...target.path.split("/")), { force: true });
+      },
     });
     // The whole generation is gone in ONE swap: no shard, no marker.
     assert.equal(await existsQuiet(localRoot, "state/embeddings/shard-0000.json"), false);
