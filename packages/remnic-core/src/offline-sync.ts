@@ -28,6 +28,7 @@ import { EmbeddingIndexStorageError } from "./embedding-index-storage.js";
 import { matchesOfflineSyncDefaultExclude } from "./offline-sync-exclude-globs.js";
 import {
   EMBEDDING_SHARD_DIR_BASENAME,
+  applyEmbeddingGenerationRemoval,
   applyEmbeddingGenerationTransaction,
   computeOmittedEmbeddingGenerationPaths,
   detectIncomingEmbeddingGenerations,
@@ -1669,14 +1670,60 @@ export async function applyOfflineSyncSnapshot(options: {
       now: Date.now(),
     }));
   }
-  const transactionHandled = new Map<string, OfflineSyncFileState | null>();
+  // Whole-generation removal (codex round 6 P1): when the remote deleted a
+  // previously shared sharded index, the deletion revisions cover EVERY
+  // local member. Remove that generation as ONE atomic swap instead of
+  // deleting shards one-by-one, so a crash or delete failure can never
+  // expose a partial same-identity generation serving missing memories.
+  const localGenerationDirs = new Set<string>();
+  for (const relPath of currentMap.keys()) {
+    const membership = embeddingGenerationMembership(relPath);
+    if (membership?.kind === "shard") localGenerationDirs.add(membership.shardDir);
+  }
+  for (const shardDir of localGenerationDirs) {
+    if (
+      generationDirs.has(shardDir) ||
+      deferredGenerationDirs.has(shardDir) ||
+      omittedGenerationDirs.has(shardDir) ||
+      deletionMtimeByPath === undefined
+    ) {
+      continue;
+    }
+    const localMembers = [...currentMap.keys()].filter(
+      (relPath) => embeddingGenerationMembership(relPath)?.shardDir === shardDir,
+    );
+    if (
+      localMembers.length > 0 &&
+      localMembers.every((relPath) => deletionMtimeByPath.has(relPath))
+    ) {
+      transactionResults.push(await applyEmbeddingGenerationRemoval({
+        root,
+        shardDirRel: shardDir,
+        io: { deleteFile: options.deleteFile },
+        now: Date.now(),
+      }));
+    }
+  }
+
+  const transactionHandled = new Set<string>();
   let generationUpserted = 0;
   let generationDeleted = 0;
   for (const result of transactionResults) {
     generationUpserted += result.upserted;
     generationDeleted += result.deleted;
-    for (const [relPath, state] of result.writtenStates) transactionHandled.set(relPath, state);
-    for (const relPath of result.removedPaths) transactionHandled.set(relPath, null);
+    // Base bookkeeping is applied DIRECTLY here: converted shards (legacy
+    // marker -> sharded layout) create local paths that appear in none of
+    // the base/incoming/current maps, so the union loop would never visit
+    // them and the persisted base would silently lose the authoritative
+    // shards (codex round 6, P1).
+    for (const [relPath, state] of result.writtenStates) {
+      nextBase.set(relPath, state);
+      transactionHandled.add(relPath);
+    }
+    for (const relPath of result.removedPaths) {
+      nextBase.delete(relPath);
+      transactionHandled.add(relPath);
+    }
   }
 
   for (const relPath of unionPaths(baseMap, incomingMap, currentMap)) {
@@ -1691,14 +1738,9 @@ export async function applyOfflineSyncSnapshot(options: {
       continue;
     }
 
-    // The generation transaction already published or removed this path;
-    // its counters and nextBase bookkeeping were applied above.
-    if (transactionHandled.has(relPath)) {
-      const state = transactionHandled.get(relPath);
-      if (state) nextBase.set(relPath, state);
-      else nextBase.delete(relPath);
-      continue;
-    }
+    // The generation transaction already published or removed this path and
+    // applied its nextBase bookkeeping above; nothing left to do.
+    if (transactionHandled.has(relPath)) continue;
 
     // A deferral anywhere in a generation defers the WHOLE generation: no
     // partial replacement in either direction, local files and base entries

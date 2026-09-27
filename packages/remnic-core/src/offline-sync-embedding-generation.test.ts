@@ -1112,3 +1112,80 @@ test("recovery failure is recorded durably before the mutation is rejected", asy
     await rm(outside, { recursive: true, force: true });
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// Round 6.5: converted-shard base bookkeeping + atomic whole-generation removal
+// ---------------------------------------------------------------------------
+
+test("converted shard paths are recorded in the persisted base immediately", async () => {
+  const localRoot = await tempDir("remnic-3148-converted-base");
+  const remoteRoot = await tempDir("remnic-3148-converted-base-remote");
+  try {
+    // Local has ONLY the legacy marker: the converted shards are brand-new
+    // local paths that appear in none of the base/incoming/current maps.
+    const incoming = serializeIndex(indexFile("openai", "m", {
+      conv1: { path: "p1", vector: [1] },
+      conv2: { path: "p2", vector: [2] },
+    }));
+    await write(remoteRoot, "state/embeddings.json", incoming);
+    const snapshot = await buildOfflineSyncSnapshot({
+      root: remoteRoot, sourceId: "remote", includeContent: true,
+    });
+    const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
+    const shardPaths = result.nextBaseFiles
+      .map((f) => f.path)
+      .filter((path) => path.startsWith("state/embeddings/shard-"));
+    assert.equal(shardPaths.length >= 2, true);
+    // The state digests match the actually-published shard bytes.
+    for (const state of result.nextBaseFiles.filter((f) => f.path.startsWith("state/embeddings/shard-"))) {
+      const published = await readFile(path.join(localRoot, ...state.path.split("/")));
+      assert.equal(createHash("sha256").update(published).digest("hex"), state.sha256);
+    }
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+    await rm(remoteRoot, { recursive: true, force: true });
+  }
+});
+
+test("a remotely deleted generation is removed as one atomic transaction", async () => {
+  const localRoot = await tempDir("remnic-3148-atomic-removal");
+  try {
+    await write(localRoot, "facts/keep.md", "keep");
+    await write(localRoot, "state/embeddings/shard-0000.json", serializeIndex(
+      indexFile("openai", "m", { a: { path: "p", vector: [1] } }),
+    ));
+    await write(localRoot, trueShardRel("hydrated"), serializeIndex(
+      indexFile("openai", "m", { b: { path: "p2", vector: [2] } }),
+    ));
+    await write(localRoot, "state/embeddings.json", serializeIndex(indexFile("openai", "m", {})));
+    const snapshot: OfflineSyncSnapshot = {
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+      schemaVersion: 1,
+      createdAt: "2026-09-27T00:00:00.000Z",
+      sourceId: "remote",
+      includeTranscripts: true,
+      files: [{
+        path: "facts/keep.md",
+        sha256: sha256Of("keep"),
+        bytes: 4,
+        mtimeMs: 1,
+        contentBase64: Buffer.from("keep").toString("base64"),
+      }],
+      deletions: [
+        { path: "state/embeddings/shard-0000.json", mtimeMs: 100 },
+        { path: trueShardRel("hydrated"), mtimeMs: 100 },
+        { path: "state/embeddings.json", mtimeMs: 100 },
+      ],
+    };
+    const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
+    // The whole generation is gone in ONE swap: no shard, no marker.
+    assert.equal(await existsQuiet(localRoot, "state/embeddings/shard-0000.json"), false);
+    assert.equal(await existsQuiet(localRoot, trueShardRel("hydrated")), false);
+    assert.equal(await existsQuiet(localRoot, "state/embeddings.json"), false);
+    assert.equal(result.deleted >= 3, true);
+    assert.equal(await existsQuiet(localRoot, "state/embeddings.pre-replace.tmp"), false);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});

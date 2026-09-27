@@ -787,6 +787,35 @@ export class EmbeddingIndexFileStore {
   }
 
   /**
+   * Atomically remove the published generation (offline-sync: the remote
+   * deleted the whole index). The published directory is demoted to the
+   * fixed transaction backup and only then deleted, so a failure rolls the
+   * former generation back and a crash in the rename gap is recovered by
+   * the ordinary rollback on next use — a partial generation is never
+   * exposed. The fixed backup is symlink-checked first (round 5).
+   */
+  async removePublishedGeneration(): Promise<void> {
+    const backupPath = replacementBackupPath(this.shardDir);
+    await this.assertBackupNotSymlink(backupPath);
+    await rm(backupPath, { recursive: true, force: true });
+    let demoted = false;
+    try {
+      await stat(this.shardDir);
+      await rename(this.shardDir, backupPath);
+      demoted = true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    if (!demoted) return;
+    try {
+      await rm(backupPath, { recursive: true, force: true });
+    } catch (err) {
+      await rename(backupPath, this.shardDir).catch(() => undefined);
+      throw err;
+    }
+  }
+
+  /**
    * Atomically publish a fully staged generation directory as THE published
    * generation. The former published directory is demoted to the FIXED
    * transaction backup and the staging dir is renamed in with a single

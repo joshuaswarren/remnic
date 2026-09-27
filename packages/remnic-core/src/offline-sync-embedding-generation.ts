@@ -570,3 +570,62 @@ export function storageBackedIndexStoreIo(storage: StorageBackedIndexIoHost): Em
       ),
   };
 }
+
+export interface EmbeddingGenerationRemovalInput {
+  root: SafeArchiveRoot;
+  /** The generation dir, e.g. `state/embeddings`. */
+  shardDirRel: string;
+  io: Pick<EmbeddingGenerationTransactionIo, "deleteFile">;
+  now: number;
+}
+
+/**
+ * Remove a LOCAL embedding generation atomically because the remote deleted
+ * it wholesale (every member has a deletion revision): recover first, then
+ * demote the published directory through the store's single swap state
+ * machine and delete the backup — a crash or delete failure can never leave
+ * a partial same-identity generation serving silently missing memories.
+ * The local legacy marker, when present, is removed through the same delete
+ * hook the per-file path uses.
+ */
+export async function applyEmbeddingGenerationRemoval(
+  input: EmbeddingGenerationRemovalInput,
+): Promise<EmbeddingGenerationTransactionResult> {
+  const { root, shardDirRel, io } = input;
+  const stateDirRel = shardDirRel.slice(0, -(`/${EMBEDDING_SHARD_DIR_BASENAME}`.length));
+  const markerRel = `${stateDirRel}/${EMBEDDING_MARKER_BASENAME}`;
+  const shardDirAbs = await resolveSafeArchiveTarget(root, shardDirRel);
+  const markerAbs = await resolveSafeArchiveTarget(root, markerRel);
+  const store = new EmbeddingIndexFileStore(
+    markerAbs,
+    shardDirAbs,
+    await resolveSafeArchiveTarget(root, `${stateDirRel}/embedding-fallback-status.json`),
+  );
+  await store.recoverIfInterrupted();
+  const localShardRels = (await readdir(shardDirAbs).catch((err) => {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [] as string[];
+    throw err;
+  }))
+    .filter((name) => EMBEDDING_SHARD_FILE_PATTERN.test(name))
+    .map((name) => `${shardDirRel}/${name}`)
+    .sort();
+  await store.removePublishedGeneration();
+  const removedPaths = new Set(localShardRels);
+  let deleted = removedPaths.size;
+  if (await pathExists(markerAbs)) {
+    if (io.deleteFile) {
+      await io.deleteFile({ root: root.abs, path: markerRel, filePath: markerAbs });
+    } else {
+      await rm(markerAbs, { force: true });
+    }
+    removedPaths.add(markerRel);
+    deleted += 1;
+  }
+  return {
+    upserted: 0,
+    deleted,
+    writtenStates: new Map(),
+    removedPaths,
+    handledPaths: new Set(removedPaths),
+  };
+}
