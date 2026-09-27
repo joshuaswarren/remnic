@@ -9,8 +9,9 @@
 // atomic generation transaction then consumes the staged bytes via core's
 // `readIncomingFile` apply callback — live paths are only ever touched by
 // the transaction's atomic backup-swap.
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { hostname } from "node:os";
 
 import { StorageManager, embeddingGenerationMembership } from "@remnic/core";
 import type { OfflineSyncFileState } from "@remnic/core";
@@ -62,6 +63,32 @@ export function generationMembersForStagedTransport(options: {
     .sort((left, right) => right.bytes - left.bytes || left.path.localeCompare(right.path));
 }
 
+/** Reclaim only same-host stages whose recorded process no longer exists. */
+async function reclaimAbandonedGenerationStages(offlineDir: string): Promise<void> {
+  const names = await readdir(offlineDir).catch(() => [] as string[]);
+  for (const name of names) {
+    if (!name.startsWith(GENERATION_STAGING_PREFIX)) continue;
+    const dir = path.join(offlineDir, name);
+    try {
+      const info = await lstat(dir);
+      if (!info.isDirectory() || info.isSymbolicLink()) continue;
+      const owner = JSON.parse(await readFile(path.join(dir, "owner.json"), "utf-8"));
+      if (owner?.hostname !== hostname() || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) continue;
+      try {
+        process.kill(owner.pid, 0);
+      } catch (error) {
+        // EPERM/unknown ownership and reused PIDs are conservative keeps.
+        // Age alone never proves that an oversized transfer is abandoned.
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+          await rm(dir, { recursive: true, force: true });
+        }
+      }
+    } catch {
+      // Missing/malformed ownership or concurrent cleanup: preserve unknown stages.
+    }
+  }
+}
+
 /**
  * Chunk-fetch the oversized generation members of an incoming snapshot into
  * a private, secure-store-bound staging root and expose them to the apply
@@ -95,14 +122,16 @@ export async function stageGenerationMembersForApply(options: {
     deferredPaths: options.deferredPaths,
     minBytes: options.minBytes,
   });
+  const offlineDir = path.join(options.memoryDir, ".offline-sync");
+  await reclaimAbandonedGenerationStages(offlineDir);
   if (candidates.length === 0) return noop;
 
-  const offlineDir = path.join(options.memoryDir, ".offline-sync");
-  // ponytail: crash remnants stay excluded; reclaim only with ownership proof,
-  // never by age alone (a large active transfer can outlive that cutoff).
   await mkdir(offlineDir, { recursive: true });
   const stagingRoot = await mkdtemp(path.join(offlineDir, GENERATION_STAGING_PREFIX));
   try {
+    await writeFile(path.join(stagingRoot, "owner.json"), JSON.stringify({
+      pid: process.pid, hostname: hostname(),
+    }), { mode: 0o600, flag: "wx" });
     // The fresh staging root has no keyring header of its own; inherit the
     // parent vault's secure-store policy so staged bytes are encrypted at
     // rest with the same key instead of plaintext-downgrading the vault.

@@ -626,7 +626,19 @@ test("staged generation transport encrypts staging bytes at rest and serves AAD-
     const activeName = "generation-incoming-active";
     const activeDir = path.join(memoryDir, ".offline-sync", activeName);
     await mkdir(activeDir, { recursive: true });
+    await writeFile(path.join(activeDir, "owner.json"), JSON.stringify({ pid: process.pid, hostname: os.hostname() }));
     await writeFile(path.join(activeDir, "still-active"), "keep");
+    const { spawn } = await import("node:child_process");
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", () => resolve());
+    });
+    assert.ok(child.pid);
+    const abandonedDir = path.join(memoryDir, ".offline-sync/generation-incoming-abandoned");
+    await mkdir(abandonedDir, { recursive: true });
+    await writeFile(path.join(abandonedDir, "owner.json"), JSON.stringify({ pid: child.pid, hostname: os.hostname() }));
+    await writeFile(path.join(abandonedDir, "payload"), "abandoned transfer");
     const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
     await utimes(activeDir, twoHoursAgo, twoHoursAgo);
     const transport = await stageGenerationMembersForApply({
@@ -642,6 +654,7 @@ test("staged generation transport encrypts staging bytes at rest and serves AAD-
       const offlineDir = path.join(memoryDir, ".offline-sync");
       const stagingDir = (await readdir(offlineDir)).find((entry) => entry.startsWith("generation-incoming-") && entry !== activeName);
       assert.equal(await readFile(path.join(activeDir, "still-active"), "utf-8"), "keep");
+      await assert.rejects(stat(abandonedDir), { code: "ENOENT" });
       assert.ok(stagingDir, "the private staging root must exist during transport");
       const stagedFile = path.join(offlineDir, stagingDir, "state", "embeddings.json");
       const raw = await readFile(stagedFile);

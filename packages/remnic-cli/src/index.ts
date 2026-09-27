@@ -9095,6 +9095,11 @@ Environment fallbacks:
       memoryDir,
       await createConfiguredOfflineStorage(memoryDir, config.secureStoreEncryptOnWrite),
     );
+    const currentSnapshot = await buildOfflineSyncSnapshotFromBase({
+      root: memoryDir, sourceId: "local", includeContent: false, includeTranscripts,
+      readFile: storageIo.readFile, readFileDigest: storageIo.readFileDigest,
+      excludeNodeLocalState: false,
+    });
     const stagedTransport = await stageGenerationMembersForApply({
       memoryDir,
       remoteUrl,
@@ -9102,6 +9107,7 @@ Environment fallbacks:
       namespace: resolvedNamespace,
       includeTranscripts,
       incomingFiles: remoteSnapshotMetadata.files,
+      currentFiles: currentSnapshot.files,
       minBytes: OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES,
       secureStoreEncryptOnWrite: config.secureStoreEncryptOnWrite,
       hydrateFileContent: hydrateOfflineFileContent,
@@ -9116,6 +9122,7 @@ Environment fallbacks:
         includeTranscripts,
         snapshot: remoteSnapshotMetadata,
         baseFiles: existingState?.state.baseFiles ?? [],
+        currentFiles: currentSnapshot.files,
         skipContentPaths: stagedTransport.stagedPaths,
       });
       pull = await applyOfflineSyncSnapshot({

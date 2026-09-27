@@ -968,6 +968,16 @@ test("offline prepare hydrates an oversized legacy marker through the staged chu
     await store.readShardGenerationInto(merged);
     assert.deepEqual(Object.keys(merged).sort(), ["big1", "small"]);
     assert.equal(await store.detectLayout(), "sharded");
+    // A repeated prepare with the same large member must use the local
+    // census, not transfer it again through either chunk or base64 routes.
+    await writeFile(path.join(root, "state/embeddings.json"), newBody);
+    const transferredChunks = chunkLengths.length;
+    const repeated = await runCli([
+      "offline", "prepare", "--remote-url", "http://remnic.test",
+      "--token", "t", "--memory-dir", root, "--json",
+    ]);
+    assert.equal(repeated.exitCode, 0);
+    assert.equal(chunkLengths.length, transferredChunks);
     const offlineEntries = await readdir(path.join(root, ".offline-sync"));
     assert.equal(
       offlineEntries.some((entry) => entry.startsWith("generation-incoming-")),
