@@ -575,6 +575,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     maintenanceLedgerTail: T_ARRAY,
     qmdProbe: T_OBJECT,
     daemon: T_OBJECT,
+    embeddingIndex: T_OBJECT,
     errors: T_ARRAY,
   }),
   dreams_status: objectSchema({ phases: T_OBJECT, windowStart: T_STRING, windowEnd: T_STRING }),

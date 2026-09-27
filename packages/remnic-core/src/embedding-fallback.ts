@@ -1,5 +1,4 @@
 import path from "node:path";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { log } from "./logger.js";
 import {
   resolveMemoryLifecycleCapabilities,
@@ -13,9 +12,23 @@ import {
   type HostEmbeddingProvider,
   normalizeHostEmbeddingVector,
 } from "./host-embedding-provider.js";
-
-type EmbeddingProviderType = "openai" | "local" | "host";
-
+import {
+  EmbeddingIndexFileStore,
+  EmbeddingIndexStorageError,
+  type EmbeddingIndexEntry,
+  type EmbeddingIndexFile,
+  type EmbeddingIndexIdentity,
+  type EmbeddingProviderType,
+  EmbeddingIndexStoreIo,
+} from "./embedding-index-storage.js";
+export {
+  EmbeddingIndexCapacityError,
+  EmbeddingIndexStorageError,
+} from "./embedding-index-storage.js";
+export type {
+  EmbeddingIndexStatusFile,
+  EmbeddingIndexWriteFailure,
+} from "./embedding-index-storage.js";
 type ProviderConfig = {
   type: EmbeddingProviderType;
   model: string;
@@ -24,24 +37,11 @@ type ProviderConfig = {
   hostProvider?: HostEmbeddingProvider;
 };
 
-type EmbeddingIndexEntry = {
-  vector: number[];
-  path: string;
-};
-
 type EmbeddingResult = {
   provider: ProviderConfig;
   vector: number[];
 };
 
-type EmbeddingIndexFile = {
-  version: 1;
-  provider: EmbeddingProviderType;
-  model: string;
-  entries: Record<string, EmbeddingIndexEntry>;
-};
-
-type EmbeddingIndexIdentity = Pick<EmbeddingIndexFile, "provider" | "model">;
 type EmbeddingIndexComparable =
   | EmbeddingIndexIdentity
   | Pick<ProviderConfig, "type" | "model">;
@@ -77,6 +77,14 @@ const DEFAULT_OPENAI_MODEL = "text-embedding-3-small";
  * The class name is kept for backward compatibility — `EmbeddingTimeoutError`
  * now signals "lookup backend unavailable" rather than strictly "timed out".
  */
+import {
+  assertEmbeddingGenerationLockHeld,
+  embeddingGenerationLockPath,
+  EmbeddingGenerationLockUnavailableError,
+  withEmbeddingGenerationLock,
+  type EmbeddingGenerationLockSection,
+} from "./embedding-generation-lock.js";
+
 export class EmbeddingTimeoutError extends Error {
   override readonly name = "EmbeddingTimeoutError" as const;
   constructor(message: string) {
@@ -165,12 +173,27 @@ function resolveEmbeddingIndexTimeoutMs(): number {
 export type EmbedMode = "lookup" | "index";
 
 export class EmbeddingFallback {
-  private readonly indexPath: string;
+  private readonly store: EmbeddingIndexFileStore;
   private loaded: EmbeddingIndexFile | null = null;
+  /** True when `loaded` was read from disk rather than started fresh, so identity probes can trust it. */
+  private loadedFromDisk = false;
   private mutationQueue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly config: PluginConfig) {
-    this.indexPath = path.join(config.memoryDir, "state", "embeddings.json");
+  /** The canonical state dir scoping this fallback's generation mutation lock. */
+  private readonly generationStateDir: string;
+  private readonly generationLockPath: string;
+  private lockSection: EmbeddingGenerationLockSection | null = null;
+
+  constructor(private readonly config: PluginConfig, storeIo?: EmbeddingIndexStoreIo) {
+    const stateDir = path.join(config.memoryDir, "state");
+    this.generationStateDir = stateDir;
+    this.generationLockPath = embeddingGenerationLockPath(stateDir);
+    this.store = new EmbeddingIndexFileStore(
+      path.join(stateDir, "embeddings.json"),
+      path.join(stateDir, "embeddings"),
+      path.join(stateDir, "embedding-fallback-status.json"),
+      storeIo,
+    );
   }
 
   async isAvailable(): Promise<boolean> {
@@ -265,61 +288,97 @@ export class EmbeddingFallback {
 
     let queryResult = await this.embedForSearch(query, provider, options);
     if (!queryResult) return [];
+    // Effective query embedding: swapped to the disk index's provider
+    // below when the on-disk generation has a different identity. `let` so
+    // the swap reassigns; TS narrowing bound for control flow.
+    let active = queryResult;
 
-    const diskIdentity = await this.readIndexIdentityFromDisk();
-    if (diskIdentity && !sameIndexIdentity(diskIdentity, queryResult.provider)) {
-      const diskProvider = await this.resolveFallbackProviderForIndexIdentity(diskIdentity);
-      if (diskProvider) {
-        const diskQueryResult = await this.embedForSearch(query, diskProvider, options);
-        if (diskQueryResult && sameIndexIdentity(diskIdentity, diskQueryResult.provider)) {
-          queryResult = diskQueryResult;
+    // Recall fails OPEN on index read failures (corrupt/oversized/mixed
+    // generations, unreadable shard dirs): return [] without caching so a
+    // later mutation still revalidates and fails closed (issue #3146).
+    try {
+      const diskIdentity = await this.readIndexIdentityFromDisk();
+      if (diskIdentity && !sameIndexIdentity(diskIdentity, queryResult.provider)) {
+        // The provider swap needs a NETWORK embed: run it OUTSIDE the
+        // generation lock, then re-verify the identity under the lock below.
+        const diskProvider = await this.resolveFallbackProviderForIndexIdentity(diskIdentity);
+        if (diskProvider) {
+          const diskQueryResult = await this.embedForSearch(query, diskProvider, options);
+          if (diskQueryResult && sameIndexIdentity(diskIdentity, diskQueryResult.provider)) {
+            active = diskQueryResult;
+          } else {
+            log.debug(
+              `embedding fallback search skipped: preserved ${diskIdentity.provider}/${diskIdentity.model} index is unavailable for lookup`,
+            );
+            return [];
+          }
         } else {
           log.debug(
-            `embedding fallback search skipped: preserved ${diskIdentity.provider}/${diskIdentity.model} index is unavailable for lookup`,
+            `embedding fallback search skipped: query provider ${queryResult.provider.type}/${queryResult.provider.model} does not match existing ${diskIdentity.provider}/${diskIdentity.model} index`,
           );
           return [];
         }
-      } else {
+      }
+
+      // Cold load only (cache miss): the complete shard enumeration + read
+      // happens under the generation mutation lock so a concurrent swap can
+      // never leave a cached SUBSET of the generation (codex
+      // PRRT_kwDORJXyws6mZ72p). Warm cached searches stay lock-free.
+      let index: EmbeddingIndexFile;
+      try {
+        index = await this.loadIndexUnderGenerationLock(active.provider);
+      } catch (err) {
+        if (err instanceof EmbeddingGenerationLockUnavailableError) {
+          // Existing read diagnostic, recorded once per failed load; recall
+          // itself fails open.
+          await this.store.recordIndexStatusForLoad(
+            `generation mutation lock unavailable: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          return [];
+        }
+        throw err;
+      }
+      const ids = Object.keys(index.entries);
+      if (ids.length === 0) return [];
+
+      const includePrefix = normalizePathPrefix(options.pathPrefix);
+      const excludePrefixes = (options.pathExcludePrefixes ?? [])
+        .map((p) => normalizePathPrefix(p))
+        .filter((p): p is string => typeof p === "string");
+
+      const scored = ids
+        .map((id) => {
+          const entry = index.entries[id];
+          return {
+            id,
+            path: entry.path,
+            score: cosineSimilarity(active.vector, entry.vector),
+          };
+        })
+        .filter((r) => {
+          if (!Number.isFinite(r.score)) return false;
+          const normalized = normalizeEntryPath(r.path);
+          if (includePrefix !== undefined && !normalized.startsWith(includePrefix)) {
+            return false;
+          }
+          for (const excl of excludePrefixes) {
+            if (normalized.startsWith(excl)) return false;
+          }
+          return true;
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, Math.max(1, limit));
+
+      return scored;
+    } catch (err) {
+      if (err instanceof EmbeddingIndexStorageError) {
         log.debug(
-          `embedding fallback search skipped: query provider ${queryResult.provider.type}/${queryResult.provider.model} does not match existing ${diskIdentity.provider}/${diskIdentity.model} index`,
+          `embedding fallback index unreadable on recall path, failing open: ${err instanceof Error ? err.message : String(err)}`,
         );
         return [];
       }
+      throw err;
     }
-
-    const index = await this.loadIndex(queryResult.provider);
-    const ids = Object.keys(index.entries);
-    if (ids.length === 0) return [];
-
-    const includePrefix = normalizePathPrefix(options.pathPrefix);
-    const excludePrefixes = (options.pathExcludePrefixes ?? [])
-      .map((p) => normalizePathPrefix(p))
-      .filter((p): p is string => typeof p === "string");
-
-    const scored = ids
-      .map((id) => {
-        const entry = index.entries[id];
-        return {
-          id,
-          path: entry.path,
-          score: cosineSimilarity(queryResult.vector, entry.vector),
-        };
-      })
-      .filter((r) => {
-        if (!Number.isFinite(r.score)) return false;
-        const normalized = normalizeEntryPath(r.path);
-        if (includePrefix !== undefined && !normalized.startsWith(includePrefix)) {
-          return false;
-        }
-        for (const excl of excludePrefixes) {
-          if (normalized.startsWith(excl)) return false;
-        }
-        return true;
-      })
-      .sort((a, b) => b.score - a.score)
-      .slice(0, Math.max(1, limit));
-
-    return scored;
   }
 
   async indexFile(memoryId: string, content: string, filePath: string): Promise<void> {
@@ -336,25 +395,31 @@ export class EmbeddingFallback {
     });
     if (!result) return;
 
-    await this.enqueueIndexMutation(async () => {
-      const existing = await this.readIndexIdentityFromDisk();
-      if (
-        existing &&
-        !sameIndexIdentity(existing, result.provider) &&
-        !canReplaceIndexIdentity(existing, result.provider)
-      ) {
-        log.debug(
-          `embedding fallback index update skipped: ${result.provider.type}/${result.provider.model} would replace existing ${existing.provider}/${existing.model} index`,
-        );
-        return;
+    await this.enqueueIndexMutation(memoryId, async () => {
+      try {
+        const existing = await this.readIndexIdentityFromDisk();
+        if (
+          existing &&
+          !sameIndexIdentity(existing, result.provider) &&
+          !canReplaceIndexIdentity(existing, result.provider)
+        ) {
+          log.debug(
+            `embedding fallback index update skipped: ${result.provider.type}/${result.provider.model} would replace existing ${existing.provider}/${existing.model} index`,
+          );
+          return;
+        }
+        const index = await this.loadIndex(result.provider);
+        const relPath = toMemoryRelativePath(this.config.memoryDir, filePath);
+        index.entries[memoryId] = {
+          vector: result.vector,
+          path: relPath,
+        };
+        await this.saveIndex(index, { touchedIds: [memoryId], memoryId });
+      } catch (err) {
+        await this.store.recordIndexWriteOutcome(err, memoryId);
+        throw err;
       }
-      const index = await this.loadIndex(result.provider);
-      const relPath = toMemoryRelativePath(this.config.memoryDir, filePath);
-      index.entries[memoryId] = {
-        vector: result.vector,
-        path: relPath,
-      };
-      await this.saveIndex(index);
+      await this.store.recordIndexWriteOutcome(null, memoryId);
     });
   }
 
@@ -362,7 +427,7 @@ export class EmbeddingFallback {
     const provider = await this.resolveProvider();
     if (!provider) return;
 
-    await this.enqueueIndexMutation(async () => {
+    await this.enqueueIndexMutation(memoryId, async () => {
       const providers = [provider];
       const diskIdentity = await this.readIndexIdentityFromDisk();
       if (
@@ -381,17 +446,71 @@ export class EmbeddingFallback {
         }
       }
 
+      let saved = false;
       for (const indexProvider of providers) {
-        const index = await this.loadIndex(indexProvider);
-        if (!index.entries[memoryId]) continue;
-        delete index.entries[memoryId];
-        await this.saveIndex(index);
+        try {
+          const index = await this.loadIndex(indexProvider);
+          if (!index.entries[memoryId]) continue;
+          delete index.entries[memoryId];
+          await this.saveIndex(index, { touchedIds: [memoryId], memoryId });
+          saved = true;
+        } catch (err) {
+          await this.store.recordIndexWriteOutcome(err, memoryId);
+          throw err;
+        }
       }
+      // A no-op removal (id absent from every candidate index) performs no
+      // save: it must NOT clear a recorded persistence failure, or the
+      // operator console would report an unresolved failure as fixed
+      // without any demonstration that storage is writable (round 6).
+      if (saved) await this.store.recordIndexWriteOutcome(null, memoryId);
     });
   }
 
-  private enqueueIndexMutation<T>(mutation: () => Promise<T>): Promise<T> {
-    const run = this.mutationQueue.catch(() => undefined).then(mutation);
+  private enqueueIndexMutation<T>(memoryId: string | undefined, mutation: () => Promise<T>): Promise<T> {
+    const run = this.mutationQueue
+      .catch(() => undefined)
+      .then(() =>
+        withEmbeddingGenerationLock(this.generationStateDir, async (section) => {
+          this.lockSection = section;
+          try {
+            // A peer process may have persisted while this process did not
+            // hold the generation lock: drop any cached index so the
+            // mutation loads the real disk state (codex P1).
+            this.loaded = null;
+            this.loadedFromDisk = false;
+            // Recover an interrupted replacement BEFORE the mutation's identity
+            // probes and existence checks: a deletion no-op must not skip
+            // persistence while the published generation sits in the rename-gap
+            // backup, and insertions must load the restored vectors rather than
+            // a fresh empty index (issue #3148, codex round 3).
+            let recovered = false;
+            try {
+              recovered = await this.store.recoverIfInterrupted(this.generationFence());
+            } catch (err) {
+              // Record the recovery failure durably BEFORE rejecting the
+              // mutation: the write-outcome try below is never reached.
+              await this.store.recordIndexWriteOutcome(err).catch(() => undefined);
+              throw err;
+            }
+            if (recovered) {
+              this.loaded = null;
+              this.loadedFromDisk = false;
+            }
+            return await mutation();
+          } finally {
+            this.lockSection = null;
+          }
+        }).catch(async (err) => {
+          // A lock ACQUISITION failure never reaches the mutation closure's
+          // own write-outcome recording. Route it through the existing
+          // durable diagnostic exactly once (codex PRRT_kwDORJXyws6mZ8qS);
+          // in-lock failures were already recorded by the closure.
+          if (err instanceof EmbeddingGenerationLockUnavailableError) {
+            await this.store.recordIndexWriteOutcome(err, memoryId).catch(() => undefined);
+          }
+          throw err;
+        }));
     this.mutationQueue = run.then(
       () => undefined,
       () => undefined,
@@ -666,32 +785,108 @@ export class EmbeddingFallback {
     }
   }
 
+  /**
+   * Load the authoritative generation for `provider`. STRICT: an unreadable,
+   * malformed, foreign-shaped, or mixed-identity index throws
+   * EmbeddingIndexStorageError instead of ever returning a partial view —
+   * recall catches it at its boundary and fails open uncached; mutations
+   * propagate it and fail closed. This.loaded is only ever assigned a fully
+   * validated generation.
+   */
+  /**
+   * A fence the store calls immediately before destructive writes: reasserts
+   * THIS section's lock ownership after potentially long serialization.
+   * Fail closed when no section is held — persisting unsynchronized would
+   * reintroduce the lost-update race.
+   */
+  private generationFence(): () => Promise<void> {
+    const section = this.lockSection;
+    if (!section) {
+      return async () => {
+        throw new EmbeddingIndexStorageError(
+          "embedding index mutation attempted outside the generation lock; refusing to publish",
+        );
+      };
+    }
+    return () => assertEmbeddingGenerationLockHeld(this.generationLockPath, section);
+  }
+
+  /**
+   * Cache-warm path: a normal search serves the in-memory index WITHOUT the
+   * lock (pre-existing staleness semantics: a peer swap between searches is
+   * refreshed by the next cold load). On a cache miss the COMPLETE load runs
+   * under the generation mutation lock so the enumeration + shard reads see
+   * exactly one generation. The identity is re-checked under the lock on the
+   * cold path; the caller has already performed any provider-swap embed
+   * outside the lock.
+   */
+  private async loadIndexUnderGenerationLock(provider: ProviderConfig): Promise<EmbeddingIndexFile> {
+    if (this.loaded && this.loadedFromDisk) return this.loaded;
+    return await withEmbeddingGenerationLock(this.generationStateDir, async () => {
+      // Another in-process consumer may have warmed the cache while this
+      // call waited on the lock.
+      if (this.loaded && this.loadedFromDisk) return this.loaded;
+      // Re-check the on-disk identity UNDER the lock: a peer swap during the
+      // caller's embed means the cold load must fail open, never serve a
+      // mixed generation (codex PRRT_kwDORJXyws6mZ72p).
+      const diskIdentity = await this.store.identityFromDisk();
+      if (diskIdentity && !sameIndexIdentity(diskIdentity, provider)) {
+        throw new EmbeddingIndexStorageError(
+          `embedding index identity swapped to ${diskIdentity.provider}/${diskIdentity.model} during the cold load; failing open`,
+        );
+      }
+      return await this.loadIndex(provider);
+    });
+  }
+
   private async loadIndex(provider: ProviderConfig): Promise<EmbeddingIndexFile> {
     if (this.loaded && this.loaded.provider === provider.type && this.loaded.model === provider.model) {
       return this.loaded;
     }
 
-    try {
-      const raw = await readFile(this.indexPath, "utf-8");
-      const parsed = JSON.parse(raw) as EmbeddingIndexFile;
-      if (
-        parsed &&
-        parsed.version === 1 &&
-        parsed.provider === provider.type &&
-        parsed.model === provider.model &&
-        parsed.entries &&
-        typeof parsed.entries === "object"
-      ) {
-        this.loaded = {
-          version: 1,
-          provider: provider.type,
-          model: provider.model,
-          entries: parsed.entries,
-        };
-        return this.loaded;
+    const merged: Record<string, EmbeddingIndexEntry> = {};
+    let diskIdentity: EmbeddingIndexIdentity | null = null;
+
+    const layout = await this.store.detectLayout();
+    if (layout === "sharded") {
+      // Published generation: shards are the ONLY authoritative state. A
+      // legacy embeddings.json left over by a crash between the atomic
+      // publish and its recovery rename is never merged (single-generation
+      // rule, issue #3146).
+      diskIdentity = await this.store.readShardGenerationInto(merged);
+    } else if (layout === "legacy") {
+      const read = await this.store.readLegacy();
+      if (read.outcome === "ok") {
+        diskIdentity = { provider: read.file.provider, model: read.file.model };
+        Object.assign(merged, read.file.entries);
+      } else if (read.outcome === "unreadable") {
+        await this.store.recordIndexStatusForLoad(read.reason);
+        throw new EmbeddingIndexStorageError(
+          `refusing to continue from an unreadable embedding index at ${this.store.legacyPath}: ${read.reason}`,
+        );
+      } else if (read.outcome === "foreign") {
+        // Valid JSON but not an index we recognize (wrong version/shape).
+        // Overwriting it would destroy unknown data, so mutation fails
+        // closed; the file stays in place for recovery.
+        await this.store.recordIndexStatusForLoad("unrecognized index format");
+        throw new EmbeddingIndexStorageError(
+          `refusing to continue from a malformed embedding index at ${this.store.legacyPath} (unrecognized format); file preserved in place`,
+        );
       }
-    } catch {
-      // ignore and create a new index
+      // absent falls through to a fresh index; a readable legacy index with
+      // a different provider identity keeps the existing replace semantics
+      // (gated by canReplaceIndexIdentity at the mutation sites).
+    }
+
+    if (diskIdentity && diskIdentity.provider === provider.type && diskIdentity.model === provider.model) {
+      this.loaded = {
+        version: 1,
+        provider: provider.type,
+        model: provider.model,
+        entries: merged,
+      };
+      this.loadedFromDisk = true;
+      return this.loaded;
     }
 
     this.loaded = {
@@ -700,49 +895,38 @@ export class EmbeddingFallback {
       model: provider.model,
       entries: {},
     };
+    this.loadedFromDisk = false;
     return this.loaded;
   }
 
   private async readIndexIdentityFromDisk(): Promise<EmbeddingIndexIdentity | null> {
-    try {
-      const raw = await readFile(this.indexPath, "utf-8");
-      const parsed = JSON.parse(raw) as Partial<EmbeddingIndexFile> | null;
-      if (
-        parsed &&
-        parsed.version === 1 &&
-        (parsed.provider === "openai" ||
-          parsed.provider === "local" ||
-          parsed.provider === "host") &&
-        typeof parsed.model === "string" &&
-        parsed.model.length > 0
-      ) {
-        return {
-          provider: parsed.provider,
-          model: parsed.model,
-        };
-      }
-    } catch {
-      // Missing or invalid indexes are treated as absent; loadIndex() owns
-      // creating a fresh file when it is safe to write.
+    // After a load, `loaded` mirrors the disk state exactly (every mutation
+    // saves through saveIndex and a failed save invalidates the cache), so
+    // skip re-reading on every mutation.
+    if (this.loaded && this.loadedFromDisk) {
+      return { provider: this.loaded.provider, model: this.loaded.model };
     }
-    return null;
+    return this.store.identityFromDisk();
   }
 
-  private async saveIndex(index: EmbeddingIndexFile): Promise<void> {
-    const dir = path.dirname(this.indexPath);
-    await mkdir(dir, { recursive: true });
-    const tempPath = path.join(
-      dir,
-      `.embeddings.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
-    );
+  /**
+   * Persist the index through the file store. On any failure the in-memory
+   * cache is invalidated: entries mutated in the cached map must never be
+   * mistaken for durable state by a retry or a later search.
+   */
+  private async saveIndex(
+    index: EmbeddingIndexFile,
+    opts: { touchedIds?: readonly string[]; memoryId?: string } = {},
+  ): Promise<void> {
     try {
-      await writeFile(tempPath, JSON.stringify(index), "utf-8");
-      await rename(tempPath, this.indexPath);
+      await this.store.persist(index, { ...opts, fence: this.generationFence() });
     } catch (err) {
-      await rm(tempPath, { force: true }).catch(() => undefined);
+      this.loaded = null;
+      this.loadedFromDisk = false;
       throw err;
     }
     this.loaded = index;
+    this.loadedFromDisk = true;
   }
 }
 

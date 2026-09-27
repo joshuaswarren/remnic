@@ -63,6 +63,9 @@ export async function respondOfflineSnapshotStream(
     sourceId: snapshot.sourceId,
     includeTranscripts: snapshot.includeTranscripts,
     deletions: snapshot.deletions,
+    ...(snapshot.omittedEmbeddingGenerationDirs
+      ? { omittedEmbeddingGenerationDirs: snapshot.omittedEmbeddingGenerationDirs }
+      : {}),
   }, snapshot.files, requestId);
 }
 

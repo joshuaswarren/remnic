@@ -313,9 +313,9 @@ import {
   buildOfflineSyncSnapshotFromBase,
   compileOfflineSyncExcludeGlobs,
   filterOfflineSyncDeletionRevisions,
-  iterateOfflineSyncSnapshotFileRecords,
   readOfflineSyncFileContentChunk,
 } from "./offline-sync.js";
+import { buildEmbeddingAwareSnapshotStream } from "./offline-sync-snapshot-stream.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { ReviewDeckSurface } from "./review/review-deck-surface.js";
 import { formatProfileTraceAscii } from "./profiling.js";
@@ -5523,31 +5523,20 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   ): Promise<EngramAccessOfflineSyncSnapshotStreamResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
     const storage = await offlineSyncStorageForSnapshot(this.orchestrator, resolvedNamespace);
-    const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
-    const deletions = await filterOfflineSyncDeletionRevisions({
-      root: storage.dir,
-      deletions: [...(await storage.readDeletionRevisions())].map(([path, mtimeMs]) => ({ path, mtimeMs })),
-      includeTranscripts: options.includeTranscripts !== false,
-      userExcludeRegexps: this.offlineSyncUserExcludes,
-    });
     return {
-      namespace: resolvedNamespace,
-      format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
-      schemaVersion: 1,
-      createdAt: new Date().toISOString(),
-      sourceId: `remnic:${resolvedNamespace}:${storageHash}`,
-      includeTranscripts: options.includeTranscripts !== false,
-      deletions,
-      files: iterateOfflineSyncSnapshotFileRecords({
+      ...await buildEmbeddingAwareSnapshotStream({
         root: storage.dir,
+        namespace: resolvedNamespace,
         includeContent: options.includeContent === true,
         includeTranscripts: options.includeTranscripts !== false,
-        readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
-        readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
-        signal: options.signal,
         userExcludeRegexps: this.offlineSyncUserExcludes,
         excludeFile: createSupportPassportPrivateFileExclusion(storage),
+        readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+        readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
+        deletions: [...(await storage.readDeletionRevisions())].map(([path, mtimeMs]) => ({ path, mtimeMs })),
+        signal: options.signal,
       }),
+      namespace: resolvedNamespace,
     };
   }
   async offlineSyncManifestStream(

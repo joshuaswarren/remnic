@@ -1,0 +1,245 @@
+/**
+ * Issue #3148 review round 1: detectLayout() must decide the layout on the
+ * FIRST call after a restart inside the replacement rename gap — rolling the
+ * transaction backup back into place and returning "sharded" immediately, so
+ * a stray legacy embeddings.json never wins. Higher-level search tests can
+ * hide this because a second detectLayout() call inside the same operation
+ * sees the already-rolled-back directory.
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import { lstat, mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { EmbeddingIndexFileStore, EmbeddingIndexStorageError } from "./embedding-index-storage.js";
+
+const SHARD_FILE = JSON.stringify({
+  version: 1,
+  provider: "openai",
+  model: "text-embedding-3-small",
+  entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } },
+});
+
+function newStore(memoryDir: string): EmbeddingIndexFileStore {
+  const stateDir = path.join(memoryDir, "state");
+  return new EmbeddingIndexFileStore(
+    path.join(stateDir, "embeddings.json"),
+    path.join(stateDir, "embeddings"),
+    path.join(stateDir, "embedding-fallback-status.json"),
+  );
+}
+
+test("detectLayout returns sharded on the first post-gap call and ignores a stray legacy file", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3146-gapfirst-"));
+  const store = newStore(memoryDir);
+  const stateDir = path.join(memoryDir, "state");
+  try {
+    const backupDir = path.join(stateDir, "embeddings.pre-replace.tmp");
+    await mkdir(backupDir, { recursive: true });
+    await writeFile(path.join(backupDir, "shard-0058.json"), SHARD_FILE, "utf-8");
+    await writeFile(
+      path.join(stateDir, "embeddings.json"),
+      JSON.stringify({
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: { "mem-stale": { vector: [0, 1], path: "facts/stale.md" } },
+      }),
+      "utf-8",
+    );
+
+    // First post-gap call reports SHARDED without writing: reads fail open
+    // to an empty view (the gap generation cannot be enumerated) and the
+    // stray legacy file never wins.
+    assert.equal(await store.detectLayout(), "sharded");
+    let probe: Record<string, { vector: number[]; path: string }> = {};
+    const identity = await store.readShardGenerationInto(probe);
+    assert.equal(identity, null);
+    assert.deepEqual(probe, {});
+    try {
+      await stat(path.join(stateDir, "embeddings"));
+      assert.fail("detectLayout must not write on a read path");
+    } catch (err) {
+      assert.equal((err as NodeJS.ErrnoException).code, "ENOENT");
+    }
+
+    // The mutation wrapper performs the recovery (restored generation
+    // becomes the loaded view) and lands the write on it: old + new.
+    assert.equal(await store.recoverIfInterrupted(), true);
+    const loaded = await (async () => {
+      const merged: Record<string, { vector: number[]; path: string }> = {};
+      await store.readShardGenerationInto(merged);
+      return merged;
+    })();
+    loaded["mem-new"] = { vector: [1, 1], path: "facts/new.md" };
+    await store.persist(
+      {
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: loaded,
+      },
+      { touchedIds: ["mem-new"], memoryId: "mem-new" },
+    );
+    assert.equal(await store.detectLayout(), "sharded");
+    probe = {};
+    const identityAfter = await store.readShardGenerationInto(probe);
+    assert.deepEqual(identityAfter, { provider: "openai", model: "text-embedding-3-small" });
+    assert.deepEqual(Object.keys(probe).sort(), ["mem-new", "mem-old"]);
+    assert.equal(probe["mem-old"].path, "facts/old.md");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("a corrupt replacement backup shape surfaces as a tagged storage error, never the legacy fallback", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3146-gapbackup-"));
+  const store = newStore(memoryDir);
+  try {
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    // `embeddings.pre-replace.tmp` exists but is NOT a directory: the
+    // rollback moves that junk file into the published position, where the
+    // shard enumeration must fail loudly (tagged) instead of degrading to
+    // the legacy fallback.
+    await writeFile(path.join(stateDir, "embeddings.pre-replace.tmp"), "junk", "utf-8");
+    // The mutation wrapper's recovery moves the junk file into the published
+    // position; the subsequent persist must then fail loudly (tagged) when
+    // shard enumeration hits it, instead of degrading to the legacy
+    // fallback.
+    assert.equal(await store.recoverIfInterrupted(), true);
+    await assert.rejects(
+      store.persist({
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: {},
+      }),
+      (err: NodeJS.ErrnoException) => err.name === "EmbeddingIndexStorageError",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("removing an index on an empty store publishes an empty layout marker", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-remove-empty-"));
+  try {
+    const store = newStore(root);
+    await store.removePublishedGeneration();
+    assert.equal(await newStore(root).detectLayout(), "sharded");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("misplaced shard entries record read diagnostics before failing closed", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-misplaced-status-"));
+  try {
+    await mkdir(path.join(root, "state/embeddings"), { recursive: true });
+    // mem-old hashes to shard-0058, not 0000.
+    await writeFile(path.join(root, "state/embeddings/shard-0000.json"), SHARD_FILE);
+    const store = newStore(root);
+    await assert.rejects(() => store.readShardGenerationInto({}), /shard/);
+    const { readFile } = await import("node:fs/promises");
+    const status = JSON.parse(await readFile(path.join(root, "state/embedding-fallback-status.json"), "utf-8"));
+    assert.match(status.lastReadRecovery.message, /shard-0000/);
+    assert.equal(await readFile(path.join(root, "state/embeddings/shard-0000.json"), "utf-8"), SHARD_FILE);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Codex PRRT_kwDORJXyws6mZ72r — symlinked generation dir / members are
+// rejected at read and mutation boundaries; planted links must never serve
+// or write through to paths outside the state directory.
+// ---------------------------------------------------------------------------
+
+test("a symlinked embedding shard directory is rejected at the layout and read boundaries", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb-symlink-dir-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-emb-symlink-outside-"));
+  try {
+    // Use a shard whose entry id hashes to the same shard name so a
+    // successful parse would otherwise validate; the symlink boundary must
+    // throw BEFORE any shard membership check.
+    const shardNameForId = (id: string): string => {
+      let h = 0x811c9dc5;
+      for (let i = 0; i < id.length; i++) {
+        h ^= id.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+      }
+      return `shard-${String(h % 64).padStart(4, "0")}.json`;
+    };
+    const fixtureId = "mem-old";
+    const fixtureShard = shardNameForId(fixtureId);
+    await mkdir(path.join(outside, "embeddings"), { recursive: true });
+    await writeFile(
+      path.join(outside, "embeddings", fixtureShard),
+      JSON.stringify({
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: { [fixtureId]: { vector: [1, 0], path: "facts/old.md" } },
+      }),
+      "utf-8",
+    );
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    await symlink(path.join(outside, "embeddings"), path.join(stateDir, "embeddings"), "dir");
+    assert.equal((await (await import("node:fs/promises")).lstat(path.join(stateDir, "embeddings"))).isSymbolicLink(), true, "fixture assumption: state/embeddings must be a symlink");
+    const store = newStore(memoryDir);
+
+    await assert.rejects(
+      () => store.detectLayout(),
+      (err: unknown) => err instanceof EmbeddingIndexStorageError && /symlink/.test(err.message),
+    );
+    await assert.rejects(
+      () => store.readShardGenerationInto({}),
+      (err: unknown) => err instanceof EmbeddingIndexStorageError && /symlink/.test(err.message),
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked shard member pointing outside the state dir is rejected on read", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb-symlink-mem-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-emb-symlink-mem-out-"));
+  try {
+    const shardDir = path.join(memoryDir, "state", "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    const fixtureId = "mem-old";
+    let h = 0x811c9dc5;
+    for (let i = 0; i < fixtureId.length; i++) {
+      h ^= fixtureId.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    const fixtureShard = `shard-${String(h % 64).padStart(4, "0")}.json`;
+    await writeFile(
+      path.join(outside, "planted.json"),
+      JSON.stringify({
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: { [fixtureId]: { vector: [1, 0], path: "facts/old.md" } },
+      }),
+      "utf-8",
+    );
+    await symlink(
+      path.join(outside, "planted.json"),
+      path.join(shardDir, fixtureShard),
+    );
+    const store = newStore(memoryDir);
+    await assert.rejects(
+      () => store.readShardGenerationInto({}),
+      (err: unknown) =>
+        err instanceof EmbeddingIndexStorageError &&
+        (/symlink/.test(err.message) || /escapes the state directory/.test(err.message)),
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
