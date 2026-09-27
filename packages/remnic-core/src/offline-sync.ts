@@ -1774,8 +1774,7 @@ export async function applyOfflineSyncSnapshot(options: {
   for (const result of transactionResults) {
     if (result.deferredLocalDivergence) {
       for (const relPath of result.handledPaths) deferredPaths.add(relPath);
-      const member = embeddingGenerationMembership(result.handledPaths.values().next().value ?? "");
-      if (member) deferredGenerationDirs.add(member.shardDir);
+      deferredGenerationDirs.add(result.shardDirRel);
       continue;
     }
     generationUpserted += result.upserted;

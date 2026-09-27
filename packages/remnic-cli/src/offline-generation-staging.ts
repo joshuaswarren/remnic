@@ -63,9 +63,35 @@ export function generationMembersForStagedTransport(options: {
     .sort((left, right) => right.bytes - left.bytes || left.path.localeCompare(right.path));
 }
 
+/** Reject redirected staging roots before enumeration or mutation. */
+async function assertPrivateOfflineDir(offlineDir: string): Promise<void> {
+  const info = await lstat(offlineDir).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (info && (info.isSymbolicLink() || !info.isDirectory())) {
+    throw new Error("offline-sync staging directory must be a real directory, not a symlink");
+  }
+}
+
+async function removeStage(offlineDir: string, stage: string): Promise<void> {
+  await assertPrivateOfflineDir(offlineDir);
+  const info = await lstat(stage).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (info?.isDirectory() && !info.isSymbolicLink()) {
+    await rm(stage, { recursive: true, force: true });
+  }
+}
+
 /** Reclaim only same-host stages whose recorded process no longer exists. */
 async function reclaimAbandonedGenerationStages(offlineDir: string): Promise<void> {
-  const names = await readdir(offlineDir).catch(() => [] as string[]);
+  await assertPrivateOfflineDir(offlineDir);
+  const names = await readdir(offlineDir).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [] as string[];
+    throw error;
+  });
   for (const name of names) {
     if (!name.startsWith(GENERATION_STAGING_PREFIX)) continue;
     const dir = path.join(offlineDir, name);
@@ -80,7 +106,7 @@ async function reclaimAbandonedGenerationStages(offlineDir: string): Promise<voi
         // EPERM/unknown ownership and reused PIDs are conservative keeps.
         // Age alone never proves that an oversized transfer is abandoned.
         if ((error as NodeJS.ErrnoException).code === "ESRCH") {
-          await rm(dir, { recursive: true, force: true });
+          await removeStage(offlineDir, dir);
         }
       }
     } catch {
@@ -127,6 +153,7 @@ export async function stageGenerationMembersForApply(options: {
   if (candidates.length === 0) return noop;
 
   await mkdir(offlineDir, { recursive: true });
+  await assertPrivateOfflineDir(offlineDir);
   const stagingRoot = await mkdtemp(path.join(offlineDir, GENERATION_STAGING_PREFIX));
   try {
     await writeFile(path.join(stagingRoot, "owner.json"), JSON.stringify({
@@ -202,11 +229,11 @@ export async function stageGenerationMembersForApply(options: {
         });
       },
       cleanup: async () => {
-        await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+        await removeStage(offlineDir, stagingRoot).catch(() => {});
       },
     };
   } catch (error) {
-    await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+    await removeStage(offlineDir, stagingRoot).catch(() => {});
     throw error;
   }
 }

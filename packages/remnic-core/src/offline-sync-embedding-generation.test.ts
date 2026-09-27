@@ -2040,6 +2040,27 @@ test("late whole-generation deferral retains a locally deleted base-only shard",
   }
 });
 
+test("late whole-generation removal deferral keeps base when no handled paths survive", async () => {
+  const root = await tempDir("remnic-3148-empty-generation-deferral");
+  try {
+    const relPath = "state/embeddings/shard-0000.json";
+    const body = serializeIndex(indexFile("openai", "m", {}));
+    const baseFiles = [{ path: relPath, sha256: createHash("sha256").update(body).digest("hex"), bytes: Buffer.byteLength(body), mtimeMs: 1 }];
+    const snapshot: OfflineSyncSnapshot = {
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT, schemaVersion: 1,
+      createdAt: "2026-09-27T00:00:00.000Z", sourceId: "remote",
+      includeTranscripts: true, files: [], deletions: [{ path: relPath, mtimeMs: 1 }],
+    };
+    // The caller's census is stale: the last member was deleted locally
+    // before the transaction acquired the generation lock.
+    const result = await applyOfflineSyncSnapshot({ root, snapshot, baseFiles, currentFiles: baseFiles });
+    assert.ok(result.nextBaseFiles.some((file) => file.path === relPath), "local deletion must remain in the shared base for the next sync");
+    assert.equal(result.deleted, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("streamed omission header fails closed when an excluded shard appears after header construction", async () => {
   const root = await tempDir("remnic-3148-omission-race");
   try {

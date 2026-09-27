@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -735,4 +735,32 @@ test("locally diverged generation members defer their whole generation", async (
     currentFiles: [{ path: "state/buffer.json", sha256: "diverged" }],
   });
   assert.deepEqual(unrelated, []);
+});
+
+test("generation staging rejects a symlinked offline root without touching external stages", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-staging-link-vault-"));
+  const external = await mkdtemp(path.join(os.tmpdir(), "remnic-staging-link-external-"));
+  try {
+    const { spawn } = await import("node:child_process");
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", () => resolve());
+    });
+    assert.ok(child.pid);
+    const stage = path.join(external, "generation-incoming-abandoned");
+    await mkdir(stage);
+    await writeFile(path.join(stage, "owner.json"), JSON.stringify({ pid: child.pid, hostname: os.hostname() }));
+    await writeFile(path.join(stage, "payload"), "keep");
+    await symlink(external, path.join(memoryDir, ".offline-sync"));
+    const { stageGenerationMembersForApply } = await import("./offline-generation-staging.js");
+    await assert.rejects(stageGenerationMembersForApply({
+      memoryDir, remoteUrl: "http://stub", token: "t", includeTranscripts: true,
+      incomingFiles: [], minBytes: 1024, hydrateFileContent: async () => { throw new Error("unexpected fetch"); },
+    }), /symlink|offline.sync|directory/i);
+    assert.equal(await readFile(path.join(stage, "payload"), "utf-8"), "keep");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(external, { recursive: true, force: true });
+  }
 });

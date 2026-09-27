@@ -191,6 +191,7 @@ export interface EmbeddingGenerationTransactionInput {
 }
 
 export interface EmbeddingGenerationTransactionResult {
+  shardDirRel: string;
   upserted: number;
   deleted: number;
   /** nextBase states for files the transaction published. */
@@ -345,6 +346,7 @@ export async function applyEmbeddingGenerationTransaction(
           `embedding generation ${shardDirRel} deferred: disk diverged from the shared base under the mutation lock (${deferrals.length > 0 ? deferrals.join(", ") : "generation membership changed since base"}); nothing published, nothing removed`,
         );
         return {
+          shardDirRel,
           upserted: 0,
           deleted: 0,
           writtenStates: new Map<string, OfflineSyncFileState>(),
@@ -506,6 +508,7 @@ export async function applyEmbeddingGenerationTransaction(
         }
       }
       return {
+        shardDirRel,
         upserted: published.size,
         deleted,
         writtenStates,
@@ -785,6 +788,7 @@ export async function applyEmbeddingGenerationRemoval(
           `embedding generation removal ${shardDirRel} deferred: disk diverged from the shared base under the mutation lock; local generation preserved`,
         );
         return {
+          shardDirRel,
           upserted: 0,
           deleted: 0,
           writtenStates: new Map<string, OfflineSyncFileState>(),
@@ -838,6 +842,7 @@ export async function applyEmbeddingGenerationRemoval(
     }
     if (firstError) throw firstError;
     return {
+      shardDirRel,
       upserted: 0,
       deleted,
       writtenStates: new Map(),
