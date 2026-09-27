@@ -702,9 +702,11 @@ export function divergedEmbeddingGenerationDeferrals(options: {
   }
   if (conflictedDirs.size === 0) return [];
   const deferred: string[] = [];
-  for (const incoming of options.incomingFiles) {
-    const membership = embeddingGenerationMembership(incoming.path);
-    if (membership && conflictedDirs.has(membership.shardDir)) deferred.push(incoming.path);
+  // Include local/base members too: an all-absent remote generation still
+  // needs a concrete deferral so its removal cannot erase a local change.
+  for (const relPath of new Set([...base.keys(), ...current.keys(), ...incomingByPath.keys()])) {
+    const membership = embeddingGenerationMembership(relPath);
+    if (membership && conflictedDirs.has(membership.shardDir)) deferred.push(relPath);
   }
   return deferred.sort((left, right) => left.localeCompare(right));
 }

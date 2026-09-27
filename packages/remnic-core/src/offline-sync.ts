@@ -1610,7 +1610,7 @@ export async function applyOfflineSyncSnapshot(options: {
   const deferredGenerationDirs = new Set<string>();
   for (const deferredPath of deferredPaths) {
     const membership = embeddingGenerationMembership(deferredPath);
-    if (membership && generationDirs.has(membership.shardDir)) {
+    if (membership) {
       deferredGenerationDirs.add(membership.shardDir);
     }
   }

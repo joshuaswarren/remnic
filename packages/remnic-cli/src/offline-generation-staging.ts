@@ -9,7 +9,7 @@
 // atomic generation transaction then consumes the staged bytes via core's
 // `readIncomingFile` apply callback — live paths are only ever touched by
 // the transaction's atomic backup-swap.
-import { lstat, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { StorageManager, embeddingGenerationMembership } from "@remnic/core";
@@ -25,13 +25,6 @@ type HydrateOfflineFileContentFn = typeof hydrateOfflineFileContent;
 
 /** Sync-internal staging prefix under `<memoryDir>/.offline-sync/`. */
 const GENERATION_STAGING_PREFIX = "generation-incoming-";
-
-/**
- * Age in ms before a staging root is treated as a crash orphan — mirrors the
- * decrypt-staging policy (#2033 P1). A normal run removes its root in
- * `finally`; this bounds accumulation after a hard crash.
- */
-const GENERATION_STAGING_ORPHAN_MS = 60 * 60 * 1000;
 
 export interface GenerationStagedTransport {
   /** Generation member paths routed through the staged transport. */
@@ -67,28 +60,6 @@ export function generationMembersForStagedTransport(options: {
         embeddingGenerationMembership(file.path) !== null
     )
     .sort((left, right) => right.bytes - left.bytes || left.path.localeCompare(right.path));
-}
-
-async function sweepOrphanGenerationStaging(offlineDir: string): Promise<void> {
-  let entries: string[];
-  try {
-    entries = await readdir(offlineDir);
-  } catch {
-    return;
-  }
-  const now = Date.now();
-  for (const name of entries) {
-    if (!name.startsWith(GENERATION_STAGING_PREFIX)) continue;
-    try {
-      const dir = path.join(offlineDir, name);
-      const info = await lstat(dir);
-      if (!info.isDirectory() || info.isSymbolicLink()) continue;
-      if (now - info.mtimeMs < GENERATION_STAGING_ORPHAN_MS) continue;
-      await rm(dir, { recursive: true, force: true });
-    } catch {
-      // best-effort: skip entries that vanish or cannot be removed
-    }
-  }
 }
 
 /**
@@ -127,7 +98,8 @@ export async function stageGenerationMembersForApply(options: {
   if (candidates.length === 0) return noop;
 
   const offlineDir = path.join(options.memoryDir, ".offline-sync");
-  await sweepOrphanGenerationStaging(offlineDir);
+  // ponytail: crash remnants stay excluded; reclaim only with ownership proof,
+  // never by age alone (a large active transfer can outlive that cutoff).
   await mkdir(offlineDir, { recursive: true });
   const stagingRoot = await mkdtemp(path.join(offlineDir, GENERATION_STAGING_PREFIX));
   try {

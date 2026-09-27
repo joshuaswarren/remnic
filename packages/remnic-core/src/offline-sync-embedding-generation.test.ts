@@ -422,8 +422,8 @@ test("a receiver keeps an omitted generation instead of deleting it", async () =
     await write(localRoot, "state/embeddings/shard-0000.json", "local 0000");
     await write(localRoot, "state/embeddings/shard-0001.json", "local 0001");
     const baseFiles = [
-      { path: "state/embeddings/shard-0000.json", sha256: "0".repeat(64), bytes: 11, mtimeMs: 1 },
-      { path: "state/embeddings/shard-0001.json", sha256: "1".repeat(64), bytes: 11, mtimeMs: 1 },
+      { path: "state/embeddings/shard-0000.json", sha256: sha256Of("local 0000"), bytes: Buffer.byteLength("local 0000"), mtimeMs: 1 },
+      { path: "state/embeddings/shard-0001.json", sha256: sha256Of("local 0001"), bytes: Buffer.byteLength("local 0001"), mtimeMs: 1 },
     ];
     const snapshot: OfflineSyncSnapshot = {
       format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
@@ -459,7 +459,7 @@ test("an absent generation WITHOUT the omission marker still converges by deleti
   const localRoot = await tempDir("remnic-3148-absent-delete");
   try {
     await write(localRoot, "state/embeddings/shard-0000.json", "local 0000");
-    const baseFiles = [{ path: "state/embeddings/shard-0000.json", sha256: "0".repeat(64), bytes: 11, mtimeMs: 1 }];
+    const baseFiles = [{ path: "state/embeddings/shard-0000.json", sha256: sha256Of("local 0000"), bytes: Buffer.byteLength("local 0000"), mtimeMs: 1 }];
     const snapshot: OfflineSyncSnapshot = {
       format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
       schemaVersion: 1,
@@ -1362,7 +1362,7 @@ test("a wholly-local generation with no base or tombstone evidence is preserved"
   }
 });
 
-test("mixed base and local-only extras are removed as one unit", async () => {
+test("remote deletion preserves a shared generation with local-only additions as one unit", async () => {
   const localRoot = await tempDir("remnic-3148-mixed-unit");
   try {
     await write(localRoot, trueShardRel("shared"), serializeIndex(indexFile("openai", "m", {
@@ -1388,11 +1388,11 @@ test("mixed base and local-only extras are removed as one unit", async () => {
       files: [],
     };
     const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot, baseFiles });
-    // The shared member's remote absence removes the WHOLE generation,
-    // including the local-only extra shard — never a partial delete.
-    assert.equal(await existsQuiet(localRoot, trueShardRel("shared")), false);
-    assert.equal(await existsQuiet(localRoot, trueShardRel("extra")), false);
-    assert.equal(result.deleted >= 2, true);
+    // The local addition conflicts with remote deletion: preserve the WHOLE
+    // generation rather than deleting the shared member or the added shard.
+    assert.equal(await existsQuiet(localRoot, trueShardRel("shared")), true);
+    assert.equal(await existsQuiet(localRoot, trueShardRel("extra")), true);
+    assert.equal(result.deleted, 0);
   } finally {
     await rm(localRoot, { recursive: true, force: true });
   }
@@ -1610,6 +1610,9 @@ test("generation deferral includes added and removed shards but not initial impo
   const added = { path: trueShardRel("extra"), sha256: "new-local" };
   assert.deepEqual(divergedEmbeddingGenerationDeferrals({
     baseFiles: [existing], incomingFiles: [existing], currentFiles: [existing, added],
+  }), [existing.path, added.path].sort());
+  assert.deepEqual(divergedEmbeddingGenerationDeferrals({
+    baseFiles: [existing], incomingFiles: [], currentFiles: [{ ...existing, sha256: "modified" }],
   }), [existing.path]);
   assert.deepEqual(divergedEmbeddingGenerationDeferrals({
     baseFiles: [existing], incomingFiles: [existing], currentFiles: [],

@@ -621,6 +621,14 @@ test("staged generation transport encrypts staging bytes at rest and serves AAD-
       });
     }) as typeof fetch;
 
+    // Root mtime does not establish orphanhood: an active transfer writes
+    // nested upload files and may be older than the former one-hour cutoff.
+    const activeName = "generation-incoming-active";
+    const activeDir = path.join(memoryDir, ".offline-sync", activeName);
+    await mkdir(activeDir, { recursive: true });
+    await writeFile(path.join(activeDir, "still-active"), "keep");
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await utimes(activeDir, twoHoursAgo, twoHoursAgo);
     const transport = await stageGenerationMembersForApply({
       memoryDir,
       remoteUrl: "http://stub",
@@ -632,7 +640,8 @@ test("staged generation transport encrypts staging bytes at rest and serves AAD-
     });
     try {
       const offlineDir = path.join(memoryDir, ".offline-sync");
-      const stagingDir = (await readdir(offlineDir)).find((entry) => entry.startsWith("generation-incoming-"));
+      const stagingDir = (await readdir(offlineDir)).find((entry) => entry.startsWith("generation-incoming-") && entry !== activeName);
+      assert.equal(await readFile(path.join(activeDir, "still-active"), "utf-8"), "keep");
       assert.ok(stagingDir, "the private staging root must exist during transport");
       const stagedFile = path.join(offlineDir, stagingDir, "state", "embeddings.json");
       const raw = await readFile(stagedFile);
@@ -670,7 +679,7 @@ test("staged generation transport encrypts staging bytes at rest and serves AAD-
     }
     const offlineEntries = await readdir(path.join(memoryDir, ".offline-sync"));
     assert.equal(
-      offlineEntries.some((entry) => entry.startsWith("generation-incoming-")),
+      offlineEntries.some((entry) => entry.startsWith("generation-incoming-") && entry !== activeName),
       false,
       "cleanup must remove the staging root",
     );
