@@ -481,3 +481,38 @@ test("a >=16MiB changed shard hydrates via content fetch and applies atomically;
     await rm(remoteRoot, { recursive: true, force: true });
   }
 });
+
+
+test("locally diverged generation members defer their whole generation", async () => {
+  const { divergedEmbeddingGenerationDeferrals } = await import("./index.js");
+  const baseFiles = [
+    { path: "state/embeddings/shard-0000.json", sha256: "base0", bytes: 10, mtimeMs: 1 },
+    { path: "state/embeddings/shard-0012.json", sha256: "base1", bytes: 10, mtimeMs: 1 },
+  ];
+  const incomingFiles = [
+    // Unchanged vs base: no conflict (the transaction hydrates locally).
+    { path: "state/embeddings/shard-0012.json", sha256: "base1" },
+    // Locally diverged AFTER the base while the remote still serves the base
+    // bytes: the daemon indexed between push and pull.
+    { path: "state/embeddings/shard-0000.json", sha256: "base0" },
+  ];
+  const currentFiles = [
+    { path: "state/embeddings/shard-0000.json", sha256: "diverged", bytes: 10, mtimeMs: 2 },
+    { path: "state/embeddings/shard-0012.json", sha256: "base1", bytes: 10, mtimeMs: 1 },
+  ];
+  const deferred = divergedEmbeddingGenerationDeferrals({
+    incomingFiles, baseFiles, currentFiles,
+  });
+  // Every incoming member of the conflicted generation is deferred together.
+  assert.deepEqual(deferred, [
+    "state/embeddings/shard-0000.json",
+    "state/embeddings/shard-0012.json",
+  ]);
+  // Unrelated runtime files never defer.
+  const unrelated = divergedEmbeddingGenerationDeferrals({
+    incomingFiles: [{ path: "state/buffer.json", sha256: "x" }],
+    baseFiles: [{ path: "state/buffer.json", sha256: "base" }],
+    currentFiles: [{ path: "state/buffer.json", sha256: "diverged", bytes: 1, mtimeMs: 2 }],
+  });
+  assert.deepEqual(unrelated, []);
+});

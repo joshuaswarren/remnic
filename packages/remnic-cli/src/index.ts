@@ -8677,6 +8677,12 @@ export async function runOfflineSyncOnce(options: {
     excludeNodeLocalState: false,
   });
   const applyCurrentSnapshot = await buildCurrentSnapshotForApply();
+  const generationDeferrals = divergedEmbeddingGenerationDeferrals({
+    incomingFiles: remoteSnapshotMetadata.files,
+    baseFiles: syncBaseFiles,
+    currentFiles: applyCurrentSnapshot.files,
+  });
+  const pullDeferredPaths = [...remoteDeferredPaths, ...generationDeferrals];
   let remoteSnapshot: Awaited<ReturnType<typeof hydrateOfflineSnapshotContent>>;
   try {
     remoteSnapshot = await hydrateOfflineSnapshotContent({
@@ -8687,7 +8693,7 @@ export async function runOfflineSyncOnce(options: {
       snapshot: remoteSnapshotMetadata,
       baseFiles: syncBaseFiles,
       currentFiles: applyCurrentSnapshot.files,
-      deferredPaths: [...remoteDeferredPaths],
+      deferredPaths: pullDeferredPaths,
       missingContentDeferredPaths: remoteDeferredPaths,
     });
   } catch (error) {
@@ -8705,7 +8711,7 @@ export async function runOfflineSyncOnce(options: {
       snapshot: remoteSnapshot,
       baseFiles: syncBaseFiles,
       currentFiles: latestApplySnapshot.files,
-      deferredPaths: [...remoteDeferredPaths],
+      deferredPaths: pullDeferredPaths,
       allowMissingConflictContent: true,
       readFile: storageIo.readFile,
       readFileDigest: storageIo.readFileDigest,
@@ -8735,7 +8741,7 @@ export async function runOfflineSyncOnce(options: {
         snapshot: remoteSnapshotMetadata,
         baseFiles: syncBaseFiles,
         currentFiles: applyCurrentSnapshot.files,
-        deferredPaths: [...remoteDeferredPaths],
+        deferredPaths: pullDeferredPaths,
         missingContentDeferredPaths: remoteDeferredPaths,
       });
     } catch (retryError) {
@@ -8754,7 +8760,7 @@ export async function runOfflineSyncOnce(options: {
         snapshot: retrySnapshot,
         baseFiles: syncBaseFiles,
         currentFiles: latestRetryApplySnapshot.files,
-        deferredPaths: [...remoteDeferredPaths],
+        deferredPaths: pullDeferredPaths,
         allowMissingConflictContent: true,
         readFile: storageIo.readFile,
         readFileDigest: storageIo.readFileDigest,
@@ -13313,4 +13319,39 @@ if (
       process.stderr.write(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
       process.exit(1);
     });
+}
+
+/**
+ * Locally diverged embedding generation members (incoming == base but the
+ * daemon indexed locally after the push) must defer their WHOLE generation:
+ * the content-hydration fallback would read the divergent local bytes, fail
+ * the incoming digest check, and abort the entire pull, while a per-file
+ * retry would expose a mixed generation (issue #3148, codex round 6).
+ * Returns the incoming member paths whose generation must be deferred.
+ */
+export function divergedEmbeddingGenerationDeferrals(options: {
+  incomingFiles: readonly { path: string; sha256: string }[];
+  baseFiles: readonly { path: string; sha256: string }[];
+  currentFiles: readonly { path: string; sha256: string }[];
+}): string[] {
+  const base = new Map(options.baseFiles.map((f) => [f.path, f.sha256]));
+  const current = new Map(options.currentFiles.map((f) => [f.path, f.sha256]));
+  const incomingByPath = new Map(options.incomingFiles.map((f) => [f.path, f.sha256]));
+  const conflictedDirs = new Set<string>();
+  for (const incoming of options.incomingFiles) {
+    const membership = embeddingGenerationMembership(incoming.path);
+    if (!membership) continue;
+    const baseSha = base.get(incoming.path);
+    const currentSha = current.get(incoming.path);
+    if (baseSha !== undefined && currentSha !== undefined && currentSha !== incoming.sha256 && incoming.sha256 === baseSha) {
+      conflictedDirs.add(membership.shardDir);
+    }
+  }
+  if (conflictedDirs.size === 0) return [];
+  const deferred: string[] = [];
+  for (const incoming of options.incomingFiles) {
+    const membership = embeddingGenerationMembership(incoming.path);
+    if (membership && conflictedDirs.has(membership.shardDir)) deferred.push(incoming.path);
+  }
+  return deferred.sort((left, right) => left.localeCompare(right));
 }
