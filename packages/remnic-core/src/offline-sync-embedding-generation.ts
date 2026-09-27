@@ -883,3 +883,177 @@ export function divergedEmbeddingGenerationDeferrals(options: {
   }
   return deferred.sort((left, right) => left.localeCompare(right));
 }
+
+// ---------------------------------------------------------------------------
+// Snapshot-side generation routing, extracted from applyOfflineSyncSnapshot
+// for issue #3150 so the changeset path could share the machinery without
+// growing the offline-sync.ts ratchet ceiling. Behavior-preserving.
+// ---------------------------------------------------------------------------
+
+export interface IncomingEmbeddingGenerationApply {
+  transactionResults: EmbeddingGenerationTransactionResult[];
+  deferredGenerationDirs: Set<string>;
+}
+
+export interface IncomingEmbeddingGenerationApplyOptions {
+  root: SafeArchiveRoot;
+  incomingMap: ReadonlyMap<string, OfflineSyncFileState>;
+  incomingBuffers: ReadonlyMap<string, Buffer>;
+  baseMap: ReadonlyMap<string, OfflineSyncFileState>;
+  currentMap: ReadonlyMap<string, OfflineSyncFileState>;
+  deferredPaths: ReadonlySet<string>;
+  omittedGenerationDirs: ReadonlySet<string>;
+  deletionMtimeByPath?: ReadonlyMap<string, number>;
+  io: EmbeddingGenerationTransactionIo;
+  /** True when the caller supplied ANY custom storage IO. */
+  customIoPresent: boolean;
+  now: number;
+}
+
+/**
+ * Snapshot-side generation routing, extracted from applyOfflineSyncSnapshot
+ * for issue #3150 (the changeset path needed the same machinery and the
+ * offline-sync.ts line ratchet had no headroom). Incoming generations replace
+ * as ONE unit through the shared locked transaction. Behavior-preserving —
+ * the #3148 regression suites own this contract.
+ */
+export async function applyIncomingEmbeddingGenerations(
+  options: IncomingEmbeddingGenerationApplyOptions,
+): Promise<IncomingEmbeddingGenerationApply> {
+  const incomingGenerations = detectIncomingEmbeddingGenerations(options.incomingMap.keys());
+  const generationDirs = new Set<string>([
+    ...incomingGenerations.shardDirs,
+    ...incomingGenerations.legacyMarkerDirs,
+  ]);
+  const deferredGenerationDirs = new Set<string>();
+  for (const deferredPath of options.deferredPaths) {
+    const membership = embeddingGenerationMembership(deferredPath);
+    if (membership) deferredGenerationDirs.add(membership.shardDir);
+  }
+  const transactionResults: EmbeddingGenerationTransactionResult[] = [];
+  // Included and omitted cannot describe the same generation.
+  for (const shardDir of generationDirs) {
+    if (options.omittedGenerationDirs.has(shardDir)) {
+      throw new EmbeddingIndexStorageError(
+        `offline sync snapshot both includes and omits embedding generation ${shardDir}; refusing to apply`,
+      );
+    }
+  }
+  // Fail closed BEFORE any publication: custom storage IO (encrypted or
+  // otherwise) without the staging pair would make the generation transaction
+  // fall back to unencrypted raw writes — a plaintext downgrade of the staged
+  // generation. Callers must wire both staging hooks (the CLI does).
+  if (
+    generationDirs.size > 0 &&
+    options.customIoPresent &&
+    !(options.io.writeStagingFile && options.io.readStagingFile)
+  ) {
+    throw new EmbeddingIndexStorageError(
+      "refusing to replace embedding generation: custom storage IO requires both writeStagingFile and readStagingFile hooks; unencrypted raw staging would plaintext-downgrade the index",
+    );
+  }
+  for (const shardDir of generationDirs) {
+    if (deferredGenerationDirs.has(shardDir)) continue;
+    if (
+      incomingGenerations.legacyMarkerDirs.has(shardDir) &&
+      !incomingGenerations.shardDirs.has(shardDir)
+    ) {
+      // Cross-layout: an incoming legacy marker replaces a local sharded
+      // generation as a whole (codex round 4). When shards are ALSO
+      // incoming, the sharded set is the generation and the marker is
+      // written as an inert artifact by the per-file loop below.
+      const markerRel = [...options.incomingMap.keys()].find(
+        (relPath) => embeddingMarkerDirOf(relPath) === shardDir.slice(0, -`/${EMBEDDING_SHARD_DIR_BASENAME}`.length),
+      );
+      if (!markerRel) continue;
+      transactionResults.push(await applyEmbeddingGenerationTransaction({
+        root: options.root,
+        shardDirRel: shardDir,
+        incomingShardPaths: [],
+        incomingMarker: {
+          path: markerRel,
+          sha256: options.incomingMap.get(markerRel)!.sha256,
+          buffer: options.incomingBuffers.get(markerRel) ?? null,
+        },
+        incomingMarkerPresent: false,
+        incomingShardStates: new Map(),
+        incomingBuffers: options.incomingBuffers,
+        baseStates: options.baseMap,
+        io: options.io,
+        now: options.now,
+      }));
+      continue;
+    }
+    transactionResults.push(await applyEmbeddingGenerationTransaction({
+      root: options.root,
+      shardDirRel: shardDir,
+      incomingShardPaths: [...options.incomingMap.keys()]
+        .filter((relPath) => embeddingShardDirOf(relPath) === shardDir)
+        .sort(),
+      incomingMarker: null,
+      incomingMarkerPresent: Boolean(
+        incomingGenerations.legacyMarkerDirs.has(shardDir),
+      ),
+      incomingShardStates: new Map(
+        [...options.incomingMap.values()]
+          .filter((state) => embeddingShardDirOf(state.path) === shardDir)
+          .map((state) => [state.path, state]),
+      ),
+      incomingBuffers: options.incomingBuffers,
+      baseStates: options.baseMap,
+      io: options.io,
+      now: options.now,
+    }));
+  }
+  // Whole-generation removal (codex round 6 P1): when the remote deleted a
+  // previously shared sharded index, the deletion revisions cover EVERY
+  // local member. Remove that generation as ONE atomic swap instead of
+  // deleting shards one-by-one, so a crash or delete failure can never
+  // expose a partial same-identity generation serving missing memories.
+  const localGenerationDirs = new Set<string>();
+  for (const relPath of options.currentMap.keys()) {
+    const membership = embeddingGenerationMembership(relPath);
+    if (membership?.kind === "shard") localGenerationDirs.add(membership.shardDir);
+  }
+  for (const shardDir of localGenerationDirs) {
+    if (
+      generationDirs.has(shardDir) ||
+      deferredGenerationDirs.has(shardDir) ||
+      options.omittedGenerationDirs.has(shardDir)
+    ) {
+      continue;
+    }
+    const localMembers = [...options.currentMap.keys()].filter(
+      (relPath) => embeddingGenerationMembership(relPath)?.shardDir === shardDir,
+    );
+    if (localMembers.length === 0) continue;
+    // Tombstone or shared-base absence authorizes whole-generation removal.
+    const baseMembers = localMembers.filter((relPath) => options.baseMap.has(relPath));
+    // Tombstone evidence is satisfied by the members the REMOTE knew: the
+    // remote cannot tombstone local-only extras or an inert legacy marker,
+    // and the removal sweeps those once the remote deletion is established.
+    // Non-empty same-generation tombstones establish remote absence on
+    // their own: they may name shards already absent locally (removed in an
+    // earlier round), so the set is NOT required to intersect localMembers
+    // (codex round 6, XiOb).
+    const tombstonedMembers =
+      options.deletionMtimeByPath === undefined
+        ? []
+        : [...options.deletionMtimeByPath.keys()].filter(
+            (relPath) => embeddingGenerationMembership(relPath)?.shardDir === shardDir,
+          );
+    const tombstoneCovered = tombstonedMembers.length > 0;
+    const baseEvidenced =
+      baseMembers.length > 0 && baseMembers.every((relPath) => !options.incomingMap.has(relPath));
+    if (!tombstoneCovered && !baseEvidenced) continue;
+    transactionResults.push(await applyEmbeddingGenerationRemoval({
+      root: options.root,
+      shardDirRel: shardDir,
+      io: { deleteFile: options.io.deleteFile, readFile: options.io.readFile },
+      deletionMtimeByPath: options.deletionMtimeByPath,
+      baseStates: options.baseMap,
+      now: options.now,
+    }));
+  }
+  return { transactionResults, deferredGenerationDirs };
+}
