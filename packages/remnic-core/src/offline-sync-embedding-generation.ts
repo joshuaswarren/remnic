@@ -678,3 +678,33 @@ export async function applyEmbeddingGenerationRemoval(
     handledPaths: new Set(removedPaths),
   };
 }
+
+/** Defer a whole generation when the shared remote base would erase a local change. */
+export function divergedEmbeddingGenerationDeferrals(options: {
+  incomingFiles: readonly { path: string; sha256: string }[];
+  baseFiles: readonly { path: string; sha256: string }[];
+  currentFiles: readonly { path: string; sha256: string }[];
+}): string[] {
+  const base = new Map(options.baseFiles.map((f) => [f.path, f.sha256]));
+  const current = new Map(options.currentFiles.map((f) => [f.path, f.sha256]));
+  const incomingByPath = new Map(options.incomingFiles.map((f) => [f.path, f.sha256]));
+  const sharedDirs = new Set(options.baseFiles.map((f) => embeddingGenerationMembership(f.path)?.shardDir));
+  const conflictedDirs = new Set<string>();
+  for (const relPath of new Set([...base.keys(), ...current.keys(), ...incomingByPath.keys()])) {
+    const membership = embeddingGenerationMembership(relPath);
+    // Without a shared generation base this is an initial remote-authoritative
+    // import, not evidence of local indexing after a synchronized snapshot.
+    if (!membership || !sharedDirs.has(membership.shardDir)) continue;
+    const currentSha = current.get(relPath);
+    if (currentSha !== base.get(relPath) && currentSha !== incomingByPath.get(relPath)) {
+      conflictedDirs.add(membership.shardDir);
+    }
+  }
+  if (conflictedDirs.size === 0) return [];
+  const deferred: string[] = [];
+  for (const incoming of options.incomingFiles) {
+    const membership = embeddingGenerationMembership(incoming.path);
+    if (membership && conflictedDirs.has(membership.shardDir)) deferred.push(incoming.path);
+  }
+  return deferred.sort((left, right) => left.localeCompare(right));
+}

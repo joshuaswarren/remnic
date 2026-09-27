@@ -552,7 +552,14 @@ export class EmbeddingIndexFileStore {
           `refusing to continue from malformed embedding index shard ${name} (unrecognized format); file preserved in place`,
         );
       }
-      validateShardMembership(name, read.file);
+      try {
+        validateShardMembership(name, read.file);
+      } catch (error) {
+        await this.recordIndexStatus({
+          lastReadRecovery: { ts: new Date().toISOString(), message: String(error) },
+        });
+        throw error;
+      }
       const shardIdentity = { provider: read.file.provider, model: read.file.model };
       if (!identity) identity = shardIdentity;
       if (!sameIndexIdentity(shardIdentity, identity)) {
@@ -808,6 +815,7 @@ export class EmbeddingIndexFileStore {
     // legacy file can never become authoritative after removal. The
     // demoted backup's post-commit cleanup is non-fatal (existing
     // publishSwappedGeneration semantics).
+    await mkdir(path.dirname(this.shardDir), { recursive: true });
     const emptyStaging = await mkdtemp(
       path.join(path.dirname(this.shardDir), "embeddings.staging.tmp-empty-"),
     );

@@ -390,7 +390,7 @@ test("offline sync includes retrieval debug snapshots for full-fidelity offline 
   }
 });
 
-test("offline sync applies shard generations wholesale: base-unchanged locally-modified paths follow incoming, local-only extras are removed, other namespaces untouched (#3146)", async () => {
+test("offline sync defers a whole locally diverged shard generation, preserving extras and other namespaces (#3146)", async () => {
   const localRoot = await tempDir("remnic-offline-embgen-local");
   const remoteRoot = await tempDir("remnic-offline-embgen-remote");
   try {
@@ -432,17 +432,16 @@ test("offline sync applies shard generations wholesale: base-unchanged locally-m
       baseFiles: baseSnapshot.files,
     });
 
-    // Base-unchanged-but-locally-modified same-path shard: the incoming
-    // generation wins (no locally-modified preservation inside a replaced
-    // generation).
-    assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0000.json"), await readUtf8(remoteRoot, "state/embeddings/shard-0000.json"));
-    assert.ok((await readUtf8(localRoot, "state/embeddings/shard-0037.json")).includes("added"));
-    // Local-only shard inside the replaced generation is removed.
-    const removedExists = await exists(localRoot, "state/embeddings/shard-0050.json");
-    assert.equal(removedExists, false);
-    // Unrelated namespace generation is untouched.
+    // An unchanged remote base must not erase local indexing. Deferral is
+    // generation-wide: neither the incoming addition nor deletion of local
+    // extras may partially replace the preserved generation.
+    assert.equal(JSON.parse(await readUtf8(localRoot, "state/embeddings/shard-0000.json")).model, "local-drift");
+    assert.equal(await exists(localRoot, "state/embeddings/shard-0037.json"), false);
+    assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0050.json"), "local only extra");
     assert.equal(await readUtf8(localRoot, "namespaces/team/state/embeddings/shard-0009.json"), "team local");
-    assert.equal(result.deleted >= 1, true);
+    assert.equal(result.deleted, 0);
+    assert.equal(result.upserted, 0);
+    assert.ok(result.skipped >= 2);
   } finally {
     await rm(localRoot, { recursive: true, force: true });
     await rm(remoteRoot, { recursive: true, force: true });
@@ -3298,6 +3297,72 @@ test("plain-file content chunks carry the full-file sha256 (file-content respons
     });
     assert.equal(tail.sha256, first.sha256, "every chunk carries the same whole-file sha");
     assert.equal(tail.chunkBytes, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("applyOfflineSyncSnapshot consumes readIncomingFile for records without inline content", async () => {
+  const root = await tempDir("remnic-offline-read-incoming");
+  try {
+    const oldBody = "old incoming payload";
+    const newBody = "brand new incoming payload";
+    const shaOf = (content: string) => createHash("sha256").update(content).digest("hex");
+    await write(root, "facts/a.md", oldBody);
+    const baseEntry = { path: "facts/a.md", sha256: shaOf(oldBody), bytes: Buffer.byteLength(oldBody), mtimeMs: 1 };
+    const incoming = { path: "facts/a.md", sha256: shaOf(newBody), bytes: Buffer.byteLength(newBody), mtimeMs: 2 };
+    const snapshot = {
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+      schemaVersion: 1,
+      createdAt: new Date().toISOString(),
+      sourceId: "remote",
+      includeTranscripts: true,
+      files: [incoming],
+    };
+    const baseFiles = [baseEntry];
+
+    // (a) The callback supplies the verified incoming buffer; the record
+    // carries no contentBase64 at all.
+    const applied = await applyOfflineSyncSnapshot({
+      root,
+      snapshot,
+      baseFiles,
+      currentFiles: baseFiles,
+      readIncomingFile: async (target) =>
+        target.path === "facts/a.md" && target.sha256 === incoming.sha256 ? Buffer.from(newBody) : null,
+    });
+    assert.equal(applied.upserted, 1);
+    assert.equal(await readUtf8(root, "facts/a.md"), newBody);
+
+    // (b) A callback buffer that does not match the declared digest is
+    // rejected BEFORE any publication; the published file is untouched.
+    await write(root, "facts/a.md", oldBody);
+    await assert.rejects(() =>
+      applyOfflineSyncSnapshot({
+        root,
+        snapshot,
+        baseFiles,
+        currentFiles: baseFiles,
+        readIncomingFile: async () => Buffer.from("tampered payload"),
+      }),
+    );
+    assert.equal(await readUtf8(root, "facts/a.md"), oldBody);
+
+    // (c) null keeps the metadata-only behavior: an unchanged member whose
+    // local hash matches the incoming record needs no content.
+    const unchangedSnapshot = {
+      ...snapshot,
+      files: [{ ...incoming, sha256: shaOf(oldBody), bytes: Buffer.byteLength(oldBody) }],
+    };
+    const skipped = await applyOfflineSyncSnapshot({
+      root,
+      snapshot: unchangedSnapshot,
+      baseFiles,
+      currentFiles: baseFiles,
+      readIncomingFile: async () => null,
+    });
+    assert.equal(skipped.upserted, 0);
+    assert.equal(await readUtf8(root, "facts/a.md"), oldBody);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

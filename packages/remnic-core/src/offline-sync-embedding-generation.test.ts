@@ -1577,3 +1577,47 @@ test("remote tombstones for already-missing shards still sweep the local unit", 
     await rm(localRoot, { recursive: true, force: true });
   }
 });
+
+test("snapshot apply preserves locally diverged generations without CLI deferrals", async () => {
+  const root = await tempDir("remnic-prepare-divergence");
+  try {
+    const relPath = trueShardRel("a1");
+    const baseBody = serializeIndex(indexFile("openai", "m", { a1: { path: "p", vector: [1] } }));
+    const localBody = serializeIndex(indexFile("openai", "m", { a1: { path: "p", vector: [2] } }));
+    const record = { path: relPath, sha256: sha256Of(baseBody), bytes: Buffer.byteLength(baseBody), mtimeMs: 1 };
+    await write(root, relPath, localBody);
+    const result = await applyOfflineSyncSnapshot({
+      root,
+      baseFiles: [record],
+      snapshot: {
+        format: OFFLINE_SYNC_SNAPSHOT_FORMAT, schemaVersion: 1,
+        createdAt: "2026-01-01T00:00:00.000Z", sourceId: "remote", includeTranscripts: true,
+        files: [{ ...record, contentBase64: Buffer.from(baseBody).toString("base64") }],
+      },
+    });
+    assert.equal(await readUtf8(root, relPath), localBody);
+    assert.equal(result.upserted, 0);
+    assert.equal(result.skipped, 1);
+    assert.equal(result.nextBaseFiles.find((file) => file.path === relPath)?.sha256, record.sha256);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("generation deferral includes added and removed shards but not initial imports", async () => {
+  const { divergedEmbeddingGenerationDeferrals } = await import("./offline-sync-embedding-generation.js");
+  const existing = { path: trueShardRel("a1"), sha256: "base" };
+  const added = { path: trueShardRel("extra"), sha256: "new-local" };
+  assert.deepEqual(divergedEmbeddingGenerationDeferrals({
+    baseFiles: [existing], incomingFiles: [existing], currentFiles: [existing, added],
+  }), [existing.path]);
+  assert.deepEqual(divergedEmbeddingGenerationDeferrals({
+    baseFiles: [existing], incomingFiles: [existing], currentFiles: [],
+  }), [existing.path]);
+  assert.deepEqual(divergedEmbeddingGenerationDeferrals({
+    baseFiles: [existing], incomingFiles: [existing, added], currentFiles: [existing, added],
+  }), []);
+  assert.deepEqual(divergedEmbeddingGenerationDeferrals({
+    baseFiles: [], incomingFiles: [existing], currentFiles: [added],
+  }), []);
+});

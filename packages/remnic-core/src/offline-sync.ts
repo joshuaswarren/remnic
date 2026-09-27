@@ -32,6 +32,7 @@ import {
   applyEmbeddingGenerationTransaction,
   computeOmittedEmbeddingGenerationPaths,
   detectIncomingEmbeddingGenerations,
+  divergedEmbeddingGenerationDeferrals,
   embeddingGenerationMembership,
   embeddingMarkerDirOf,
   embeddingShardDirOf,
@@ -1513,6 +1514,15 @@ export async function applyOfflineSyncSnapshot(options: {
   currentFiles?: readonly OfflineSyncFileState[];
   deferredPaths?: readonly string[];
   allowMissingConflictContent?: boolean;
+  /**
+   * Explicit INCOMING content source for snapshot records without inline
+   * `contentBase64` (oversized generation members the client fetched
+   * chunk-wise into a private staging root). Consulted only for such
+   * records; return null to keep the metadata-only behavior (the local
+   * file must hash-match the record). Returned buffers are digest-verified
+   * against the incoming record before anything is published.
+   */
+  readIncomingFile?: (target: { path: string; sha256: string; bytes: number }) => Promise<Buffer | null>;
   writeConflictCopies?: boolean;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
@@ -1531,8 +1541,9 @@ export async function applyOfflineSyncSnapshot(options: {
   const deletionMtimeByPath = snapshot.deletions === undefined
     ? undefined
     : new Map(snapshot.deletions.map((deletion) => [deletion.path, deletion.mtimeMs] as const));
-  const incomingBuffers = verifyRecordContents(snapshot.files, "offline sync snapshot", {
+  const incomingBuffers = await verifyRecordContents(snapshot.files, "offline sync snapshot", {
     requireContent: false,
+    readIncomingFile: options.readIncomingFile,
   });
   const root = await ensureSyncRoot(options.root, "applyOfflineSyncSnapshot");
   const currentFiles = options.currentFiles
@@ -1547,7 +1558,11 @@ export async function applyOfflineSyncSnapshot(options: {
         excludeNodeLocalState: false,
       })).files;
   const currentMap = byPath(currentFiles);
-  const deferredPaths = new Set(options.deferredPaths ?? []);
+  const deferredPaths = new Set([...(options.deferredPaths ?? []),
+    ...divergedEmbeddingGenerationDeferrals({
+      incomingFiles: snapshot.files, baseFiles: [...baseMap.values()], currentFiles,
+    }),
+  ]);
   const omittedGenerationDirs = new Set(snapshot.omittedEmbeddingGenerationDirs ?? []);
   if (deletionMtimeByPath && options.recordDeletionRevision) {
     for (const [relPath, mtimeMs] of deletionMtimeByPath) {
@@ -1981,7 +1996,7 @@ export async function applyOfflineSyncChangeset(options: {
   const records = changeset.changes
     .filter((change): change is Extract<OfflineSyncChange, { type: "upsert" }> => change.type === "upsert")
     .map((change) => change.file);
-  const incomingBuffers = verifyRecordContents(records, "offline sync changeset");
+  const incomingBuffers = await verifyRecordContents(records, "offline sync changeset");
   const currentFiles = options.currentFiles
     ? filterBaseFilesForMode(normalizeFileStates(options.currentFiles), changeset.includeTranscripts).sort(compareByPath)
     : (await buildOfflineSyncSnapshotForPaths({
@@ -2100,14 +2115,37 @@ export async function applyOfflineSyncChangeset(options: {
   };
 }
 
-function verifyRecordContents(
+async function verifyRecordContents(
   records: readonly OfflineSyncFileRecord[],
   context: string,
-  options: { requireContent?: boolean } = {},
-): Map<string, Buffer> {
+  options: {
+    requireContent?: boolean;
+    readIncomingFile?: (target: { path: string; sha256: string; bytes: number }) => Promise<Buffer | null>;
+  } = {},
+): Promise<Map<string, Buffer>> {
   const buffers = new Map<string, Buffer>();
   for (const record of records) {
     if (typeof record.contentBase64 !== "string") {
+      if (options.readIncomingFile) {
+        // Explicit INCOMING content source for records whose bytes travel
+        // out-of-band (chunked fetch into the client's private staging
+        // root). Never the local current-state file: the buffer is
+        // digest-verified against the incoming record before anything is
+        // published. null keeps the metadata-only behavior below.
+        const incoming = await options.readIncomingFile({
+          path: record.path,
+          sha256: record.sha256,
+          bytes: record.bytes,
+        });
+        if (incoming) {
+          const digest = sha256Buffer(incoming);
+          if (digest.sha256 !== record.sha256 || digest.bytes !== record.bytes) {
+            throw new Error(`${context}: incoming content checksum mismatch for ${record.path}`);
+          }
+          buffers.set(record.path, incoming);
+          continue;
+        }
+      }
       if (options.requireContent === false) continue;
       throw new Error(`${context}: contentBase64 is required for ${record.path}`);
     }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -42,6 +42,8 @@ import {
   runOfflineSyncOnce,
   shouldDirectHydrateOfflineFile,
 } from "../packages/remnic-cli/src/index.js";
+import { generationMembersForStagedTransport } from "../packages/remnic-cli/src/offline-generation-staging.js";
+import { runCli } from "../packages/remnic-cli/src/run-cli.js";
 import type { OfflineSyncChangeset, OfflineSyncFileState } from "@remnic/core";
 
 function file(path: string, bytes: number, fill = "0"): OfflineSyncFileState {
@@ -692,13 +694,393 @@ test("offline sync direct hydration covers remote mid-size files", () => {
     }),
     false,
   );
+  // Generation members never direct-hydrate at their live marker/shard
+  // paths; a large changed marker rides the private staged chunk transport
+  // into the atomic generation transaction instead.
+  const legacyMarker = file("namespaces/team/state/embeddings.json", OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES, "b");
   assert.equal(
     shouldDirectHydrateOfflineFile({
-      incoming: file("namespaces/team/state/embeddings.json", OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES, "b"),
+      incoming: legacyMarker,
       base: file("namespaces/team/state/embeddings.json", OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES, "b"),
     }),
-    true,
+    false,
   );
+  assert.deepEqual(
+    generationMembersForStagedTransport({
+      incomingFiles: [legacyMarker],
+      minBytes: OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES,
+    }).map((member) => member.path),
+    [legacyMarker.path],
+  );
+});
+
+function stagedMarkerChunkFetchStub(
+  markerPath: string,
+  markerRecord: OfflineSyncFileState,
+  body: Buffer,
+  maxChunkBytes: number,
+  chunkLengths?: number[],
+): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/remnic/v1/offline-sync/snapshot")) {
+      return new Response(JSON.stringify({
+        format: "remnic.offline-sync.snapshot.v1",
+        schemaVersion: 1,
+        createdAt: "2026-05-31T00:01:00.000Z",
+        sourceId: "remote",
+        namespace: "generalist",
+        includeTranscripts: true,
+        files: [markerRecord],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.endsWith("/remnic/v1/offline-sync/file-content")) {
+      const request = JSON.parse(String(init?.body ?? "{}")) as { offset?: number; length?: number };
+      const offset = request.offset ?? 0;
+      const length = Math.min(maxChunkBytes, request.length ?? body.length, body.length - offset);
+      const content = body.subarray(offset, offset + length);
+      chunkLengths?.push(content.length);
+      return new Response(Uint8Array.from(content), {
+        status: 200,
+        headers: {
+          "x-remnic-file-path": encodeURIComponent(markerPath),
+          "x-remnic-file-sha256": markerRecord.sha256,
+          "x-remnic-file-bytes": String(markerRecord.bytes),
+          "x-remnic-file-mtime-ms": String(markerRecord.mtimeMs),
+          "x-remnic-chunk-offset": String(offset),
+          "x-remnic-chunk-bytes": String(content.length),
+        },
+      });
+    }
+    if (url.pathname.endsWith("/remnic/v1/offline-sync/files")) {
+      throw new Error("the staged generation member must not ride the inline base64 content path");
+    }
+    throw new Error(`unexpected fetch: ${url.pathname}`);
+  }) as typeof fetch;
+}
+
+function stagedMarkerFixture(root: string, newBody: string): {
+  markerPath: string;
+  markerRecord: OfflineSyncFileState;
+  statePath: string;
+} {
+  const markerPath = "state/embeddings.json";
+  const markerRecord = contentFile(markerPath, newBody, 2);
+  const statePath = path.join(root, ".offline-sync", "state", "test.json");
+  return { markerPath, markerRecord, statePath };
+}
+
+test("an oversized changed legacy marker hydrates through the staged chunk transport and publishes atomically", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-staged-marker-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const oldBody = JSON.stringify({
+      version: 1, provider: "openai", model: "m1",
+      entries: { old1: { path: "p-old", vector: [0, 0] } },
+    });
+    const vector = Array.from({ length: 256 }, (_, k) => (k % 5) / 5);
+    const newBody = JSON.stringify({
+      version: 1, provider: "openai", model: "m2",
+      entries: { big1: { path: "p-big", vector }, small: { path: "p-small", vector: [1, 1] } },
+    });
+    await mkdir(path.join(root, "state"), { recursive: true });
+    const { markerPath, markerRecord, statePath } = stagedMarkerFixture(root, newBody);
+    await writeFile(path.join(root, markerPath), oldBody);
+    await writeOfflineSyncState(statePath, {
+      version: 1,
+      remoteId: "http://remnic.test",
+      namespace: "generalist",
+      includeTranscripts: true,
+      lastSyncedAt: "2026-05-31T00:00:00.000Z",
+      baseFiles: [contentFile(markerPath, oldBody, 1)],
+    });
+
+    const chunkLengths: number[] = [];
+    globalThis.fetch = stagedMarkerChunkFetchStub(markerPath, markerRecord, Buffer.from(newBody), 512, chunkLengths);
+
+    const result = await runOfflineSyncOnce({
+      memoryDir: root,
+      remoteUrl: "http://remnic.test",
+      token: "test-token",
+      namespace: "generalist",
+      includeTranscripts: true,
+      statePath,
+      statePathExplicit: true,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
+      generationStagedHydrateMinBytes: 1024,
+    });
+
+    assert.ok(result.pull);
+    assert.ok(result.pull.upserted >= 1, "the incoming generation must publish");
+    assert.ok(chunkLengths.length >= 2, "the marker must be fetched in multiple chunks");
+    assert.equal(chunkLengths.reduce((total, length) => total + length, 0), markerRecord.bytes);
+    const { EmbeddingIndexFileStore } = await import("@remnic/core");
+    const store = new EmbeddingIndexFileStore(
+      path.join(root, "state/embeddings.json"),
+      path.join(root, "state/embeddings"),
+      path.join(root, "state/embedding-fallback-status.json"),
+    );
+    const merged: Record<string, { path: string; vector: number[] }> = {};
+    await store.readShardGenerationInto(merged);
+    assert.deepEqual(Object.keys(merged).sort(), ["big1", "small"]);
+    assert.equal(await store.detectLayout(), "sharded");
+    const offlineEntries = await readdir(path.join(root, ".offline-sync"));
+    assert.equal(
+      offlineEntries.some((entry) => entry.startsWith("generation-incoming-")),
+      false,
+      "the private staging root must be cleaned up",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a corrupted staged chunk payload fails before publication and preserves the old generation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-staged-corrupt-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const oldBody = JSON.stringify({
+      version: 1, provider: "openai", model: "m1",
+      entries: { old1: { path: "p-old", vector: [0, 0] } },
+    });
+    const newBody = JSON.stringify({
+      version: 1, provider: "openai", model: "m2",
+      entries: { big1: { path: "p-big", vector: Array.from({ length: 256 }, (_, k) => (k % 3) / 3) } },
+    });
+    await mkdir(path.join(root, "state"), { recursive: true });
+    const { markerPath, markerRecord, statePath } = stagedMarkerFixture(root, newBody);
+    await writeFile(path.join(root, markerPath), oldBody);
+    await writeOfflineSyncState(statePath, {
+      version: 1,
+      remoteId: "http://remnic.test",
+      namespace: "generalist",
+      includeTranscripts: true,
+      lastSyncedAt: "2026-05-31T00:00:00.000Z",
+      baseFiles: [contentFile(markerPath, oldBody, 1)],
+    });
+
+    // Headers still declare the real incoming digest; the served bytes lie.
+    globalThis.fetch = stagedMarkerChunkFetchStub(
+      markerPath,
+      markerRecord,
+      Buffer.from("tampered payload bytes".repeat(40)),
+      512,
+    );
+
+    await assert.rejects(() => runOfflineSyncOnce({
+      memoryDir: root,
+      remoteUrl: "http://remnic.test",
+      token: "test-token",
+      namespace: "generalist",
+      includeTranscripts: true,
+      statePath,
+      statePathExplicit: true,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
+      generationStagedHydrateMinBytes: 1024,
+    }));
+    assert.equal(
+      await readFile(path.join(root, markerPath), "utf-8"),
+      oldBody,
+      "a staging failure must never touch the published generation",
+    );
+    const offlineEntries = await readdir(path.join(root, ".offline-sync"));
+    assert.equal(
+      offlineEntries.some((entry) => entry.startsWith("generation-incoming-")),
+      false,
+      "the staging root must be cleaned up on failure",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline prepare hydrates an oversized legacy marker through the staged chunk transport", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-prepare-staged-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const vector = Array.from({ length: 2_000_000 }, (_, k) => (k % 7) / 7);
+    const newBody = JSON.stringify({
+      version: 1, provider: "openai", model: "m2",
+      entries: { big1: { path: "p-big", vector }, small: { path: "p-small", vector: [1, 1] } },
+    });
+    assert.ok(
+      Buffer.byteLength(newBody) >= 16 * 1024 * 1024,
+      "fixture assumption: the marker must reach the production staged threshold",
+    );
+    const markerRecord = contentFile("state/embeddings.json", newBody, 2);
+    const chunkLengths: number[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/remnic/v1/offline-sync/snapshot")) {
+        return new Response(JSON.stringify({
+          format: "remnic.offline-sync.snapshot.v1",
+          schemaVersion: 1,
+          createdAt: "2026-05-31T00:01:00.000Z",
+          sourceId: "remote",
+          namespace: "generalist",
+          includeTranscripts: true,
+          files: [markerRecord],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname.endsWith("/remnic/v1/offline-sync/file-content")) {
+        const request = JSON.parse(String(init?.body ?? "{}")) as { offset?: number; length?: number };
+        const offset = request.offset ?? 0;
+        const content = Buffer.from(newBody).subarray(offset, offset + Math.min(8 * 1024 * 1024, newBody.length - offset));
+        chunkLengths.push(content.length);
+        return new Response(content, {
+          status: 200,
+          headers: {
+            "x-remnic-file-path": encodeURIComponent("state/embeddings.json"),
+            "x-remnic-file-sha256": markerRecord.sha256,
+            "x-remnic-file-bytes": String(markerRecord.bytes),
+            "x-remnic-file-mtime-ms": String(markerRecord.mtimeMs),
+            "x-remnic-chunk-offset": String(offset),
+            "x-remnic-chunk-bytes": String(content.length),
+          },
+        });
+      }
+      if (url.pathname.endsWith("/remnic/v1/offline-sync/files")) {
+        throw new Error("the staged generation member must not ride the inline base64 content path");
+      }
+      throw new Error(`unexpected fetch: ${url.pathname}`);
+    }) as typeof fetch;
+
+    const result = await runCli([
+      "offline", "prepare",
+      "--remote-url", "http://remnic.test",
+      "--token", "t",
+      "--memory-dir", root,
+      "--json",
+    ]);
+    assert.equal(result.exitCode, 0);
+    assert.ok(chunkLengths.length >= 2, "prepare must fetch the marker in multiple chunks");
+    const { EmbeddingIndexFileStore } = await import("@remnic/core");
+    const store = new EmbeddingIndexFileStore(
+      path.join(root, "state/embeddings.json"),
+      path.join(root, "state/embeddings"),
+      path.join(root, "state/embedding-fallback-status.json"),
+    );
+    const merged: Record<string, { path: string; vector: number[] }> = {};
+    await store.readShardGenerationInto(merged);
+    assert.deepEqual(Object.keys(merged).sort(), ["big1", "small"]);
+    assert.equal(await store.detectLayout(), "sharded");
+    const offlineEntries = await readdir(path.join(root, ".offline-sync"));
+    assert.equal(
+      offlineEntries.some((entry) => entry.startsWith("generation-incoming-")),
+      false,
+      "the private staging root must be cleaned up",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("failed generation staging after a successful push checkpoints the advanced base as a partial run", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-staged-partial-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const pushPath = "facts/local.md";
+    const baseLocal = "base local";
+    const newLocal = "new local";
+    const oldBody = JSON.stringify({
+      version: 1, provider: "openai", model: "m1",
+      entries: { old1: { path: "p-old", vector: [0, 0] } },
+    });
+    const newBody = JSON.stringify({
+      version: 1, provider: "openai", model: "m2",
+      entries: { big1: { path: "p-big", vector: Array.from({ length: 300 }, (_, k) => (k % 5) / 5) } },
+    });
+    assert.ok(Buffer.byteLength(newBody) >= 1024, "fixture assumption: the marker must clear the injected staged cutoff");
+    await mkdir(path.join(root, "state"), { recursive: true });
+    await mkdir(path.join(root, "facts"), { recursive: true });
+    const { markerPath, markerRecord, statePath } = stagedMarkerFixture(root, newBody);
+    await writeFile(path.join(root, pushPath), newLocal);
+    await writeFile(path.join(root, markerPath), oldBody);
+    const baseFiles = [contentFile(pushPath, baseLocal, 1), contentFile(markerPath, oldBody, 1)];
+    await writeOfflineSyncState(statePath, {
+      version: 1,
+      remoteId: "http://remnic.test",
+      namespace: "generalist",
+      includeTranscripts: true,
+      lastSyncedAt: "2026-05-31T00:00:00.000Z",
+      baseFiles,
+    });
+    const metadataSnapshot = {
+      format: "remnic.offline-sync.snapshot.v1",
+      schemaVersion: 1,
+      createdAt: "2026-05-31T00:01:00.000Z",
+      sourceId: "remote",
+      namespace: "generalist",
+      includeTranscripts: true,
+      files: [markerRecord, contentFile(pushPath, baseLocal, 1)],
+    };
+
+    let appliedUpserts = 0;
+    const corruptChunkFetch = stagedMarkerChunkFetchStub(
+      markerPath,
+      markerRecord,
+      // Same length as the declared incoming payload; the bytes lie.
+      Buffer.from("tampered payload bytes".repeat(120)).subarray(0, markerRecord.bytes),
+      512,
+    );
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/remnic/v1/offline-sync/apply")) {
+        appliedUpserts += 1;
+        return new Response(JSON.stringify({
+          namespace: "generalist",
+          appliedUpserts: 1,
+          appliedDeletes: 0,
+          skipped: 0,
+          conflicts: [],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname.endsWith("/remnic/v1/offline-sync/snapshot")) {
+        return new Response(JSON.stringify(metadataSnapshot), {
+          status: 200, headers: { "content-type": "application/json" },
+        });
+      }
+      return corruptChunkFetch(input, init);
+    }) as typeof fetch;
+
+    const result = await runOfflineSyncOnce({
+      memoryDir: root,
+      remoteUrl: "http://remnic.test",
+      token: "test-token",
+      namespace: "generalist",
+      includeTranscripts: true,
+      statePath,
+      statePathExplicit: true,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
+      generationStagedHydrateMinBytes: 1024,
+    });
+
+    assert.equal(appliedUpserts, 1, "the push must have succeeded before staging failed");
+    assert.equal(result.partial, true);
+    assert.ok(result.pullError, "the staging failure must be reported");
+    assert.ok(result.pullError!.includes("checksum"), `actual pullError: ${result.pullError}`);
+    assert.equal(result.pull, null);
+    const state = await readOfflineSyncState(statePath);
+    assert.ok(state);
+    const advanced = new Map(state.baseFiles.map((file) => [file.path, file.sha256]));
+    assert.equal(advanced.get(pushPath), contentFile(pushPath, newLocal).sha256, "the pushed file must advance the checkpoint base");
+    assert.equal(advanced.get(markerPath), contentFile(markerPath, oldBody).sha256, "unrelated base entries must stay put");
+    const offlineEntries = await readdir(path.join(root, ".offline-sync"));
+    assert.equal(
+      offlineEntries.some((entry) => entry.startsWith("generation-incoming-")),
+      false,
+      "the staging root must be cleaned up on failure",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("offline sync direct hydration defers apply conflicts from stale local snapshots", async () => {

@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { StorageManager, globToRegExp } from "@remnic/core";
 import type { OfflineSyncSnapshot } from "@remnic/core";
+import type { GenerationStagedTransport } from "./offline-generation-staging.js";
 import {
   DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS,
   OFFLINE_DECRYPT_STAGING_DIR_PREFIX,
@@ -361,11 +362,13 @@ test("embedding generation members are excluded from direct hydration", async ()
   assert.equal(shouldDirectHydrateOfflineFile({ incoming: nonMember }), true);
 });
 
-test("a >=16MiB changed shard hydrates via content fetch and applies atomically; payload failure preserves the old generation", async () => {
-  const { offlineSnapshotContentFilesForApply, hydrateOfflineSnapshotContent } = await import("./index.js");
+test("a >=16MiB changed shard rides the staged chunk transport and applies atomically; payload failure preserves the old generation", async () => {
+  const { offlineSnapshotContentFilesForApply, hydrateOfflineSnapshotContent, hydrateOfflineFileContent, OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES } = await import("./index.js");
   const { applyOfflineSyncSnapshot, buildOfflineSyncSnapshot: buildRemote, EmbeddingIndexFileStore } = await import("@remnic/core");
+  const { generationMembersForStagedTransport, stageGenerationMembersForApply } = await import("./offline-generation-staging.js");
   const localRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-3148-bigshard-"));
   const remoteRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-3148-bigshard-remote-"));
+  const originalFetch = globalThis.fetch;
   try {
     const bigVector = Array.from({ length: 2_000_000 }, (_, k) => (k % 7) / 7);
     const oldShardBody = JSON.stringify({
@@ -402,86 +405,281 @@ test("a >=16MiB changed shard hydrates via content fetch and applies atomically;
         bytes: Buffer.byteLength(oldShardBody), mtimeMs: 1 },
     ];
     const baseFiles = currentFiles;
-    // (a) The changed big shard is selected for content hydration.
-    const needed = offlineSnapshotContentFilesForApply({
-      snapshot: metadataOnly, baseFiles, currentFiles,
+    // (a) The oversized changed member is selected for the staged chunk
+    // transport — never direct hydration at its live path.
+    const stagedMembers = generationMembersForStagedTransport({
+      incomingFiles: metadataOnly.files,
+      currentFiles,
+      minBytes: OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES,
     });
-    assert.deepEqual(needed.map((f) => f.path).sort(), [
-      "state/embeddings/shard-0012.json",
-      "state/embeddings/shard-0024.json",
-    ]);
-    // (b) Live generation untouched during hydration.
+    assert.deepEqual(stagedMembers.map((m) => m.path), ["state/embeddings/shard-0024.json"]);
+    const stagedPaths = new Set(stagedMembers.map((m) => m.path));
+    // (b) ... and it is excluded from the inline base64 content fetch; the
+    // small shard still rides the batched fetch.
+    const needed = offlineSnapshotContentFilesForApply({
+      snapshot: metadataOnly, baseFiles, currentFiles, skipPaths: stagedPaths,
+    });
+    assert.deepEqual(needed.map((f) => f.path), ["state/embeddings/shard-0012.json"]);
+    // (c) Live generation untouched during staging.
     assert.equal(
       await readFile(path.join(localRoot, "state/embeddings/shard-0037.json"), "utf-8"),
       oldShardBody,
     );
-    // (c) Hydrate with a stubbed fetch serving the real remote bytes.
-    const contentByPath = new Map<string, string>([
-      ["state/embeddings/shard-0024.json", bigBody],
-      ["state/embeddings/shard-0012.json", smallBody],
-    ]);
-    const hydrated = await hydrateOfflineSnapshotContent({
-      remoteUrl: "http://stub", token: "t",
-      includeTranscripts: true,
-      snapshot: metadataOnly, baseFiles, currentFiles,
-      fetchFiles: async ({ paths }) => ({
-        ...metadataOnly,
-        files: paths.map((p) => {
-          const body = contentByPath.get(p);
-          assert.ok(body !== undefined, "stub must serve every requested path");
-          return {
-            path: p,
-            sha256: createHash("sha256").update(body).digest("hex"),
-            bytes: Buffer.byteLength(body),
-            mtimeMs: 1,
-            contentBase64: Buffer.from(body).toString("base64"),
-          };
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/remnic/v1/offline-sync/file-content")) {
+        throw new Error(`unexpected fetch: ${url.pathname}`);
+      }
+      const request = JSON.parse(String(init?.body ?? "{}")) as { offset?: number; length?: number };
+      const offset = request.offset ?? 0;
+      const content = Buffer.from(bigBody).subarray(offset, offset + (request.length ?? bigBody.length));
+      return new Response(content, {
+        status: 200,
+        headers: {
+          "x-remnic-file-path": encodeURIComponent("state/embeddings/shard-0024.json"),
+          "x-remnic-file-sha256": bigRecord.sha256,
+          "x-remnic-file-bytes": String(bigRecord.bytes),
+          "x-remnic-file-mtime-ms": String(bigRecord.mtimeMs),
+          "x-remnic-chunk-offset": String(offset),
+          "x-remnic-chunk-bytes": String(content.length),
+        },
+      });
+    }) as typeof fetch;
+    let transport: GenerationStagedTransport | undefined;
+    try {
+      transport = await stageGenerationMembersForApply({
+        memoryDir: localRoot,
+        remoteUrl: "http://stub",
+        token: "t",
+        includeTranscripts: true,
+        incomingFiles: metadataOnly.files,
+        currentFiles,
+        minBytes: OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES,
+        hydrateFileContent: hydrateOfflineFileContent,
+      });
+      // (d) Hydrate the small shard via the batched fetch; the big shard's
+      // content travels only through the staged transport.
+      const hydrated = await hydrateOfflineSnapshotContent({
+        remoteUrl: "http://stub", token: "t",
+        includeTranscripts: true,
+        snapshot: metadataOnly, baseFiles, currentFiles,
+        skipContentPaths: transport.stagedPaths,
+        fetchFiles: async ({ paths }) => ({
+          ...metadataOnly,
+          files: paths.map((p) => {
+            const body = p === "state/embeddings/shard-0012.json" ? smallBody : undefined;
+            assert.ok(body !== undefined, "stub must serve every requested path");
+            return {
+              path: p,
+              sha256: createHash("sha256").update(body).digest("hex"),
+              bytes: Buffer.byteLength(body),
+              mtimeMs: 1,
+              contentBase64: Buffer.from(body).toString("base64"),
+            };
+          }),
         }),
-      }),
-    });
-    // (d) Apply through the atomic generation transaction (plain mode).
-    const store = new EmbeddingIndexFileStore(
-      path.join(localRoot, "state/embeddings.json"),
-      path.join(localRoot, "state/embeddings"),
-      path.join(localRoot, "state/embedding-fallback-status.json"),
-    );
-    const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot: hydrated, baseFiles });
-    const merged: Record<string, { path: string; vector: number[] }> = {};
-    await store.readShardGenerationInto(merged);
-    assert.deepEqual(Object.keys(merged).sort(), ["big1", "small"]);
-    assert.equal(await store.detectLayout(), "sharded");
-    assert.equal(result.upserted >= 2, true);
-    // (e) Payload failure (fetched bytes do not match the declared digest)
-    // rejects at apply and preserves the old generation.
+      });
+      assert.equal(
+        hydrated.files.find((f) => f.path === "state/embeddings/shard-0024.json")?.contentBase64,
+        undefined,
+        "the staged member must not carry inline content",
+      );
+      assert.equal(
+        await readFile(path.join(localRoot, "state/embeddings/shard-0037.json"), "utf-8"),
+        oldShardBody,
+      );
+      await assert.rejects(
+        stat(path.join(localRoot, "state/embeddings/shard-0024.json")),
+        "staged bytes must never land at the live shard path",
+      );
+      // (e) Apply through the atomic generation transaction, consuming the
+      // staged bytes via the explicit incoming callback.
+      const store = new EmbeddingIndexFileStore(
+        path.join(localRoot, "state/embeddings.json"),
+        path.join(localRoot, "state/embeddings"),
+        path.join(localRoot, "state/embedding-fallback-status.json"),
+      );
+      const result = await applyOfflineSyncSnapshot({
+        root: localRoot, snapshot: hydrated, baseFiles,
+        readIncomingFile: transport.readIncomingFile,
+      });
+      const merged: Record<string, { path: string; vector: number[] }> = {};
+      await store.readShardGenerationInto(merged);
+      assert.deepEqual(Object.keys(merged).sort(), ["big1", "small"]);
+      assert.equal(await store.detectLayout(), "sharded");
+      assert.equal(result.upserted >= 2, true);
+    } finally {
+      await transport?.cleanup();
+      globalThis.fetch = originalFetch;
+    }
+    // (f) Payload failure (fetched bytes do not match the declared digest)
+    // rejects during staging and preserves the old generation.
     await rm(path.join(localRoot, "state/embeddings"), { recursive: true, force: true });
     await mkdir(path.join(localRoot, "state/embeddings"), { recursive: true });
     await writeFile(path.join(localRoot, "state/embeddings/shard-0037.json"), oldShardBody);
-    const tamperedHydrated = await hydrateOfflineSnapshotContent({
-      remoteUrl: "http://stub", token: "t",
-      includeTranscripts: true,
-      snapshot: metadataOnly, baseFiles, currentFiles,
-      fetchFiles: async ({ paths }) => ({
-        ...metadataOnly,
-        files: paths.map((p) => ({
-          path: p,
-          sha256: createHash("sha256").update("tampered").digest("hex"),
-          bytes: 8,
-          mtimeMs: 1,
-          contentBase64: Buffer.from("tampered").toString("base64"),
-        })),
-      }),
-    });
-    await assert.rejects(() => applyOfflineSyncSnapshot({ root: localRoot, snapshot: tamperedHydrated, baseFiles }));
-    assert.equal(
-      await readFile(path.join(localRoot, "state/embeddings/shard-0037.json"), "utf-8"),
-      oldShardBody,
-    );
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/remnic/v1/offline-sync/file-content")) {
+        throw new Error(`unexpected fetch: ${url.pathname}`);
+      }
+      const request = JSON.parse(String(init?.body ?? "{}")) as { offset?: number; length?: number };
+      const offset = request.offset ?? 0;
+      const content = Buffer.from("tampered".repeat(64)).subarray(offset, offset + (request.length ?? 512));
+      return new Response(content, {
+        status: 200,
+        headers: {
+          "x-remnic-file-path": encodeURIComponent("state/embeddings/shard-0024.json"),
+          "x-remnic-file-sha256": bigRecord.sha256,
+          "x-remnic-file-bytes": String(bigRecord.bytes),
+          "x-remnic-file-mtime-ms": String(bigRecord.mtimeMs),
+          "x-remnic-chunk-offset": String(offset),
+          "x-remnic-chunk-bytes": String(content.length),
+        },
+      });
+    }) as typeof fetch;
+    try {
+      await assert.rejects(() => stageGenerationMembersForApply({
+        memoryDir: localRoot,
+        remoteUrl: "http://stub",
+        token: "t",
+        includeTranscripts: true,
+        incomingFiles: metadataOnly.files,
+        currentFiles,
+        minBytes: OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES,
+        hydrateFileContent: hydrateOfflineFileContent,
+      }));
+      assert.equal(
+        await readFile(path.join(localRoot, "state/embeddings/shard-0037.json"), "utf-8"),
+        oldShardBody,
+      );
+      const offlineEntries = await readdir(path.join(localRoot, ".offline-sync")).catch(() => [] as string[]);
+      assert.equal(
+        offlineEntries.some((entry) => entry.startsWith("generation-incoming-")),
+        false,
+        "the staging root must be cleaned up when staging fails",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   } finally {
     await rm(localRoot, { recursive: true, force: true });
     await rm(remoteRoot, { recursive: true, force: true });
   }
 });
 
+test("staged generation transport encrypts staging bytes at rest and serves AAD-bound verified content", async () => {
+  const { hydrateOfflineFileContent } = await import("./index.js");
+  const { stageGenerationMembersForApply } = await import("./offline-generation-staging.js");
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-staged-encrypted-"));
+  const storeKey = Buffer.alloc(32, 43);
+  const originalFetch = globalThis.fetch;
+  try {
+    const metadata = buildMetadata({
+      algorithm: "scrypt",
+      salt: Buffer.alloc(16, 44),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    await writeHeader(
+      memoryDir,
+      buildHeader({
+        metadata,
+        derivedKey: storeKey,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    keyring.unlock(secureStoreDir(memoryDir), storeKey);
+
+    const markerPath = "state/embeddings.json";
+    const body = JSON.stringify({
+      version: 1, provider: "openai", model: "m2",
+      entries: { big1: { path: "p-big", vector: Array.from({ length: 256 }, (_, k) => (k % 3) / 3) } },
+    });
+    const record = {
+      path: markerPath,
+      sha256: createHash("sha256").update(body).digest("hex"),
+      bytes: Buffer.byteLength(body),
+      mtimeMs: 2,
+    };
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith("/remnic/v1/offline-sync/file-content")) {
+        throw new Error(`unexpected fetch: ${url.pathname}`);
+      }
+      const request = JSON.parse(String(init?.body ?? "{}")) as { offset?: number; length?: number };
+      const offset = request.offset ?? 0;
+      const content = Buffer.from(body).subarray(offset, offset + (request.length ?? body.length));
+      return new Response(content, {
+        status: 200,
+        headers: {
+          "x-remnic-file-path": encodeURIComponent(markerPath),
+          "x-remnic-file-sha256": record.sha256,
+          "x-remnic-file-bytes": String(record.bytes),
+          "x-remnic-file-mtime-ms": String(record.mtimeMs),
+          "x-remnic-chunk-offset": String(offset),
+          "x-remnic-chunk-bytes": String(content.length),
+        },
+      });
+    }) as typeof fetch;
+
+    const transport = await stageGenerationMembersForApply({
+      memoryDir,
+      remoteUrl: "http://stub",
+      token: "t",
+      includeTranscripts: true,
+      incomingFiles: [record],
+      minBytes: 1024,
+      hydrateFileContent: hydrateOfflineFileContent,
+    });
+    try {
+      const offlineDir = path.join(memoryDir, ".offline-sync");
+      const stagingDir = (await readdir(offlineDir)).find((entry) => entry.startsWith("generation-incoming-"));
+      assert.ok(stagingDir, "the private staging root must exist during transport");
+      const stagedFile = path.join(offlineDir, stagingDir, "state", "embeddings.json");
+      const raw = await readFile(stagedFile);
+      assert.equal(
+        raw.includes(Buffer.from("big1")),
+        false,
+        "staged bytes must be ciphertext at rest inside an encrypted vault",
+      );
+
+      const incoming = await transport.readIncomingFile({
+        path: markerPath,
+        sha256: record.sha256,
+        bytes: record.bytes,
+      });
+      assert.ok(incoming);
+      assert.equal(createHash("sha256").update(incoming).digest("hex"), record.sha256);
+      assert.equal(
+        await transport.readIncomingFile({ path: "facts/other.md", sha256: "0".repeat(64), bytes: 1 }),
+        null,
+        "non-staged paths must stay metadata-only",
+      );
+
+      // Tampering with the staged ciphertext fails the authenticated
+      // decrypt instead of yielding forged content.
+      const corrupted = Buffer.from(raw);
+      corrupted[corrupted.length - 24] = (corrupted[corrupted.length - 24] ?? 0) ^ 0xff;
+      await writeFile(stagedFile, corrupted);
+      await assert.rejects(() => transport.readIncomingFile({
+        path: markerPath,
+        sha256: record.sha256,
+        bytes: record.bytes,
+      }));
+    } finally {
+      await transport.cleanup();
+    }
+    const offlineEntries = await readdir(path.join(memoryDir, ".offline-sync"));
+    assert.equal(
+      offlineEntries.some((entry) => entry.startsWith("generation-incoming-")),
+      false,
+      "cleanup must remove the staging root",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    keyring.lock(secureStoreDir(memoryDir));
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 
 test("locally diverged generation members defer their whole generation", async () => {
   const { divergedEmbeddingGenerationDeferrals } = await import("./index.js");

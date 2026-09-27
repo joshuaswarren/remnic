@@ -876,23 +876,12 @@ export {
   type OfflineSyncFileRecord,
   type OfflineSyncFileContentChunk,
   type OfflineSyncRecordDeletionRevision,
-  type OfflineSyncFileState,
-  type OfflineSyncFileTarget,
-  type OfflineSyncFileWriteTarget,
+  type OfflineSyncFileState, type OfflineSyncFileTarget, type OfflineSyncFileWriteTarget,
   type OfflineSyncSnapshot,
   type OfflineSyncState,
 } from "./offline-sync.js";
-export { embeddingGenerationMembership } from "./offline-sync-embedding-generation.js";
-export {
-  EmbeddingIndexCapacityError,
-  EmbeddingIndexFileStore,
-  EmbeddingIndexStorageError,
-  parseEmbeddingIndexDocument,
-  serializeEmbeddingShard,
-  shardEntriesForIndex,
-  shardIndexOf,
-  validateShardMembership,
-} from "./embedding-index-storage.js";
+export { embeddingGenerationMembership, divergedEmbeddingGenerationDeferrals } from "./offline-sync-embedding-generation.js";
+export { EmbeddingIndexCapacityError, EmbeddingIndexFileStore, EmbeddingIndexStorageError, parseEmbeddingIndexDocument, serializeEmbeddingShard, shardEntriesForIndex, shardIndexOf, validateShardMembership } from "./embedding-index-storage.js";
 
 // ---------------------------------------------------------------------------
 // Memory Extension Host (#382)

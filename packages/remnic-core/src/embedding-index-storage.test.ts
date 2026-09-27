@@ -121,3 +121,31 @@ test("a corrupt replacement backup shape surfaces as a tagged storage error, nev
     await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
   }
 });
+
+test("removing an index on an empty store publishes an empty layout marker", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-remove-empty-"));
+  try {
+    const store = newStore(root);
+    await store.removePublishedGeneration();
+    assert.equal(await newStore(root).detectLayout(), "sharded");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("misplaced shard entries record read diagnostics before failing closed", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-misplaced-status-"));
+  try {
+    await mkdir(path.join(root, "state/embeddings"), { recursive: true });
+    // mem-old hashes to shard-0058, not 0000.
+    await writeFile(path.join(root, "state/embeddings/shard-0000.json"), SHARD_FILE);
+    const store = newStore(root);
+    await assert.rejects(() => store.readShardGenerationInto({}), /shard/);
+    const { readFile } = await import("node:fs/promises");
+    const status = JSON.parse(await readFile(path.join(root, "state/embedding-fallback-status.json"), "utf-8"));
+    assert.match(status.lastReadRecovery.message, /shard-0000/);
+    assert.equal(await readFile(path.join(root, "state/embeddings/shard-0000.json"), "utf-8"), SHARD_FILE);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

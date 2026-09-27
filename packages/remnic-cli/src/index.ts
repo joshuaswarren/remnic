@@ -157,6 +157,7 @@ import {
   readOfflineSyncFileContentChunk,
   readOfflineSyncState,
   embeddingGenerationMembership,
+  divergedEmbeddingGenerationDeferrals,
   shouldPreferIncomingOfflineRuntimeFile,
   summarizeOfflineSyncChangeset,
   summarizeOfflineSyncPendingChanges,
@@ -217,6 +218,8 @@ import {
   filterOfflineSyncBaseFiles,
   resolveOfflineDirectHydrationPath,
 } from "./offline-storage-io.js";
+import { stageGenerationMembersForApply } from "./offline-generation-staging.js";
+import type { GenerationStagedTransport } from "./offline-generation-staging.js";
 import type {
   BinaryLifecycleConfig,
 } from "@remnic/core";
@@ -7365,14 +7368,18 @@ export function offlineSnapshotContentFilesForApply(options: {
   currentFiles?: readonly OfflineSyncFileState[];
   conflictContentMaxBytes?: number;
   deferredPaths?: readonly string[];
+  /** Paths whose content arrives out-of-band (staged chunk transport). */
+  skipPaths?: ReadonlySet<string>;
 }): OfflineSyncFileState[] {
   const base = offlineFileStateMap(options.baseFiles);
   const current = options.currentFiles ? offlineFileStateMap(options.currentFiles) : null;
   const conflictContentMaxBytes = options.conflictContentMaxBytes ?? Number.POSITIVE_INFINITY;
   const deferredPaths = new Set(options.deferredPaths ?? []);
+  const skipPaths = options.skipPaths ?? new Set<string>();
   const files: OfflineSyncFileState[] = [];
   for (const incoming of options.snapshot.files) {
     if (deferredPaths.has(incoming.path)) continue;
+    if (skipPaths.has(incoming.path)) continue;
     const baseEntry = base.get(incoming.path);
     const currentEntry = current?.get(incoming.path);
     if (currentEntry?.sha256 === incoming.sha256) continue;
@@ -7688,7 +7695,7 @@ async function fetchOfflineFileContent(args: {
   return content;
 }
 
-async function hydrateOfflineFileContent(args: {
+export async function hydrateOfflineFileContent(args: {
   remoteUrl: string;
   token: string;
   namespace?: string;
@@ -7938,6 +7945,8 @@ export async function hydrateOfflineSnapshotContent(args: {
   currentFiles?: readonly OfflineSyncFileState[];
   deferredPaths?: readonly string[];
   missingContentDeferredPaths?: Set<string>;
+  /** Paths whose content arrives out-of-band via the staged chunk transport. */
+  skipContentPaths?: ReadonlySet<string>;
   fetchFiles?: typeof fetchOfflineFiles;
   missingContentRetryMax?: number;
   missingContentRetryDelayMs?: number;
@@ -7949,6 +7958,7 @@ export async function hydrateOfflineSnapshotContent(args: {
     currentFiles: args.currentFiles,
     conflictContentMaxBytes: OFFLINE_SYNC_FILES_CONTENT_MAX_BATCH_BYTES,
     deferredPaths: args.deferredPaths,
+    skipPaths: args.skipContentPaths,
   });
   if (neededFiles.length === 0) return { ...args.snapshot, files: snapshot.files };
 
@@ -8255,6 +8265,12 @@ export async function runOfflineSyncOnce(options: {
   skipLargeFilePaths?: ReadonlySet<string>;
   /** Preserve the configured secure-store write policy when loading the key. */
   secureStoreEncryptOnWrite?: boolean;
+  /**
+   * Minimum incoming generation member size routed through the private
+   * staged chunk transport (defaults to the direct-hydration threshold;
+   * tests inject a smaller cutoff).
+   */
+  generationStagedHydrateMinBytes?: number;
 } & { impressionsRotateBytes: number; impressionsRotateKeep: number }): Promise<OfflineSyncRunResult> {
   fs.mkdirSync(options.memoryDir, { recursive: true });
   let activeStatePath = options.statePath;
@@ -8683,57 +8699,39 @@ export async function runOfflineSyncOnce(options: {
     currentFiles: applyCurrentSnapshot.files,
   });
   const pullDeferredPaths = [...remoteDeferredPaths, ...generationDeferrals];
-  let remoteSnapshot: Awaited<ReturnType<typeof hydrateOfflineSnapshotContent>>;
+  // Oversized generation members cannot ride the inline base64 content
+  // path: the base64 string of a near-512MiB legacy marker exceeds the V8
+  // string ceiling. Fetch them chunk-wise into a private, secure-store-bound
+  // staging root instead, and let the atomic generation transaction consume
+  // the staged bytes via core's readIncomingFile apply callback. Live
+  // marker/shard paths are only ever touched by the transaction.
+  let stagedTransport: GenerationStagedTransport;
   try {
-    remoteSnapshot = await hydrateOfflineSnapshotContent({
+    stagedTransport = await stageGenerationMembersForApply({
+      memoryDir: options.memoryDir,
       remoteUrl: options.remoteUrl,
       token: options.token,
       namespace: syncNamespace,
       includeTranscripts: options.includeTranscripts,
-      snapshot: remoteSnapshotMetadata,
-      baseFiles: syncBaseFiles,
+      incomingFiles: remoteSnapshotMetadata.files,
       currentFiles: applyCurrentSnapshot.files,
       deferredPaths: pullDeferredPaths,
-      missingContentDeferredPaths: remoteDeferredPaths,
+      minBytes: options.generationStagedHydrateMinBytes ?? OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES,
+      secureStoreEncryptOnWrite: options.secureStoreEncryptOnWrite,
+      hydrateFileContent: hydrateOfflineFileContent,
     });
   } catch (error) {
+    // A staging failure after a successful push must still checkpoint the
+    // advanced base — the same contract as direct-hydration failures below.
     if (pushed || partialHydration.hydratedFiles.length > 0) {
       return writePartialPushState(error, partialHydrationWithContext);
     }
     throw error;
   }
-  const resolvedNamespace = resolvedOfflineSnapshotNamespace(remoteSnapshot, syncNamespace);
-  let pull: OfflineSyncPullResult;
   try {
-    const latestApplySnapshot = await buildCurrentSnapshotForApply();
-    pull = await applyOfflineSyncSnapshot({
-      root: options.memoryDir,
-      snapshot: remoteSnapshot,
-      baseFiles: syncBaseFiles,
-      currentFiles: latestApplySnapshot.files,
-      deferredPaths: pullDeferredPaths,
-      allowMissingConflictContent: true,
-      readFile: storageIo.readFile,
-      readFileDigest: storageIo.readFileDigest,
-      writeFile: storageIo.writeFile,
-      writeStagingFile: storageIo.writeStagingFile,
-      readStagingFile: storageIo.readStagingFile,
-      deleteFile: storageIo.deleteFile,
-      recordDeletionRevision: storageIo.recordDeletionRevision,
-    });
-  } catch (error) {
-    if (!isMissingOfflineContentError(error)) {
-      if (pushed || partialHydration.hydratedFiles.length > 0) {
-        return writePartialPushState(error, {
-          ...partialHydrationWithContext,
-          resolvedNamespace,
-        });
-      }
-      throw error;
-    }
-    let retrySnapshot: Awaited<ReturnType<typeof hydrateOfflineSnapshotContent>>;
+    let remoteSnapshot: Awaited<ReturnType<typeof hydrateOfflineSnapshotContent>>;
     try {
-      retrySnapshot = await hydrateOfflineSnapshotContent({
+      remoteSnapshot = await hydrateOfflineSnapshotContent({
         remoteUrl: options.remoteUrl,
         token: options.token,
         namespace: syncNamespace,
@@ -8743,25 +8741,26 @@ export async function runOfflineSyncOnce(options: {
         currentFiles: applyCurrentSnapshot.files,
         deferredPaths: pullDeferredPaths,
         missingContentDeferredPaths: remoteDeferredPaths,
+        skipContentPaths: stagedTransport.stagedPaths,
       });
-    } catch (retryError) {
+    } catch (error) {
       if (pushed || partialHydration.hydratedFiles.length > 0) {
-        return writePartialPushState(retryError, {
-          ...partialHydrationWithContext,
-          resolvedNamespace,
-        });
+        return writePartialPushState(error, partialHydrationWithContext);
       }
-      throw retryError;
+      throw error;
     }
+    const resolvedNamespace = resolvedOfflineSnapshotNamespace(remoteSnapshot, syncNamespace);
+    let pull: OfflineSyncPullResult;
     try {
-      const latestRetryApplySnapshot = await buildCurrentSnapshotForApply();
+      const latestApplySnapshot = await buildCurrentSnapshotForApply();
       pull = await applyOfflineSyncSnapshot({
         root: options.memoryDir,
-        snapshot: retrySnapshot,
+        snapshot: remoteSnapshot,
         baseFiles: syncBaseFiles,
-        currentFiles: latestRetryApplySnapshot.files,
+        currentFiles: latestApplySnapshot.files,
         deferredPaths: pullDeferredPaths,
         allowMissingConflictContent: true,
+        readIncomingFile: stagedTransport.readIncomingFile,
         readFile: storageIo.readFile,
         readFileDigest: storageIo.readFileDigest,
         writeFile: storageIo.writeFile,
@@ -8770,42 +8769,96 @@ export async function runOfflineSyncOnce(options: {
         deleteFile: storageIo.deleteFile,
         recordDeletionRevision: storageIo.recordDeletionRevision,
       });
-    } catch (retryApplyError) {
-      if (pushed || partialHydration.hydratedFiles.length > 0) {
-        return writePartialPushState(retryApplyError, {
-          ...partialHydrationWithContext,
-          resolvedNamespace,
-        });
+    } catch (error) {
+      if (!isMissingOfflineContentError(error)) {
+        if (pushed || partialHydration.hydratedFiles.length > 0) {
+          return writePartialPushState(error, {
+            ...partialHydrationWithContext,
+            resolvedNamespace,
+          });
+        }
+        throw error;
       }
-      throw retryApplyError;
+      let retrySnapshot: Awaited<ReturnType<typeof hydrateOfflineSnapshotContent>>;
+      try {
+        retrySnapshot = await hydrateOfflineSnapshotContent({
+          remoteUrl: options.remoteUrl,
+          token: options.token,
+          namespace: syncNamespace,
+          includeTranscripts: options.includeTranscripts,
+          snapshot: remoteSnapshotMetadata,
+          baseFiles: syncBaseFiles,
+          currentFiles: applyCurrentSnapshot.files,
+          deferredPaths: pullDeferredPaths,
+          missingContentDeferredPaths: remoteDeferredPaths,
+          skipContentPaths: stagedTransport.stagedPaths,
+        });
+      } catch (retryError) {
+        if (pushed || partialHydration.hydratedFiles.length > 0) {
+          return writePartialPushState(retryError, {
+            ...partialHydrationWithContext,
+            resolvedNamespace,
+          });
+        }
+        throw retryError;
+      }
+      try {
+        const latestRetryApplySnapshot = await buildCurrentSnapshotForApply();
+        pull = await applyOfflineSyncSnapshot({
+          root: options.memoryDir,
+          snapshot: retrySnapshot,
+          baseFiles: syncBaseFiles,
+          currentFiles: latestRetryApplySnapshot.files,
+          deferredPaths: pullDeferredPaths,
+          allowMissingConflictContent: true,
+          readIncomingFile: stagedTransport.readIncomingFile,
+          readFile: storageIo.readFile,
+          readFileDigest: storageIo.readFileDigest,
+          writeFile: storageIo.writeFile,
+          writeStagingFile: storageIo.writeStagingFile,
+          readStagingFile: storageIo.readStagingFile,
+          deleteFile: storageIo.deleteFile,
+          recordDeletionRevision: storageIo.recordDeletionRevision,
+        });
+      } catch (retryApplyError) {
+        if (pushed || partialHydration.hydratedFiles.length > 0) {
+          return writePartialPushState(retryApplyError, {
+            ...partialHydrationWithContext,
+            resolvedNamespace,
+          });
+        }
+        throw retryApplyError;
+      }
     }
+    const state = offlineSyncStateFromSnapshot({
+      remoteId: options.remoteUrl,
+      namespace: resolvedNamespace,
+      snapshot: remoteSnapshot,
+      baseFiles: pull.nextBaseFiles,
+    });
+    const stateWritePaths = stateWritePathsFor(resolvedNamespace);
+    for (const statePath of stateWritePaths) {
+      await writeOfflineSyncState(statePath, state);
+    }
+    return {
+      statePath: stateWritePaths[0] ?? activeStatePath,
+      namespace: resolvedNamespace,
+      prepared: priorState === null,
+      pushed,
+      pull,
+      partial: false,
+      pendingSummary,
+      remoteFileCount: remoteSnapshot.files.length,
+      largeFilePushFailures: [...directPushFailures],
+      deferred: {
+        localChangedDuringPush: [...directPushDeferredPaths].sort(),
+        remoteChangedDuringHydrate: [...remoteDeferredPaths].sort(),
+        total: directPushDeferredPaths.size + remoteDeferredPaths.size,
+      },
+    };
+  } finally {
+    await stagedTransport.cleanup();
   }
-  const state = offlineSyncStateFromSnapshot({
-    remoteId: options.remoteUrl,
-    namespace: resolvedNamespace,
-    snapshot: remoteSnapshot,
-    baseFiles: pull.nextBaseFiles,
-  });
-  const stateWritePaths = stateWritePathsFor(resolvedNamespace);
-  for (const statePath of stateWritePaths) {
-    await writeOfflineSyncState(statePath, state);
-  }
-  return {
-    statePath: stateWritePaths[0] ?? activeStatePath,
-    namespace: resolvedNamespace,
-    prepared: priorState === null,
-    pushed,
-    pull,
-    partial: false,
-    pendingSummary,
-    remoteFileCount: remoteSnapshot.files.length,
-    largeFilePushFailures: [...directPushFailures],
-    deferred: {
-      localChangedDuringPush: [...directPushDeferredPaths].sort(),
-      remoteChangedDuringHydrate: [...remoteDeferredPaths].sort(),
-      total: directPushDeferredPaths.size + remoteDeferredPaths.size,
-    },
-  };
 }
 
 function sumOfflineFileBytes(files: readonly OfflineSyncFileState[]): number {
@@ -9007,13 +9060,19 @@ Environment fallbacks:
   if (action === "prepare") {
     if (!remoteUrl || !token || !statePath) throw new Error("offline prepare requires remote URL and token");
     fs.mkdirSync(memoryDir, { recursive: true });
-    const remoteSnapshot = await fetchOfflineSnapshot({
+    // Metadata-only pull (#3148 P1): a near-512MiB legacy marker cannot ride
+    // the inline base64 snapshot content, so prepare fills content exactly
+    // like sync — small files via base64 batches, oversized generation
+    // members chunk-wise into a private staging root consumed by the atomic
+    // generation transaction.
+    const remoteSnapshotMetadata = await fetchOfflineSnapshot({
       remoteUrl,
       token,
       namespace,
       includeTranscripts,
+      includeContent: false,
     });
-    const resolvedNamespace = resolvedOfflineSnapshotNamespace(remoteSnapshot, namespace);
+    const resolvedNamespace = resolvedOfflineSnapshotNamespace(remoteSnapshotMetadata, namespace);
     const stateWritePaths = offlineStatePathsForNamespace({
       memoryDir,
       remoteUrl,
@@ -9036,18 +9095,45 @@ Environment fallbacks:
       memoryDir,
       await createConfiguredOfflineStorage(memoryDir, config.secureStoreEncryptOnWrite),
     );
-    const pull = await applyOfflineSyncSnapshot({
-      root: memoryDir,
-      snapshot: remoteSnapshot,
-      baseFiles: existingState?.state.baseFiles ?? [],
-      readFile: storageIo.readFile,
-      readFileDigest: storageIo.readFileDigest,
-      writeFile: storageIo.writeFile,
-      writeStagingFile: storageIo.writeStagingFile,
-      readStagingFile: storageIo.readStagingFile,
-      deleteFile: storageIo.deleteFile,
-      recordDeletionRevision: storageIo.recordDeletionRevision,
+    const stagedTransport = await stageGenerationMembersForApply({
+      memoryDir,
+      remoteUrl,
+      token,
+      namespace: resolvedNamespace,
+      includeTranscripts,
+      incomingFiles: remoteSnapshotMetadata.files,
+      minBytes: OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES,
+      secureStoreEncryptOnWrite: config.secureStoreEncryptOnWrite,
+      hydrateFileContent: hydrateOfflineFileContent,
     });
+    let remoteSnapshot: OfflineSyncSnapshot & { namespace?: string };
+    let pull: OfflineSyncPullResult;
+    try {
+      remoteSnapshot = await hydrateOfflineSnapshotContent({
+        remoteUrl,
+        token,
+        namespace: resolvedNamespace,
+        includeTranscripts,
+        snapshot: remoteSnapshotMetadata,
+        baseFiles: existingState?.state.baseFiles ?? [],
+        skipContentPaths: stagedTransport.stagedPaths,
+      });
+      pull = await applyOfflineSyncSnapshot({
+        root: memoryDir,
+        snapshot: remoteSnapshot,
+        baseFiles: existingState?.state.baseFiles ?? [],
+        readFile: storageIo.readFile,
+        readFileDigest: storageIo.readFileDigest,
+        writeFile: storageIo.writeFile,
+        writeStagingFile: storageIo.writeStagingFile,
+        readStagingFile: storageIo.readStagingFile,
+        deleteFile: storageIo.deleteFile,
+        recordDeletionRevision: storageIo.recordDeletionRevision,
+        readIncomingFile: stagedTransport.readIncomingFile,
+      });
+    } finally {
+      await stagedTransport.cleanup();
+    }
     const state = offlineSyncStateFromSnapshot({
       remoteId: remoteUrl,
       namespace: resolvedNamespace,
@@ -13321,37 +13407,4 @@ if (
     });
 }
 
-/**
- * Locally diverged embedding generation members (incoming == base but the
- * daemon indexed locally after the push) must defer their WHOLE generation:
- * the content-hydration fallback would read the divergent local bytes, fail
- * the incoming digest check, and abort the entire pull, while a per-file
- * retry would expose a mixed generation (issue #3148, codex round 6).
- * Returns the incoming member paths whose generation must be deferred.
- */
-export function divergedEmbeddingGenerationDeferrals(options: {
-  incomingFiles: readonly { path: string; sha256: string }[];
-  baseFiles: readonly { path: string; sha256: string }[];
-  currentFiles: readonly { path: string; sha256: string }[];
-}): string[] {
-  const base = new Map(options.baseFiles.map((f) => [f.path, f.sha256]));
-  const current = new Map(options.currentFiles.map((f) => [f.path, f.sha256]));
-  const incomingByPath = new Map(options.incomingFiles.map((f) => [f.path, f.sha256]));
-  const conflictedDirs = new Set<string>();
-  for (const incoming of options.incomingFiles) {
-    const membership = embeddingGenerationMembership(incoming.path);
-    if (!membership) continue;
-    const baseSha = base.get(incoming.path);
-    const currentSha = current.get(incoming.path);
-    if (baseSha !== undefined && currentSha !== undefined && currentSha !== incoming.sha256 && incoming.sha256 === baseSha) {
-      conflictedDirs.add(membership.shardDir);
-    }
-  }
-  if (conflictedDirs.size === 0) return [];
-  const deferred: string[] = [];
-  for (const incoming of options.incomingFiles) {
-    const membership = embeddingGenerationMembership(incoming.path);
-    if (membership && conflictedDirs.has(membership.shardDir)) deferred.push(incoming.path);
-  }
-  return deferred.sort((left, right) => left.localeCompare(right));
-}
+export { divergedEmbeddingGenerationDeferrals } from "@remnic/core";
