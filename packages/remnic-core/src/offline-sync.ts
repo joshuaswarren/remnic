@@ -1626,7 +1626,11 @@ export async function applyOfflineSyncSnapshot(options: {
         root,
         shardDirRel: shardDir,
         incomingShardPaths: [],
-        incomingMarker: { path: markerRel, buffer: requiredBuffer(incomingBuffers, markerRel) },
+        incomingMarker: {
+          path: markerRel,
+          sha256: incomingMap.get(markerRel)!.sha256,
+          buffer: incomingBuffers.get(markerRel) ?? null,
+        },
         incomingMarkerPresent: false,
         incomingShardStates: new Map(),
         incomingBuffers,

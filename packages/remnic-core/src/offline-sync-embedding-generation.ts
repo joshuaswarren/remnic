@@ -28,6 +28,7 @@ import {
   parseEmbeddingIndexDocument,
   serializeEmbeddingShard,
   shardEntriesForIndex,
+  validateShardMembership,
 } from "./embedding-index-storage.js";
 import type { OfflineSyncExcludeFile, OfflineSyncFileTarget } from "./offline-sync-file-io.js";
 import { EMBEDDING_SHARD_FILE_PATTERN } from "./offline-sync-runtime-state.js";
@@ -159,7 +160,7 @@ export interface EmbeddingGenerationTransactionInput {
   /** Incoming legacy marker (rel path + verified content), when the
    * incoming generation is legacy-layout. Mutually exclusive with
    * `incomingShardPaths`. */
-  incomingMarker: { path: string; buffer: Buffer } | null;
+  incomingMarker: { path: string; sha256: string; buffer: Buffer | null } | null;
   /** True when the incoming snapshot ALSO carries the legacy marker while
    * shards form the generation (mixed remote): the per-file loop then writes
    * the marker as the inert remote artifact, so this transaction must NOT
@@ -184,6 +185,32 @@ export interface EmbeddingGenerationTransactionResult {
   removedPaths: Set<string>;
   /** Paths the per-file apply loop must skip — all handled here. */
   handledPaths: Set<string>;
+}
+
+/**
+ * Content for ONE incoming generation member: the verified incoming buffer,
+ * or the LOCAL file hash-verified against the incoming record (metadata-only
+ * pulls skip content whose local hash already matches — the local bytes ARE
+ * the incoming content). Shared by the shard and legacy-marker branches.
+ */
+async function hydratedIncomingBuffer(
+  io: EmbeddingGenerationTransactionIo,
+  root: SafeArchiveRoot,
+  relPath: string,
+  expectedSha256: string,
+  incoming: Buffer | null | undefined,
+): Promise<Buffer> {
+  if (incoming) return incoming;
+  const filePath = await resolveSafeArchiveTarget(root, relPath);
+  const local = io.readFile
+    ? await io.readFile({ root: root.abs, path: relPath, filePath })
+    : await readFile(filePath);
+  if (sha256Hex(local) !== expectedSha256) {
+    throw new EmbeddingIndexStorageError(
+      `cannot hydrate unchanged embedding index file ${relPath}: local digest does not match the incoming record; local generation preserved`,
+    );
+  }
+  return local;
 }
 
 /**
@@ -226,7 +253,14 @@ export async function applyEmbeddingGenerationTransaction(
   const published = new Map<string, Buffer>();
   let identity: EmbeddingIndexIdentity | null = null;
   if (input.incomingMarker) {
-    const read = parseEmbeddingIndexDocument(input.incomingMarker.buffer.toString("utf-8"));
+    const markerBuffer = await hydratedIncomingBuffer(
+      io,
+      root,
+      input.incomingMarker.path,
+      input.incomingMarker.sha256,
+      input.incomingMarker.buffer,
+    );
+    const read = parseEmbeddingIndexDocument(markerBuffer.toString("utf-8"));
     if (read.outcome !== "ok") {
       throw new EmbeddingIndexStorageError(
         `refusing incoming embedding index generation ${markerRel}: ${describeIndexReadFailure(read)}; local generation preserved`
@@ -243,31 +277,24 @@ export async function applyEmbeddingGenerationTransaction(
     }
   } else {
     for (const relPath of input.incomingShardPaths) {
-      let buffer = input.incomingBuffers.get(relPath);
-      if (!buffer) {
-        // Metadata-only pulls skip content whose local hash already matches
-        // the incoming record: the LOCAL bytes ARE the incoming content, so
-        // read and hash-verify them instead of failing (codex round 5).
-        const state = input.incomingShardStates.get(relPath);
-        if (!state) {
-          throw new EmbeddingIndexStorageError(`missing incoming content for ${relPath}`);
-        }
-        const local = input.io.readFile
-          ? await input.io.readFile({ root: root.abs, path: relPath, filePath: await resolveSafeArchiveTarget(root, relPath) })
-          : await readFile(await resolveSafeArchiveTarget(root, relPath));
-        if (sha256Hex(local) !== state.sha256) {
-          throw new EmbeddingIndexStorageError(
-            `cannot hydrate unchanged embedding index shard ${relPath}: local digest does not match the incoming record; local generation preserved`,
-          );
-        }
-        buffer = local;
-      }
+      // Metadata-only pulls skip content whose local hash already matches
+      // the incoming record: the LOCAL bytes ARE the incoming content, so
+      // read and hash-verify them instead of failing (codex rounds 5-6).
+      const state = input.incomingShardStates.get(relPath);
+      const buffer = await hydratedIncomingBuffer(
+        io,
+        root,
+        relPath,
+        state?.sha256 ?? "",
+        input.incomingBuffers.get(relPath),
+      );
       const read = parseEmbeddingIndexDocument(buffer.toString("utf-8"));
       if (read.outcome !== "ok") {
         throw new EmbeddingIndexStorageError(
           `refusing incoming embedding index shard ${relPath}: ${describeIndexReadFailure(read)}; local generation preserved`
         );
       }
+      validateShardMembership(relPath.split("/").pop() ?? "", read.file);
       const shardIdentity = { provider: read.file.provider, model: read.file.model };
       if (!identity) identity = shardIdentity;
       if (identity.provider !== shardIdentity.provider || identity.model !== shardIdentity.model) {

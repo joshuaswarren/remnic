@@ -177,6 +177,26 @@ export function shardIndexOf(memoryId: string, shardCount: number): number {
   return hash % shardCount;
 }
 
+/**
+ * A shard file named `shard-NNNN.json` must only contain ids that hash to
+ * that shard: a misplaced copy would be loaded today and silently resurrect
+ * stale vectors after the computed shard is rewritten (issue #3148, round 6).
+ * Throws the tagged storage error so mutations fail closed and recall fails
+ * open at its boundary.
+ */
+export function validateShardMembership(shardName: string, file: EmbeddingIndexFile): void {
+  const match = /^shard-(\d{4})\.json$/.exec(shardName);
+  if (!match) return; // not a shard file (legacy documents have no constraint)
+  const shardIndex = Number(match[1]);
+  for (const id of Object.keys(file.entries)) {
+    if (shardIndexOf(id, SHARD_COUNT) !== shardIndex) {
+      throw new EmbeddingIndexStorageError(
+        `refusing embedding index shard ${shardName}: id ${id} hashes to shard ${shardIndexOf(id, SHARD_COUNT)}, not ${shardIndex}; file preserved in place`,
+      );
+    }
+  }
+}
+
 export function isInvalidStringLengthError(err: unknown): boolean {
   return err instanceof RangeError && /invalid string length/i.test(err.message);
 }
@@ -521,6 +541,7 @@ export class EmbeddingIndexFileStore {
           `refusing to continue from malformed embedding index shard ${name} (unrecognized format); file preserved in place`,
         );
       }
+      validateShardMembership(name, read.file);
       const shardIdentity = { provider: read.file.provider, model: read.file.model };
       if (!identity) identity = shardIdentity;
       if (!sameIndexIdentity(shardIdentity, identity)) {
@@ -901,8 +922,18 @@ export class EmbeddingIndexFileStore {
       }
       if (patch.lastReadRecovery !== undefined) next.lastReadRecovery = patch.lastReadRecovery;
       if (patch.lastSuccessAt !== undefined) next.lastSuccessAt = patch.lastSuccessAt;
+      // The status file is ALWAYS plain (non-secret diagnostics: failure
+      // strings and counts only). It bypasses the secure io so console_state
+      // keeps reading it on locked stores and failure counts never reset.
       await mkdir(path.dirname(this.statusPath), { recursive: true });
-      await this.writeAtomicFile(this.statusPath, JSON.stringify(next));
+      const statusTemp = `${this.statusPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      try {
+        await writeFile(statusTemp, JSON.stringify(next), "utf-8");
+        await rename(statusTemp, this.statusPath);
+      } catch (err) {
+        await rm(statusTemp, { force: true }).catch(() => undefined);
+        throw err;
+      }
     } catch (err) {
       log.debug(`embedding fallback status write failed: ${err}`);
     }

@@ -36,7 +36,7 @@ test("detectLayout returns sharded on the first post-gap call and ignores a stra
   try {
     const backupDir = path.join(stateDir, "embeddings.pre-replace.tmp");
     await mkdir(backupDir, { recursive: true });
-    await writeFile(path.join(backupDir, "shard-0000.json"), SHARD_FILE, "utf-8");
+    await writeFile(path.join(backupDir, "shard-0058.json"), SHARD_FILE, "utf-8");
     await writeFile(
       path.join(stateDir, "embeddings.json"),
       JSON.stringify({

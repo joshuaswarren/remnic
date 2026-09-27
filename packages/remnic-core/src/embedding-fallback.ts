@@ -436,7 +436,15 @@ export class EmbeddingFallback {
         // persistence while the published generation sits in the rename-gap
         // backup, and insertions must load the restored vectors rather than
         // a fresh empty index (issue #3148, codex round 3).
-        const recovered = await this.store.recoverIfInterrupted();
+        let recovered = false;
+        try {
+          recovered = await this.store.recoverIfInterrupted();
+        } catch (err) {
+          // Record the recovery failure durably BEFORE rejecting the
+          // mutation: the write-outcome try below is never reached.
+          await this.store.recordIndexWriteOutcome(err).catch(() => undefined);
+          throw err;
+        }
         if (recovered) {
           this.loaded = null;
           this.loadedFromDisk = false;

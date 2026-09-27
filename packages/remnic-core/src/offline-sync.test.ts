@@ -416,7 +416,7 @@ test("offline sync applies shard generations wholesale: base-unchanged locally-m
       sourceId: "remote",
       includeContent: true,
     });
-    await write(remoteRoot, "state/embeddings/shard-0001.json", JSON.stringify({
+    await write(remoteRoot, "state/embeddings/shard-0037.json", JSON.stringify({
       version: 1, provider: "openai", model: "base", entries: {
         added: { path: "memories/added.md", vector: [1] },
       },
@@ -436,7 +436,7 @@ test("offline sync applies shard generations wholesale: base-unchanged locally-m
     // generation wins (no locally-modified preservation inside a replaced
     // generation).
     assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0000.json"), await readUtf8(remoteRoot, "state/embeddings/shard-0000.json"));
-    assert.ok((await readUtf8(localRoot, "state/embeddings/shard-0001.json")).includes("added"));
+    assert.ok((await readUtf8(localRoot, "state/embeddings/shard-0037.json")).includes("added"));
     // Local-only shard inside the replaced generation is removed.
     const removedExists = await exists(localRoot, "state/embeddings/shard-0050.json");
     assert.equal(removedExists, false);

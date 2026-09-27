@@ -8,9 +8,17 @@ import type {
   OfflineSyncFileRecord,
   OfflineSyncSnapshot,
 } from "./offline-sync.js";
-import { OFFLINE_SYNC_SNAPSHOT_FORMAT, iterateOfflineSyncSnapshotFileRecords } from "./offline-sync.js";
-import { resolvePushEmbeddingGenerationState } from "./offline-sync-embedding-generation.js";
+import {
+  filterOfflineSyncDeletionRevisions,
+  OFFLINE_SYNC_SNAPSHOT_FORMAT,
+  iterateOfflineSyncSnapshotFileRecords,
+} from "./offline-sync.js";
+import {
+  computeOmittedEmbeddingGenerationPaths,
+  embeddingGenerationMembership,
+} from "./offline-sync-embedding-generation.js";
 import type { OfflineSyncExcludeFile, OfflineSyncFileTarget } from "./offline-sync-file-io.js";
+import { matchesOfflineSyncDefaultExclude } from "./offline-sync-exclude-globs.js";
 import type { OfflineSyncFileDigest } from "./offline-sync.js";
 
 export interface OfflineSyncSnapshotStreamBuildOptions {
@@ -40,12 +48,28 @@ export async function buildEmbeddingAwareSnapshotStream(
   options: OfflineSyncSnapshotStreamBuildOptions,
 ): Promise<OfflineSyncSnapshotStreamBuild> {
   const storageHash = createHash("sha256").update(options.root).digest("hex").slice(0, 16);
-  const generationState = await resolvePushEmbeddingGenerationState({
-    rootAbs: options.root,
+  // Deletions: the canonical filter (exclusions + stale-tombstone exists
+  // check) FIRST, then whole-generation suppression so a filtered generation
+  // is never announced as deleted (PR #3148 round 6).
+  const deletions = await filterOfflineSyncDeletionRevisions({
+    root: options.root,
+    deletions: options.deletions,
     includeTranscripts: options.includeTranscripts,
     userExcludeRegexps: options.userExcludeRegexps,
     excludeFile: options.excludeFile,
-    deletions: options.deletions,
+  });
+  const omission = await computeOmittedEmbeddingGenerationPaths({
+    rootAbs: options.root,
+    userExcludeRegexps: options.userExcludeRegexps,
+    excludeFile: options.excludeFile,
+    isExcludedRelPath: (relPath) =>
+      matchesOfflineSyncDefaultExclude(relPath) ||
+      Boolean(options.userExcludeRegexps?.some((re) => re.test(relPath))),
+  });
+  const omittedDirs = new Set(omission.omittedDirs);
+  const deletionsAfterGenerationSuppression = deletions.filter((deletion) => {
+    const membership = embeddingGenerationMembership(deletion.path);
+    return !(membership && omittedDirs.has(membership.shardDir));
   });
   return {
     namespace: options.namespace,
@@ -54,9 +78,9 @@ export async function buildEmbeddingAwareSnapshotStream(
     createdAt: new Date().toISOString(),
     sourceId: `remnic:${options.namespace}:${storageHash}`,
     includeTranscripts: options.includeTranscripts,
-    deletions: generationState.deletions,
-    ...(generationState.omittedDirs.length > 0
-      ? { omittedEmbeddingGenerationDirs: generationState.omittedDirs }
+    deletions: deletionsAfterGenerationSuppression,
+    ...(omission.omittedDirs.length > 0
+      ? { omittedEmbeddingGenerationDirs: omission.omittedDirs }
       : {}),
     files: iterateOfflineSyncSnapshotFileRecords({
       root: options.root,
@@ -67,7 +91,7 @@ export async function buildEmbeddingAwareSnapshotStream(
       signal: options.signal,
       userExcludeRegexps: options.userExcludeRegexps,
       excludeFile: options.excludeFile,
-      skipEmbeddingGenerationPaths: generationState.omittedPaths,
+      skipEmbeddingGenerationPaths: omission.omittedPaths,
     }),
   };
 }

@@ -99,6 +99,12 @@ function entryOf(elements: number, relPath: string): IndexEntry {
   return { vector: vectorOf(elements), path: relPath };
 }
 
+const shardName = (id: string): string => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) { h ^= id.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return `shard-${String(h % 64).padStart(4, "0")}.json`;
+};
+
 function buildIndex(entries: Record<string, IndexEntry>): LegacyIndexFile {
   return {
     version: 1,
@@ -285,10 +291,18 @@ test("loads entries and path associations from the published shard generation in
     const shardDir = path.join(memoryDir, SHARD_DIR_REL);
     await mkdir(shardDir, { recursive: true });
     await writeFile(
-      path.join(shardDir, "shard-0000.json"),
+      path.join(shardDir, shardName("mem-r1")),
       JSON.stringify(
         buildIndex({
           "mem-r1": entryOf(2, "facts/one.md"),
+        }),
+      ),
+      "utf-8",
+    );
+    await writeFile(
+      path.join(shardDir, shardName("mem-r2")),
+      JSON.stringify(
+        buildIndex({
           "mem-r2": { vector: [1, 0], path: "namespaces/alpha/facts/two.md" },
         }),
       ),
@@ -389,7 +403,7 @@ test("a stray legacy file beside the published generation is never merged (crash
     const shardDir = path.join(memoryDir, SHARD_DIR_REL);
     await mkdir(shardDir, { recursive: true });
     await writeFile(
-      path.join(shardDir, "shard-0000.json"),
+      path.join(shardDir, shardName("mem-live")),
       JSON.stringify(buildIndex({ "mem-live": entryOf(2, "facts/live.md") })),
       "utf-8",
     );
@@ -653,8 +667,13 @@ test("an unreadable published generation fails mutation closed instead of writin
       "mem-live-1": entryOf(2, "facts/one.md"),
       "mem-live-2": entryOf(2, "facts/two.md"),
     });
-    await writeFile(path.join(shardDir, "shard-0000.json"), JSON.stringify(seeded), "utf-8");
-    const shardBefore = await readFile(path.join(shardDir, "shard-0000.json"), "utf-8");
+    await writeFile(path.join(shardDir, shardName("mem-live-1")), JSON.stringify(buildIndex({
+      "mem-live-1": entryOf(2, "facts/one.md"),
+    })), "utf-8");
+    await writeFile(path.join(shardDir, shardName("mem-live-2")), JSON.stringify(buildIndex({
+      "mem-live-2": entryOf(2, "facts/two.md"),
+    })), "utf-8");
+    const shardBefore = await readFile(path.join(shardDir, shardName("mem-live-1")), "utf-8");
 
     await withEnv({ [LIMIT_ENV]: "2000" }, async () => {
       // Revoke read permission on the published generation directory.
@@ -674,7 +693,7 @@ test("an unreadable published generation fails mutation closed instead of writin
 
     await chmod(shardDir, 0o755);
     // Existing shards are untouched: the mutation never wrote blind.
-    assert.equal(await readFile(path.join(shardDir, "shard-0000.json"), "utf-8"), shardBefore);
+    assert.equal(await readFile(path.join(shardDir, shardName("mem-live-1")), "utf-8"), shardBefore);
     const collected = await collectIndex(memoryDir);
     assert.equal(collected.merged["mem-new"], undefined, "no entry may be written from an unloadable generation");
     assert.deepEqual(Object.keys(collected.merged).sort(), ["mem-live-1", "mem-live-2"]);
@@ -710,8 +729,8 @@ test("mutations reject a mixed-identity generation and a malformed shard instead
       model: "some-host-model",
       entries: { "mem-b": { vector: [1, 0], path: "facts/b.md" } },
     });
-    await writeFile(path.join(shardDir, "shard-0000.json"), openaiShard, "utf-8");
-    await writeFile(path.join(shardDir, "shard-0001.json"), hostShard, "utf-8");
+    await writeFile(path.join(shardDir, shardName("mem-a")), openaiShard, "utf-8");
+    await writeFile(path.join(shardDir, shardName("mem-b")), hostShard, "utf-8");
 
     await withEnv({ [LIMIT_ENV]: "2000" }, async () => {
       const fallback = new EmbeddingFallback(stubConfig(memoryDir));
@@ -723,13 +742,13 @@ test("mutations reject a mixed-identity generation and a malformed shard instead
       );
 
       // Both files preserved; nothing was rewritten from a partial view.
-      assert.equal(await readFile(path.join(shardDir, "shard-0000.json"), "utf-8"), openaiShard);
-      assert.equal(await readFile(path.join(shardDir, "shard-0001.json"), "utf-8"), hostShard);
+      assert.equal(await readFile(path.join(shardDir, shardName("mem-a")), "utf-8"), openaiShard);
+      assert.equal(await readFile(path.join(shardDir, shardName("mem-b")), "utf-8"), hostShard);
     });
 
     // Now a malformed shard instead: recall skips it; mutation rejects it.
     const malformed = '{"hello":1}';
-    await writeFile(path.join(shardDir, "shard-0001.json"), malformed, "utf-8");
+    await writeFile(path.join(shardDir, shardName("mem-b")), malformed, "utf-8");
     const fallback2 = new EmbeddingFallback(stubConfig(memoryDir));
     cleanup.push(installEmbedFetch([[0.1, 0.2], vectorOf(3)]));
     // Recall fails open UNCACHED on any generation read failure — it never
@@ -740,7 +759,7 @@ test("mutations reject a mixed-identity generation and a malformed shard instead
       (err: NodeJS.ErrnoException) =>
         err.name === "EmbeddingIndexStorageError" && /malformed embedding index shard/.test(err.message),
     );
-    assert.equal(await readFile(path.join(shardDir, "shard-0001.json"), "utf-8"), malformed);
+    assert.equal(await readFile(path.join(shardDir, shardName("mem-b")), "utf-8"), malformed);
   } finally {
     for (const fn of cleanup.reverse()) fn();
     unregister();
@@ -758,7 +777,7 @@ test("identity change on a sharded generation publishes a complete replacement (
     const shardDir = path.join(memoryDir, SHARD_DIR_REL);
     await mkdir(shardDir, { recursive: true });
     await writeFile(
-      path.join(shardDir, "shard-0000.json"),
+      path.join(shardDir, shardName("mem-h1")),
       JSON.stringify({
         version: 1,
         provider: "host",
@@ -768,7 +787,7 @@ test("identity change on a sharded generation publishes a complete replacement (
       "utf-8",
     );
     await writeFile(
-      path.join(shardDir, "shard-0007.json"),
+      path.join(shardDir, shardName("mem-h2")),
       JSON.stringify({
         version: 1,
         provider: "host",
@@ -828,7 +847,7 @@ test("identity change to a new host model replaces the generation and keeps it w
     const shardDir = path.join(memoryDir, SHARD_DIR_REL);
     await mkdir(shardDir, { recursive: true });
     await writeFile(
-      path.join(shardDir, "shard-0003.json"),
+      path.join(shardDir, shardName("mem-v1")),
       JSON.stringify({
         version: 1,
         provider: "host",
@@ -874,7 +893,7 @@ test("injected replacement failures preserve the old generation until the replac
       model: "host-model",
       entries: { "mem-h1": { vector: [1, 0], path: "facts/h1.md" } },
     });
-    await writeFile(path.join(shardDir, "shard-0000.json"), oldShard, "utf-8");
+    await writeFile(path.join(shardDir, shardName("mem-h1")), oldShard, "utf-8");
 
     // (a) Serialization failure while staging the replacement: the huge
     // entry overflows its shard, throwing BEFORE any destructive step.
@@ -890,7 +909,7 @@ test("injected replacement failures preserve the old generation until the replac
         fallback.indexFile("mem-huge", "huge fact", path.join(memoryDir, "facts", "huge.md")),
         (err: NodeJS.ErrnoException) => err.name === "EmbeddingIndexCapacityError",
       );
-      assert.equal(await readFile(path.join(shardDir, "shard-0000.json"), "utf-8"), oldShard, "old generation must survive a staging failure");
+      assert.equal(await readFile(path.join(shardDir, shardName("mem-h1")), "utf-8"), oldShard, "old generation must survive a staging failure");
       assert.equal((await collectIndex(memoryDir)).stagingDirs.length, 0, "staging must be rolled back");
       // Recall honestly reports nothing: the surviving generation still has
       // the host identity, which this config's openai query cannot serve.
@@ -913,7 +932,7 @@ test("injected replacement failures preserve the old generation until the replac
       // replacement (staging lives under the state dir).
       await rm(shardDir, { recursive: true, force: true });
       await mkdir(shardDir, { recursive: true });
-      await writeFile(path.join(shardDir, "shard-0000.json"), oldShard, "utf-8");
+      await writeFile(path.join(shardDir, shardName("mem-h1")), oldShard, "utf-8");
 
       const fallback = new EmbeddingFallback(stubConfig(memoryDir));
       cleanup.push(installEmbedFetch([vectorOf(3), vectorOf(3)]));
@@ -923,7 +942,7 @@ test("injected replacement failures preserve the old generation until the replac
         (err: NodeJS.ErrnoException) => (err as NodeJS.ErrnoException).code === "EACCES",
       );
       await chmod(stateDir, 0o755);
-      assert.equal(await readFile(path.join(shardDir, "shard-0000.json"), "utf-8"), oldShard, "old generation must survive an I/O failure");
+      assert.equal(await readFile(path.join(shardDir, shardName("mem-h1")), "utf-8"), oldShard, "old generation must survive an I/O failure");
       assert.equal((await collectIndex(memoryDir)).stagingDirs.length, 0, "staging must be rolled back");
       assert.deepEqual(await fallback.search("after io failure", 5), []);
       await fallback.indexFile("mem-after", "after fact", path.join(memoryDir, "facts", "after.md"));
