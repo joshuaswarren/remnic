@@ -209,61 +209,64 @@ export class EmbeddingIndexFileStore {
   async detectLayout(): Promise<IndexLayout> {
     // An interrupted identity replacement leaves the published directory
     // absent with the fixed transaction backup still on disk (the publish
-    // rename never completed). Roll the former generation back BEFORE layout
-    // selection: its vectors stay authoritative and a stray legacy file
-    // cannot resurrect over them (issue #3146 review).
-    let shardDirPresent = false;
+    // rename never completed). Report SHARDED for that gap: the backup holds
+    // the authoritative generation, so neither the legacy file nor a fresh
+    // index may win, and reads fail open to empty until the mutation queue
+    // performs the rollback. The rollback itself only ever runs inside
+    // persist() — a write — so read paths never race an in-flight
+    // replacement with a recovery rename (issue #3148 review).
     try {
       await stat(this.shardDir);
-      shardDirPresent = true;
+      return "sharded";
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
         // The pointer exists but cannot be stat'ed — fail towards the
         // published generation so its readers surface the I/O error.
         return "sharded";
       }
-      if (await this.rollbackInterruptedReplacement()) {
-        log.warn(
-          `embedding index: recovered interrupted replacement; former generation restored from ${replacementBackupPath(this.shardDir)}`,
-        );
-        await this.recordIndexStatus({
-          lastReadRecovery: {
-            ts: new Date().toISOString(),
-            message: "interrupted identity replacement rolled back to the former generation",
-          },
-        });
-        // The rollback IS the layout decision: the restored generation is
-        // authoritative on THIS call — falling through would let a stray
-        // legacy file win (issue #3148 review, round 1).
-        return "sharded";
-      }
+      if (await this.replacementBackupExists()) return "sharded";
+      return this.legacyOrEmptyLayout();
     }
-    if (shardDirPresent) return "sharded";
-    return this.legacyOrEmptyLayout();
   }
 
   /**
    * Roll the fixed transaction backup back into the published position.
    * Returns true when a rollback happened.
    */
-  private async rollbackInterruptedReplacement(): Promise<boolean> {
+  private async replacementBackupExists(): Promise<boolean> {
     const backupPath = replacementBackupPath(this.shardDir);
-    let backupPresent = false;
     try {
       await stat(backupPath);
-      backupPresent = true;
+      return true;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        // An unreadable backup must not be silently treated as absent —
-        // that would permit the legacy fallback over a generation we cannot
-        // inspect (issue #3148 review, round 1).
-        throw new EmbeddingIndexStorageError(
-          `cannot stat embedding index replacement backup ${backupPath}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+      // An unreadable backup must not be silently treated as absent —
+      // that would permit the legacy fallback over a generation we cannot
+      // inspect (issue #3148 review, round 1).
+      throw new EmbeddingIndexStorageError(
+        `cannot stat embedding index replacement backup ${backupPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
-    if (!backupPresent) return false;
+  }
+
+  /**
+   * Mutation-queue-only: roll the fixed transaction backup back into the
+   * published position after an interrupted replacement. Returns true when
+   * a rollback happened.
+   */
+  private async rollbackInterruptedReplacement(): Promise<boolean> {
+    const backupPath = replacementBackupPath(this.shardDir);
+    if (!(await this.replacementBackupExists())) return false;
     await rename(backupPath, this.shardDir);
+    log.warn(
+      `embedding index: recovered interrupted replacement; former generation restored from ${backupPath}`,
+    );
+    await this.recordIndexStatus({
+      lastReadRecovery: {
+        ts: new Date().toISOString(),
+        message: "interrupted identity replacement rolled back to the former generation",
+      },
+    });
     return true;
   }
 
@@ -436,14 +439,22 @@ export class EmbeddingIndexFileStore {
     const stateDir = path.dirname(this.indexPath);
     await mkdir(stateDir, { recursive: true });
     await this.cleanForeignStagingDirs();
+    // Recovery of an interrupted replacement runs only here (mutation
+    // queue): the former generation is restored BEFORE layout selection, so
+    // the write lands on the restored authoritative generation.
+    const rolledBack = await this.rollbackInterruptedReplacement();
 
-    const groups = new Map<number, Record<string, EmbeddingIndexEntry>>();
-    for (const id of Object.keys(index.entries)) {
-      const shardIndex = shardIndexOf(id, SHARD_COUNT);
-      const group = groups.get(shardIndex);
-      if (group) group[id] = index.entries[id];
-      else groups.set(shardIndex, { [id]: index.entries[id] });
-    }
+    const buildGroups = () => {
+      const map = new Map<number, Record<string, EmbeddingIndexEntry>>();
+      for (const id of Object.keys(index.entries)) {
+        const shardIndex = shardIndexOf(id, SHARD_COUNT);
+        const group = map.get(shardIndex);
+        if (group) group[id] = index.entries[id];
+        else map.set(shardIndex, { [id]: index.entries[id] });
+      }
+      return map;
+    };
+    let groups = buildGroups();
 
     const layout = await this.detectLayout();
 
@@ -462,6 +473,17 @@ export class EmbeddingIndexFileStore {
       if (identityChanged) {
         await this.publishReplacementGeneration(index, groups, limit);
         return;
+      }
+      if (rolledBack && diskIdentity) {
+        // Same identity after a rollback: the restored generation is
+        // authoritative, so its recovered vectors merge UNDER the incoming
+        // mutation instead of being clobbered by it (issue #3148 review).
+        const restored: Record<string, EmbeddingIndexEntry> = {};
+        await this.readShardGenerationInto(restored);
+        for (const [id, entry] of Object.entries(restored)) {
+          if (!index.entries[id]) index.entries[id] = entry;
+        }
+        groups = buildGroups();
       }
       const dirtyShards = opts.touchedIds?.length
         ? new Set(opts.touchedIds.map((id) => shardIndexOf(id, SHARD_COUNT)))
@@ -575,6 +597,12 @@ export class EmbeddingIndexFileStore {
         await rename(backupPath, this.shardDir).catch(() => undefined);
         throw err;
       }
+      // The replacement is published: the backup is obsolete disk. A
+      // cleanup failure is non-fatal (the next replacement removes it) but
+      // must stay visible.
+      await rm(backupPath, { recursive: true, force: true }).catch((err) => {
+        log.warn(`embedding index: could not remove replacement backup ${backupPath}: ${err}`);
+      });
     } catch (err) {
       await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
       throw err;

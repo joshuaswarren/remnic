@@ -772,7 +772,8 @@ export function shouldPreferIncomingOfflineRuntimeFile(relPosix: string): boolea
   const parts = relPosix.split("/");
   const basename = parts[parts.length - 1] ?? "";
   return isCanonicalRuntimeStatePath(parts) &&
-    (REMOTE_AUTHORITATIVE_RUNTIME_STATE_FILES.has(basename) || EMBEDDING_SHARD_FILE_PATTERN.test(basename));
+    (REMOTE_AUTHORITATIVE_RUNTIME_STATE_FILES.has(basename) ||
+      (EMBEDDING_SHARD_FILE_PATTERN.test(basename) && parts[parts.length - 2] === "embeddings"));
 }
 
 function shouldDeleteAbsentIncomingOfflineRuntimeFile(relPosix: string): boolean {

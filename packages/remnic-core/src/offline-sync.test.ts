@@ -409,6 +409,8 @@ test("offline sync push-side default excludes live LCM sqlite but apply-side sti
       true,
     );
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/embeddings/other.json"), false);
+    // Shard preference is scoped to the embedding index directory.
+    assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/other/shard-0000.json"), false);
 
     // buildOfflineSyncSnapshotForPaths still rejects explicitly excluded
     // paths so callers cannot bypass the default exclude via path lists.

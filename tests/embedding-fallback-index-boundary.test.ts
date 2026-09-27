@@ -198,6 +198,21 @@ async function tmpMemoryDir(prefix: string): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
+/**
+ * True when the OS actually denies writes into `dir` after a chmod. Root
+ * containers and Windows ignore directory permission bits, so chmod-forced
+ * failure tests must skip instead of failing (issue #3148 review).
+ */
+async function chmodDeniesWrites(dir: string, mode: number): Promise<boolean> {
+  await chmod(dir, mode);
+  try {
+    await writeFile(path.join(dir, `.perm-probe-${Math.random().toString(16).slice(2)}`), "x", "utf-8");
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 const HOST_PROVIDER_STUB = {
   id: "host-test",
   model: "host-model",
@@ -621,7 +636,7 @@ test("recall fails open uncached and a following mutation still fails closed on 
   }
 });
 
-test("an unreadable published generation fails mutation closed instead of writing into it blind", async () => {
+test("an unreadable published generation fails mutation closed instead of writing into it blind", async (t) => {
   const memoryDir = await tmpMemoryDir("remnic-emb3146-direnum-");
   const unregister = registerHostEmbeddingProvider(memoryDir, HOST_PROVIDER_STUB);
   const cleanup: Array<() => void> = [];
@@ -637,13 +652,11 @@ test("an unreadable published generation fails mutation closed instead of writin
 
     await withEnv({ [LIMIT_ENV]: "2000" }, async () => {
       // Revoke read permission on the published generation directory.
-      cleanup.push(() => {
-        return undefined;
-      });
       await chmod(shardDir, 0o000);
-      cleanup.push(() => {
-        return undefined;
-      });
+      if (!(await chmodDeniesWrites(shardDir, 0o000))) {
+        t.skip("directory permission enforcement unavailable (root or Windows)");
+        return;
+      }
 
       const fallback = new EmbeddingFallback(stubConfig(memoryDir));
       cleanup.push(installEmbedFetch([vectorOf(3)]));
@@ -841,7 +854,7 @@ test("identity change to a new host model replaces the generation and keeps it w
   }
 });
 
-test("injected replacement failures preserve the old generation until the replacement is valid", async () => {
+test("injected replacement failures preserve the old generation until the replacement is valid", async (t) => {
   const memoryDir = await tmpMemoryDir("remnic-emb3146-replace-fail-");
   const unregister = registerHostEmbeddingProvider(memoryDir, HOST_PROVIDER_STUB);
   const cleanup: Array<() => void> = [];
@@ -859,6 +872,11 @@ test("injected replacement failures preserve the old generation until the replac
 
     // (a) Serialization failure while staging the replacement: the huge
     // entry overflows its shard, throwing BEFORE any destructive step.
+    // (b) uses chmod, which is unenforced as root/on Windows - skip there.
+    if (process.getuid?.() === 0 || process.platform === "win32") {
+      t.skip("permission-based failure injection unavailable (root or Windows)");
+      return;
+    }
     await withEnv({ [LIMIT_ENV]: "2000" }, async () => {
       const fallback = new EmbeddingFallback(stubConfig(memoryDir));
       cleanup.push(installEmbedFetch([vectorOf(300), vectorOf(3)]));
@@ -937,24 +955,27 @@ test("a restart inside the replacement rename gap rolls back to the old generati
       "utf-8",
     );
 
-    // First read recovers the former generation before layout selection.
+    // Recall during the gap fails open to [] - it never adopts the stale
+    // legacy file, and the backup generation is only recovered by a write.
     const fallback = new EmbeddingFallback(stubConfig(memoryDir));
     cleanup.push(installEmbedFetch([[0.1, 0.2], vectorOf(3)]));
-    const results = await fallback.search("after restart", 5);
-    assert.deepEqual(results.map((r) => r.id), ["mem-old"], "old vectors must be recovered, not the stale legacy file");
+    assert.deepEqual(await fallback.search("after restart", 5), []);
+    const duringGap = await collectIndex(memoryDir);
+    assert.equal(duringGap.legacy?.entries["mem-stale"] !== undefined, true, "fixture assumption: stray legacy on disk");
+    // (duringGap.merged includes the stray file only because the TEST helper
+    // merges whatever is on disk; the library serves [] per the assertion
+    // above.)
 
-    // Recovery is durable: the published generation is back in place.
-    const collected = await collectIndex(memoryDir);
-    assert.ok(collected.shardFiles.length > 0, "former generation restored to the published position");
-    assert.equal(collected.legacy?.entries["mem-stale"] !== undefined, true, "fixture assumption: stray legacy still on disk");
-    assert.equal(collected.merged["mem-stale"], undefined, "stray legacy must not merge over the recovered generation");
-
-    // A mutation proceeds normally against the recovered generation.
+    // The mutation performs the recovery, then lands on the restored
+    // generation: old vectors return and the new entry joins them.
     await fallback.indexFile("mem-new", "new fact", path.join(memoryDir, "facts", "new.md"));
     const after = await collectIndex(memoryDir);
-    assert.ok(after.shardFiles.length > 0);
+    assert.ok(after.shardFiles.length > 0, "former generation restored to the published position");
+    assert.equal(after.merged["mem-old"] !== undefined, true, "old vectors recovered by the mutation");
     assert.equal(after.merged["mem-new"] !== undefined, true);
-    assert.equal(after.merged["mem-old"] !== undefined, true);
+    assert.equal(after.merged["mem-stale"], undefined, "stray legacy never merges");
+    const results = await fallback.search("recovered", 5);
+    assert.deepEqual(results.map((r) => r.id).sort(), ["mem-new", "mem-old"]);
   } finally {
     for (const fn of cleanup.reverse()) fn();
     unregister();
@@ -997,7 +1018,7 @@ test("an interrupted migration leaves no staging debris and the legacy file auth
   }
 });
 
-test("a failed persistence invalidates the cache and the retry actually reaches disk", async () => {
+test("a failed persistence invalidates the cache and the retry actually reaches disk", async (t) => {
   const memoryDir = await tmpMemoryDir("remnic-emb3146-cache-");
   const unregister = registerHostEmbeddingProvider(memoryDir, HOST_PROVIDER_STUB);
   const cleanup: Array<() => void> = [];
@@ -1011,6 +1032,10 @@ test("a failed persistence invalidates the cache and the retry actually reaches 
       const fallback = new EmbeddingFallback(stubConfig(memoryDir));
       cleanup.push(installEmbedFetch([vectorOf(3), queryVec, vectorOf(3), queryVec]));
       await chmod(stateDir, 0o500);
+      if (!(await chmodDeniesWrites(stateDir, 0o500))) {
+        t.skip("directory permission enforcement unavailable (root or Windows)");
+        return;
+      }
       await assert.rejects(
         fallback.indexFile("mem-x", "fact x", path.join(memoryDir, "facts", "x.md")),
         (err: NodeJS.ErrnoException) => (err as NodeJS.ErrnoException).code === "EACCES",

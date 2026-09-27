@@ -10,7 +10,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { EmbeddingIndexFileStore } from "./embedding-index-storage.js";
 
 const SHARD_FILE = JSON.stringify({
@@ -32,8 +32,8 @@ function newStore(memoryDir: string): EmbeddingIndexFileStore {
 test("detectLayout returns sharded on the first post-gap call and ignores a stray legacy file", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3146-gapfirst-"));
   const store = newStore(memoryDir);
+  const stateDir = path.join(memoryDir, "state");
   try {
-    const stateDir = path.join(memoryDir, "state");
     const backupDir = path.join(stateDir, "embeddings.pre-replace.tmp");
     await mkdir(backupDir, { recursive: true });
     await writeFile(path.join(backupDir, "shard-0000.json"), SHARD_FILE, "utf-8");
@@ -48,13 +48,38 @@ test("detectLayout returns sharded on the first post-gap call and ignores a stra
       "utf-8",
     );
 
-    assert.equal(await store.detectLayout(), "sharded", "first post-gap call must return the restored generation");
+    // First post-gap call reports SHARDED without writing: reads fail open
+    // to an empty view (the gap generation cannot be enumerated) and the
+    // stray legacy file never wins.
     assert.equal(await store.detectLayout(), "sharded");
-    // The restored generation is what a loader sees — not the stray legacy.
-    const merged: Record<string, { vector: number[]; path: string }> = {};
-    const identity = await store.readShardGenerationInto(merged, true);
-    assert.deepEqual(identity, { provider: "openai", model: "text-embedding-3-small" });
-    assert.deepEqual(Object.keys(merged), ["mem-old"]);
+    let probe: Record<string, { vector: number[]; path: string }> = {};
+    const identity = await store.readShardGenerationInto(probe);
+    assert.equal(identity, null);
+    assert.deepEqual(probe, {});
+    try {
+      await stat(path.join(stateDir, "embeddings"));
+      assert.fail("detectLayout must not write on a read path");
+    } catch (err) {
+      assert.equal((err as NodeJS.ErrnoException).code, "ENOENT");
+    }
+
+    // The mutation queue performs the rollback and lands the write on the
+    // restored authoritative generation.
+    await store.persist(
+      {
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: { "mem-new": { vector: [1, 1], path: "facts/new.md" } },
+      },
+      { touchedIds: ["mem-new"], memoryId: "mem-new" },
+    );
+    assert.equal(await store.detectLayout(), "sharded");
+    probe = {};
+    const identityAfter = await store.readShardGenerationInto(probe);
+    assert.deepEqual(identityAfter, { provider: "openai", model: "text-embedding-3-small" });
+    assert.deepEqual(Object.keys(probe).sort(), ["mem-new", "mem-old"]);
+    assert.equal(probe["mem-old"].path, "facts/old.md");
   } finally {
     await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
   }
@@ -71,10 +96,16 @@ test("a corrupt replacement backup shape surfaces as a tagged storage error, nev
     // shard enumeration must fail loudly (tagged) instead of degrading to
     // the legacy fallback.
     await writeFile(path.join(stateDir, "embeddings.pre-replace.tmp"), "junk", "utf-8");
-    const recovered = await store.detectLayout();
-    assert.equal(recovered, "sharded");
+    // The mutation queue's rollback moves the junk file into the published
+    // position, where shard enumeration fails loudly (tagged) instead of
+    // degrading to the legacy fallback.
     await assert.rejects(
-      store.readShardGenerationInto({}, true),
+      store.persist({
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: {},
+      }),
       (err: NodeJS.ErrnoException) => err.name === "EmbeddingIndexStorageError",
     );
   } finally {
