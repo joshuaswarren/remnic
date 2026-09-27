@@ -226,7 +226,18 @@ export function parseEmbeddingIndexDocument(raw: string): ManagedIndexRead {
     Array.isArray(parsed) ||
     (parsed as Partial<EmbeddingIndexFile>).version !== 1 ||
     typeof (parsed as Partial<EmbeddingIndexFile>).provider !== "string" ||
-    typeof (parsed as Partial<EmbeddingIndexFile>).model !== "string"
+    typeof (parsed as Partial<EmbeddingIndexFile>).model !== "string" ||
+    ((parsed as Partial<EmbeddingIndexFile>).model as string).length === 0
+  ) {
+    return { outcome: "foreign" };
+  }
+  // An unsupported identity must fail closed like any other malformed
+  // document: recall cannot serve it and mutations must not adopt it as
+  // authoritative (issue #3148, round 6).
+  if (
+    (parsed as Partial<EmbeddingIndexFile>).provider !== "openai" &&
+    (parsed as Partial<EmbeddingIndexFile>).provider !== "local" &&
+    (parsed as Partial<EmbeddingIndexFile>).provider !== "host"
   ) {
     return { outcome: "foreign" };
   }
@@ -846,9 +857,9 @@ export class EmbeddingIndexFileStore {
   private async writeAtomicFile(
     filePath: string,
     contents: string,
-    opts?: { finalAadFilePath?: string },
+    opts?: { finalAadFilePath?: string; bypassSecureIo?: boolean },
   ): Promise<void> {
-    if (this.io) {
+    if (this.io && opts?.bypassSecureIo !== true) {
       await this.io.writeUtf8(filePath, contents, opts?.finalAadFilePath === undefined ? undefined : { finalAadFilePath: opts.finalAadFilePath });
       return;
     }
@@ -926,14 +937,7 @@ export class EmbeddingIndexFileStore {
       // strings and counts only). It bypasses the secure io so console_state
       // keeps reading it on locked stores and failure counts never reset.
       await mkdir(path.dirname(this.statusPath), { recursive: true });
-      const statusTemp = `${this.statusPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      try {
-        await writeFile(statusTemp, JSON.stringify(next), "utf-8");
-        await rename(statusTemp, this.statusPath);
-      } catch (err) {
-        await rm(statusTemp, { force: true }).catch(() => undefined);
-        throw err;
-      }
+      await this.writeAtomicFile(this.statusPath, JSON.stringify(next), { bypassSecureIo: true });
     } catch (err) {
       log.debug(`embedding fallback status write failed: ${err}`);
     }

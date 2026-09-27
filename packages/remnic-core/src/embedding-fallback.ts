@@ -412,18 +412,24 @@ export class EmbeddingFallback {
         }
       }
 
+      let saved = false;
       for (const indexProvider of providers) {
         try {
           const index = await this.loadIndex(indexProvider);
           if (!index.entries[memoryId]) continue;
           delete index.entries[memoryId];
           await this.saveIndex(index, { touchedIds: [memoryId], memoryId });
+          saved = true;
         } catch (err) {
           await this.store.recordIndexWriteOutcome(err, memoryId);
           throw err;
         }
       }
-      await this.store.recordIndexWriteOutcome(null, memoryId);
+      // A no-op removal (id absent from every candidate index) performs no
+      // save: it must NOT clear a recorded persistence failure, or the
+      // operator console would report an unresolved failure as fixed
+      // without any demonstration that storage is writable (round 6).
+      if (saved) await this.store.recordIndexWriteOutcome(null, memoryId);
     });
   }
 

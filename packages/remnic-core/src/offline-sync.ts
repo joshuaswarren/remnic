@@ -1635,6 +1635,7 @@ export async function applyOfflineSyncSnapshot(options: {
         incomingShardStates: new Map(),
         incomingBuffers,
         io: {
+          readFile: options.readFile,
           writeStagingFile: options.writeStagingFile,
           readStagingFile: options.readStagingFile,
           deleteFile: options.deleteFile,
