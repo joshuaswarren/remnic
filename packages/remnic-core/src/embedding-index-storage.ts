@@ -15,7 +15,7 @@
  */
 import path from "node:path";
 import { constants as bufferConstants } from "node:buffer";
-import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { log } from "./logger.js";
 import { readEnvVar } from "./runtime/env.js";
 
@@ -788,29 +788,33 @@ export class EmbeddingIndexFileStore {
 
   /**
    * Atomically remove the published generation (offline-sync: the remote
-   * deleted the whole index). The published directory is demoted to the
-   * fixed transaction backup and only then deleted, so a failure rolls the
-   * former generation back and a crash in the rename gap is recovered by
-   * the ordinary rollback on next use — a partial generation is never
-   * exposed. The fixed backup is symlink-checked first (round 5).
+   * deleted the whole index) by publishing an EMPTY staged directory
+   * through the shared swap: the rename is atomic, so the former generation
+   * moves whole into the fixed backup and back — a failure before the
+   * commit rolls the former generation back intact, and a post-commit
+   * backup-cleanup failure is non-fatal (the empty published directory
+   * stays the authoritative one-way layout marker). The fixed backup is
+   * symlink-checked first (round 5).
    */
   async removePublishedGeneration(): Promise<void> {
     const backupPath = replacementBackupPath(this.shardDir);
     await this.assertBackupNotSymlink(backupPath);
     await rm(backupPath, { recursive: true, force: true });
-    let demoted = false;
+    // Remove by publishing an EMPTY staged directory through the SAME swap
+    // state machine as every other publication: rename is atomic, so the
+    // former generation moves whole into the fixed backup and back — a
+    // partially-deleted generation can never be exposed. The empty
+    // published directory stays the one-way layout marker, so a stray
+    // legacy file can never become authoritative after removal. The
+    // demoted backup's post-commit cleanup is non-fatal (existing
+    // publishSwappedGeneration semantics).
+    const emptyStaging = await mkdtemp(
+      path.join(path.dirname(this.shardDir), "embeddings.staging.tmp-empty-"),
+    );
     try {
-      await stat(this.shardDir);
-      await rename(this.shardDir, backupPath);
-      demoted = true;
+      await this.publishSwappedGeneration(emptyStaging);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    }
-    if (!demoted) return;
-    try {
-      await rm(backupPath, { recursive: true, force: true });
-    } catch (err) {
-      await rename(backupPath, this.shardDir).catch(() => undefined);
+      await rm(emptyStaging, { recursive: true, force: true }).catch(() => undefined);
       throw err;
     }
   }

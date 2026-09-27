@@ -1684,25 +1684,33 @@ export async function applyOfflineSyncSnapshot(options: {
     if (
       generationDirs.has(shardDir) ||
       deferredGenerationDirs.has(shardDir) ||
-      omittedGenerationDirs.has(shardDir) ||
-      deletionMtimeByPath === undefined
+      omittedGenerationDirs.has(shardDir)
     ) {
       continue;
     }
     const localMembers = [...currentMap.keys()].filter(
       (relPath) => embeddingGenerationMembership(relPath)?.shardDir === shardDir,
     );
-    if (
-      localMembers.length > 0 &&
-      localMembers.every((relPath) => deletionMtimeByPath.has(relPath))
-    ) {
-      transactionResults.push(await applyEmbeddingGenerationRemoval({
-        root,
-        shardDirRel: shardDir,
-        io: { deleteFile: options.deleteFile },
-        now: Date.now(),
-      }));
-    }
+    if (localMembers.length === 0) continue;
+    // Remote-absence evidence, either form (codex round 6 P1):
+    //   - tombstones: the snapshot's deletion revisions cover every member; or
+    //   - shared base: a base member is absent from the incoming snapshot.
+    // A wholly-local generation (no base, no tombstones) is preserved. When
+    // removal fires it covers the WHOLE generation as one unit — base
+    // members and local-only extras alike — never a partial delete.
+    const baseMembers = localMembers.filter((relPath) => baseMap.has(relPath));
+    const tombstoneCovered =
+      deletionMtimeByPath !== undefined &&
+      localMembers.every((relPath) => deletionMtimeByPath.has(relPath));
+    const baseEvidenced =
+      baseMembers.length > 0 && baseMembers.every((relPath) => !incomingMap.has(relPath));
+    if (!tombstoneCovered && !baseEvidenced) continue;
+    transactionResults.push(await applyEmbeddingGenerationRemoval({
+      root,
+      shardDirRel: shardDir,
+      io: { deleteFile: options.deleteFile },
+      now: Date.now(),
+    }));
   }
 
   const transactionHandled = new Set<string>();

@@ -1178,13 +1178,216 @@ test("a remotely deleted generation is removed as one atomic transaction", async
         { path: "state/embeddings.json", mtimeMs: 100 },
       ],
     };
-    const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
+    const recorded: string[] = [];
+    const result = await applyOfflineSyncSnapshot({
+      root: localRoot,
+      snapshot,
+      deleteFile: async (target) => { recorded.push(target.path); },
+    });
     // The whole generation is gone in ONE swap: no shard, no marker.
     assert.equal(await existsQuiet(localRoot, "state/embeddings/shard-0000.json"), false);
     assert.equal(await existsQuiet(localRoot, trueShardRel("hydrated")), false);
     assert.equal(await existsQuiet(localRoot, "state/embeddings.json"), false);
     assert.equal(result.deleted >= 3, true);
     assert.equal(await existsQuiet(localRoot, "state/embeddings.pre-replace.tmp"), false);
+    // Replicated tombstones are preserved through the configured hook.
+    assert.ok(recorded.includes("state/embeddings/shard-0000.json"));
+    assert.ok(recorded.includes(trueShardRel("hydrated")));
+    assert.ok(recorded.includes("state/embeddings.json"));
+    // The published directory remains as the EMPTY one-way layout marker:
+    // even a stray legacy file planted afterwards can never win.
+    const store = new EmbeddingIndexFileStore(
+      path.join(localRoot, "state/embeddings.json"),
+      path.join(localRoot, "state/embeddings"),
+      path.join(localRoot, "state/embedding-fallback-status.json"),
+    );
+    assert.equal(await store.detectLayout(), "sharded");
+    assert.equal((await readdir(path.join(localRoot, "state/embeddings"))).length, 0);
+    await write(localRoot, "state/embeddings.json", serializeIndex(indexFile("openai", "stray", {
+      stale: { path: "p", vector: [9] },
+    })));
+    const afterStray: Record<string, EmbeddingIndexEntry> = {};
+    await store.readShardGenerationInto(afterStray);
+    assert.deepEqual(Object.keys(afterStray), []);
+    assert.equal(await store.detectLayout(), "sharded");
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+
+test("a marker delete failure after a committed removal keeps the empty generation authoritative", async () => {
+  const localRoot = await tempDir("remnic-3148-marker-delete-fail");
+  try {
+    await write(localRoot, "state/embeddings/shard-0000.json", serializeIndex(
+      indexFile("openai", "m", { a: { path: "p", vector: [1] } }),
+    ));
+    await write(localRoot, "state/embeddings.json", serializeIndex(indexFile("openai", "m", {})));
+    const snapshot: OfflineSyncSnapshot = {
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+      schemaVersion: 1,
+      createdAt: "2026-09-27T00:00:00.000Z",
+      sourceId: "remote",
+      includeTranscripts: true,
+      files: [],
+      deletions: [
+        { path: "state/embeddings/shard-0000.json", mtimeMs: 100 },
+        { path: "state/embeddings.json", mtimeMs: 100 },
+      ],
+    };
+    await assert.rejects(() => applyOfflineSyncSnapshot({
+      root: localRoot,
+      snapshot,
+      deleteFile: async (target) => {
+        if (target.path === "state/embeddings.json") throw new Error("marker delete IO error");
+      },
+    }), /marker delete IO error/);
+    // The removal COMMITTED before the marker delete failed: the empty
+    // published generation stays authoritative across a restart, and the
+    // stale marker can never resurrect entries.
+    const store = new EmbeddingIndexFileStore(
+      path.join(localRoot, "state/embeddings.json"),
+      path.join(localRoot, "state/embeddings"),
+      path.join(localRoot, "state/embedding-fallback-status.json"),
+    );
+    assert.equal(await store.detectLayout(), "sharded");
+    assert.equal((await readdir(path.join(localRoot, "state/embeddings"))).length, 0);
+    const merged: Record<string, EmbeddingIndexEntry> = {};
+    await store.readShardGenerationInto(merged);
+    assert.deepEqual(Object.keys(merged), []);
+    assert.equal(await existsQuiet(localRoot, "state/embeddings.pre-replace.tmp"), false);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// Round 6.5b: base-evidenced remote absence (no tombstones needed)
+// ---------------------------------------------------------------------------
+
+test("a base-shared generation absent from the incoming snapshot is removed without tombstones", async () => {
+  const localRoot = await tempDir("remnic-3148-base-absent");
+  try {
+    await write(localRoot, "facts/base.md", "base");
+    await write(localRoot, trueShardRel("a1"), serializeIndex(indexFile("openai", "m", {
+      a1: { path: "p", vector: [1] },
+    })));
+    await write(localRoot, trueShardRel("a2"), serializeIndex(indexFile("openai", "m", {
+      a2: { path: "p2", vector: [2] },
+    })));
+    const base = [
+      { path: trueShardRel("a1"), sha256: "a".repeat(64), bytes: 2, mtimeMs: 1 },
+      { path: trueShardRel("a2"), sha256: "b".repeat(64), bytes: 2, mtimeMs: 1 },
+    ];
+    void base;
+    // Incoming: ONLY the fact file; the generation vanished remotely and the
+    // snapshot carries NO deletions array at all.
+    const snapshot: OfflineSyncSnapshot = {
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+      schemaVersion: 1,
+      createdAt: "2026-09-27T00:00:00.000Z",
+      sourceId: "remote",
+      includeTranscripts: true,
+      files: [{
+        path: "facts/base.md",
+        sha256: sha256Of("base"),
+        bytes: 4,
+        mtimeMs: 1,
+        contentBase64: Buffer.from("base").toString("base64"),
+      }],
+    };
+    const baseEntries = await Promise.all([trueShardRel("a1"), trueShardRel("a2")].map(async (shardPath) => ({
+      path: shardPath,
+      sha256: sha256Of(await readFile(path.join(localRoot, ...shardPath.split("/")), "utf-8")),
+      bytes: (await readFile(path.join(localRoot, ...shardPath.split("/")))).length,
+      mtimeMs: 1,
+    })));
+    const result = await applyOfflineSyncSnapshot({
+      root: localRoot,
+      snapshot,
+      baseFiles: baseEntries,
+    });
+    // Whole generation removed as one unit, no partial shard left behind.
+    assert.equal(await existsQuiet(localRoot, trueShardRel("a1")), false);
+    assert.equal(await existsQuiet(localRoot, trueShardRel("a2")), false);
+    assert.equal(await existsQuiet(localRoot, "state/embeddings.json"), false);
+    assert.equal(await existsQuiet(localRoot, "state/embeddings.pre-replace.tmp"), false);
+    assert.equal(result.deleted >= 2, true);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+async function readUtf8Async(absolutePath: string): Promise<string> {
+  return readFile(absolutePath, "utf-8");
+}
+
+test("a wholly-local generation with no base or tombstone evidence is preserved", async () => {
+  const localRoot = await tempDir("remnic-3148-pure-local");
+  try {
+    await write(localRoot, "facts/other.md", "other");
+    await write(localRoot, trueShardRel("local1"), serializeIndex(indexFile("openai", "m", {
+      local1: { path: "p", vector: [1] },
+    })));
+    await write(localRoot, trueShardRel("local2"), serializeIndex(indexFile("openai", "m", {
+      local2: { path: "p2", vector: [2] },
+    })));
+    const snapshot: OfflineSyncSnapshot = {
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+      schemaVersion: 1,
+      createdAt: "2026-09-27T00:00:00.000Z",
+      sourceId: "remote",
+      includeTranscripts: true,
+      files: [{
+        path: "facts/other.md",
+        sha256: sha256Of("other"),
+        bytes: 5,
+        mtimeMs: 1,
+        contentBase64: Buffer.from("other").toString("base64"),
+      }],
+    };
+    const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
+    // No base entries, no tombstones: the generation is untouched.
+    assert.ok((await readUtf8(localRoot, trueShardRel("local1"))).includes("local1"));
+    assert.ok((await readUtf8(localRoot, trueShardRel("local2"))).includes("local2"));
+    assert.equal(result.deleted, 0);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+test("mixed base and local-only extras are removed as one unit", async () => {
+  const localRoot = await tempDir("remnic-3148-mixed-unit");
+  try {
+    await write(localRoot, trueShardRel("shared"), serializeIndex(indexFile("openai", "m", {
+      shared: { path: "p", vector: [1] },
+    })));
+    await write(localRoot, trueShardRel("extra"), serializeIndex(indexFile("openai", "m", {
+      extra: { path: "p2", vector: [2] },
+    })));
+    const baseFiles = [
+      {
+        path: trueShardRel("shared"),
+        sha256: sha256Of(await readFile(path.join(localRoot, ...trueShardRel("shared").split("/")), "utf-8")),
+        bytes: 0,
+        mtimeMs: 1,
+      },
+    ];
+    const snapshot: OfflineSyncSnapshot = {
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+      schemaVersion: 1,
+      createdAt: "2026-09-27T00:00:00.000Z",
+      sourceId: "remote",
+      includeTranscripts: true,
+      files: [],
+    };
+    const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot, baseFiles });
+    // The shared member's remote absence removes the WHOLE generation,
+    // including the local-only extra shard — never a partial delete.
+    assert.equal(await existsQuiet(localRoot, trueShardRel("shared")), false);
+    assert.equal(await existsQuiet(localRoot, trueShardRel("extra")), false);
+    assert.equal(result.deleted >= 2, true);
   } finally {
     await rm(localRoot, { recursive: true, force: true });
   }

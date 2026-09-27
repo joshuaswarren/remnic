@@ -32,6 +32,7 @@ import {
 } from "./embedding-index-storage.js";
 import type { OfflineSyncExcludeFile, OfflineSyncFileTarget } from "./offline-sync-file-io.js";
 import { EMBEDDING_SHARD_FILE_PATTERN } from "./offline-sync-runtime-state.js";
+import { log } from "./logger.js";
 import type {
   OfflineSyncFileDeleteTarget,
   OfflineSyncFileStagingReadTarget,
@@ -576,6 +577,10 @@ export interface EmbeddingGenerationRemovalInput {
   /** The generation dir, e.g. `state/embeddings`. */
   shardDirRel: string;
   io: Pick<EmbeddingGenerationTransactionIo, "deleteFile">;
+  /** Incoming deletion revisions by path, threaded so each removed member's
+   * tombstone is recorded through the configured delete hook AFTER the
+   * atomic empty publication (round 6: raw removal must not lose them). */
+  deletionMtimeByPath?: ReadonlyMap<string, number>;
   now: number;
 }
 
@@ -620,6 +625,27 @@ export async function applyEmbeddingGenerationRemoval(
     }
     removedPaths.add(markerRel);
     deleted += 1;
+  }
+  // Preserve the replicated tombstones through the configured hooks AFTER
+  // the atomic publication: raw removal must not lose the deletion
+  // revisions, or a downstream sync without base evidence retains stale
+  // entries. The storage hook tolerates already-absent paths.
+  if (io.deleteFile && input.deletionMtimeByPath) {
+    let firstError: unknown = null;
+    for (const relPath of removedPaths) {
+      try {
+        await io.deleteFile({
+          root: root.abs,
+          path: relPath,
+          filePath: await resolveSafeArchiveTarget(root, relPath),
+          mtimeMs: input.deletionMtimeByPath.get(relPath) ?? input.now,
+        });
+      } catch (err) {
+        firstError ??= err;
+        log.warn(\`embedding generation removal: tombstone recording failed for \${relPath}: \${err instanceof Error ? err.message : String(err)}\`);
+      }
+    }
+    if (firstError) throw firstError;
   }
   return {
     upserted: 0,
