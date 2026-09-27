@@ -150,11 +150,35 @@ export interface ConsoleStateSnapshot {
   /** Faithfulness gate distribution (issue #1576). Absent when the gate is off. */
   faithfulness?: ConsoleFaithfulnessDistribution;
   /**
+   * Embedding-fallback index layout + durable diagnostics (issue #3146).
+   * Absent when the memory dir carries no embedding index state at all.
+   */
+  embeddingIndex?: ConsoleEmbeddingIndexState;
+  /**
    * Subsystem read errors. One entry per failed reader keyed by
    * subsystem name (e.g. `"bufferState: ..."`). An empty array means
    * every section was read cleanly.
    */
   errors: string[];
+}
+
+/** Loose view of `state/embedding-fallback-status.json` (written by EmbeddingFallback). */
+export interface ConsoleEmbeddingIndexStatus {
+  failureCount?: number;
+  lastWriteFailure?: { ts: string; kind: string; message: string; memoryId?: string };
+  lastReadRecovery?: { ts: string; message: string };
+  lastSuccessAt?: string;
+}
+
+/** Embedding-fallback index layout + durable failure diagnostics (issue #3146). */
+export interface ConsoleEmbeddingIndexState {
+  /** Size in bytes of the legacy single-file index, when present. */
+  legacyFileBytes: number | null;
+  /** Shard files under `state/embeddings/` (indexes past the single-file budget). */
+  shardCount: number;
+  shardBytes: number;
+  /** Durable diagnostics written by EmbeddingFallback, when present. */
+  status: ConsoleEmbeddingIndexStatus | null;
 }
 
 const MAX_LEDGER_TAIL = 50;
@@ -182,6 +206,7 @@ export async function gatherConsoleState(
   );
   const qmdProbe = readQmdProbe(orchestrator, errors);
   const daemon = readDaemonInfo(orchestrator, errors);
+  const embeddingIndex = await readEmbeddingIndexState(orchestrator, errors);
 
   // Faithfulness gate distribution (issue #1576). Optional — absent when
   // the gate is off or the orchestrator does not expose the accessor.
@@ -203,8 +228,66 @@ export async function gatherConsoleState(
     qmdProbe,
     daemon,
     ...(faithfulness ? { faithfulness } : {}),
+    ...(embeddingIndex ? { embeddingIndex } : {}),
     errors,
   };
+}
+
+const EMBEDDING_SHARD_PATTERN = /^shard-\d{4}\.json$/;
+
+/**
+ * Read the embedding-fallback index layout and its durable failure
+ * diagnostics straight off disk (issue #3146): legacy file size, shard
+ * count/bytes under `state/embeddings/`, and the status file
+ * EmbeddingFallback writes on write failures and corrupt-file recovery.
+ * Returns undefined when the memory dir carries no index state at all.
+ */
+async function readEmbeddingIndexState(
+  orchestrator: ConsoleStateOrchestratorLike,
+  errors: string[],
+): Promise<ConsoleEmbeddingIndexState | undefined> {
+  try {
+    const memoryDir = orchestrator.config?.memoryDir;
+    if (!memoryDir) return undefined;
+    const stateDir = path.join(memoryDir, "state");
+
+    let legacyFileBytes: number | null = null;
+    try {
+      legacyFileBytes = (await fs.stat(path.join(stateDir, "embeddings.json"))).size;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+
+    let shardCount = 0;
+    let shardBytes = 0;
+    let shardNames: string[] = [];
+    try {
+      shardNames = await fs.readdir(path.join(stateDir, "embeddings"));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    for (const name of shardNames) {
+      if (!EMBEDDING_SHARD_PATTERN.test(name)) continue;
+      shardCount += 1;
+      shardBytes += (await fs.stat(path.join(stateDir, "embeddings", name))).size;
+    }
+
+    let status: ConsoleEmbeddingIndexStatus | null = null;
+    try {
+      const parsed: unknown = JSON.parse(
+        await fs.readFile(path.join(stateDir, "embedding-fallback-status.json"), "utf-8"),
+      );
+      if (parsed && typeof parsed === "object") status = parsed as ConsoleEmbeddingIndexStatus;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+
+    if (legacyFileBytes === null && shardCount === 0 && status === null) return undefined;
+    return { legacyFileBytes, shardCount, shardBytes, status };
+  } catch (err) {
+    errors.push(`embeddingIndex: ${describeError(err)}`);
+    return undefined;
+  }
 }
 
 function readBufferState(

@@ -514,3 +514,64 @@ test("offline sync aborts (never pushes) when the lifecycle drain cannot complet
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("offline sync refreshes generation deferrals after content hydration", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-hydration-race-"));
+  const originalFetch = globalThis.fetch;
+  const shardPath = "state/embeddings/shard-0037.json";
+  const body = (value: number) => JSON.stringify({
+    version: 1, provider: "openai", model: "m",
+    entries: { old1: { path: "facts/old.md", vector: [value] } },
+  });
+  const initial = body(1);
+  const indexedDuringHydration = body(2);
+  const record = (relPath: string, content: string) => ({
+    path: relPath, sha256: createHash("sha256").update(content).digest("hex"),
+    bytes: Buffer.byteLength(content), mtimeMs: 1,
+  });
+  try {
+    await mkdir(path.join(root, "state/embeddings"), { recursive: true });
+    await writeFile(path.join(root, shardPath), initial);
+    const statePath = path.join(root, ".offline-sync/state/test.json");
+    const base = record(shardPath, initial);
+    await writeOfflineSyncState(statePath, {
+      version: 1, remoteId: "http://remnic.test", namespace: "generalist",
+      includeTranscripts: true, lastSyncedAt: "2026-01-01T00:00:00.000Z", baseFiles: [base],
+    });
+    const newFact = record("facts/remote.md", "remote fact");
+    let hydrated = false;
+    globalThis.fetch = (async (input) => {
+      const url = new URL(String(input));
+      const json = (value: unknown) => new Response(JSON.stringify(value), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+      if (url.pathname.endsWith("/offline-sync/apply")) {
+        return json({ namespace: "generalist", appliedUpserts: 0, appliedDeletes: 0, skipped: 0, conflicts: [] });
+      }
+      if (url.pathname.endsWith("/offline-sync/snapshot")) {
+        return json({ ...EMPTY_REMOTE_SNAPSHOT, files: [base, newFact] });
+      }
+      if (url.pathname.endsWith("/offline-sync/files")) {
+        hydrated = true;
+        // The daemon indexes while an unrelated content request is in flight.
+        await writeFile(path.join(root, shardPath), indexedDuringHydration);
+        return json({ ...EMPTY_REMOTE_SNAPSHOT, files: [{
+          ...newFact, contentBase64: Buffer.from("remote fact").toString("base64"),
+        }] });
+      }
+      throw new Error("unexpected fetch: " + url.pathname);
+    }) as typeof fetch;
+    const result = await runOfflineSyncOnce({
+      memoryDir: root, remoteUrl: "http://remnic.test", token: "test-token",
+      namespace: "generalist", includeTranscripts: true, statePath, statePathExplicit: true,
+      impressionsRotateBytes: 0, impressionsRotateKeep: 5,
+    });
+    assert.equal(hydrated, true);
+    assert.equal(result.partial, false, result.pullError);
+    assert.equal(await readFile(path.join(root, shardPath), "utf-8"), indexedDuringHydration);
+    assert.equal(await readFile(path.join(root, newFact.path), "utf-8"), "remote fact");
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(root, { recursive: true, force: true });
+  }
+});

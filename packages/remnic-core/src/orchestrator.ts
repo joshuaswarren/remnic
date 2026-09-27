@@ -296,6 +296,7 @@ import { isDisagreementPrompt } from "./signal.js";
 import { lintWorkspaceFiles, rotateMarkdownFileToArchive } from "./hygiene.js";
 import { isPathInsideStorageRoot } from "./storage-paths.js";
 import { EmbeddingFallback } from "./embedding-fallback.js";
+import { storageBackedIndexStoreIo } from "./offline-sync-embedding-generation.js";
 import {
   decideSemanticDedup,
   type SemanticDedupDecision,
@@ -1635,7 +1636,7 @@ export class Orchestrator {
       debounceMs: config.sessionObserverDebounceMs ?? 120_000,
       bands: config.sessionObserverBands ?? [],
     });
-    this.embeddingFallback = new EmbeddingFallback(config);
+    this.embeddingFallback = new EmbeddingFallback(config, storageBackedIndexStoreIo(this.storage));
     this.policyRuntime = new PolicyRuntimeManager(config.memoryDir, config);
     this.summarizer = new HourlySummarizer(
       config,

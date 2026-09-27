@@ -222,3 +222,59 @@ test("maintenance ledger merges judge-verdicts + rebuilt-observations and picks 
     rmSync(baseDir, { recursive: true, force: true });
   }
 });
+
+test("console state surfaces embedding index layout and durable failure status (#3146)", async () => {
+  const baseDir = mkdtempSync(path.join(tmpdir(), "remnic-console-embindex-"));
+  try {
+    const stateDir = path.join(baseDir, "state", "embeddings");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      path.join(stateDir, "shard-0000.json"),
+      JSON.stringify({
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: { "mem-1": { vector: [0.1], path: "facts/a.md" } },
+      }),
+    );
+    writeFileSync(
+      path.join(baseDir, "state", "embedding-fallback-status.json"),
+      JSON.stringify({
+        version: 1,
+        failureCount: 3,
+        lastWriteFailure: {
+          ts: "2026-09-26T00:00:00.000Z",
+          kind: "capacity",
+          message: "shard needs 600000000 chars",
+          memoryId: "mem-1",
+        },
+      }),
+    );
+
+    const snapshot = await gatherConsoleState(
+      makeOrchestrator({ config: { memoryDir: baseDir } }),
+    );
+    assert.ok(snapshot.embeddingIndex, "snapshot must carry the embedding index block");
+    assert.equal(snapshot.embeddingIndex.legacyFileBytes, null);
+    assert.equal(snapshot.embeddingIndex.shardCount, 1);
+    assert.ok(snapshot.embeddingIndex.shardBytes > 0);
+    assert.equal(snapshot.embeddingIndex.status?.failureCount, 3);
+    assert.equal(snapshot.embeddingIndex.status?.lastWriteFailure?.kind, "capacity");
+    assert.deepEqual(snapshot.errors, []);
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("console state omits the embedding index block when no index state exists", async () => {
+  const baseDir = mkdtempSync(path.join(tmpdir(), "remnic-console-embindex-empty-"));
+  try {
+    const snapshot = await gatherConsoleState(
+      makeOrchestrator({ config: { memoryDir: baseDir } }),
+    );
+    assert.equal(snapshot.embeddingIndex, undefined);
+    assert.deepEqual(snapshot.errors, []);
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});
