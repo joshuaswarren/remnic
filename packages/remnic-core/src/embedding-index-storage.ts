@@ -255,6 +255,17 @@ export class EmbeddingIndexFileStore {
    * a rollback happened.
    */
   private async rollbackInterruptedReplacement(): Promise<boolean> {
+    // Only the rename gap (published directory absent) is recoverable. When
+    // the directory is present - including after a crash that followed a
+    // successful publish - the generation on disk is already authoritative
+    // and renaming the backup onto it would fail with EEXIST (issue #3148
+    // review, round 2).
+    try {
+      await stat(this.shardDir);
+      return false;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
     const backupPath = replacementBackupPath(this.shardDir);
     if (!(await this.replacementBackupExists())) return false;
     await rename(backupPath, this.shardDir);

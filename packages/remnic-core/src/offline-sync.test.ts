@@ -381,6 +381,26 @@ test("offline sync includes retrieval debug snapshots for full-fidelity offline 
   }
 });
 
+test("offline sync excludes embedding-index transaction leftovers (#3146)", async () => {
+  const root = await tempDir("remnic-offline-emb3146");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "state/embeddings.pre-replace.tmp/shard-0000.json", "old generation");
+    await write(root, "state/embeddings.staging.tmp-123/staged.json", "staged");
+    await write(root, "state/embeddings.json.pre-migration.tmp-456", "demoted legacy");
+    await write(root, "namespaces/team/state/embeddings.pre-replace.tmp/shard-0001.json", "ns old");
+
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: true,
+    });
+    assert.deepEqual(snapshot.files.map((file) => file.path), ["facts/a.md"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offline sync push-side default excludes live LCM sqlite but apply-side still accepts it (#1786)", async () => {
   const root = await tempDir("remnic-offline-lcm-sqlite");
   try {

@@ -55,4 +55,16 @@ export const DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS: readonly string[] = [
   // a crash-orphan can never be enumerated into a snapshot; the leading `**/`
   // matches the root-level dir (zero segments) and any nested placement.
   "**/.remnic-offline-decrypt-*/**",
+  // Embedding-index transaction leftovers (issue #3146, PR #3148). The
+  // identity-replacement backup (`embeddings.pre-replace.tmp`) can hold a
+  // full obsolete generation and `embeddings.staging.tmp-*` holds a
+  // partially staged one; both are node-local recovery state that must
+  // never be enumerated into a snapshot. The demoted legacy recovery file
+  // (`embeddings.json.pre-migration.tmp-*`) is likewise node-local.
+  "**/state/embeddings.pre-replace.tmp/**",
+  "**/state/embeddings.staging.tmp-*/**",
+  "**/state/embeddings.json.pre-migration.tmp-*",
+  "**/namespaces/*/state/embeddings.pre-replace.tmp/**",
+  "**/namespaces/*/state/embeddings.staging.tmp-*/**",
+  "**/namespaces/*/state/embeddings.json.pre-migration.tmp-*",
 ];
