@@ -1397,3 +1397,183 @@ test("mixed base and local-only extras are removed as one unit", async () => {
     await rm(localRoot, { recursive: true, force: true });
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// Round 6.5c: remaining codex P1s + deterministic crash-state regressions
+// ---------------------------------------------------------------------------
+
+test("remote tombstones over a partial known set sweep local-only extras and the marker", async () => {
+  const localRoot = await tempDir("remnic-3148-sweep-extras");
+  try {
+    // Local: the two shards the remote knew + a local-only extra + an inert
+    // legacy marker the remote never had.
+    await write(localRoot, trueShardRel("known"), serializeIndex(indexFile("openai", "m", {
+      known: { path: "p", vector: [1] },
+    })));
+    await write(localRoot, trueShardRel("extra"), serializeIndex(indexFile("openai", "m", {
+      extra: { path: "p2", vector: [2] },
+    })));
+    await write(localRoot, "state/embeddings.json", serializeIndex(indexFile("openai", "m", {})));
+    const snapshot: OfflineSyncSnapshot = {
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+      schemaVersion: 1,
+      createdAt: "2026-09-27T00:00:00.000Z",
+      sourceId: "remote",
+      includeTranscripts: true,
+      files: [],
+      deletions: [{ path: trueShardRel("known"), mtimeMs: 100 }],
+    };
+    const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
+    // The remote deletion is established by the one known tombstone; the
+    // sweep removes the local-only extra and the marker as the same unit.
+    assert.equal(await existsQuiet(localRoot, trueShardRel("known")), false);
+    assert.equal(await existsQuiet(localRoot, trueShardRel("extra")), false);
+    assert.equal(await existsQuiet(localRoot, "state/embeddings.json"), false);
+    assert.equal(result.deleted >= 3, true);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+test("a snapshot that both includes and omits a generation fails closed", async () => {
+  const localRoot = await tempDir("remnic-3148-include-omit");
+  try {
+    await write(localRoot, "facts/x.md", "x");
+    await write(localRoot, trueShardRel("a1"), serializeIndex(indexFile("openai", "m", {
+      a1: { path: "p", vector: [1] },
+    })));
+    const snapshot: OfflineSyncSnapshot = {
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+      schemaVersion: 1,
+      createdAt: "2026-09-27T00:00:00.000Z",
+      sourceId: "remote",
+      includeTranscripts: true,
+      files: [{
+        path: trueShardRel("a1"),
+        sha256: sha256Of("incoming"),
+        bytes: 8,
+        mtimeMs: 1,
+        contentBase64: Buffer.from("incoming").toString("base64"),
+      }],
+      omittedEmbeddingGenerationDirs: ["state/embeddings"],
+    };
+    await assert.rejects(() => applyOfflineSyncSnapshot({ root: localRoot, snapshot }),
+      (err: unknown) => err instanceof EmbeddingIndexStorageError);
+    // Nothing applied from the contradictory snapshot.
+    assert.ok((await readUtf8(localRoot, trueShardRel("a1"))).includes("a1"));
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+test("an excluded tombstoned member omits its whole generation from the push", async () => {
+  const root = await tempDir("remnic-3148-omitted-tombstone");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, trueShardRel("kept"), serializeIndex(indexFile("openai", "m", {
+      kept: { path: "p", vector: [1] },
+    })));
+    // shard-0007 was already deleted locally and is only represented by a
+    // deletion revision; the user regexp excludes exactly that member.
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "source",
+      includeContent: true,
+      userExcludeRegexps: [/^state\/embeddings\/shard-0007\.json$/],
+      deletions: [{ path: "state/embeddings/shard-0007.json", mtimeMs: 500 }],
+    });
+    const paths = snapshot.files.map((file) => file.path);
+    assert.deepEqual(paths, ["facts/a.md"]);
+    assert.deepEqual(snapshot.omittedEmbeddingGenerationDirs, ["state/embeddings"]);
+    // The tombstone for the excluded member is suppressed with the generation.
+    assert.deepEqual(snapshot.deletions, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a partially removed backup after a committed removal stays inert across restart", async () => {
+  const localRoot = await tempDir("remnic-3148-partial-backup");
+  try {
+    await write(localRoot, "state/embeddings/shard-0000.json", serializeIndex(indexFile("openai", "m", {
+      a: { path: "p", vector: [1] },
+    })));
+    await write(localRoot, "state/embeddings.json", serializeIndex(indexFile("openai", "m", {})));
+    const snapshot: OfflineSyncSnapshot = {
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+      schemaVersion: 1,
+      createdAt: "2026-09-27T00:00:00.000Z",
+      sourceId: "remote",
+      includeTranscripts: true,
+      files: [],
+      deletions: [
+        { path: "state/embeddings/shard-0000.json", mtimeMs: 100 },
+        { path: "state/embeddings.json", mtimeMs: 100 },
+      ],
+    };
+    await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
+    // Committed removal: the empty published generation is authoritative.
+    const store = new EmbeddingIndexFileStore(
+      path.join(localRoot, "state/embeddings.json"),
+      path.join(localRoot, "state/embeddings"),
+      path.join(localRoot, "state/embedding-fallback-status.json"),
+    );
+    assert.equal(await store.detectLayout(), "sharded");
+    // Simulate a crash mid backup-cleanup: the demoted backup holds a
+    // PARTIAL old generation on disk.
+    await mkdir(path.join(localRoot, "state/embeddings.pre-replace.tmp"), { recursive: true });
+    await write(localRoot, "state/embeddings.pre-replace.tmp/shard-0000.json", serializeIndex(
+      indexFile("openai", "m", { resurrect: { path: "p", vector: [9] } }),
+    ));
+    // A FRESH instance (restart) still serves the empty authoritative
+    // generation; the partial backup never resurrects entries.
+    const fresh = new EmbeddingIndexFileStore(
+      path.join(localRoot, "state/embeddings.json"),
+      path.join(localRoot, "state/embeddings"),
+      path.join(localRoot, "state/embedding-fallback-status.json"),
+    );
+    assert.equal(await fresh.detectLayout(), "sharded");
+    const merged: Record<string, EmbeddingIndexEntry> = {};
+    await fresh.readShardGenerationInto(merged);
+    assert.deepEqual(Object.keys(merged), []);
+    // A subsequent removal cleans the stale partial backup safely.
+    await fresh.removePublishedGeneration();
+    assert.equal(await existsQuiet(localRoot, "state/embeddings.pre-replace.tmp"), false);
+    const mergedAfter: Record<string, EmbeddingIndexEntry> = {};
+    await fresh.readShardGenerationInto(mergedAfter);
+    assert.deepEqual(Object.keys(mergedAfter), []);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+
+test("remote tombstones for already-missing shards still sweep the local unit", async () => {
+  const localRoot = await tempDir("remnic-3148-sweep-missing");
+  try {
+    // Local: ONE remaining extra shard. The remote tombstones two shards:
+    // one already absent locally (removed in an earlier round) and... the
+    // local extra itself is NOT tombstoned (the remote never had it).
+    await write(localRoot, trueShardRel("extra"), serializeIndex(indexFile("openai", "m", {
+      extra: { path: "p2", vector: [2] },
+    })));
+    const snapshot: OfflineSyncSnapshot = {
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+      schemaVersion: 1,
+      createdAt: "2026-09-27T00:00:00.000Z",
+      sourceId: "remote",
+      includeTranscripts: true,
+      files: [],
+      deletions: [{ path: trueShardRel("gone"), mtimeMs: 100 }],
+    };
+    const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
+    // The unit sweep removes the remaining local shard even though the only
+    // tombstone names an already-missing shard.
+    assert.equal(await existsQuiet(localRoot, trueShardRel("extra")), false);
+    assert.equal(await existsQuiet(localRoot, trueShardRel("gone")), false);
+    assert.equal(result.deleted >= 1, true);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});

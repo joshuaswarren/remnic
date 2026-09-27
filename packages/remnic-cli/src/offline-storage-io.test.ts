@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { StorageManager, globToRegExp } from "@remnic/core";
+import type { OfflineSyncSnapshot } from "@remnic/core";
 import {
   DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS,
   OFFLINE_DECRYPT_STAGING_DIR_PREFIX,
@@ -347,4 +348,136 @@ test("cleanupOrphanedOfflineDecryptStaging removes stale orphans but keeps in-fl
 
 test("cleanupOrphanedOfflineDecryptStaging is a no-op on a missing memory dir (#2033 P1)", async () => {
   await cleanupOrphanedOfflineDecryptStaging(path.join(os.tmpdir(), "remnic-decrypt-cleanup-absent-xyz"));
+});
+
+
+test("embedding generation members are excluded from direct hydration", async () => {
+  const { shouldDirectHydrateOfflineFile } = await import("../src/index.js");
+  const big = { path: "state/embeddings/shard-0000.json", sha256: "a".repeat(64), bytes: 17 * 1024 * 1024, mtimeMs: 1 };
+  assert.equal(shouldDirectHydrateOfflineFile({ incoming: big }), false);
+  const marker = { ...big, path: "state/embeddings.json" };
+  assert.equal(shouldDirectHydrateOfflineFile({ incoming: marker }), false);
+  const nonMember = { ...big, path: "assets/blob.bin" };
+  assert.equal(shouldDirectHydrateOfflineFile({ incoming: nonMember }), true);
+});
+
+test("a >=16MiB changed shard hydrates via content fetch and applies atomically; payload failure preserves the old generation", async () => {
+  const { offlineSnapshotContentFilesForApply, hydrateOfflineSnapshotContent } = await import("./index.js");
+  const { applyOfflineSyncSnapshot, buildOfflineSyncSnapshot: buildRemote, EmbeddingIndexFileStore } = await import("@remnic/core");
+  const localRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-3148-bigshard-"));
+  const remoteRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-3148-bigshard-remote-"));
+  try {
+    const bigVector = Array.from({ length: 2_000_000 }, (_, k) => (k % 7) / 7);
+    const oldShardBody = JSON.stringify({
+      version: 1, provider: "openai", model: "m1",
+      entries: { old1: { path: "p1", vector: [0, 0] } },
+    });
+    await mkdir(path.join(localRoot, "state/embeddings"), { recursive: true });
+    await writeFile(path.join(localRoot, "state/embeddings/shard-0037.json"), oldShardBody);
+    const bigBody = JSON.stringify({
+      version: 1, provider: "openai", model: "m2",
+      entries: { big1: { path: "p-big", vector: bigVector } },
+    });
+    await mkdir(path.join(remoteRoot, "state/embeddings"), { recursive: true });
+    await writeFile(path.join(remoteRoot, "state/embeddings/shard-0024.json"), bigBody);
+    const smallBody = JSON.stringify({
+      version: 1, provider: "openai", model: "m2",
+      entries: { small: { path: "p-small", vector: [1, 1] } },
+    });
+    await writeFile(path.join(remoteRoot, "state/embeddings/shard-0012.json"), smallBody);
+
+    const full: OfflineSyncSnapshot & { namespace?: string } = await buildRemote({ root: remoteRoot, sourceId: "remote", includeContent: true });
+    const metadataOnly: OfflineSyncSnapshot = {
+      ...full,
+      files: full.files.map((file) => ({
+        path: file.path, sha256: file.sha256, bytes: file.bytes, mtimeMs: file.mtimeMs,
+      })),
+    };
+    const bigRecord = metadataOnly.files.find((f) => f.path === "state/embeddings/shard-0024.json");
+    assert.ok(bigRecord && bigRecord.bytes >= 16 * 1024 * 1024,
+      "fixture assumption: the changed shard must be at least 16 MiB");
+    const currentFiles = [
+      { path: "state/embeddings/shard-0037.json",
+        sha256: createHash("sha256").update(oldShardBody).digest("hex"),
+        bytes: Buffer.byteLength(oldShardBody), mtimeMs: 1 },
+    ];
+    const baseFiles = currentFiles;
+    // (a) The changed big shard is selected for content hydration.
+    const needed = offlineSnapshotContentFilesForApply({
+      snapshot: metadataOnly, baseFiles, currentFiles,
+    });
+    assert.deepEqual(needed.map((f) => f.path).sort(), [
+      "state/embeddings/shard-0012.json",
+      "state/embeddings/shard-0024.json",
+    ]);
+    // (b) Live generation untouched during hydration.
+    assert.equal(
+      await readFile(path.join(localRoot, "state/embeddings/shard-0037.json"), "utf-8"),
+      oldShardBody,
+    );
+    // (c) Hydrate with a stubbed fetch serving the real remote bytes.
+    const contentByPath = new Map<string, string>([
+      ["state/embeddings/shard-0024.json", bigBody],
+      ["state/embeddings/shard-0012.json", smallBody],
+    ]);
+    const hydrated = await hydrateOfflineSnapshotContent({
+      remoteUrl: "http://stub", token: "t",
+      includeTranscripts: true,
+      snapshot: metadataOnly, baseFiles, currentFiles,
+      fetchFiles: async ({ paths }) => ({
+        ...metadataOnly,
+        files: paths.map((p) => {
+          const body = contentByPath.get(p);
+          assert.ok(body !== undefined, "stub must serve every requested path");
+          return {
+            path: p,
+            sha256: createHash("sha256").update(body).digest("hex"),
+            bytes: Buffer.byteLength(body),
+            mtimeMs: 1,
+            contentBase64: Buffer.from(body).toString("base64"),
+          };
+        }),
+      }),
+    });
+    // (d) Apply through the atomic generation transaction (plain mode).
+    const store = new EmbeddingIndexFileStore(
+      path.join(localRoot, "state/embeddings.json"),
+      path.join(localRoot, "state/embeddings"),
+      path.join(localRoot, "state/embedding-fallback-status.json"),
+    );
+    const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot: hydrated, baseFiles });
+    const merged: Record<string, { path: string; vector: number[] }> = {};
+    await store.readShardGenerationInto(merged);
+    assert.deepEqual(Object.keys(merged).sort(), ["big1", "small"]);
+    assert.equal(await store.detectLayout(), "sharded");
+    assert.equal(result.upserted >= 2, true);
+    // (e) Payload failure (fetched bytes do not match the declared digest)
+    // rejects at apply and preserves the old generation.
+    await rm(path.join(localRoot, "state/embeddings"), { recursive: true, force: true });
+    await mkdir(path.join(localRoot, "state/embeddings"), { recursive: true });
+    await writeFile(path.join(localRoot, "state/embeddings/shard-0037.json"), oldShardBody);
+    const tamperedHydrated = await hydrateOfflineSnapshotContent({
+      remoteUrl: "http://stub", token: "t",
+      includeTranscripts: true,
+      snapshot: metadataOnly, baseFiles, currentFiles,
+      fetchFiles: async ({ paths }) => ({
+        ...metadataOnly,
+        files: paths.map((p) => ({
+          path: p,
+          sha256: createHash("sha256").update("tampered").digest("hex"),
+          bytes: 8,
+          mtimeMs: 1,
+          contentBase64: Buffer.from("tampered").toString("base64"),
+        })),
+      }),
+    });
+    await assert.rejects(() => applyOfflineSyncSnapshot({ root: localRoot, snapshot: tamperedHydrated, baseFiles }));
+    assert.equal(
+      await readFile(path.join(localRoot, "state/embeddings/shard-0037.json"), "utf-8"),
+      oldShardBody,
+    );
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+    await rm(remoteRoot, { recursive: true, force: true });
+  }
 });

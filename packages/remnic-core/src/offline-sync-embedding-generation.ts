@@ -417,12 +417,16 @@ export interface EmbeddingGenerationOmissionOptions {
   rootAbs: string;
   userExcludeRegexps?: readonly RegExp[];
   excludeFile?: OfflineSyncExcludeFile;
+  /** Recorded deletion-revision paths: a tombstoned member counts as a
+   * generation member for omission detection even though it is absent on
+   * disk (its exclusion must omit the WHOLE generation). */
+  tombstonedPaths?: readonly string[];
   /**
    * Per-path push exclusion predicate (structural + node-local defaults +
-   * user regexps), owned by offline-sync.ts so the filter semantics can
-   * never drift from the walk that consumes the result.
+   * user regexps). Defaults to the built-in default excludes + the supplied
+   * user regexps, matching the walk that consumes the result.
    */
-  isExcludedRelPath: (relPath: string) => boolean;
+  isExcludedRelPath?: (relPath: string) => boolean;
 }
 
 export interface EmbeddingGenerationOmission {
@@ -452,6 +456,10 @@ export async function computeOmittedEmbeddingGenerationPaths(
     // no namespaces
   }
   for (const ns of namespaceNames) stateDirs.push(`namespaces/${ns}/state`);
+  const isExcluded = options.isExcludedRelPath ??
+    ((relPath: string) =>
+      matchesOfflineSyncDefaultExclude(relPath) ||
+      Boolean(options.userExcludeRegexps?.some((re) => re.test(relPath))));
 
   for (const stateDir of stateDirs) {
     const markerRel = `${stateDir}/${EMBEDDING_MARKER_BASENAME}`;
@@ -470,11 +478,20 @@ export async function computeOmittedEmbeddingGenerationPaths(
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
     for (const name of shardNames) memberRels.push(`${shardDirRel}/${name}`);
+    // A tombstoned member is part of the generation even though it is
+    // already absent on disk: its exclusion must omit the WHOLE generation,
+    // not just drop its revision individually (codex round 6, XkFf).
+    for (const tombstoned of options.tombstonedPaths ?? []) {
+      const membership = embeddingGenerationMembership(tombstoned);
+      if (membership?.shardDir === shardDirRel && !memberRels.includes(tombstoned)) {
+        memberRels.push(tombstoned);
+      }
+    }
     if (memberRels.length === 0) continue;
 
     const excludedMembers: string[] = [];
     for (const relPath of memberRels) {
-      let excluded = options.isExcludedRelPath(relPath);
+      let excluded = isExcluded(relPath);
       if (!excluded && options.excludeFile) {
         excluded = await options.excludeFile({
           root: options.rootAbs,
@@ -529,6 +546,9 @@ export async function resolvePushEmbeddingGenerationState(options: {
     rootAbs: options.rootAbs,
     userExcludeRegexps: options.userExcludeRegexps,
     excludeFile: options.excludeFile,
+    // RAW pre-filter tombstones: a deleted member's exclusion must omit the
+    // whole generation even though the member is already absent on disk.
+    tombstonedPaths: options.deletions.map((deletion) => deletion.path),
     isExcludedRelPath: (relPath) =>
       matchesOfflineSyncDefaultExclude(relPath) ||
       Boolean(options.userExcludeRegexps?.some((re) => re.test(relPath))),

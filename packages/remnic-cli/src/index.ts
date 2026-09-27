@@ -156,6 +156,7 @@ import {
   offlineSyncStateFromSnapshot,
   readOfflineSyncFileContentChunk,
   readOfflineSyncState,
+  embeddingGenerationMembership,
   shouldPreferIncomingOfflineRuntimeFile,
   summarizeOfflineSyncChangeset,
   summarizeOfflineSyncPendingChanges,
@@ -7402,6 +7403,14 @@ export function shouldDirectHydrateOfflineFile(options: {
 }): boolean {
   if (options.incoming.bytes < OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES) return false;
   if (options.current?.sha256 === options.incoming.sha256) return false;
+  // Embedding generation members must flow through the atomic generation
+  // transaction, never through direct per-file hydration writes at their
+  // final paths (issue #3148, codex round 6: a crash between direct writes
+  // would expose a mixed generation). Excluded members are still fetched
+  // WITH content by hydrateOfflineSnapshotContent (they are runtime-
+  // authoritative in offlineSnapshotContentFilesForApply), so the
+  // transaction stages and publishes them atomically.
+  if (embeddingGenerationMembership(options.incoming.path)) return false;
   if (shouldPreferIncomingOfflineRuntimeFile(options.incoming.path)) return true;
   if (options.current && options.base && options.current.sha256 === options.base.sha256) {
     return true;

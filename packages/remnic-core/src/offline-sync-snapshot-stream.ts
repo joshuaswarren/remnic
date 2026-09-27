@@ -62,6 +62,8 @@ export async function buildEmbeddingAwareSnapshotStream(
     rootAbs: options.root,
     userExcludeRegexps: options.userExcludeRegexps,
     excludeFile: options.excludeFile,
+    // RAW pre-filter tombstones (see resolvePushEmbeddingGenerationState).
+    tombstonedPaths: options.deletions.map((deletion) => deletion.path),
     isExcludedRelPath: (relPath) =>
       matchesOfflineSyncDefaultExclude(relPath) ||
       Boolean(options.userExcludeRegexps?.some((re) => re.test(relPath))),

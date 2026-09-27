@@ -909,11 +909,13 @@ export async function buildOfflineSyncSnapshot(options: {
   throwIfOfflineSyncAborted(options.signal);
   const includeTranscripts = options.includeTranscripts !== false;
   const pushExcludes = options.excludeNodeLocalState !== false;
+  const normalizedDeletions = normalizeDeletionRevisions(options.deletions, "deletions");
   const omission = pushExcludes
     ? await computeOmittedEmbeddingGenerationPaths({
         rootAbs: path.resolve(options.root),
         userExcludeRegexps: options.userExcludeRegexps,
         excludeFile: options.excludeFile,
+        tombstonedPaths: (normalizedDeletions ?? []).map((deletion) => deletion.path),
         isExcludedRelPath: (relPath) =>
           shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps),
       })
@@ -986,11 +988,13 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
     ? rawBaseCapturedAtMs
     : null;
   const pushExcludes = options.excludeNodeLocalState !== false;
+  const normalizedDeletions = normalizeDeletionRevisions(options.deletions, "deletions");
   const omission = pushExcludes
     ? await computeOmittedEmbeddingGenerationPaths({
         rootAbs: root.abs,
         userExcludeRegexps: options.userExcludeRegexps,
         excludeFile: options.excludeFile,
+        tombstonedPaths: (normalizedDeletions ?? []).map((deletion) => deletion.path),
         isExcludedRelPath: (relPath) =>
           shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps),
       })
@@ -1596,6 +1600,17 @@ export async function applyOfflineSyncSnapshot(options: {
     }
   }
   const transactionResults: EmbeddingGenerationTransactionResult[] = [];
+  // A snapshot that BOTH carries members of a generation and lists that
+  // generation as omitted is self-contradictory (producer race or
+  // corruption): fail closed instead of publishing a lone shard and
+  // deleting the rest of the local generation (codex round 6).
+  for (const shardDir of generationDirs) {
+    if (omittedGenerationDirs.has(shardDir)) {
+      throw new EmbeddingIndexStorageError(
+        `offline sync snapshot both includes and omits embedding generation ${shardDir}; refusing to apply`,
+      );
+    }
+  }
   // Fail closed BEFORE any publication: custom storage IO (encrypted or
   // otherwise) without the staging pair would make the generation transaction
   // fall back to unencrypted raw writes — a plaintext downgrade of the staged
@@ -1699,9 +1714,20 @@ export async function applyOfflineSyncSnapshot(options: {
     // removal fires it covers the WHOLE generation as one unit — base
     // members and local-only extras alike — never a partial delete.
     const baseMembers = localMembers.filter((relPath) => baseMap.has(relPath));
-    const tombstoneCovered =
-      deletionMtimeByPath !== undefined &&
-      localMembers.every((relPath) => deletionMtimeByPath.has(relPath));
+    // Tombstone evidence is satisfied by the members the REMOTE knew: the
+    // remote cannot tombstone local-only extras or an inert legacy marker,
+    // and the removal sweeps those once the remote deletion is established.
+    // Non-empty same-generation tombstones establish remote absence on
+    // their own: they may name shards already absent locally (removed in an
+    // earlier round), so the set is NOT required to intersect localMembers
+    // (codex round 6, XiOb).
+    const tombstonedMembers =
+      deletionMtimeByPath === undefined
+        ? []
+        : [...deletionMtimeByPath.keys()].filter(
+            (relPath) => embeddingGenerationMembership(relPath)?.shardDir === shardDir,
+          );
+    const tombstoneCovered = tombstonedMembers.length > 0;
     const baseEvidenced =
       baseMembers.length > 0 && baseMembers.every((relPath) => !incomingMap.has(relPath));
     if (!tombstoneCovered && !baseEvidenced) continue;
