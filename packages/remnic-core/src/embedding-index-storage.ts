@@ -232,6 +232,10 @@ export class EmbeddingIndexFileStore {
             message: "interrupted identity replacement rolled back to the former generation",
           },
         });
+        // The rollback IS the layout decision: the restored generation is
+        // authoritative on THIS call — falling through would let a stray
+        // legacy file win (issue #3148 review, round 1).
+        return "sharded";
       }
     }
     if (shardDirPresent) return "sharded";
@@ -244,11 +248,21 @@ export class EmbeddingIndexFileStore {
    */
   private async rollbackInterruptedReplacement(): Promise<boolean> {
     const backupPath = replacementBackupPath(this.shardDir);
+    let backupPresent = false;
     try {
       await stat(backupPath);
-    } catch {
-      return false;
+      backupPresent = true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        // An unreadable backup must not be silently treated as absent —
+        // that would permit the legacy fallback over a generation we cannot
+        // inspect (issue #3148 review, round 1).
+        throw new EmbeddingIndexStorageError(
+          `cannot stat embedding index replacement backup ${backupPath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
+    if (!backupPresent) return false;
     await rename(backupPath, this.shardDir);
     return true;
   }
