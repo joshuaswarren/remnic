@@ -250,11 +250,13 @@ export class EmbeddingIndexFileStore {
   }
 
   /**
-   * Mutation-queue-only: roll the fixed transaction backup back into the
-   * published position after an interrupted replacement. Returns true when
-   * a rollback happened.
+   * Mutation-queue entry point: roll the fixed transaction backup back into
+   * the published position after an interrupted replacement. Returns true
+   * when a rollback happened. Only fires in the actual rename gap
+   * (published directory absent); callers must invalidate any cached index
+   * view when this returns true.
    */
-  private async rollbackInterruptedReplacement(): Promise<boolean> {
+  async recoverIfInterrupted(): Promise<boolean> {
     // Only the rename gap (published directory absent) is recoverable. When
     // the directory is present - including after a crash that followed a
     // successful publish - the generation on disk is already authoritative
@@ -450,22 +452,17 @@ export class EmbeddingIndexFileStore {
     const stateDir = path.dirname(this.indexPath);
     await mkdir(stateDir, { recursive: true });
     await this.cleanForeignStagingDirs();
-    // Recovery of an interrupted replacement runs only here (mutation
-    // queue): the former generation is restored BEFORE layout selection, so
-    // the write lands on the restored authoritative generation.
-    const rolledBack = await this.rollbackInterruptedReplacement();
+    // NOTE: interrupted-replacement recovery runs in the mutation wrapper
+    // (EmbeddingFallback.enqueueIndexMutation) BEFORE this method, so the
+    // caller's index already reflects the restored generation.
 
-    const buildGroups = () => {
-      const map = new Map<number, Record<string, EmbeddingIndexEntry>>();
-      for (const id of Object.keys(index.entries)) {
-        const shardIndex = shardIndexOf(id, SHARD_COUNT);
-        const group = map.get(shardIndex);
-        if (group) group[id] = index.entries[id];
-        else map.set(shardIndex, { [id]: index.entries[id] });
-      }
-      return map;
-    };
-    let groups = buildGroups();
+    const groups = new Map<number, Record<string, EmbeddingIndexEntry>>();
+    for (const id of Object.keys(index.entries)) {
+      const shardIndex = shardIndexOf(id, SHARD_COUNT);
+      const group = groups.get(shardIndex);
+      if (group) group[id] = index.entries[id];
+      else groups.set(shardIndex, { [id]: index.entries[id] });
+    }
 
     const layout = await this.detectLayout();
 
@@ -484,17 +481,6 @@ export class EmbeddingIndexFileStore {
       if (identityChanged) {
         await this.publishReplacementGeneration(index, groups, limit);
         return;
-      }
-      if (rolledBack && diskIdentity) {
-        // Same identity after a rollback: the restored generation is
-        // authoritative, so its recovered vectors merge UNDER the incoming
-        // mutation instead of being clobbered by it (issue #3148 review).
-        const restored: Record<string, EmbeddingIndexEntry> = {};
-        await this.readShardGenerationInto(restored);
-        for (const [id, entry] of Object.entries(restored)) {
-          if (!index.entries[id]) index.entries[id] = entry;
-        }
-        groups = buildGroups();
       }
       const dirtyShards = opts.touchedIds?.length
         ? new Set(opts.touchedIds.map((id) => shardIndexOf(id, SHARD_COUNT)))
@@ -620,7 +606,9 @@ export class EmbeddingIndexFileStore {
     }
   }
 
-  /** Remove staging dirs orphaned by crashed migrations; never this process's own. */
+  /** Remove staging dirs orphaned by crashed migrations. A foreign dir younger than the grace window may belong to a live writer mid-migration, so only older dirs are removed (issue #3148 review, round 3). */
+  private static readonly STAGING_CLEANUP_GRACE_MS = 10 * 60 * 1000;
+
   private async cleanForeignStagingDirs(): Promise<void> {
     const stateDir = path.dirname(this.indexPath);
     let names: string[] = [];
@@ -630,8 +618,15 @@ export class EmbeddingIndexFileStore {
       return;
     }
     const ownPrefix = `embeddings.staging.tmp-${process.pid}-`;
+    const cutoff = Date.now() - EmbeddingIndexFileStore.STAGING_CLEANUP_GRACE_MS;
     for (const name of names) {
       if (!name.startsWith("embeddings.staging.tmp-") || name.startsWith(ownPrefix)) continue;
+      try {
+        const stats = await stat(path.join(stateDir, name));
+        if (stats.mtimeMs > cutoff) continue;
+      } catch {
+        continue;
+      }
       await rm(path.join(stateDir, name), { recursive: true, force: true }).catch(() => undefined);
     }
   }

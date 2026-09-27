@@ -68,3 +68,103 @@ export const DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS: readonly string[] = [
   "**/namespaces/*/state/embeddings.staging.tmp-*/**",
   "**/namespaces/*/state/embeddings.json.pre-migration.tmp-*",
 ];
+
+
+const DEFAULT_OFFLINE_SYNC_EXCLUDE_REGEXPS: readonly RegExp[] =
+  DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS.map((glob) => globToRegExp(glob));
+
+/**
+ * Precompiled-once default-exclude check for the snapshot enumeration hot
+ * path (Kilo review, PR #1793). Moved here from offline-sync.ts with the
+ * glob list so the two can never drift (issue #1995).
+ */
+export function matchesOfflineSyncDefaultExclude(relPosix: string): boolean {
+  for (const regexp of DEFAULT_OFFLINE_SYNC_EXCLUDE_REGEXPS) {
+    if (regexp.test(relPosix)) return true;
+  }
+  return false;
+}
+
+export function globToRegExp(glob: string): RegExp {
+  if (typeof glob !== "string" || glob.length === 0) {
+    throw new Error("offlineSyncExcludes entry must be a non-empty string");
+  }
+  if (glob.includes("\0")) {
+    throw new Error("offlineSyncExcludes entry must not contain NUL bytes");
+  }
+  let source = "";
+  for (let i = 0; i < glob.length; i += 1) {
+    const ch = glob[i];
+    if (ch === "*") {
+      if (glob[i + 1] === "*") {
+        // `**` is cross-segment wherever it appears:
+        //   leading `**/`  -> zero or more whole segments
+        //   `/**` at end   -> everything under the directory
+        //   `a/**/b`       -> any depth between segments
+        // (Cursor review on PR #1793: trailing `scratch/**` must match
+        // nested `scratch/a/b.md`, matching the offline-mode guide.)
+        if (glob[i + 2] === "/") {
+          source += "(?:.*/)?";
+          i += 2;
+          continue;
+        }
+        source += ".*";
+        i += 1;
+        continue;
+      }
+      source += "[^/]*";
+      continue;
+    }
+    if (ch === "?") {
+      source += "[^/]";
+      continue;
+    }
+    if (ch === "/") {
+      source += "/";
+      continue;
+    }
+    source += ch.replace(/[\\^$.+()|{}\[\]]/g, "\\$&");
+  }
+  return new RegExp(`^${source}$`);
+}
+
+export function compileOfflineSyncExcludeGlobs(
+  globs: readonly unknown[],
+): RegExp[] {
+  const out: RegExp[] = [];
+  for (const entry of globs) {
+    if (typeof entry !== "string" || entry.length === 0) {
+      throw new Error("offlineSyncExcludes must contain only non-empty strings");
+    }
+    out.push(globToRegExp(entry));
+  }
+  return out;
+}
+
+/**
+ * Validate the operator-supplied offline-sync exclude list (#1786).
+ * Rejects loudly instead of silently defaulting (CLAUDE.md rule 39):
+ * a misspelled key value must fail config parse, not be ignored.
+ * Lives next to the glob compiler so config.ts only carries the call.
+ */
+export function parseOfflineSyncExcludes(raw: unknown): string[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error(
+      `offlineSyncExcludes must be an array of non-empty glob strings; got ${typeof raw}`,
+    );
+  }
+  for (const entry of raw) {
+    if (typeof entry !== "string" || entry.trim().length === 0) {
+      throw new Error(
+        "offlineSyncExcludes must contain only non-empty glob strings",
+      );
+    }
+  }
+  const globs = raw.map((entry) => (entry as string).trim());
+  // Compile-check every glob now so a bad pattern fails at parse time
+  // rather than mid-sync. compileOfflineSyncExcludeGlobs throws with a
+  // per-entry message.
+  compileOfflineSyncExcludeGlobs(globs);
+  return globs;
+}

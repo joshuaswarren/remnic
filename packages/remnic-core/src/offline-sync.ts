@@ -24,7 +24,18 @@ import {
   type SafeArchiveRoot,
 } from "./transfer/fs-utils.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
-import { DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS } from "./offline-sync-exclude-globs.js";
+import { matchesOfflineSyncDefaultExclude } from "./offline-sync-exclude-globs.js";
+import {
+  isCanonicalRuntimeStatePath,
+  shouldDeleteAbsentIncomingOfflineRuntimeFile,
+  shouldPreferIncomingOfflineRuntimeFile,
+} from "./offline-sync-runtime-state.js";
+export { shouldPreferIncomingOfflineRuntimeFile } from "./offline-sync-runtime-state.js";
+export {
+  compileOfflineSyncExcludeGlobs,
+  globToRegExp,
+  parseOfflineSyncExcludes,
+} from "./offline-sync-exclude-globs.js";
 import {
   isEncryptedOfflineSyncFile,
   readPlainOfflineSyncFileChunk,
@@ -228,48 +239,6 @@ const EXCLUDED_FILE_PREFIXES = [
  * matches zero or more whole segments, and a trailing `dir/star-star`
  * matches everything under `dir/` at any depth.
  */
-export function globToRegExp(glob: string): RegExp {
-  if (typeof glob !== "string" || glob.length === 0) {
-    throw new Error("offlineSyncExcludes entry must be a non-empty string");
-  }
-  if (glob.includes("\0")) {
-    throw new Error("offlineSyncExcludes entry must not contain NUL bytes");
-  }
-  let source = "";
-  for (let i = 0; i < glob.length; i += 1) {
-    const ch = glob[i];
-    if (ch === "*") {
-      if (glob[i + 1] === "*") {
-        // `**` is cross-segment wherever it appears:
-        //   leading `**/`  -> zero or more whole segments
-        //   `/**` at end   -> everything under the directory
-        //   `a/**/b`       -> any depth between segments
-        // (Cursor review on PR #1793: trailing `scratch/**` must match
-        // nested `scratch/a/b.md`, matching the offline-mode guide.)
-        if (glob[i + 2] === "/") {
-          source += "(?:.*/)?";
-          i += 2;
-          continue;
-        }
-        source += ".*";
-        i += 1;
-        continue;
-      }
-      source += "[^/]*";
-      continue;
-    }
-    if (ch === "?") {
-      source += "[^/]";
-      continue;
-    }
-    if (ch === "/") {
-      source += "/";
-      continue;
-    }
-    source += ch.replace(/[\\^$.+()|{}\[\]]/g, "\\$&");
-  }
-  return new RegExp(`^${source}$`);
-}
 
 function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -675,15 +644,7 @@ function shouldExcludePushRelPath(
 
 // Precompiled once at module load — this check sits on the hot
 // enumeration path for every walked file (Kilo review, PR #1793).
-const DEFAULT_OFFLINE_SYNC_EXCLUDE_REGEXPS: readonly RegExp[] =
-  DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS.map((glob) => globToRegExp(glob));
 
-function matchesOfflineSyncDefaultExclude(relPosix: string): boolean {
-  for (const regexp of DEFAULT_OFFLINE_SYNC_EXCLUDE_REGEXPS) {
-    if (regexp.test(relPosix)) return true;
-  }
-  return false;
-}
 
 /**
  * Compile operator-supplied `offlineSyncExcludes` glob strings into a
@@ -692,94 +653,12 @@ function matchesOfflineSyncDefaultExclude(relPosix: string): boolean {
  * a thrown error as a fatal configuration mistake and refuse to start the
  * sync run rather than silently dropping the bad entry.
  */
-export function compileOfflineSyncExcludeGlobs(
-  globs: readonly unknown[],
-): RegExp[] {
-  const out: RegExp[] = [];
-  for (const entry of globs) {
-    if (typeof entry !== "string" || entry.length === 0) {
-      throw new Error("offlineSyncExcludes must contain only non-empty strings");
-    }
-    out.push(globToRegExp(entry));
-  }
-  return out;
-}
-
-/**
- * Validate the operator-supplied offline-sync exclude list (#1786).
- * Rejects loudly instead of silently defaulting (CLAUDE.md rule 39):
- * a misspelled key value must fail config parse, not be ignored.
- * Lives next to the glob compiler so config.ts only carries the call.
- */
-export function parseOfflineSyncExcludes(raw: unknown): string[] {
-  if (raw === undefined || raw === null) return [];
-  if (!Array.isArray(raw)) {
-    throw new Error(
-      `offlineSyncExcludes must be an array of non-empty glob strings; got ${typeof raw}`,
-    );
-  }
-  for (const entry of raw) {
-    if (typeof entry !== "string" || entry.trim().length === 0) {
-      throw new Error(
-        "offlineSyncExcludes must contain only non-empty glob strings",
-      );
-    }
-  }
-  const globs = raw.map((entry) => (entry as string).trim());
-  // Compile-check every glob now so a bad pattern fails at parse time
-  // rather than mid-sync. compileOfflineSyncExcludeGlobs throws with a
-  // per-entry message.
-  compileOfflineSyncExcludeGlobs(globs);
-  return globs;
-}
 
 function shouldIgnoreIncomingRuntimePath(relPosix: string): boolean {
   if (isInternalRemnicStatePath(relPosix)) return true;
   const parts = relPosix.split("/");
   const basename = parts[parts.length - 1] ?? "";
   return isCanonicalRuntimeStatePath(parts) && basename.includes(".tmp-");
-}
-
-function isCanonicalRuntimeStatePath(parts: string[]): boolean {
-  if (parts[0] === "state") return true;
-  return parts[0] === "namespaces" && parts.length >= 4 && parts[2] === "state";
-}
-
-const REMOTE_AUTHORITATIVE_RUNTIME_STATE_FILES = new Set([
-  ".artifact-write-version.log",
-  ".memory-status-version.log",
-  "buffer.json",
-  "embeddings.json",
-  "index_time.json",
-  "last_intent.json",
-  "last_qmd_recall.json",
-  "last_recall.json",
-  "lcm.sqlite-shm",
-  "lcm.sqlite-wal",
-  "memory-lifecycle-ledger.jsonl",
-  "recall_impressions.jsonl",
-]);
-
-const ABSENT_INCOMING_RUNTIME_DELETE_FILES = new Set([
-  "lcm.sqlite-shm",
-  "lcm.sqlite-wal",
-]);
-
-// Sharded embedding index (#3146): remote-authoritative like embeddings.json.
-const EMBEDDING_SHARD_FILE_PATTERN = /^shard-\d{4}\.json$/;
-
-export function shouldPreferIncomingOfflineRuntimeFile(relPosix: string): boolean {
-  const parts = relPosix.split("/");
-  const basename = parts[parts.length - 1] ?? "";
-  return isCanonicalRuntimeStatePath(parts) &&
-    (REMOTE_AUTHORITATIVE_RUNTIME_STATE_FILES.has(basename) ||
-      (EMBEDDING_SHARD_FILE_PATTERN.test(basename) && parts[parts.length - 2] === "embeddings"));
-}
-
-function shouldDeleteAbsentIncomingOfflineRuntimeFile(relPosix: string): boolean {
-  const parts = relPosix.split("/");
-  const basename = parts[parts.length - 1] ?? "";
-  return isCanonicalRuntimeStatePath(parts) && ABSENT_INCOMING_RUNTIME_DELETE_FILES.has(basename);
 }
 
 function filterBaseFilesForMode(
@@ -1559,6 +1438,32 @@ export async function applyOfflineSyncSnapshot(options: {
     return requiredBuffer(incomingBuffers, relPath);
   };
 
+  // Sharded embedding indexes travel as ONE generation (issue #3148, codex
+  // P1): when the incoming snapshot carries any shard for an embeddings
+  // directory, that set is the whole generation, so local-only shards in
+  // the same directory are stale leftovers of an older generation and must
+  // be deleted instead of merging into the incoming set.
+  const incomingShardDirs = new Set<string>();
+  for (const relPath of incomingMap.keys()) {
+    const parts = relPath.split("/");
+    if (
+      parts.length >= 2 &&
+      parts[parts.length - 2] === "embeddings" &&
+      /^shard-\d{4}\.json$/.test(parts[parts.length - 1] ?? "")
+    ) {
+      incomingShardDirs.add(parts.slice(0, -1).join("/"));
+    }
+  }
+  const inIncomingShardGenerationDir = (relPath: string): boolean => {
+    if (incomingShardDirs.size === 0) return false;
+    const parts = relPath.split("/");
+    return (
+      parts.length >= 2 &&
+      parts[parts.length - 2] === "embeddings" &&
+      incomingShardDirs.has(parts.slice(0, -1).join("/"))
+    );
+  };
+
   for (const relPath of unionPaths(baseMap, incomingMap, currentMap)) {
     const base = baseMap.get(relPath);
     const incoming = incomingMap.get(relPath);
@@ -1583,7 +1488,11 @@ export async function applyOfflineSyncSnapshot(options: {
         skipped += 1;
         continue;
       }
-      if (shouldPreferIncomingOfflineRuntimeFile(relPath) && currentEntry && base && incoming.sha256 === base.sha256) {
+      if (
+        shouldPreferIncomingOfflineRuntimeFile(relPath) &&
+        currentEntry && base && incoming.sha256 === base.sha256 &&
+        !inIncomingShardGenerationDir(relPath)
+      ) {
         nextBase.set(relPath, base);
         skipped += 1;
         continue;
@@ -1676,6 +1585,30 @@ export async function applyOfflineSyncSnapshot(options: {
       );
       nextBase.delete(relPath);
       deleted += 1;
+      continue;
+    }
+    if (
+      shouldPreferIncomingOfflineRuntimeFile(relPath) &&
+      incomingShardDirs.size > 0
+    ) {
+      const parts = relPath.split("/");
+      const parentDir = parts.slice(0, -1).join("/");
+      if (incomingShardDirs.has(parentDir)) {
+        // Local-only shard inside a directory whose generation the incoming
+        // snapshot replaces: keeping it would merge a stale generation into
+        // the incoming one (issue #3148, codex P1).
+        await deleteSafeFile(
+          root,
+          relPath,
+          options.deleteFile,
+          deletionMtimeByPath?.get(relPath),
+        );
+        nextBase.delete(relPath);
+        deleted += 1;
+        continue;
+      }
+      pendingLocal += 1;
+      skipped += 1;
       continue;
     }
     if (shouldPreferIncomingOfflineRuntimeFile(relPath)) {

@@ -426,7 +426,21 @@ export class EmbeddingFallback {
   }
 
   private enqueueIndexMutation<T>(mutation: () => Promise<T>): Promise<T> {
-    const run = this.mutationQueue.catch(() => undefined).then(mutation);
+    const run = this.mutationQueue
+      .catch(() => undefined)
+      .then(async () => {
+        // Recover an interrupted replacement BEFORE the mutation's identity
+        // probes and existence checks: a deletion no-op must not skip
+        // persistence while the published generation sits in the rename-gap
+        // backup, and insertions must load the restored vectors rather than
+        // a fresh empty index (issue #3148, codex round 3).
+        const recovered = await this.store.recoverIfInterrupted();
+        if (recovered) {
+          this.loaded = null;
+          this.loadedFromDisk = false;
+        }
+        return mutation();
+      });
     this.mutationQueue = run.then(
       () => undefined,
       () => undefined,

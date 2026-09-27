@@ -63,14 +63,21 @@ test("detectLayout returns sharded on the first post-gap call and ignores a stra
       assert.equal((err as NodeJS.ErrnoException).code, "ENOENT");
     }
 
-    // The mutation queue performs the rollback and lands the write on the
-    // restored authoritative generation.
+    // The mutation wrapper performs the recovery (restored generation
+    // becomes the loaded view) and lands the write on it: old + new.
+    assert.equal(await store.recoverIfInterrupted(), true);
+    const loaded = await (async () => {
+      const merged: Record<string, { vector: number[]; path: string }> = {};
+      await store.readShardGenerationInto(merged);
+      return merged;
+    })();
+    loaded["mem-new"] = { vector: [1, 1], path: "facts/new.md" };
     await store.persist(
       {
         version: 1,
         provider: "openai",
         model: "text-embedding-3-small",
-        entries: { "mem-new": { vector: [1, 1], path: "facts/new.md" } },
+        entries: loaded,
       },
       { touchedIds: ["mem-new"], memoryId: "mem-new" },
     );
@@ -96,9 +103,11 @@ test("a corrupt replacement backup shape surfaces as a tagged storage error, nev
     // shard enumeration must fail loudly (tagged) instead of degrading to
     // the legacy fallback.
     await writeFile(path.join(stateDir, "embeddings.pre-replace.tmp"), "junk", "utf-8");
-    // The mutation queue's rollback moves the junk file into the published
-    // position, where shard enumeration fails loudly (tagged) instead of
-    // degrading to the legacy fallback.
+    // The mutation wrapper's recovery moves the junk file into the published
+    // position; the subsequent persist must then fail loudly (tagged) when
+    // shard enumeration hits it, instead of degrading to the legacy
+    // fallback.
+    assert.equal(await store.recoverIfInterrupted(), true);
     await assert.rejects(
       store.persist({
         version: 1,

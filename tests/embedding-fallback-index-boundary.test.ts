@@ -17,7 +17,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { EmbeddingFallback } from "@remnic/core/embedding-fallback";
 import {
   clearHostEmbeddingProvidersForTest,
@@ -161,9 +161,11 @@ async function collectIndex(memoryDir: string): Promise<CollectedIndex> {
     if (name.startsWith("embeddings.json.pre-migration.tmp-")) out.backupFiles.push(name);
     if (name.startsWith("embeddings.staging.tmp-")) out.stagingDirs.push(name);
   }
+  let shardDirPresent = false;
   let shardDirEntries: string[] = [];
   try {
     shardDirEntries = await readdir(path.join(memoryDir, SHARD_DIR_REL));
+    shardDirPresent = true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
@@ -174,9 +176,13 @@ async function collectIndex(memoryDir: string): Promise<CollectedIndex> {
     out.shards.push({ file: name, provider: parsed.provider, model: parsed.model, entries: parsed.entries });
     Object.assign(out.merged, parsed.entries as Record<string, IndexEntry>);
   }
-  // Single-generation rule: a legacy file beside a published shard
-  // generation is a recovery artifact, never authoritative.
-  if (out.legacy && out.shardFiles.length === 0) Object.assign(out.merged, out.legacy.entries);
+  // Single-generation rule: the legacy file is authoritative only while the
+  // published shard directory is entirely absent. Even an EMPTIED published
+  // directory (all shards removed) is the authoritative generation, so the
+  // stray legacy file must not merge back.
+  if (out.legacy && out.shardFiles.length === 0 && !shardDirPresent) {
+    Object.assign(out.merged, out.legacy.entries);
+  }
   return out;
 }
 
@@ -932,6 +938,45 @@ test("injected replacement failures preserve the old generation until the replac
   }
 });
 
+test("a corrupt backup file is recovered by the mutation queue, which then fails closed loudly", async () => {
+  const memoryDir = await tmpMemoryDir("remnic-emb3146-gapjunk-");
+  const unregister = registerHostEmbeddingProvider(memoryDir, HOST_PROVIDER_STUB);
+  const cleanup: Array<() => void> = [];
+  try {
+    // Gap state where the fixed backup is NOT a directory (corrupt): the
+    // mutation queue's recovery moves it into the published position, and
+    // the mutation must fail closed with a tagged error instead of
+    // degrading to the stray legacy file or a fresh index.
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(path.join(stateDir, "embeddings.pre-replace.tmp"), "junk", "utf-8");
+    await writeFile(
+      path.join(memoryDir, LEGACY_REL),
+      JSON.stringify(buildIndex({ "mem-stale": entryOf(2, "facts/stale.md") })),
+      "utf-8",
+    );
+
+    const fallback = new EmbeddingFallback(stubConfig(memoryDir));
+    cleanup.push(installEmbedFetch([vectorOf(3), [0.1, 0.2]]));
+    await assert.rejects(
+      fallback.indexFile("mem-x", "fact x", path.join(memoryDir, "facts", "x.md")),
+      (err: NodeJS.ErrnoException) => err.name === "EmbeddingIndexStorageError",
+    );
+    // The stray legacy file was moved (recovered) but never served or
+    // overwritten: recall fails open to [] and the legacy bytes survive.
+    assert.deepEqual(await fallback.search("q", 5), []);
+    assert.equal(
+      await readFile(path.join(memoryDir, LEGACY_REL), "utf-8"),
+      JSON.stringify(buildIndex({ "mem-stale": entryOf(2, "facts/stale.md") })),
+    );
+  } finally {
+    for (const fn of cleanup.reverse()) fn();
+    unregister();
+    clearHostEmbeddingProvidersForTest();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("a restart inside the replacement rename gap rolls back to the old generation, not stale legacy", async () => {
   const memoryDir = await tmpMemoryDir("remnic-emb3146-gap-");
   const unregister = registerHostEmbeddingProvider(memoryDir, HOST_PROVIDER_STUB);
@@ -943,8 +988,9 @@ test("a restart inside the replacement rename gap rolls back to the old generati
     // them trying to resurrect old vectors.
     const backupDir = path.join(memoryDir, "state", "embeddings.pre-replace.tmp");
     await mkdir(backupDir, { recursive: true });
+    // shard-0058 is mem-old's hash slot for SHARD_COUNT=64.
     await writeFile(
-      path.join(backupDir, "shard-0000.json"),
+      path.join(backupDir, "shard-0058.json"),
       JSON.stringify(buildIndex({ "mem-old": entryOf(2, "facts/old.md") })),
       "utf-8",
     );
@@ -966,16 +1012,26 @@ test("a restart inside the replacement rename gap rolls back to the old generati
     // merges whatever is on disk; the library serves [] per the assertion
     // above.)
 
-    // The mutation performs the recovery, then lands on the restored
-    // generation: old vectors return and the new entry joins them.
-    await fallback.indexFile("mem-new", "new fact", path.join(memoryDir, "facts", "new.md"));
+    // A DELETE as the first post-crash mutation must also recover before its
+    // no-op skip (codex round 3): removing mem-old restores the generation,
+    // then drops the entry from it.
+    await fallback.removeFromIndex("mem-old");
     const after = await collectIndex(memoryDir);
-    assert.ok(after.shardFiles.length > 0, "former generation restored to the published position");
-    assert.equal(after.merged["mem-old"] !== undefined, true, "old vectors recovered by the mutation");
-    assert.equal(after.merged["mem-new"] !== undefined, true);
+    // Recovery consumed the fixed transaction backup; the removal was
+    // applied to the restored generation; the stray legacy file never
+    // served.
+    let replacementBackupLeft = false;
+    try {
+      await readFile(path.join(memoryDir, "state", "embeddings.pre-replace.tmp"));
+      replacementBackupLeft = true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") replacementBackupLeft = true;
+    }
+    assert.equal(replacementBackupLeft, false, "transaction backup consumed by the recovery");
+    assert.equal(after.merged["mem-old"], undefined, "requested removal applied to the restored generation");
     assert.equal(after.merged["mem-stale"], undefined, "stray legacy never merges");
     const results = await fallback.search("recovered", 5);
-    assert.deepEqual(results.map((r) => r.id).sort(), ["mem-new", "mem-old"]);
+    assert.deepEqual(results.map((r) => r.id), [], "mem-old was the only searchable entry and is now removed");
   } finally {
     for (const fn of cleanup.reverse()) fn();
     unregister();
@@ -992,10 +1048,13 @@ test("an interrupted migration leaves no staging debris and the legacy file auth
     const seed = buildIndex({ "mem-seed": entryOf(3, "facts/seed.md") });
     const rawBefore = JSON.stringify(seed);
     await writeLegacyIndex(memoryDir, seed);
-    // Orphan staging dir from a crashed process (different pid).
+    // Orphan staging dir from a crashed process (different pid), aged past
+    // the cleanup grace window.
     const staleStaging = path.join(memoryDir, "state", "embeddings.staging.tmp-999999-stale");
     await mkdir(staleStaging, { recursive: true });
     await writeFile(path.join(staleStaging, "shard-0000.json"), "junk", "utf-8");
+    const old = new Date(Date.now() - 30 * 60 * 1000);
+    await utimes(staleStaging, old, old);
 
     await withEnv({ [LIMIT_ENV]: "100000" }, async () => {
       const fallback = new EmbeddingFallback(stubConfig(memoryDir));

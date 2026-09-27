@@ -42,6 +42,15 @@ async function readUtf8(root: string, relPath: string): Promise<string> {
   return readFile(path.join(root, relPath), "utf-8");
 }
 
+async function exists(root: string, relPath: string): Promise<boolean> {
+  try {
+    await readFile(path.join(root, relPath));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 test("offline snapshot captures source-of-truth files and excludes private/internal paths", async () => {
   const root = await tempDir("remnic-offline-snapshot");
   try {
@@ -378,6 +387,46 @@ test("offline sync includes retrieval debug snapshots for full-fidelity offline 
     assert.equal(await readUtf8(root, "state/last_graph_recall.json"), "graph");
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync applies shard generations wholesale: base-unchanged locally-modified paths follow incoming, local-only extras are removed, other namespaces untouched (#3146)", async () => {
+  const localRoot = await tempDir("remnic-offline-embgen-local");
+  const remoteRoot = await tempDir("remnic-offline-embgen-remote");
+  try {
+    // Local: generation drifted since the shared base + a local-only shard
+    // + an unrelated namespace shard that must stay local-authoritative.
+    await write(localRoot, "facts/a.md", "alpha");
+    await write(localRoot, "state/embeddings/shard-0000.json", "local modified 0000");
+    await write(localRoot, "state/embeddings/shard-0050.json", "local only extra");
+    await write(localRoot, "namespaces/team/state/embeddings/shard-0009.json", "team local");
+
+    // Remote (incoming) generation: base-unchanged 0000 + new 0001.
+    await write(remoteRoot, "facts/a.md", "alpha");
+    await write(remoteRoot, "state/embeddings/shard-0000.json", "base unchanged 0000");
+    await write(remoteRoot, "state/embeddings/shard-0001.json", "new 0001");
+
+    const snapshot = await buildOfflineSyncSnapshot({
+      root: remoteRoot,
+      sourceId: "remote",
+      includeContent: true,
+    });
+    const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
+
+    // Base-unchanged-but-locally-modified same-path shard: the incoming
+    // generation wins (no locally-modified preservation inside a replaced
+    // generation).
+    assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0000.json"), "base unchanged 0000");
+    assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0001.json"), "new 0001");
+    // Local-only shard inside the replaced generation is removed.
+    const removedExists = await exists(localRoot, "state/embeddings/shard-0050.json");
+    assert.equal(removedExists, false);
+    // Unrelated namespace generation is untouched.
+    assert.equal(await readUtf8(localRoot, "namespaces/team/state/embeddings/shard-0009.json"), "team local");
+    assert.equal(result.deleted >= 1, true);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+    await rm(remoteRoot, { recursive: true, force: true });
   }
 });
 
