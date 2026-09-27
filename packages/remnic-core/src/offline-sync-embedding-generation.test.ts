@@ -13,6 +13,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createServer } from "node:http";
 import test from "node:test";
 
 import {
@@ -30,6 +31,7 @@ import {
   computeOmittedEmbeddingGenerationPaths,
   embeddingGenerationMembership,
 } from "./offline-sync-embedding-generation.js";
+import { respondOfflineSnapshotStream } from "./access-http-offline-stream.js";
 import {
   OFFLINE_SYNC_SNAPSHOT_FORMAT,
   type OfflineSyncSnapshot,
@@ -37,6 +39,7 @@ import {
   buildOfflineSyncSnapshot,
   buildOfflineSyncSnapshotFromBase,
   iterateOfflineSyncSnapshotFileRecords,
+  normalizeOfflineSyncSnapshot,
 } from "./offline-sync.js";
 import { MAGIC_BYTES, readMaybeEncryptedFile } from "./secure-store/secure-fs.js";
 import { StorageManager } from "./storage.js";
@@ -497,6 +500,8 @@ test("a staging write failure preserves the local generation", async () => {
           shardDirRel: "state/embeddings",
           incomingShardPaths: ["state/embeddings/shard-0000.json"],
           incomingMarker: null,
+          incomingMarkerPresent: false,
+          incomingShardStates: new Map(),
           incomingBuffers,
           io: {
             writeStagingFile: async () => {
@@ -622,14 +627,14 @@ test("secure-store staged ciphertext decrypts at the canonical path after publis
       )
     );
     await storage.writeOfflineSyncStagingFile(path.join(memoryDir, ...stagingRel.split("/")), content, {
-      aadRelPath: finalRel,
+      aadFilePath: path.join(memoryDir, ...finalRel.split("/")),
     });
     // Encrypted at rest in the staging location.
     const raw = await readFile(path.join(memoryDir, ...stagingRel.split("/")));
     assert.equal(raw.subarray(0, MAGIC_BYTES.length).toString("ascii"), MAGIC_BYTES.toString("ascii"));
     // Read back through the staging hook with the final-path AAD.
     const staged = await storage.readOfflineSyncFile(path.join(memoryDir, ...stagingRel.split("/")), {
-      aadRelPath: finalRel,
+      aadFilePath: path.join(memoryDir, ...finalRel.split("/")),
     });
     assert.deepEqual(staged, content);
     // WITHOUT the final-path AAD the staging ciphertext cannot decrypt.
@@ -700,5 +705,283 @@ test("computeOmittedEmbeddingGenerationPaths omits nothing when every member is 
     assert.equal(omission.omittedPaths.size, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// Round-5 batch: hydration, fail-closed IO, backup links, encrypted store io
+// ---------------------------------------------------------------------------
+
+test("metadata-only pulls hydrate unchanged shards from local bytes", async () => {
+  const localRoot = await tempDir("remnic-3148-hydrate");
+  const remoteRoot = await tempDir("remnic-3148-hydrate-remote");
+  try {
+    const shardBody = serializeIndex(indexFile("openai", "m", {
+      kept: { path: "p", vector: [1, 2] },
+    }));
+    await write(localRoot, "state/embeddings/shard-0000.json", shardBody);
+    await write(localRoot, "facts/readme.md", "readme");
+    // Remote: identical generation (metadata-only pull carries no content
+    // for the unchanged shard) plus one genuinely new shard.
+    await write(remoteRoot, "state/embeddings/shard-0000.json", shardBody);
+    await write(remoteRoot, "state/embeddings/shard-0001.json", serializeIndex(
+      indexFile("openai", "m", { neu: { path: "p1", vector: [3] } }),
+    ));
+    const full = await buildOfflineSyncSnapshot({
+      root: remoteRoot, sourceId: "remote", includeContent: true,
+    });
+    // Simulate the CLI metadata hydration: keep content only for the NEW
+    // shard, drop it for the locally-unchanged one.
+    const metadataOnly: OfflineSyncSnapshot = {
+      ...full,
+      files: full.files.map((file) =>
+        file.path.endsWith("shard-0000.json")
+          ? { path: file.path, sha256: file.sha256, bytes: file.bytes, mtimeMs: file.mtimeMs }
+          : file,
+      ),
+    };
+    const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot: metadataOnly });
+    // The unchanged shard is intact (hydrated + republished) and the new
+    // shard landed: no "missing incoming content" failure.
+    assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0000.json"), shardBody);
+    assert.ok((await readUtf8(localRoot, "state/embeddings/shard-0001.json")).includes("neu"));
+    assert.equal(result.upserted >= 2, true);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+    await rm(remoteRoot, { recursive: true, force: true });
+  }
+});
+
+test("custom storage IO without the staging pair fails closed before touching local state", async () => {
+  const localRoot = await tempDir("remnic-3148-downgrade-guard");
+  try {
+    await write(localRoot, "state/embeddings/shard-0000.json", serializeIndex(
+      indexFile("openai", "m1", { local: { path: "p", vector: [0] } }),
+    ));
+    let writeFileCalls = 0;
+    const result = await applyOfflineSyncSnapshot({
+      root: localRoot,
+      snapshot: {
+        format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+        schemaVersion: 1,
+        createdAt: "2026-09-27T00:00:00.000Z",
+        sourceId: "remote",
+        includeTranscripts: true,
+        files: [{
+          path: "state/embeddings/shard-0000.json",
+          sha256: sha256Of("incoming"),
+          bytes: 8,
+          mtimeMs: 1,
+          contentBase64: Buffer.from("incoming").toString("base64"),
+        }],
+      },
+      writeFile: async () => { writeFileCalls += 1; },
+    }).then(() => null, (error: unknown) => error as Error);
+    assert.ok(result instanceof Error);
+    assert.match(result.message, /plaintext-downgrade|writeStagingFile and readStagingFile/);
+    // The local generation is byte-identical and no custom write happened.
+    assert.ok((await readUtf8(localRoot, "state/embeddings/shard-0000.json")).includes("m1"));
+    assert.equal(writeFileCalls, 0);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+test("a planted symlink backup is rejected, never restored or followed", async () => {
+  const localRoot = await tempDir("remnic-3148-backup-link");
+  const outside = await tempDir("remnic-3148-backup-outside");
+  const remoteRoot = await tempDir("remnic-3148-backup-remote");
+  try {
+    await mkdir(path.join(localRoot, "state"), { recursive: true });
+    await symlink(outside, path.join(localRoot, "state/embeddings.pre-replace.tmp"));
+    await write(outside, "shard-0000.json", "outside bytes");
+    await write(remoteRoot, "state/embeddings/shard-0000.json", serializeIndex(
+      indexFile("openai", "m", { neu: { path: "p", vector: [1] } }),
+    ));
+    const snapshot = await buildOfflineSyncSnapshot({
+      root: remoteRoot, sourceId: "remote", includeContent: true,
+    });
+    await assert.rejects(() => applyOfflineSyncSnapshot({ root: localRoot, snapshot }));
+    // The planted target is untouched and no generation was published
+    // through the link.
+    assert.equal(await readUtf8(outside, "shard-0000.json"), "outside bytes");
+    assert.equal(await existsQuiet(localRoot, "state/embeddings/shard-0000.json"), false);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+    await rm(remoteRoot, { recursive: true, force: true });
+  }
+});
+
+test("mixed incoming (shards + marker) keeps the marker without a delete-rewrite cycle", async () => {
+  const localRoot = await tempDir("remnic-3148-mixed-marker");
+  const remoteRoot = await tempDir("remnic-3148-mixed-remote");
+  try {
+    await write(localRoot, "state/embeddings/shard-0000.json", serializeIndex(
+      indexFile("openai", "m1", { stale: { path: "p", vector: [9] } }),
+    ));
+    await write(localRoot, "state/embeddings.json", serializeIndex(indexFile("openai", "m0", {})));
+    await write(remoteRoot, "state/embeddings/shard-0000.json", serializeIndex(
+      indexFile("openai", "m1", { fresh: { path: "p", vector: [1] } }),
+    ));
+    const marker = serializeIndex(indexFile("openai", "m1", {}));
+    await write(remoteRoot, "state/embeddings.json", marker);
+    const snapshot = await buildOfflineSyncSnapshot({
+      root: remoteRoot, sourceId: "remote", includeContent: true,
+    });
+    await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
+    // The incoming marker survived (inert artifact), no flip-flop deletion.
+    assert.equal(await readUtf8(localRoot, "state/embeddings.json"), marker);
+    assert.ok((await readUtf8(localRoot, "state/embeddings/shard-0000.json")).includes("fresh"));
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+    await rm(remoteRoot, { recursive: true, force: true });
+  }
+});
+
+test("wired store io keeps encrypted migration, replacement, reload and writes canonical", async () => {
+  const memoryDir = await tempDir("remnic-3148-secure-store-io");
+  const prevLimit = process.env.REMNIC_EMBEDDING_INDEX_FILE_CHAR_LIMIT;
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.setSecureStoreKeyAndWait(randomBytes(32), true);
+    // Emulate the orchestrator wiring: daemon store IO via StorageManager.
+    const shardLimit = 1024; // resolver floor; forces one-way migration quickly
+    process.env.REMNIC_EMBEDDING_INDEX_FILE_CHAR_LIMIT = String(shardLimit);
+    const entry = (i: number): EmbeddingIndexEntry => ({
+      path: `memories/m${i}.md`,
+      vector: Array.from({ length: 16 }, (_, k) => (i * 16 + k) / 4096),
+    });
+    const entries: Record<string, EmbeddingIndexEntry> = {};
+    for (let i = 0; i < 40; i += 1) entries[`id-${i}`] = entry(i);
+    const store = new EmbeddingIndexFileStore(
+      path.join(memoryDir, "state/embeddings.json"),
+      path.join(memoryDir, "state/embeddings"),
+      path.join(memoryDir, "state/embedding-fallback-status.json"),
+      {
+        readUtf8: async (filePath) =>
+          (await storage.readOfflineSyncFile(filePath)).toString("utf-8"),
+        writeUtf8: async (filePath, contents, opts) =>
+          storage.writeOfflineSyncStagingFile(
+            filePath,
+            Buffer.from(contents, "utf-8"),
+            opts?.finalAadFilePath === undefined ? undefined : { aadFilePath: opts.finalAadFilePath },
+          ),
+      },
+    );
+    // One-way migration under the small budget: staged ciphertext binds the
+    // FINAL shard paths, so the store can read its own migration back.
+    await store.persist(indexFile("openai", "m", entries));
+    assert.equal(await store.detectLayout(), "sharded");
+    const merged: Record<string, EmbeddingIndexEntry> = {};
+    assert.deepEqual(await store.readShardGenerationInto(merged), {
+      provider: "openai",
+      model: "m",
+    });
+    assert.equal(Object.keys(merged).length, 40);
+    // Raw bytes are encrypted at rest, canonical path decrypts via the io.
+    const someShard = path.join(memoryDir, "state/embeddings/shard-0000.json");
+    const raw = await readFile(someShard);
+    assert.equal(
+      raw.subarray(0, MAGIC_BYTES.length).toString("ascii"),
+      MAGIC_BYTES.toString("ascii"),
+    );
+    // Identity replacement also publishes encrypted + readable.
+    await store.persist(indexFile("openai", "m2", {
+      swapped: { path: "p", vector: [1] },
+    }));
+    const replaced: Record<string, EmbeddingIndexEntry> = {};
+    assert.deepEqual(await store.readShardGenerationInto(replaced), {
+      provider: "openai",
+      model: "m2",
+    });
+    assert.deepEqual(Object.keys(replaced), ["swapped"]);
+    // Subsequent dirty-shard write stays canonical-decryptable.
+    await store.persist(indexFile("openai", "m2", {
+      ...replaced,
+      swapped2: { path: "p2", vector: [2] },
+    }), { touchedIds: ["swapped2"] });
+    const after: Record<string, EmbeddingIndexEntry> = {};
+    await store.readShardGenerationInto(after);
+    assert.ok(after.swapped && after.swapped2);
+    // Status file stays intentionally plain for console_state (and is only
+    // created once a write outcome is recorded).
+    if (await existsQuiet(memoryDir, "state/embedding-fallback-status.json")) {
+      const status = await readFile(path.join(memoryDir, "state/embedding-fallback-status.json"), "utf-8");
+      assert.equal(status.includes("REMNIC-ENC"), false);
+    }
+  } finally {
+    if (prevLimit === undefined) delete process.env.REMNIC_EMBEDDING_INDEX_FILE_CHAR_LIMIT;
+    else process.env.REMNIC_EMBEDDING_INDEX_FILE_CHAR_LIMIT = prevLimit;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("streamed snapshot header carries omission metadata and the receiver keeps the generation", async () => {
+  const localRoot = await tempDir("remnic-3148-stream-apply");
+  const remoteRoot = await tempDir("remnic-3148-stream-remote");
+    try {
+    await write(localRoot, "state/embeddings/shard-0000.json", "local 0000");
+    await write(localRoot, "state/embeddings/shard-0001.json", "local 0001");
+    await write(remoteRoot, "facts/only.md", "only");
+    await write(remoteRoot, "state/embeddings/shard-0000.json", "remote 0000");
+    await write(remoteRoot, "state/embeddings/shard-0003.json", "filtered 0003");
+    const build = await buildOfflineSyncSnapshot({
+      root: remoteRoot, sourceId: "remote", includeContent: true,
+      userExcludeRegexps: [/^state\/embeddings\/shard-0003\.json$/],
+    });
+    assert.deepEqual(build.omittedEmbeddingGenerationDirs, ["state/embeddings"]);
+    // Serve the snapshot through the REAL ndjson stream writer.
+    const { createServer } = await import("node:http");
+    const received: string[] = [];
+    const server = createServer((request, response) => {
+      void respondOfflineSnapshotStream(response, {
+        namespace: "test",
+        ...build,
+        files: (async function* () {
+          for (const file of build.files) yield file;
+        })(),
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const url = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}/`;
+    try {
+      const response = await fetch(url);
+      const text = await response.text();
+      for (const line of text.split("\n").filter((l) => l.trim().length > 0)) {
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        if (parsed.type === "snapshot") received.push(JSON.stringify(parsed));
+      }
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    // Header round-trips the omission (server writer + client decoder field).
+    assert.equal(received.length, 1);
+    const header = JSON.parse(received[0] ?? "{}") as Record<string, unknown>;
+    assert.deepEqual(header.omittedEmbeddingGenerationDirs, ["state/embeddings"]);
+    // Receiver: normalize the streamed header+files exactly like the client
+    // and apply — the local generation must survive.
+    const streamed = normalizeOfflineSyncSnapshot({
+      format: header.format,
+      schemaVersion: header.schemaVersion,
+      createdAt: header.createdAt,
+      sourceId: header.sourceId,
+      includeTranscripts: header.includeTranscripts,
+      omittedEmbeddingGenerationDirs: header.omittedEmbeddingGenerationDirs as string[],
+      files: build.files,
+    });
+    const baseFiles = [
+      { path: "state/embeddings/shard-0000.json", sha256: "0".repeat(64), bytes: 9, mtimeMs: 1 },
+      { path: "state/embeddings/shard-0001.json", sha256: "1".repeat(64), bytes: 9, mtimeMs: 1 },
+    ];
+    const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot: streamed, baseFiles });
+    assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0000.json"), "local 0000");
+    assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0001.json"), "local 0001");
+    assert.equal(result.deleted, 0);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+    await rm(remoteRoot, { recursive: true, force: true });
   }
 });

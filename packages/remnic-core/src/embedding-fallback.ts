@@ -19,6 +19,7 @@ import {
   type EmbeddingIndexFile,
   type EmbeddingIndexIdentity,
   type EmbeddingProviderType,
+  EmbeddingIndexStoreIo,
 } from "./embedding-index-storage.js";
 export {
   EmbeddingIndexCapacityError,
@@ -170,12 +171,13 @@ export class EmbeddingFallback {
   private loadedFromDisk = false;
   private mutationQueue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly config: PluginConfig) {
+  constructor(private readonly config: PluginConfig, storeIo?: EmbeddingIndexStoreIo) {
     const stateDir = path.join(config.memoryDir, "state");
     this.store = new EmbeddingIndexFileStore(
       path.join(stateDir, "embeddings.json"),
       path.join(stateDir, "embeddings"),
       path.join(stateDir, "embedding-fallback-status.json"),
+      storeIo,
     );
   }
 

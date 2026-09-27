@@ -2686,7 +2686,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     filePath: string,
     content: string | Buffer,
     forceEncrypt = false,
-    secureOptions?: { aadRelPath?: string }
+    secureOptions?: { aadFilePath?: string }
   ): Promise<void> {
     assertNotOkfReservedBasename(filePath);
     const writeKey = this.resolveWriteKey(forceEncrypt);
@@ -2738,7 +2738,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.deletionRevisionStore.deleteManagedStorageFile(filePath, deletionMtimeMs);
   }
 
-  async readOfflineSyncFile(filePath: string, opts?: { aadRelPath?: string }): Promise<Buffer> {
+  async readOfflineSyncFile(filePath: string, opts?: { aadFilePath?: string }): Promise<Buffer> {
     const target = this.assertManagedStoragePath(filePath, "storage.readOfflineSyncFile");
     return readMaybeEncryptedFileBuffer(target, this._secureStoreKey, this.baseDir, opts);
   }
@@ -2900,7 +2900,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
   }
 
-  async writeOfflineSyncStagingFile(filePath: string, content: Buffer, opts?: { aadRelPath?: string }): Promise<void> {
+  async writeOfflineSyncStagingFile(filePath: string, content: Buffer, opts?: { aadFilePath?: string }): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncStagingFile");
     await this.writeStorageSecureFile(target, content, false, opts);
   }

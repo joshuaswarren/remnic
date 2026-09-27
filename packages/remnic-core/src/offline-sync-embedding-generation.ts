@@ -23,6 +23,7 @@ import {
   type EmbeddingIndexFile,
   EmbeddingIndexFileStore,
   type EmbeddingIndexIdentity,
+  type EmbeddingIndexStoreIo,
   EmbeddingIndexStorageError,
   parseEmbeddingIndexDocument,
   serializeEmbeddingShard,
@@ -141,6 +142,9 @@ async function pathExists(absPath: string): Promise<boolean> {
 }
 
 export interface EmbeddingGenerationTransactionIo {
+  /** Storage-backed local read: hydrates unchanged shards (metadata-only
+   * pulls skip their content) and decrypts secure-store files. */
+  readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   writeStagingFile?: (target: OfflineSyncFileStagingWriteTarget) => Promise<void>;
   readStagingFile?: (target: OfflineSyncFileStagingReadTarget) => Promise<Buffer>;
   deleteFile?: (target: OfflineSyncFileDeleteTarget) => Promise<void>;
@@ -156,7 +160,16 @@ export interface EmbeddingGenerationTransactionInput {
    * incoming generation is legacy-layout. Mutually exclusive with
    * `incomingShardPaths`. */
   incomingMarker: { path: string; buffer: Buffer } | null;
-  /** Verified incoming content by rel path. */
+  /** True when the incoming snapshot ALSO carries the legacy marker while
+   * shards form the generation (mixed remote): the per-file loop then writes
+   * the marker as the inert remote artifact, so this transaction must NOT
+   * remove a local marker. */
+  incomingMarkerPresent: boolean;
+  /** Incoming shard records (sha256 for local hydration of unchanged
+   * metadata-only pulls). */
+  incomingShardStates: ReadonlyMap<string, OfflineSyncFileState>;
+  /** Verified incoming content by rel path (absent for shards the metadata
+   * hydration skipped because the local hash already matches). */
   incomingBuffers: ReadonlyMap<string, Buffer>;
   io: EmbeddingGenerationTransactionIo;
   now: number;
@@ -197,8 +210,16 @@ export async function applyEmbeddingGenerationTransaction(
   );
 
   // 1. Close a pending rename gap (old generation restored) before staging:
-  //    the swap below must never build on a half-replaced generation.
-  await store.recoverIfInterrupted();
+  //    the swap below must never build on a half-replaced generation. The
+  //    fixed backup path is validated first: a planted symlink (or any
+  //    escape) must fail closed instead of being renamed into the published
+  //    position or removed through. The restored target is re-resolved so a
+  //    symlinked restoration cannot slip past the subsequent IO.
+  const backupRel = `${stateDirRel}/embeddings.pre-replace.tmp`;
+  await resolveSafeArchiveTarget(root, backupRel);
+  if (await store.recoverIfInterrupted()) {
+    await resolveSafeArchiveTarget(root, shardDirRel);
+  }
 
   // 2. Build the complete incoming generation (final rel path → plaintext
   //    bytes) and validate every document BEFORE touching local state.
@@ -222,9 +243,24 @@ export async function applyEmbeddingGenerationTransaction(
     }
   } else {
     for (const relPath of input.incomingShardPaths) {
-      const buffer = input.incomingBuffers.get(relPath);
+      let buffer = input.incomingBuffers.get(relPath);
       if (!buffer) {
-        throw new EmbeddingIndexStorageError(`missing incoming content for ${relPath}`);
+        // Metadata-only pulls skip content whose local hash already matches
+        // the incoming record: the LOCAL bytes ARE the incoming content, so
+        // read and hash-verify them instead of failing (codex round 5).
+        const state = input.incomingShardStates.get(relPath);
+        if (!state) {
+          throw new EmbeddingIndexStorageError(`missing incoming content for ${relPath}`);
+        }
+        const local = input.io.readFile
+          ? await input.io.readFile({ root: root.abs, path: relPath, filePath: await resolveSafeArchiveTarget(root, relPath) })
+          : await readFile(await resolveSafeArchiveTarget(root, relPath));
+        if (sha256Hex(local) !== state.sha256) {
+          throw new EmbeddingIndexStorageError(
+            `cannot hydrate unchanged embedding index shard ${relPath}: local digest does not match the incoming record; local generation preserved`,
+          );
+        }
+        buffer = local;
       }
       const read = parseEmbeddingIndexDocument(buffer.toString("utf-8"));
       if (read.outcome !== "ok") {
@@ -260,13 +296,14 @@ export async function applyEmbeddingGenerationTransaction(
     for (const [relPath, buffer] of published) {
       const stagedRel = `${stagingRel}/${path.basename(relPath)}`;
       const stagedAbs = await resolveSafeArchiveTarget(root, stagedRel);
+      const finalAbs = await resolveSafeArchiveTarget(root, relPath);
       if (io.writeStagingFile) {
         await io.writeStagingFile({
           root: root.abs,
           path: stagedRel,
           filePath: stagedAbs,
           content: buffer,
-          aadRelPath: relPath,
+          finalAadFilePath: finalAbs,
         });
       } else {
         await writeFile(stagedAbs, buffer, { mode: 0o600 });
@@ -283,7 +320,7 @@ export async function applyEmbeddingGenerationTransaction(
             root: root.abs,
             path: stagedRel,
             filePath: stagedAbs,
-            aadRelPath: relPath,
+            finalAadFilePath: await resolveSafeArchiveTarget(root, relPath),
           })
         : await readFile(stagedAbs);
       if (!staged.equals(buffer)) {
@@ -318,7 +355,7 @@ export async function applyEmbeddingGenerationTransaction(
     }
     const removedPaths = new Set<string>(localShardRels.filter((rel) => !published.has(rel)));
     let deleted = removedPaths.size;
-    if ((await pathExists(markerAbs)) && !input.incomingMarker) {
+    if ((await pathExists(markerAbs)) && !input.incomingMarker && !input.incomingMarkerPresent) {
       // A sharded incoming generation replaces the local legacy generation
       // wholesale: the demoted marker is stale bytes beside a published
       // directory that never reads it. Remove it through the same delete
@@ -433,3 +470,76 @@ export function isPathInOmittedEmbeddingGeneration(relPath: string, omittedDirs:
 }
 
 export type { EmbeddingIndexFile };
+
+import { matchesOfflineSyncDefaultExclude } from "./offline-sync-exclude-globs.js";
+import type { OfflineSyncDeletionRevision } from "./offline-sync.js";
+
+export interface PushEmbeddingGenerationState {
+  /** Generation dirs omitted by the push filters (snapshot header value). */
+  omittedDirs: string[];
+  /** All omitted member paths (walk skip set). */
+  omittedPaths: Set<string>;
+  /** Deletions with whole-generation suppression applied. */
+  deletions: OfflineSyncDeletionRevision[];
+}
+
+/**
+ * One-call push-side generation state for streaming snapshot builders: the
+ * whole-generation omission set (from user regexps, excludeFile, and default
+ * excludes) plus the deletion list with omitted-generation revisions
+ * suppressed — including revisions for members that are already absent, so a
+ * filtered generation can never be announced as deleted.
+ */
+export async function resolvePushEmbeddingGenerationState(options: {
+  rootAbs: string;
+  includeTranscripts: boolean;
+  userExcludeRegexps?: readonly RegExp[];
+  excludeFile?: OfflineSyncExcludeFile;
+  deletions: readonly OfflineSyncDeletionRevision[];
+}): Promise<PushEmbeddingGenerationState> {
+  const omission = await computeOmittedEmbeddingGenerationPaths({
+    rootAbs: options.rootAbs,
+    userExcludeRegexps: options.userExcludeRegexps,
+    excludeFile: options.excludeFile,
+    isExcludedRelPath: (relPath) =>
+      matchesOfflineSyncDefaultExclude(relPath) ||
+      Boolean(options.userExcludeRegexps?.some((re) => re.test(relPath))),
+  });
+  const omittedDirs = new Set(omission.omittedDirs);
+  const deletions = options.deletions.filter((deletion) => {
+    if (matchesOfflineSyncDefaultExclude(deletion.path)) return false;
+    if (options.userExcludeRegexps?.some((re) => re.test(deletion.path))) return false;
+    const membership = embeddingGenerationMembership(deletion.path);
+    if (membership && omittedDirs.has(membership.shardDir)) return false;
+    return true;
+  });
+  return { omittedDirs: omission.omittedDirs, omittedPaths: omission.omittedPaths, deletions };
+}
+
+
+interface StorageBackedIndexIoHost {
+  readOfflineSyncFile(filePath: string, opts?: { aadFilePath?: string }): Promise<Buffer>;
+  writeOfflineSyncStagingFile(
+    filePath: string,
+    content: Buffer,
+    opts?: { aadFilePath?: string },
+  ): Promise<void>;
+}
+
+/**
+ * Daemon wiring for the index store IO backed by a StorageManager:
+ * canonical-path secure reads/writes, so sync-published encrypted shards
+ * decrypt in the daemon and daemon-written shards decrypt on sync. Shard
+ * STAGING writes bind the FINAL published path.
+ */
+export function storageBackedIndexStoreIo(storage: StorageBackedIndexIoHost): EmbeddingIndexStoreIo {
+  return {
+    readUtf8: async (filePath) => (await storage.readOfflineSyncFile(filePath)).toString("utf-8"),
+    writeUtf8: (filePath, contents, opts) =>
+      storage.writeOfflineSyncStagingFile(
+        filePath,
+        Buffer.from(contents, "utf-8"),
+        opts?.finalAadFilePath === undefined ? undefined : { aadFilePath: opts.finalAadFilePath },
+      ),
+  };
+}

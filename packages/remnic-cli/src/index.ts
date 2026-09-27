@@ -6856,6 +6856,7 @@ interface OfflineSnapshotStreamHeader {
   createdAt: string;
   sourceId: string;
   includeTranscripts: boolean;
+  omittedEmbeddingGenerationDirs?: string[];
 }
 
 async function parseOfflineSnapshotStreamResponse(
@@ -6881,6 +6882,9 @@ async function parseOfflineSnapshotStreamResponse(
         createdAt: parsed.createdAt as string,
         sourceId: parsed.sourceId as string,
         includeTranscripts: parsed.includeTranscripts as boolean,
+        ...(Array.isArray(parsed.omittedEmbeddingGenerationDirs)
+          ? { omittedEmbeddingGenerationDirs: parsed.omittedEmbeddingGenerationDirs as string[] }
+          : {}),
       };
       return;
     }
@@ -6914,6 +6918,9 @@ async function parseOfflineSnapshotStreamResponse(
     sourceId: finalHeader.sourceId,
     includeTranscripts: finalHeader.includeTranscripts,
     files,
+    ...(finalHeader.omittedEmbeddingGenerationDirs
+      ? { omittedEmbeddingGenerationDirs: finalHeader.omittedEmbeddingGenerationDirs }
+      : {}),
   });
   return {
     ...(finalHeader.namespace ? { namespace: finalHeader.namespace } : {}),

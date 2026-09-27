@@ -289,7 +289,7 @@ export async function readMaybeEncryptedFileBuffer(
   filePath: string,
   key: Buffer | null,
   memoryDir?: string,
-  opts?: { aadRelPath?: string }
+  opts?: { aadFilePath?: string }
 ): Promise<Buffer> {
   const buf = await readFile(filePath);
   if (!isEncryptedFile(buf)) {
@@ -302,7 +302,7 @@ export async function readMaybeEncryptedFileBuffer(
       `secure-store is locked — cannot read encrypted file at ${filePath}. Run \`remnic secure-store unlock\` to decrypt.`
     );
   }
-  return decryptFileBodyForPath(buf, key, filePath, memoryDir, opts?.aadRelPath);
+  return decryptFileBodyForPath(buf, key, filePath, memoryDir, opts?.aadFilePath);
 }
 
 export async function readMaybeEncryptedFile(
@@ -325,16 +325,16 @@ export interface WriteMaybeEncryptedFileOptions {
    */
   atomic?: boolean;
   /**
-   * Canonical relative path to bind the ciphertext's AAD to INSTEAD of the
-   * physical `filePath`. Used by the offline-sync generation transaction:
-   * staged ciphertext physically lives under a staging directory but must
-   * decrypt at its FINAL published path after the staging directory is
-   * swapped into place by rename — a physical-path AAD would make the
-   * published file unreadable. The AAD still binds a validated canonical
-   * path, so relocation protections are preserved; only the staging→final
-   * swap is licensed. (issue #3148, round 4)
+   * ABSOLUTE final path whose canonical AAD (via {@link filePathAad})
+   * replaces the physical `filePath`'s. Used by the offline-sync generation
+   * transaction: staged ciphertext physically lives under a staging
+   * directory but must decrypt at its FINAL published path after the
+   * staging directory is swapped into place by rename. Deriving the AAD
+   * from the absolute final path through the SAME filePathAad logic as
+   * ordinary reads keeps write and read derivations identical on every
+   * platform (POSIX and Windows separators alike). (issue #3148, round 4/5)
    */
-  aadRelPath?: string;
+  aadFilePath?: string;
 }
 
 /**
@@ -354,12 +354,12 @@ export async function writeMaybeEncryptedFile(
   options: WriteMaybeEncryptedFileOptions = {},
   memoryDir?: string
 ): Promise<void> {
-  const { mode = 0o600, atomic = true, aadRelPath } = options;
+  const { mode = 0o600, atomic = true, aadFilePath } = options;
   await mkdir(path.dirname(filePath), { recursive: true });
 
   let data: Buffer | string;
   if (key !== null) {
-    const aad = aadRelPath !== undefined ? Buffer.from(aadRelPath, "utf8") : filePathAad(filePath, memoryDir);
+    const aad = aadFilePath !== undefined ? filePathAad(aadFilePath, memoryDir) : filePathAad(filePath, memoryDir);
     data = encryptFileBody(content, key, aad);
   } else {
     data = content;
@@ -670,11 +670,11 @@ function decryptFileBodyForPath(
   key: Buffer,
   filePath: string,
   memoryDir?: string,
-  aadRelPath?: string
+  aadFilePath?: string
 ): Buffer {
   // A canonical-AAD stage read (offline-sync generation transaction) binds
   // the FINAL published path, not the physical staging path.
-  const aad = aadRelPath !== undefined ? Buffer.from(aadRelPath, "utf8") : filePathAad(filePath, memoryDir);
+  const aad = aadFilePath !== undefined ? filePathAad(aadFilePath, memoryDir) : filePathAad(filePath, memoryDir);
   try {
     return decryptFileBody(buf, key, aad);
   } catch (err) {

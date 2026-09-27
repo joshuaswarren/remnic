@@ -24,6 +24,7 @@ import {
   type SafeArchiveRoot,
 } from "./transfer/fs-utils.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
+import { EmbeddingIndexStorageError } from "./embedding-index-storage.js";
 import { matchesOfflineSyncDefaultExclude } from "./offline-sync-exclude-globs.js";
 import {
   EMBEDDING_SHARD_DIR_BASENAME,
@@ -44,6 +45,7 @@ import {
   shouldPreferIncomingOfflineRuntimeFile,
 } from "./offline-sync-runtime-state.js";
 export { shouldPreferIncomingOfflineRuntimeFile } from "./offline-sync-runtime-state.js";
+export { computeOmittedEmbeddingGenerationPaths } from "./offline-sync-embedding-generation.js";
 export {
   compileOfflineSyncExcludeGlobs,
   globToRegExp,
@@ -213,17 +215,18 @@ export interface OfflineSyncFileWriteChunksTarget extends OfflineSyncFileTarget 
 
 export interface OfflineSyncFileStagingWriteTarget extends OfflineSyncFileWriteTarget {
   /**
-   * Canonical final rel path the staged ciphertext's AAD binds (secure-store
-   * deployments): the offline-sync embedding generation transaction stages
-   * under a staging dir and publishes by rename, so the ciphertext must
-   * decrypt at the FINAL path, not the physical staging path.
+   * ABSOLUTE final path whose canonical AAD the staged ciphertext binds
+   * (secure-store deployments): the offline-sync embedding generation
+   * transaction stages under a staging dir and publishes by rename, so the
+   * ciphertext must decrypt at the FINAL path. The AAD derives through the
+   * same filePathAad logic as ordinary reads (platform-consistent).
    */
-  aadRelPath?: string;
+  finalAadFilePath?: string;
 }
 
 export interface OfflineSyncFileStagingReadTarget extends OfflineSyncFileTarget {
-  /** See {@link OfflineSyncFileStagingWriteTarget.aadRelPath}. */
-  aadRelPath?: string;
+  /** See {@link OfflineSyncFileStagingWriteTarget.finalAadFilePath}. */
+  finalAadFilePath?: string;
 }
 
 export interface OfflineSyncFileContentChunk extends Omit<OfflineSyncFileState, "sha256"> {
@@ -443,6 +446,7 @@ export async function filterOfflineSyncDeletionRevisions(options: {
   deletions: readonly OfflineSyncDeletionRevision[];
   includeTranscripts?: boolean;
   userExcludeRegexps?: readonly RegExp[];
+  excludeFile?: OfflineSyncExcludeFile;
 }): Promise<OfflineSyncDeletionRevision[]> {
   const deletions = normalizeDeletionRevisions(options.deletions, "deletions");
   if (deletions === undefined) throw new Error("deletions must be an array");
@@ -456,14 +460,16 @@ export async function filterOfflineSyncDeletionRevisions(options: {
   const omission = await computeOmittedEmbeddingGenerationPaths({
     rootAbs: root.abs,
     userExcludeRegexps: options.userExcludeRegexps,
+    excludeFile: options.excludeFile,
     isExcludedRelPath: (relPath) =>
       shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps),
   });
+  const omittedDirs = new Set(omission.omittedDirs);
   const filtered: OfflineSyncDeletionRevision[] = [];
   for (const deletion of deletions) {
     if (
       shouldExcludePushRelPath(deletion.path, includeTranscripts, options.userExcludeRegexps) ||
-      omission.omittedPaths.has(deletion.path)
+      isDeletionInOmittedGeneration(deletion.path, omittedDirs)
     ) {
       continue;
     }
@@ -1589,6 +1595,19 @@ export async function applyOfflineSyncSnapshot(options: {
     }
   }
   const transactionResults: EmbeddingGenerationTransactionResult[] = [];
+  // Fail closed BEFORE any publication: custom storage IO (encrypted or
+  // otherwise) without the staging pair would make the generation transaction
+  // fall back to unencrypted raw writes — a plaintext downgrade of the staged
+  // generation. Callers must wire both staging hooks (the CLI does).
+  if (
+    generationDirs.size > 0 &&
+    (options.writeFile || options.readFile || options.readFileDigest || options.deleteFile) &&
+    !(options.writeStagingFile && options.readStagingFile)
+  ) {
+    throw new EmbeddingIndexStorageError(
+      "refusing to replace embedding generation: custom storage IO requires both writeStagingFile and readStagingFile hooks; unencrypted raw staging would plaintext-downgrade the index",
+    );
+  }
   for (const shardDir of generationDirs) {
     if (deferredGenerationDirs.has(shardDir)) continue;
     if (
@@ -1608,6 +1627,8 @@ export async function applyOfflineSyncSnapshot(options: {
         shardDirRel: shardDir,
         incomingShardPaths: [],
         incomingMarker: { path: markerRel, buffer: requiredBuffer(incomingBuffers, markerRel) },
+        incomingMarkerPresent: false,
+        incomingShardStates: new Map(),
         incomingBuffers,
         io: {
           writeStagingFile: options.writeStagingFile,
@@ -1625,8 +1646,17 @@ export async function applyOfflineSyncSnapshot(options: {
         .filter((relPath) => embeddingShardDirOf(relPath) === shardDir)
         .sort(),
       incomingMarker: null,
+      incomingMarkerPresent: Boolean(
+        incomingGenerations.legacyMarkerDirs.has(shardDir),
+      ),
+      incomingShardStates: new Map(
+        [...incomingMap.values()]
+          .filter((relPath) => embeddingShardDirOf(relPath.path) === shardDir)
+          .map((state) => [state.path, state]),
+      ),
       incomingBuffers,
       io: {
+        readFile: options.readFile,
         writeStagingFile: options.writeStagingFile,
         readStagingFile: options.readStagingFile,
         deleteFile: options.deleteFile,

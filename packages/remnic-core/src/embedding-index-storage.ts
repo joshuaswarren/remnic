@@ -15,7 +15,7 @@
  */
 import path from "node:path";
 import { constants as bufferConstants } from "node:buffer";
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { log } from "./logger.js";
 import { readEnvVar } from "./runtime/env.js";
 
@@ -312,12 +312,36 @@ function largestEntryId(entries: Record<string, EmbeddingIndexEntry>): string {
   return worstId;
 }
 
+/**
+ * Optional canonical secure-store IO for the daemon. When provided (both
+ * halves), file content is read/written through the SAME
+ * StorageManager-backed contract offline sync uses: canonical-path AAD,
+ * secure-key-aware, atomic. Shard STAGING writes carry the FINAL published
+ * path so the post-publish rename keeps the ciphertext decryptable; dirty
+ * shard, status, and legacy writes are their own canonical final path.
+ * When omitted, the store behaves exactly as before (raw plaintext fs).
+ * The diagnostics status file is intentionally ALWAYS plain: it holds no
+ * memory content (failure strings/counts only) and console_state reads it
+ * without unlocking the store.
+ */
+export interface EmbeddingIndexStoreIo {
+  readUtf8(filePath: string): Promise<string>;
+  writeUtf8(filePath: string, contents: string, opts?: { finalAadFilePath?: string }): Promise<void>;
+}
+
 export class EmbeddingIndexFileStore {
   constructor(
     private readonly indexPath: string,
     private readonly shardDir: string,
     private readonly statusPath: string,
-  ) {}
+    private readonly io?: EmbeddingIndexStoreIo,
+  ) {
+    if (io && (Boolean(io.readUtf8) !== Boolean(io.writeUtf8))) {
+      throw new EmbeddingIndexStorageError(
+        "embedding index store io requires both readUtf8 and writeUtf8; a half-wired io would mix encrypted and plaintext files",
+      );
+    }
+  }
 
   /** Legacy single-file layout path (public for error messages). */
   get legacyPath(): string {
@@ -353,6 +377,7 @@ export class EmbeddingIndexFileStore {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
         // The pointer exists but cannot be stat'ed — fail towards the
         // published generation so its readers surface the I/O error.
+        log.warn(`embedding index: shard dir stat failed (${err instanceof Error ? err.message : String(err)}); assuming sharded layout`);
         return "sharded";
       }
       if (await this.replacementBackupExists()) return "sharded";
@@ -381,6 +406,24 @@ export class EmbeddingIndexFileStore {
   }
 
   /**
+   * The fixed transaction backup is a path with well-known semantics; a
+   * planted symlink must never be restored into the published position (it
+   * would point the generation outside the memory dir) nor removed through
+   * as if it were the former generation. Symlinks are rejected outright.
+   */
+  private async assertBackupNotSymlink(backupPath: string): Promise<void> {
+    const info = await lstat(backupPath).catch((err) => {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw err;
+    });
+    if (info?.isSymbolicLink()) {
+      throw new EmbeddingIndexStorageError(
+        `embedding index replacement backup is a symlink; refusing to touch it: ${backupPath}`,
+      );
+    }
+  }
+
+  /**
    * Mutation-queue entry point: roll the fixed transaction backup back into
    * the published position after an interrupted replacement. Returns true
    * when a rollback happened. Only fires in the actual rename gap
@@ -397,10 +440,14 @@ export class EmbeddingIndexFileStore {
       await stat(this.shardDir);
       return false;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") return false;
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        log.warn(`embedding index: recovery skipped because shard dir stat failed: ${err instanceof Error ? err.message : String(err)}`);
+        return false;
+      }
     }
     const backupPath = replacementBackupPath(this.shardDir);
     if (!(await this.replacementBackupExists())) return false;
+    await this.assertBackupNotSymlink(backupPath);
     await rename(backupPath, this.shardDir);
     log.warn(
       `embedding index: recovered interrupted replacement; former generation restored from ${backupPath}`,
@@ -523,7 +570,9 @@ export class EmbeddingIndexFileStore {
     }
     let raw: string;
     try {
-      raw = await readFile(filePath, "utf-8");
+      raw = this.io
+        ? await this.io.readUtf8(filePath)
+        : await readFile(filePath, "utf-8");
     } catch (err) {
       return { outcome: "unreadable", reason: `read failed: ${err instanceof Error ? err.message : String(err)}` };
     }
@@ -696,9 +745,11 @@ export class EmbeddingIndexFileStore {
         body: serializeEmbeddingShard(index, shardIndex, entries, limit),
       }));
     for (const payload of payloads) {
+      const finalAadFilePath = path.join(this.shardDir, shardFileName(payload.shardIndex));
       await this.writeAtomicFile(
         path.join(stagingDir, shardFileName(payload.shardIndex)),
         payload.body,
+        { finalAadFilePath },
       );
     }
   }
@@ -719,6 +770,7 @@ export class EmbeddingIndexFileStore {
     // failure is non-fatal (the next replacement removes it) but must stay
     // visible.
     const backupPath = replacementBackupPath(this.shardDir);
+    await this.assertBackupNotSymlink(backupPath);
     await rm(backupPath, { recursive: true, force: true });
     let demoted = false;
     try {
@@ -766,9 +818,19 @@ export class EmbeddingIndexFileStore {
 
   /**
    * Temp-file + rename write. The temp name carries `.tmp-` so offline sync
-   * ignores in-flight files under `state/`.
+   * ignores in-flight files under `state/`. With a wired io, the write goes
+   * through the canonical secure-store contract instead, optionally binding
+   * the ciphertext to the FINAL published path (staged shards).
    */
-  private async writeAtomicFile(filePath: string, contents: string): Promise<void> {
+  private async writeAtomicFile(
+    filePath: string,
+    contents: string,
+    opts?: { finalAadFilePath?: string },
+  ): Promise<void> {
+    if (this.io) {
+      await this.io.writeUtf8(filePath, contents, opts?.finalAadFilePath === undefined ? undefined : { finalAadFilePath: opts.finalAadFilePath });
+      return;
+    }
     const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     try {
       await writeFile(tempPath, contents, "utf-8");

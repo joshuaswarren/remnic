@@ -171,10 +171,10 @@ export async function createOfflineStorageIo(
         chunkSize,
       }),
     writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
-    writeStagingFile: async ({ filePath, content, aadRelPath }) =>
-      storage.writeOfflineSyncStagingFile(filePath, content, aadRelPath === undefined ? undefined : { aadRelPath }),
-    readStagingFile: async ({ filePath, aadRelPath }) =>
-      storage.readOfflineSyncFile(filePath, aadRelPath === undefined ? undefined : { aadRelPath }),
+    writeStagingFile: async ({ filePath, content, finalAadFilePath }) =>
+      storage.writeOfflineSyncStagingFile(filePath, content, finalAadFilePath === undefined ? undefined : { aadFilePath: finalAadFilePath }),
+    readStagingFile: async ({ filePath, finalAadFilePath }) =>
+      storage.readOfflineSyncFile(filePath, finalAadFilePath === undefined ? undefined : { aadFilePath: finalAadFilePath }),
     writeFileChunks: async ({ filePath, chunks }) => storage.writeOfflineSyncFileChunks(filePath, chunks),
     deleteFile: async ({ filePath, mtimeMs }) => storage.deleteOfflineSyncFile(filePath, mtimeMs ?? null),
     recordDeletionRevision: async ({ filePath, mtimeMs }) =>
