@@ -1,6 +1,6 @@
 {
   "name": "remnic-workspace",
-  "version": "9.69.87",
+  "version": "9.69.88",
   "private": true,
   "packageManager": "pnpm@10.32.1",
   "type": "module",
