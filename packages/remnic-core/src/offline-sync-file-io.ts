@@ -76,3 +76,51 @@ export async function plainFileDigest(filePath: string): Promise<string> {
   }
   return hash.digest("hex");
 }
+
+import { lstat, utimes } from "node:fs/promises";
+import { isCensusMtimeMs } from "./census-validation.js";
+import { resolveSafeArchiveTarget, type SafeArchiveRoot } from "./transfer/fs-utils.js";
+
+/** Sync-internal directory spooling partial uploads and coordination state. */
+export const SYNC_INTERNAL_DIR = ".offline-sync";
+
+export const OFFLINE_SYNC_FAST_BASE_MTIME_TOLERANCE_MS = 1_000;
+
+export function assertNonNegativeFinite(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${field} must be a non-negative finite number`);
+  }
+  return value;
+}
+
+export function assertOfflineSyncMtimeMs(value: unknown, field: string): number {
+  const mtimeMs = assertNonNegativeFinite(value, field);
+  if (!isCensusMtimeMs(mtimeMs)) {
+    throw new Error(`${field} must be within JavaScript Date range`);
+  }
+  return mtimeMs;
+}
+
+export async function setSafeFileMtime(
+  root: SafeArchiveRoot,
+  relPath: string,
+  mtimeMs: number | undefined,
+): Promise<boolean> {
+  if (mtimeMs === undefined) return true;
+  const target = await resolveSafeArchiveTarget(root, relPath);
+  const targetStat = await lstat(target).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (!targetStat) return false;
+  if (targetStat.isSymbolicLink()) {
+    throw new Error(`offline sync target is a symlink: ${relPath}`);
+  }
+  const targetMtimeMs = assertOfflineSyncMtimeMs(mtimeMs, "mtimeMs");
+  if (Math.abs(targetStat.mtimeMs - targetMtimeMs) <= OFFLINE_SYNC_FAST_BASE_MTIME_TOLERANCE_MS) {
+    return true;
+  }
+  const mtime = new Date(targetMtimeMs);
+  await utimes(target, mtime, mtime);
+  return true;
+}

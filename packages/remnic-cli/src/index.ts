@@ -8694,6 +8694,8 @@ export async function runOfflineSyncOnce(options: {
       readFile: storageIo.readFile,
       readFileDigest: storageIo.readFileDigest,
       writeFile: storageIo.writeFile,
+      writeStagingFile: storageIo.writeStagingFile,
+      readStagingFile: storageIo.readStagingFile,
       deleteFile: storageIo.deleteFile,
       recordDeletionRevision: storageIo.recordDeletionRevision,
     });
@@ -8741,6 +8743,8 @@ export async function runOfflineSyncOnce(options: {
         readFile: storageIo.readFile,
         readFileDigest: storageIo.readFileDigest,
         writeFile: storageIo.writeFile,
+        writeStagingFile: storageIo.writeStagingFile,
+        readStagingFile: storageIo.readStagingFile,
         deleteFile: storageIo.deleteFile,
         recordDeletionRevision: storageIo.recordDeletionRevision,
       });
@@ -9017,6 +9021,8 @@ Environment fallbacks:
       readFile: storageIo.readFile,
       readFileDigest: storageIo.readFileDigest,
       writeFile: storageIo.writeFile,
+      writeStagingFile: storageIo.writeStagingFile,
+      readStagingFile: storageIo.readStagingFile,
       deleteFile: storageIo.deleteFile,
       recordDeletionRevision: storageIo.recordDeletionRevision,
     });

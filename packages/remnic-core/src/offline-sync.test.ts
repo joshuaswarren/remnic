@@ -397,27 +397,46 @@ test("offline sync applies shard generations wholesale: base-unchanged locally-m
     // Local: generation drifted since the shared base + a local-only shard
     // + an unrelated namespace shard that must stay local-authoritative.
     await write(localRoot, "facts/a.md", "alpha");
-    await write(localRoot, "state/embeddings/shard-0000.json", "local modified 0000");
+    await write(localRoot, "state/embeddings/shard-0000.json", JSON.stringify({
+      version: 1, provider: "openai", model: "local-drift", entries: {},
+    }));
     await write(localRoot, "state/embeddings/shard-0050.json", "local only extra");
     await write(localRoot, "namespaces/team/state/embeddings/shard-0009.json", "team local");
 
-    // Remote (incoming) generation: base-unchanged 0000 + new 0001.
+    // Remote generation: base-unchanged 0000 + new 0001.
     await write(remoteRoot, "facts/a.md", "alpha");
-    await write(remoteRoot, "state/embeddings/shard-0000.json", "base unchanged 0000");
-    await write(remoteRoot, "state/embeddings/shard-0001.json", "new 0001");
+    await write(remoteRoot, "state/embeddings/shard-0000.json", JSON.stringify({
+      version: 1, provider: "openai", model: "base", entries: {},
+    }));
 
+    // The shared base is REQUIRED for the base-unchanged shortcut below
+    // (CodeRabbit round 4: supply the base so the branch is really tested).
+    const baseSnapshot = await buildOfflineSyncSnapshot({
+      root: remoteRoot,
+      sourceId: "remote",
+      includeContent: true,
+    });
+    await write(remoteRoot, "state/embeddings/shard-0001.json", JSON.stringify({
+      version: 1, provider: "openai", model: "base", entries: {
+        added: { path: "memories/added.md", vector: [1] },
+      },
+    }));
     const snapshot = await buildOfflineSyncSnapshot({
       root: remoteRoot,
       sourceId: "remote",
       includeContent: true,
     });
-    const result = await applyOfflineSyncSnapshot({ root: localRoot, snapshot });
+    const result = await applyOfflineSyncSnapshot({
+      root: localRoot,
+      snapshot,
+      baseFiles: baseSnapshot.files,
+    });
 
     // Base-unchanged-but-locally-modified same-path shard: the incoming
     // generation wins (no locally-modified preservation inside a replaced
     // generation).
-    assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0000.json"), "base unchanged 0000");
-    assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0001.json"), "new 0001");
+    assert.equal(await readUtf8(localRoot, "state/embeddings/shard-0000.json"), await readUtf8(remoteRoot, "state/embeddings/shard-0000.json"));
+    assert.ok((await readUtf8(localRoot, "state/embeddings/shard-0001.json")).includes("added"));
     // Local-only shard inside the replaced generation is removed.
     const removedExists = await exists(localRoot, "state/embeddings/shard-0050.json");
     assert.equal(removedExists, false);
@@ -559,7 +578,7 @@ test("offline sync includes durable runtime state and excludes only transient sy
     await write(root, "state/buffer-surprise-ledger.jsonl", "surprise");
     await write(root, "state/buffer.json", "buffer");
     await write(root, "state/buffer.json.tmp-123-456", "tmp");
-    await write(root, "state/embeddings.json", "embeddings");
+    await write(root, "state/embeddings.json", '{"version":1,"provider":"openai","model":"m","entries":{}}');
     await write(root, "state/entity-mention-index.json", "entities");
     await write(root, "state/index_tags.json", "tags");
     await write(root, "state/index_time.json", "time");

@@ -26,6 +26,19 @@ import {
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { matchesOfflineSyncDefaultExclude } from "./offline-sync-exclude-globs.js";
 import {
+  EMBEDDING_SHARD_DIR_BASENAME,
+  applyEmbeddingGenerationTransaction,
+  computeOmittedEmbeddingGenerationPaths,
+  detectIncomingEmbeddingGenerations,
+  embeddingGenerationMembership,
+  embeddingMarkerDirOf,
+  embeddingShardDirOf,
+  isEmbeddingGenerationDirPath,
+  isPathInOmittedEmbeddingGeneration,
+  type EmbeddingGenerationTransactionIo,
+  type EmbeddingGenerationTransactionResult,
+} from "./offline-sync-embedding-generation.js";
+import {
   isCanonicalRuntimeStatePath,
   shouldDeleteAbsentIncomingOfflineRuntimeFile,
   shouldPreferIncomingOfflineRuntimeFile,
@@ -44,8 +57,21 @@ import {
   type OfflineSyncExcludeFile,
   type OfflineSyncFileTarget,
   plainFileDigest,
+  SYNC_INTERNAL_DIR,
+  setSafeFileMtime,
+  assertNonNegativeFinite,
+  assertOfflineSyncMtimeMs,
+  OFFLINE_SYNC_FAST_BASE_MTIME_TOLERANCE_MS,
 } from "./offline-sync-file-io.js";
-import { CENSUS_MAX_MTIME_MS, isCensusMtimeMs, isSha256Hex } from "./census-validation.js";
+import { CENSUS_MAX_MTIME_MS, isSha256Hex } from "./census-validation.js";
+import {
+  cleanupOfflineUpload,
+  digestOfflineUploadStagingContent,
+  pruneOfflineUploadStaging,
+  writeOfflineUploadChunk,
+  writeSafeFileFromUpload,
+  hashText,
+} from "./offline-sync-upload-staging.js";
 export type { OfflineSyncExcludeFile, OfflineSyncFileTarget } from "./offline-sync-file-io.js";
 
 export const OFFLINE_SYNC_SNAPSHOT_FORMAT = "remnic.offline-sync.snapshot.v1";
@@ -87,6 +113,14 @@ export interface OfflineSyncSnapshot {
   includeTranscripts: boolean;
   files: OfflineSyncFileRecord[];
   deletions?: OfflineSyncDeletionRevision[];
+  /**
+   * Embedding generation dirs whose on-disk members were ALL omitted from
+   * `files` because a push filter excluded at least one member (PR #3148
+   * round 4). Their absence here is NOT a delete instruction: a receiver
+   * keeps its local copy and its base entries until the generation is
+   * pushed unfiltered or genuinely deleted with deletion metadata.
+   */
+  omittedEmbeddingGenerationDirs?: string[];
 }
 
 export type OfflineSyncChange =
@@ -177,7 +211,20 @@ export interface OfflineSyncFileWriteChunksTarget extends OfflineSyncFileTarget 
   chunks: AsyncIterable<Buffer>;
 }
 
-export interface OfflineSyncFileStagingWriteTarget extends OfflineSyncFileWriteTarget {}
+export interface OfflineSyncFileStagingWriteTarget extends OfflineSyncFileWriteTarget {
+  /**
+   * Canonical final rel path the staged ciphertext's AAD binds (secure-store
+   * deployments): the offline-sync embedding generation transaction stages
+   * under a staging dir and publishes by rename, so the ciphertext must
+   * decrypt at the FINAL path, not the physical staging path.
+   */
+  aadRelPath?: string;
+}
+
+export interface OfflineSyncFileStagingReadTarget extends OfflineSyncFileTarget {
+  /** See {@link OfflineSyncFileStagingWriteTarget.aadRelPath}. */
+  aadRelPath?: string;
+}
 
 export interface OfflineSyncFileContentChunk extends Omit<OfflineSyncFileState, "sha256"> {
   sha256?: string;
@@ -216,9 +263,6 @@ interface OfflineSyncFileRecordOptions {
   signal?: AbortSignal;
 }
 
-const SYNC_INTERNAL_DIR = ".offline-sync";
-const OFFLINE_SYNC_UPLOAD_STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const OFFLINE_SYNC_FAST_BASE_MTIME_TOLERANCE_MS = 1_000;
 const OFFLINE_SYNC_FAST_BASE_CTIME_TOLERANCE_MS = 1;
 const EXCLUDED_FILE_NAMES = new Set([
   ".sync-state.json",
@@ -240,9 +284,6 @@ const EXCLUDED_FILE_PREFIXES = [
  * matches everything under `dir/` at any depth.
  */
 
-function hashText(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
 
 function sha256Buffer(buffer: Buffer): { sha256: string; bytes: number } {
   return sha256Bytes(buffer);
@@ -276,20 +317,7 @@ function assertNonNegativeInteger(value: unknown, field: string): number {
   return value;
 }
 
-function assertNonNegativeFinite(value: unknown, field: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw new Error(`${field} must be a non-negative finite number`);
-  }
-  return value;
-}
 
-function assertOfflineSyncMtimeMs(value: unknown, field: string): number {
-  const mtimeMs = assertNonNegativeFinite(value, field);
-  if (!isCensusMtimeMs(mtimeMs)) {
-    throw new Error(`${field} must be within JavaScript Date range`);
-  }
-  return mtimeMs;
-}
 
 function assertBoolean(value: unknown, field: string): boolean {
   if (typeof value !== "boolean") {
@@ -376,6 +404,10 @@ function snapshotBuilderDeletions(options: {
   includeTranscripts: boolean;
   excludeNodeLocalState?: boolean;
   userExcludeRegexps?: readonly RegExp[];
+  /** Generation dirs omitted by the push enumeration (PR #3148): revisions
+   * for ANY member — including already-absent ones — are suppressed, so a
+   * filtered generation can never be announced as deleted. */
+  omittedGenerationDirs?: ReadonlySet<string>;
 }): OfflineSyncDeletionRevision[] | undefined {
   const deletions = normalizeDeletionRevisions(options.deletions, "deletions");
   if (deletions === undefined) return undefined;
@@ -387,6 +419,7 @@ function snapshotBuilderDeletions(options: {
   return deletions.filter((deletion) =>
     (scopedPaths === undefined || scopedPaths.has(deletion.path.toLowerCase())) &&
     !presentPaths.has(deletion.path.toLowerCase()) &&
+    !isDeletionInOmittedGeneration(deletion.path, options.omittedGenerationDirs) &&
     !(options.excludeNodeLocalState === false
       ? shouldExcludeRelPath(deletion.path, options.includeTranscripts)
       : shouldExcludePushRelPath(
@@ -394,6 +427,15 @@ function snapshotBuilderDeletions(options: {
           options.includeTranscripts,
           options.userExcludeRegexps,
         )));
+}
+
+function isDeletionInOmittedGeneration(
+  relPath: string,
+  omittedGenerationDirs: ReadonlySet<string> | undefined,
+): boolean {
+  if (!omittedGenerationDirs || omittedGenerationDirs.size === 0) return false;
+  const membership = embeddingGenerationMembership(relPath);
+  return membership !== null && omittedGenerationDirs.has(membership.shardDir);
 }
 
 export async function filterOfflineSyncDeletionRevisions(options: {
@@ -411,9 +453,18 @@ export async function filterOfflineSyncDeletionRevisions(options: {
     "root",
   );
   const includeTranscripts = options.includeTranscripts !== false;
+  const omission = await computeOmittedEmbeddingGenerationPaths({
+    rootAbs: root.abs,
+    userExcludeRegexps: options.userExcludeRegexps,
+    isExcludedRelPath: (relPath) =>
+      shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps),
+  });
   const filtered: OfflineSyncDeletionRevision[] = [];
   for (const deletion of deletions) {
-    if (shouldExcludePushRelPath(deletion.path, includeTranscripts, options.userExcludeRegexps)) {
+    if (
+      shouldExcludePushRelPath(deletion.path, includeTranscripts, options.userExcludeRegexps) ||
+      omission.omittedPaths.has(deletion.path)
+    ) {
       continue;
     }
     const filePath = path.join(root.abs, ...deletion.path.split("/"));
@@ -472,6 +523,26 @@ export function normalizeOfflineSyncSnapshot(
   if (excludedPath) {
     throw new Error(`offline sync snapshot contains excluded path: ${excludedPath}`);
   }
+  let omittedEmbeddingGenerationDirs: string[] | undefined;
+  if (obj.omittedEmbeddingGenerationDirs !== undefined) {
+    if (!Array.isArray(obj.omittedEmbeddingGenerationDirs)) {
+      throw new Error("offline sync snapshot omittedEmbeddingGenerationDirs must be an array");
+    }
+    const seenDirs = new Set<string>();
+    for (const [index, entry] of obj.omittedEmbeddingGenerationDirs.entries()) {
+      if (
+        typeof entry !== "string" ||
+        !isEmbeddingGenerationDirPath(entry) ||
+        seenDirs.has(entry)
+      ) {
+        throw new Error(
+          `omittedEmbeddingGenerationDirs[${index}] must be a unique canonical embeddings generation dir`,
+        );
+      }
+      seenDirs.add(entry);
+    }
+    omittedEmbeddingGenerationDirs = [...seenDirs].sort((left, right) => left.localeCompare(right));
+  }
   return {
     format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
     schemaVersion: 1,
@@ -480,6 +551,7 @@ export function normalizeOfflineSyncSnapshot(
     includeTranscripts,
     files,
     ...(deletions === undefined ? {} : { deletions }),
+    ...(omittedEmbeddingGenerationDirs === undefined ? {} : { omittedEmbeddingGenerationDirs }),
   };
 }
 
@@ -735,6 +807,13 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
   excludeFile?: OfflineSyncExcludeFile;
   userExcludeRegexps?: readonly RegExp[];
   /**
+   * Precomputed whole-generation omission set (PR #3148 round 4): paths the
+   * walk must skip because their embedding generation lost ANY member to a
+   * push filter. When omitted and push excludes are active, the set is
+   * computed here so streaming census consumers get the same semantics.
+   */
+  skipEmbeddingGenerationPaths?: ReadonlySet<string>;
+  /**
    * When false, enumeration uses only the legacy structural excludes —
    * the apply/pull-side view of local files. Push-side callers keep the
    * default (true): built-in node-local state excludes + user excludes.
@@ -748,6 +827,17 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
   const rootAbs = path.resolve(options.root);
   const root = await prepareSafeArchiveRoot(rootAbs, "iterateOfflineSyncSnapshotFileRecords", "root");
   const includeTranscripts = options.includeTranscripts !== false;
+  const pushExcludes = options.excludeNodeLocalState !== false;
+  const skipGenerationPaths = options.skipEmbeddingGenerationPaths ??
+    (pushExcludes
+      ? (await computeOmittedEmbeddingGenerationPaths({
+          rootAbs: root.abs,
+          userExcludeRegexps: options.userExcludeRegexps,
+          excludeFile: options.excludeFile,
+          isExcludedRelPath: (relPath) =>
+            shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps),
+        })).omittedPaths
+      : undefined);
 
   async function* walk(dirAbs: string): AsyncIterable<OfflineSyncFileRecord> {
     throwIfOfflineSyncAborted(options.signal);
@@ -761,6 +851,7 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
           ? shouldExcludeRelPath(relPosix, includeTranscripts)
           : shouldExcludePushRelPath(relPosix, includeTranscripts, options.userExcludeRegexps)
       ) continue;
+      if (skipGenerationPaths?.has(relPosix)) continue;
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
         yield* walk(abs);
@@ -810,8 +901,21 @@ export async function buildOfflineSyncSnapshot(options: {
 }): Promise<OfflineSyncSnapshot> {
   throwIfOfflineSyncAborted(options.signal);
   const includeTranscripts = options.includeTranscripts !== false;
+  const pushExcludes = options.excludeNodeLocalState !== false;
+  const omission = pushExcludes
+    ? await computeOmittedEmbeddingGenerationPaths({
+        rootAbs: path.resolve(options.root),
+        userExcludeRegexps: options.userExcludeRegexps,
+        excludeFile: options.excludeFile,
+        isExcludedRelPath: (relPath) =>
+          shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps),
+      })
+    : undefined;
   const files: OfflineSyncFileRecord[] = [];
-  for await (const file of iterateOfflineSyncSnapshotFileRecords(options)) files.push(file);
+  for await (const file of iterateOfflineSyncSnapshotFileRecords({
+    ...options,
+    skipEmbeddingGenerationPaths: omission?.omittedPaths,
+  })) files.push(file);
   throwIfOfflineSyncAborted(options.signal);
 
   const sortedFiles = files.sort(compareByPath);
@@ -821,6 +925,9 @@ export async function buildOfflineSyncSnapshot(options: {
     includeTranscripts,
     excludeNodeLocalState: options.excludeNodeLocalState,
     userExcludeRegexps: options.userExcludeRegexps,
+    omittedGenerationDirs: omission && omission.omittedDirs.length > 0
+      ? new Set(omission.omittedDirs)
+      : undefined,
   });
   return {
     format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
@@ -830,6 +937,9 @@ export async function buildOfflineSyncSnapshot(options: {
     includeTranscripts,
     files: sortedFiles,
     ...(deletions === undefined ? {} : { deletions }),
+    ...(omission && omission.omittedDirs.length > 0
+      ? { omittedEmbeddingGenerationDirs: omission.omittedDirs }
+      : {}),
   };
 }
 
@@ -868,6 +978,16 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
   const baseCapturedAtMs = rawBaseCapturedAtMs !== undefined && Number.isFinite(rawBaseCapturedAtMs)
     ? rawBaseCapturedAtMs
     : null;
+  const pushExcludes = options.excludeNodeLocalState !== false;
+  const omission = pushExcludes
+    ? await computeOmittedEmbeddingGenerationPaths({
+        rootAbs: root.abs,
+        userExcludeRegexps: options.userExcludeRegexps,
+        excludeFile: options.excludeFile,
+        isExcludedRelPath: (relPath) =>
+          shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps),
+      })
+    : undefined;
   const files: OfflineSyncFileRecord[] = [];
 
   async function walk(dirAbs: string): Promise<void> {
@@ -883,6 +1003,7 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
           ? shouldExcludeRelPath(relPosix, includeTranscripts)
           : shouldExcludePushRelPath(relPosix, includeTranscripts, options.userExcludeRegexps)
       ) continue;
+      if (omission?.omittedPaths.has(relPosix)) continue;
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
         await walk(abs);
@@ -927,6 +1048,9 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
     includeTranscripts,
     excludeNodeLocalState: options.excludeNodeLocalState,
     userExcludeRegexps: options.userExcludeRegexps,
+    omittedGenerationDirs: omission && omission.omittedDirs.length > 0
+      ? new Set(omission.omittedDirs)
+      : undefined,
   });
   return {
     format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
@@ -936,6 +1060,9 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
     includeTranscripts,
     files: sortedFiles,
     ...(deletions === undefined ? {} : { deletions }),
+    ...(omission && omission.omittedDirs.length > 0
+      ? { omittedEmbeddingGenerationDirs: omission.omittedDirs }
+      : {}),
   };
 }
 
@@ -1379,6 +1506,8 @@ export async function applyOfflineSyncSnapshot(options: {
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
   writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
+  writeStagingFile?: (target: OfflineSyncFileStagingWriteTarget) => Promise<void>;
+  readStagingFile?: (target: OfflineSyncFileStagingReadTarget) => Promise<Buffer>;
   deleteFile?: (target: OfflineSyncFileDeleteTarget) => Promise<void>;
   recordDeletionRevision?: OfflineSyncRecordDeletionRevision;
 }): Promise<OfflineSyncApplySnapshotResult> {
@@ -1408,11 +1537,14 @@ export async function applyOfflineSyncSnapshot(options: {
       })).files;
   const currentMap = byPath(currentFiles);
   const deferredPaths = new Set(options.deferredPaths ?? []);
+  const omittedGenerationDirs = new Set(snapshot.omittedEmbeddingGenerationDirs ?? []);
   if (deletionMtimeByPath && options.recordDeletionRevision) {
     for (const [relPath, mtimeMs] of deletionMtimeByPath) {
       if (
         currentMap.has(relPath) ||
         deferredPaths.has(relPath) ||
+        (omittedGenerationDirs.size > 0 &&
+          isPathInOmittedEmbeddingGeneration(relPath, omittedGenerationDirs)) ||
         matchesOfflineSyncDefaultExclude(relPath)
       ) {
         continue;
@@ -1438,31 +1570,79 @@ export async function applyOfflineSyncSnapshot(options: {
     return requiredBuffer(incomingBuffers, relPath);
   };
 
-  // Sharded embedding indexes travel as ONE generation (issue #3148, codex
-  // P1): when the incoming snapshot carries any shard for an embeddings
-  // directory, that set is the whole generation, so local-only shards in
-  // the same directory are stale leftovers of an older generation and must
-  // be deleted instead of merging into the incoming set.
-  const incomingShardDirs = new Set<string>();
-  for (const relPath of incomingMap.keys()) {
-    const parts = relPath.split("/");
-    if (
-      parts.length >= 2 &&
-      parts[parts.length - 2] === "embeddings" &&
-      /^shard-\d{4}\.json$/.test(parts[parts.length - 1] ?? "")
-    ) {
-      incomingShardDirs.add(parts.slice(0, -1).join("/"));
+  // Embedding generations travel and replace as ONE unit (issue #3148).
+  // Incoming shards form the generation; an incoming legacy marker is a
+  // complete generation too (converted to the sharded layout, preserving the
+  // one-way migration). A deferral anywhere in a generation defers the WHOLE
+  // generation; a generation the push omitted by filter is announced by the
+  // snapshot and its absence is never a delete instruction.
+  const incomingGenerations = detectIncomingEmbeddingGenerations(incomingMap.keys());
+  const generationDirs = new Set([
+    ...incomingGenerations.shardDirs,
+    ...incomingGenerations.legacyMarkerDirs,
+  ]);
+  const deferredGenerationDirs = new Set<string>();
+  for (const deferredPath of deferredPaths) {
+    const membership = embeddingGenerationMembership(deferredPath);
+    if (membership && generationDirs.has(membership.shardDir)) {
+      deferredGenerationDirs.add(membership.shardDir);
     }
   }
-  const inIncomingShardGenerationDir = (relPath: string): boolean => {
-    if (incomingShardDirs.size === 0) return false;
-    const parts = relPath.split("/");
-    return (
-      parts.length >= 2 &&
-      parts[parts.length - 2] === "embeddings" &&
-      incomingShardDirs.has(parts.slice(0, -1).join("/"))
-    );
-  };
+  const transactionResults: EmbeddingGenerationTransactionResult[] = [];
+  for (const shardDir of generationDirs) {
+    if (deferredGenerationDirs.has(shardDir)) continue;
+    if (
+      incomingGenerations.legacyMarkerDirs.has(shardDir) &&
+      !incomingGenerations.shardDirs.has(shardDir)
+    ) {
+      // Cross-layout: an incoming legacy marker replaces a local sharded
+      // generation as a whole (codex round 4). When shards are ALSO
+      // incoming, the sharded set is the generation and the marker is
+      // written as an inert artifact by the per-file loop below.
+      const markerRel = [...incomingMap.keys()].find(
+        (relPath) => embeddingMarkerDirOf(relPath) === shardDir.slice(0, -`/${EMBEDDING_SHARD_DIR_BASENAME}`.length),
+      );
+      if (!markerRel) continue;
+      transactionResults.push(await applyEmbeddingGenerationTransaction({
+        root,
+        shardDirRel: shardDir,
+        incomingShardPaths: [],
+        incomingMarker: { path: markerRel, buffer: requiredBuffer(incomingBuffers, markerRel) },
+        incomingBuffers,
+        io: {
+          writeStagingFile: options.writeStagingFile,
+          readStagingFile: options.readStagingFile,
+          deleteFile: options.deleteFile,
+        },
+        now: Date.now(),
+      }));
+      continue;
+    }
+    transactionResults.push(await applyEmbeddingGenerationTransaction({
+      root,
+      shardDirRel: shardDir,
+      incomingShardPaths: [...incomingMap.keys()]
+        .filter((relPath) => embeddingShardDirOf(relPath) === shardDir)
+        .sort(),
+      incomingMarker: null,
+      incomingBuffers,
+      io: {
+        writeStagingFile: options.writeStagingFile,
+        readStagingFile: options.readStagingFile,
+        deleteFile: options.deleteFile,
+      },
+      now: Date.now(),
+    }));
+  }
+  const transactionHandled = new Map<string, OfflineSyncFileState | null>();
+  let generationUpserted = 0;
+  let generationDeleted = 0;
+  for (const result of transactionResults) {
+    generationUpserted += result.upserted;
+    generationDeleted += result.deleted;
+    for (const [relPath, state] of result.writtenStates) transactionHandled.set(relPath, state);
+    for (const relPath of result.removedPaths) transactionHandled.set(relPath, null);
+  }
 
   for (const relPath of unionPaths(baseMap, incomingMap, currentMap)) {
     const base = baseMap.get(relPath);
@@ -1470,6 +1650,26 @@ export async function applyOfflineSyncSnapshot(options: {
     const currentEntry = currentMap.get(relPath);
 
     if (deferredPaths.has(relPath)) {
+      if (base) nextBase.set(relPath, base);
+      else nextBase.delete(relPath);
+      skipped += 1;
+      continue;
+    }
+
+    // The generation transaction already published or removed this path;
+    // its counters and nextBase bookkeeping were applied above.
+    if (transactionHandled.has(relPath)) {
+      const state = transactionHandled.get(relPath);
+      if (state) nextBase.set(relPath, state);
+      else nextBase.delete(relPath);
+      continue;
+    }
+
+    // A deferral anywhere in a generation defers the WHOLE generation: no
+    // partial replacement in either direction, local files and base entries
+    // stay exactly as they are.
+    const membership = embeddingGenerationMembership(relPath);
+    if (membership && deferredGenerationDirs.has(membership.shardDir)) {
       if (base) nextBase.set(relPath, base);
       else nextBase.delete(relPath);
       skipped += 1;
@@ -1488,10 +1688,13 @@ export async function applyOfflineSyncSnapshot(options: {
         skipped += 1;
         continue;
       }
+      // Remote unchanged from the shared base while the local file drifted:
+      // keep the local copy (no content is needed to make that decision).
+      // Members of a replaced generation never reach this branch — the
+      // generation transaction or the deferral guard handled them above.
       if (
         shouldPreferIncomingOfflineRuntimeFile(relPath) &&
-        currentEntry && base && incoming.sha256 === base.sha256 &&
-        !inIncomingShardGenerationDir(relPath)
+        currentEntry && base && incoming.sha256 === base.sha256
       ) {
         nextBase.set(relPath, base);
         skipped += 1;
@@ -1575,6 +1778,18 @@ export async function applyOfflineSyncSnapshot(options: {
     }
     if (
       shouldPreferIncomingOfflineRuntimeFile(relPath) &&
+      membership !== null && omittedGenerationDirs.has(membership.shardDir)
+    ) {
+      // The push omitted this whole generation because a filter excluded at
+      // least one member (snapshot.omittedEmbeddingGenerationDirs): absence
+      // is NOT a deletion — keep the local generation and its base entries
+      // until it is pushed unfiltered or deleted with deletion metadata.
+      pendingLocal += 1;
+      skipped += 1;
+      continue;
+    }
+    if (
+      shouldPreferIncomingOfflineRuntimeFile(relPath) &&
       (base || shouldDeleteAbsentIncomingOfflineRuntimeFile(relPath))
     ) {
       await deleteSafeFile(
@@ -1585,30 +1800,6 @@ export async function applyOfflineSyncSnapshot(options: {
       );
       nextBase.delete(relPath);
       deleted += 1;
-      continue;
-    }
-    if (
-      shouldPreferIncomingOfflineRuntimeFile(relPath) &&
-      incomingShardDirs.size > 0
-    ) {
-      const parts = relPath.split("/");
-      const parentDir = parts.slice(0, -1).join("/");
-      if (incomingShardDirs.has(parentDir)) {
-        // Local-only shard inside a directory whose generation the incoming
-        // snapshot replaces: keeping it would merge a stale generation into
-        // the incoming one (issue #3148, codex P1).
-        await deleteSafeFile(
-          root,
-          relPath,
-          options.deleteFile,
-          deletionMtimeByPath?.get(relPath),
-        );
-        nextBase.delete(relPath);
-        deleted += 1;
-        continue;
-      }
-      pendingLocal += 1;
-      skipped += 1;
       continue;
     }
     if (shouldPreferIncomingOfflineRuntimeFile(relPath)) {
@@ -1642,8 +1833,8 @@ export async function applyOfflineSyncSnapshot(options: {
   }
 
   return {
-    upserted,
-    deleted,
+    upserted: upserted + generationUpserted,
+    deleted: deleted + generationDeleted,
     skipped,
     pendingLocal,
     conflicts,
@@ -1894,29 +2085,6 @@ async function writeSafeFile(
   }
 }
 
-async function setSafeFileMtime(
-  root: SafeArchiveRoot,
-  relPath: string,
-  mtimeMs: number | undefined,
-): Promise<boolean> {
-  if (mtimeMs === undefined) return true;
-  const target = await resolveSafeArchiveTarget(root, relPath);
-  const targetStat = await lstat(target).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  });
-  if (!targetStat) return false;
-  if (targetStat.isSymbolicLink()) {
-    throw new Error(`offline sync target is a symlink: ${relPath}`);
-  }
-  const targetMtimeMs = assertOfflineSyncMtimeMs(mtimeMs, "mtimeMs");
-  if (Math.abs(targetStat.mtimeMs - targetMtimeMs) <= OFFLINE_SYNC_FAST_BASE_MTIME_TOLERANCE_MS) {
-    return true;
-  }
-  const mtime = new Date(targetMtimeMs);
-  await utimes(target, mtime, mtime);
-  return true;
-}
 
 /**
  * Read the local file digest for a single relative path without applying
@@ -2170,272 +2338,6 @@ export async function applyOfflineSyncFileContentChunk(options: {
   }
 }
 
-function offlineUploadRelPath(options: {
-  sourceId: string;
-  relPath: string;
-  sha256: string;
-  bytes: number;
-}): string {
-  const key = hashText([
-    options.sourceId,
-    options.relPath,
-    options.sha256,
-    String(options.bytes),
-  ].join("\0"));
-  return `${SYNC_INTERNAL_DIR}/uploads/${key}.part`;
-}
-
-async function offlineUploadPath(root: SafeArchiveRoot, options: {
-  sourceId: string;
-  relPath: string;
-  sha256: string;
-  bytes: number;
-}): Promise<OfflineUploadStaging> {
-  const relPath = offlineUploadRelPath(options);
-  return {
-    kind: "single",
-    relPath,
-    filePath: await resolveSafeArchiveTarget(root, relPath),
-  };
-}
-
-async function offlineUploadChunkPath(root: SafeArchiveRoot, options: {
-  sourceId: string;
-  relPath: string;
-  sha256: string;
-  bytes: number;
-  offset: number;
-}): Promise<OfflineUploadStaging> {
-  const uploadRelPath = offlineUploadRelPath(options);
-  const relPath = `${uploadRelPath}/${String(options.offset).padStart(20, "0")}.part`;
-  return {
-    kind: "chunks",
-    relPath,
-    filePath: await resolveSafeArchiveTarget(root, relPath),
-  };
-}
-
-async function writeOfflineUploadChunk(options: {
-  root: SafeArchiveRoot;
-  sourceId: string;
-  relPath: string;
-  sha256: string;
-  bytes: number;
-  offset: number;
-  content: Buffer;
-  readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
-  writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
-  writeStagingFile?: (target: OfflineSyncFileStagingWriteTarget) => Promise<void>;
-}): Promise<OfflineUploadStaging> {
-  if ((options.writeFile || options.writeStagingFile) && !options.readFile) {
-    throw new Error("offline sync upload chunk storage hooks require readFile");
-  }
-  const uploadRoot = {
-    ...(await offlineUploadPath(options.root, options)),
-    kind: "chunks" as const,
-  };
-  if (options.offset === 0) {
-    await rm(uploadRoot.filePath, { recursive: true, force: true }).catch(() => {});
-  } else {
-    const existing = await stat(uploadRoot.filePath).catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    });
-    if (!existing || !existing.isDirectory()) {
-      throw new Error(`offline sync upload is missing initial chunk for ${options.relPath}`);
-    }
-  }
-  const chunk = await offlineUploadChunkPath(options.root, { ...options, offset: options.offset });
-
-  const writeStagingFile = options.writeStagingFile ?? options.writeFile;
-  if (writeStagingFile) {
-    // Storage-backed services provide these hooks so secure-store deployments
-    // keep staged partial uploads encrypted at rest without mutating indexes.
-    await writeOfflineUploadContent({
-      root: options.root,
-      relPath: chunk.relPath,
-      filePath: chunk.filePath,
-      content: options.content,
-      writeFile: writeStagingFile,
-    });
-    return uploadRoot;
-  }
-
-  await mkdir(path.dirname(chunk.filePath), { recursive: true });
-  const existingChunk = await lstat(chunk.filePath).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  });
-  if (existingChunk?.isSymbolicLink()) {
-    throw new Error(`offline sync upload chunk is a symlink: ${chunk.relPath}`);
-  }
-  await writeFile(chunk.filePath, options.content, { mode: 0o600 });
-  return uploadRoot;
-}
-
-async function pruneOfflineUploadStaging(root: SafeArchiveRoot): Promise<void> {
-  const uploadsRelPath = `${SYNC_INTERNAL_DIR}/uploads`;
-  const uploadsPath = await resolveSafeArchiveTarget(root, uploadsRelPath);
-  const entries = await readdir(uploadsPath, { withFileTypes: true }).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  });
-  const now = Date.now();
-  await Promise.all(entries.map(async (entry) => {
-    if (!/^[a-f0-9]{64}\.part$/i.test(entry.name)) return;
-    const relPath = `${uploadsRelPath}/${entry.name}`;
-    const filePath = await resolveSafeArchiveTarget(root, relPath);
-    const info = await lstat(filePath).catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    });
-    if (!info) return;
-    if (now - info.mtimeMs <= OFFLINE_SYNC_UPLOAD_STAGING_MAX_AGE_MS) return;
-    await rm(filePath, { recursive: true, force: true });
-  }));
-}
-
-async function* readOfflineUploadStagingChunks(options: {
-  root: SafeArchiveRoot;
-  upload: OfflineUploadStaging;
-  readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
-}): AsyncGenerator<Buffer> {
-  if (options.upload.kind === "single") {
-    yield await readOfflineUploadContent({
-      root: options.root,
-      relPath: options.upload.relPath,
-      filePath: options.upload.filePath,
-      readFile: options.readFile,
-    });
-    return;
-  }
-
-  const entries = await readdir(options.upload.filePath);
-  const chunkNames = entries
-    .filter((entry) => /^\d{20}\.part$/.test(entry))
-    .sort();
-  if (chunkNames.length === 0) {
-    throw new Error(`offline sync upload is missing chunks for ${options.upload.relPath}`);
-  }
-  let expectedOffset = 0;
-  for (const chunkName of chunkNames) {
-    const offset = Number(chunkName.slice(0, 20));
-    if (!Number.isSafeInteger(offset) || offset !== expectedOffset) {
-      throw new Error(
-        `offline sync upload offset mismatch for ${options.upload.relPath}: expected ${expectedOffset}, got ${offset}`,
-      );
-    }
-    const relPath = `${options.upload.relPath}/${chunkName}`;
-    const filePath = await resolveSafeArchiveTarget(options.root, relPath);
-    const content = await readOfflineUploadContent({
-      root: options.root,
-      relPath,
-      filePath,
-      readFile: options.readFile,
-    });
-    expectedOffset += content.length;
-    yield content;
-  }
-}
-
-async function digestOfflineUploadStagingContent(options: {
-  root: SafeArchiveRoot;
-  upload: OfflineUploadStaging;
-  readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
-}): Promise<{ sha256: string; bytes: number }> {
-  const hash = createHash("sha256");
-  let bytes = 0;
-  for await (const chunk of readOfflineUploadStagingChunks(options)) {
-    hash.update(chunk);
-    bytes += chunk.length;
-  }
-  return { sha256: hash.digest("hex"), bytes };
-}
-
-async function writeSafeFileFromUpload(
-  root: SafeArchiveRoot,
-  relPath: string,
-  upload: OfflineUploadStaging,
-  readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>,
-  writeFileChunks?: (target: OfflineSyncFileWriteChunksTarget) => Promise<void>,
-  mtimeMs?: number,
-): Promise<void> {
-  const target = await resolveSafeArchiveTarget(root, relPath);
-  const chunks = readOfflineUploadStagingChunks({ root, upload, readFile });
-  if (writeFileChunks) {
-    await writeFileChunks({ root: root.abs, path: relPath, filePath: target, chunks });
-    await setSafeFileMtime(root, relPath, mtimeMs);
-    return;
-  }
-
-  await mkdir(path.dirname(target), { recursive: true });
-  const tmp = path.join(
-    path.dirname(target),
-    `.remnic-sync.${process.pid}.${randomUUID()}.tmp`,
-  );
-  const handle = await open(tmp, "w", 0o600);
-  try {
-    for await (const chunk of chunks) {
-      if (chunk.length > 0) await handle.write(chunk);
-    }
-    await handle.close();
-    const targetStat = await lstat(target).catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    });
-    if (targetStat?.isSymbolicLink()) {
-      throw new Error(`offline sync target is a symlink: ${relPath}`);
-    }
-    await rename(tmp, target);
-    await setSafeFileMtime(root, relPath, mtimeMs);
-  } catch (error) {
-    await handle.close().catch(() => {});
-    await unlink(tmp).catch(() => {});
-    throw error;
-  }
-}
-
-async function cleanupOfflineUpload(upload: OfflineUploadStaging): Promise<void> {
-  if (upload.kind === "chunks") {
-    await rm(upload.filePath, { recursive: true, force: true });
-    return;
-  }
-  await unlink(upload.filePath).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  });
-}
-
-async function readOfflineUploadContent(options: {
-  root: SafeArchiveRoot;
-  relPath: string;
-  filePath: string;
-  readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
-}): Promise<Buffer> {
-  if (options.readFile) {
-    return options.readFile({
-      root: options.root.abs,
-      path: options.relPath,
-      filePath: options.filePath,
-    });
-  }
-  return readFile(options.filePath);
-}
-
-async function writeOfflineUploadContent(options: {
-  root: SafeArchiveRoot;
-  relPath: string;
-  filePath: string;
-  content: Buffer;
-  writeFile: (target: OfflineSyncFileWriteTarget) => Promise<void>;
-}): Promise<void> {
-  await options.writeFile({
-    root: options.root.abs,
-    path: options.relPath,
-    filePath: options.filePath,
-    content: options.content,
-  });
-}
 
 async function deleteSafeFile(
   root: SafeArchiveRoot,

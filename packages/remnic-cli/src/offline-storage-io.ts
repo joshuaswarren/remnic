@@ -54,6 +54,7 @@ export interface OfflineStorageIo {
   readFileChunks: OfflineFileChunkReader;
   writeFile: Parameters<typeof applyOfflineSyncSnapshot>[0]["writeFile"];
   writeStagingFile: Parameters<typeof applyOfflineSyncFileContentChunk>[0]["writeStagingFile"];
+  readStagingFile: NonNullable<Parameters<typeof applyOfflineSyncSnapshot>[0]["readStagingFile"]>;
   writeFileChunks: Parameters<typeof applyOfflineSyncFileContentChunk>[0]["writeFileChunks"];
   deleteFile: Parameters<typeof applyOfflineSyncSnapshot>[0]["deleteFile"];
   recordDeletionRevision: Parameters<typeof applyOfflineSyncSnapshot>[0]["recordDeletionRevision"];
@@ -170,7 +171,10 @@ export async function createOfflineStorageIo(
         chunkSize,
       }),
     writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
-    writeStagingFile: async ({ filePath, content }) => storage.writeOfflineSyncStagingFile(filePath, content),
+    writeStagingFile: async ({ filePath, content, aadRelPath }) =>
+      storage.writeOfflineSyncStagingFile(filePath, content, aadRelPath === undefined ? undefined : { aadRelPath }),
+    readStagingFile: async ({ filePath, aadRelPath }) =>
+      storage.readOfflineSyncFile(filePath, aadRelPath === undefined ? undefined : { aadRelPath }),
     writeFileChunks: async ({ filePath, chunks }) => storage.writeOfflineSyncFileChunks(filePath, chunks),
     deleteFile: async ({ filePath, mtimeMs }) => storage.deleteOfflineSyncFile(filePath, mtimeMs ?? null),
     recordDeletionRevision: async ({ filePath, mtimeMs }) =>

@@ -181,6 +181,137 @@ export function isInvalidStringLengthError(err: unknown): boolean {
   return err instanceof RangeError && /invalid string length/i.test(err.message);
 }
 
+/**
+ * Parse and FULLY validate one serialized index document (legacy or shard).
+ * The single read boundary shared by disk reads and offline-sync pulls: a
+ * document with a valid header but a malformed body (`entries` not a plain
+ * record, or an entry whose `path` is not a string / whose `vector` is not a
+ * finite-number array) is `unreadable`, not `ok` — recall fails open on the
+ * tagged reason, mutations fail closed, and the bytes are never overwritten
+ * (issue #3148 review, round 4).
+ */
+export function parseEmbeddingIndexDocument(raw: string): ManagedIndexRead {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return {
+      outcome: "unreadable",
+      reason: `JSON parse failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    (parsed as Partial<EmbeddingIndexFile>).version !== 1 ||
+    typeof (parsed as Partial<EmbeddingIndexFile>).provider !== "string" ||
+    typeof (parsed as Partial<EmbeddingIndexFile>).model !== "string"
+  ) {
+    return { outcome: "foreign" };
+  }
+  const entries = (parsed as Partial<EmbeddingIndexFile>).entries;
+  if (!entries || typeof entries !== "object" || Array.isArray(entries)) {
+    return {
+      outcome: "unreadable",
+      reason: "entries must be a plain record of memory id -> entry",
+    };
+  }
+  for (const [id, entry] of Object.entries(entries as Record<string, unknown>)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return { outcome: "unreadable", reason: `entry ${id} must be an object` };
+    }
+    const candidate = entry as Partial<EmbeddingIndexEntry>;
+    if (typeof candidate.path !== "string") {
+      return { outcome: "unreadable", reason: `entry ${id}.path must be a string` };
+    }
+    if (!Array.isArray(candidate.vector)) {
+      return { outcome: "unreadable", reason: `entry ${id}.vector must be an array` };
+    }
+    for (const component of candidate.vector) {
+      if (!Number.isFinite(component)) {
+        return {
+          outcome: "unreadable",
+          reason: `entry ${id}.vector must contain only finite numbers`,
+        };
+      }
+    }
+  }
+  return { outcome: "ok", file: parsed as EmbeddingIndexFile };
+}
+
+/**
+ * Group a complete index into per-shard entry records using the stable FNV
+ * assignment. Shared by `persist()` and the offline-sync generation
+ * transaction so a converted generation shards identically everywhere.
+ */
+export function shardEntriesForIndex(
+  index: EmbeddingIndexFile,
+): Map<number, Record<string, EmbeddingIndexEntry>> {
+  const groups = new Map<number, Record<string, EmbeddingIndexEntry>>();
+  for (const id of Object.keys(index.entries)) {
+    const shardIndex = shardIndexOf(id, SHARD_COUNT);
+    const group = groups.get(shardIndex);
+    if (group) group[id] = index.entries[id];
+    else groups.set(shardIndex, { [id]: index.entries[id] });
+  }
+  return groups;
+}
+
+/**
+ * Serialize one shard, translating a ceiling overflow into a tagged,
+ * recoverable capacity error. Exported for the offline-sync generation
+ * transaction, which stages incoming generations through the same budget.
+ */
+export function serializeEmbeddingShard(
+  index: EmbeddingIndexFile,
+  shardIndex: number,
+  entries: Record<string, EmbeddingIndexEntry>,
+  limit: number = resolveIndexFileCharLimit(),
+): string {
+  let body: string;
+  try {
+    body = JSON.stringify({
+      version: 1 as const,
+      provider: index.provider,
+      model: index.model,
+      entries,
+    });
+  } catch (err) {
+    throw new EmbeddingIndexCapacityError(
+      `embedding index shard ${shardFileName(shardIndex)} exceeded the single-string ceiling while serializing: ${err instanceof Error ? err.message : String(err)}`,
+      largestEntryId(entries) || undefined,
+    );
+  }
+  if (body.length > limit) {
+    const worstId = largestEntryId(entries);
+    const worstLength = worstId && entries[worstId] ? JSON.stringify(entries[worstId]).length : 0;
+    throw new EmbeddingIndexCapacityError(
+      `embedding index shard ${shardFileName(shardIndex)} needs ${body.length} chars, over the ${limit}-char single-file limit; largest entry ${worstId || "(unknown)"} serializes to ${worstLength} chars`,
+      worstId || undefined,
+    );
+  }
+  return body;
+}
+
+function largestEntryId(entries: Record<string, EmbeddingIndexEntry>): string {
+  let worstId = "";
+  let worstLength = 0;
+  for (const [id, entry] of Object.entries(entries)) {
+    let length: number;
+    try {
+      length = JSON.stringify(entry).length;
+    } catch {
+      return id;
+    }
+    if (length > worstLength) {
+      worstLength = length;
+      worstId = id;
+    }
+  }
+  return worstId;
+}
+
 export class EmbeddingIndexFileStore {
   constructor(
     private readonly indexPath: string,
@@ -396,27 +527,7 @@ export class EmbeddingIndexFileStore {
     } catch (err) {
       return { outcome: "unreadable", reason: `read failed: ${err instanceof Error ? err.message : String(err)}` };
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (err) {
-      return {
-        outcome: "unreadable",
-        reason: `JSON parse failed: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      (parsed as Partial<EmbeddingIndexFile>).version === 1 &&
-      typeof (parsed as Partial<EmbeddingIndexFile>).provider === "string" &&
-      typeof (parsed as Partial<EmbeddingIndexFile>).model === "string" &&
-      (parsed as Partial<EmbeddingIndexFile>).entries &&
-      typeof (parsed as Partial<EmbeddingIndexFile>).entries === "object"
-    ) {
-      return { outcome: "ok", file: parsed as EmbeddingIndexFile };
-    }
-    return { outcome: "foreign" };
+    return parseEmbeddingIndexDocument(raw);
   }
 
   private async readShardNames(): Promise<string[]> {
@@ -456,13 +567,7 @@ export class EmbeddingIndexFileStore {
     // (EmbeddingFallback.enqueueIndexMutation) BEFORE this method, so the
     // caller's index already reflects the restored generation.
 
-    const groups = new Map<number, Record<string, EmbeddingIndexEntry>>();
-    for (const id of Object.keys(index.entries)) {
-      const shardIndex = shardIndexOf(id, SHARD_COUNT);
-      const group = groups.get(shardIndex);
-      if (group) group[id] = index.entries[id];
-      else groups.set(shardIndex, { [id]: index.entries[id] });
-    }
+    const groups = shardEntriesForIndex(index);
 
     const layout = await this.detectLayout();
 
@@ -492,7 +597,7 @@ export class EmbeddingIndexFileStore {
         .filter((shardIndex) => groups.has(shardIndex))
         .map((shardIndex) => ({
           shardIndex,
-          body: this.serializeShard(index, shardIndex, groups.get(shardIndex)!, limit),
+          body: serializeEmbeddingShard(index, shardIndex, groups.get(shardIndex)!, limit),
         }));
       for (const payload of payloads) {
         await this.writeAtomicFile(
@@ -532,15 +637,9 @@ export class EmbeddingIndexFileStore {
     );
     await mkdir(stagingDir, { recursive: true });
     try {
-      for (const [shardIndex, entries] of groups) {
-        if (Object.keys(entries).length === 0) continue;
-        await this.writeAtomicFile(
-          path.join(stagingDir, shardFileName(shardIndex)),
-          this.serializeShard(index, shardIndex, entries, limit),
-        );
-      }
+      await this.stageShardSet(stagingDir, index, groups, limit);
       // Atomic publish: the directory appearing IS the layout marker.
-      await rename(stagingDir, this.shardDir);
+      await this.publishSwappedGeneration(stagingDir);
     } catch (err) {
       await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
       throw err;
@@ -556,11 +655,8 @@ export class EmbeddingIndexFileStore {
    * change (replacement semantics — the former entries are obsolete by
    * definition). Crash-safe by the same construction as the migration: the
    * COMPLETE new-identity set is staged and validated first (old bytes are
-   * not touched until staging succeeds), the published directory is renamed
-   * aside atomically as a recovery artifact, and the staging dir is
-   * published with a single atomic rename. No rename ever targets a
-   * non-empty directory, and a crash at any point converges to one valid
-   * single generation on the next write.
+   * not touched until staging succeeds), then published atomically through
+   * `publishSwappedGeneration`.
    */
   private async publishReplacementGeneration(
     index: EmbeddingIndexFile,
@@ -574,36 +670,73 @@ export class EmbeddingIndexFileStore {
     );
     await mkdir(stagingDir, { recursive: true });
     try {
-      for (const [shardIndex, entries] of groups) {
-        if (Object.keys(entries).length === 0) continue;
-        await this.writeAtomicFile(
-          path.join(stagingDir, shardFileName(shardIndex)),
-          this.serializeShard(index, shardIndex, entries, limit),
-        );
-      }
-      // Demote the former generation to the FIXED transaction backup, then
-      // publish the replacement. If the publish rename fails, roll the
-      // former generation back into place; if the process dies in the gap,
-      // detectLayout() performs the same rollback on next use.
-      const backupPath = replacementBackupPath(this.shardDir);
-      await rm(backupPath, { recursive: true, force: true });
-      await rename(this.shardDir, backupPath);
-      try {
-        await rename(stagingDir, this.shardDir);
-      } catch (err) {
-        await rename(backupPath, this.shardDir).catch(() => undefined);
-        throw err;
-      }
-      // The replacement is published: the backup is obsolete disk. A
-      // cleanup failure is non-fatal (the next replacement removes it) but
-      // must stay visible.
-      await rm(backupPath, { recursive: true, force: true }).catch((err) => {
-        log.warn(`embedding index: could not remove replacement backup ${backupPath}: ${err}`);
-      });
+      await this.stageShardSet(stagingDir, index, groups, limit);
+      await this.publishSwappedGeneration(stagingDir);
     } catch (err) {
       await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
       throw err;
     }
+  }
+
+  /**
+   * Write a complete shard set into a staging directory. Every shard is
+   * serialized before the first write, so a capacity failure cannot leave a
+   * partial stage behind.
+   */
+  private async stageShardSet(
+    stagingDir: string,
+    index: EmbeddingIndexFile,
+    groups: Map<number, Record<string, EmbeddingIndexEntry>>,
+    limit: number,
+  ): Promise<void> {
+    const payloads = [...groups]
+      .filter(([, entries]) => Object.keys(entries).length > 0)
+      .map(([shardIndex, entries]) => ({
+        shardIndex,
+        body: serializeEmbeddingShard(index, shardIndex, entries, limit),
+      }));
+    for (const payload of payloads) {
+      await this.writeAtomicFile(
+        path.join(stagingDir, shardFileName(payload.shardIndex)),
+        payload.body,
+      );
+    }
+  }
+
+  /**
+   * Atomically publish a fully staged generation directory as THE published
+   * generation. The former published directory is demoted to the FIXED
+   * transaction backup and the staging dir is renamed in with a single
+   * rename; if the publish rename fails the former generation is rolled
+   * back, and if the process dies in the rename gap `detectLayout()` /
+   * `recoverIfInterrupted()` perform the same rollback on next use.
+   * Shared by the mutation-side migration/replacement and the offline-sync
+   * generation transaction (issue #3148, round 4) so there is exactly one
+   * swap state machine. Staging-dir cleanup stays with the caller.
+   */
+  async publishSwappedGeneration(stagingDir: string): Promise<void> {
+    // The replacement is published: the backup is obsolete disk. A cleanup
+    // failure is non-fatal (the next replacement removes it) but must stay
+    // visible.
+    const backupPath = replacementBackupPath(this.shardDir);
+    await rm(backupPath, { recursive: true, force: true });
+    let demoted = false;
+    try {
+      await stat(this.shardDir);
+      await rename(this.shardDir, backupPath);
+      demoted = true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    try {
+      await rename(stagingDir, this.shardDir);
+    } catch (err) {
+      if (demoted) await rename(backupPath, this.shardDir).catch(() => undefined);
+      throw err;
+    }
+    await rm(backupPath, { recursive: true, force: true }).catch((err) => {
+      log.warn(`embedding index: could not remove replacement backup ${backupPath}: ${err}`);
+    });
   }
 
   /** Remove staging dirs orphaned by crashed migrations. A foreign dir younger than the grace window may belong to a live writer mid-migration, so only older dirs are removed (issue #3148 review, round 3). */
@@ -629,56 +762,6 @@ export class EmbeddingIndexFileStore {
       }
       await rm(path.join(stateDir, name), { recursive: true, force: true }).catch(() => undefined);
     }
-  }
-
-  /** Serialize one shard, translating a ceiling overflow into a tagged, recoverable capacity error. */
-  private serializeShard(
-    index: EmbeddingIndexFile,
-    shardIndex: number,
-    entries: Record<string, EmbeddingIndexEntry>,
-    limit: number,
-  ): string {
-    let body: string;
-    try {
-      body = JSON.stringify({
-        version: 1 as const,
-        provider: index.provider,
-        model: index.model,
-        entries,
-      });
-    } catch (err) {
-      throw new EmbeddingIndexCapacityError(
-        `embedding index shard ${shardFileName(shardIndex)} exceeded the single-string ceiling while serializing: ${err instanceof Error ? err.message : String(err)}`,
-        this.largestEntryId(entries) || undefined,
-      );
-    }
-    if (body.length > limit) {
-      const worstId = this.largestEntryId(entries);
-      const worstLength = worstId && entries[worstId] ? JSON.stringify(entries[worstId]).length : 0;
-      throw new EmbeddingIndexCapacityError(
-        `embedding index shard ${shardFileName(shardIndex)} needs ${body.length} chars, over the ${limit}-char single-file limit; largest entry ${worstId || "(unknown)"} serializes to ${worstLength} chars`,
-        worstId || undefined,
-      );
-    }
-    return body;
-  }
-
-  private largestEntryId(entries: Record<string, EmbeddingIndexEntry>): string {
-    let worstId = "";
-    let worstLength = 0;
-    for (const [id, entry] of Object.entries(entries)) {
-      let length: number;
-      try {
-        length = JSON.stringify(entry).length;
-      } catch {
-        return id;
-      }
-      if (length > worstLength) {
-        worstLength = length;
-        worstId = id;
-      }
-    }
-    return worstId;
   }
 
   /**

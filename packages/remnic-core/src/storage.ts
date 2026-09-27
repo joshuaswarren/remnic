@@ -2682,10 +2682,15 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     );
     return this.writeStorageSecureFile(target, content);
   }
-  protected writeStorageSecureFile(filePath: string, content: string | Buffer, forceEncrypt = false): Promise<void> {
+  protected writeStorageSecureFile(
+    filePath: string,
+    content: string | Buffer,
+    forceEncrypt = false,
+    secureOptions?: { aadRelPath?: string }
+  ): Promise<void> {
     assertNotOkfReservedBasename(filePath);
     const writeKey = this.resolveWriteKey(forceEncrypt);
-    return writeMaybeEncryptedFile(filePath, content, writeKey, {}, this.baseDir).then(() => {
+    return writeMaybeEncryptedFile(filePath, content, writeKey, secureOptions ?? {}, this.baseDir).then(() => {
       // No manual sniff-cache update needed (issue #1909 round 10): this rewrite
       // changes the file's (size, mtime), so isEncryptedFileHeader re-sniffs on
       // the next append when its identity check misses. Identity validation also
@@ -2733,9 +2738,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.deletionRevisionStore.deleteManagedStorageFile(filePath, deletionMtimeMs);
   }
 
-  async readOfflineSyncFile(filePath: string): Promise<Buffer> {
+  async readOfflineSyncFile(filePath: string, opts?: { aadRelPath?: string }): Promise<Buffer> {
     const target = this.assertManagedStoragePath(filePath, "storage.readOfflineSyncFile");
-    return readMaybeEncryptedFileBuffer(target, this._secureStoreKey, this.baseDir);
+    return readMaybeEncryptedFileBuffer(target, this._secureStoreKey, this.baseDir, opts);
   }
 
   async digestOfflineSyncFile(filePath: string): Promise<{ sha256: string; bytes: number }> {
@@ -2895,9 +2900,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
   }
 
-  async writeOfflineSyncStagingFile(filePath: string, content: Buffer): Promise<void> {
+  async writeOfflineSyncStagingFile(filePath: string, content: Buffer, opts?: { aadRelPath?: string }): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncStagingFile");
-    await this.writeStorageSecureFile(target, content);
+    await this.writeStorageSecureFile(target, content, false, opts);
   }
 
   createContentHashIndex(): ContentHashIndex {
