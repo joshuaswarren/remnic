@@ -26,10 +26,14 @@ type FrontmatterDecision = "allow" | "wait";
 interface SupportPassportOfflineSyncStorage {
   dir: string;
   readMemoryByPath(filePath: string): Promise<MemoryFile | null>;
-  readOfflineSyncFile(filePath: string): Promise<Buffer>;
+  readOfflineSyncFile(filePath: string, opts?: { aadFilePath?: string }): Promise<Buffer>;
   digestOfflineSyncFile(filePath: string): Promise<{ sha256: string; bytes: number }>;
   writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void>;
-  writeOfflineSyncStagingFile(filePath: string, content: Buffer): Promise<void>;
+  writeOfflineSyncStagingFile(
+    filePath: string,
+    content: Buffer,
+    opts?: { aadFilePath?: string },
+  ): Promise<void>;
   writeOfflineSyncFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void>;
   deleteOfflineSyncFile(filePath: string, deletionMtimeMs?: number | null): Promise<void>;
   recordReplicatedDeletionRevision(filePath: string, mtimeMs: number): Promise<void>;
@@ -219,6 +223,16 @@ export async function applySupportPassportOfflineSyncChangeset(
       guard.assertContentAllowed(target.path, target.content);
       await storage.writeOfflineSyncFile(target.filePath, target.content);
     },
+    // Secure staging for embedding-generation replacement (#3150): staged
+    // ciphertext binds the FINAL published path, matching the snapshot apply.
+    writeStagingFile: async ({ filePath, content, finalAadFilePath }) =>
+      storage.writeOfflineSyncStagingFile(
+        filePath,
+        content,
+        finalAadFilePath === undefined ? undefined : { aadFilePath: finalAadFilePath },
+      ),
+    readStagingFile: async ({ filePath, finalAadFilePath }) =>
+      storage.readOfflineSyncFile(filePath, finalAadFilePath === undefined ? undefined : { aadFilePath: finalAadFilePath }),
     deleteFile: async (target) => {
       await guard.assertTargetAllowed(target);
       await storage.deleteOfflineSyncFile(target.filePath, target.mtimeMs ?? null);
