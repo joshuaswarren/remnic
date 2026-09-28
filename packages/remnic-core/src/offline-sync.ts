@@ -27,21 +27,19 @@ import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { EmbeddingIndexStorageError } from "./embedding-index-storage.js";
 import { matchesOfflineSyncDefaultExclude } from "./offline-sync-exclude-globs.js";
 import {
-  EMBEDDING_SHARD_DIR_BASENAME,
-  applyEmbeddingGenerationRemoval,
-  applyEmbeddingGenerationTransaction,
+  applyIncomingEmbeddingGenerations,
   assertEmbeddingGenerationStillIncluded,
   computeOmittedEmbeddingGenerationPaths,
-  detectIncomingEmbeddingGenerations,
   divergedEmbeddingGenerationDeferrals,
   embeddingGenerationMembership,
-  embeddingMarkerDirOf,
-  embeddingShardDirOf,
   isEmbeddingGenerationDirPath,
   isPathInOmittedEmbeddingGeneration,
-  type EmbeddingGenerationTransactionIo,
-  type EmbeddingGenerationTransactionResult,
 } from "./offline-sync-embedding-generation.js";
+import {
+  applyChangesetEmbeddingGenerations,
+  normalizeChangesetGenerations,
+  type OfflineSyncChangesetGeneration,
+} from "./offline-sync-changeset-generations.js";
 import { withEmbeddingGenerationLock, withEmbeddingGenerationLockIter } from "./embedding-generation-lock.js";
 import {
   isCanonicalRuntimeStatePath,
@@ -50,6 +48,7 @@ import {
 } from "./offline-sync-runtime-state.js";
 export { shouldPreferIncomingOfflineRuntimeFile } from "./offline-sync-runtime-state.js";
 export { computeOmittedEmbeddingGenerationPaths } from "./offline-sync-embedding-generation.js";
+export type { OfflineSyncChangesetGeneration } from "./offline-sync-changeset-generations.js";
 export {
   compileOfflineSyncExcludeGlobs,
   globToRegExp,
@@ -150,6 +149,13 @@ export interface OfflineSyncChangeset {
   sourceId: string;
   includeTranscripts: boolean;
   changes: OfflineSyncChange[];
+  /**
+   * Complete post-change membership of every embedding generation the
+   * changeset touches (issue #3150). Absent on legacy senders: receivers
+   * defer manifest-less shard upserts as conflicts instead of publishing a
+   * mixed generation.
+   */
+  embeddingGenerations?: OfflineSyncChangesetGeneration[];
 }
 
 export interface OfflineSyncState {
@@ -170,7 +176,12 @@ export interface OfflineSyncConflict {
     | "remote_exists_for_local_create"
     | "remote_changed_for_local_update"
     | "remote_deleted_for_local_update"
-    | "remote_changed_for_local_delete";
+    | "remote_changed_for_local_delete"
+    // Changeset generation deferrals (#3150): the receiver refused a whole
+    // embedding generation; surfaced as conflicts so the push side never
+    // checkpoints it as applied.
+    | "embedding_generation_diverged"
+    | "embedding_generation_manifest_required";
   baseSha256?: string;
   localSha256?: string;
   incomingSha256?: string;
@@ -637,6 +648,7 @@ export function normalizeOfflineSyncChangeset(
   if (excludedPath) {
     throw new Error(`offline sync changeset contains excluded path: ${excludedPath}`);
   }
+  const embeddingGenerations = normalizeChangesetGenerations(obj.embeddingGenerations, changes);
   return {
     format: OFFLINE_SYNC_CHANGESET_FORMAT,
     schemaVersion: 1,
@@ -644,6 +656,7 @@ export function normalizeOfflineSyncChangeset(
     sourceId,
     includeTranscripts,
     changes: changes.sort(compareByPath),
+    ...(embeddingGenerations === undefined ? {} : { embeddingGenerations }),
   };
 }
 
@@ -1614,159 +1627,28 @@ export async function applyOfflineSyncSnapshot(options: {
     return requiredBuffer(incomingBuffers, relPath);
   };
 
-  // Embedding generations travel and replace as ONE unit (issue #3148).
-  // Incoming shards form the generation; an incoming legacy marker is a
-  // complete generation too (converted to the sharded layout, preserving the
-  // one-way migration). A deferral anywhere in a generation defers the WHOLE
-  // generation; a generation the push omitted by filter is announced by the
-  // snapshot and its absence is never a delete instruction.
-  const incomingGenerations = detectIncomingEmbeddingGenerations(incomingMap.keys());
-  const generationDirs = new Set([
-    ...incomingGenerations.shardDirs,
-    ...incomingGenerations.legacyMarkerDirs,
-  ]);
-  const deferredGenerationDirs = new Set<string>();
-  for (const deferredPath of deferredPaths) {
-    const membership = embeddingGenerationMembership(deferredPath);
-    if (membership) {
-      deferredGenerationDirs.add(membership.shardDir);
-    }
-  }
-  const transactionResults: EmbeddingGenerationTransactionResult[] = [];
-  // Included and omitted cannot describe the same generation.
-  for (const shardDir of generationDirs) {
-    if (omittedGenerationDirs.has(shardDir)) {
-      throw new EmbeddingIndexStorageError(
-        `offline sync snapshot both includes and omits embedding generation ${shardDir}; refusing to apply`,
-      );
-    }
-  }
-  // Fail closed BEFORE any publication: custom storage IO (encrypted or
-  // otherwise) without the staging pair would make the generation transaction
-  // fall back to unencrypted raw writes — a plaintext downgrade of the staged
-  // generation. Callers must wire both staging hooks (the CLI does).
-  if (
-    generationDirs.size > 0 &&
-    (options.writeFile || options.readFile || options.readFileDigest || options.deleteFile) &&
-    !(options.writeStagingFile && options.readStagingFile)
-  ) {
-    throw new EmbeddingIndexStorageError(
-      "refusing to replace embedding generation: custom storage IO requires both writeStagingFile and readStagingFile hooks; unencrypted raw staging would plaintext-downgrade the index",
-    );
-  }
-  for (const shardDir of generationDirs) {
-    if (deferredGenerationDirs.has(shardDir)) continue;
-    if (
-      incomingGenerations.legacyMarkerDirs.has(shardDir) &&
-      !incomingGenerations.shardDirs.has(shardDir)
-    ) {
-      // Cross-layout: an incoming legacy marker replaces a local sharded
-      // generation as a whole (codex round 4). When shards are ALSO
-      // incoming, the sharded set is the generation and the marker is
-      // written as an inert artifact by the per-file loop below.
-      const markerRel = [...incomingMap.keys()].find(
-        (relPath) => embeddingMarkerDirOf(relPath) === shardDir.slice(0, -`/${EMBEDDING_SHARD_DIR_BASENAME}`.length),
-      );
-      if (!markerRel) continue;
-      transactionResults.push(await applyEmbeddingGenerationTransaction({
-        root,
-        shardDirRel: shardDir,
-        incomingShardPaths: [],
-        incomingMarker: {
-          path: markerRel,
-          sha256: incomingMap.get(markerRel)!.sha256,
-          buffer: incomingBuffers.get(markerRel) ?? null,
-        },
-        incomingMarkerPresent: false,
-        incomingShardStates: new Map(),
-        incomingBuffers,
-        baseStates: baseMap,
-        io: {
-          readFile: options.readFile,
-          writeStagingFile: options.writeStagingFile,
-          readStagingFile: options.readStagingFile,
-          deleteFile: options.deleteFile,
-        },
-        now: Date.now(),
-      }));
-      continue;
-    }
-    transactionResults.push(await applyEmbeddingGenerationTransaction({
-      root,
-      shardDirRel: shardDir,
-      incomingShardPaths: [...incomingMap.keys()]
-        .filter((relPath) => embeddingShardDirOf(relPath) === shardDir)
-        .sort(),
-      incomingMarker: null,
-      incomingMarkerPresent: Boolean(
-        incomingGenerations.legacyMarkerDirs.has(shardDir),
-      ),
-      incomingShardStates: new Map(
-        [...incomingMap.values()]
-          .filter((relPath) => embeddingShardDirOf(relPath.path) === shardDir)
-          .map((state) => [state.path, state]),
-      ),
-      incomingBuffers,
-      baseStates: baseMap,
-      io: {
-        readFile: options.readFile,
-        writeStagingFile: options.writeStagingFile,
-        readStagingFile: options.readStagingFile,
-        deleteFile: options.deleteFile,
-      },
-      now: Date.now(),
-    }));
-  }
-  // Whole-generation removal (codex round 6 P1): when the remote deleted a
-  // previously shared sharded index, the deletion revisions cover EVERY
-  // local member. Remove that generation as ONE atomic swap instead of
-  // deleting shards one-by-one, so a crash or delete failure can never
-  // expose a partial same-identity generation serving missing memories.
-  const localGenerationDirs = new Set<string>();
-  for (const relPath of currentMap.keys()) {
-    const membership = embeddingGenerationMembership(relPath);
-    if (membership?.kind === "shard") localGenerationDirs.add(membership.shardDir);
-  }
-  for (const shardDir of localGenerationDirs) {
-    if (
-      generationDirs.has(shardDir) ||
-      deferredGenerationDirs.has(shardDir) ||
-      omittedGenerationDirs.has(shardDir)
-    ) {
-      continue;
-    }
-    const localMembers = [...currentMap.keys()].filter(
-      (relPath) => embeddingGenerationMembership(relPath)?.shardDir === shardDir,
-    );
-    if (localMembers.length === 0) continue;
-    // Tombstone or shared-base absence authorizes whole-generation removal.
-    const baseMembers = localMembers.filter((relPath) => baseMap.has(relPath));
-    // Tombstone evidence is satisfied by the members the REMOTE knew: the
-    // remote cannot tombstone local-only extras or an inert legacy marker,
-    // and the removal sweeps those once the remote deletion is established.
-    // Non-empty same-generation tombstones establish remote absence on
-    // their own: they may name shards already absent locally (removed in an
-    // earlier round), so the set is NOT required to intersect localMembers
-    // (codex round 6, XiOb).
-    const tombstonedMembers =
-      deletionMtimeByPath === undefined
-        ? []
-        : [...deletionMtimeByPath.keys()].filter(
-            (relPath) => embeddingGenerationMembership(relPath)?.shardDir === shardDir,
-          );
-    const tombstoneCovered = tombstonedMembers.length > 0;
-    const baseEvidenced =
-      baseMembers.length > 0 && baseMembers.every((relPath) => !incomingMap.has(relPath));
-    if (!tombstoneCovered && !baseEvidenced) continue;
-    transactionResults.push(await applyEmbeddingGenerationRemoval({
-      root,
-      shardDirRel: shardDir,
-      io: { deleteFile: options.deleteFile, readFile: options.readFile },
-      deletionMtimeByPath,
-      baseStates: baseMap,
-      now: Date.now(),
-    }));
-  }
+  // Embedding generations travel and replace as ONE unit (issue #3148):
+  // atomic replacement, cross-layout marker conversion, whole-generation
+  // removal on tombstones — all extracted to the generation module (issue
+  // #3150) so the changeset path can share it without growing this file.
+  const { transactionResults, deferredGenerationDirs } = await applyIncomingEmbeddingGenerations({
+    root,
+    incomingMap,
+    incomingBuffers,
+    baseMap,
+    currentMap,
+    deferredPaths,
+    omittedGenerationDirs,
+    deletionMtimeByPath,
+    io: {
+      readFile: options.readFile,
+      writeStagingFile: options.writeStagingFile,
+      readStagingFile: options.readStagingFile,
+      deleteFile: options.deleteFile,
+    },
+    customIoPresent: Boolean(options.writeFile || options.readFile || options.readFileDigest || options.deleteFile),
+    now: Date.now(),
+  });
 
   const transactionHandled = new Set<string>();
   let generationUpserted = 0;
@@ -1993,6 +1875,8 @@ export async function applyOfflineSyncChangeset(options: {
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
   writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
+  writeStagingFile?: (target: OfflineSyncFileStagingWriteTarget) => Promise<void>;
+  readStagingFile?: (target: OfflineSyncFileStagingReadTarget) => Promise<Buffer>;
   deleteFile?: (target: OfflineSyncFileDeleteTarget) => Promise<void>;
   recordDeletionRevision?: OfflineSyncRecordDeletionRevision;
 }): Promise<OfflineSyncApplyChangesetResult> {
@@ -2030,7 +1914,30 @@ export async function applyOfflineSyncChangeset(options: {
   let appliedDeletes = 0;
   let skipped = 0;
 
+  // Embedding generations apply as ONE unit through the shared locked
+  // transaction (issue #3150). Deferred generations surface as conflicts so
+  // the push side never checkpoints them as applied.
+  const generationRouting = await applyChangesetEmbeddingGenerations({
+    root,
+    changeset,
+    incomingBuffers,
+    currentMap,
+    io: {
+      readFile: options.readFile,
+      writeStagingFile: options.writeStagingFile,
+      readStagingFile: options.readStagingFile,
+      deleteFile: options.deleteFile,
+    },
+    customIoPresent: Boolean(options.writeFile || options.readFile || options.readFileDigest || options.deleteFile),
+    now: Date.now(),
+  });
+  appliedUpserts += generationRouting.appliedUpserts;
+  appliedDeletes += generationRouting.appliedDeletes;
+  conflicts.push(...generationRouting.conflicts);
+
   for (const change of changeset.changes) {
+    if (generationRouting.conflictedPaths.has(change.path)) continue;
+    if (generationRouting.transactionHandled.has(change.path)) continue;
     const currentEntry = currentMap.get(change.path);
     if (change.type === "upsert") {
       if (currentEntry?.sha256 === change.file.sha256) {
@@ -2109,6 +2016,12 @@ export async function applyOfflineSyncChangeset(options: {
       localSha256: currentEntry.sha256,
     });
   }
+
+  // Generation transactions bypassed the per-file loop; fold their published
+  // and removed members into the partial result map (returnCurrentFiles ===
+  // false consumers) so it reflects the post-apply generation exactly.
+  for (const [relPath, state] of generationRouting.writtenStates) currentMap.set(relPath, state);
+  for (const relPath of generationRouting.removedPaths) currentMap.delete(relPath);
 
   return {
     appliedUpserts,

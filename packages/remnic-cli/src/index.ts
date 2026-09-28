@@ -8038,6 +8038,12 @@ export async function hydrateOfflineSnapshotContent(args: {
   };
 }
 
+interface OfflineChangesetBatchItem {
+  changes: Array<Awaited<ReturnType<typeof buildOfflineSyncChangeset>>["changes"][number]>;
+  /** Embedding generation dir when the item is ONE whole generation. */
+  shardDir: string | null;
+}
+
 export function chunkOfflineChangesetApplyBatches(
   changeset: Awaited<ReturnType<typeof buildOfflineSyncChangeset>>,
   namespace?: string,
@@ -8046,31 +8052,78 @@ export function chunkOfflineChangesetApplyBatches(
   if (!Number.isInteger(maxRequestBytes) || maxRequestBytes < 1) {
     throw new Error("offline sync apply max request bytes must be a positive integer");
   }
-  const chunks: Array<Awaited<ReturnType<typeof buildOfflineSyncChangeset>>> = [];
-  let current: Awaited<ReturnType<typeof buildOfflineSyncChangeset>>["changes"] = [];
-  const requestBytesFor = (changes: typeof current) => Buffer.byteLength(JSON.stringify({
-    namespace,
-    changeset: {
-      ...changeset,
-      changes,
-    },
-  }), "utf-8");
+  // Generation-coherent batching (issue #3150): every change belonging to one
+  // embedding generation is ONE item that must never be split across
+  // requests — a receiver applying half a generation would serve a mixed
+  // index. Each request carries only the manifest entries for the
+  // generations it actually applies.
+  const items: OfflineChangesetBatchItem[] = [];
+  const itemIndexByDir = new Map<string, number>();
   for (const change of changeset.changes) {
-    const withChange = [...current, change];
-    if (current.length > 0 && requestBytesFor(withChange) > maxRequestBytes) {
-      chunks.push({ ...changeset, changes: current });
-      current = [];
+    const membership = embeddingGenerationMembership(change.path);
+    if (!membership) {
+      items.push({ changes: [change], shardDir: null });
+      continue;
     }
-    const singleBytes = requestBytesFor([...current, change]);
-    if (singleBytes > maxRequestBytes) {
+    const existing = itemIndexByDir.get(membership.shardDir);
+    if (existing !== undefined) {
+      items[existing].changes.push(change);
+      continue;
+    }
+    itemIndexByDir.set(membership.shardDir, items.length);
+    items.push({ changes: [change], shardDir: membership.shardDir });
+  }
+  const manifestFor = (dirs: ReadonlySet<string>) =>
+    (changeset.embeddingGenerations ?? []).filter((generation) => dirs.has(generation.shardDir));
+  const requestBytesFor = (changes: OfflineChangesetBatchItem["changes"], dirs: ReadonlySet<string>) =>
+    Buffer.byteLength(JSON.stringify({
+      namespace,
+      changeset: {
+        ...changeset,
+        changes,
+        embeddingGenerations: manifestFor(dirs),
+      },
+    }), "utf-8");
+  const chunks: Array<Awaited<ReturnType<typeof buildOfflineSyncChangeset>>> = [];
+  let current: OfflineChangesetBatchItem["changes"] = [];
+  const currentDirs = new Set<string>();
+  const flush = () => {
+    chunks.push({ ...changeset, changes: current, embeddingGenerations: manifestFor(currentDirs) });
+    current = [];
+    currentDirs.clear();
+  };
+  for (const item of items) {
+    if (current.length > 0) {
+      const nextDirs = new Set([...currentDirs, ...(item.shardDir ? [item.shardDir] : [])]);
+      if (requestBytesFor([...current, ...item.changes], nextDirs) > maxRequestBytes) {
+        flush();
+      }
+    }
+    const singleDirs = new Set(item.shardDir ? [item.shardDir] : []);
+    if (requestBytesFor(item.changes, singleDirs) > maxRequestBytes) {
+      if (item.shardDir) {
+        const generationBytes = item.changes.reduce(
+          (total, change) => total + (change.type === "upsert" ? change.file.bytes : 0),
+          0,
+        );
+        throw new Error(
+          `offline sync push aborted before any request: embedding generation ${item.shardDir} ` +
+          `(${generationBytes} bytes of shards plus sync overhead) exceeds the apply request budget of ` +
+          `${maxRequestBytes} bytes and cannot be split without exposing a mixed generation. ` +
+          `Oversized generations need the secure staged chunk transport (planned; chunks land in a ` +
+          `private staging root and publish through the atomic generation swap), not final-path upload ` +
+          `— retry after the index shrinks below the budget.`,
+        );
+      }
       throw new Error(
-        `offline sync change for ${change.path} exceeds the apply request size budget; retry after direct-push threshold is lowered`,
+        `offline sync change for ${item.changes[0].path} exceeds the apply request size budget; retry after direct-push threshold is lowered`,
       );
     }
-    current.push(change);
+    current.push(...item.changes);
+    if (item.shardDir) currentDirs.add(item.shardDir);
   }
   if (current.length > 0) {
-    chunks.push({ ...changeset, changes: current });
+    flush();
   }
   return chunks;
 }

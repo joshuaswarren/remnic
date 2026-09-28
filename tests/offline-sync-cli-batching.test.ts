@@ -2026,3 +2026,102 @@ test("offline sync re-snapshots after direct hydration before filtering content 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Issue #3150 — generation-coherent changeset batching
+// ---------------------------------------------------------------------------
+
+function generationUpsert(path: string, content: Buffer, baseSha256?: string) {
+  return {
+    type: "upsert" as const,
+    path,
+    ...(baseSha256 ? { baseSha256 } : {}),
+    file: {
+      path,
+      sha256: "1".repeat(64),
+      bytes: content.length,
+      mtimeMs: 1,
+      contentBase64: content.toString("base64"),
+    },
+  };
+}
+
+test("apply batches keep one embedding generation together across requests", () => {
+  const shard = (index: number) => Buffer.alloc(2 * 1024 * 1024, index + 1);
+  const changes = [
+    generationUpsert("facts/a.md", Buffer.alloc(1 * 1024 * 1024, 1)),
+    generationUpsert("state/embeddings/shard-0000.json", shard(0)),
+    generationUpsert("state/embeddings/shard-0001.json", shard(1)),
+    generationUpsert("facts/z.md", Buffer.alloc(1 * 1024 * 1024, 2)),
+  ];
+  const changeset: OfflineSyncChangeset = {
+    format: "remnic.offline-sync.changeset.v1",
+    schemaVersion: 1,
+    createdAt: "2026-09-27T00:00:00.000Z",
+    sourceId: "test",
+    includeTranscripts: true,
+    changes,
+    embeddingGenerations: [{
+      shardDir: "state/embeddings",
+      members: [
+        { path: "state/embeddings/shard-0000.json", sha256: "1".repeat(64), bytes: shard(0).length },
+        { path: "state/embeddings/shard-0001.json", sha256: "1".repeat(64), bytes: shard(1).length },
+      ],
+    }],
+  };
+
+  const batches = chunkOfflineChangesetApplyBatches(changeset, "generalist");
+  assert.ok(batches.length > 1, "a 6MiB generation plus siblings must split");
+  for (const batch of batches) {
+    const genMembers = batch.changes.filter((change) => change.path.startsWith("state/embeddings/"));
+    if (genMembers.length > 0) {
+      assert.equal(genMembers.length, 2, "both generation members must ride one request");
+      assert.deepEqual(
+        batch.embeddingGenerations?.map((generation) => generation.shardDir),
+        ["state/embeddings"],
+        "a generation batch carries only its own manifest entry",
+      );
+    } else {
+      assert.deepEqual(batch.embeddingGenerations, [], "non-generation batches carry no manifest");
+    }
+  }
+  assert.equal(
+    batches.reduce((total, batch) => total + batch.changes.length, 0),
+    changes.length,
+  );
+});
+
+test("an over-budget embedding generation fails closed before any request", () => {
+  const shardA = Buffer.alloc(5 * 1024 * 1024, 1);
+  const shardB = Buffer.alloc(5 * 1024 * 1024, 2);
+  const changeset: OfflineSyncChangeset = {
+    format: "remnic.offline-sync.changeset.v1",
+    schemaVersion: 1,
+    createdAt: "2026-09-27T00:00:00.000Z",
+    sourceId: "test",
+    includeTranscripts: true,
+    changes: [
+      generationUpsert("state/embeddings/shard-0000.json", shardA),
+      generationUpsert("state/embeddings/shard-0001.json", shardB),
+    ],
+    embeddingGenerations: [{
+      shardDir: "state/embeddings",
+      members: [
+        { path: "state/embeddings/shard-0000.json", sha256: "1".repeat(64), bytes: shardA.length },
+        { path: "state/embeddings/shard-0001.json", sha256: "1".repeat(64), bytes: shardB.length },
+      ],
+    }],
+  };
+
+  assert.throws(
+    () => chunkOfflineChangesetApplyBatches(changeset, "generalist"),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /state\/embeddings/);
+      assert.match(error.message, /staged chunk transport/);
+      assert.match(error.message, /aborted before any/);
+      return true;
+    },
+    "the generation must fail closed with the staged-transport policy, not the direct-push hint",
+  );
+});
