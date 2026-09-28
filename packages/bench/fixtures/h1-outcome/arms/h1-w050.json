@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "h1-w050",
+  "role": "h1-arm",
+  "outcomeBoostWeight": 0.5,
+  "retrieval": {
+    "k": 10,
+    "contextCapTokens": 2000
+  },
+  "configOverrides": {
+    "outcomeBoostEnabled": true,
+    "outcomeBoostWeight": 0.5,
+    "recallMemoryWorthFilterEnabled": false,
+    "trustScoreEnabled": false,
+    "boostAccessCount": false,
+    "reinforcementRecallBoostEnabled": false,
+    "recencyWeight": 0
+  }
+}
