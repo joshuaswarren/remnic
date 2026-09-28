@@ -186,6 +186,30 @@ export interface EmbeddingGenerationTransactionInput {
    * (codex P1: a daemon mutation between census and lock was discarded).
    */
   baseStates?: ReadonlyMap<string, { sha256: string }>;
+  /**
+   * Paths this apply is pre-authorized to remove (changeset deletes / remote
+   * tombstones). A base member absent from the under-lock census is
+   * divergence UNLESS it is pre-authorized — the retry after a response loss
+   * must re-apply idempotently instead of failing as diverged (#3150
+   * review). A pre-authorized member still present with a changed digest
+   * defers as before, so a daemon rewrite is never silently swept.
+   */
+  justifiedRemovals?: ReadonlySet<string>;
+  /**
+   * Deletion revisions (mtimeMs by path) to record through the delete hook
+   * AFTER the swap publishes. Swept members bypass the per-file delete path,
+   * so without this their tombstones are lost and a later peer without
+   * shared-base evidence can reintroduce the removed shards (codex P1).
+   */
+  deletionMtimeByPath?: ReadonlyMap<string, number>;
+  /**
+   * True when the incoming set claims to be a FRESH creation but carries no
+   * base evidence (manifested changeset members are all base-less upserts):
+   * a non-empty local generation must match the incoming set exactly or the
+   * apply defers as diverged, because the empty-base divergence skip would
+   * otherwise silently replace it (#3150 review).
+   */
+  freshCreateClaim?: boolean;
   io: EmbeddingGenerationTransactionIo;
   now: number;
 }
@@ -323,7 +347,11 @@ export async function applyEmbeddingGenerationTransaction(
     // secure IO and defer the WHOLE generation when the disk no longer
     // matches the shared base — a concurrent daemon mutation must never be
     // silently discarded by the swap.
-    // No shared base (fresh catch-up) = no divergence semantics to protect.
+    // No shared base (fresh catch-up) = no divergence semantics to protect,
+    // UNLESS the apply claims a fresh creation (manifested base-less
+    // upserts): an existing local generation must then match the incoming
+    // set exactly or defer, instead of being silently replaced.
+    const justifiedRemovals = input.justifiedRemovals ?? new Set<string>();
     const baseStates = baseStatesForGeneration(input.baseStates, shardDirRel);
     if (baseStates.size > 0) {
       const localCensus = await censusGenerationState(io, root, markerRel, markerAbs, shardDirAbs, shardDirRel);
@@ -331,12 +359,15 @@ export async function applyEmbeddingGenerationTransaction(
       const censusArr = [...localCensus].map(([relPath, sha256]) => ({ path: relPath, sha256 }));
       const deferrals = divergedEmbeddingGenerationDeferrals({
         incomingFiles: incomingGenerationStates(input),
-        baseFiles: baseArr,
-        currentFiles: censusArr,
+        // A pre-authorized removal keeps its base entry only while still on
+        // disk (digest auth); once absent it is already applied and must not
+        // diverge the retry (#3150 review).
+        baseFiles: baseArr.filter((member) => !justifiedRemovals.has(member.path) || localCensus.has(member.path)),
+        currentFiles: censusArr.filter((member) => !justifiedRemovals.has(member.path)),
       });
       const addedOrRemovedSinceBase =
-        censusArr.some((member) => !baseStates.has(member.path)) ||
-        baseArr.some((member) => !localCensus.has(member.path));
+        censusArr.some((member) => !baseStates.has(member.path) && !justifiedRemovals.has(member.path)) ||
+        baseArr.some((member) => !localCensus.has(member.path) && !justifiedRemovals.has(member.path));
       if (deferrals.length > 0 || addedOrRemovedSinceBase) {
         const handled = new Set<string>(input.incomingShardPaths);
         if (input.incomingMarker) handled.add(input.incomingMarker.path);
@@ -354,6 +385,35 @@ export async function applyEmbeddingGenerationTransaction(
           handledPaths: handled,
           deferredLocalDivergence: true,
         };
+      }
+    } else if (input.freshCreateClaim) {
+      const localCensus = await censusGenerationState(io, root, markerRel, markerAbs, shardDirAbs, shardDirRel);
+      if (localCensus.size > 0) {
+        const incomingArr = incomingGenerationStates(input).sort((left, right) => left.path.localeCompare(right.path));
+        const censusArr = [...localCensus]
+          .map(([relPath, sha256]) => ({ path: relPath, sha256 }))
+          .sort((left, right) => left.path.localeCompare(right.path));
+        const identical =
+          censusArr.length === incomingArr.length &&
+          censusArr.every((member, index) => member.path === incomingArr[index]?.path && member.sha256 === incomingArr[index]?.sha256);
+        if (!identical) {
+          const handled = new Set<string>(input.incomingShardPaths);
+          if (input.incomingMarker) handled.add(input.incomingMarker.path);
+          if (input.incomingMarkerPresent) handled.add(markerRel);
+          for (const relPath of localCensus.keys()) handled.add(relPath);
+          log.warn(
+            `embedding generation ${shardDirRel} deferred: base-less creation does not match the existing local generation under the mutation lock; nothing published, nothing removed`,
+          );
+          return {
+            shardDirRel,
+            upserted: 0,
+            deleted: 0,
+            writtenStates: new Map<string, OfflineSyncFileState>(),
+            removedPaths: new Set<string>(),
+            handledPaths: handled,
+            deferredLocalDivergence: true,
+          };
+        }
       }
     }
 
@@ -506,6 +566,30 @@ export async function applyEmbeddingGenerationTransaction(
           markerCleanupFailed = true;
           log.warn(`embedding generation ${shardDirRel}: marker cleanup deferred after publish: ${err}`);
         }
+      }
+      // Swept members bypass the per-file delete path, so record their
+      // deletion revisions here — mirroring the whole-generation removal
+      // path — or a later peer without shared-base evidence can reintroduce
+      // the removed shards (codex P1). Every member gets an attempt before
+      // the failure propagates: the push side then retries a fully-recorded
+      // apply or nothing, and the justified-removals exemption keeps that
+      // retry idempotent.
+      if (input.deletionMtimeByPath !== undefined && input.deletionMtimeByPath.size > 0 && io.deleteFile) {
+        let firstTombstoneError: unknown = null;
+        for (const relPath of removedPaths) {
+          try {
+            await io.deleteFile({
+              root: root.abs,
+              path: relPath,
+              filePath: await resolveSafeArchiveTarget(root, relPath),
+              mtimeMs: input.deletionMtimeByPath.get(relPath) ?? input.now,
+            });
+          } catch (err) {
+            firstTombstoneError ??= err;
+            log.warn(`embedding generation ${shardDirRel}: tombstone recording failed for ${relPath}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        if (firstTombstoneError) throw firstTombstoneError;
       }
       return {
         shardDirRel,

@@ -116,8 +116,8 @@ function upsertChange(
   };
 }
 
-function deleteChange(relPath: string, baseSha256: string): OfflineSyncChange {
-  return { type: "delete", path: relPath, baseSha256 };
+function deleteChange(relPath: string, baseSha256: string, mtimeMs?: number): OfflineSyncChange {
+  return { type: "delete", path: relPath, baseSha256, ...(mtimeMs === undefined ? {} : { mtimeMs }) };
 }
 
 function member(relPath: string, content: Buffer): { path: string; sha256: string; bytes: number } {
@@ -138,7 +138,7 @@ function baseChangeset(changes: OfflineSyncChange[], embeddingGenerations?: Offl
 
 /** Secure-IO spies: real filesystem effects + call recording. */
 function makeIo(root: string) {
-  const calls = { stagingWrites: [] as string[], stagingReads: [] as string[], plainWrites: [] as string[], deletes: [] as string[] };
+  const calls = { stagingWrites: [] as string[], stagingReads: [] as string[], plainWrites: [] as string[], deletes: [] as string[], deleteMtimes: [] as (number | undefined)[] };
   return {
     calls,
     io: {
@@ -159,8 +159,9 @@ function makeIo(root: string) {
         calls.stagingReads.push(target.path);
         return readAll(root, target.path);
       },
-      deleteFile: async (target: { path: string }) => {
+      deleteFile: async (target: { path: string; mtimeMs?: number }) => {
         calls.deletes.push(target.path);
+        calls.deleteMtimes.push(target.mtimeMs);
         await rm(path.join(root, target.path), { force: true });
       },
     },
@@ -512,6 +513,161 @@ test("re-applying an already-applied manifested changeset stays idempotent", asy
     const retry = await applyOfflineSyncChangeset({ root, changeset: build(), returnCurrentFiles: false, ...io });
     assert.equal(retry.conflicts.length, 0, `retry must not conflict: ${JSON.stringify(retry.conflicts)}`);
     assert.deepEqual(await readAll(root, shardRel(0)), new0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unbased manifested creation defers instead of overwriting an independent local generation", async () => {
+  const root = await tempDir("remnic-3150-unbased-create");
+  try {
+    const local = await seedLocalGeneration(root, 2);
+    // Fresh sender creation: base-less upserts, no shared base evidence.
+    const incoming0 = shardDoc({ [SHARD_IDS[2]]: { path: `memories/${SHARD_IDS[2]}.md`, vector: [7, 7] } });
+    const incoming1 = shardDoc({ [SHARD_IDS[3]]: { path: `memories/${SHARD_IDS[3]}.md`, vector: [6, 6] } });
+    const changeset = baseChangeset(
+      [upsertChange(shardRel(0), incoming0, 100), upsertChange(shardRel(1), incoming1, 100)],
+      [{ shardDir: "state/embeddings", members: [member(shardRel(0), incoming0), member(shardRel(1), incoming1)] }],
+    );
+    const { io } = makeIo(root);
+    const result = await applyOfflineSyncChangeset({ root, changeset, returnCurrentFiles: false, ...io });
+    assert.ok(
+      result.conflicts.some((c) => c.reason === "embedding_generation_diverged"),
+      `unbased creation over an existing generation must defer: ${JSON.stringify(result.conflicts)}`,
+    );
+    assert.deepEqual(await readAll(root, shardRel(0)), local.get(shardRel(0)), "local generation must be untouched");
+    assert.deepEqual(await readAll(root, shardRel(1)), local.get(shardRel(1)), "local generation must be untouched");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unbased manifested creation applies to an empty receiver and to an exactly matching one", async () => {
+  const fresh = await tempDir("remnic-3150-unbased-fresh");
+  const matching = await tempDir("remnic-3150-unbased-match");
+  try {
+    const incoming0 = shardDoc({ [SHARD_IDS[0]]: { path: `memories/${SHARD_IDS[0]}.md`, vector: [1, 1] } });
+    const incoming1 = shardDoc({ [SHARD_IDS[1]]: { path: `memories/${SHARD_IDS[1]}.md`, vector: [2, 2] } });
+    const build = () => baseChangeset(
+      [upsertChange(shardRel(0), incoming0, 100), upsertChange(shardRel(1), incoming1, 100)],
+      [{ shardDir: "state/embeddings", members: [member(shardRel(0), incoming0), member(shardRel(1), incoming1)] }],
+    );
+    const freshIo = makeIo(fresh);
+    const freshResult = await applyOfflineSyncChangeset({ root: fresh, changeset: build(), returnCurrentFiles: false, ...freshIo.io });
+    assert.equal(freshResult.conflicts.length, 0, `fresh create must apply: ${JSON.stringify(freshResult.conflicts)}`);
+    assert.deepEqual((await shardNames(fresh)).length, 2);
+
+    // Identical content already on disk: re-applying the same unbased create is idempotent, not divergent.
+    await write(matching, shardRel(0), incoming0);
+    await write(matching, shardRel(1), incoming1);
+    const matchingIo = makeIo(matching);
+    const matchResult = await applyOfflineSyncChangeset({ root: matching, changeset: build(), returnCurrentFiles: false, ...matchingIo.io });
+    assert.equal(matchResult.conflicts.length, 0, `identical unbased create must re-apply: ${JSON.stringify(matchResult.conflicts)}`);
+    assert.deepEqual(await readAll(matching, shardRel(0)), incoming0);
+  } finally {
+    await rm(fresh, { recursive: true, force: true });
+    await rm(matching, { recursive: true, force: true });
+  }
+});
+
+test("retrying a manifested shrink after response loss stays idempotent", async () => {
+  const root = await tempDir("remnic-3150-shrink-retry");
+  try {
+    const local = await seedLocalGeneration(root, 3);
+    const build = () => baseChangeset(
+      [deleteChange(shardRel(2), sha256(local.get(shardRel(2))!))],
+      [{ shardDir: "state/embeddings", members: [
+        member(shardRel(0), local.get(shardRel(0))!),
+        member(shardRel(1), local.get(shardRel(1))!),
+      ] }],
+    );
+    const { io } = makeIo(root);
+    await applyOfflineSyncChangeset({ root, changeset: build(), returnCurrentFiles: false, ...io });
+    const retry = await applyOfflineSyncChangeset({ root, changeset: build(), returnCurrentFiles: false, ...io });
+    assert.equal(retry.conflicts.length, 0, `shrink retry must not diverge: ${JSON.stringify(retry.conflicts)}`);
+    assert.deepEqual(await shardNames(root), ["shard-0000.json", "shard-0001.json"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("manifested shrink records deletion revisions for swept members", async () => {
+  const root = await tempDir("remnic-3150-shrink-tombstone");
+  try {
+    const local = await seedLocalGeneration(root, 3);
+    const DELETION_MTIME = 555555;
+    const changeset = baseChangeset(
+      [deleteChange(shardRel(2), sha256(local.get(shardRel(2))!), DELETION_MTIME)],
+      [{ shardDir: "state/embeddings", members: [
+        member(shardRel(0), local.get(shardRel(0))!),
+        member(shardRel(1), local.get(shardRel(1))!),
+      ] }],
+    );
+    const { io, calls } = makeIo(root);
+    const result = await applyOfflineSyncChangeset({ root, changeset, returnCurrentFiles: false, ...io });
+    assert.equal(result.conflicts.length, 0, `shrink must apply: ${JSON.stringify(result.conflicts)}`);
+    assert.deepEqual(await shardNames(root), ["shard-0000.json", "shard-0001.json"]);
+    assert.deepEqual(calls.deletes, [shardRel(2)], "swept shard must be tombstoned through the delete hook");
+    assert.deepEqual(calls.deleteMtimes, [DELETION_MTIME], "the supplied deletion timestamp must survive");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a failing delete hook fails the manifested shrink after recording every tombstone", async () => {
+  const root = await tempDir("remnic-3150-shrink-tombstone-fail");
+  try {
+    const local = await seedLocalGeneration(root, 3);
+    const changeset = baseChangeset(
+      [deleteChange(shardRel(2), sha256(local.get(shardRel(2))!), 555555)],
+      [{ shardDir: "state/embeddings", members: [
+        member(shardRel(0), local.get(shardRel(0))!),
+        member(shardRel(1), local.get(shardRel(1))!),
+      ] }],
+    );
+    const io = makeIo(root);
+    let hookCalls = 0;
+    await assert.rejects(
+      applyOfflineSyncChangeset({
+        root,
+        changeset,
+        returnCurrentFiles: false,
+        ...io.io,
+        deleteFile: async () => {
+          hookCalls += 1;
+          throw new Error("hook down");
+        },
+      }),
+      /hook down/,
+    );
+    assert.equal(hookCalls, 1, "every swept member must get a tombstone attempt");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("marker-only conversion consumes the marker change so the per-file loop never rewrites it", async () => {
+  const root = await tempDir("remnic-3150-marker-handled");
+  try {
+    await seedLocalGeneration(root, 2);
+    const marker = Buffer.from(JSON.stringify({
+      version: 1,
+      provider: "openai",
+      model: "text-embedding-3-small",
+      entries: { [SHARD_IDS[2]]: { path: `memories/${SHARD_IDS[2]}.md`, vector: [1, 2] } },
+    } satisfies EmbeddingIndexFile), "utf-8");
+    const changeset = baseChangeset([upsertChange("state/embeddings.json", marker, 100)]);
+    const { io, calls } = makeIo(root);
+    const result = await applyOfflineSyncChangeset({ root, changeset, returnCurrentFiles: false, ...io });
+    assert.equal(result.conflicts.length, 0, `marker conversion must apply: ${JSON.stringify(result.conflicts)}`);
+    const names = await shardNames(root);
+    assert.ok(names.includes("shard-0002.json"), `marker entry must convert into its shard: ${JSON.stringify(names)}`);
+    await assert.rejects(
+      readAll(root, "state/embeddings.json"),
+      /ENOENT/,
+      "the marker change is consumed by the conversion — the per-file loop must not rewrite the legacy marker",
+    );
+    assert.deepEqual(calls.plainWrites, [], "the marker must never take the per-file write path");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
