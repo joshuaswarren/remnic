@@ -1151,7 +1151,7 @@ test("recall never serves entries from a generation swapped in mid-load", async 
   const memoryDir = await tmpMemoryDir("remnic-emb3146-recall-swap-");
   const unregister = registerHostEmbeddingProvider(memoryDir, HOST_PROVIDER_STUB);
   const cleanup: Array<() => void> = [];
-  let mutationDone: Promise<void> | null = null;
+  const mutations: Array<Promise<void>> = [];
   try {
     // Generation A: two shards, two searchable entries with distinctive ids.
     const idA = ["mem-a1", "mem-a2"];
@@ -1211,7 +1211,7 @@ test("recall never serves entries from a generation swapped in mid-load", async 
         .then(() => {
           swapPublished = true;
         });
-      mutationDone = done;
+      mutations.push(done);
       return done;
     }
 
@@ -1226,7 +1226,7 @@ test("recall never serves entries from a generation swapped in mid-load", async 
     // When the 1500ms publish deadline expires the mutation is still
     // mid-flight; tearing the tree down under it is the intermittent
     // ENOTEMPTY this suite flaked on. Settle it before rm.
-    if (mutationDone) await mutationDone.catch(() => undefined);
+    await Promise.all(mutations.map((mutation) => mutation.catch(() => undefined)));
     for (const fn of cleanup.reverse()) fn();
     unregister();
     await rm(memoryDir, { recursive: true, force: true });
