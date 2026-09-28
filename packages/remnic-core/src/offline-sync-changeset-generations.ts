@@ -352,13 +352,17 @@ export async function applyChangesetEmbeddingGenerations(
       // Manifested deletes are pre-authorized removals: the retry after a
       // response loss must re-apply idempotently instead of diverging
       // (#3150 review), and the swept members need their deletion revisions
-      // recorded after the swap (the per-file loop never sees them).
+      // recorded after the swap (the per-file loop never sees them). The
+      // map is present whenever tombstones exist — even when none carries
+      // mtimeMs — so the recording pass runs and defaults to `now`.
       justifiedRemovals: new Set(tombstones.map((change) => change.path)),
-      deletionMtimeByPath: new Map(
-        tombstones
-          .filter((change) => change.mtimeMs !== undefined)
-          .map((change) => [change.path, change.mtimeMs as number]),
-      ),
+      deletionMtimeByPath: tombstones.length === 0
+        ? undefined
+        : new Map(
+          tombstones
+            .filter((change) => change.mtimeMs !== undefined)
+            .map((change) => [change.path, change.mtimeMs as number]),
+        ),
       // All-manifested members base-less = the sender claims a fresh
       // creation; an existing local generation must match exactly or defer.
       freshCreateClaim: baseStates.size === 0,

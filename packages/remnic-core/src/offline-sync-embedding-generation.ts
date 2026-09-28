@@ -360,13 +360,21 @@ export async function applyEmbeddingGenerationTransaction(
       const deferrals = divergedEmbeddingGenerationDeferrals({
         incomingFiles: incomingGenerationStates(input),
         // A pre-authorized removal keeps its base entry only while still on
-        // disk (digest auth); once absent it is already applied and must not
-        // diverge the retry (#3150 review).
+        // disk (digest auth): present members are compared normally — a
+        // daemon rewrite still defers — while an absent member is already
+        // applied and must not diverge the retry (#3150 review).
         baseFiles: baseArr.filter((member) => !justifiedRemovals.has(member.path) || localCensus.has(member.path)),
-        currentFiles: censusArr.filter((member) => !justifiedRemovals.has(member.path)),
+        currentFiles: censusArr,
       });
+      const incomingShardPaths = new Set(input.incomingShardPaths);
       const addedOrRemovedSinceBase =
-        censusArr.some((member) => !baseStates.has(member.path) && !justifiedRemovals.has(member.path)) ||
+        censusArr.some((member) =>
+          !baseStates.has(member.path) &&
+          !justifiedRemovals.has(member.path) &&
+          // An incoming member found in the census is the apply's own
+          // already-published work (response-loss retry), not a local
+          // addition; its bytes were verified above.
+          !incomingShardPaths.has(member.path)) ||
         baseArr.some((member) => !localCensus.has(member.path) && !justifiedRemovals.has(member.path));
       if (deferrals.length > 0 || addedOrRemovedSinceBase) {
         const handled = new Set<string>(input.incomingShardPaths);
@@ -570,11 +578,13 @@ export async function applyEmbeddingGenerationTransaction(
       // Swept members bypass the per-file delete path, so record their
       // deletion revisions here — mirroring the whole-generation removal
       // path — or a later peer without shared-base evidence can reintroduce
-      // the removed shards (codex P1). Every member gets an attempt before
-      // the failure propagates: the push side then retries a fully-recorded
-      // apply or nothing, and the justified-removals exemption keeps that
-      // retry idempotent.
-      if (input.deletionMtimeByPath !== undefined && input.deletionMtimeByPath.size > 0 && io.deleteFile) {
+      // the removed shards (codex P1). An empty map still records (with
+      // `now`) when the caller declared a deletion context, so tombstones
+      // whose changeset deletes omit mtimeMs are not lost. Every member
+      // gets an attempt before the failure propagates: the push side then
+      // retries a fully-recorded apply or nothing, and the
+      // justified-removals exemption keeps that retry idempotent.
+      if (input.deletionMtimeByPath !== undefined && io.deleteFile) {
         let firstTombstoneError: unknown = null;
         for (const relPath of removedPaths) {
           try {
