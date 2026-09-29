@@ -1184,6 +1184,7 @@ const RECALL_ENH_FIELD_TO_FLAG: Record<keyof RecallEnhancementCapabilitySet, str
   responseGuidanceRecall: "responseGuidanceRecallEnabled",
   eventOrderRecall: "eventOrderRecallEnabled",
   reinforcementRecallBoost: "reinforcementRecallBoostEnabled",
+  outcomeBoost: "outcomeBoostEnabled",
   recallPlannerTelemetry: "recallPlannerTelemetryEnabled",
   peerProfileRecall: "peerProfileRecallEnabled",
   graphAssistShadowEval: "graphAssistShadowEvalEnabled",

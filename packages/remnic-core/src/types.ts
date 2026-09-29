@@ -10,9 +10,9 @@ import type { ReplicaPeersConfig } from "./replica-peers-config.js";
 import type { ExternalWikiRoot } from "./external-wiki-config.js";
 import type { StateViewResult } from "./recall-state-view.js";
 import type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
-import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
+import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js"; export type { GraphPathScoringConfig };
+import type { OutcomeBoostConfig } from "./outcome-boost-config.js"; export type { OutcomeBoostConfig };
 export type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
-export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 export type { BackgroundGenerationConfig } from "./background-generation-config.js";
 import type { BackgroundGenerationConfig } from "./background-generation-config.js";
 import type {
@@ -700,7 +700,7 @@ export interface PluginConfig
     RecallNavigationSettings,
     RecognitionTierSettings,
     SeedGraduationSettings,
-    LocalLlmConfig {
+    LocalLlmConfig, OutcomeBoostConfig {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
   backgroundGeneration?: BackgroundGenerationConfig;

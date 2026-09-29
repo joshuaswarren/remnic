@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "memory-worth-base",
+  "role": "memory-worth-base",
+  "outcomeBoostWeight": 0,
+  "retrieval": {
+    "k": 10,
+    "contextCapTokens": 2000
+  },
+  "configOverrides": {
+    "recallMemoryWorthFilterEnabled": true,
+    "outcomeBoostEnabled": false,
+    "outcomeBoostWeight": 0
+  }
+}
