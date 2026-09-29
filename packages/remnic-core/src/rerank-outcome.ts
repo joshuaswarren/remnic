@@ -8,6 +8,11 @@
  * positive. It does not use the Memory Worth Laplace prior (s+1)/(s+f+2).
  * An observed result uses the maximum-likelihood rate success/(success+fail).
  *
+ * Turning the blend on (enabled and weight > 0) clamps every candidate's text
+ * score into [0, 1] before mixing, including UNOBSERVED items. Raw scores
+ * outside that range can change order relative to the weight-0 path. Weight 0
+ * does not clamp.
+ *
  * Weight 0 is an identity on the raw input score: same values, same order.
  * The recall pipeline calls `applyOutcomePriorScores` only when
  * `outcomeBoostEnabled === true` and the weight is greater than 0, so the
@@ -79,6 +84,11 @@ export function resolveOutcomeObservation(
   };
 }
 
+/**
+ * Weight 0 returns `textScore` unchanged. A positive weight clamps `textScore`
+ * into [0, 1] first. UNOBSERVED stays on that clamped value. OBSERVED mixes it
+ * with the success rate.
+ */
 export function blendOutcomeScore(
   textScore: number,
   observation: OutcomeObservation,
@@ -167,8 +177,12 @@ export function applyOutcomePriorScores(
   config: { outcomeBoostWeight?: number },
 ): void {
   const weight = config.outcomeBoostWeight;
-  if (!(typeof weight === "number" && Number.isFinite(weight) && weight > 0)) return;
+  // Non-numbers, non-finite values, and negatives are a no-op. Zero is an
+  // identity. assertOutcomeWeight is the upper bound (> 1 throws); it is not
+  // a second copy of the positivity check.
+  if (typeof weight !== "number" || !Number.isFinite(weight) || weight < 0) return;
   assertOutcomeWeight(weight);
+  if (weight === 0) return;
   const ranked = results.map((result, originalIndex) => {
     const memory = memoryForResult(memoryByPath, result);
     const observation = resolveOutcomeObservation(

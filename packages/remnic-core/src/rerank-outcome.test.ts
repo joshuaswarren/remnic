@@ -149,6 +149,20 @@ test("applyOutcomePriorScores is an identity at weight 0 and uses the namespace 
     untouched.map((row) => ({ path: row.path, score: row.score, namespace: row.namespace })),
     before,
   );
+  const negative = [result("facts/a.md", 1.4)];
+  applyOutcomePriorScores(negative, new Map(), { outcomeBoostWeight: -1 });
+  assert.equal(negative[0]?.score, 1.4);
+  assert.throws(
+    () => applyOutcomePriorScores([result("facts/a.md", 1)], new Map(), { outcomeBoostWeight: 1.2 }),
+    /outcomeBoostWeight/,
+  );
+
+  const namespaced = resolveOutcomeObservation({ success: 0, fail: 1 });
+  assert.equal(namespaced.state, OUTCOME_STATE_OBSERVED);
+  assert.equal(namespaced.outcomeScore, 0);
+  const bare = resolveOutcomeObservation({ success: 8, fail: 0 });
+  assert.equal(bare.state, OUTCOME_STATE_OBSERVED);
+  assert.equal(bare.outcomeScore, 1);
 
   const results = [result("facts/a.md", 1, "ns-a"), result("facts/a.md", 0.2)];
   const memoryByPath = new Map<string, MemoryFile>([
@@ -156,6 +170,9 @@ test("applyOutcomePriorScores is an identity at weight 0 and uses the namespace 
     ["facts/a.md", memory({ mw_success: 8, mw_fail: 0 })],
   ]);
   applyOutcomePriorScores(results, memoryByPath, { outcomeBoostWeight: 1 });
+  // 0/1 is an observed rate of 0, not UNOBSERVED. The namespaced key must not
+  // read the bare-path 8/0 counters. At weight 1 the bare path (rate 1) sorts
+  // ahead of ns-a (rate 0).
   assert.equal(results[0]?.namespace, undefined);
   assert.equal(results[0]?.score, 1);
   assert.equal(results[1]?.namespace, "ns-a");

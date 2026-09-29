@@ -1892,7 +1892,7 @@ Cross-session pattern detection: clusters memories by normalized content, reinfo
 
 ## Outcome prior boost (issue #1958)
 
-Default off. Recall ranking is unchanged unless `outcomeBoostEnabled` is true and `outcomeBoostWeight` is greater than 0. Unobserved facts (no finite non-negative `mw_success` / `mw_fail` result) keep the clamped text score. They are not pulled toward the Memory Worth Beta prior. Weight `0` is an identity on the raw text score.
+Default off. Recall ranking is unchanged unless `outcomeBoostEnabled` is true and `outcomeBoostWeight` is greater than 0. When that blend runs, every candidate's text score is clamped into `[0, 1]` before mixing, including unobserved facts. Scores outside that range can change order relative to the default path. Unobserved facts (no finite non-negative `mw_success` / `mw_fail` result, or an explicit `0`/`0`) stay on that clamped text score. They are not pulled toward the Memory Worth Beta prior. A present `0` success with a positive fail count is observed, at rate `0`. Weight `0` is an identity on the raw text score and does not clamp.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
