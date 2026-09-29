@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "ruleId": "h1-outcome-prior-decision-v1",
+  "controllingIssue": 1958,
+  "controllingComment": "https://github.com/joshuaswarren/remnic/issues/1958#issuecomment-4998194342",
+  "clock": {
+    "warmEpochs": [1, 8],
+    "pickEpochs": [9, 10],
+    "lockedEpochs": [11, 12],
+    "pickWeights": [0.15, 0.3, 0.5]
+  },
+  "primaryMetric": "recall@k",
+  "h1b": "NOT RUN",
+  "thresholds": {
+    "minRelativeGain": 0.05,
+    "confidenceLevel": 0.95,
+    "ciLowerStrictlyAbove": 0,
+    "alpha": 0.05
+  },
+  "analysis": {
+    "bootstrapDraws": 10000,
+    "pairing": "user-data-seed-run-seed",
+    "interval": "paired-bootstrap-grouped-by-user",
+    "significance": "paired-shuffle",
+    "pickStageMultiplicity": "holm"
+  }
+}

@@ -10288,12 +10288,40 @@ async function cmdLegacyBenchmark(action: string, rest: string[], json: boolean)
   }
 }
 
+async function cmdBenchOutcomePrior(rest: string[]): Promise<void> {
+  const benchModule = await loadBenchModule();
+  const runner = (
+    benchModule as unknown as {
+      runOutcomePriorScaffoldCli?: (argv: readonly string[]) => {
+        ok: boolean;
+        exitCode: number;
+        runsExecuted: 0;
+        message: string;
+      };
+    }
+  ).runOutcomePriorScaffoldCli;
+  if (typeof runner !== "function") {
+    console.error(
+      "The installed @remnic/bench build does not expose runOutcomePriorScaffoldCli. Upgrade to a build that includes the H1 outcome-prior scaffold.",
+    );
+    process.exit(1);
+  }
+  const result = runner(rest);
+  console.log(JSON.stringify(result));
+  if (result.exitCode !== 0) process.exit(result.exitCode);
+}
+
 async function cmdBench(rest: string[]): Promise<void> {
   if (rest[0] === "coding") return cmdBenchCoding(rest.slice(1));
   if (rest[0] === "security") return cmdBenchSecurity(rest.slice(1));
   // Procedural ablation (#567): ad-hoc harness, not a catalogue entry.
   if (rest[0] === "procedural-ablation") {
     await cmdBenchProceduralAblation(rest.slice(1));
+    return;
+  }
+  // H1 outcome prior (#1958): scaffold only. Refuses warm/pilot/main.
+  if (rest[0] === "ablate" && rest[1] === "outcome-prior") {
+    await cmdBenchOutcomePrior(rest.slice(2));
     return;
   }
 

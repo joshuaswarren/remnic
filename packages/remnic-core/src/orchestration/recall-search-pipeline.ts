@@ -58,6 +58,7 @@ import {
   memoryMapKey,
   resultHasKey,
 } from "../recall-memory-map.js";
+import { applyOutcomePriorScores, outcomePriorBoostActive } from "../rerank-outcome.js";
 import { type UtilityRuntimeValues, applyUtilityRankingRuntimeDelta } from "../utility-runtime.js";
 import {
   lifecycleRecallScoreAdjustment,
@@ -1709,6 +1710,8 @@ export class RecallSearchPipelineCoordinator {
 
       boosted.push({ ...r, score });
     }
+
+    if (outcomePriorBoostActive(this.deps.config)) applyOutcomePriorScores(boosted, memoryByPath, this.deps.config);
 
     // Re-sort by boosted score
     return boosted.sort((a, b) => b.score - a.score);

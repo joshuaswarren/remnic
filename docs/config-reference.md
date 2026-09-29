@@ -1890,6 +1890,15 @@ Cross-session pattern detection: clusters memories by normalized content, reinfo
 | `reinforcementRecallBoostWeight` | `0.05` | Per-unit score bonus applied per `reinforcement_count`. Raw boost is `weight × reinforcement_count`, then clipped at `reinforcementRecallBoostMax`. Range `[0, 1]`. |
 | `reinforcementRecallBoostMax` | `0.3` | Maximum additive reinforcement boost per recall result. Range `[0, 1]`. Raw boost formula: `min(reinforcementRecallBoostMax, reinforcementRecallBoostWeight × reinforcement_count)`. |
 
+## Outcome prior boost (issue #1958)
+
+Default off. Recall ranking is unchanged unless `outcomeBoostEnabled` is true and `outcomeBoostWeight` is greater than 0. When that blend runs, every candidate's text score is clamped into `[0, 1]` before mixing, including unobserved facts. Scores outside that range can change order relative to the default path. Unobserved facts (no finite non-negative `mw_success` / `mw_fail` result, or an explicit `0`/`0`) stay on that clamped text score. They are not pulled toward the Memory Worth Beta prior. A present `0` success with a positive fail count is observed, at rate `0`. Weight `0` is an identity on the raw text score and does not clamp.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `outcomeBoostEnabled` | `false` | Opt-in gate for the H1 outcome-prior blend. Default `false`. String values `false`, `0`, `no`, and `off` stay off. |
+| `outcomeBoostWeight` | `0` | Blend weight in `[0, 1]`. Absent or empty parses as `0`. A present value outside that range throws. `0` does not call the blend. |
+
 ## Codex Marketplace (issue #418)
 
 | Setting | Default | Description |
@@ -2411,6 +2420,8 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `reinforcementRecallBoostEnabled` | `false` | `false` until you confirm pattern reinforcement is producing high-quality canonicals. Enable recall boost only after observing `remnic patterns list` output. |
 | `reinforcementRecallBoostWeight` | `0.05` | `0.05` (per-unit score bonus per `reinforcement_count`; raise cautiously and pair with a lower `reinforcementRecallBoostMax` if you want fast saturation) |
 | `reinforcementRecallBoostMax` | `0.3` | `0.3` (a 30-point maximum additive boost; lower to `0.1`–`0.15` for conservative uplift) |
+| `outcomeBoostEnabled` | `false` | `false` until an H1 locked test supports the outcome prior. Leave this off in production. |
+| `outcomeBoostWeight` | `0` | `0` disables the blend even if the gate is on. Do not raise it to chase a single corpus. |
 | `proactiveExtractionEnabled` | `false` | `false` until you validate the second pass in your environment |
 | `contextCompressionActionsEnabled` | `false` | `false` unless you are validating action-policy flows |
 | `compressionGuidelineLearningEnabled` | `false` | `false` unless action-policy telemetry is already stable |

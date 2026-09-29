@@ -737,6 +737,21 @@ export type {
   AblationConfigOverrides,
 } from "./ablations/single-flag-matrix.js";
 
+// H1 outcome-prior scaffold (issue #1958). Loads frozen arms; does not run epochs.
+export {
+  OUTCOME_PRIOR_CLI_COMMAND,
+  evaluateH1Decision,
+  loadOutcomePriorArms,
+  loadOutcomePriorDecisionRule,
+  runOutcomePriorScaffoldCli,
+} from "./ablations/outcome-prior.js";
+export type {
+  H1ComparisonResult,
+  OutcomePriorArm,
+  OutcomePriorDecisionRule,
+  OutcomePriorScaffoldCliResult,
+} from "./ablations/outcome-prior.js";
+
 // Real-fixture procedural-recall scenarios + baseline (issue #567 PR 2/5).
 export {
   PROCEDURAL_REAL_SCENARIOS,

@@ -549,6 +549,12 @@
       "graduationCriterion": "The backend runs green in the search-backend smoke matrix on BOTH the daemon and subprocess paths across 2 consecutive stable releases, with recall parity against qmd on the same corpus."
     },
     {
+      "flag": "outcomeBoostEnabled",
+      "addedIn": "9.69.88",
+      "issue": 1958,
+      "graduationCriterion": "Stays default-off until the H1 locked test (epochs 11-12) is SUPPORTED under the preregistered rule and a separate graduation PR links that run."
+    },
+    {
       "flag": "parallelRetrievalEnabled",
       "addedIn": "<=9.69.55",
       "issue": 3032,

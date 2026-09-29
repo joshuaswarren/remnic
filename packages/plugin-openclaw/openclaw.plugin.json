@@ -4072,6 +4072,18 @@
         "default": false,
         "description": "Enable Orama as a supplemental search backend."
       },
+      "outcomeBoostEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Opt in to the H1 outcome-prior recall blend (issue #1958). Default false. Ranking is unchanged unless this is true and outcomeBoostWeight is greater than 0."
+      },
+      "outcomeBoostWeight": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "default": 0,
+        "description": "Outcome-prior blend weight in [0, 1]. 0 keeps the raw text score. Unobserved facts are not pulled toward the Memory Worth Beta prior. Invalid values are rejected."
+      },
       "parallelAgentWeights": {
         "type": "object",
         "default": {

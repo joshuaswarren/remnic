@@ -1031,14 +1031,9 @@ export function resolveRecallAuxiliaryCapabilities(config: RecallAuxiliaryConfig
 }
 
 // ---------------------------------------------------------------------------
-// RecallEnhancement capability set (issue #1523 batch 9).
-//
-// These 24 flags gate recall enrichment, memory reconstruction, entity
-// relationships, causal trajectory recall, CMC retrieval, and related
-// enhancement paths. Read sites span orchestrator, access-service, graph-recall,
-// and CLI research-status commands. All flags are non-optional booleans on
-// PluginConfig (defaults resolved at the parse boundary), so the projection
-// is a pure pass-through.
+// RecallEnhancement capability set (issue #1523 batch 9, outcome prior #1958).
+// Gates recall enrichment and related paths. Flags are booleans on PluginConfig
+// (defaults resolved at parse), so the projection is a pure pass-through.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1051,6 +1046,7 @@ export interface RecallEnhancementCapabilitySet {
   readonly responseGuidanceRecall: boolean;
   readonly eventOrderRecall: boolean;
   readonly reinforcementRecallBoost: boolean;
+  readonly outcomeBoost: boolean;
   readonly recallPlannerTelemetry: boolean;
   readonly peerProfileRecall: boolean;
   readonly graphAssistShadowEval: boolean;
@@ -1081,6 +1077,7 @@ export type RecallEnhancementConfigProjection = Pick<
   | "responseGuidanceRecallEnabled"
   | "eventOrderRecallEnabled"
   | "reinforcementRecallBoostEnabled"
+  | "outcomeBoostEnabled"
   | "recallPlannerTelemetryEnabled"
   | "peerProfileRecallEnabled"
   | "graphAssistShadowEvalEnabled"
@@ -1111,6 +1108,7 @@ export function resolveRecallEnhancementCapabilities(config: RecallEnhancementCo
     responseGuidanceRecall: config.responseGuidanceRecallEnabled,
     eventOrderRecall: config.eventOrderRecallEnabled,
     reinforcementRecallBoost: config.reinforcementRecallBoostEnabled,
+    outcomeBoost: config.outcomeBoostEnabled,
     recallPlannerTelemetry: config.recallPlannerTelemetryEnabled,
     peerProfileRecall: config.peerProfileRecallEnabled,
     graphAssistShadowEval: config.graphAssistShadowEvalEnabled === true,

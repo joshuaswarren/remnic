@@ -44,6 +44,7 @@ import {
   parseStandingBlockMaxChars,
 } from "./standing-memory-block.js";
 import { parseDirectorySidecarsEnabled } from "./directory-sidecars.js";
+import { parseOutcomeBoostWeight } from "./rerank-outcome.js";
 import { parseRecognitionIndexMaxEntries, parseRecallRecognitionTier } from "./recall-recognition-tier.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
 import { parseExtractionFields } from "./extraction-span-config.js";
@@ -2622,6 +2623,8 @@ export function parseConfig(
       }
       return n;
     })(),
+    outcomeBoostEnabled: coerceBool(cfg.outcomeBoostEnabled) ?? false,
+    outcomeBoostWeight: parseOutcomeBoostWeight(cfg.outcomeBoostWeight),
     // Async peer profile reasoner (issue #679 PR 2/5). Defaults to
     // `false` (opt-in) per Gotchas #30/#48 — least-privileged default.
     // `coerceBool` handles "true"/"1"/"yes"/"on" CLI strings (Gotcha
