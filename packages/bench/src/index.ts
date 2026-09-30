@@ -737,7 +737,8 @@ export type {
   AblationConfigOverrides,
 } from "./ablations/single-flag-matrix.js";
 
-// H1 outcome-prior scaffold (issue #1958). Loads frozen arms; does not run epochs.
+// H1 outcome-prior scaffold (issue #1958). Loads frozen arms. --gates checks
+// the committed CI snapshot. Neither path runs epochs or writes result JSONL.
 export {
   OUTCOME_PRIOR_CLI_COMMAND,
   evaluateH1Decision,

@@ -57,10 +57,11 @@ Commands:
   report                   Legacy latency report generator (compatibility)
   procedural-ablation --out <path> [--fixture <path>]
                            Run the procedural recall ablation harness (issue #567)
-  ablate outcome-prior [--phase <warm|pilot|main>]
+  ablate outcome-prior [--gates] [--phase <warm|pilot|main>]
                            H1 outcome-prior scaffold (issue #1958). Lists frozen
-                           arms and refuses warm, pilot, and main phases. It does
-                           not run an experiment.
+                           arms. --gates checks the committed CI snapshot and
+                           does not run an experiment. Warm, pilot, and main
+                           phases are refused.
 
 Options:
   --quick                  Run a lightweight quick pass (maps to --lightweight --limit 1)

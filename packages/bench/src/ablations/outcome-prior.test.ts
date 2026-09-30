@@ -131,16 +131,24 @@ test("evaluateH1Decision reuses bench stats and withholds a verdict without a sh
   assert.equal(zeroBaseline.confidenceInterval, null);
 });
 
-test("scaffold CLI refuses experiment phases and does not run", () => {
-  for (const argv of [["--phase", "warm"], ["--phase", "pilot"], ["--phase=main"]] as const) {
-    const refused = runOutcomePriorScaffoldCli(argv);
+test("scaffold CLI refuses experiment phases and does not run", async () => {
+  for (const argv of [
+    ["--phase", "warm"],
+    ["--phase", "pilot"],
+    ["--phase=main"],
+    ["--phase", "warm", "--gates"],
+    ["--gates", "--phase=pilot"],
+  ] as const) {
+    const refused = await runOutcomePriorScaffoldCli(argv);
     assert.equal(refused.ok, false);
     assert.equal(refused.exitCode, 2);
     assert.equal(refused.runsExecuted, 0);
     assert.equal(refused.h1b, "NOT RUN");
     assert.deepEqual(refused.armIds, []);
+    assert.equal(refused.gates, undefined);
+    assert.equal(JSON.stringify(refused).includes("smokeHash"), false);
   }
-  const listed = runOutcomePriorScaffoldCli([]);
+  const listed = await runOutcomePriorScaffoldCli([]);
   assert.equal(listed.ok, true);
   assert.equal(listed.exitCode, 0);
   assert.equal(listed.runsExecuted, 0);
@@ -148,4 +156,5 @@ test("scaffold CLI refuses experiment phases and does not run", () => {
   assert.equal(listed.ruleId, "h1-outcome-prior-decision-v1");
   assert.deepEqual(listed.armIds, ["h1-w0", "h1-w015", "h1-w030", "h1-w050", "memory-worth-base"]);
   assert.match(listed.message, /scaffolding only/);
+  assert.equal(listed.gates, undefined);
 });

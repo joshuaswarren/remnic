@@ -2,8 +2,9 @@
  * H1 outcome-prior scaffold (issue #1958).
  *
  * Loads the frozen arm fixtures and decision rule, and evaluates one paired
- * recall comparison with `packages/bench/src/stats/*`. It does not warm a
- * store, draw epochs, or write result JSONL.
+ * recall comparison with `packages/bench/src/stats/*`. `--gates` checks the
+ * committed CI snapshot. This module does not draw epochs or write result
+ * JSONL, and it refuses `--phase warm`, `--phase pilot`, and `--phase main`.
  *
  * TODO(#1958): the preregistered paired shuffle test and the Holm correction
  * across pick-stage weights are not implemented here. Callers pass a shuffle
@@ -14,6 +15,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pairedDeltaConfidenceInterval, type BootstrapOptions } from "../stats/bootstrap.js";
 import { cohensD } from "../stats/effect-size.js";
+import { runOutcomePriorPreMainGates } from "./outcome-prior-gates.js";
 
 export const OUTCOME_PRIOR_CLI_COMMAND = "remnic bench ablate outcome-prior";
 
@@ -109,6 +111,13 @@ export interface OutcomePriorScaffoldCliResult {
   armIds: string[];
   ruleId: string;
   message: string;
+  gates?: {
+    smokeHash: string;
+    warmStoreHash: string;
+    repeated: boolean;
+    armOrderInvariant: boolean;
+    warmStoreImmutable: boolean;
+  };
 }
 
 function fixtureDir(): string {
@@ -445,7 +454,13 @@ function refusedPhase(argv: readonly string[]): (typeof REFUSED_PHASES)[number] 
   return undefined;
 }
 
-export function runOutcomePriorScaffoldCli(argv: readonly string[]): OutcomePriorScaffoldCliResult {
+function wantsPreMainGates(argv: readonly string[]): boolean {
+  return argv.includes("--gates");
+}
+
+export async function runOutcomePriorScaffoldCli(
+  argv: readonly string[],
+): Promise<OutcomePriorScaffoldCliResult> {
   const phase = refusedPhase(argv);
   if (phase) {
     return {
@@ -460,13 +475,34 @@ export function runOutcomePriorScaffoldCli(argv: readonly string[]): OutcomePrio
   }
   const arms = loadOutcomePriorArms();
   const rule = loadOutcomePriorDecisionRule();
+  if (!wantsPreMainGates(argv)) {
+    return {
+      ok: true,
+      exitCode: 0,
+      runsExecuted: 0,
+      h1b: rule.h1b,
+      armIds: arms.map((arm) => arm.id),
+      ruleId: rule.ruleId,
+      message: "scaffolding only — no experiment runs",
+    };
+  }
+  const gates = await runOutcomePriorPreMainGates(arms);
   return {
-    ok: true,
-    exitCode: 0,
+    ok: gates.ok,
+    exitCode: gates.ok ? 0 : 1,
     runsExecuted: 0,
     h1b: rule.h1b,
     armIds: arms.map((arm) => arm.id),
     ruleId: rule.ruleId,
-    message: "scaffolding only — no experiment runs",
+    message: gates.ok
+      ? "pre-main gates passed — no experiment runs"
+      : `pre-main gates failed: ${gates.reasons.join("; ")}`,
+    gates: {
+      smokeHash: gates.smokeHash,
+      warmStoreHash: gates.warmStoreHash,
+      repeated: gates.repeated,
+      armOrderInvariant: gates.armOrderInvariant,
+      warmStoreImmutable: gates.warmStoreImmutable,
+    },
   };
 }

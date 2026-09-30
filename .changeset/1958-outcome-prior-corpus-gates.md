@@ -1,0 +1,9 @@
+---
+"@remnic/core": minor
+"@remnic/bench": minor
+---
+
+H1 outcome-prior synthetic task family, CI snapshot, and pre-main gates (issue #1958). `@remnic/core` exports the existing outcome blend from `@remnic/core/rerank-outcome`. `outcomeBoostEnabled` stays default false and `outcomeBoostWeight` stays default 0. `@remnic/bench` commits the drift-gen task family and a 2-user / 4-epoch snapshot. `remnic bench ablate outcome-prior --gates` checks that snapshot and still refuses warm, pilot, and main phases. No experiment JSONL is written.
+
+Stability: alpha
+Flag: outcomeBoostEnabled

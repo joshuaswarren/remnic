@@ -10306,7 +10306,7 @@ async function cmdBenchOutcomePrior(rest: string[]): Promise<void> {
     );
     process.exit(1);
   }
-  const result = runner(rest);
+  const result = await runner(rest);
   console.log(JSON.stringify(result));
   if (result.exitCode !== 0) process.exit(result.exitCode);
 }
@@ -10319,7 +10319,7 @@ async function cmdBench(rest: string[]): Promise<void> {
     await cmdBenchProceduralAblation(rest.slice(1));
     return;
   }
-  // H1 outcome prior (#1958): scaffold only. Refuses warm/pilot/main.
+  // H1 outcome prior (#1958). Refuses warm/pilot/main. --gates does not run an experiment.
   if (rest[0] === "ablate" && rest[1] === "outcome-prior") {
     await cmdBenchOutcomePrior(rest.slice(2));
     return;
