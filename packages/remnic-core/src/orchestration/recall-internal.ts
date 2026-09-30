@@ -345,7 +345,6 @@ export class RecallInternalCoordinator {
     }
     this.deps.profiler.endSpan("planning", profileTraceId);
     const recallMode: RecallPlanMode = requestedMode ?? recallDecision.effectiveMode;
-    await options.onRecallPlanResolved?.(recallMode);
     const queryIntent = inferIntentFromText(retrievalQuery);
     const qmdSearchOptions =
       this.deps.buildConfiguredQmdSearchOptions(retrievalQuery);
@@ -467,6 +466,7 @@ export class RecallInternalCoordinator {
       scopeProfilePlan,
       lcmReadSessionIds,
     } = scopePlan;
+    await options.onRecallPlanResolved?.(recallMode, recallNamespaces);
     // `firstNonEmptyLcmRead`: query the ordered LCM read key set, return the
     // FIRST non-empty result (#1505). The query-SCORED sections no longer use
     // it — they MERGE candidates across every authorized key (a weak primary

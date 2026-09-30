@@ -849,10 +849,10 @@ export class AccessRecallSurface {
       onContextComposition: (composition) => {
         contextComposition = composition;
       },
-      onRecallPlanResolved: async (effectiveMode) => {
+      onRecallPlanResolved: async (effectiveMode, readNamespaces) => {
         if (effectiveMode === "no_recall" || request.abortSignal?.aborted) return;
         storageCorpusVersionsAtRecallStart = await Promise.all(
-          recallScopePlan.readNamespaces.map(async (recallNamespace) => {
+          readNamespaces.map(async (recallNamespace) => {
             const storage = await this.deps.orchestrator.getStorage(recallNamespace);
             return { namespace: recallNamespace, version: storage.getMemoryCorpusVersion() };
           }),

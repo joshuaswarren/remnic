@@ -188,7 +188,7 @@ export class RecallEntryCoordinator {
       abortSignal: abortController.signal,
       budgetCharsOverride: innerBudget,
       onRecallPlanResolved: options.onRecallPlanResolved
-        ? (mode: RecallPlanMode) => initGateCompleted ? options.onRecallPlanResolved?.(mode) : undefined
+        ? (mode: RecallPlanMode, readNamespaces: readonly string[]) => initGateCompleted ? options.onRecallPlanResolved?.(mode, readNamespaces) : undefined
         : undefined,
       onContextComposition:
         standingText.length > 0

@@ -275,6 +275,27 @@ test("recall reports the same coding namespaces selected by its scope plan", asy
         codingContext: orchestrator.getCodingContextForSession(sessionKey),
         namespacesEnabled: true,
       });
+      const originalRecall = orchestrator.recall.bind(orchestrator);
+      orchestrator.recall = async (...args) => {
+        orchestrator.setCodingContextForSession(sessionKey, {
+          projectId: "origin:acme/new-repo",
+          branch: "main",
+          rootPath: "/workspace/new-repo",
+          defaultBranch: "main",
+        });
+        return originalRecall(...args);
+      };
+      const actualScopePlan = resolveScopePlan({
+        config: orchestrator.config,
+        sessionKey,
+        codingContext: {
+          projectId: "origin:acme/new-repo",
+          branch: "main",
+          rootPath: "/workspace/new-repo",
+          defaultBranch: "main",
+        },
+        namespacesEnabled: true,
+      });
       const response = await new EngramAccessService(orchestrator).recall({
         query: QUERY,
         sessionKey,
@@ -283,7 +304,7 @@ test("recall reports the same coding namespaces selected by its scope plan", asy
 
       assert.deepEqual(
         response.storageCorpusVersionsAtRecallStart?.map(({ namespace }) => namespace),
-        scopePlan.readNamespaces,
+        actualScopePlan.readNamespaces,
       );
     },
     { namespacesEnabled: true, codingMode: { projectScope: true, branchScope: false, globalFallback: true } },
