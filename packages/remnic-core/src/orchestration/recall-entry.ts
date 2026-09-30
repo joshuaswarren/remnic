@@ -165,41 +165,44 @@ export class RecallEntryCoordinator {
       options.budgetCharsOverride >= 0
         ? options.budgetCharsOverride
         : this.deps.config.recallBudgetChars;
-    if (this.deps.config.recallStandingBlock && !namespacesEnabled && standingBudget !== 0 && !options.asOf) {
-      try {
-        const memories = await this.deps.storage.readAllMemories({
-          abortSignal: abortController.signal,
-        });
-        standingText = renderStandingMemoryBlock(
-          this.deps.config,
-          memoriesToStandingEntries(memories, { requestingConnector: options.sourceConnector }),
-        );
-      } catch (err) {
-        log.warn(`standing memory block skipped: ${err}`);
-      }
-    }
+    const shouldReadStandingBlock =
+      this.deps.config.recallStandingBlock && !namespacesEnabled && standingBudget !== 0 && !options.asOf;
+    let innerBudget = options.budgetCharsOverride;
     const innerObserver = options.onContextComposition;
-    const innerBudget =
-      standingText.length > 0 && standingBudget && standingBudget > 0
-        ? Math.max(0, standingBudget - standingText.length - 2)
-        : options.budgetCharsOverride;
-    const recallOptions = {
+    let recallOptions: RecallInvocationOptions;
+    recallOptions = {
       ...options,
       abortSignal: abortController.signal,
       budgetCharsOverride: innerBudget,
-      onRecallPlanResolved: options.onRecallPlanResolved
-        ? (mode: RecallPlanMode, readNamespaces: readonly string[]) => initGateCompleted ? options.onRecallPlanResolved?.(mode, readNamespaces) : undefined
+      onRecallPlanResolved: options.onRecallPlanResolved || shouldReadStandingBlock
+        ? async (mode: RecallPlanMode, readNamespaces: readonly string[]) => {
+            if (!initGateCompleted) return;
+            await options.onRecallPlanResolved?.(mode, readNamespaces);
+            if (shouldReadStandingBlock) {
+              try {
+                const memories = await this.deps.storage.readAllMemories({ abortSignal: abortController.signal });
+                standingText = renderStandingMemoryBlock(
+                  this.deps.config,
+                  memoriesToStandingEntries(memories, { requestingConnector: options.sourceConnector }),
+                );
+              } catch (err) {
+                log.warn(`standing memory block skipped: ${err}`);
+              }
+            }
+            innerBudget = standingText.length > 0 && standingBudget > 0
+              ? Math.max(0, standingBudget - standingText.length - 2)
+              : options.budgetCharsOverride;
+            recallOptions.budgetCharsOverride = innerBudget;
+          }
         : undefined,
       onContextComposition:
-        standingText.length > 0
+        shouldReadStandingBlock
           ? (composition: RecallContextComposition) =>
               innerObserver?.({
                 ...composition,
-                context: prefixStandingMemoryBlock(
-                  composition.context ?? "",
-                  standingText,
-                  standingBudget,
-                ),
+                context: standingText.length > 0
+                  ? prefixStandingMemoryBlock(composition.context ?? "", standingText, standingBudget)
+                  : composition.context,
               })
           : innerObserver,
     };

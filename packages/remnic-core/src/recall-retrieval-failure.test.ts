@@ -257,6 +257,39 @@ test("no_recall does not sample corpus versions for namespaces it did not search
   });
 });
 
+test("recall captures corpus versions before reading the standing-memory block", async () => {
+  await withOrchestrator(
+    "remnic-recall-standing-version-",
+    false,
+    async (orchestrator) => {
+      const storage = await orchestrator.getStorage("default");
+      const versionBeforeRecall = storage.getMemoryCorpusVersion();
+      const manager = orchestrator.storage;
+      const readAllMemories = manager.readAllMemories.bind(manager);
+      let standingReadCount = 0;
+      manager.readAllMemories = async (...args) => {
+        standingReadCount += 1;
+        if (standingReadCount === 1) {
+          await storage.writeMemory("fact", "write during standing-memory read");
+        }
+        return readAllMemories(...args);
+      };
+
+      const response = await new EngramAccessService(orchestrator).recall({
+        query: QUERY,
+        sessionKey: "standing-corpus-version",
+      });
+
+      assert.ok(standingReadCount >= 1);
+      assert.ok(storage.getMemoryCorpusVersion() > versionBeforeRecall);
+      assert.deepEqual(response.storageCorpusVersionsAtRecallStart, [
+        { namespace: "default", version: versionBeforeRecall },
+      ]);
+    },
+    { recallStandingBlock: true },
+  );
+});
+
 test("recall reports the same coding namespaces selected by its scope plan", async () => {
   await withOrchestrator(
     "remnic-recall-coding-version-",
