@@ -23,6 +23,7 @@ import { normalizeProjectionTags } from "./memory-projection-format.js";
 import { namespaceIdentityFromToken } from "./namespaces/identity.js";
 import { canReadNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
 import { expandScopeProfileReadNamespaces, resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
+import { resolveScopePlan } from "./scopes/scope-plan.js";
 import type { Orchestrator, RecallInvocationOptions } from "./orchestrator.js";
 import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
 import { assembleRecallResponse } from "./access-recall-response.js";
@@ -732,6 +733,14 @@ export class AccessRecallSurface {
           codingContext: profileCodingContext,
           codingOverlay: profileCodingOverlay,
         });
+    const recallScopePlan = resolveScopePlan({
+      config: this.deps.orchestrator.config,
+      sessionKey: request.sessionKey,
+      namespace: namespaceOverride,
+      principalOverride: authenticatedPrincipal,
+      codingContext: profileCodingContext,
+      namespacesEnabled: resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces,
+    });
     // Skip budget checks for modes that never perform a cross-namespace read.
     const modeSkipsBudget = mode === "no_recall";
     // Derive the full set of namespaces the orchestrator will actually search.
@@ -898,7 +907,9 @@ export class AccessRecallSurface {
     // construction — so ANY failure after the reserve releases the exact
     // budget entry (by token, review #4) instead of leaking it.
     try {
-      const namespacesForVersion = effectiveNamespaces.length > 0 ? effectiveNamespaces : [namespace];
+      await this.deps.orchestrator.initialize();
+      const namespacesForVersion =
+        recallScopePlan.readNamespaces.length > 0 ? recallScopePlan.readNamespaces : [namespace];
       const storageCorpusVersionsAtRecallStart = await Promise.all(
         namespacesForVersion.map(async (recallNamespace) => {
           const storage = await this.deps.orchestrator.getStorage(recallNamespace);

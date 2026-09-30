@@ -19,6 +19,7 @@ import { EngramAccessService } from "./access-service.js";
 import type { EngramAccessRecallRequest, EngramAccessRecallResponse } from "./access-service.js";
 import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
+import { resolveScopePlan } from "./scopes/scope-plan.js";
 import {
   MEMORY_CONTEXT_UNAVAILABLE_NOTE,
   type RecallContextComposition,
@@ -56,19 +57,19 @@ function searchBackend(
       return degrade ? "backend=timeout-stub" : "backend=empty-stub";
     },
     async search(_query, _collection, _maxResults, _options, execution) {
-      return await search(execution);
+      return search(execution);
     },
     async searchGlobal(_query, _maxResults, execution) {
-      return await search(execution);
+      return search(execution);
     },
     async bm25Search(_query, _collection, _maxResults, execution) {
-      return await search(execution);
+      return search(execution);
     },
     async vectorSearch(_query, _collection, _maxResults, execution) {
-      return await search(execution);
+      return search(execution);
     },
     async hybridSearch(_query, _collection, _maxResults, execution) {
-      return await search(execution);
+      return search(execution);
     },
     async update() {},
     async updateCollection() {},
@@ -192,6 +193,84 @@ test("recall reports a separate storage corpus version for every searched namesp
       ]);
     },
     { namespacesEnabled: true, defaultRecallNamespaces: ["self", "shared"] },
+  );
+});
+
+test("cold-start recall samples corpus versions only after initialization", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-recall-cold-start-"));
+  const orchestrator = new Orchestrator(parseConfig({
+    memoryDir,
+    workspaceDir: memoryDir,
+    qmdEnabled: true,
+    embeddingFallbackEnabled: false,
+  }));
+  const observed = { calls: 0 };
+  const withBackend = orchestrator as unknown as { qmd: SearchBackend };
+  withBackend.qmd = searchBackend(observed, false);
+  let initialized = false;
+  let initializedWhenVersionRead = false;
+  const initialize = orchestrator.initialize.bind(orchestrator);
+  orchestrator.initialize = async () => {
+    await initialize();
+    initialized = true;
+  };
+  const getStorage = orchestrator.getStorage.bind(orchestrator);
+  orchestrator.getStorage = async (namespace) => {
+    const storage = await getStorage(namespace);
+    const getVersion = storage.getMemoryCorpusVersion.bind(storage);
+    storage.getMemoryCorpusVersion = () => {
+      initializedWhenVersionRead = initialized;
+      return getVersion();
+    };
+    return storage;
+  };
+  try {
+    const response = await new EngramAccessService(orchestrator).recall({
+      query: QUERY,
+      sessionKey: "cold-start-corpus-version",
+    });
+    assert.ok(observed.calls > 0);
+    assert.equal(initializedWhenVersionRead, true, "sampling must wait for orchestrator initialization");
+    const storage = await getStorage("default");
+    assert.ok(storage.getMemoryCorpusVersion() > 0);
+    assert.deepEqual(response.storageCorpusVersionsAtRecallStart, [
+      { namespace: "default", version: storage.getMemoryCorpusVersion() },
+    ]);
+  } finally {
+    await orchestrator.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("recall reports the same coding namespaces selected by its scope plan", async () => {
+  await withOrchestrator(
+    "remnic-recall-coding-version-",
+    false,
+    async (orchestrator) => {
+      const sessionKey = "coding-version";
+      orchestrator.setCodingContextForSession(sessionKey, {
+        projectId: "origin:acme/repo",
+        branch: "main",
+        rootPath: "/workspace/repo",
+      });
+      const scopePlan = resolveScopePlan({
+        config: orchestrator.config,
+        sessionKey,
+        codingContext: orchestrator.getCodingContextForSession(sessionKey),
+        namespacesEnabled: true,
+      });
+      const response = await new EngramAccessService(orchestrator).recall({
+        query: QUERY,
+        sessionKey,
+        authenticatedPrincipal: "alice",
+      });
+
+      assert.deepEqual(
+        response.storageCorpusVersionsAtRecallStart?.map(({ namespace }) => namespace),
+        scopePlan.readNamespaces,
+      );
+    },
+    { namespacesEnabled: true, codingMode: { projectScope: true } },
   );
 });
 

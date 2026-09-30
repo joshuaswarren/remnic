@@ -1652,8 +1652,6 @@
     "@axe-core/playwright": "^4.12.1",
     "@biomejs/biome": "1.9.4",
     "@openclaw/plugin-inspector": "0.3.10",
-    "@oxlint/plugins": "1.86.0",
-    "oxlint": "1.86.0",
     "@playwright/test": "^1.62.1",
     "@remnic/bench": "workspace:*",
     "@types/better-sqlite3": "^7.6.13",
