@@ -138,6 +138,7 @@ import type { CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { TurnIngestionCoordinator, type TurnIngestionOptions } from "./orchestration/turn-ingestion.js";
 import { RecallIntrospectionCoordinator } from "./orchestration/recall-introspection.js";
 import { OrchestratorInitCoordinator } from "./orchestration/orchestrator-init.js";
+import { raceInitializationGate } from "./orchestration/initialization-gate.js";
 import { PersistenceIndexCoordinator } from "./orchestration/persistence-index.js";
 import { WorkspaceOpsCoordinator } from "./orchestration/workspace-ops.js";
 import { NamespaceReadFanoutCoordinator } from "./orchestration/namespace-read-fanout.js";
@@ -157,7 +158,6 @@ import {
   buildCompressionGuidelinesMarkdown,
   buildQmdIntentHint,
   mergeArtifactRecallCandidates,
-  raceInitializationGate,
   tokenizeRecallQuery,
   type BulkImportBatchIngestResult,
   type DaySummaryGatherOptions,
@@ -192,7 +192,6 @@ export {
   parseMemoryIntentSnapshot,
   parseQmdRecallResults,
   qmdStartupCollectionCheckWithTimeout,
-  raceInitializationGate,
   raceRecallAbort,
   resolveEffectiveRecallMode,
   resolvePersistedMemoryRelativePath,
