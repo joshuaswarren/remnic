@@ -176,7 +176,6 @@ export class RecallEntryCoordinator {
       budgetCharsOverride: innerBudget,
       onRecallPlanResolved: options.onRecallPlanResolved || shouldReadStandingBlock
         ? async (mode: RecallPlanMode, readNamespaces: readonly string[]) => {
-            if (!initGateCompleted) return;
             await options.onRecallPlanResolved?.(mode, readNamespaces);
             if (shouldReadStandingBlock) {
               try {

@@ -241,6 +241,41 @@ test("cold-start recall samples corpus versions only after initialization", asyn
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("fail-open recall still reports versions when initialization times out", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-recall-init-timeout-"));
+  const orchestrator = new Orchestrator(parseConfig({
+    memoryDir,
+    workspaceDir: memoryDir,
+    qmdEnabled: true,
+    embeddingFallbackEnabled: false,
+    initGateTimeoutMs: 1,
+  }));
+  const observed = { calls: 0 };
+  (orchestrator as unknown as { qmd: SearchBackend }).qmd = searchBackend(observed, false);
+  let releaseInitialization!: () => void;
+  const initializationGate = new Promise<void>((resolve) => { releaseInitialization = resolve; });
+  const initialize = orchestrator.initialize.bind(orchestrator);
+  orchestrator.initialize = async () => {
+    await initializationGate;
+    await initialize();
+  };
+  let initialization: Promise<void> | undefined;
+  try {
+    initialization = orchestrator.initialize();
+    const response = await new EngramAccessService(orchestrator).recall({
+      query: QUERY,
+      sessionKey: "init-timeout-corpus-version",
+    });
+    assert.ok(observed.calls > 0);
+    assert.deepEqual(response.storageCorpusVersionsAtRecallStart?.map(({ namespace }) => namespace), ["default"]);
+  } finally {
+    releaseInitialization();
+    await initialization?.catch(() => undefined);
+    await orchestrator.destroy();
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
 test("no_recall does not sample corpus versions for namespaces it did not search", async () => {
   await withOrchestrator("remnic-recall-no-recall-version-", false, async (orchestrator) => {
     const response = await new EngramAccessService(orchestrator).recall({
