@@ -25,7 +25,7 @@ import { canReadNamespace, defaultNamespaceForPrincipal, resolvePrincipal } from
 import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import { resolveScopePlan } from "./scopes/scope-plan.js";
 import type { Orchestrator, RecallInvocationOptions } from "./orchestrator.js";
-import { createRecallCorpusVersionCapture } from "./access-recall-corpus-versions.js";
+import { createRecallCorpusVersionCapture, mergeRecallCorpusVersions } from "./access-recall-corpus-versions.js";
 import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
 import { assembleRecallResponse } from "./access-recall-response.js";
 import { coerceIncludedMemories, type LastRecallSnapshot } from "./recall-state.js";
@@ -853,7 +853,7 @@ export class AccessRecallSurface {
       onContextComposition: (composition) => {
         contextComposition = composition;
       },
-      onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = versions; }, true),
+      onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = mergeRecallCorpusVersions(storageCorpusVersionsAtRecallStart, versions); }, true),
       ...(authenticatedPrincipal ? { principalOverride: authenticatedPrincipal } : {}),
       ...(request.sourceConnector ? { sourceConnector: request.sourceConnector } : {}),
       ...(request.stateView !== undefined ? { stateView: request.stateView } : {}),
@@ -1081,7 +1081,7 @@ export class AccessRecallSurface {
             ? { budgetCharsOverride: budgetOverride }
             : {}),
           ...(mode !== undefined ? { mode } : {}),
-          onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = versions; }),
+          onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = mergeRecallCorpusVersions(storageCorpusVersionsAtRecallStart, versions); }),
           // When the caller supplies an authenticated principal, forward
           // it via the dedicated override channel so orchestrator-side
           // ACL decisions use the SAME principal the access-surface

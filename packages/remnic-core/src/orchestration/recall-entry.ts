@@ -165,6 +165,18 @@ export class RecallEntryCoordinator {
         : this.deps.config.recallBudgetChars;
     const shouldReadStandingBlock =
       this.deps.config.recallStandingBlock && !namespacesEnabled && standingBudget !== 0 && !options.asOf;
+    if (shouldReadStandingBlock) {
+      await options.onRecallPlanResolved?.("no_recall", ["default"]);
+      try {
+        const memories = await this.deps.storage.readAllMemories({ abortSignal: abortController.signal });
+        standingText = renderStandingMemoryBlock(
+          this.deps.config,
+          memoriesToStandingEntries(memories, { requestingConnector: options.sourceConnector }),
+        );
+      } catch (err) {
+        log.warn(`standing memory block skipped: ${err}`);
+      }
+    }
     let innerBudget = options.budgetCharsOverride;
     const innerObserver = options.onContextComposition;
     let recallOptions: RecallInvocationOptions;
@@ -181,17 +193,6 @@ export class RecallEntryCoordinator {
                   ? [...readNamespaces, "default"]
                   : readNamespaces;
             await options.onRecallPlanResolved?.(mode, versionNamespaces);
-            if (shouldReadStandingBlock) {
-              try {
-                const memories = await this.deps.storage.readAllMemories({ abortSignal: abortController.signal });
-                standingText = renderStandingMemoryBlock(
-                  this.deps.config,
-                  memoriesToStandingEntries(memories, { requestingConnector: options.sourceConnector }),
-                );
-              } catch (err) {
-                log.warn(`standing memory block skipped: ${err}`);
-              }
-            }
             innerBudget = standingText.length > 0 && standingBudget > 0
               ? Math.max(0, standingBudget - standingText.length - 2)
               : options.budgetCharsOverride;

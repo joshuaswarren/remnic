@@ -13,6 +13,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createRecallCorpusVersionCapture } from "./access-recall-corpus-versions.js";
 
 import { EngramMcpServer } from "./access-mcp.js";
 import { EngramAccessService } from "./access-service.js";
@@ -379,6 +380,60 @@ test("recall captures corpus versions before reading the standing-memory block",
     },
     { recallStandingBlock: true },
   );
+});
+test("standing-memory fallback survives recall planning failure with its captured version", async () => {
+  await withOrchestrator(
+    "remnic-standing-planning-failure-",
+    false,
+    async (orchestrator) => {
+      const storage = await orchestrator.getStorage("default");
+      await storage.writeMemory("fact", "standing fallback survives planning failure");
+      const versionBeforeRead = storage.getMemoryCorpusVersion();
+      const manager = orchestrator.storage;
+      const readAllMemories = manager.readAllMemories.bind(manager);
+      manager.readAllMemories = async () => {
+        await storage.writeMemory("fact", "write during failing-recall standing read");
+        return [{
+          id: "standing-fallback",
+          content: "Standing fallback memory survives planning failure.",
+          frontmatter: { id: "standing-fallback", origin: "user", status: "active", pinned: true },
+        }] as unknown as Awaited<ReturnType<typeof readAllMemories>>;
+      };
+      (orchestrator as unknown as { recallInternal: () => Promise<string> }).recallInternal = async () => {
+        throw new Error("synthetic planning failure");
+      };
+
+      const response = await new EngramAccessService(orchestrator).recall({
+        query: QUERY,
+        sessionKey: "standing-planning-failure",
+      });
+
+      assert.match(response.context, /Standing fallback memory survives planning failure/);
+      assert.ok(storage.getMemoryCorpusVersion() > versionBeforeRead);
+      assert.deepEqual(response.storageCorpusVersionsAtRecallStart, [
+        { namespace: "default", version: versionBeforeRead },
+      ]);
+    },
+    { recallStandingBlock: true },
+  );
+});
+
+test("corpus-version capture is failure-open for unavailable secondary storage", async () => {
+  let captured: Array<{ namespace: string; version: number }> = [];
+  const capture = createRecallCorpusVersionCapture(
+    {
+      async getStorage(namespace) {
+        if (namespace === "unavailable") throw new Error("store unavailable");
+        return { getMemoryCorpusVersion: () => 7 };
+      },
+    },
+    undefined,
+    (versions) => { captured = versions; },
+    true,
+  );
+
+  await capture("no_recall", ["default", "unavailable"]);
+  assert.deepEqual(captured, [{ namespace: "default", version: 7 }]);
 });
 
 test("recall reports the same coding namespaces selected by its scope plan", async () => {
