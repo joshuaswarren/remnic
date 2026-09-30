@@ -1081,7 +1081,7 @@ export class AccessRecallSurface {
             ? { budgetCharsOverride: budgetOverride }
             : {}),
           ...(mode !== undefined ? { mode } : {}),
-          onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = mergeRecallCorpusVersions(storageCorpusVersionsAtRecallStart, versions); }),
+          onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = mergeRecallCorpusVersions(storageCorpusVersionsAtRecallStart, versions); }, true),
           // When the caller supplies an authenticated principal, forward
           // it via the dedicated override channel so orchestrator-side
           // ACL decisions use the SAME principal the access-surface

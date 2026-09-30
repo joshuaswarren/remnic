@@ -202,6 +202,49 @@ test("includeRecall X-ray responses report storage versions sampled before retri
     ]);
   });
 });
+test("no-recall X-ray includes corpus versions read by the standing-memory block", async () => {
+  await withOrchestrator(
+    "remnic-xray-standing-version-",
+    false,
+    async (orchestrator) => {
+      const storage = await orchestrator.getStorage("default");
+      const versionBeforeRead = storage.getMemoryCorpusVersion();
+      const response = await new EngramAccessService(orchestrator).recallXray({
+        query: "thanks",
+        sessionKey: "xray-standing-no-recall",
+        mode: "no_recall",
+        includeRecall: true,
+      });
+
+      assert.ok(response.snapshotFound);
+      assert.deepEqual(response.recall?.storageCorpusVersionsAtRecallStart, [
+        { namespace: "default", version: versionBeforeRead },
+      ]);
+    },
+    { recallStandingBlock: true },
+  );
+});
+
+test("standing-memory corpus version uses configured default namespace", async () => {
+  await withOrchestrator(
+    "remnic-standing-custom-namespace-",
+    false,
+    async (orchestrator) => {
+      const storage = await orchestrator.getStorage("personal");
+      const version = storage.getMemoryCorpusVersion();
+      const response = await new EngramAccessService(orchestrator).recall({
+        query: "thanks",
+        sessionKey: "standing-custom-namespace",
+        mode: "no_recall",
+      });
+
+      assert.deepEqual(response.storageCorpusVersionsAtRecallStart, [
+        { namespace: "personal", version },
+      ]);
+    },
+    { recallStandingBlock: true, defaultNamespace: "personal" },
+  );
+});
 
 test("recall reports a separate storage corpus version for every searched namespace", async () => {
   await withOrchestrator(

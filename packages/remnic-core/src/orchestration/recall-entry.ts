@@ -166,7 +166,7 @@ export class RecallEntryCoordinator {
     const shouldReadStandingBlock =
       this.deps.config.recallStandingBlock && !namespacesEnabled && standingBudget !== 0 && !options.asOf;
     if (shouldReadStandingBlock) {
-      await options.onRecallPlanResolved?.("no_recall", ["default"]);
+      await options.onRecallPlanResolved?.("no_recall", [this.deps.config.defaultNamespace]);
       try {
         const memories = await this.deps.storage.readAllMemories({ abortSignal: abortController.signal });
         standingText = renderStandingMemoryBlock(
@@ -189,8 +189,8 @@ export class RecallEntryCoordinator {
             const versionNamespaces =
               mode === "no_recall" && !shouldReadStandingBlock
                 ? []
-                : shouldReadStandingBlock && !readNamespaces.includes("default")
-                  ? [...readNamespaces, "default"]
+                : shouldReadStandingBlock && !readNamespaces.includes(this.deps.config.defaultNamespace)
+                  ? [...readNamespaces, this.deps.config.defaultNamespace]
                   : readNamespaces;
             await options.onRecallPlanResolved?.(mode, versionNamespaces);
             innerBudget = standingText.length > 0 && standingBudget > 0
