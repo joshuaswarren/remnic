@@ -123,8 +123,11 @@ function makeRawExcerptProbe(options: {
       Orchestrator.prototype.resolvePrincipal.call(orch, sk),
     resolveSelfNamespace: (sk?: string) =>
       Orchestrator.prototype.resolveSelfNamespace.call(orch, sk),
+    async waitForInitialization() {
+      return true;
+    },
     async getStorage() {
-      return storage;
+      return { ...storage, getMemoryCorpusVersion: () => 0 };
     },
     lastRecall: new Map<string, LastRecallSnapshot>([
       [options.sessionKey, snapshot],

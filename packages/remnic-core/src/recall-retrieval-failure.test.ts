@@ -241,6 +241,17 @@ test("cold-start recall samples corpus versions only after initialization", asyn
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("no_recall does not sample corpus versions for namespaces it did not search", async () => {
+  await withOrchestrator("remnic-recall-no-recall-version-", false, async (orchestrator) => {
+    const response = await new EngramAccessService(orchestrator).recall({
+      query: "thanks",
+      sessionKey: "no-recall-corpus-version",
+      mode: "no_recall",
+    });
+    assert.deepEqual(response.storageCorpusVersionsAtRecallStart, []);
+  });
+});
+
 test("recall reports the same coding namespaces selected by its scope plan", async () => {
   await withOrchestrator(
     "remnic-recall-coding-version-",

@@ -157,6 +157,7 @@ import {
   buildCompressionGuidelinesMarkdown,
   buildQmdIntentHint,
   mergeArtifactRecallCandidates,
+  raceInitializationGate,
   tokenizeRecallQuery,
   type BulkImportBatchIngestResult,
   type DaySummaryGatherOptions,
@@ -191,6 +192,7 @@ export {
   parseMemoryIntentSnapshot,
   parseQmdRecallResults,
   qmdStartupCollectionCheckWithTimeout,
+  raceInitializationGate,
   raceRecallAbort,
   resolveEffectiveRecallMode,
   resolvePersistedMemoryRelativePath,
@@ -1970,8 +1972,8 @@ export class Orchestrator {
     return buildChainFollowupGenerator(this.fastLlmForRerank);
   }
 
-  waitForInitialization(): Promise<void> {
-    return this.initPromise ?? Promise.resolve();
+  waitForInitialization(abortSignal?: AbortSignal): Promise<boolean> {
+    return raceInitializationGate(this.initPromise, this.config.initGateTimeoutMs, abortSignal);
   }
 
   async initialize(): Promise<void> {

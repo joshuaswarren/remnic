@@ -887,9 +887,10 @@ export class AccessRecallSurface {
     // construction — so ANY failure after the reserve releases the exact
     // budget entry (by token, review #4) instead of leaking it.
     try {
-      await this.deps.orchestrator.waitForInitialization();
       const namespacesForVersion =
-        recallScopePlan.readNamespaces.length > 0 ? recallScopePlan.readNamespaces : [namespace];
+        mode !== "no_recall" && !request.abortSignal?.aborted &&
+        await this.deps.orchestrator.waitForInitialization(request.abortSignal)
+          ? recallScopePlan.readNamespaces : [];
       const storageCorpusVersionsAtRecallStart = await Promise.all(
         namespacesForVersion.map(async (recallNamespace) => {
           const storage = await this.deps.orchestrator.getStorage(recallNamespace);

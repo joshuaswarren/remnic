@@ -394,7 +394,6 @@ export { auditMemoryStore, auditScreenProfile, formatAuditMemoryReport, type Aud
 // ---------------------------------------------------------------------------
 
 export { EngramAccessService, EngramAccessInputError, type EngramAccessRecallResponse } from "./access-service.js";
-
 export {
   EngramAccessHttpServer,
   type RemnicAdminConfigPatch,
@@ -1460,7 +1459,8 @@ export type {
   ParseResult,
   SymbolIR,
 } from "./coding/coding-graph-types.js";
-export type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js"; export * from "./maintenance/atomic-file.js";
+export type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
+export * from "./maintenance/atomic-file.js";
 
 // Privacy-safe action-to-outcome trajectory eval (issue #2345)
 export * from "./eval-trajectory.js";
