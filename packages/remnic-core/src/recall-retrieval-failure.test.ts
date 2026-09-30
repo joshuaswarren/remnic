@@ -109,7 +109,7 @@ async function withOrchestrator(
     await run(orchestrator, observed);
   } finally {
     await orchestrator.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
