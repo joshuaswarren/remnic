@@ -853,7 +853,7 @@ export class AccessRecallSurface {
       onContextComposition: (composition) => {
         contextComposition = composition;
       },
-      onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = versions; }),
+      onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = versions; }, true),
       ...(authenticatedPrincipal ? { principalOverride: authenticatedPrincipal } : {}),
       ...(request.sourceConnector ? { sourceConnector: request.sourceConnector } : {}),
       ...(request.stateView !== undefined ? { stateView: request.stateView } : {}),

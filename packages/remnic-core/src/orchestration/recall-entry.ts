@@ -174,7 +174,13 @@ export class RecallEntryCoordinator {
       budgetCharsOverride: innerBudget,
       onRecallPlanResolved: options.onRecallPlanResolved || shouldReadStandingBlock
         ? async (mode: RecallPlanMode, readNamespaces: readonly string[]) => {
-            await options.onRecallPlanResolved?.(mode, readNamespaces);
+            const versionNamespaces =
+              mode === "no_recall" && !shouldReadStandingBlock
+                ? []
+                : shouldReadStandingBlock && !readNamespaces.includes("default")
+                  ? [...readNamespaces, "default"]
+                  : readNamespaces;
+            await options.onRecallPlanResolved?.(mode, versionNamespaces);
             if (shouldReadStandingBlock) {
               try {
                 const memories = await this.deps.storage.readAllMemories({ abortSignal: abortController.signal });

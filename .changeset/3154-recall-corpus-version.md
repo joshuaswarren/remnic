@@ -1,8 +1,9 @@
 ---
 "@remnic/core": patch
 "@remnic/cli": patch
+"@remnic/hermes-provider": patch
 ---
 
-Add storageCorpusVersionsAtRecallStart to recall responses. It lists each searched namespace with its storage corpus sentinel value captured before retrieval; it does not claim those writes are present in the downstream QMD index (issue #3154).
+Add storageCorpusVersionsAtRecallStart to recall responses. It lists every searched namespace and, when standalone memory context is read, the default storage namespace too. Each value is the storage corpus sentinel captured before its read; it does not prove that QMD has applied the write (issue #3154).
 
 Stability: stable

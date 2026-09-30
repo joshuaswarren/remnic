@@ -316,7 +316,36 @@ test("no_recall does not sample corpus versions for namespaces it did not search
       sessionKey: "auto-no-recall-corpus-version",
     });
     assert.deepEqual(autoPlanned.storageCorpusVersionsAtRecallStart, []);
-  });
+  }, { recallStandingBlock: false });
+});
+
+test("no_recall reports the corpus version read by the standing-memory block", async () => {
+  await withOrchestrator(
+    "remnic-no-recall-standing-version-",
+    false,
+    async (orchestrator) => {
+      const storage = await orchestrator.getStorage("default");
+      const versionBeforeRead = storage.getMemoryCorpusVersion();
+      const manager = orchestrator.storage;
+      const readAllMemories = manager.readAllMemories.bind(manager);
+      manager.readAllMemories = async (...args) => {
+        await storage.writeMemory("fact", "write during no-recall standing-memory read");
+        return readAllMemories(...args);
+      };
+
+      const response = await new EngramAccessService(orchestrator).recall({
+        query: "thanks",
+        sessionKey: "no-recall-standing-version",
+        mode: "no_recall",
+      });
+
+      assert.ok(storage.getMemoryCorpusVersion() > versionBeforeRead);
+      assert.deepEqual(response.storageCorpusVersionsAtRecallStart, [
+        { namespace: "default", version: versionBeforeRead },
+      ]);
+    },
+    { recallStandingBlock: true },
+  );
 });
 
 test("recall captures corpus versions before reading the standing-memory block", async () => {
