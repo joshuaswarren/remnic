@@ -4,7 +4,9 @@
  * Loads the frozen arm fixtures and decision rule, and evaluates one paired
  * recall comparison with `packages/bench/src/stats/*`. `--gates` checks the
  * committed CI snapshot. This module does not draw epochs or write result
- * JSONL, and it refuses `--phase warm`, `--phase pilot`, and `--phase main`.
+ * JSONL. It refuses `--phase warm`, `--phase pilot`, and `--phase main`.
+ * Any other flag, a repeated flag, or a phase outside that set is rejected
+ * and does not run the gates.
  *
  * TODO(#1958): the preregistered paired shuffle test and the Holm correction
  * across pick-stage weights are not implemented here. Callers pass a shuffle
@@ -439,30 +441,57 @@ export function evaluateH1Decision(input: H1ComparisonInput): H1ComparisonResult
   return { relativeGain, confidenceInterval, cohensD: effect, decision: "supported", reasons };
 }
 
-function refusedPhase(argv: readonly string[]): (typeof REFUSED_PHASES)[number] | undefined {
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index] ?? "";
-    if (token === "--phase") {
-      const value = argv[index + 1];
-      if (value === "warm" || value === "pilot" || value === "main") return value;
-    }
-    if (token.startsWith("--phase=")) {
-      const value = token.slice("--phase=".length);
-      if (value === "warm" || value === "pilot" || value === "main") return value;
-    }
-  }
-  return undefined;
+function usageRejection(message: string): OutcomePriorScaffoldCliResult {
+  return {
+    ok: false,
+    exitCode: 2,
+    runsExecuted: 0,
+    h1b: "NOT RUN",
+    armIds: [],
+    ruleId: "",
+    message,
+  };
 }
 
-function wantsPreMainGates(argv: readonly string[]): boolean {
-  return argv.includes("--gates");
+function classifyScaffoldArgv(
+  argv: readonly string[],
+): { kind: "refused"; phase: string } | { kind: "invalid"; message: string } | { kind: "list" } | { kind: "gates" } {
+  let gates = false;
+  let phase: string | undefined;
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index] ?? "";
+    if (token === "--gates") {
+      if (gates) return { kind: "invalid", message: "duplicate --gates" };
+      gates = true;
+      continue;
+    }
+    if (token === "--phase" || token.startsWith("--phase=")) {
+      if (phase !== undefined) return { kind: "invalid", message: "duplicate --phase" };
+      const attached = token.startsWith("--phase=");
+      const value = attached ? token.slice("--phase=".length) : argv[index + 1];
+      if (!attached) index += 1;
+      if (value === undefined || value.length === 0 || value.startsWith("--")) {
+        return { kind: "invalid", message: "--phase requires warm, pilot, or main" };
+      }
+      if (!(REFUSED_PHASES as readonly string[]).includes(value)) {
+        return { kind: "invalid", message: `invalid phase ${value}` };
+      }
+      phase = value;
+      continue;
+    }
+    return { kind: "invalid", message: `unknown argument ${token}` };
+  }
+  if (phase !== undefined) return { kind: "refused", phase };
+  if (gates) return { kind: "gates" };
+  return { kind: "list" };
 }
 
 export async function runOutcomePriorScaffoldCli(
   argv: readonly string[],
 ): Promise<OutcomePriorScaffoldCliResult> {
-  const phase = refusedPhase(argv);
-  if (phase) {
+  const parsed = classifyScaffoldArgv(argv);
+  if (parsed.kind === "invalid") return usageRejection(parsed.message);
+  if (parsed.kind === "refused") {
     return {
       ok: false,
       exitCode: 2,
@@ -470,12 +499,12 @@ export async function runOutcomePriorScaffoldCli(
       h1b: "NOT RUN",
       armIds: [],
       ruleId: "",
-      message: `refusing phase ${phase}: scaffolding only — no experiment runs`,
+      message: `refusing phase ${parsed.phase}: scaffolding only — no experiment runs`,
     };
   }
   const arms = loadOutcomePriorArms();
   const rule = loadOutcomePriorDecisionRule();
-  if (!wantsPreMainGates(argv)) {
+  if (parsed.kind === "list") {
     return {
       ok: true,
       exitCode: 0,

@@ -227,16 +227,25 @@ export function hashCanonical(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
-function expectedAnswer(task: OutcomeTask, facts: ReadonlyMap<string, OutcomeFactRef>): string {
+function resolveGoldAnswer(
+  task: OutcomeTask,
+  facts: ReadonlyMap<string, OutcomeFactRef>,
+): { ok: true; expected: string } | { ok: false; reason: string } {
   const values: string[] = [];
   for (const id of task.goldFactIds) {
     const fact = facts.get(id);
     if (!fact || fact.userId !== task.userId) {
-      throw new Error(`task ${task.taskId} gold fact ${id} does not resolve for ${task.userId}`);
+      return { ok: false, reason: `task ${task.taskId} gold fact ${id} does not resolve for ${task.userId}` };
     }
     values.push(fact.value);
   }
-  return values.join(" | ");
+  return { ok: true, expected: values.join(" | ") };
+}
+
+function expectedAnswer(task: OutcomeTask, facts: ReadonlyMap<string, OutcomeFactRef>): string {
+  const resolved = resolveGoldAnswer(task, facts);
+  if (!resolved.ok) throw new Error(resolved.reason);
+  return resolved.expected;
 }
 
 export function fakeModelAnswer(task: OutcomeTask, facts: ReadonlyMap<string, OutcomeFactRef>, index: number): string {
@@ -428,12 +437,44 @@ export function warmOutcomeStore(
 function replayTrajectories(
   tasks: readonly OutcomeTask[],
   facts: ReadonlyMap<string, OutcomeFactRef>,
-): OutcomeWarmTrajectory[] {
-  return tasks.map((task, index) => ({
-    taskId: task.taskId,
-    outcome: answerMatchesTask(task, fakeModelAnswer(task, facts, index), facts) ? "success" : "fail",
-    factIds: [...task.goldFactIds],
-  }));
+): { replay: OutcomeWarmTrajectory[] } | { reasons: string[] } {
+  const reasons: string[] = [];
+  const replay: OutcomeWarmTrajectory[] = [];
+  for (let index = 0; index < tasks.length; index += 1) {
+    const task = tasks[index]!;
+    const resolved = resolveGoldAnswer(task, facts);
+    if (!resolved.ok) {
+      reasons.push(resolved.reason);
+      continue;
+    }
+    if (task.successCheck.value !== escapeRegexLiteral(resolved.expected)) {
+      reasons.push(`task ${task.taskId} successCheck does not match its gold values`);
+      continue;
+    }
+    const answer = isDeliberateWarmFailure(index) ? "unresolved" : resolved.expected;
+    replay.push({
+      taskId: task.taskId,
+      outcome: answer === resolved.expected ? "success" : "fail",
+      factIds: [...task.goldFactIds],
+    });
+  }
+  if (reasons.length > 0) return { reasons };
+  return { replay };
+}
+
+function countersFromTrajectories(
+  trajectories: readonly OutcomeWarmTrajectory[],
+): Map<string, { success: number; fail: number }> {
+  const expected = new Map<string, { success: number; fail: number }>();
+  for (const trajectory of trajectories) {
+    for (const id of trajectory.factIds) {
+      const current = expected.get(id) ?? { success: 0, fail: 0 };
+      if (trajectory.outcome === "success") current.success += 1;
+      else current.fail += 1;
+      expected.set(id, current);
+    }
+  }
+  return expected;
 }
 
 function sameTrajectory(left: OutcomeWarmTrajectory, right: OutcomeWarmTrajectory): boolean {
@@ -476,14 +517,36 @@ export function verifyOutcomeWarm(
   if (!(successTotal > 0)) reasons.push("warm store has no success counters");
   if (!(failTotal > 0)) reasons.push("warm store has no failure counters");
 
-  const replay = replayTrajectories(tasks, facts);
-  if (replay.length !== store.trajectories.length) {
-    reasons.push("trajectory count does not match the task list");
+  const replayed = replayTrajectories(tasks, facts);
+  if ("reasons" in replayed) {
+    reasons.push(...replayed.reasons);
   } else {
-    for (let index = 0; index < replay.length; index += 1) {
-      if (!sameTrajectory(replay[index]!, store.trajectories[index]!)) {
-        reasons.push("trajectories do not match the warm replay");
-        break;
+    const replay = replayed.replay;
+    if (replay.length !== store.trajectories.length) {
+      reasons.push("trajectory count does not match the task list");
+    } else {
+      for (let index = 0; index < replay.length; index += 1) {
+        if (!sameTrajectory(replay[index]!, store.trajectories[index]!)) {
+          reasons.push("trajectories do not match the warm replay");
+          break;
+        }
+      }
+    }
+    const expected = countersFromTrajectories(replay);
+    const matched = new Set<string>();
+    for (const id of expected.keys()) {
+      matched.add(id);
+      const want = expected.get(id);
+      const got = Object.hasOwn(store.counters, id) ? store.counters[id] : undefined;
+      if (!want || !got || got.success !== want.success || got.fail !== want.fail) {
+        reasons.push(`counter for ${id} does not match replayed trajectories`);
+      }
+    }
+    for (const id of Object.getOwnPropertyNames(store.counters)) {
+      if (matched.has(id)) continue;
+      const got = store.counters[id];
+      if (got && (got.success !== 0 || got.fail !== 0)) {
+        reasons.push(`counter for ${id} does not match replayed trajectories`);
       }
     }
   }

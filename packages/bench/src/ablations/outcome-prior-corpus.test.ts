@@ -115,6 +115,44 @@ test("warm verification rejects an all-success store and a counter mismatch", ()
     mismatch.reasons.some((reason) => reason.includes("counter totals do not equal")),
     true,
   );
+
+  const swapped = structuredClone(store);
+  const names = Object.getOwnPropertyNames(swapped.counters).sort();
+  let pair: [string, string] | undefined;
+  for (let leftIndex = 0; leftIndex < names.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < names.length; rightIndex += 1) {
+      const left = swapped.counters[names[leftIndex]!];
+      const right = swapped.counters[names[rightIndex]!];
+      if (!left || !right) continue;
+      if (left.success !== right.success || left.fail !== right.fail) {
+        pair = [names[leftIndex]!, names[rightIndex]!];
+        break;
+      }
+    }
+    if (pair) break;
+  }
+  assert.ok(pair);
+  const [leftId, rightId] = pair;
+  const hold = swapped.counters[leftId];
+  swapped.counters[leftId] = swapped.counters[rightId]!;
+  swapped.counters[rightId] = hold!;
+  const swappedResult = verifyOutcomeWarm(tasks, facts, swapped);
+  assert.equal(swappedResult.ok, false);
+  assert.equal(
+    swappedResult.reasons.some((reason) => reason.includes(`counter for ${leftId} does not match`)),
+    true,
+  );
+  assert.equal(
+    swappedResult.reasons.some((reason) => reason.includes("counter totals do not equal")),
+    false,
+  );
+
+  const broken = tasks.map((task, index) =>
+    index === 0 ? { ...task, successCheck: { type: "regex" as const, value: "not-the-gold-answer" } } : task,
+  );
+  const check = verifyOutcomeWarm(broken, facts, store);
+  assert.equal(check.ok, false);
+  assert.equal(check.reasons.some((reason) => reason.includes("successCheck does not match")), true);
 });
 
 test("task parsing rejects a whitespace-padded fact id and an unhandled check type", () => {

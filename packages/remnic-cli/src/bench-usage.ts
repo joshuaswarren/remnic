@@ -61,7 +61,8 @@ Commands:
                            H1 outcome-prior scaffold (issue #1958). Lists frozen
                            arms. --gates checks the committed CI snapshot and
                            does not run an experiment. Warm, pilot, and main
-                           phases are refused.
+                           phases are refused. Any other flag or phase is
+                           rejected.
 
 Options:
   --quick                  Run a lightweight quick pass (maps to --lightweight --limit 1)

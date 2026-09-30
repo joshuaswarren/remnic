@@ -62,6 +62,7 @@ export function rankSmokeByArm(
   facts: ReadonlyMap<string, OutcomeFactRef>,
   store: OutcomeWarmStore,
   arms: readonly OutcomePriorArm[],
+  rank: typeof rerankWithOutcomePrior = rerankWithOutcomePrior,
 ): FakeModelSmoke {
   const hashes = [hashCanonical(store)];
   const byArm: Record<string, SmokeArmRow[]> = {};
@@ -82,7 +83,7 @@ export function rankSmokeByArm(
             fail: counter?.fail,
           };
         });
-      const ranked = rerankWithOutcomePrior(candidates, arm.outcomeBoostWeight);
+      const ranked = rank(candidates, arm.outcomeBoostWeight);
       const top = ranked.slice(0, arm.retrieval.k).map((row) => ({
         id: row.item,
         score: row.score,
@@ -120,32 +121,83 @@ function sameRows(left: readonly SmokeArmRow[], right: readonly SmokeArmRow[]): 
   return hashCanonical(left) === hashCanonical(right);
 }
 
+export function smokeIsArmOrderInvariant(forward: FakeModelSmoke, reversed: FakeModelSmoke): boolean {
+  const leftIds = Object.getOwnPropertyNames(forward.byArm);
+  const rightIds = Object.getOwnPropertyNames(reversed.byArm);
+  if (leftIds.length !== rightIds.length) return false;
+  for (const id of leftIds) {
+    const left = forward.byArm[id];
+    const right = reversed.byArm[id];
+    if (left === undefined || right === undefined || !sameRows(left, right)) return false;
+  }
+  return true;
+}
+
+function gateError(error: unknown): string {
+  return error instanceof Error && error.message.length > 0 ? error.message : "pre-main gate failed";
+}
+
+function failedGates(reasons: string[]): PreMainGateResult {
+  return {
+    ok: false,
+    reasons,
+    smokeHash: "",
+    warmStoreHash: "",
+    repeated: false,
+    armOrderInvariant: false,
+    warmStoreImmutable: false,
+  };
+}
+
 export async function runOutcomePriorPreMainGates(
   arms: readonly OutcomePriorArm[],
   root = h1OutcomeFixtureRoot(),
 ): Promise<PreMainGateResult> {
   const reasons: string[] = [];
   const corpusDir = path.join(root, "corpus-ci");
-  const report = await validateDriftCorpus(corpusDir);
+  let report: Awaited<ReturnType<typeof validateDriftCorpus>>;
+  try {
+    report = await validateDriftCorpus(corpusDir);
+  } catch (error) {
+    return failedGates([gateError(error)]);
+  }
   if (!report.ok) reasons.push(...report.errors.map((error) => `drift-gen: ${error}`));
   if (report.stats.users !== H1_CI_RECIPE.users || report.stats.epochs !== H1_CI_RECIPE.epochs) {
     reasons.push("CI snapshot is not 2 users and 4 epochs");
   }
-  const { tasks, facts, store } = loadCiSnapshot(root);
+  let tasks: OutcomeTask[];
+  let facts: Map<string, OutcomeFactRef>;
+  let store: OutcomeWarmStore;
+  try {
+    ({ tasks, facts, store } = loadCiSnapshot(root));
+  } catch (error) {
+    reasons.push(gateError(error));
+    return failedGates(reasons);
+  }
   if (tasks.length !== H1_CI_TASK_COUNT) reasons.push(`CI snapshot has ${tasks.length} tasks, need ${H1_CI_TASK_COUNT}`);
   if (store.seed !== H1_CI_RECIPE.seed || store.users !== H1_CI_RECIPE.users || store.epochs !== H1_CI_RECIPE.epochs) {
     reasons.push("warm store recipe does not match the CI snapshot");
   }
-  const verification = verifyOutcomeWarm(tasks, facts, store);
+  let verification: ReturnType<typeof verifyOutcomeWarm>;
+  try {
+    verification = verifyOutcomeWarm(tasks, facts, store);
+  } catch (error) {
+    reasons.push(gateError(error));
+    return failedGates(reasons);
+  }
   if (!verification.ok) reasons.push(...verification.reasons);
-  const forward = rankSmokeByArm(tasks, facts, store, arms);
-  const reversed = rankSmokeByArm(tasks, facts, store, [...arms].reverse());
-  const repeated = rankSmokeByArm(tasks, facts, store, arms);
-  const armOrderInvariant = forward.hash === reversed.hash && Object.getOwnPropertyNames(forward.byArm).every((id) => {
-    const left = forward.byArm[id];
-    const right = reversed.byArm[id];
-    return left !== undefined && right !== undefined && sameRows(left, right);
-  });
+  let forward: FakeModelSmoke;
+  let reversed: FakeModelSmoke;
+  let repeated: FakeModelSmoke;
+  try {
+    forward = rankSmokeByArm(tasks, facts, store, arms);
+    reversed = rankSmokeByArm(tasks, facts, store, [...arms].reverse());
+    repeated = rankSmokeByArm(tasks, facts, store, arms);
+  } catch (error) {
+    reasons.push(gateError(error));
+    return failedGates(reasons);
+  }
+  const armOrderInvariant = smokeIsArmOrderInvariant(forward, reversed);
   const hashesMatch = forward.hash === repeated.hash && forward.warmStoreHash === repeated.warmStoreHash;
   if (!armOrderInvariant) reasons.push("arm order changed the smoke hash");
   if (!hashesMatch) reasons.push("repeated fake-model smoke hashes differ");

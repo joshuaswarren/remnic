@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { rerankWithOutcomePrior } from "@remnic/core/rerank-outcome.js";
 import { loadOutcomePriorArms, runOutcomePriorScaffoldCli } from "./outcome-prior.js";
 import { hashCanonical } from "./outcome-prior-corpus.js";
 import {
   loadCiSnapshot,
   rankSmokeByArm,
   runOutcomePriorPreMainGates,
+  smokeIsArmOrderInvariant,
 } from "./outcome-prior-gates.js";
 
 test("fake-model smoke matches twice, ignores arm order, and keeps the warm-store hash", async () => {
@@ -58,4 +63,48 @@ test("scaffold --gates reports the smoke hash and does not run an experiment", a
   assert.equal(result.gates?.armOrderInvariant, true);
   assert.equal(result.gates?.warmStoreImmutable, true);
   assert.deepEqual(result.armIds, ["h1-w0", "h1-w015", "h1-w030", "h1-w050", "memory-worth-base"]);
+});
+
+test("arm-order and warm-store gates go red when ranking is order-dependent or mutates", async () => {
+  const arms = loadOutcomePriorArms().filter((arm) => arm.id === "h1-w0" || arm.id === "h1-w050");
+  const { tasks, facts, store } = loadCiSnapshot();
+  const makeRank = (): typeof rerankWithOutcomePrior => {
+    let calls = 0;
+    return (candidates, weight) => {
+      const ranked = rerankWithOutcomePrior(candidates, weight);
+      const bump = calls;
+      calls += 1;
+      return ranked.map((row) => ({ ...row, score: row.score + bump }));
+    };
+  };
+  const forward = rankSmokeByArm(tasks, facts, structuredClone(store), arms, makeRank());
+  const reversed = rankSmokeByArm(tasks, facts, structuredClone(store), [...arms].reverse(), makeRank());
+  assert.equal(smokeIsArmOrderInvariant(forward, reversed), false);
+
+  const mutable = structuredClone(store);
+  const factId = tasks[0]?.goldFactIds[0];
+  assert.ok(factId);
+  assert.throws(
+    () =>
+      rankSmokeByArm(tasks, facts, mutable, arms.slice(0, 1), (candidates, weight) => {
+        const counter = mutable.counters[factId];
+        if (counter) counter.fail += 1;
+        return rerankWithOutcomePrior(candidates, weight);
+      }),
+    /warm store changed/,
+  );
+
+  const root = await mkdtemp(path.join(tmpdir(), "h1-gates-"));
+  try {
+    const gates = await runOutcomePriorPreMainGates(loadOutcomePriorArms(), root);
+    assert.equal(gates.ok, false);
+    assert.equal(gates.smokeHash, "");
+    assert.equal(gates.warmStoreHash, "");
+    assert.equal(gates.repeated, false);
+    assert.equal(gates.armOrderInvariant, false);
+    assert.equal(gates.warmStoreImmutable, false);
+    assert.ok(gates.reasons.length > 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

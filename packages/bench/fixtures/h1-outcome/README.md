@@ -53,7 +53,10 @@ equality, not a constructed regular expression.
 
 `remnic bench ablate outcome-prior` loads this directory and refuses
 `--phase warm`, `--phase pilot`, and `--phase main`, including when `--gates`
-is also present. `--gates` runs the pre-main checks on `corpus-ci/` only:
-drift-gen validation, warm verification, a fake-model smoke twice (hashes
-must match), arm-order invariance, and an unchanged warm-store hash. It
-does not write a result JSONL and it does not decide H1.
+is also present. Any other flag, a repeated flag, or a phase outside that
+set is rejected and does not run the gates. `--gates` runs the pre-main
+checks on `corpus-ci/` only: drift-gen validation, warm verification
+(per-fact counters must match the replay), a fake-model smoke twice (hashes
+must match), arm-order invariance of each arm's rows, and an unchanged
+warm-store hash. A snapshot that cannot be loaded is a structured gate
+failure. It does not write a result JSONL and it does not decide H1.

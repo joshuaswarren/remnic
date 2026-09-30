@@ -148,6 +148,24 @@ test("scaffold CLI refuses experiment phases and does not run", async () => {
     assert.equal(refused.gates, undefined);
     assert.equal(JSON.stringify(refused).includes("smokeHash"), false);
   }
+  for (const argv of [
+    ["--phase", "staging"],
+    ["--phase=staging", "--gates"],
+    ["--phase"],
+    ["--phase="],
+    ["--gates=true"],
+    ["--bogus"],
+    ["--gates", "--bogus"],
+    ["--gates", "--gates"],
+  ]) {
+    const rejected = await runOutcomePriorScaffoldCli(argv);
+    assert.equal(rejected.ok, false, argv.join(" "));
+    assert.equal(rejected.exitCode, 2);
+    assert.equal(rejected.runsExecuted, 0);
+    assert.equal(rejected.gates, undefined);
+    assert.deepEqual(rejected.armIds, []);
+    assert.equal(JSON.stringify(rejected).includes("smokeHash"), false);
+  }
   const listed = await runOutcomePriorScaffoldCli([]);
   assert.equal(listed.ok, true);
   assert.equal(listed.exitCode, 0);
