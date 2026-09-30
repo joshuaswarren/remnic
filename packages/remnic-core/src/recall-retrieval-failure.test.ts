@@ -24,7 +24,7 @@ import {
   type RecallContextComposition,
 } from "./recall-context-composition.js";
 import type { SearchBackend, SearchDegradation, SearchExecutionOptions } from "./search/port.js";
-import { DEFAULT_RECALL_DISCLOSURE } from "./types.js";
+import { DEFAULT_RECALL_DISCLOSURE, type PluginConfig } from "./types.js";
 
 const TIMEOUT_DEGRADATION: SearchDegradation = {
   backend: "qmd",
@@ -34,10 +34,15 @@ const TIMEOUT_DEGRADATION: SearchDegradation = {
 
 const QUERY = "what writing rules apply here?";
 
-function searchBackend(observed: { calls: number }, degrade: boolean): SearchBackend {
-  const search = (execution?: SearchExecutionOptions) => {
+function searchBackend(
+  observed: { calls: number },
+  degrade: boolean,
+  onSearch?: () => Promise<void>,
+): SearchBackend {
+  const search = async (execution?: SearchExecutionOptions) => {
     observed.calls += 1;
     if (degrade) execution?.onDegradation?.(TIMEOUT_DEGRADATION);
+    await onSearch?.();
     return [];
   };
   const backend: Partial<SearchBackend> = {
@@ -51,19 +56,19 @@ function searchBackend(observed: { calls: number }, degrade: boolean): SearchBac
       return degrade ? "backend=timeout-stub" : "backend=empty-stub";
     },
     async search(_query, _collection, _maxResults, _options, execution) {
-      return search(execution);
+      return await search(execution);
     },
     async searchGlobal(_query, _maxResults, execution) {
-      return search(execution);
+      return await search(execution);
     },
     async bm25Search(_query, _collection, _maxResults, execution) {
-      return search(execution);
+      return await search(execution);
     },
     async vectorSearch(_query, _collection, _maxResults, execution) {
-      return search(execution);
+      return await search(execution);
     },
     async hybridSearch(_query, _collection, _maxResults, execution) {
-      return search(execution);
+      return await search(execution);
     },
     async update() {},
     async updateCollection() {},
@@ -80,6 +85,7 @@ async function withOrchestrator(
   prefix: string,
   degrade: boolean,
   run: (orchestrator: Orchestrator, observed: { calls: number }) => Promise<void>,
+  configOverrides: Partial<PluginConfig> = {},
 ): Promise<void> {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), prefix));
   const orchestrator = new Orchestrator(
@@ -88,6 +94,7 @@ async function withOrchestrator(
       workspaceDir: memoryDir,
       qmdEnabled: true,
       embeddingFallbackEnabled: false,
+      ...configOverrides,
     }),
   );
   const observed = { calls: 0 };
@@ -135,6 +142,57 @@ test("genuine empty retrieval stays marker-free at the orchestrator", async () =
     assert.equal(composition?.degradation, undefined);
     assert.equal(context.includes("Memory context unavailable"), false);
   });
+});
+
+test("recall reports storage corpus versions captured before retrieval, not index application", async () => {
+  await withOrchestrator("remnic-recall-version-", false, async (orchestrator, observed) => {
+    const storage = await orchestrator.getStorage("default");
+    const beforeRetrieval = storage.getMemoryCorpusVersion();
+    let writeDuringSearch = true;
+    let indexUpdates = 0;
+    const backend = searchBackend(observed, false, async () => {
+      if (!writeDuringSearch) return;
+      writeDuringSearch = false;
+      await storage.writeMemory("fact", "write committed while retrieval was in flight");
+    });
+    const withBackend = orchestrator as unknown as { qmd: SearchBackend };
+    withBackend.qmd = {
+      ...backend,
+      async updateCollection() { indexUpdates += 1; },
+      async updateCollectionStrict() { indexUpdates += 1; },
+    };
+
+    const response = await new EngramAccessService(orchestrator).recall({
+      query: QUERY,
+      sessionKey: "corpus-version",
+    });
+
+    assert.ok(observed.calls > 0, "recall must consult the backend");
+    assert.ok(storage.getMemoryCorpusVersion() > beforeRetrieval, "the in-flight write advanced storage");
+    assert.deepEqual(response.storageCorpusVersionsAtRecallStart, [{ namespace: "default", version: beforeRetrieval }]);
+    assert.equal(indexUpdates, 0, "a corpus sentinel does not prove QMD index application");
+  });
+});
+
+test("recall reports a separate storage corpus version for every searched namespace", async () => {
+  await withOrchestrator(
+    "remnic-recall-multi-version-",
+    false,
+    async (orchestrator) => {
+      const primary = await orchestrator.getStorage("default");
+      const shared = await orchestrator.getStorage("shared");
+      const response = await new EngramAccessService(orchestrator).recall({
+        query: QUERY,
+        sessionKey: "multi-corpus-version",
+        authenticatedPrincipal: "alice",
+      });
+      assert.deepEqual(response.storageCorpusVersionsAtRecallStart, [
+        { namespace: "default", version: primary.getMemoryCorpusVersion() },
+        { namespace: "shared", version: shared.getMemoryCorpusVersion() },
+      ]);
+    },
+    { namespacesEnabled: true, defaultRecallNamespaces: ["self", "shared"] },
+  );
 });
 
 test("access recall surfaces retrievalFailure on daemon timeout and omits it on genuine empty", async () => {
@@ -192,6 +250,7 @@ test("MCP recall payload keeps retrievalFailure so a tool caller can branch on i
     fallbackUsed: false,
     sourcesUsed: [],
     disclosure: DEFAULT_RECALL_DISCLOSURE,
+    storageCorpusVersionsAtRecallStart: [{ namespace: "default", version: 1 }],
     retrievalFailure: {
       reason: "backend_unavailable",
       detail: "qmd:daemon_timeout (no response within the deadline)",
@@ -207,6 +266,7 @@ test("MCP recall payload keeps retrievalFailure so a tool caller can branch on i
     fallbackUsed: false,
     sourcesUsed: [],
     disclosure: DEFAULT_RECALL_DISCLOSURE,
+    storageCorpusVersionsAtRecallStart: [{ namespace: "default", version: 1 }],
   };
 
   async function callRecall(response: EngramAccessRecallResponse): Promise<EngramAccessRecallResponse> {
@@ -233,6 +293,10 @@ test("MCP recall payload keeps retrievalFailure so a tool caller can branch on i
     assert.ok(parsed && typeof parsed === "object");
     const parsedFailure = "retrievalFailure" in parsed ? parsed.retrievalFailure : undefined;
     assert.deepEqual(parsedFailure, structured.retrievalFailure);
+    assert.deepEqual(
+      "storageCorpusVersionsAtRecallStart" in parsed ? parsed.storageCorpusVersionsAtRecallStart : undefined,
+      structured.storageCorpusVersionsAtRecallStart,
+    );
     return structured;
   }
 

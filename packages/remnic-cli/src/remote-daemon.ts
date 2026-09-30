@@ -373,6 +373,7 @@ export async function printHealthCheck(
 
 /** Minimal recall-response shape the CLI query renderers consume. */
 export interface RemoteRecallResult {
+  storageCorpusVersionsAtRecallStart?: Array<{ namespace: string; version: number }>;
   results?: QueryRenderableResult[];
   count?: number;
   context?: string;

@@ -446,6 +446,8 @@ export interface EngramAccessRecallResponse {
   /** Request-local split used by adapters that must re-render a tighter prompt budget. */
   contextComposition?: RecallContextComposition;
   retrievalFailure?: { reason: "backend_unavailable"; detail: string };
+  /** Storage corpus sentinel values read immediately before retrieval; they do not attest to QMD index application. */
+  storageCorpusVersionsAtRecallStart?: Array<{ namespace: string; version: number }>;
   count: number;
   memoryIds: string[];
   results: EngramAccessMemorySummary[];

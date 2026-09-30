@@ -106,6 +106,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
       reason: T_STRING,
       detail: T_STRING,
     }),
+    storageCorpusVersionsAtRecallStart: { type: "array", items: objectSchema({ namespace: T_STRING, version: T_NUMBER }) },
   }),
   recall_explain: objectSchema({
     found: T_BOOLEAN,

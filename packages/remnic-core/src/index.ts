@@ -394,6 +394,7 @@ export { auditMemoryStore, auditScreenProfile, formatAuditMemoryReport, type Aud
 // ---------------------------------------------------------------------------
 
 export { EngramAccessService, EngramAccessInputError } from "./access-service.js";
+export type { EngramAccessRecallResponse } from "./access-service.js";
 export {
   EngramAccessHttpServer,
   type RemnicAdminConfigPatch,

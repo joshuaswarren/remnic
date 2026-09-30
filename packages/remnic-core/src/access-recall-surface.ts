@@ -898,6 +898,13 @@ export class AccessRecallSurface {
     // construction — so ANY failure after the reserve releases the exact
     // budget entry (by token, review #4) instead of leaking it.
     try {
+      const namespacesForVersion = effectiveNamespaces.length > 0 ? effectiveNamespaces : [namespace];
+      const storageCorpusVersionsAtRecallStart = await Promise.all(
+        namespacesForVersion.map(async (recallNamespace) => {
+          const storage = await this.deps.orchestrator.getStorage(recallNamespace);
+          return { namespace: recallNamespace, version: storage.getMemoryCorpusVersion() };
+        }),
+      );
       const context = await this.deps.orchestrator.recall(
         query,
         request.sessionKey,
@@ -907,6 +914,7 @@ export class AccessRecallSurface {
         request,
         context,
         contextComposition,
+        storageCorpusVersionsAtRecallStart,
         query,
         mode,
         namespace,
