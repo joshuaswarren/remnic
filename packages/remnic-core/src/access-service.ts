@@ -2036,6 +2036,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   private async buildRecallResponseFromXraySnapshot(options: {
     query: string;
     sessionKey?: string;
+    storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number }>;
     snapshot: RecallXraySnapshot;
     disclosure: RecallDisclosure;
     startedAt: number;

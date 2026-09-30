@@ -175,6 +175,33 @@ test("recall reports storage corpus versions captured before retrieval, not inde
   });
 });
 
+test("includeRecall X-ray responses report storage versions sampled before retrieval", async () => {
+  await withOrchestrator("remnic-xray-recall-version-", false, async (orchestrator, observed) => {
+    const storage = await orchestrator.getStorage("default");
+    const beforeRetrieval = storage.getMemoryCorpusVersion();
+    let writeDuringSearch = true;
+    const backend = searchBackend(observed, false, async () => {
+      if (!writeDuringSearch) return;
+      writeDuringSearch = false;
+      await storage.writeMemory("fact", "write committed while X-ray retrieval was in flight");
+    });
+    (orchestrator as unknown as { qmd: SearchBackend }).qmd = backend;
+
+    const response = await new EngramAccessService(orchestrator).recallXray({
+      query: QUERY,
+      sessionKey: "xray-corpus-version",
+      includeRecall: true,
+    });
+
+    assert.ok(observed.calls > 0);
+    assert.ok(response.snapshotFound);
+    assert.ok(storage.getMemoryCorpusVersion() > beforeRetrieval);
+    assert.deepEqual(response.recall?.storageCorpusVersionsAtRecallStart, [
+      { namespace: "default", version: beforeRetrieval },
+    ]);
+  });
+});
+
 test("recall reports a separate storage corpus version for every searched namespace", async () => {
   await withOrchestrator(
     "remnic-recall-multi-version-",
