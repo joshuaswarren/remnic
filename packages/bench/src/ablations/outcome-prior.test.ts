@@ -7,6 +7,7 @@ import {
   loadOutcomePriorArms,
   loadOutcomePriorDecisionRule,
   parseOutcomePriorArm,
+  runOutcomePriorGatesCli,
   runOutcomePriorScaffoldCli,
 } from "./outcome-prior.js";
 
@@ -166,7 +167,8 @@ test("scaffold CLI refuses experiment phases and does not run", async () => {
     assert.deepEqual(rejected.armIds, []);
     assert.equal(JSON.stringify(rejected).includes("smokeHash"), false);
   }
-  const listed = await runOutcomePriorScaffoldCli([]);
+  const listed = runOutcomePriorScaffoldCli([]);
+  assert.equal(listed instanceof Promise, false);
   assert.equal(listed.ok, true);
   assert.equal(listed.exitCode, 0);
   assert.equal(listed.runsExecuted, 0);
@@ -175,4 +177,13 @@ test("scaffold CLI refuses experiment phases and does not run", async () => {
   assert.deepEqual(listed.armIds, ["h1-w0", "h1-w015", "h1-w030", "h1-w050", "memory-worth-base"]);
   assert.match(listed.message, /scaffolding only/);
   assert.equal(listed.gates, undefined);
+  const syncGates = runOutcomePriorScaffoldCli(["--gates"]);
+  assert.equal(syncGates instanceof Promise, false);
+  assert.equal(syncGates.ok, false);
+  assert.equal(syncGates.exitCode, 2);
+  assert.equal(syncGates.gates, undefined);
+  assert.match(syncGates.message, /runOutcomePriorGatesCli/);
+  const asyncGates = await runOutcomePriorGatesCli(["--phase", "main", "--gates"]);
+  assert.equal(asyncGates.exitCode, 2);
+  assert.equal(asyncGates.gates, undefined);
 });

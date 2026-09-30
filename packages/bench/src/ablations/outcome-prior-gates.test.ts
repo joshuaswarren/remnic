@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { rerankWithOutcomePrior } from "@remnic/core/rerank-outcome.js";
-import { loadOutcomePriorArms, runOutcomePriorScaffoldCli } from "./outcome-prior.js";
+import { loadOutcomePriorArms, runOutcomePriorGatesCli } from "./outcome-prior.js";
 import { hashCanonical } from "./outcome-prior-corpus.js";
 import {
   loadCiSnapshot,
@@ -52,7 +52,7 @@ test("fake-model smoke matches twice, ignores arm order, and keeps the warm-stor
 });
 
 test("scaffold --gates reports the smoke hash and does not run an experiment", async () => {
-  const result = await runOutcomePriorScaffoldCli(["--gates"]);
+  const result = await runOutcomePriorGatesCli(["--gates"]);
   assert.equal(result.ok, true);
   assert.equal(result.exitCode, 0);
   assert.equal(result.runsExecuted, 0);

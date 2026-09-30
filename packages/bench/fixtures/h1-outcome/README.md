@@ -54,7 +54,9 @@ equality, not a constructed regular expression.
 `remnic bench ablate outcome-prior` loads this directory and refuses
 `--phase warm`, `--phase pilot`, and `--phase main`, including when `--gates`
 is also present. Any other flag, a repeated flag, or a phase outside that
-set is rejected and does not run the gates. `--gates` runs the pre-main
+set is rejected and does not run the gates. The synchronous
+`runOutcomePriorScaffoldCli` helper rejects `--gates`; the CLI calls
+`runOutcomePriorGatesCli`. `--gates` runs the pre-main
 checks on `corpus-ci/` only: drift-gen validation, warm verification
 (per-fact counters must match the replay), a fake-model smoke twice (hashes
 must match), arm-order invariance of each arm's rows, and an unchanged

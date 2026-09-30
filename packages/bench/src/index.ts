@@ -737,13 +737,15 @@ export type {
   AblationConfigOverrides,
 } from "./ablations/single-flag-matrix.js";
 
-// H1 outcome-prior scaffold (issue #1958). Loads frozen arms. --gates checks
-// the committed CI snapshot. Neither path runs epochs or writes result JSONL.
+// H1 outcome-prior scaffold (issue #1958). The sync helper loads frozen arms.
+// runOutcomePriorGatesCli checks the committed CI snapshot. Neither path runs
+// epochs or writes result JSONL.
 export {
   OUTCOME_PRIOR_CLI_COMMAND,
   evaluateH1Decision,
   loadOutcomePriorArms,
   loadOutcomePriorDecisionRule,
+  runOutcomePriorGatesCli,
   runOutcomePriorScaffoldCli,
 } from "./ablations/outcome-prior.js";
 export type {

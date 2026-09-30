@@ -6,7 +6,8 @@
  * committed CI snapshot. This module does not draw epochs or write result
  * JSONL. It refuses `--phase warm`, `--phase pilot`, and `--phase main`.
  * Any other flag, a repeated flag, or a phase outside that set is rejected
- * and does not run the gates.
+ * and does not run the gates. `runOutcomePriorScaffoldCli` stays synchronous.
+ * `--gates` runs through `runOutcomePriorGatesCli`.
  *
  * TODO(#1958): the preregistered paired shuffle test and the Holm correction
  * across pick-stage weights are not implemented here. Callers pass a shuffle
@@ -486,10 +487,9 @@ function classifyScaffoldArgv(
   return { kind: "list" };
 }
 
-export async function runOutcomePriorScaffoldCli(
-  argv: readonly string[],
-): Promise<OutcomePriorScaffoldCliResult> {
-  const parsed = classifyScaffoldArgv(argv);
+function scaffoldWithoutGates(
+  parsed: { kind: "invalid"; message: string } | { kind: "refused"; phase: string } | { kind: "list" },
+): OutcomePriorScaffoldCliResult {
   if (parsed.kind === "invalid") return usageRejection(parsed.message);
   if (parsed.kind === "refused") {
     return {
@@ -504,17 +504,30 @@ export async function runOutcomePriorScaffoldCli(
   }
   const arms = loadOutcomePriorArms();
   const rule = loadOutcomePriorDecisionRule();
-  if (parsed.kind === "list") {
-    return {
-      ok: true,
-      exitCode: 0,
-      runsExecuted: 0,
-      h1b: rule.h1b,
-      armIds: arms.map((arm) => arm.id),
-      ruleId: rule.ruleId,
-      message: "scaffolding only — no experiment runs",
-    };
+  return {
+    ok: true,
+    exitCode: 0,
+    runsExecuted: 0,
+    h1b: rule.h1b,
+    armIds: arms.map((arm) => arm.id),
+    ruleId: rule.ruleId,
+    message: "scaffolding only — no experiment runs",
+  };
+}
+
+export function runOutcomePriorScaffoldCli(argv: readonly string[]): OutcomePriorScaffoldCliResult {
+  const parsed = classifyScaffoldArgv(argv);
+  if (parsed.kind === "gates") {
+    return usageRejection("--gates is asynchronous; call runOutcomePriorGatesCli");
   }
+  return scaffoldWithoutGates(parsed);
+}
+
+export async function runOutcomePriorGatesCli(argv: readonly string[]): Promise<OutcomePriorScaffoldCliResult> {
+  const parsed = classifyScaffoldArgv(argv);
+  if (parsed.kind !== "gates") return scaffoldWithoutGates(parsed);
+  const arms = loadOutcomePriorArms();
+  const rule = loadOutcomePriorDecisionRule();
   const gates = await runOutcomePriorPreMainGates(arms);
   return {
     ok: gates.ok,

@@ -10290,16 +10290,21 @@ async function cmdLegacyBenchmark(action: string, rest: string[], json: boolean)
 
 async function cmdBenchOutcomePrior(rest: string[]): Promise<void> {
   const benchModule = await loadBenchModule();
-  const runner = (
-    benchModule as unknown as {
-      runOutcomePriorScaffoldCli?: (argv: readonly string[]) => {
-        ok: boolean;
-        exitCode: number;
-        runsExecuted: 0;
-        message: string;
-      };
-    }
-  ).runOutcomePriorScaffoldCli;
+  const surface = benchModule as unknown as {
+    runOutcomePriorGatesCli?: (argv: readonly string[]) => Promise<{
+      ok: boolean;
+      exitCode: number;
+      runsExecuted: 0;
+      message: string;
+    }>;
+    runOutcomePriorScaffoldCli?: (argv: readonly string[]) => {
+      ok: boolean;
+      exitCode: number;
+      runsExecuted: 0;
+      message: string;
+    };
+  };
+  const runner = surface.runOutcomePriorGatesCli ?? surface.runOutcomePriorScaffoldCli;
   if (typeof runner !== "function") {
     console.error(
       "The installed @remnic/bench build does not expose runOutcomePriorScaffoldCli. Upgrade to a build that includes the H1 outcome-prior scaffold.",
