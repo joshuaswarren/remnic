@@ -1,4 +1,4 @@
-import type { RecallInvocationOptions } from "./orchestrator-helpers.js";
+import type { RecallInvocationOptions } from "./orchestration/orchestrator-helpers.js";
 
 export function createRecallCorpusVersionCapture(
   orchestrator: { getStorage(namespace: string): Promise<{ getMemoryCorpusVersion(): number }> },

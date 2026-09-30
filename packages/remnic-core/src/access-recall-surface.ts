@@ -25,7 +25,7 @@ import { canReadNamespace, defaultNamespaceForPrincipal, resolvePrincipal } from
 import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import { resolveScopePlan } from "./scopes/scope-plan.js";
 import type { Orchestrator, RecallInvocationOptions } from "./orchestrator.js";
-import { createRecallCorpusVersionCapture } from "./orchestration/recall-corpus-versions.js";
+import { createRecallCorpusVersionCapture } from "./access-recall-corpus-versions.js";
 import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
 import { assembleRecallResponse } from "./access-recall-response.js";
 import { coerceIncludedMemories, type LastRecallSnapshot } from "./recall-state.js";
