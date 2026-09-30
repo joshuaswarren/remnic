@@ -690,7 +690,6 @@ export function buildCompressionGuidelinesMarkdown(
   return buildCompressionGuidelinesMarkdownV2(events, generatedAtIso);
 }
 
-
 export function applyQueryAwareCandidateFilter(
   candidates: QmdSearchResult[],
   candidatePaths: Set<string> | null,
