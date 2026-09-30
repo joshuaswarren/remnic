@@ -249,6 +249,11 @@ test("no_recall does not sample corpus versions for namespaces it did not search
       mode: "no_recall",
     });
     assert.deepEqual(response.storageCorpusVersionsAtRecallStart, []);
+    const autoPlanned = await new EngramAccessService(orchestrator).recall({
+      query: "thanks",
+      sessionKey: "auto-no-recall-corpus-version",
+    });
+    assert.deepEqual(autoPlanned.storageCorpusVersionsAtRecallStart, []);
   });
 });
 

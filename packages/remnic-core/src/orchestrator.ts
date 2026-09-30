@@ -138,7 +138,6 @@ import type { CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { TurnIngestionCoordinator, type TurnIngestionOptions } from "./orchestration/turn-ingestion.js";
 import { RecallIntrospectionCoordinator } from "./orchestration/recall-introspection.js";
 import { OrchestratorInitCoordinator } from "./orchestration/orchestrator-init.js";
-import { raceInitializationGate } from "./orchestration/initialization-gate.js";
 import { PersistenceIndexCoordinator } from "./orchestration/persistence-index.js";
 import { WorkspaceOpsCoordinator } from "./orchestration/workspace-ops.js";
 import { NamespaceReadFanoutCoordinator } from "./orchestration/namespace-read-fanout.js";
@@ -1969,10 +1968,6 @@ export class Orchestrator {
         : resolveLocalLlmCapabilities(this.config).localLlm;
     if (!chainAvailable) return undefined;
     return buildChainFollowupGenerator(this.fastLlmForRerank);
-  }
-
-  waitForInitialization(abortSignal?: AbortSignal): Promise<boolean> {
-    return raceInitializationGate(this.initPromise, this.config.initGateTimeoutMs, abortSignal);
   }
 
   async initialize(): Promise<void> {

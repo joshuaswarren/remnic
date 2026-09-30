@@ -849,6 +849,15 @@ export class AccessRecallSurface {
       onContextComposition: (composition) => {
         contextComposition = composition;
       },
+      onRecallPlanResolved: async (effectiveMode) => {
+        if (effectiveMode === "no_recall" || request.abortSignal?.aborted) return;
+        storageCorpusVersionsAtRecallStart = await Promise.all(
+          recallScopePlan.readNamespaces.map(async (recallNamespace) => {
+            const storage = await this.deps.orchestrator.getStorage(recallNamespace);
+            return { namespace: recallNamespace, version: storage.getMemoryCorpusVersion() };
+          }),
+        );
+      },
       ...(authenticatedPrincipal ? { principalOverride: authenticatedPrincipal } : {}),
       ...(request.sourceConnector ? { sourceConnector: request.sourceConnector } : {}),
       ...(request.stateView !== undefined ? { stateView: request.stateView } : {}),
@@ -886,17 +895,8 @@ export class AccessRecallSurface {
     // operation — orchestrator.recall AND serialization / debug / response
     // construction — so ANY failure after the reserve releases the exact
     // budget entry (by token, review #4) instead of leaking it.
+    let storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number }> = [];
     try {
-      const namespacesForVersion =
-        mode !== "no_recall" && !request.abortSignal?.aborted &&
-        await this.deps.orchestrator.waitForInitialization(request.abortSignal)
-          ? recallScopePlan.readNamespaces : [];
-      const storageCorpusVersionsAtRecallStart = await Promise.all(
-        namespacesForVersion.map(async (recallNamespace) => {
-          const storage = await this.deps.orchestrator.getStorage(recallNamespace);
-          return { namespace: recallNamespace, version: storage.getMemoryCorpusVersion() };
-        }),
-      );
       const context = await this.deps.orchestrator.recall(
         query,
         request.sessionKey,
