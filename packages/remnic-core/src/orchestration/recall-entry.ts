@@ -109,7 +109,6 @@ export class RecallEntryCoordinator {
     // Wait for initialization to complete before attempting recall. The timeout
     // is configurable so OpenClaw's per-hook budget and Remnic's internal init
     // gate can stay aligned during cold starts.
-    let initGateCompleted = !this.deps.initPromise;
     let initGateTimeoutHandle: NodeJS.Timeout | null = null;
     let onInitGateAbort: (() => void) | null = null;
     if (this.deps.initPromise) {
@@ -139,7 +138,6 @@ export class RecallEntryCoordinator {
         this.deps.logRecallFailure(abortRecallError("recall aborted before init"));
         return "";
       }
-      initGateCompleted = gateResult === "ok";
       if (gateResult === "timeout") {
         log.warn("recall: init gate timed out — proceeding without full init");
       }
