@@ -1970,6 +1970,10 @@ export class Orchestrator {
     return buildChainFollowupGenerator(this.fastLlmForRerank);
   }
 
+  waitForInitialization(): Promise<void> {
+    return this.initPromise ?? Promise.resolve();
+  }
+
   async initialize(): Promise<void> {
     this.extractionQueueCoordinator.resumeAccepting();
     await this.orchestratorInitCoordinator.initialize();

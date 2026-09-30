@@ -21,8 +21,8 @@ import { type BudgetDecision, type BudgetReservation, CrossNamespaceBudget, toBu
 import { lcmEvidenceIdentity } from "./lcm/evidence-identity.js";
 import { normalizeProjectionTags } from "./memory-projection-format.js";
 import { namespaceIdentityFromToken } from "./namespaces/identity.js";
-import { canReadNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
-import { expandScopeProfileReadNamespaces, resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
+import { canReadNamespace, defaultNamespaceForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
+import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import { resolveScopePlan } from "./scopes/scope-plan.js";
 import type { Orchestrator, RecallInvocationOptions } from "./orchestrator.js";
 import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
@@ -743,27 +743,7 @@ export class AccessRecallSurface {
     });
     // Skip budget checks for modes that never perform a cross-namespace read.
     const modeSkipsBudget = mode === "no_recall";
-    // Derive the full set of namespaces the orchestrator will actually search.
-    // When no explicit override is provided, `recallNamespacesForPrincipal()` may
-    // expand to shared / policy-default namespaces.  Budget must be checked
-    // against every cross-namespace entry in the effective set so that omitting
-    // `namespace` cannot bypass the limiter (Cursor/Codex review feedback).
-    //
-    const legacyRecallNamespaces = Array.isArray(this.deps.orchestrator.config.defaultRecallNamespaces)
-      ? recallNamespacesForPrincipal(principal, this.deps.orchestrator.config)
-      : [];
-    const effectiveNamespaces = namespaceOverride
-      ? [namespaceOverride]
-      : profilePlan
-        ? expandScopeProfileReadNamespaces({
-            profilePlan,
-            principalSelfNamespace: profilePlan.baseNamespace,
-            config: this.deps.orchestrator.config,
-            principal,
-            codingOverlay: profileCodingOverlay,
-            legacyRecallNamespaces,
-          })
-        : legacyRecallNamespaces;
+    const effectiveNamespaces = recallScopePlan.readNamespaces;
     const budgetPrincipalNamespace = profilePlan?.baseNamespace ?? principalNamespace;
     let budgetDecision: BudgetDecision;
     let willReserveBudget = false;
@@ -907,7 +887,7 @@ export class AccessRecallSurface {
     // construction — so ANY failure after the reserve releases the exact
     // budget entry (by token, review #4) instead of leaking it.
     try {
-      await this.deps.orchestrator.initialize();
+      await this.deps.orchestrator.waitForInitialization();
       const namespacesForVersion =
         recallScopePlan.readNamespaces.length > 0 ? recallScopePlan.readNamespaces : [namespace];
       const storageCorpusVersionsAtRecallStart = await Promise.all(

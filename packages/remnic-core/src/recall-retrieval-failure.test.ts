@@ -207,41 +207,40 @@ test("cold-start recall samples corpus versions only after initialization", asyn
   const observed = { calls: 0 };
   const withBackend = orchestrator as unknown as { qmd: SearchBackend };
   withBackend.qmd = searchBackend(observed, false);
-  let initialized = false;
-  let initializedWhenVersionRead = false;
+  let releaseInitialization!: () => void;
+  let notifyInitializationStarted!: () => void;
+  const initializationGate = new Promise<void>((resolve) => { releaseInitialization = resolve; });
+  const initializationStarted = new Promise<void>((resolve) => { notifyInitializationStarted = resolve; });
   const initialize = orchestrator.initialize.bind(orchestrator);
   orchestrator.initialize = async () => {
+    notifyInitializationStarted();
+    await initializationGate;
     await initialize();
-    initialized = true;
   };
-  const getStorage = orchestrator.getStorage.bind(orchestrator);
-  orchestrator.getStorage = async (namespace) => {
-    const storage = await getStorage(namespace);
-    const getVersion = storage.getMemoryCorpusVersion.bind(storage);
-    storage.getMemoryCorpusVersion = () => {
-      initializedWhenVersionRead = initialized;
-      return getVersion();
-    };
-    return storage;
-  };
+  let initialization: Promise<void> | undefined;
   try {
-    const response = await new EngramAccessService(orchestrator).recall({
+    initialization = orchestrator.initialize();
+    await initializationStarted;
+    const recall = new EngramAccessService(orchestrator).recall({
       query: QUERY,
       sessionKey: "cold-start-corpus-version",
     });
+    releaseInitialization();
+    await initialization;
+    const response = await recall;
     assert.ok(observed.calls > 0);
-    assert.equal(initializedWhenVersionRead, true, "sampling must wait for orchestrator initialization");
-    const storage = await getStorage("default");
+    const storage = await orchestrator.getStorage("default");
     assert.ok(storage.getMemoryCorpusVersion() > 0);
     assert.deepEqual(response.storageCorpusVersionsAtRecallStart, [
       { namespace: "default", version: storage.getMemoryCorpusVersion() },
     ]);
   } finally {
+    releaseInitialization();
+    await initialization?.catch(() => undefined);
     await orchestrator.destroy();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
-
 test("recall reports the same coding namespaces selected by its scope plan", async () => {
   await withOrchestrator(
     "remnic-recall-coding-version-",
@@ -252,6 +251,7 @@ test("recall reports the same coding namespaces selected by its scope plan", asy
         projectId: "origin:acme/repo",
         branch: "main",
         rootPath: "/workspace/repo",
+        defaultBranch: "main",
       });
       const scopePlan = resolveScopePlan({
         config: orchestrator.config,
@@ -270,7 +270,7 @@ test("recall reports the same coding namespaces selected by its scope plan", asy
         scopePlan.readNamespaces,
       );
     },
-    { namespacesEnabled: true, codingMode: { projectScope: true } },
+    { namespacesEnabled: true, codingMode: { projectScope: true, branchScope: false, globalFallback: true } },
   );
 });
 
