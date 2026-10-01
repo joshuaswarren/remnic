@@ -2,8 +2,14 @@
  * H1 outcome-prior scaffold (issue #1958).
  *
  * Loads the frozen arm fixtures and decision rule, and evaluates one paired
- * recall comparison with `packages/bench/src/stats/*`. It does not warm a
- * store, draw epochs, or write result JSONL.
+ * recall comparison with `packages/bench/src/stats/*`. `--gates` checks the
+ * committed CI snapshot. This module does not draw epochs or write result
+ * JSONL. It refuses `--phase warm`, `--phase pilot`, and `--phase main`.
+ * Any other flag, a repeated flag, or a phase outside that set is rejected
+ * and does not run the gates. `runOutcomePriorScaffoldCli` stays synchronous.
+ * `--gates` runs through `runOutcomePriorGatesCli`. A malformed arm or
+ * decision-rule fixture returns `{ ok: false }` from that helper instead of
+ * throwing.
  *
  * TODO(#1958): the preregistered paired shuffle test and the Holm correction
  * across pick-stage weights are not implemented here. Callers pass a shuffle
@@ -14,6 +20,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pairedDeltaConfidenceInterval, type BootstrapOptions } from "../stats/bootstrap.js";
 import { cohensD } from "../stats/effect-size.js";
+import { runOutcomePriorPreMainGates } from "./outcome-prior-gates.js";
 
 export const OUTCOME_PRIOR_CLI_COMMAND = "remnic bench ablate outcome-prior";
 
@@ -109,6 +116,13 @@ export interface OutcomePriorScaffoldCliResult {
   armIds: string[];
   ruleId: string;
   message: string;
+  gates?: {
+    smokeHash: string;
+    warmStoreHash: string;
+    repeated: boolean;
+    armOrderInvariant: boolean;
+    warmStoreImmutable: boolean;
+  };
 }
 
 function fixtureDir(): string {
@@ -430,24 +444,83 @@ export function evaluateH1Decision(input: H1ComparisonInput): H1ComparisonResult
   return { relativeGain, confidenceInterval, cohensD: effect, decision: "supported", reasons };
 }
 
-function refusedPhase(argv: readonly string[]): (typeof REFUSED_PHASES)[number] | undefined {
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index] ?? "";
-    if (token === "--phase") {
-      const value = argv[index + 1];
-      if (value === "warm" || value === "pilot" || value === "main") return value;
-    }
-    if (token.startsWith("--phase=")) {
-      const value = token.slice("--phase=".length);
-      if (value === "warm" || value === "pilot" || value === "main") return value;
-    }
-  }
-  return undefined;
+function loadFrozenFixtures(): { arms: OutcomePriorArm[]; rule: OutcomePriorDecisionRule } {
+  return { arms: loadOutcomePriorArms(), rule: loadOutcomePriorDecisionRule() };
 }
 
-export function runOutcomePriorScaffoldCli(argv: readonly string[]): OutcomePriorScaffoldCliResult {
-  const phase = refusedPhase(argv);
-  if (phase) {
+function fixtureLoadMessage(error: unknown): string {
+  return error instanceof Error && error.message.length > 0 ? error.message : "outcome-prior fixtures failed to load";
+}
+
+function fixtureLoadFailure(message: string): OutcomePriorScaffoldCliResult {
+  return {
+    ok: false,
+    exitCode: 1,
+    runsExecuted: 0,
+    h1b: "NOT RUN",
+    armIds: [],
+    ruleId: "",
+    message,
+    gates: {
+      smokeHash: "",
+      warmStoreHash: "",
+      repeated: false,
+      armOrderInvariant: false,
+      warmStoreImmutable: false,
+    },
+  };
+}
+
+function usageRejection(message: string): OutcomePriorScaffoldCliResult {
+  return {
+    ok: false,
+    exitCode: 2,
+    runsExecuted: 0,
+    h1b: "NOT RUN",
+    armIds: [],
+    ruleId: "",
+    message,
+  };
+}
+
+function classifyScaffoldArgv(
+  argv: readonly string[],
+): { kind: "refused"; phase: string } | { kind: "invalid"; message: string } | { kind: "list" } | { kind: "gates" } {
+  let gates = false;
+  let phase: string | undefined;
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index] ?? "";
+    if (token === "--gates") {
+      if (gates) return { kind: "invalid", message: "duplicate --gates" };
+      gates = true;
+      continue;
+    }
+    if (token === "--phase" || token.startsWith("--phase=")) {
+      if (phase !== undefined) return { kind: "invalid", message: "duplicate --phase" };
+      const attached = token.startsWith("--phase=");
+      const value = attached ? token.slice("--phase=".length) : argv[index + 1];
+      if (!attached) index += 1;
+      if (value === undefined || value.length === 0 || value.startsWith("--")) {
+        return { kind: "invalid", message: "--phase requires warm, pilot, or main" };
+      }
+      if (!(REFUSED_PHASES as readonly string[]).includes(value)) {
+        return { kind: "invalid", message: `invalid phase ${value}` };
+      }
+      phase = value;
+      continue;
+    }
+    return { kind: "invalid", message: `unknown argument ${token}` };
+  }
+  if (phase !== undefined) return { kind: "refused", phase };
+  if (gates) return { kind: "gates" };
+  return { kind: "list" };
+}
+
+function scaffoldWithoutGates(
+  parsed: { kind: "invalid"; message: string } | { kind: "refused"; phase: string } | { kind: "list" },
+): OutcomePriorScaffoldCliResult {
+  if (parsed.kind === "invalid") return usageRejection(parsed.message);
+  if (parsed.kind === "refused") {
     return {
       ok: false,
       exitCode: 2,
@@ -455,7 +528,7 @@ export function runOutcomePriorScaffoldCli(argv: readonly string[]): OutcomePrio
       h1b: "NOT RUN",
       armIds: [],
       ruleId: "",
-      message: `refusing phase ${phase}: scaffolding only — no experiment runs`,
+      message: `refusing phase ${parsed.phase}: scaffolding only — no experiment runs`,
     };
   }
   const arms = loadOutcomePriorArms();
@@ -468,5 +541,47 @@ export function runOutcomePriorScaffoldCli(argv: readonly string[]): OutcomePrio
     armIds: arms.map((arm) => arm.id),
     ruleId: rule.ruleId,
     message: "scaffolding only — no experiment runs",
+  };
+}
+
+export function runOutcomePriorScaffoldCli(argv: readonly string[]): OutcomePriorScaffoldCliResult {
+  const parsed = classifyScaffoldArgv(argv);
+  if (parsed.kind === "gates") {
+    return usageRejection("--gates is asynchronous; call runOutcomePriorGatesCli");
+  }
+  return scaffoldWithoutGates(parsed);
+}
+
+export async function runOutcomePriorGatesCli(
+  argv: readonly string[],
+  loadFixtures: () => { arms: OutcomePriorArm[]; rule: OutcomePriorDecisionRule } = loadFrozenFixtures,
+): Promise<OutcomePriorScaffoldCliResult> {
+  const parsed = classifyScaffoldArgv(argv);
+  if (parsed.kind !== "gates") return scaffoldWithoutGates(parsed);
+  let arms: OutcomePriorArm[];
+  let rule: OutcomePriorDecisionRule;
+  try {
+    ({ arms, rule } = loadFixtures());
+  } catch (error) {
+    return fixtureLoadFailure(fixtureLoadMessage(error));
+  }
+  const gates = await runOutcomePriorPreMainGates(arms);
+  return {
+    ok: gates.ok,
+    exitCode: gates.ok ? 0 : 1,
+    runsExecuted: 0,
+    h1b: rule.h1b,
+    armIds: arms.map((arm) => arm.id),
+    ruleId: rule.ruleId,
+    message: gates.ok
+      ? "pre-main gates passed — no experiment runs"
+      : `pre-main gates failed: ${gates.reasons.join("; ")}`,
+    gates: {
+      smokeHash: gates.smokeHash,
+      warmStoreHash: gates.warmStoreHash,
+      repeated: gates.repeated,
+      armOrderInvariant: gates.armOrderInvariant,
+      warmStoreImmutable: gates.warmStoreImmutable,
+    },
   };
 }

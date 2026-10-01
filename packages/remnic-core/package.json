@@ -36,6 +36,16 @@
       "remnic-source": "./src/abort-error.ts",
       "import": "./dist/abort-error.js"
     },
+    "./rerank-outcome": {
+      "types": "./dist/rerank-outcome.d.ts",
+      "remnic-source": "./src/rerank-outcome.ts",
+      "import": "./dist/rerank-outcome.js"
+    },
+    "./rerank-outcome.js": {
+      "types": "./dist/rerank-outcome.d.ts",
+      "remnic-source": "./src/rerank-outcome.ts",
+      "import": "./dist/rerank-outcome.js"
+    },
     "./salvage-envelope": {
       "types": "./dist/salvage-envelope.d.ts",
       "remnic-source": "./src/salvage-envelope.ts",
