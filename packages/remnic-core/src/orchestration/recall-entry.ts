@@ -166,7 +166,11 @@ export class RecallEntryCoordinator {
     const shouldReadStandingBlock =
       this.deps.config.recallStandingBlock && !namespacesEnabled && standingBudget !== 0 && !options.asOf;
     if (shouldReadStandingBlock) {
-      await options.onRecallPlanResolved?.("no_recall", [this.deps.config.defaultNamespace]);
+      try {
+        await options.onRecallPlanResolved?.("no_recall", [this.deps.config.defaultNamespace]);
+      } catch (err) {
+        log.warn(`standing-memory plan callback failed: ${err}`);
+      }
       try {
         const memories = await this.deps.storage.readAllMemories({ abortSignal: abortController.signal });
         standingText = renderStandingMemoryBlock(

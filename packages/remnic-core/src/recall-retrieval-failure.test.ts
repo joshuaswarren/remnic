@@ -461,6 +461,36 @@ test("standing-memory fallback survives recall planning failure with its capture
   );
 });
 
+test("a throwing plan callback cannot escape recall or skip the standing block", async () => {
+  await withOrchestrator(
+    "remnic-throwing-plan-callback-",
+    false,
+    async (orchestrator) => {
+      const manager = orchestrator.storage;
+      manager.readAllMemories = async () => [{
+        id: "callback-standing",
+        content: "Standing memory survives a plan callback failure.",
+        frontmatter: { id: "callback-standing", origin: "user", status: "active", pinned: true },
+      }] as unknown as Awaited<ReturnType<typeof manager.readAllMemories>>;
+      let threw = false;
+      const response = await orchestrator.recall(QUERY, "throwing-plan-callback", {
+        onRecallPlanResolved: async (mode) => {
+          if (mode === "no_recall" && !threw) {
+            threw = true;
+            throw new Error("synthetic pre-plan callback failure");
+          }
+        },
+      });
+
+      assert.ok(threw);
+      assert.ok(response.includes("## Standing Memory (Remnic)"));
+      assert.ok(response.includes("Standing memory survives a plan callback failure."));
+      assert.ok(!response.includes("Memory context unavailable"));
+    },
+    { recallStandingBlock: true },
+  );
+});
+
 test("corpus-version capture is failure-open for unavailable secondary storage", async () => {
   let captured: Array<{ namespace: string; version: number }> = [];
   const capture = createRecallCorpusVersionCapture(

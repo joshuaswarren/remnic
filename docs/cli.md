@@ -59,13 +59,13 @@ remnic doctor
 
 `remnic query` is the everyday entrypoint. Use `--explain` to see where a slow answer spends its time:
 
-remnic query <text> --json emits the full recall response, including `storageCorpusVersionsAtRecallStart`.
-It reports the per-namespace storage sentinel read before retrieval, not whether the QMD index has applied
-each write; see the API reference (api.md#http) for the exact guarantee.
-
 ```bash
 remnic query "what did we decide about the pricing model?" --explain
 ```
+
+`remnic query <text> --json` emits the full recall response, including `storageCorpusVersionsAtRecallStart`.
+It reports the per-namespace storage sentinel read before retrieval, not whether the QMD index has applied
+each write; see the API reference (api.md#http) for the exact guarantee.
 
 `remnic briefing` windows accept `yesterday`, `today`, `NNh`, `NNd`, or `NNw`; focus filters accept `person:<name>`, `project:<name>`, or `topic:<name>`:
 
