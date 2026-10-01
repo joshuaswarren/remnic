@@ -492,7 +492,7 @@ test("a throwing plan callback cannot escape recall or skip the standing block",
 });
 
 test("corpus-version capture is failure-open for unavailable secondary storage", async () => {
-  let captured: Array<{ namespace: string; version: number }> = [];
+  let captured: Array<{ namespace: string; version: number | null }> = [];
   const capture = createRecallCorpusVersionCapture(
     {
       async getStorage(namespace) {
