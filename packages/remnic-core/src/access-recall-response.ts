@@ -36,7 +36,7 @@ export async function assembleRecallResponse(
   request: EngramAccessRecallRequest;
   context: string;
   contextComposition?: RecallContextComposition;
-  storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number }>;
+  storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number | null }>;
   query: string;
   mode: RecallPlanMode | undefined;
   namespace: string;

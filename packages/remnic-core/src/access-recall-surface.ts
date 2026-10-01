@@ -59,7 +59,7 @@ export interface AccessRecallSurfaceDeps {
     query: string;
     sessionKey?: string;
     snapshot: RecallXraySnapshot;
-    storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number }>;
+    storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number | null }>;
     disclosure: RecallDisclosure;
     startedAt: number;
     requestedMode?: RecallPlanMode | "auto";
@@ -190,7 +190,7 @@ export class AccessRecallSurface {
     query: string;
     sessionKey?: string;
     snapshot: RecallXraySnapshot;
-    storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number }>;
+    storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number | null }>;
     disclosure: RecallDisclosure;
     startedAt: number;
     requestedMode?: RecallPlanMode | "auto";
@@ -891,7 +891,7 @@ export class AccessRecallSurface {
     // operation — orchestrator.recall AND serialization / debug / response
     // construction — so ANY failure after the reserve releases the exact
     // budget entry (by token, review #4) instead of leaking it.
-    let storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number }> = [];
+    let storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number | null }> = [];
     try {
       const context = await this.deps.orchestrator.recall(
         query,
@@ -1059,7 +1059,7 @@ export class AccessRecallSurface {
     let recallStartedAt = Date.now();
 
     const recallSessionKey = request.sessionKey?.trim() || undefined;
-    let storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number }> = [];
+    let storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number | null }> = [];
     let xrayResponse: {
       snapshotFound: boolean;
       snapshot?: RecallXraySnapshot;

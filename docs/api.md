@@ -28,7 +28,7 @@ Two infrastructure routes carry no request envelope and sit outside the op-gated
 - `GET /engram/v1/recall/timings` — recent recall timing samples
 - `POST /engram/v1/action-confidence` — read-only ask/draft/act/refuse/escalate decision
 
-Every recall response includes `storageCorpusVersionsAtRecallStart`, with one namespace/version entry for each searched namespace. When standalone memory context is read, it also includes the default storage namespace, even when the selected mode performs no search.
+Every recall response includes `storageCorpusVersionsAtRecallStart`, with one entry for each namespace in the resolved read plan. When standalone memory context is read, it also includes the default storage namespace, even when the selected mode performs no search. If storage cannot be read for a planned namespace, its entry has `version: null`; this reports an unavailable sentinel without preventing recall.
 Each value is the size-based memory-corpus storage sentinel read immediately before its namespace retrieval or standalone-memory read.
 
 The entries are sampled separately, not as one atomic cross-namespace snapshot. Compare versions only for

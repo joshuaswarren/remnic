@@ -447,7 +447,7 @@ export interface EngramAccessRecallResponse {
   contextComposition?: RecallContextComposition;
   retrievalFailure?: { reason: "backend_unavailable"; detail: string };
   /** Storage corpus sentinel values read immediately before retrieval; they do not attest to QMD index application. */
-  storageCorpusVersionsAtRecallStart?: Array<{ namespace: string; version: number }>;
+  storageCorpusVersionsAtRecallStart?: Array<{ namespace: string; version: number | null }>;
   count: number;
   memoryIds: string[];
   results: EngramAccessMemorySummary[];
@@ -2036,7 +2036,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   private async buildRecallResponseFromXraySnapshot(options: {
     query: string;
     sessionKey?: string;
-    storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number }>;
+    storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number | null }>;
     snapshot: RecallXraySnapshot;
     disclosure: RecallDisclosure;
     startedAt: number;

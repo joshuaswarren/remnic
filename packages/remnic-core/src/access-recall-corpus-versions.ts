@@ -1,6 +1,6 @@
 import type { RecallInvocationOptions } from "./orchestration/orchestrator-helpers.js";
 
-export type RecallCorpusVersion = { namespace: string; version: number };
+export type RecallCorpusVersion = { namespace: string; version: number | null };
 
 export function mergeRecallCorpusVersions(
   current: RecallCorpusVersion[],
@@ -26,9 +26,9 @@ export function createRecallCorpusVersionCapture(
         const storage = await orchestrator.getStorage(namespace);
         return { namespace, version: storage.getMemoryCorpusVersion() };
       } catch {
-        return undefined;
+        return { namespace, version: null };
       }
     }));
-    if (!signal?.aborted) setVersions(captured.filter((entry): entry is RecallCorpusVersion => entry !== undefined));
+    if (!signal?.aborted) setVersions(captured);
   };
 }

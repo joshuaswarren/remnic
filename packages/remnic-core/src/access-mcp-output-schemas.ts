@@ -14,6 +14,7 @@ const T_ARRAY = { type: "array" } as const;
 const T_OBJECT = { type: "object" } as const;
 const T_NULLABLE_OBJECT = { type: ["object", "null"] } as const;
 const T_NULLABLE_STRING = { type: ["string", "null"] } as const;
+const T_NULLABLE_NUMBER = { type: ["number", "null"] } as const;
 
 /** Build a JSON Schema object type with the given properties. */
 function objectSchema(
@@ -106,7 +107,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
       reason: T_STRING,
       detail: T_STRING,
     }),
-    storageCorpusVersionsAtRecallStart: { type: "array", items: objectSchema({ namespace: T_STRING, version: T_NUMBER }) },
+    storageCorpusVersionsAtRecallStart: { type: "array", items: objectSchema({ namespace: T_STRING, version: T_NULLABLE_NUMBER }) },
   }),
   recall_explain: objectSchema({
     found: T_BOOLEAN,

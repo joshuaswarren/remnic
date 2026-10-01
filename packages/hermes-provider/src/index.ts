@@ -55,7 +55,7 @@ export interface EngramAccessRecallResponse {
   sourcesUsed?: string[];
   budgetsApplied?: Record<string, unknown>;
   latencyMs?: number;
-  storageCorpusVersionsAtRecallStart?: Array<{ namespace: string; version: number }>;
+  storageCorpusVersionsAtRecallStart?: Array<{ namespace: string; version: number | null }>;
 }
 
 export interface EngramAccessObserveResponse {

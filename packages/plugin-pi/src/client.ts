@@ -4,6 +4,7 @@ export interface RecallResponse {
   context?: string;
   results?: Array<{ id?: string; content?: string; score?: number; category?: string }>;
   count?: number;
+  storageCorpusVersionsAtRecallStart?: Array<{ namespace: string; version: number | null }>;
 }
 
 export interface ObserveMessagePart {

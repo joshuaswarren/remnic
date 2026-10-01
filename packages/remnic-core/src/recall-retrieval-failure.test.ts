@@ -506,7 +506,10 @@ test("corpus-version capture is failure-open for unavailable secondary storage",
   );
 
   await capture("no_recall", ["default", "unavailable"]);
-  assert.deepEqual(captured, [{ namespace: "default", version: 7 }]);
+  assert.deepEqual(captured, [
+    { namespace: "default", version: 7 },
+    { namespace: "unavailable", version: null },
+  ]);
 });
 
 test("recall reports the same coding namespaces selected by its scope plan", async () => {
