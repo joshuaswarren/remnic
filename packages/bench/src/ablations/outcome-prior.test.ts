@@ -187,3 +187,30 @@ test("scaffold CLI refuses experiment phases and does not run", async () => {
   assert.equal(asyncGates.exitCode, 2);
   assert.equal(asyncGates.gates, undefined);
 });
+
+test("malformed arm fixtures return a structured gate failure", async () => {
+  const failed = await runOutcomePriorGatesCli(["--gates"], () => {
+    throw new SyntaxError("Unexpected token in decision-rule.json");
+  });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.exitCode, 1);
+  assert.equal(failed.runsExecuted, 0);
+  assert.equal(failed.h1b, "NOT RUN");
+  assert.deepEqual(failed.armIds, []);
+  assert.equal(failed.ruleId, "");
+  assert.equal(failed.message, "Unexpected token in decision-rule.json");
+  assert.deepEqual(failed.gates, {
+    smokeHash: "",
+    warmStoreHash: "",
+    repeated: false,
+    armOrderInvariant: false,
+    warmStoreImmutable: false,
+  });
+  const blank = await runOutcomePriorGatesCli(["--gates"], () => {
+    throw new Error("");
+  });
+  assert.equal(blank.ok, false);
+  assert.equal(blank.exitCode, 1);
+  assert.equal(blank.message, "outcome-prior fixtures failed to load");
+  assert.equal(blank.gates?.smokeHash, "");
+});

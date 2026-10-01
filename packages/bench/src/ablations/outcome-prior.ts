@@ -7,7 +7,9 @@
  * JSONL. It refuses `--phase warm`, `--phase pilot`, and `--phase main`.
  * Any other flag, a repeated flag, or a phase outside that set is rejected
  * and does not run the gates. `runOutcomePriorScaffoldCli` stays synchronous.
- * `--gates` runs through `runOutcomePriorGatesCli`.
+ * `--gates` runs through `runOutcomePriorGatesCli`. A malformed arm or
+ * decision-rule fixture returns `{ ok: false }` from that helper instead of
+ * throwing.
  *
  * TODO(#1958): the preregistered paired shuffle test and the Holm correction
  * across pick-stage weights are not implemented here. Callers pass a shuffle
@@ -442,6 +444,33 @@ export function evaluateH1Decision(input: H1ComparisonInput): H1ComparisonResult
   return { relativeGain, confidenceInterval, cohensD: effect, decision: "supported", reasons };
 }
 
+function loadFrozenFixtures(): { arms: OutcomePriorArm[]; rule: OutcomePriorDecisionRule } {
+  return { arms: loadOutcomePriorArms(), rule: loadOutcomePriorDecisionRule() };
+}
+
+function fixtureLoadMessage(error: unknown): string {
+  return error instanceof Error && error.message.length > 0 ? error.message : "outcome-prior fixtures failed to load";
+}
+
+function fixtureLoadFailure(message: string): OutcomePriorScaffoldCliResult {
+  return {
+    ok: false,
+    exitCode: 1,
+    runsExecuted: 0,
+    h1b: "NOT RUN",
+    armIds: [],
+    ruleId: "",
+    message,
+    gates: {
+      smokeHash: "",
+      warmStoreHash: "",
+      repeated: false,
+      armOrderInvariant: false,
+      warmStoreImmutable: false,
+    },
+  };
+}
+
 function usageRejection(message: string): OutcomePriorScaffoldCliResult {
   return {
     ok: false,
@@ -523,11 +552,19 @@ export function runOutcomePriorScaffoldCli(argv: readonly string[]): OutcomePrio
   return scaffoldWithoutGates(parsed);
 }
 
-export async function runOutcomePriorGatesCli(argv: readonly string[]): Promise<OutcomePriorScaffoldCliResult> {
+export async function runOutcomePriorGatesCli(
+  argv: readonly string[],
+  loadFixtures: () => { arms: OutcomePriorArm[]; rule: OutcomePriorDecisionRule } = loadFrozenFixtures,
+): Promise<OutcomePriorScaffoldCliResult> {
   const parsed = classifyScaffoldArgv(argv);
   if (parsed.kind !== "gates") return scaffoldWithoutGates(parsed);
-  const arms = loadOutcomePriorArms();
-  const rule = loadOutcomePriorDecisionRule();
+  let arms: OutcomePriorArm[];
+  let rule: OutcomePriorDecisionRule;
+  try {
+    ({ arms, rule } = loadFixtures());
+  } catch (error) {
+    return fixtureLoadFailure(fixtureLoadMessage(error));
+  }
   const gates = await runOutcomePriorPreMainGates(arms);
   return {
     ok: gates.ok,
