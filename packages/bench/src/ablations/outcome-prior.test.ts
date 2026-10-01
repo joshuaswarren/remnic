@@ -7,6 +7,7 @@ import {
   loadOutcomePriorArms,
   loadOutcomePriorDecisionRule,
   parseOutcomePriorArm,
+  runOutcomePriorGatesCli,
   runOutcomePriorScaffoldCli,
 } from "./outcome-prior.js";
 
@@ -131,16 +132,43 @@ test("evaluateH1Decision reuses bench stats and withholds a verdict without a sh
   assert.equal(zeroBaseline.confidenceInterval, null);
 });
 
-test("scaffold CLI refuses experiment phases and does not run", () => {
-  for (const argv of [["--phase", "warm"], ["--phase", "pilot"], ["--phase=main"]] as const) {
-    const refused = runOutcomePriorScaffoldCli(argv);
+test("scaffold CLI refuses experiment phases and does not run", async () => {
+  for (const argv of [
+    ["--phase", "warm"],
+    ["--phase", "pilot"],
+    ["--phase=main"],
+    ["--phase", "warm", "--gates"],
+    ["--gates", "--phase=pilot"],
+  ] as const) {
+    const refused = await runOutcomePriorScaffoldCli(argv);
     assert.equal(refused.ok, false);
     assert.equal(refused.exitCode, 2);
     assert.equal(refused.runsExecuted, 0);
     assert.equal(refused.h1b, "NOT RUN");
     assert.deepEqual(refused.armIds, []);
+    assert.equal(refused.gates, undefined);
+    assert.equal(JSON.stringify(refused).includes("smokeHash"), false);
+  }
+  for (const argv of [
+    ["--phase", "staging"],
+    ["--phase=staging", "--gates"],
+    ["--phase"],
+    ["--phase="],
+    ["--gates=true"],
+    ["--bogus"],
+    ["--gates", "--bogus"],
+    ["--gates", "--gates"],
+  ]) {
+    const rejected = await runOutcomePriorScaffoldCli(argv);
+    assert.equal(rejected.ok, false, argv.join(" "));
+    assert.equal(rejected.exitCode, 2);
+    assert.equal(rejected.runsExecuted, 0);
+    assert.equal(rejected.gates, undefined);
+    assert.deepEqual(rejected.armIds, []);
+    assert.equal(JSON.stringify(rejected).includes("smokeHash"), false);
   }
   const listed = runOutcomePriorScaffoldCli([]);
+  assert.equal(listed instanceof Promise, false);
   assert.equal(listed.ok, true);
   assert.equal(listed.exitCode, 0);
   assert.equal(listed.runsExecuted, 0);
@@ -148,4 +176,41 @@ test("scaffold CLI refuses experiment phases and does not run", () => {
   assert.equal(listed.ruleId, "h1-outcome-prior-decision-v1");
   assert.deepEqual(listed.armIds, ["h1-w0", "h1-w015", "h1-w030", "h1-w050", "memory-worth-base"]);
   assert.match(listed.message, /scaffolding only/);
+  assert.equal(listed.gates, undefined);
+  const syncGates = runOutcomePriorScaffoldCli(["--gates"]);
+  assert.equal(syncGates instanceof Promise, false);
+  assert.equal(syncGates.ok, false);
+  assert.equal(syncGates.exitCode, 2);
+  assert.equal(syncGates.gates, undefined);
+  assert.match(syncGates.message, /runOutcomePriorGatesCli/);
+  const asyncGates = await runOutcomePriorGatesCli(["--phase", "main", "--gates"]);
+  assert.equal(asyncGates.exitCode, 2);
+  assert.equal(asyncGates.gates, undefined);
+});
+
+test("malformed arm fixtures return a structured gate failure", async () => {
+  const failed = await runOutcomePriorGatesCli(["--gates"], () => {
+    throw new SyntaxError("Unexpected token in decision-rule.json");
+  });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.exitCode, 1);
+  assert.equal(failed.runsExecuted, 0);
+  assert.equal(failed.h1b, "NOT RUN");
+  assert.deepEqual(failed.armIds, []);
+  assert.equal(failed.ruleId, "");
+  assert.equal(failed.message, "Unexpected token in decision-rule.json");
+  assert.deepEqual(failed.gates, {
+    smokeHash: "",
+    warmStoreHash: "",
+    repeated: false,
+    armOrderInvariant: false,
+    warmStoreImmutable: false,
+  });
+  const blank = await runOutcomePriorGatesCli(["--gates"], () => {
+    throw new Error("");
+  });
+  assert.equal(blank.ok, false);
+  assert.equal(blank.exitCode, 1);
+  assert.equal(blank.message, "outcome-prior fixtures failed to load");
+  assert.equal(blank.gates?.smokeHash, "");
 });

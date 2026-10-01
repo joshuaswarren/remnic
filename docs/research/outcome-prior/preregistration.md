@@ -90,5 +90,7 @@ the shuffle test or the Holm correction.
 
 ## Out of scope for this change
 
-No warmed store, no synthetic corpus, no warm/pilot/main phase, and no result
-JSONL. Those steps stay on the build plan for a later change.
+The synthetic task family and the 2-user / 4-epoch CI snapshot are committed
+under `packages/bench/fixtures/h1-outcome/`. `--gates` checks that snapshot.
+Warm, pilot, and main phases still refuse. No locked run, no pilot that
+freezes N, and no result JSONL. H1 SUPPORTED is not claimed.

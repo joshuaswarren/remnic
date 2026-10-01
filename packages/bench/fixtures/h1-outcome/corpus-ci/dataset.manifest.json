@@ -1,0 +1,32 @@
+{
+  "name": "drift-gen-core",
+  "version": "1.0.0",
+  "generatorVersion": "1.0.0",
+  "seeds": [
+    21
+  ],
+  "counts": {
+    "users": 2,
+    "epochs": 4,
+    "facts": 64,
+    "probes": 62
+  },
+  "generator": {
+    "factsPerEpoch": 8,
+    "driftingRatio": 0.2,
+    "contradictedRatio": 0.1
+  },
+  "files": {
+    "21/gold/facts.jsonl": "fda66056aaa2c4514cfbb5f22eea1a66c65223329141414325e89000fa79cb56",
+    "21/gold/probes.jsonl": "1f4cc046534f044d7db2207a33d2e782f3ff6c0515259db3aa38313843ad653f",
+    "21/users/u1/sessions.jsonl": "31e211afd180bc9c6dbcfd5abcfaf7dd0f2d3d2a7f1404b2cd30ca01e033f4e2",
+    "21/users/u2/sessions.jsonl": "6ddb1d6e54a49e373047178315c94dc73156f8e4e2fdac40ace7637c5df7c49c"
+  },
+  "createdAt": "1970-01-01T00:00:00.000Z",
+  "licenses": [
+    {
+      "source": "synthetic",
+      "license": "MIT (repo)"
+    }
+  ]
+}

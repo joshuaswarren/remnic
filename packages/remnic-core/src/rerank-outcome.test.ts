@@ -67,6 +67,44 @@ test("UNOBSERVED is not the Memory Worth Beta prior", () => {
   assert.equal(oneSided.outcomeScore, 1);
 });
 
+test("pre-main unit gates cover ties, equal scores, and w=0 identity", () => {
+  const unobserved = resolveOutcomeObservation(undefined);
+  const observedZero = resolveOutcomeObservation({ success: 0, fail: 4 });
+  assert.equal(unobserved.state, OUTCOME_STATE_UNOBSERVED);
+  assert.equal(observedZero.state, OUTCOME_STATE_OBSERVED);
+  assert.equal(blendOutcomeScore(1.7, unobserved, 0), 1.7);
+  assert.equal(blendOutcomeScore(1.7, observedZero, 0), 1.7);
+  assert.equal(blendOutcomeScore(1.7, observedZero, 0.5), scaleTextScore(1.7) * 0.5);
+
+  const tied = rerankWithOutcomePrior(
+    [
+      { item: "left", textScore: 0.4, success: 3, fail: 1 },
+      { item: "right", textScore: 0.4, success: 0, fail: 9 },
+    ],
+    0,
+  );
+  assert.deepEqual(
+    tied.map((row) => [row.item, row.score, row.state]),
+    [
+      ["left", 0.4, OUTCOME_STATE_OBSERVED],
+      ["right", 0.4, OUTCOME_STATE_OBSERVED],
+    ],
+  );
+
+  const equalBlend = rerankWithOutcomePrior(
+    [
+      { item: "first", textScore: 0.2, success: 1, fail: 1 },
+      { item: "second", textScore: 0.2, success: 1, fail: 1 },
+    ],
+    0.5,
+  );
+  assert.deepEqual(
+    equalBlend.map((row) => row.item),
+    ["first", "second"],
+  );
+  assert.equal(equalBlend[0]?.score, equalBlend[1]?.score);
+});
+
 test("weight 0 keeps raw scores and original order", () => {
   const ranked = rerankWithOutcomePrior(
     [
