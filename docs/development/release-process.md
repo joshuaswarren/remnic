@@ -167,12 +167,12 @@ Until both steps are complete, the helper fails with this message:
 
 To bootstrap the current release tag:
 
-1. Publish a seed version below the pending release with an authenticated npm
-   account and the `alpha` dist-tag (not `latest`). The release workflow does not
-   have a token and cannot seed it. This one-time package creation requires a
-   maintainer action.
-2. Configure npm Trusted Publishing for this GitHub repository (use its
-   `owner/repository` identifier) with workflow filename
+1. For each package, publish a seed version below the pending release with an
+   authenticated npm account and the `alpha` dist-tag (not `latest`). The release
+   workflow does not have a token and cannot seed them. This one-time package
+   creation requires a maintainer action.
+2. For each of the two platform packages, configure npm Trusted Publishing using
+   this GitHub repository's `owner/repository` identifier and workflow filename
    `capture-native-helper.yml`. Leave the Environment field blank: the workflow
    at this release tag does not declare a job environment.
 3. Rerun the failed dispatch for this original release tag:
