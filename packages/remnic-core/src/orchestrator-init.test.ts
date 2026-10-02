@@ -8,9 +8,19 @@ import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
 import { NoopSearchBackend } from "./search/noop-backend.js";
 
+/**
+ * Watchdog for startup lifecycle awaits. This is a HANG guard, not a speed
+ * budget: a real Orchestrator.initialize() does real fs/sqlite discovery and
+ * can take well over a second on a loaded CI runner (a merge to main failed
+ * its shard when initialize settled ~40ms after the old 1250ms deadline had
+ * already resolved), and the discovery paths can block the loop so even
+ * in-file timers stall meanwhile. The deadline only needs to fire when the
+ * awaited lifecycle genuinely never settles, so keep it far above any
+ * legitimate startup cost.
+ */
 async function withTestDeadline<T>(
   promise: Promise<T>,
-  timeoutMs = 1_250,
+  timeoutMs = 10_000,
 ): Promise<T | "deadline"> {
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<"deadline">((resolve) => {

@@ -50,7 +50,10 @@ publish_log="$(mktemp)"
 trap 'rm -f "${publish_log}"' EXIT
 
 is_transient() {
-  grep -qE "Too many bytes read in a single function execution|Your request couldn't be completed\. Try again later" "$1"
+  # ClawHub runs on a Convex backend with a 512MB per-action memory limit
+  # and short read/rate limits. Catch every documented transient class so
+  # re-runs / retries can recover without leaving the npm release red.
+  grep -qE "Too many bytes read in a single function execution|Your request couldn't be completed\. Try again later|ran out of memory" "$1"
 }
 
 attempt=1
