@@ -216,3 +216,22 @@ test("a malformed EVAL_SHA is refused, never exported, and cannot inject a workf
     "the embedded newline must not start a second workflow command",
   );
 });
+
+test("percent and comma in a malformed EVAL_SHA are escaped in the ::error payload", () => {
+  // GitHub decodes %0A in command data as a newline, so an unescaped value
+  // like this one could turn into a second workflow command downstream.
+  const hostile = `${"d".repeat(36)}%0A,::warning::x`;
+  const r = runGate({ prHeadSha: hostile });
+
+  assert.notEqual(r.status, 0, "a malformed EVAL_SHA must fail the step");
+  const lines = r.stdout.split("\n");
+  const errorLine = lines.find((l) => l.startsWith("::error title=Bad evaluated SHA::"));
+  assert.ok(errorLine, "the refusal must be reported as an ::error");
+  assert.ok(errorLine.includes("%250A"), `percent must be escaped to %25: ${errorLine}`);
+  assert.ok(errorLine.includes("%2C"), `comma must be escaped to %2C: ${errorLine}`);
+  assert.equal(
+    lines.some((l) => l.startsWith("::warning::")),
+    false,
+    "the payload must not start a second workflow command",
+  );
+});
