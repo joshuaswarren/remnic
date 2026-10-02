@@ -210,7 +210,7 @@ jobs:
         if: steps.ref_check.outputs.is_release_tag == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: '22.13.0'
+          node-version: '22.14.0'
           registry-url: https://registry.npmjs.org
 
       - name: Install npm 11 for trusted publishing

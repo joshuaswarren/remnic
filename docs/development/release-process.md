@@ -124,7 +124,7 @@ They are built from `packages/capture-native-darwin-helper` (a Swift
 package) on real macOS runners, then staged into the per-arch
 `packages/capture-native-darwin-{arm64,x64}/bin/`. Only compilation needs macOS. `release-and-publish.yml`
 skips the packages because it runs on Linux. `capture-native-helper.yml` builds them on macOS
-and publishes on `ubuntu-latest`; the publish job pins npm 11.16.0 for OIDC trusted publishing.
+and publishes on `ubuntu-latest`; the publish job uses Node 22.14.0 and pins npm 11.16.0 for OIDC trusted publishing.
 
 ### Why a `workflow_dispatch` and not the `release: published` event
 

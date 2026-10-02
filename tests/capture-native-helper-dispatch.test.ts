@@ -99,6 +99,10 @@ test("capture-native-helper publish job is reachable from a v* tag dispatch", ()
   // packages, which bypasses the release-promote.yml flow.
   const publishIndex = helperPublish.steps?.findIndex((s) => s.run?.includes("pnpm publish")) ?? -1;
   const npmSetupIndex = helperPublish.steps?.findIndex((s) => s.name === "Install npm 11 for trusted publishing") ?? -1;
+  const nodeSetupIndex = helperPublish.steps?.findIndex((s) => s.name === "Setup Node") ?? -1;
+  assert.ok(nodeSetupIndex >= 0, "publish job must set up Node for npm trusted publishing");
+  assert.equal(helperPublish.steps?.[nodeSetupIndex]?.with?.["node-version"], "22.14.0");
+  assert.ok(nodeSetupIndex < npmSetupIndex, "Node must be set up before installing npm 11");
   assert.ok(npmSetupIndex >= 0, "publish job must install npm 11 for OIDC trusted publishing");
   assert.match(helperPublish.steps?.[npmSetupIndex]?.run ?? "", /npm install -g npm@11\.16\.0/);
   assert.ok(npmSetupIndex < publishIndex, "npm 11 must be installed before the publish command");
