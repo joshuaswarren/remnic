@@ -163,18 +163,30 @@ jobs:
       # reaches `pnpm publish` is `refs/tags/vX.Y.Z` exactly. For a real
       # `release` event we set the output directly so the downstream
       # steps still run.
+      #
+      # Security: ${{ github.ref }} is passed via the step's `env:` block
+      # (quoted shell variable in the regex) rather than directly
+      # interpolated into the bash source. Direct interpolation would let
+      # a tag name like `v$(rm -rf /)` execute commands inside this
+      # trusted-publishing job before the regex rejects it. Anyone able to
+      # create a tag and dispatch this workflow can reach this step (the
+      # job-level `if` only requires startsWith('refs/tags/v')), so the
+      # injection surface is real until the env passthrough is in place.
       - name: Validate ref is a vX.Y.Z tag
         id: ref_check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "release" ]; then
+          if [ "${EVENT_NAME}" = "release" ]; then
             echo "is_release_tag=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [[ "${{ github.ref }}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ "${DISPATCH_REF}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "is_release_tag=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::Ref ${{ github.ref }} is not a vX.Y.Z tag; refusing to publish."
+            echo "::error::Ref ${DISPATCH_REF} is not a vX.Y.Z tag; refusing to publish."
             echo "is_release_tag=false" >> "$GITHUB_OUTPUT"
             exit 1
           fi

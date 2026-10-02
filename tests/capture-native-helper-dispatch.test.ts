@@ -147,10 +147,16 @@ test("capture-native-helper publish has a ref-validation step that anchors vX.Y.
   assert.equal(validationStep.id, "ref_check", "validation step must set the ref_check output id");
   const run = validationStep.run ?? "";
   // The regex anchor is bash's `[[ =~ ]]`; both endpoints must be present.
+// SECURITY: the ref must reach bash via an env: passthrough (quoted shell
+// variable), not direct ${{ github.ref }} interpolation. A tag name like
+// `v$(cmd)` could otherwise execute inside this trusted-publishing job
+// (which has id-token: write) before the regex rejects it. The job's `if`
+// only requires `startsWith('refs/tags/v')`, so anyone able to create a
+// tag and dispatch this workflow can reach this step.
   assert.match(
     run,
-    /\[\[ "\$\{\{ github\.ref \}\}" =~ \^refs\/tags\/v\[0-9\]\+\\.\[0-9\]\+\\.\[0-9\]\+\$ \]\]/,
-    "validation step must check the ref against ^refs/tags/vX.Y.Z$ exactly",
+    /\[\[ "\$\{DISPATCH_REF\}" =~ \^refs\/tags\/v\[0-9\]\+\\.\[0-9\]\+\\.\[0-9\]\+\$ \]\]/,
+    "validation step must check ${DISPATCH_REF} against ^refs/tags/vX.Y.Z$ exactly (env passthrough, not direct interpolation)",
   );
   assert.match(
     run,
@@ -159,8 +165,24 @@ test("capture-native-helper publish has a ref-validation step that anchors vX.Y.
   );
   assert.match(
     run,
-    /github\.event_name/,
-    "validation step must short-circuit to true on a real release event",
+    /\$\{EVENT_NAME\}/,
+    "validation step must short-circuit on a real release event via env passthrough",
+  );
+  // The step must declare the env block.
+  assert.match(
+    JSON.stringify(validationStep),
+    /DISPATCH_REF/,
+    "validation step must declare DISPATCH_REF in env:",
+  );
+  assert.doesNotMatch(
+    run,
+    /"\$\{\{ github\.ref \}\}"/,
+    "validation step must NOT directly interpolate ${{ github.ref }} into bash source (shell injection)",
+  );
+  assert.doesNotMatch(
+    run,
+    /"\$\{\{ github\.event_name \}\}"/,
+    "validation step must NOT directly interpolate ${{ github.event_name }} into bash source",
   );
   // Every step that does work after the validation must gate on the output.
   const gatedSteps = steps.filter(
