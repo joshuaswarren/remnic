@@ -170,7 +170,12 @@ To provision each package:
 1. Publish a seed version below the pending release with an authenticated npm
    account. The release workflow does not have a token and cannot seed it.
 2. Add a trusted-publisher entry for
-   `.github/workflows/capture-native-helper.yml`, leaving the environment blank.
+   `.github/workflows/capture-native-helper.yml`. As a hardening measure, set a
+   GitHub Environment name in npm, create that environment in repository settings,
+   and restrict its deployment protection rules to tags matching `v*`. After the
+   environment exists, add `environment: <name>` to the publish job in a follow-up
+   change. Do not add that key before the environment exists: GitHub creates a
+   missing environment implicitly when a job references it.
 3. Rerun the failed dispatch for the original release tag:
 
    ```sh
