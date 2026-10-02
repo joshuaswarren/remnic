@@ -205,23 +205,45 @@ jobs:
           # commit the ruleset actually gated for the merge. For true merge
           # commits (two parents), the PR head is the second parent.
           EVAL_SHA="${SOURCE_SHA}"
+          EVAL_NOTE=""
           PARENT_COUNT="$(gh api "${REPO}/commits/${SOURCE_SHA}" --jq '.parents | length')"
           if [ "${PARENT_COUNT}" -ge 2 ]; then
             EVAL_SHA="$(gh api "${REPO}/commits/${SOURCE_SHA}" --jq '.parents[1].sha')"
-            echo "Source commit is a ${PARENT_COUNT}-parent merge; evaluating PR HEAD ${EVAL_SHA}."
+            EVAL_NOTE="Source commit is a ${PARENT_COUNT}-parent merge; evaluating PR HEAD"
           else
             # Paginated (the endpoint defaults to per_page=30; a noisy commit
             # can push the matching PR off the first page), filtered to
             # merged-into-main PRs whose merge_commit_sha equals our source.
             PR_HEAD="$(gh api --paginate "${REPO}/commits/${SOURCE_SHA}/pulls" \
-              | jq -s --arg sha "${SOURCE_SHA}" 'map(.[]) | map(select(.merged_at != null and .merge_commit_sha == $sha and .base.ref == "main")) | .[0].head.sha // empty')"
+              | jq -rs --arg sha "${SOURCE_SHA}" 'map(.[]) | map(select(.merged_at != null and .merge_commit_sha == $sha and .base.ref == "main")) | .[0].head.sha // empty')"
             if [ -n "${PR_HEAD}" ] && [ "${PR_HEAD}" != "null" ]; then
               EVAL_SHA="${PR_HEAD}"
-              echo "Source commit is a squash; retargeting to associated PR HEAD ${EVAL_SHA}."
+              EVAL_NOTE="Source commit is a squash; retargeting to associated PR HEAD"
             else
               echo "Source commit has no associated merged PR; evaluating ${SOURCE_SHA} directly."
             fi
           fi
+
+          # Fail closed before EVAL_SHA reaches any API call: a malformed
+          # value (quoted string, empty, short sha, embedded newline, or
+          # anything other than exactly 40 hex digits) must never turn
+          # into a confusing downstream 422. Real dry run 37008248423
+          # failed here with a JSON-quoted sha from the retarget above.
+          # Bash [[ =~ ]] anchors the match to the whole string (grep -E
+          # is line-oriented and would let a value containing a newline
+          # plus a trailing 40-hex line pass).
+          if ! [[ "${EVAL_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            # Escape the value before embedding it in a workflow command:
+            # GitHub decodes % escapes in ::error/::warning payload data,
+            # so a hostile or malformed %0A/%25/%0D terminates the command
+            # and lets subsequent commands run on the same line.
+            EVAL_SHA_SAFE="$(printf '%s' "${EVAL_SHA}" | tr -d '\r\n' | sed -e 's/%/%25/g' -e 's/,/%2C/g')"
+            echo "::error title=Bad evaluated SHA::EVAL_SHA='${EVAL_SHA_SAFE}' is not a bare 40-hex commit sha; refusing before any API call."
+            exit 1
+          fi
+          # Print the retarget note only now: the value is validated, so a
+          # malformed one can never reach the log as a workflow command.
+          if [ -n "${EVAL_NOTE}" ]; then echo "${EVAL_NOTE} ${EVAL_SHA}."; fi
           echo "EVAL_SHA=${EVAL_SHA}" >> "$GITHUB_ENV"
 
           # Read the effective required-status-checks list for the default
