@@ -325,8 +325,10 @@ test("release-promote.yml keeps os-restricted packages in plan_package but exclu
   // expected until the helper publishes them on real macOS, and adding
   // them to MISSING would block every promotion indefinitely.
   const promote = readFileSync(".github/workflows/release-promote.yml", "utf8");
-  const planBody = promote.split("- name: Plan the dist-tag moves", 2)[1] ?? "";
-  assert.ok(planBody, "release-promote.yml must still have a Plan the dist-tag moves step");
+  const planStart = promote.indexOf("- name: Plan the dist-tag moves");
+  assert.notEqual(planStart, -1, "release-promote.yml must still have a Plan the dist-tag moves step");
+  const nextStep = promote.indexOf(String.fromCharCode(10) + "      - name:", planStart + 1);
+  const planBody = promote.slice(planStart, nextStep === -1 ? undefined : nextStep);
   assert.match(
     planBody,
     /os\.includes\(process\.platform\)/,
