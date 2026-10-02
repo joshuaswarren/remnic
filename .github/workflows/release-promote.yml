@@ -242,30 +242,13 @@ jobs:
             fi
             local name
             local pkg_version
-            local is_os_restricted=false
             name="$(node -p "require('./${pkg_json}').name")"
             pkg_version="$(node -p "require('./${pkg_json}').version")"
-            if ! node -e "const os=require('./${pkg_json}').os; if (!Array.isArray(os) || os.length===0) process.exit(0); process.exit(os.includes(process.platform)?0:1)"; then
-              is_os_restricted=true
-              echo "::notice::${name} is os-restricted; capture-native-helper.yml is the authoritative publisher, but plan_package still moves its dist-tags here (npm view / npm dist-tag are registry-only operations, not binary install)."
-            fi
             if [ "${pkg_version}" != "${VERSION}" ]; then
               echo "::error title=Version mismatch::${name} at ${RELEASE_TAG} is ${pkg_version}, not ${VERSION}."
               exit 1
             fi
             if ! npm view "${name}@${VERSION}" version >/dev/null 2>&1; then
-              # Os-restricted packages may legitimately be absent on the
-              # promotion runner (capture-native-helper.yml publishes
-              # them on real macOS). Report them as missing in the
-              # summary so the operator sees they are not on the registry
-              # yet, but do NOT add to the fatal MISSING list, because
-              # their absence is expected for any version that has not
-              # been published by the helper yet — and would otherwise
-              # block every promotion indefinitely.
-              if [ "${is_os_restricted}" = "true" ]; then
-                echo "::notice::${name}@${VERSION} is not yet on npm (expected for os-restricted packages until capture-native-helper.yml publishes it); not added to MISSING list."
-                return 0
-              fi
               MISSING+=("${name}@${VERSION}")
               return 0
             fi

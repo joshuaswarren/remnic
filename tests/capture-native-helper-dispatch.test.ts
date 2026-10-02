@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 // Use the workspace's pinned `yaml` package so we parse workflows with the
@@ -47,11 +49,12 @@ type HelperJob = {
   steps?: WorkflowStep[];
 };
 
-const helperDoc = parse(readFileSync(".github/workflows/capture-native-helper.yml", "utf8")) as {
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const helperDoc = parse(readFileSync(resolve(repoRoot, ".github/workflows/capture-native-helper.yml"), "utf8")) as {
   on: Record<string, unknown>;
   jobs: Record<string, HelperJob>;
 };
-const releaseDoc = parse(readFileSync(".github/workflows/release-and-publish.yml", "utf8")) as {
+const releaseDoc = parse(readFileSync(resolve(repoRoot, ".github/workflows/release-and-publish.yml"), "utf8")) as {
   permissions?: Record<string, string>;
   jobs: Record<string, { permissions?: Record<string, string>; steps?: WorkflowStep[] }>;
 };
@@ -315,47 +318,6 @@ test("release-and-publish grants actions: write for the dispatch step", () => {
   );
 });
 
-test("release-promote.yml keeps os-restricted packages in plan_package but excludes them from MISSING", () => {
-  // plan_package must NOT skip os-restricted packages outright: npm view
-  // and npm dist-tag are registry-only operations and DO work for them,
-  // and capture-native-helper.yml publishes them under alpha — release-promote.yml
-  // is the only path that moves alpha -> beta -> latest for them.
-  // Plan_package MUST, however, exempt os-restricted packages from the
-  // MISSING fatal-list: their absence on the Linux promotion runner is
-  // expected until the helper publishes them on real macOS, and adding
-  // them to MISSING would block every promotion indefinitely.
-  const promote = readFileSync(".github/workflows/release-promote.yml", "utf8");
-  const planStart = promote.indexOf("- name: Plan the dist-tag moves");
-  assert.notEqual(planStart, -1, "release-promote.yml must still have a Plan the dist-tag moves step");
-  const nextStep = promote.indexOf(String.fromCharCode(10) + "      - name:", planStart + 1);
-  const planBody = promote.slice(planStart, nextStep === -1 ? undefined : nextStep);
-  assert.match(
-    planBody,
-    /os\.includes\(process\.platform\)/,
-    "plan_package must check the os field so it can distinguish os-restricted packages from genuinely missing ones",
-  );
-  // The MISSING branch is gated on is_os_restricted so an os-restricted
-  // package that is not yet on npm (capture-native-helper.yml hasn't
-  // published it yet) does not block the promotion.
-  assert.match(
-    planBody,
-    /if ! npm view ".*\$\{name\}@\$\{VERSION\}"/,
-    "plan_package must have a MISSING branch after the npm view check",
-  );
-  assert.match(
-    planBody,
-    /is_os_restricted[\s\S]*?not added to MISSING list/,
-    "plan_package must exempt os-restricted packages from the MISSING list so their absence on the promotion runner does not block promotions indefinitely",
-  );
-  // And plan_package must NOT have an unconditional `return 0` before
-  // the MISSING branch (which would silently skip os-restricted packages).
-  const beforeMissing = planBody.split(/if ! npm view/)[0] ?? "";
-  assert.doesNotMatch(
-    beforeMissing,
-    /echo "::notice::.*os-restricted.*published by capture-native-helper\.yml"\s*\n\s*return 0/,
-    "plan_package must NOT unconditionally skip os-restricted packages — they still need their dist-tags moved",
-  );
-});
 
 test("capture-native-helper publish matrix matches the darwin packages release-and-publish skips", () => {
   // The two lists must move together: if a future PR adds a third

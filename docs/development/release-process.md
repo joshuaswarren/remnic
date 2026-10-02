@@ -76,6 +76,7 @@ commit's source SHA is embedded in the git tag, so re-running against the same
    until that is done, the helper's publish step fails with the message
    `::error::Provision npm trusted publishing for <pkg>, then rerun this workflow.`
    See [Native helper publish](#native-helper-publish) below.
+   The `release-promote.yml` gate remains strict: a release without both Darwin packages at the exact version on npm is incomplete and cannot be promoted.
 9. **Rescan ClawHub.** After npm publishing, the workflow triggers a ClawHub
    package rescan for `@remnic/plugin-openclaw`.
 
