@@ -45,7 +45,41 @@ commit's source SHA is embedded in the git tag, so re-running against the same
    (see below), onto the `alpha` dist-tag. npm 11.x is pinned so provenance /
    trusted-publishing behavior only changes through review; all publishes carry
    provenance attestations.
-8. **Rescan ClawHub.** After npm publishing, the workflow triggers a ClawHub
+8. **Dispatch the native-helper publish.** After the GitHub release is created
+   and the npm publish step has run, the workflow dispatches
+   `capture-native-helper.yml` via `workflow_dispatch` at the release tag.
+   The helper then runs its `swift` job (rebuilds the unified Swift helper on
+   real macOS runners) and its `publish` job (uploads the binary to npm via
+   trusted publishing, on the `alpha` dist-tag). The dispatch is best-effort
+   relative to the main release: `continue-on-error: true` is set, and any
+   failure is surfaced via `::warning::` and a job-summary block, so it
+   cannot fail the ClawHub step or the npm publish that already completed.
+   The helper's `publish` job guards itself in two stages:
+
+   - The job `if` requires `startsWith(github.ref, 'refs/tags/v')` so
+     branch refs and non-v tag refs cannot enter the dispatch path.
+   - A dedicated `Validate ref is a vX.Y.Z tag` step reads github.ref
+     through `env: DISPATCH_REF` (not direct bash-source interpolation,
+     which would let a tag name like `v$(cmd)` execute inside this
+     trusted-publishing job before the regex rejects it) and runs
+     `[[ "${DISPATCH_REF}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]`,
+     setting `is_release_tag`; every step that touches `pnpm publish`
+     is gated on that output.
+
+   GitHub Actions expressions do not support the `=~` operator, so the
+   vX.Y.Z anchor cannot live in the job-level `if` (the REST API
+   returns HTTP 422 on `workflow_dispatch` for a workflow file that
+   tries). The two-stage gate keeps the ref check strict and parsable. Passing
+   the ref through an environment variable prevents tag-name shell metacharacters
+   from being interpreted as code.
+
+   The initial authenticated seed publish and npm trusted-publisher setup require
+   a maintainer. Until both are complete, the helper fails with the message
+   `::error::Provision npm trusted publishing for <pkg>, then rerun this workflow.`
+   See [Native helper publish](#native-helper-publish) for the required sequence.
+   The `release-promote.yml` gate remains strict: a release without both Darwin
+   packages at the exact version on npm is incomplete and cannot be promoted.
+9. **Rescan ClawHub.** After npm publishing, the workflow triggers a ClawHub
    package rescan for `@remnic/plugin-openclaw`.
 
 ### Manual override
@@ -81,6 +115,80 @@ publish failure is fatal.
 publishes to PyPI on its own workflow. See
 [monorepo-structure.md](../architecture/monorepo-structure.md) for the full
 package map. Directory names differ from published names for several packages:
+
+## Native helper publish
+
+Two of the published packages are platform-restricted darwin binaries
+(`@remnic/capture-native-darwin-arm64` and `@remnic/capture-native-darwin-x64`).
+They are built from `packages/capture-native-darwin-helper` (a Swift
+package) on real macOS runners, then staged into the per-arch
+`packages/capture-native-darwin-{arm64,x64}/bin/`. Only compilation needs macOS. `release-and-publish.yml`
+skips the packages because it runs on Linux. `capture-native-helper.yml` builds them on macOS
+and publishes on `ubuntu-latest`; the publish job uses Node 22.14.0 and pins npm 11.16.0 for OIDC trusted publishing.
+
+### Why a `workflow_dispatch` and not the `release: published` event
+
+`release-and-publish.yml` creates the GitHub release with the default
+`GITHUB_TOKEN` (so the push to `main` can be authorized). GitHub does
+**not** start workflow runs for events caused by `GITHUB_TOKEN`; only
+`workflow_dispatch` and `repository_dispatch` are exempt. The
+`release: published` trigger in `capture-native-helper.yml` therefore
+never fires for releases this repository creates itself. To bridge that,
+`release-and-publish.yml` dispatches the helper via
+`gh workflow run capture-native-helper.yml --ref <tag>` after the GitHub
+release exists, using the job's `GITHUB_TOKEN`. The helper accepts that
+dispatch only when `github.ref_type == 'tag'` and the ref passes a
+two-stage guard: the job `if` requires
+`startsWith(github.ref, 'refs/tags/v')`, and a dedicated `Validate ref
+is a vX.Y.Z tag` step inside the job runs bash `[[ =~ ]]` against
+`^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$` and gates every downstream step
+on its `is_release_tag` output. A branch dispatch (the default for
+`gh workflow run` when `--ref` is omitted), a non-v tag like
+`refs/tags/feature-x`, or a pre-release like `refs/tags/v9.69.90-rc.1`
+cannot reach `pnpm publish`.
+
+The dispatch is best-effort: `continue-on-error: true`, with a
+`::warning::` and a job-summary block on failure, so a missing helper
+publish cannot strand the npm train or be reported as an npm failure.
+
+### One-time npm trusted-publishing provisioning
+
+The two platform packages are published to npm via
+[trusted publishing](https://docs.npmjs.com/generating-provenance-statements#publishing-packages-with-provenance-via-github-actions)
+(OIDC). npm’s [trusted-publisher setup](https://docs.npmjs.com/cli/v11/commands/npm-trust/)
+requires the package to exist on the registry first. Because these package names
+do not exist yet, a maintainer must seed each one with an authenticated publish
+at a version below the pending release, then configure the trusted publisher.
+Until both steps are complete, the helper fails with this message:
+
+```
+::error::Provision npm trusted publishing for <pkg>, then rerun this workflow.
+```
+
+To bootstrap the current release tag:
+
+1. For each package, publish a seed version below the pending release with an
+   authenticated npm account and the `alpha` dist-tag (not `latest`). The release
+   workflow does not have a token and cannot seed them. This one-time package
+   creation requires a maintainer action.
+2. For each of the two platform packages, configure npm Trusted Publishing using
+   this GitHub repository's `owner/repository` identifier and workflow filename
+   `capture-native-helper.yml`. Leave the Environment field blank: the workflow
+   at this release tag does not declare a job environment.
+3. Rerun the failed dispatch for this original release tag:
+
+   ```sh
+   gh workflow run capture-native-helper.yml --ref v<X.Y.Z>
+   ```
+
+The helper then publishes the release version with OIDC provenance.
+
+Future hardening is optional and is not part of this PR. Create a GitHub
+Environment restricted to `v*` tags, add `environment: <name>` to the publish
+job in a follow-up after the environment exists, then configure npm Trusted
+Publishing with that same environment name. Only publish or retry from a release
+commit whose workflow contains the environment key; an older tag uses its own
+workflow YAML and will not include the environment claim.
 
 | Directory | Published name | Registry |
 |---|---|---|

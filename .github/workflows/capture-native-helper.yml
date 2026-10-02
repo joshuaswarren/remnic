@@ -18,9 +18,12 @@ on:
       - 'packages/capture-screen/**'
       - '.github/workflows/capture-native-helper.yml'
   release:
-    # The GitHub release created at the end of release-and-publish.yml is the
-    # publish trigger: by then versions are bumped on the tagged commit, so
-    # the darwin platform packages publish at exactly the release version.
+    # The historic publish trigger. In practice unreachable for releases
+    # created by release-and-publish.yml: that workflow uses the default
+    # GITHUB_TOKEN, and GitHub does not start workflow runs for events
+    # caused by GITHUB_TOKEN. The active trigger is the `workflow_dispatch`
+    # below, dispatched from release-and-publish.yml after the release is
+    # created, and the publish job's `if` accepts both paths.
     types: [published]
   workflow_dispatch:
 
@@ -112,7 +115,23 @@ jobs:
 
 
   publish:
-    if: github.event_name == 'release'
+    # Reachable from two paths:
+    #   1. A `release: published` event (the historic trigger).
+    #   2. A `workflow_dispatch` from a vX.Y.Z tag ref. The dispatch comes
+    #      from release-and-publish.yml after it creates the GitHub release,
+    #      because GitHub does not start workflow runs for events caused by
+    #      GITHUB_TOKEN (only `workflow_dispatch` and `repository_dispatch`
+    #      are exempt). The dispatch is needed so the darwin platform
+    #      packages actually publish on every release; otherwise the `release`
+    #      event here never fires for releases created by the default
+    #      GITHUB_TOKEN, and @remnic/capture-native-darwin-{arm64,x64} have
+    #      never made it to npm.
+    # The dispatch-only ref guard (`startsWith(github.ref, 'refs/tags/v')`)
+    # is the GitHub-native part. The strict vX.Y.Z anchor is enforced by
+    # the `Validate ref is a vX.Y.Z tag` step below, which sets
+    # `is_release_tag` and gates the rest of the job on it. Branch and PR
+    # refs cannot reach `pnpm publish`.
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v'))
     needs: swift
     strategy:
       fail-fast: false
@@ -134,25 +153,72 @@ jobs:
         with:
           persist-credentials: false
 
+      # When this job runs from a workflow_dispatch (rather than a real
+      # `release` event), confirm the dispatch ref matches a vX.Y.Z tag
+      # exactly. The job-level `if` already required
+      # `startsWith(github.ref, 'refs/tags/v')`, so the only way to reach
+      # this step is a dispatch from a v-prefixed tag, but `refs/tags/v9`,
+      # `refs/tags/v9.69`, or `refs/tags/v9.69.90-rc.1` would all satisfy
+      # the job guard. Anchor the regex here so the only ref shape that
+      # reaches `pnpm publish` is `refs/tags/vX.Y.Z` exactly. For a real
+      # `release` event we set the output directly so the downstream
+      # steps still run.
+      #
+      # Security: ${{ github.ref }} is passed via the step's `env:` block
+      # (quoted shell variable in the regex) rather than directly
+      # interpolated into the bash source. Direct interpolation would let
+      # a tag name like `v$(rm -rf /)` execute commands inside this
+      # trusted-publishing job before the regex rejects it. Anyone able to
+      # create a tag and dispatch this workflow can reach this step (the
+      # job-level `if` only requires startsWith('refs/tags/v')), so the
+      # injection surface is real until the env passthrough is in place.
+      - name: Validate ref is a vX.Y.Z tag
+        id: ref_check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "release" ]; then
+            echo "is_release_tag=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "${DISPATCH_REF}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "is_release_tag=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Ref ${DISPATCH_REF} is not a vX.Y.Z tag; refusing to publish."
+            echo "is_release_tag=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
       - name: Download helper binary
+        if: steps.ref_check.outputs.is_release_tag == 'true'
         uses: actions/download-artifact@v4
         with:
           name: remnic-capture-helper-${{ matrix.arch }}
           path: ${{ matrix.platformPackage }}/bin
 
       - name: Mark helper executable
+        if: steps.ref_check.outputs.is_release_tag == 'true'
         run: chmod +x "${{ matrix.platformPackage }}/bin/remnic-capture-helper"
 
       - name: Install pnpm
+        if: steps.ref_check.outputs.is_release_tag == 'true'
         uses: pnpm/action-setup@v4
 
       - name: Setup Node
+        if: steps.ref_check.outputs.is_release_tag == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: '22.13.0'
+          node-version: '22.14.0'
           registry-url: https://registry.npmjs.org
 
+      - name: Install npm 11 for trusted publishing
+        if: steps.ref_check.outputs.is_release_tag == 'true'
+        run: npm install -g npm@11.16.0
+
       - name: Publish platform package
+        if: steps.ref_check.outputs.is_release_tag == 'true'
         working-directory: ${{ matrix.platformPackage }}
         run: |
           set -euo pipefail
@@ -163,7 +229,7 @@ jobs:
             exit 0
           fi
           publish_log="$(mktemp)"
-          if pnpm publish --access public --provenance --no-git-checks >"$publish_log" 2>&1; then
+          if pnpm publish --access public --provenance --no-git-checks --tag alpha >"$publish_log" 2>&1; then
             cat "$publish_log"
             rm -f "$publish_log"
             exit 0
