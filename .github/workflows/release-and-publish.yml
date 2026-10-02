@@ -15,14 +15,6 @@ permissions:
   contents: write
   id-token: write
   pull-requests: read
-  # Needed only for the Dispatch capture-native-helper step, which uses
-  # `gh workflow run` with the default GITHUB_TOKEN to trigger a
-  # workflow_dispatch of capture-native-helper.yml after the GitHub
-  # release is created. Without this, the darwin platform packages
-  # (@remnic/capture-native-darwin-{arm64,x64}) never reach npm because
-  # GitHub does not start workflow runs for events caused by GITHUB_TOKEN.
-  # `gh workflow run` is the only consumer; no other job uses this scope.
-  actions: write
 
 concurrency:
   group: release-main
@@ -81,6 +73,14 @@ jobs:
     needs: release-tests
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    # Scoped to the release job so the test suite (release-tests job above)
+    # does not inherit `gh workflow run` authority. Only the Dispatch
+    # capture-native-helper step below uses this scope.
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: read
+      actions: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4

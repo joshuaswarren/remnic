@@ -52,8 +52,8 @@ const helperDoc = parse(readFileSync(".github/workflows/capture-native-helper.ym
   jobs: Record<string, HelperJob>;
 };
 const releaseDoc = parse(readFileSync(".github/workflows/release-and-publish.yml", "utf8")) as {
-  permissions: Record<string, string>;
-  jobs: Record<string, { steps?: WorkflowStep[] }>;
+  permissions?: Record<string, string>;
+  jobs: Record<string, { permissions?: Record<string, string>; steps?: WorkflowStep[] }>;
 };
 
 // The publish job's `if` accepts the historic `release` event OR a
@@ -66,7 +66,6 @@ const releaseDoc = parse(readFileSync(".github/workflows/release-and-publish.yml
 // the ref-validation step explicitly refuses any ref that does not match
 // `^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$` exactly.
 const EXPECTED_PUBLISH_IF = `github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v'))`;
-const REF_VALIDATION_REGEX = '\^refs/tags/v\[0-9\]+\\\\.\[0-9\]+\\\\.\[0-9\]+\$';
 
 const helperPublish = helperDoc.jobs.publish;
 const helperSwift = helperDoc.jobs.swift;
@@ -298,19 +297,46 @@ test("release-and-publish dispatches capture-native-helper after the GitHub rele
 test("release-and-publish grants actions: write for the dispatch step", () => {
   // gh workflow run creates a workflow_dispatch event and must be
   // authorized by the caller job's token. The minimum scope is
-  // `actions: write`; we add exactly that at the workflow level and no
-  // other permission.
+  // `actions: write`; we scope it to the `release` job so the test
+  // suite (release-tests job above) does not inherit the dispatch
+  // authority. The dispatch step is the only consumer in this job.
+  const releaseJob = releaseDoc.jobs.release;
   assert.equal(
-    releaseDoc.permissions["actions"],
+    releaseJob.permissions?.["actions"],
     "write",
-    "release workflow must grant actions: write so gh workflow run can dispatch the helper",
+    "release job must grant actions: write so gh workflow run can dispatch the helper",
   );
-  // The release job does not override permissions; the workflow-level
-  // value applies.
+  // The dispatch step must still authenticate with the default
+  // GITHUB_TOKEN; no new secret.
   assert.equal(
-    releaseDoc.jobs.release.steps?.find((s) => s.name === "Dispatch capture-native-helper")?.env
+    releaseJob.steps?.find((s) => s.name === "Dispatch capture-native-helper")?.env
       ?.GITHUB_TOKEN,
     "${{ secrets.GITHUB_TOKEN }}",
+  );
+});
+
+test("release-promote.yml skips os-restricted packages in plan_package", () => {
+  // release-promote.yml builds its promotion plan from the same
+  // PUBLISH_ORDER as release-and-publish.yml's publish loop. Both
+  // must skip the same os-restricted packages (the two darwin
+  // platform packages), otherwise release-promote.yml would refuse
+  // every promotion on a brand-new package name because plan_package's
+  // MISSING accounting has no os carve-out.
+  const promote = readFileSync(".github/workflows/release-promote.yml", "utf8");
+  // plan_package lives inside a run: block; assert the os check is
+  // present inside that scope.
+  const planStep = promote.match(/- name: Plan the dist-tag moves[\s\S]*?\n        run: \|/);
+  assert.ok(planStep, "release-promote.yml must still have a Plan the dist-tag moves step");
+  const planBody = promote.split("- name: Plan the dist-tag moves", 2)[1] ?? "";
+  assert.match(
+    planBody,
+    /os.includes\(process\.platform\)/,
+    "plan_package must skip os-restricted packages the same way release-and-publish.yml's publish loop does",
+  );
+  assert.match(
+    planBody,
+    /published by capture-native-helper\.yml/,
+    "plan_package's skip notice must name capture-native-helper.yml as the authoritative publisher",
   );
 });
 

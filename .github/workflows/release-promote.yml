@@ -240,6 +240,20 @@ jobs:
             if [ "$(node -p "require('./${pkg_json}').private || false")" = "true" ]; then
               return 0
             fi
+            # Skip os-restricted platform packages that another workflow
+            # (capture-native-helper.yml) publishes. The publish loop in
+            # release-and-publish.yml has the same skip; without it, the
+            # promote job would refuse every promotion on a brand-new package
+            # name (capture-native-darwin-{arm64,x64} have never been on npm)
+            # because plan_package's MISSING accounting has no os carve-out.
+            # Same operator-actionable provisioning gap as the publish loop:
+            # the package is in PUBLISH_ORDER, the operator provisions npm
+            # trusted publishing, the helper publishes on next dispatch,
+            # and only then does the dist-tag become movable here.
+            if ! node -e "const os=require('./${pkg_json}').os; if (!Array.isArray(os) || os.length===0) process.exit(0); process.exit(os.includes(process.platform)?0:1)"; then
+              echo "::notice::Skipping ${pkg_json} (os-restricted; published by capture-native-helper.yml)"
+              return 0
+            fi
             local name
             local pkg_version
             name="$(node -p "require('./${pkg_json}').name")"

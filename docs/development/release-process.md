@@ -58,16 +58,20 @@ commit's source SHA is embedded in the git tag, so re-running against the same
 
    - The job `if` requires `startsWith(github.ref, 'refs/tags/v')` so
      branch refs and non-v tag refs cannot enter the dispatch path.
-   - A dedicated `Validate ref is a vX.Y.Z tag` step runs `bash
-     [[ "${{ github.ref }}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]`
-     and sets the `is_release_tag` step output; every step that touches
-     `pnpm publish` is gated on that output.
+   - A dedicated `Validate ref is a vX.Y.Z tag` step reads github.ref
+     through `env: DISPATCH_REF` (not direct bash-source interpolation,
+     which would let a tag name like `v$(cmd)` execute inside this
+     trusted-publishing job before the regex rejects it) and runs
+     `[[ "${DISPATCH_REF}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]`,
+     setting `is_release_tag`; every step that touches `pnpm publish`
+     is gated on that output.
 
    GitHub Actions expressions do not support the `=~` operator, so the
    vX.Y.Z anchor cannot live in the job-level `if` (the REST API
    returns HTTP 422 on `workflow_dispatch` for a workflow file that
    tries). The two-stage gate keeps the ref check both strict and
-   parsable. **First publish for a brand-new package name requires
+   parsable, and the env passthrough keeps tag-name shell metacharacters
+   from being interpreted as code. **First publish for a brand-new package name requires
    one-time npm trusted-publishing provisioning by a maintainer** —
    until that is done, the helper's publish step fails with the message
    `::error::Provision npm trusted publishing for <pkg>, then rerun this workflow.`
