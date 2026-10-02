@@ -50,16 +50,26 @@ commit's source SHA is embedded in the git tag, so re-running against the same
    `capture-native-helper.yml` via `workflow_dispatch` at the release tag.
    The helper then runs its `swift` job (rebuilds the unified Swift helper on
    real macOS runners) and its `publish` job (uploads the binary to npm via
-   trusted publishing). The dispatch is best-effort relative to the main
-   release: `continue-on-error: true` is set, and any failure is surfaced
-   via `::warning::` and a job-summary block, so it cannot fail the
-   ClawHub step or the npm publish that already completed. The helper's
-   `publish` job guards itself with
-   `github.ref_type == 'tag' && github.ref =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$`
-   so a branch dispatch can never reach `pnpm publish`. **First publish
-   for a brand-new package name requires one-time npm trusted-publishing
-   provisioning by a maintainer** — until that is done, the helper's publish
-   step fails with the message
+   trusted publishing, on the `alpha` dist-tag). The dispatch is best-effort
+   relative to the main release: `continue-on-error: true` is set, and any
+   failure is surfaced via `::warning::` and a job-summary block, so it
+   cannot fail the ClawHub step or the npm publish that already completed.
+   The helper's `publish` job guards itself in two stages:
+
+   - The job `if` requires `startsWith(github.ref, 'refs/tags/v')` so
+     branch refs and non-v tag refs cannot enter the dispatch path.
+   - A dedicated `Validate ref is a vX.Y.Z tag` step runs `bash
+     [[ "${{ github.ref }}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]`
+     and sets the `is_release_tag` step output; every step that touches
+     `pnpm publish` is gated on that output.
+
+   GitHub Actions expressions do not support the `=~` operator, so the
+   vX.Y.Z anchor cannot live in the job-level `if` (the REST API
+   returns HTTP 422 on `workflow_dispatch` for a workflow file that
+   tries). The two-stage gate keeps the ref check both strict and
+   parsable. **First publish for a brand-new package name requires
+   one-time npm trusted-publishing provisioning by a maintainer** —
+   until that is done, the helper's publish step fails with the message
    `::error::Provision npm trusted publishing for <pkg>, then rerun this workflow.`
    See [Native helper publish](#native-helper-publish) below.
 9. **Rescan ClawHub.** After npm publishing, the workflow triggers a ClawHub
@@ -121,10 +131,15 @@ never fires for releases this repository creates itself. To bridge that,
 `release-and-publish.yml` dispatches the helper via
 `gh workflow run capture-native-helper.yml --ref <tag>` after the GitHub
 release exists, using the job's `GITHUB_TOKEN`. The helper accepts that
-dispatch only when `github.ref_type == 'tag'` and
-`github.ref =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$`, so a branch
-dispatch (the default for `gh workflow run` when `--ref` is omitted) can
-never reach `pnpm publish`.
+dispatch only when `github.ref_type == 'tag'` and the ref passes a
+two-stage guard: the job `if` requires
+`startsWith(github.ref, 'refs/tags/v')`, and a dedicated `Validate ref
+is a vX.Y.Z tag` step inside the job runs bash `[[ =~ ]]` against
+`^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$` and gates every downstream step
+on its `is_release_tag` output. A branch dispatch (the default for
+`gh workflow run` when `--ref` is omitted), a non-v tag like
+`refs/tags/feature-x`, or a pre-release like `refs/tags/v9.69.90-rc.1`
+cannot reach `pnpm publish`.
 
 The dispatch is best-effort: `continue-on-error: true`, with a
 `::warning::` and a job-summary block on failure, so a missing helper

@@ -707,10 +707,16 @@ jobs:
       # the npm publish above already completed against the same tag.
       # Failures are surfaced via ::warning:: + job summary so the run
       # summary is never silent. The helper's publish job is itself
-      # guarded by github.ref_type == 'tag' && github.ref =~
-      # ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ so a branch dispatch cannot
-      # reach `pnpm publish`. We pin --ref to the release tag so the
-      # package version equals the release version.
+      # guarded in two stages: the job `if` requires
+      # `startsWith(github.ref, 'refs/tags/v')`, and a dedicated
+      # `Validate ref is a vX.Y.Z tag` step inside the job runs bash
+      # `[[ =~ ]]` against `^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$` and
+      # gates every downstream step on its `is_release_tag` output. The
+      # vX.Y.Z anchor cannot live in the job `if` because GitHub Actions
+      # expressions do not implement that operator (and the REST API
+      # rejects workflow files that try it). The two-stage gate keeps
+      # the ref check both strict and parsable. We pin --ref to the
+      # release tag so the package version equals the release version.
       - name: Dispatch capture-native-helper
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         continue-on-error: true

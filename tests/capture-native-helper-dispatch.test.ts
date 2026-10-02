@@ -91,9 +91,12 @@ test("capture-native-helper publish job is reachable from a v* tag dispatch", ()
     "packages/capture-native-darwin-x64",
   ]);
   // Publish step must keep OIDC trusted publishing and the same publish
-  // invocation the existing test pins.
+  // invocation the existing test pins. `--tag alpha` is required so the
+  // first publish goes to the alpha channel; without it, npm assigns
+  // `latest` and every unpromoted main release becomes stable for these
+  // packages, which bypasses the release-promote.yml flow.
   const publishRun = helperPublish.steps?.find((s) => s.run?.includes("pnpm publish"))?.run ?? "";
-  assert.match(publishRun, /pnpm publish --access public --provenance --no-git-checks/);
+  assert.match(publishRun, /pnpm publish --access public --provenance --no-git-checks --tag alpha/);
   // E404 carve-out must still be present, with the actionable error text
   // Joshua sees on first publish.
   assert.match(

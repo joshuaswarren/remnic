@@ -213,7 +213,7 @@ jobs:
             exit 0
           fi
           publish_log="$(mktemp)"
-          if pnpm publish --access public --provenance --no-git-checks >"$publish_log" 2>&1; then
+          if pnpm publish --access public --provenance --no-git-checks --tag alpha >"$publish_log" 2>&1; then
             cat "$publish_log"
             rm -f "$publish_log"
             exit 0
