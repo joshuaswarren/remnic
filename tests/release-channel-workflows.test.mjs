@@ -160,3 +160,36 @@ test("the touched workflows keep their pinned job graph", () => {
     );
   }
 });
+
+test("the CI gate's squash retarget emits a raw 40-hex EVAL_SHA (issue: quoted sha broke real dry run 37008248423)", () => {
+  const raw = readWorkflow("release-promote.yml");
+  const workflow = parse(raw);
+  const steps = workflow.jobs.promote.steps;
+  const ciStep = steps.find(
+    (step) => step.name === "Verify CI is green on the release commit",
+  );
+  assert.ok(ciStep, "CI gate step must exist");
+  const run = ciStep.run;
+
+  // The PR_HEAD lookup pipes gh api output through a system jq (not gh's
+  // --jq wrapper), so it MUST carry -r: without it jq prints a JSON string
+  // with quotes and EVAL_SHA inherits them ("sha" -> gh 422 on every
+  // subsequent call).
+  assert.match(
+    run,
+    /\| jq -rs --arg sha/,
+    "PR_HEAD lookup must use jq -rs so the sha is raw, not a JSON-quoted string",
+  );
+
+  // Fail closed on a malformed EVAL_SHA before it reaches any API call.
+  assert.match(
+    run,
+    /Bad evaluated SHA/,
+    "EVAL_SHA must be validated with a ::error title=Bad evaluated SHA:: guard",
+  );
+  assert.match(
+    run,
+    /\^\[0-9a-f\]\{40\}\$/,
+    "EVAL_SHA validation must be an exact 40-hex match",
+  );
+});

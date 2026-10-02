@@ -214,7 +214,7 @@ jobs:
             # can push the matching PR off the first page), filtered to
             # merged-into-main PRs whose merge_commit_sha equals our source.
             PR_HEAD="$(gh api --paginate "${REPO}/commits/${SOURCE_SHA}/pulls" \
-              | jq -s --arg sha "${SOURCE_SHA}" 'map(.[]) | map(select(.merged_at != null and .merge_commit_sha == $sha and .base.ref == "main")) | .[0].head.sha // empty')"
+              | jq -rs --arg sha "${SOURCE_SHA}" 'map(.[]) | map(select(.merged_at != null and .merge_commit_sha == $sha and .base.ref == "main")) | .[0].head.sha // empty')"
             if [ -n "${PR_HEAD}" ] && [ "${PR_HEAD}" != "null" ]; then
               EVAL_SHA="${PR_HEAD}"
               echo "Source commit is a squash; retargeting to associated PR HEAD ${EVAL_SHA}."
@@ -223,6 +223,15 @@ jobs:
             fi
           fi
           echo "EVAL_SHA=${EVAL_SHA}" >> "$GITHUB_ENV"
+
+          # Fail closed before EVAL_SHA reaches any API call: a malformed
+          # value (quoted string, empty, short sha) must never turn into a
+          # confusing downstream 422. Real dry run 37008248423 failed here
+          # with a JSON-quoted sha from the retarget above.
+          if ! printf '%s' "${EVAL_SHA}" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error title=Bad evaluated SHA::EVAL_SHA='${EVAL_SHA}' is not a bare 40-hex commit sha; refusing before any API call."
+            exit 1
+          fi
 
           # Read the effective required-status-checks list for the default
           # branch (where the release merges) directly. If the read fails, fail
