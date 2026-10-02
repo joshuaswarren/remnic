@@ -203,3 +203,20 @@ test("squash-path glue exports a bare 40-hex EVAL_SHA (regression: quoted sha, r
     rmSync(work, { recursive: true, force: true });
   }
 });
+
+test("a malformed EVAL_SHA with embedded newline + trailing 40-hex is refused (kilo #1, line-oriented grep bypass)", () => {
+  const run = readStepRun();
+  // Confirm the guard runs as bash [[ =~ ]] (anchored whole-string), not
+  // grep -Eq (line-oriented: a value like "dead...\\nsecond-line" would
+  // pass the first line and be accepted).
+  assert.match(run, /\[\[ "\$\{EVAL_SHA\}" =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
+});
+
+test("the Bad-evaluated-SHA guard runs BEFORE the GITHUB_ENV export (kilo #2: validate-before-export)", () => {
+  const run = readStepRun();
+  const guardIdx = run.indexOf("EVAL_SHA_SAFE=");
+  const exportIdx = run.indexOf('EVAL_SHA=${EVAL_SHA}" >> "$GITHUB_ENV"');
+  assert.ok(guardIdx > 0, "guard must exist");
+  assert.ok(exportIdx > 0, "export must exist");
+  assert.ok(guardIdx < exportIdx, "guard must precede the export");
+});

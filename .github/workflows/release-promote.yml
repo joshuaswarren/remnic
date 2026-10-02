@@ -222,16 +222,25 @@ jobs:
               echo "Source commit has no associated merged PR; evaluating ${SOURCE_SHA} directly."
             fi
           fi
-          echo "EVAL_SHA=${EVAL_SHA}" >> "$GITHUB_ENV"
 
           # Fail closed before EVAL_SHA reaches any API call: a malformed
-          # value (quoted string, empty, short sha) must never turn into a
-          # confusing downstream 422. Real dry run 37008248423 failed here
-          # with a JSON-quoted sha from the retarget above.
-          if ! printf '%s' "${EVAL_SHA}" | grep -Eq '^[0-9a-f]{40}$'; then
-            echo "::error title=Bad evaluated SHA::EVAL_SHA='${EVAL_SHA}' is not a bare 40-hex commit sha; refusing before any API call."
+          # value (quoted string, empty, short sha, embedded newline, or
+          # anything other than exactly 40 hex digits) must never turn
+          # into a confusing downstream 422. Real dry run 37008248423
+          # failed here with a JSON-quoted sha from the retarget above.
+          # Bash [[ =~ ]] anchors the match to the whole string (grep -E
+          # is line-oriented and would let a value containing a newline
+          # plus a trailing 40-hex line pass).
+          if ! [[ "${EVAL_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            # Escape the value before embedding it in a workflow command:
+            # GitHub decodes % escapes in ::error/::warning payload data,
+            # so a hostile or malformed %0A/%25/%0D terminates the command
+            # and lets subsequent commands run on the same line.
+            EVAL_SHA_SAFE="$(printf '%s' "${EVAL_SHA}" | tr -d '\r' | sed -e 's/%/%25/g' -e 's/,/%2C/g')"
+            echo "::error title=Bad evaluated SHA::EVAL_SHA='${EVAL_SHA_SAFE}' is not a bare 40-hex commit sha; refusing before any API call."
             exit 1
           fi
+          echo "EVAL_SHA=${EVAL_SHA}" >> "$GITHUB_ENV"
 
           # Read the effective required-status-checks list for the default
           # branch (where the release merges) directly. If the read fails, fail

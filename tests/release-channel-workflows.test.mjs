@@ -181,15 +181,26 @@ test("the CI gate's squash retarget emits a raw 40-hex EVAL_SHA (issue: quoted s
     "PR_HEAD lookup must use jq -rs so the sha is raw, not a JSON-quoted string",
   );
 
-  // Fail closed on a malformed EVAL_SHA before it reaches any API call.
+  // Fail closed on a malformed EVAL_SHA before it reaches any API call or
+  // the export to GITHUB_ENV (kilo thread #2: validate before exporting).
+  assert.match(
+    run,
+    /\[\[ "\$\{EVAL_SHA\}" =~ \^\[0-9a-f\]\{40\}\$ \]\]/,
+    "EVAL_SHA must be validated with bash [[ =~ ]] (anchored whole-string) not grep -Eq (line-oriented)",
+  );
   assert.match(
     run,
     /Bad evaluated SHA/,
     "EVAL_SHA must be validated with a ::error title=Bad evaluated SHA:: guard",
   );
-  assert.match(
-    run,
-    /\^\[0-9a-f\]\{40\}\$/,
-    "EVAL_SHA validation must be an exact 40-hex match",
-  );
+  // The guard must run BEFORE the export to GITHUB_ENV so a malformed
+  // value can never be acted on by a later step in the same job.
+  const guardPos = run.indexOf("Bad evaluated SHA");
+  const exportPos = run.indexOf('EVAL_SHA=${EVAL_SHA}" >> "$GITHUB_ENV"');
+  assert.ok(guardPos > 0 && exportPos > 0 && guardPos < exportPos, "guard must precede the export");
+
+  // The embedded value must be percent-escaped (kilo thread #3: same
+  // defect class as the round-2 PKG_ERR fix in #3157).
+  assert.match(run, /EVAL_SHA_SAFE=/);
+  assert.match(run, /s\/%\/%25\/g/, "must percent-escape % before embedding in ::error payload");
 });
