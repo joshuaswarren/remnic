@@ -165,26 +165,29 @@ Until both steps are complete, the helper fails with this message:
 ::error::Provision npm trusted publishing for <pkg>, then rerun this workflow.
 ```
 
-To provision each package:
+To bootstrap the current release tag:
 
 1. Publish a seed version below the pending release with an authenticated npm
    account and the `alpha` dist-tag (not `latest`). The release workflow does not
    have a token and cannot seed it. This one-time package creation requires a
    maintainer action.
-2. Create a GitHub Environment and restrict its deployment protection rules to
-   tags matching `v*`. Once the environment exists, add `environment: <name>` to the
-   publish job in a follow-up change. Do not add that key before the environment
-   exists: GitHub creates a missing environment implicitly when a job references it.
-3. Configure an npm trusted-publisher entry for the repository with workflow
-   filename `capture-native-helper.yml` and the same environment name. npm requires
-   the package to exist first; the npm environment name must match the job environment.
-4. Rerun the failed dispatch for the original release tag:
+2. Configure npm Trusted Publishing for the `joshuaswarren/remnic` repository
+   with workflow filename `capture-native-helper.yml`. Leave the Environment field
+   blank: the workflow at this release tag does not declare a job environment.
+3. Rerun the failed dispatch for this original release tag:
 
    ```sh
    gh workflow run capture-native-helper.yml --ref v<X.Y.Z>
    ```
 
 The helper then publishes the release version with OIDC provenance.
+
+Future hardening is optional and is not part of this PR. Create a GitHub
+Environment restricted to `v*` tags, add `environment: <name>` to the publish
+job in a follow-up after the environment exists, then configure npm Trusted
+Publishing with that same environment name. Only publish or retry from a release
+commit whose workflow contains the environment key; an older tag uses its own
+workflow YAML and will not include the environment claim.
 
 | Directory | Published name | Registry |
 |---|---|---|

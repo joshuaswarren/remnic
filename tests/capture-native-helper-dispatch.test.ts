@@ -1,17 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { parse } from "yaml";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-// Use the workspace's pinned `yaml` package so we parse workflows with the
-// same parser the rest of the test suite trusts. Without an absolute path
-// here the test relies on node_modules being installed at the repo root;
-// the workspace's `test:file` runner makes that a precondition.
-const require = createRequire(import.meta.url);
-const YAML_PATH = require.resolve("yaml/package.json").replace(/\/package\.json$/, "");
-const { parse } = require(YAML_PATH) as { parse: (text: string) => unknown };
+// Use the workspace-pinned parser, matching the other workflow tests.
 
 // These tests pin the contract that makes capture-native-helper.yml publish
 // reachable from a normal release. The motivating bug: release-and-publish.yml
