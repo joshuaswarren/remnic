@@ -171,9 +171,10 @@ To bootstrap the current release tag:
    account and the `alpha` dist-tag (not `latest`). The release workflow does not
    have a token and cannot seed it. This one-time package creation requires a
    maintainer action.
-2. Configure npm Trusted Publishing for the `joshuaswarren/remnic` repository
-   with workflow filename `capture-native-helper.yml`. Leave the Environment field
-   blank: the workflow at this release tag does not declare a job environment.
+2. Configure npm Trusted Publishing for this GitHub repository (use its
+   `owner/repository` identifier) with workflow filename
+   `capture-native-helper.yml`. Leave the Environment field blank: the workflow
+   at this release tag does not declare a job environment.
 3. Rerun the failed dispatch for this original release tag:
 
    ```sh
