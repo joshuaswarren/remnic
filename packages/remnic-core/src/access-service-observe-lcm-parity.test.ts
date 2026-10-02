@@ -998,8 +998,10 @@ test("#3140: a duration deadline reaches scope resolution and aborts it when it 
   // (session-context.ts), so racing a 30ms wall-clock budget lets the event
   // loop drain first under CI load: the flush promise then never settles and
   // the runner cancels the rest of the file. Mocked timers make the ordering
-  // deterministic — the budget elapses only when ticked.
-  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  // deterministic — the budget elapses only when ticked. The clock starts at
+  // an epoch-scale `now` so a duration budget (30) is genuinely distinguished
+  // from the old absolute-epoch reading the test guards against.
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_700_000_000_000 });
   const probe = makeParityProbe({ namespacesEnabled: false } as Partial<PluginConfig>);
   const service = new EngramAccessService(probe.orch);
   let scopeResolutionStarted = false;
