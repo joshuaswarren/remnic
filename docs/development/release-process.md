@@ -45,7 +45,24 @@ commit's source SHA is embedded in the git tag, so re-running against the same
    (see below), onto the `alpha` dist-tag. npm 11.x is pinned so provenance /
    trusted-publishing behavior only changes through review; all publishes carry
    provenance attestations.
-8. **Rescan ClawHub.** After npm publishing, the workflow triggers a ClawHub
+8. **Dispatch the native-helper publish.** After the GitHub release is created
+   and the npm publish step has run, the workflow dispatches
+   `capture-native-helper.yml` via `workflow_dispatch` at the release tag.
+   The helper then runs its `swift` job (rebuilds the unified Swift helper on
+   real macOS runners) and its `publish` job (uploads the binary to npm via
+   trusted publishing). The dispatch is best-effort relative to the main
+   release: `continue-on-error: true` is set, and any failure is surfaced
+   via `::warning::` and a job-summary block, so it cannot fail the
+   ClawHub step or the npm publish that already completed. The helper's
+   `publish` job guards itself with
+   `github.ref_type == 'tag' && github.ref =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$`
+   so a branch dispatch can never reach `pnpm publish`. **First publish
+   for a brand-new package name requires one-time npm trusted-publishing
+   provisioning by a maintainer** — until that is done, the helper's publish
+   step fails with the message
+   `::error::Provision npm trusted publishing for <pkg>, then rerun this workflow.`
+   See [Native helper publish](#native-helper-publish) below.
+9. **Rescan ClawHub.** After npm publishing, the workflow triggers a ClawHub
    package rescan for `@remnic/plugin-openclaw`.
 
 ### Manual override
@@ -81,6 +98,65 @@ publish failure is fatal.
 publishes to PyPI on its own workflow. See
 [monorepo-structure.md](../architecture/monorepo-structure.md) for the full
 package map. Directory names differ from published names for several packages:
+
+## Native helper publish
+
+Two of the published packages are platform-restricted darwin binaries
+(`@remnic/capture-native-darwin-arm64` and `@remnic/capture-native-darwin-x64`).
+They are built from `packages/capture-native-darwin-helper` (a Swift
+package) on real macOS runners, then staged into the per-arch
+`packages/capture-native-darwin-{arm64,x64}/bin/` directory and published
+to npm. They cannot be built or published on the Linux runner that runs
+`release-and-publish.yml`, so `release-and-publish.yml` skips them and
+delegates the publish to `.github/workflows/capture-native-helper.yml`.
+
+### Why a `workflow_dispatch` and not the `release: published` event
+
+`release-and-publish.yml` creates the GitHub release with the default
+`GITHUB_TOKEN` (so the push to `main` can be authorized). GitHub does
+**not** start workflow runs for events caused by `GITHUB_TOKEN`; only
+`workflow_dispatch` and `repository_dispatch` are exempt. The
+`release: published` trigger in `capture-native-helper.yml` therefore
+never fires for releases this repository creates itself. To bridge that,
+`release-and-publish.yml` dispatches the helper via
+`gh workflow run capture-native-helper.yml --ref <tag>` after the GitHub
+release exists, using the job's `GITHUB_TOKEN`. The helper accepts that
+dispatch only when `github.ref_type == 'tag'` and
+`github.ref =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$`, so a branch
+dispatch (the default for `gh workflow run` when `--ref` is omitted) can
+never reach `pnpm publish`.
+
+The dispatch is best-effort: `continue-on-error: true`, with a
+`::warning::` and a job-summary block on failure, so a missing helper
+publish cannot strand the npm train or be reported as an npm failure.
+
+### One-time npm trusted-publishing provisioning
+
+The two platform packages are published to npm via
+[trusted publishing](https://docs.npmjs.com/generating-provenance-statements#publishing-packages-with-provenance-via-github-actions)
+(OIDC). For a brand-new package name the maintainer must provision npm
+trusted publishing once before the first publish succeeds. Until that is
+done, the helper's publish step fails with the message
+
+```
+::error::Provision npm trusted publishing for <pkg>, then rerun this workflow.
+```
+
+To provision:
+
+1. Open the package on npm (the package name does not exist on npm yet —
+   the maintainer creates it; the automation cannot).
+2. Add a trusted-publisher entry pointing at the
+   `.github/workflows/capture-native-helper.yml` workflow, with the
+   environment left blank.
+3. Rerun the failed dispatch:
+
+   ```sh
+   gh workflow run capture-native-helper.yml --ref v<X.Y.Z>
+   ```
+
+The same workflow, the same tag, the same OIDC token — the package
+publishes on the first try after the entry exists.
 
 | Directory | Published name | Registry |
 |---|---|---|

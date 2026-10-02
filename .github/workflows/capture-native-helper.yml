@@ -18,9 +18,12 @@ on:
       - 'packages/capture-screen/**'
       - '.github/workflows/capture-native-helper.yml'
   release:
-    # The GitHub release created at the end of release-and-publish.yml is the
-    # publish trigger: by then versions are bumped on the tagged commit, so
-    # the darwin platform packages publish at exactly the release version.
+    # The historic publish trigger. In practice unreachable for releases
+    # created by release-and-publish.yml: that workflow uses the default
+    # GITHUB_TOKEN, and GitHub does not start workflow runs for events
+    # caused by GITHUB_TOKEN. The active trigger is the `workflow_dispatch`
+    # below, dispatched from release-and-publish.yml after the release is
+    # created, and the publish job's `if` accepts both paths.
     types: [published]
   workflow_dispatch:
 
@@ -112,7 +115,19 @@ jobs:
 
 
   publish:
-    if: github.event_name == 'release'
+    # Reachable from two paths:
+    #   1. A `release: published` event (the historic trigger).
+    #   2. A `workflow_dispatch` from a vX.Y.Z tag ref. The dispatch comes
+    #      from release-and-publish.yml after it creates the GitHub release,
+    #      because GitHub does not start workflow runs for events caused by
+    #      GITHUB_TOKEN (only `workflow_dispatch` and `repository_dispatch`
+    #      are exempt). The dispatch is needed so the darwin platform
+    #      packages actually publish on every release; otherwise the `release`
+    #      event here never fires for releases created by the default
+    #      GITHUB_TOKEN, and @remnic/capture-native-darwin-{arm64,x64} have
+    #      never made it to npm.
+    # The ref guard ensures a branch dispatch cannot reach `pnpm publish`.
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && github.ref =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$)
     needs: swift
     strategy:
       fail-fast: false
