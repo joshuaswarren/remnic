@@ -120,10 +120,9 @@ Two of the published packages are platform-restricted darwin binaries
 (`@remnic/capture-native-darwin-arm64` and `@remnic/capture-native-darwin-x64`).
 They are built from `packages/capture-native-darwin-helper` (a Swift
 package) on real macOS runners, then staged into the per-arch
-`packages/capture-native-darwin-{arm64,x64}/bin/` directory and published
-to npm. They cannot be built or published on the Linux runner that runs
-`release-and-publish.yml`, so `release-and-publish.yml` skips them and
-delegates the publish to `.github/workflows/capture-native-helper.yml`.
+`packages/capture-native-darwin-{arm64,x64}/bin/`. Only compilation needs macOS. `release-and-publish.yml`
+skips the packages because it runs on Linux. `capture-native-helper.yml` builds them on macOS
+and publishes on `ubuntu-latest`.
 
 ### Why a `workflow_dispatch` and not the `release: published` event
 

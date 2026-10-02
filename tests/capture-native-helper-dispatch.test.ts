@@ -100,7 +100,7 @@ test("capture-native-helper publish job is reachable from a v* tag dispatch", ()
   const publishRun = helperPublish.steps?.find((s) => s.run?.includes("pnpm publish"))?.run ?? "";
   assert.match(publishRun, /pnpm publish --access public --provenance --no-git-checks --tag alpha/);
   // E404 carve-out must still be present, with the actionable error text
-  // Joshua sees on first publish.
+  // maintainers see on first publish.
   assert.match(
     publishRun,
     /Provision npm trusted publishing for \$\{pkg_name\}, then rerun this workflow\./,
