@@ -19,7 +19,7 @@ import { type RecallInvocationOptions, abortRecallError } from "./orchestrator-h
 import { ProfilingCollector } from "../profiling.js";
 import { trustResultFor, type TrustStageResultItem } from "../trust-score-stage.js";
 import type { RecallResultFormatter } from "./recall-result-formatter.js";
-import type { IdentityInjectionMode, PluginConfig, QmdSearchResult } from "../types.js";
+import type { IdentityInjectionMode, PluginConfig, QmdSearchResult, RecallPlanMode } from "../types.js";
 import { stateViewPacketActive } from "../recall-state-view-anchors.js";
 import { resultStateViewKey, stateViewPacketKeys } from "../recall-state-view.js";
 import { applyRecallStateViews } from "../recall-state-view-wire.js";
@@ -163,11 +163,16 @@ export class RecallEntryCoordinator {
       options.budgetCharsOverride >= 0
         ? options.budgetCharsOverride
         : this.deps.config.recallBudgetChars;
-    if (this.deps.config.recallStandingBlock && !namespacesEnabled && standingBudget !== 0 && !options.asOf) {
+    const shouldReadStandingBlock =
+      this.deps.config.recallStandingBlock && !namespacesEnabled && standingBudget !== 0 && !options.asOf;
+    if (shouldReadStandingBlock) {
       try {
-        const memories = await this.deps.storage.readAllMemories({
-          abortSignal: abortController.signal,
-        });
+        await options.onRecallPlanResolved?.("no_recall", [this.deps.config.defaultNamespace]);
+      } catch (err) {
+        log.warn(`standing-memory plan callback failed: ${err}`);
+      }
+      try {
+        const memories = await this.deps.storage.readAllMemories({ abortSignal: abortController.signal });
         standingText = renderStandingMemoryBlock(
           this.deps.config,
           memoriesToStandingEntries(memories, { requestingConnector: options.sourceConnector }),
@@ -176,25 +181,36 @@ export class RecallEntryCoordinator {
         log.warn(`standing memory block skipped: ${err}`);
       }
     }
+    let innerBudget = options.budgetCharsOverride;
     const innerObserver = options.onContextComposition;
-    const innerBudget =
-      standingText.length > 0 && standingBudget && standingBudget > 0
-        ? Math.max(0, standingBudget - standingText.length - 2)
-        : options.budgetCharsOverride;
-    const recallOptions = {
+    let recallOptions: RecallInvocationOptions;
+    recallOptions = {
       ...options,
       abortSignal: abortController.signal,
       budgetCharsOverride: innerBudget,
+      onRecallPlanResolved: options.onRecallPlanResolved || shouldReadStandingBlock
+        ? async (mode: RecallPlanMode, readNamespaces: readonly string[]) => {
+            const versionNamespaces =
+              mode === "no_recall" && !shouldReadStandingBlock
+                ? []
+                : shouldReadStandingBlock && !readNamespaces.includes(this.deps.config.defaultNamespace)
+                  ? [...readNamespaces, this.deps.config.defaultNamespace]
+                  : readNamespaces;
+            await options.onRecallPlanResolved?.(mode, versionNamespaces);
+            innerBudget = standingText.length > 0 && standingBudget > 0
+              ? Math.max(0, standingBudget - standingText.length - 2)
+              : options.budgetCharsOverride;
+            recallOptions.budgetCharsOverride = innerBudget;
+          }
+        : undefined,
       onContextComposition:
-        standingText.length > 0
+        shouldReadStandingBlock
           ? (composition: RecallContextComposition) =>
               innerObserver?.({
                 ...composition,
-                context: prefixStandingMemoryBlock(
-                  composition.context ?? "",
-                  standingText,
-                  standingBudget,
-                ),
+                context: standingText.length > 0
+                  ? prefixStandingMemoryBlock(composition.context ?? "", standingText, standingBudget)
+                  : composition.context,
               })
           : innerObserver,
     };

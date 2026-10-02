@@ -26,6 +26,7 @@ test("recall retries transient server errors according to client policy", async 
         context: "remembered context",
         results: [{ id: "mem-1", content: "remembered context", score: 1 }],
         count: 1,
+        storageCorpusVersionsAtRecallStart: [{ namespace: "default", version: 17 }],
       }),
       {
         status: 200,
@@ -51,6 +52,9 @@ test("recall retries transient server errors according to client policy", async 
     assert.equal(idempotencyKeys[1], idempotencyKeys[0]);
     assert.equal(result.context, "remembered context");
     assert.equal(result.results?.[0]?.id, "mem-1");
+    assert.deepEqual(result.storageCorpusVersionsAtRecallStart, [
+      { namespace: "default", version: 17 },
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }

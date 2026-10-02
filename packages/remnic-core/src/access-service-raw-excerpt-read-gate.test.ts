@@ -124,7 +124,7 @@ function makeRawExcerptProbe(options: {
     resolveSelfNamespace: (sk?: string) =>
       Orchestrator.prototype.resolveSelfNamespace.call(orch, sk),
     async getStorage() {
-      return storage;
+      return { ...storage, getMemoryCorpusVersion: () => 0 };
     },
     lastRecall: new Map<string, LastRecallSnapshot>([
       [options.sessionKey, snapshot],
