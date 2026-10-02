@@ -1019,13 +1019,17 @@ test("#3140: a duration deadline reaches scope resolution and aborts it when it 
   // clock does not move on its own.
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(scopeResolutionStarted, true, "the budget lets scope resolution start");
-  const started = Date.now();
+  // Under mocked timers the budget cannot have elapsed yet, so the flush
+  // must still be pending — proves the deadline does not fire before its
+  // budget (#3140 regression: an absolute-epoch reading would reject
+  // instantly with `scope_resolution` before the stub ran).
+  const stillPending = Promise.race([
+    flush.then(() => "rejected", () => "rejected"),
+    new Promise<string>((resolve) => setImmediate(() => resolve("pending"))),
+  ]);
+  assert.equal(await stillPending, "pending");
   t.mock.timers.tick(30);
   await assert.rejects(flush, /scope_resolution/);
-  assert.ok(
-    Date.now() - started >= 25,
-    "the flush waits out the budget instead of failing instantly",
-  );
   assert.equal(probe.extractionForceFlushCalls.length, 0);
 });
 
@@ -1135,22 +1139,28 @@ test("#2206: scope-resolution deadline cancels preparations by raw projectTag an
     }));
     await observeScopeStarted;
     // Mock the clock only for the flush: the observe is already parked on
-    // the gate, and its tail below needs the real clock back.
+    // the gate, and its tail below needs the real clock back. A try/finally
+    // makes sure a failing assertion cannot leak the mocked window or the
+    // parked observe, which would otherwise reproduce the same
+    // event-loop-drain cascade this PR fixes.
     t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
-    const flush = service.extractionForceFlush({
-      sessionKey: "pi-geek:raw-hint-deadline",
-      authenticatedPrincipal: "pi-geek",
-      deadlineMs: 1,
-      ...rawHintCase,
-    });
-    // Yield once so the stub is entered before the budget is spent; the
-    // mocked clock does not move on its own.
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal(flushScopeStarted, true);
-    t.mock.timers.tick(1);
-    await assert.rejects(flush, /scope_resolution/);
-    t.mock.timers.reset();
-    releaseObserveScope();
+    try {
+      const flush = service.extractionForceFlush({
+        sessionKey: "pi-geek:raw-hint-deadline",
+        authenticatedPrincipal: "pi-geek",
+        deadlineMs: 1,
+        ...rawHintCase,
+      });
+      // Yield once so the stub is entered before the budget is spent; the
+      // mocked clock does not move on its own.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(flushScopeStarted, true);
+      t.mock.timers.tick(1);
+      await assert.rejects(flush, /scope_resolution/);
+    } finally {
+      t.mock.timers.reset();
+      releaseObserveScope();
+    }
     const response = await observe;
     assert.equal(response.extractionQueued, false);
     assert.equal(probe.extractionCalls.length, 0);
