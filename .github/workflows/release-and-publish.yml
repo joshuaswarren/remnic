@@ -73,6 +73,14 @@ jobs:
     needs: release-tests
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    # Scoped to the release job so the test suite (release-tests job above)
+    # does not inherit `gh workflow run` authority. Only the Dispatch
+    # capture-native-helper step below uses this scope.
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: read
+      actions: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -688,6 +696,57 @@ jobs:
           tag_name: ${{ steps.release_metadata.outputs.tag_name }}
           name: ${{ steps.release_metadata.outputs.tag_name }}
           generate_release_notes: true
+
+      # Trigger capture-native-helper.yml via workflow_dispatch. The
+      # helper's `release: published` event never fires for releases
+      # created by this workflow (GitHub does not start workflow runs
+      # for events caused by GITHUB_TOKEN), so without this dispatch
+      # @remnic/capture-native-darwin-{arm64,x64} never reach npm. The
+      # dispatch is best-effort: a helper failure must not strand the
+      # ClawHub step or be reported as an npm publish failure, because
+      # the npm publish above already completed against the same tag.
+      # Failures are surfaced via ::warning:: + job summary so the run
+      # summary is never silent. The helper's publish job is itself
+      # guarded in two stages: the job `if` requires
+      # `startsWith(github.ref, 'refs/tags/v')`, and a dedicated
+      # `Validate ref is a vX.Y.Z tag` step inside the job runs bash
+      # `[[ =~ ]]` against `^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$` and
+      # gates every downstream step on its `is_release_tag` output. The
+      # vX.Y.Z anchor cannot live in the job `if` because GitHub Actions
+      # expressions do not implement that operator (and the REST API
+      # rejects workflow files that try it). The two-stage gate keeps
+      # the ref check both strict and parsable. We pin --ref to the
+      # release tag so the package version equals the release version.
+      - name: Dispatch capture-native-helper
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HELPER_TAG: ${{ steps.release_metadata.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          echo "Dispatching capture-native-helper.yml at ref ${HELPER_TAG}..."
+          if ! gh workflow run capture-native-helper.yml \
+              --ref "${HELPER_TAG}" 2>dispatch_err.log; then
+            echo "::warning::Failed to dispatch capture-native-helper.yml at ${HELPER_TAG}; the darwin platform packages will not be published by this run. See job summary."
+            cat dispatch_err.log
+            {
+              echo "## capture-native-helper dispatch failed"
+              echo ""
+              echo "Dispatch to \`capture-native-helper.yml\` at \`${HELPER_TAG}\` did not start."
+              echo "The \`release\` event in that workflow is unreachable because this"
+              echo "release was created with GITHUB_TOKEN, and the dispatch above did"
+              echo "not start. Re-run the dispatch manually:"
+              echo ""
+              echo "\`\`\`"
+              echo "gh workflow run capture-native-helper.yml --ref ${HELPER_TAG}"
+              echo "\`\`\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "Dispatched capture-native-helper.yml; monitor at:"
+          echo "  https://github.com/${{ github.repository }}/actions/workflows/capture-native-helper.yml"
+          echo "::notice::capture-native-helper dispatched for ${HELPER_TAG}; package publication (or the npm trusted-publishing gap that requires one-time provisioning) is reported in that run, not this one."
 
       - name: Publish OpenClaw plugin to ClawHub
         env:
