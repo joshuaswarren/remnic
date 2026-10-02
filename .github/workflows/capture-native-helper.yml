@@ -126,8 +126,12 @@ jobs:
     #      event here never fires for releases created by the default
     #      GITHUB_TOKEN, and @remnic/capture-native-darwin-{arm64,x64} have
     #      never made it to npm.
-    # The ref guard ensures a branch dispatch cannot reach `pnpm publish`.
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && github.ref =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$)
+    # The dispatch-only ref guard (`startsWith(github.ref, 'refs/tags/v')`)
+    # is the GitHub-native part. The strict vX.Y.Z anchor is enforced by
+    # the `Validate ref is a vX.Y.Z tag` step below, which sets
+    # `is_release_tag` and gates the rest of the job on it. Branch and PR
+    # refs cannot reach `pnpm publish`.
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v'))
     needs: swift
     strategy:
       fail-fast: false
@@ -149,25 +153,56 @@ jobs:
         with:
           persist-credentials: false
 
+      # When this job runs from a workflow_dispatch (rather than a real
+      # `release` event), confirm the dispatch ref matches a vX.Y.Z tag
+      # exactly. The job-level `if` already required
+      # `startsWith(github.ref, 'refs/tags/v')`, so the only way to reach
+      # this step is a dispatch from a v-prefixed tag, but `refs/tags/v9`,
+      # `refs/tags/v9.69`, or `refs/tags/v9.69.90-rc.1` would all satisfy
+      # the job guard. Anchor the regex here so the only ref shape that
+      # reaches `pnpm publish` is `refs/tags/vX.Y.Z` exactly. For a real
+      # `release` event we set the output directly so the downstream
+      # steps still run.
+      - name: Validate ref is a vX.Y.Z tag
+        id: ref_check
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "is_release_tag=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "${{ github.ref }}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "is_release_tag=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Ref ${{ github.ref }} is not a vX.Y.Z tag; refusing to publish."
+            echo "is_release_tag=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
       - name: Download helper binary
+        if: steps.ref_check.outputs.is_release_tag == 'true'
         uses: actions/download-artifact@v4
         with:
           name: remnic-capture-helper-${{ matrix.arch }}
           path: ${{ matrix.platformPackage }}/bin
 
       - name: Mark helper executable
+        if: steps.ref_check.outputs.is_release_tag == 'true'
         run: chmod +x "${{ matrix.platformPackage }}/bin/remnic-capture-helper"
 
       - name: Install pnpm
+        if: steps.ref_check.outputs.is_release_tag == 'true'
         uses: pnpm/action-setup@v4
 
       - name: Setup Node
+        if: steps.ref_check.outputs.is_release_tag == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '22.13.0'
           registry-url: https://registry.npmjs.org
 
       - name: Publish platform package
+        if: steps.ref_check.outputs.is_release_tag == 'true'
         working-directory: ${{ matrix.platformPackage }}
         run: |
           set -euo pipefail

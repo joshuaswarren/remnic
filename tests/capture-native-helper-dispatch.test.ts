@@ -26,24 +26,47 @@ const { parse } = require(YAML_PATH) as { parse: (text: string) => unknown };
 // 'tag' AND the ref matches a vX.Y.Z tag. Branch and PR dispatches must
 // not be able to reach `pnpm publish`.
 
+type WorkflowStep = {
+  name?: string;
+  id?: string;
+  if?: string;
+  uses?: string;
+  run?: string;
+  env?: Record<string, string>;
+  with?: Record<string, unknown>;
+  // The yaml parser preserves kebab-case keys as-is. The dispatch step
+  // uses `continue-on-error`; we type the snake-case alias too because
+  // both forms are accepted in workflow files.
+  "continue-on-error"?: boolean;
+  continue_on_error?: boolean;
+};
+type HelperJob = {
+  if?: string;
+  needs?: unknown;
+  strategy?: { matrix?: { include?: Array<{ platformPackage?: string }> } };
+  steps?: WorkflowStep[];
+};
+
 const helperDoc = parse(readFileSync(".github/workflows/capture-native-helper.yml", "utf8")) as {
   on: Record<string, unknown>;
-  jobs: Record<string, { if?: string; needs?: unknown; strategy?: { matrix?: { include?: Array<{ platformPackage?: string }> } }; steps?: Array<{ uses?: string; with?: Record<string, unknown> }> }>;
+  jobs: Record<string, HelperJob>;
 };
 const releaseDoc = parse(readFileSync(".github/workflows/release-and-publish.yml", "utf8")) as {
   permissions: Record<string, string>;
-  jobs: Record<string, { steps?: Array<{ name?: string; if?: string; uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown>; continue_on_error?: boolean }> }>;
+  jobs: Record<string, { steps?: WorkflowStep[] }>;
 };
 
-// The semver tag regex GitHub Actions evaluates against github.ref. Escaping
-// the `^` to `\^` is required for GitHub's Re2-like evaluator; this string
-// is the authoritative form the helper's `if` must use.
-const EXPECTED_REF_REGEX = '^refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+$';
 // The publish job's `if` accepts the historic `release` event OR a
-// workflow_dispatch from a vX.Y.Z tag. GitHub Actions evaluates `||`
-// left-to-right; we assert presence of each term rather than the exact
-// syntactic order inside the expression.
-const EXPECTED_PUBLISH_IF = `github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && github.ref =~ ${EXPECTED_REF_REGEX})`;
+// workflow_dispatch from a tag whose ref starts with `refs/tags/v`. The
+// stricter vX.Y.Z anchor is enforced by a separate `Validate ref is a
+// vX.Y.Z tag` step inside the job (GitHub Actions expressions do not
+// support `=~` and the API rejects workflow files that try to use it).
+// Together: a `release` event OR a dispatch from a vX.Y.Z tag, where the
+// `if` only lets a dispatch through when the ref is a v-prefixed tag and
+// the ref-validation step explicitly refuses any ref that does not match
+// `^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$` exactly.
+const EXPECTED_PUBLISH_IF = `github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v'))`;
+const REF_VALIDATION_REGEX = '\^refs/tags/v\[0-9\]+\\\\.\[0-9\]+\\\\.\[0-9\]+\$';
 
 const helperPublish = helperDoc.jobs.publish;
 const helperSwift = helperDoc.jobs.swift;
@@ -93,13 +116,60 @@ test("capture-native-helper swift job still runs on workflow_dispatch from a tag
 
 test("capture-native-helper publish is unreachable from a branch dispatch", () => {
   // The job's `if` already gates this because github.ref_type != 'tag' for
-  // branches. We assert the gate's exact form, including the anchored
-  // vX.Y.Z regex, so a future refactor cannot loosen it.
+  // branches. We assert the gate's exact form (startsWith('refs/tags/v'))
+  // so a future refactor cannot loosen it. The strict vX.Y.Z anchor is
+  // enforced separately by the ref-validation step.
   assert.ok(helperPublish, "capture-native-helper must have a publish job");
   assert.equal(helperPublish.if, EXPECTED_PUBLISH_IF);
-  // The regex form must be the semver vX.Y.Z (anchored start and end) so
-  // refs like `v9.69.90-rc.1` or `main` cannot reach the publish step.
-  assert.match(helperPublish.if ?? "", /\^refs\/tags\/v\[0-9\]\+\\.\[0-9\]\+\\.\[0-9\]\+\$/);
+  // Branch refs (`refs/heads/main`) and non-v tag refs (e.g. `refs/tags/alpha`)
+  // do not start with `refs/tags/v`, so the dispatch path is unreachable.
+  assert.match(
+    helperPublish.if ?? "",
+    /startsWith\(github\.ref, 'refs\/tags\/v'\)/,
+    "dispatch guard must use startsWith('refs/tags/v')",
+  );
+});
+
+test("capture-native-helper publish has a ref-validation step that anchors vX.Y.Z", () => {
+  // The job-level `if` cannot use `=~` (the GitHub Actions expression
+  // language does not support it and the REST API rejects workflow files
+  // that try to use it). Instead, a dedicated step validates the ref is
+  // an exact vX.Y.Z tag with bash `[[ =~ ]]`, sets `is_release_tag`, and
+  // the downstream steps gate on that output. Refs like
+  // `refs/tags/v9.69.90-rc.1` or `refs/tags/feature-x` reach the step
+  // (they all start with `refs/tags/v`) and are rejected there.
+  const steps = helperDoc.jobs.publish.steps ?? [];
+  const validationStep = steps.find((s) => s.name === "Validate ref is a vX.Y.Z tag");
+  assert.ok(validationStep, "publish job must have a 'Validate ref is a vX.Y.Z tag' step");
+  assert.equal(validationStep.id, "ref_check", "validation step must set the ref_check output id");
+  const run = validationStep.run ?? "";
+  // The regex anchor is bash's `[[ =~ ]]`; both endpoints must be present.
+  assert.match(
+    run,
+    /\[\[ "\$\{\{ github\.ref \}\}" =~ \^refs\/tags\/v\[0-9\]\+\\.\[0-9\]\+\\.\[0-9\]\+\$ \]\]/,
+    "validation step must check the ref against ^refs/tags/vX.Y.Z$ exactly",
+  );
+  assert.match(
+    run,
+    /is_release_tag=(true|false)/,
+    "validation step must set is_release_tag for downstream gating",
+  );
+  assert.match(
+    run,
+    /github\.event_name/,
+    "validation step must short-circuit to true on a real release event",
+  );
+  // Every step that does work after the validation must gate on the output.
+  const gatedSteps = steps.filter(
+    (s) => s.name && s.name !== "Checkout" && s.name !== "Validate ref is a vX.Y.Z tag",
+  );
+  for (const s of gatedSteps) {
+    assert.equal(
+      s.if,
+      "steps.ref_check.outputs.is_release_tag == 'true'",
+      `step "${s.name}" must be gated on is_release_tag`,
+    );
+  }
 });
 
 test("capture-native-helper publish is unreachable from a pull_request event", () => {
@@ -165,24 +235,23 @@ test("release-and-publish dispatches capture-native-helper after the GitHub rele
   // accepts both `continue-on-error` and `continue_on_error` syntax in
   // real workflow files. We assert on the kebab-case form because that
   // is what the workflow YAML actually contains.
-  const dispatchRecord = dispatchStep as { run?: string; env?: Record<string, string> } & Record<string, unknown>;
   assert.match(
-    dispatchRecord.run ?? "",
+    dispatchStep.run ?? "",
     /gh workflow run capture-native-helper\.yml/,
     "dispatch step must call gh workflow run capture-native-helper.yml",
   );
   assert.match(
-    dispatchRecord.run ?? "",
+    dispatchStep.run ?? "",
     /--ref\s+"?\$\{?HELPER_TAG\}?"?/,
     "dispatch step must pin --ref to the release tag so the package version equals the release version",
   );
   assert.equal(
-    dispatchRecord["continue-on-error"],
+    dispatchStep["continue-on-error"],
     true,
     "dispatch step must use continue-on-error so a helper failure does not strand the ClawHub step or mark npm publish as failed",
   );
   assert.match(
-    dispatchRecord.run ?? "",
+    dispatchStep.run ?? "",
     /::warning::/,
     "dispatch step must surface failures via ::warning:: so they appear in the run summary",
   );
@@ -190,12 +259,12 @@ test("release-and-publish dispatches capture-native-helper after the GitHub rele
   // not a new secret. PAT/deploy-key-based dispatch would widen the
   // secret surface and is explicitly forbidden.
   assert.equal(
-    dispatchRecord.env?.GITHUB_TOKEN,
+    dispatchStep.env?.GITHUB_TOKEN,
     "${{ secrets.GITHUB_TOKEN }}",
     "dispatch step must authenticate with the job's GITHUB_TOKEN (no new secret)",
   );
   assert.doesNotMatch(
-    dispatchRecord.run ?? "",
+    dispatchStep.run ?? "",
     /RELEASE_PAT|RELEASE_DEPLOY_KEY/,
     "dispatch step must not require any new secret",
   );
