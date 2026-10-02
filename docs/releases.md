@@ -51,8 +51,23 @@ row the workflow does not evaluate.
 `release-promote.yml` verifies, and refuses the promotion on failure:
 
 - the target version is an exact `X.Y.Z` string that resolves to a `vX.Y.Z` tag;
-- the latest check-run per context on that tag's commit is not failing, and at
-  least one check-run exists (zero CI evidence is a refusal, not a pass);
+- the release tag's commit (or, for a `chore(release): vX.Y.Z [skip ci]` tag,
+  that commit's first parent — the merge commit that produced the release)
+  has no failing required check-runs, and the evaluated commit is the one the
+  ruleset actually gated the merge against:
+  - true merge commit (≥2 parents) → the second parent (PR head);
+  - squash commit (1 parent) → the merged PR's head sha via
+    `commits/{sha}/pulls`;
+  - no associated merged PR (bootstrap) → the source commit itself;
+- the only check-run contexts that can block are the contexts the
+  `main`-branch ruleset marks as required (read at run time from
+  `GET /repos/{owner}/{repo}/rules/branches/main`); informational and
+  non-required contexts (e.g. `Dependabot`, `latest-openclaw-scanner`,
+  `checks`) are ignored, and the promoter's own `promote` job is excluded
+  defensively. If the ruleset cannot be read, the gate fails closed;
+- the gate refuses on a missing required context (fail closed — a required
+  context whose check-run is absent on the tested sha cannot be called
+  green) and on a still-in-progress required context (CI not finished);
 - for `channel: stable`, the version has been on npm at least 7 days, unless
   `hotfix: true` waives the window;
 - no open issue labeled `regression` was filed after the currently-tagged

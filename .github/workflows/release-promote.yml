@@ -121,33 +121,166 @@ jobs:
           echo "RELEASE_SHA=${OBJECT_SHA}" >> "$GITHUB_ENV"
           echo "${RELEASE_TAG} -> ${OBJECT_SHA}"
 
-      # Cut rule: the target version's CI must be green. Rulesets evaluate the
-      # LATEST check-run per context, so group by name and keep the newest
-      # completed_at (AGENTS.md, CI review-gate scheduling note 6). Zero
-      # check-runs is a failure, not a pass.
+      # The release tag is an old immutable snapshot; it does not contain the
+      # CI-gate script introduced for release-promote. Pin the helper checkout
+      # to the EXACT commit the workflow was dispatched from (github.workflow_sha)
+      # so a main advance after dispatch cannot swap in a different helper.
+      # The tag checkout above is preserved for everything else (npm package
+      # existence, publish-order, the dist-tag moves themselves).
+      - name: Fetch workflow sources from the dispatched commit
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          WORKFLOW_SRC="${RUNNER_TEMP}/remnic-workflow-src"
+          rm -rf "${WORKFLOW_SRC}"
+          git clone --no-checkout "https://github.com/${GITHUB_REPOSITORY}.git" "${WORKFLOW_SRC}"
+          git -C "${WORKFLOW_SRC}" checkout --detach "${WORKFLOW_SHA}"
+          echo "WORKFLOW_SRC=${WORKFLOW_SRC}" >> "$GITHUB_ENV"
+          test -f "${WORKFLOW_SRC}/scripts/release-promote-ci-gate.mjs"
+
+      # Cut rule: the target version's CI must be green. Two live facts forced
+      # the rewrite:
+      #   1. Release tags point at a `chore(release): vX.Y.Z [skip ci]` commit
+      #      whose only check-runs are `promote`/`unstick`/`Dependabot` — no
+      #      real CI. The script therefore uses the chore commit's FIRST PARENT
+      #      as the "source commit" (the merge commit that produced the release).
+      #   2. After a squash merge, that first parent IS the squash commit. The
+      #     ruleset that allowed the merge evaluated the PR HEAD sha, not the
+      #      squash sha (e.g. PR #3155 -> head f4e2c028, not 2e02177ac). The
+      #      squash sha's own push-event CI runs post-merge and can legitimately
+      #      fail (`quality` did, on 2026-10-02) without invalidating the merge
+      #      gate. We therefore retarget to the merged PR's head sha when the
+      #      source commit is a squash commit; for true merge commits the
+      #      second parent is the PR head.
+      #
+      # Only the contexts the main ruleset marks as required can block.
+      # Informational/non-required contexts (Dependabot, latest-openclaw-scanner,
+      # `checks`, etc.) and the promoter's own job cannot block — reading the
+      # ruleset per-run catches required-context drift instead of stale embedded
+      # lists. Failure to read the ruleset fails closed.
       - name: Verify CI is green on the release commit
         run: |
           set -euo pipefail
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/check-runs" \
-            --jq '.check_runs[] | {name, status, conclusion, completed_at}' > check-runs.jsonl
-          TOTAL="$(wc -l < check-runs.jsonl)"
-          if [ "${TOTAL}" -eq 0 ]; then
-            echo "::error title=No CI evidence::No check-runs exist for ${RELEASE_SHA}; refusing to promote."
+          REPO="repos/${GITHUB_REPOSITORY}"
+          # Walk the release commit chain. release-and-publish.yml may commit
+          # the chore(release) commit plus a workspace-bump commit plus a
+          # CHANGELOG promotion commit before tagging — the tag points at the
+          # LAST of those, but the real "source" merge commit is the first
+          # parent of the chain. A release commit is recognisable by subject
+          # `chore(release): ...` or `docs(changelog): promote [Unreleased]
+          # -> vX.Y.Z ...`; both are generated, both carry [skip ci]. Walk
+          # parents until the first commit that is NOT a release-chain commit
+          # — that is the merge commit that produced the release.
+          is_release_chain_commit() {
+            # Fetch the subject directly. A transient API failure must abort
+            # the step rather than silently end the walk with the predicate
+            # returning false (which would evaluate an untested release commit
+            # and surface a confusing "missing check-run" message).
+            local subject
+            if ! subject="$(gh api "${REPO}/commits/$1" --jq '.commit.message | split("\n")[0]')"; then
+              echo "::error title=Release-chain walk failed::gh api commits/$1 exited non-zero; cannot resolve release source."
+              exit 1
+            fi
+            printf '%s' "${subject}" \
+              | grep -Eq '^(chore\(release\)|docs\(changelog\): promote \[Unreleased\] -> v).* \[skip ci\]$'
+          }
+          CURRENT="${RELEASE_SHA}"
+          MAX_STEPS=10
+          STEPS=0
+          while [ "${STEPS}" -lt "${MAX_STEPS}" ] && is_release_chain_commit "${CURRENT}"; do
+            CURRENT="$(gh api "${REPO}/commits/${CURRENT}" --jq '.parents[0].sha')"
+            STEPS=$((STEPS + 1))
+          done
+          if [ "${STEPS}" -eq 0 ]; then
+            echo "Release tag points at ${RELEASE_SHA} (not a generated release commit); evaluating it directly."
+          else
+            echo "Release tag points at a generated release commit; walked ${STEPS} step(s) back to ${CURRENT} as the source."
+          fi
+          SOURCE_SHA="${CURRENT}"
+          echo "SOURCE_SHA=${SOURCE_SHA}" >> "$GITHUB_ENV"
+
+          # If SOURCE_SHA is a squash commit (one parent) associated with a
+          # merged PR, retarget the evaluation to the PR head — that is the
+          # commit the ruleset actually gated for the merge. For true merge
+          # commits (two parents), the PR head is the second parent.
+          EVAL_SHA="${SOURCE_SHA}"
+          PARENT_COUNT="$(gh api "${REPO}/commits/${SOURCE_SHA}" --jq '.parents | length')"
+          if [ "${PARENT_COUNT}" -ge 2 ]; then
+            EVAL_SHA="$(gh api "${REPO}/commits/${SOURCE_SHA}" --jq '.parents[1].sha')"
+            echo "Source commit is a ${PARENT_COUNT}-parent merge; evaluating PR HEAD ${EVAL_SHA}."
+          else
+            # Paginated (the endpoint defaults to per_page=30; a noisy commit
+            # can push the matching PR off the first page), filtered to
+            # merged-into-main PRs whose merge_commit_sha equals our source.
+            PR_HEAD="$(gh api --paginate "${REPO}/commits/${SOURCE_SHA}/pulls" \
+              | jq -s --arg sha "${SOURCE_SHA}" 'map(.[]) | map(select(.merged_at != null and .merge_commit_sha == $sha and .base.ref == "main")) | .[0].head.sha // empty')"
+            if [ -n "${PR_HEAD}" ] && [ "${PR_HEAD}" != "null" ]; then
+              EVAL_SHA="${PR_HEAD}"
+              echo "Source commit is a squash; retargeting to associated PR HEAD ${EVAL_SHA}."
+            else
+              echo "Source commit has no associated merged PR; evaluating ${SOURCE_SHA} directly."
+            fi
+          fi
+          echo "EVAL_SHA=${EVAL_SHA}" >> "$GITHUB_ENV"
+
+          # Read the effective required-status-checks list for the default
+          # branch (where the release merges) directly. If the read fails, fail
+          # closed: the gate cannot proceed without knowing what to gate on.
+          if ! gh api "${REPO}/rules/branches/main" \
+              --jq '[.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[]?.context] | unique' \
+              > required-contexts.json 2>required-read.err; then
+            echo "::error title=Ruleset unreadable::$(cat required-read.err)"
             exit 1
           fi
-          jq -s '
-            group_by(.name)
-            | map(sort_by(.completed_at // "") | last)
-            | map(select((.conclusion // "pending") as $c
-                | ["failure","cancelled","timed_out","action_required","stale","pending"]
-                | index($c)))
-            | map(.name + ": " + (.conclusion // "pending"))
-          ' check-runs.jsonl > blocking.json
-          if [ "$(jq 'length' blocking.json)" -ne 0 ]; then
-            echo "::error title=CI not green::$(jq -r 'join("; ")' blocking.json)"
+          REQUIRED_CTX="$(jq -c . required-contexts.json)"
+          if [ "${REQUIRED_CTX}" = "[]" ]; then
+            echo "::error title=Ruleset empty::main branch has no required status checks; refusing to promote."
             exit 1
           fi
-          echo "CI green on ${RELEASE_SHA} (${TOTAL} check-run record(s), $(jq -s 'group_by(.name) | length' check-runs.jsonl) context(s))."
+          echo "Required contexts: ${REQUIRED_CTX}"
+
+          # Merge both endpoints so a required context reported as a legacy
+          # commit status (rather than a check run) is still found. The
+          # status endpoint only emits a `state` (success/pending/failure)
+          # and a single `updated_at`; we project that timestamp into both
+          # `started_at` and `completed_at` so the script's latest-record
+          # selection treats the status like a completed run.
+          : > "${RUNNER_TEMP}/ci-gate-records.jsonl"
+          gh api --paginate "${REPO}/commits/${EVAL_SHA}/check-runs" \
+            --jq '.check_runs[]? | {name, status, conclusion, started_at, completed_at}' \
+            >> "${RUNNER_TEMP}/ci-gate-records.jsonl"
+          gh api "${REPO}/commits/${EVAL_SHA}/status" \
+            --jq '.statuses[]? | {name: .context, status: "completed", conclusion: .state, started_at: .updated_at, completed_at: .updated_at}' \
+            >> "${RUNNER_TEMP}/ci-gate-records.jsonl"
+          {
+            echo "{ \"type\": \"check-runs\", \"records\": ["
+            jq -s '.' "${RUNNER_TEMP}/ci-gate-records.jsonl" | sed 's/^\[//; s/\]$//'
+            echo "] }"
+          } > "${RUNNER_TEMP}/ci-gate-input.json"
+
+          set +e
+          node "${WORKFLOW_SRC}/scripts/release-promote-ci-gate.mjs" \
+            --required-contexts "${REQUIRED_CTX}" \
+            --self-excluded '["promote"]' \
+            --input-file "${RUNNER_TEMP}/ci-gate-input.json" \
+            > ci-gate-verdict.json 2> ci-gate-stderr.txt
+          VERDICT_EXIT=$?
+          set -e
+          if [ "${VERDICT_EXIT}" -ne 0 ]; then
+            echo "::error title=CI gate script failed::verdict=$(cat ci-gate-verdict.json); stderr=$(tr '\n' ' ' < ci-gate-stderr.txt)"
+            exit "${VERDICT_EXIT}"
+          fi
+          DECISION="$(jq -r '.decision' ci-gate-verdict.json)"
+          if [ "${DECISION}" != "allow" ]; then
+            REASONS="$(jq -c '.reasons' ci-gate-verdict.json)"
+            echo "::error title=CI not green::${REASONS}"
+            echo "Evaluated commit: ${EVAL_SHA} (source: ${SOURCE_SHA}, release: ${RELEASE_SHA})."
+            exit 1
+          fi
+
+          TOTAL="$(wc -l < "${RUNNER_TEMP}/ci-gate-records.jsonl" | tr -d ' ')"
+          echo "CI green on ${EVAL_SHA} (${TOTAL} check-run record(s); source=${SOURCE_SHA})."
 
       # Cut rule: a stable promotion requires the version to have soaked at
       # least STABLE_SOAK_DAYS days since it was published as alpha. The clock
@@ -248,10 +381,21 @@ jobs:
               echo "::error title=Version mismatch::${name} at ${RELEASE_TAG} is ${pkg_version}, not ${VERSION}."
               exit 1
             fi
-            if ! npm view "${name}@${VERSION}" version >/dev/null 2>&1; then
+            if ! npm view "${name}@${VERSION}" version >/dev/null 2>pkg-err.txt; then
+              # Surface both sides of the refusal: what publish-order expected
+              # and what npm actually answered. The registry's stderr is
+              # attacker-controlled text, so strip CR and percent-escapes
+              # before the value reaches a workflow command (`::warning`).
+              PKG_ERR_RAW="$(tr '\n' ' ' < pkg-err.txt)"
+              # shellcheck disable=SC1003
+              PKG_ERR_SAFE="$(printf '%s' "${PKG_ERR_RAW}" | tr -d '\r' | sed -e 's/%/%25/g' -e 's/:/%3A/g' -e 's/,/%2C/g')"
+              echo "::warning title=Missing ${name}@${VERSION}::${PKG_ERR_SAFE:-no package record at this version on npm}"
+              echo "${name}@${VERSION} not on npm at $(date -u +%FT%TZ); npm said: ${PKG_ERR_RAW:-no record}"
               MISSING+=("${name}@${VERSION}")
+              rm -f pkg-err.txt
               return 0
             fi
+            rm -f pkg-err.txt
             local current
             current="$(npm view "${name}" dist-tags --json | jq -r --arg t "${DIST_TAG}" '.[$t] // empty')"
             printf '%s\t%s\n' "${name}" "${current:-<unset>}" >> "${RUNNER_TEMP}/promote-plan.tsv"
@@ -269,6 +413,8 @@ jobs:
               for entry in "${MISSING[@]}"; do echo "- \`${entry}\`"; done
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::error title=Incomplete release::${#MISSING[@]} package(s) are not published at ${VERSION}; no dist-tag was moved."
+            echo "Missing packages (expected at ${VERSION}, none on npm):"
+            for entry in "${MISSING[@]}"; do echo "  - ${entry}"; done
             exit 1
           fi
 
