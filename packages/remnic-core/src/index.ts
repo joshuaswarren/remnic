@@ -393,7 +393,7 @@ export { auditMemoryStore, auditScreenProfile, formatAuditMemoryReport, type Aud
 // Access layer (HTTP + MCP + schema validation)
 // ---------------------------------------------------------------------------
 
-export { EngramAccessService, EngramAccessInputError } from "./access-service.js";
+export { EngramAccessService, EngramAccessInputError, type EngramAccessRecallResponse } from "./access-service.js";
 export {
   EngramAccessHttpServer,
   type RemnicAdminConfigPatch,

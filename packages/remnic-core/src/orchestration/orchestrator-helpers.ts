@@ -199,6 +199,7 @@ export interface RecallInvocationOptions {
   namespace?: string;
   topK?: number;
   mode?: RecallPlanMode;
+  onRecallPlanResolved?: (mode: RecallPlanMode, readNamespaces: readonly string[]) => void | Promise<void>;
   abortSignal?: AbortSignal;
   /** Server-resolved identity of the connector performing this recall. */
   sourceConnector?: string;
@@ -688,7 +689,6 @@ export function buildCompressionGuidelinesMarkdown(
 ): string {
   return buildCompressionGuidelinesMarkdownV2(events, generatedAtIso);
 }
-
 
 export function applyQueryAwareCandidateFilter(
   candidates: QmdSearchResult[],

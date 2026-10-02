@@ -21,9 +21,11 @@ import { type BudgetDecision, type BudgetReservation, CrossNamespaceBudget, toBu
 import { lcmEvidenceIdentity } from "./lcm/evidence-identity.js";
 import { normalizeProjectionTags } from "./memory-projection-format.js";
 import { namespaceIdentityFromToken } from "./namespaces/identity.js";
-import { canReadNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
-import { expandScopeProfileReadNamespaces, resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
+import { canReadNamespace, defaultNamespaceForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
+import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
+import { resolveScopePlan } from "./scopes/scope-plan.js";
 import type { Orchestrator, RecallInvocationOptions } from "./orchestrator.js";
+import { createRecallCorpusVersionCapture, mergeRecallCorpusVersions } from "./access-recall-corpus-versions.js";
 import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
 import { assembleRecallResponse } from "./access-recall-response.js";
 import { coerceIncludedMemories, type LastRecallSnapshot } from "./recall-state.js";
@@ -57,6 +59,7 @@ export interface AccessRecallSurfaceDeps {
     query: string;
     sessionKey?: string;
     snapshot: RecallXraySnapshot;
+    storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number | null }>;
     disclosure: RecallDisclosure;
     startedAt: number;
     requestedMode?: RecallPlanMode | "auto";
@@ -187,6 +190,7 @@ export class AccessRecallSurface {
     query: string;
     sessionKey?: string;
     snapshot: RecallXraySnapshot;
+    storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number | null }>;
     disclosure: RecallDisclosure;
     startedAt: number;
     requestedMode?: RecallPlanMode | "auto";
@@ -290,6 +294,7 @@ export class AccessRecallSurface {
       sourcesUsed,
       disclosure: options.disclosure,
       budgetsApplied: snapshotForSerialization.budgetsApplied,
+      storageCorpusVersionsAtRecallStart: options.storageCorpusVersionsAtRecallStart,
       latencyMs: snapshotForSerialization.latencyMs,
     };
   }
@@ -732,29 +737,17 @@ export class AccessRecallSurface {
           codingContext: profileCodingContext,
           codingOverlay: profileCodingOverlay,
         });
+    const recallScopePlan = resolveScopePlan({
+      config: this.deps.orchestrator.config,
+      sessionKey: request.sessionKey,
+      namespace: namespaceOverride,
+      principalOverride: authenticatedPrincipal,
+      codingContext: profileCodingContext,
+      namespacesEnabled: resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces,
+    });
     // Skip budget checks for modes that never perform a cross-namespace read.
     const modeSkipsBudget = mode === "no_recall";
-    // Derive the full set of namespaces the orchestrator will actually search.
-    // When no explicit override is provided, `recallNamespacesForPrincipal()` may
-    // expand to shared / policy-default namespaces.  Budget must be checked
-    // against every cross-namespace entry in the effective set so that omitting
-    // `namespace` cannot bypass the limiter (Cursor/Codex review feedback).
-    //
-    const legacyRecallNamespaces = Array.isArray(this.deps.orchestrator.config.defaultRecallNamespaces)
-      ? recallNamespacesForPrincipal(principal, this.deps.orchestrator.config)
-      : [];
-    const effectiveNamespaces = namespaceOverride
-      ? [namespaceOverride]
-      : profilePlan
-        ? expandScopeProfileReadNamespaces({
-            profilePlan,
-            principalSelfNamespace: profilePlan.baseNamespace,
-            config: this.deps.orchestrator.config,
-            principal,
-            codingOverlay: profileCodingOverlay,
-            legacyRecallNamespaces,
-          })
-        : legacyRecallNamespaces;
+    const effectiveNamespaces = recallScopePlan.readNamespaces;
     const budgetPrincipalNamespace = profilePlan?.baseNamespace ?? principalNamespace;
     let budgetDecision: BudgetDecision;
     let willReserveBudget = false;
@@ -860,6 +853,7 @@ export class AccessRecallSurface {
       onContextComposition: (composition) => {
         contextComposition = composition;
       },
+      onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = mergeRecallCorpusVersions(storageCorpusVersionsAtRecallStart, versions); }, true),
       ...(authenticatedPrincipal ? { principalOverride: authenticatedPrincipal } : {}),
       ...(request.sourceConnector ? { sourceConnector: request.sourceConnector } : {}),
       ...(request.stateView !== undefined ? { stateView: request.stateView } : {}),
@@ -897,6 +891,7 @@ export class AccessRecallSurface {
     // operation — orchestrator.recall AND serialization / debug / response
     // construction — so ANY failure after the reserve releases the exact
     // budget entry (by token, review #4) instead of leaking it.
+    let storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number | null }> = [];
     try {
       const context = await this.deps.orchestrator.recall(
         query,
@@ -907,6 +902,7 @@ export class AccessRecallSurface {
         request,
         context,
         contextComposition,
+        storageCorpusVersionsAtRecallStart,
         query,
         mode,
         namespace,
@@ -1063,6 +1059,7 @@ export class AccessRecallSurface {
     let recallStartedAt = Date.now();
 
     const recallSessionKey = request.sessionKey?.trim() || undefined;
+    let storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number | null }> = [];
     let xrayResponse: {
       snapshotFound: boolean;
       snapshot?: RecallXraySnapshot;
@@ -1084,6 +1081,7 @@ export class AccessRecallSurface {
             ? { budgetCharsOverride: budgetOverride }
             : {}),
           ...(mode !== undefined ? { mode } : {}),
+          onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = mergeRecallCorpusVersions(storageCorpusVersionsAtRecallStart, versions); }, true),
           // When the caller supplies an authenticated principal, forward
           // it via the dedicated override channel so orchestrator-side
           // ACL decisions use the SAME principal the access-surface
@@ -1395,6 +1393,7 @@ export class AccessRecallSurface {
           startedAt: recallStartedAt,
           requestedMode: request.mode,
           normalizedMode: mode,
+          storageCorpusVersionsAtRecallStart,
           ...(xrayRawExcerptNamespace
             ? { rawExcerptNamespace: xrayRawExcerptNamespace }
             : {}),

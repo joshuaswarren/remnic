@@ -36,6 +36,7 @@ export async function assembleRecallResponse(
   request: EngramAccessRecallRequest;
   context: string;
   contextComposition?: RecallContextComposition;
+  storageCorpusVersionsAtRecallStart: Array<{ namespace: string; version: number | null }>;
   query: string;
   mode: RecallPlanMode | undefined;
   namespace: string;
@@ -55,6 +56,7 @@ export async function assembleRecallResponse(
     request,
     context,
     contextComposition,
+    storageCorpusVersionsAtRecallStart,
     query,
     mode,
     namespace,
@@ -321,6 +323,7 @@ export async function assembleRecallResponse(
       namespace: effectiveNamespace,
       context: effectiveContext,
       contextComposition: effectiveComposition,
+      storageCorpusVersionsAtRecallStart,
       ...(retrievalFailure ? { retrievalFailure } : {}),
       count: filterTags && filterTags.length > 0
         ? results.length

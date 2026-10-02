@@ -38,8 +38,10 @@ function staticPassphraseReader(...sequence: string[]) {
 }
 
 function recallOptionsWithoutComposition(options: unknown): Record<string, unknown> {
-  const { onContextComposition, ...rest } = options as Record<string, unknown>;
+  const { onContextComposition, onRecallPlanResolved, ...rest } =
+    options as Record<string, unknown>;
   assert.equal(typeof onContextComposition, "function");
+  assert.equal(typeof onRecallPlanResolved, "function");
   return rest;
 }
 
