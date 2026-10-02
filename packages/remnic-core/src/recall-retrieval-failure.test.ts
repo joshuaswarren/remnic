@@ -511,6 +511,23 @@ test("corpus-version capture is failure-open for unavailable secondary storage",
     { namespace: "unavailable", version: null },
   ]);
 });
+test("stalled corpus-version storage cannot block recall planning", async () => {
+  let captured: Array<{ namespace: string; version: number | null }> = [];
+  const capture = createRecallCorpusVersionCapture(
+    { getStorage: () => new Promise<never>(() => {}) },
+    undefined,
+    (versions) => { captured = versions; },
+    true,
+    20,
+  );
+  const result = await Promise.race([
+    Promise.resolve(capture("no_recall", ["stalled"])).then(() => "captured"),
+    new Promise<string>((resolve) => setTimeout(() => resolve("deadline"), 100)),
+  ]);
+  assert.equal(result, "captured");
+  assert.deepEqual(captured, [{ namespace: "stalled", version: null }]);
+});
+
 
 test("recall reports the same coding namespaces selected by its scope plan", async () => {
   await withOrchestrator(
