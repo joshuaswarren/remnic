@@ -690,6 +690,7 @@ jobs:
           generate_release_notes: true
 
       - name: Publish OpenClaw plugin to ClawHub
+        continue-on-error: true
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
           SOURCE_REF: ${{ steps.release_metadata.outputs.tag_name }}
