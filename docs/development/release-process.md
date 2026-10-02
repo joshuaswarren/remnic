@@ -124,7 +124,7 @@ They are built from `packages/capture-native-darwin-helper` (a Swift
 package) on real macOS runners, then staged into the per-arch
 `packages/capture-native-darwin-{arm64,x64}/bin/`. Only compilation needs macOS. `release-and-publish.yml`
 skips the packages because it runs on Linux. `capture-native-helper.yml` builds them on macOS
-and publishes on `ubuntu-latest`.
+and publishes on `ubuntu-latest`; the publish job pins npm 11.16.0 for OIDC trusted publishing.
 
 ### Why a `workflow_dispatch` and not the `release: published` event
 
@@ -168,16 +168,17 @@ Until both steps are complete, the helper fails with this message:
 To provision each package:
 
 1. Publish a seed version below the pending release with an authenticated npm
-   account. The release workflow does not have a token and cannot seed it.
-2. Add an npm trusted-publisher entry with workflow filename
-   `capture-native-helper.yml` (the `.github/workflows/` directory is implicit).
-   As a hardening measure, set a GitHub Environment name in npm, create that
-   environment in repository settings, and restrict its deployment protection
-   rules to tags matching `v*`. After the environment exists, add
-   `environment: <name>` to the publish job in a follow-up change. Do not add that
-   key before the environment exists: GitHub creates a missing environment
-   implicitly when a job references it.
-3. Rerun the failed dispatch for the original release tag:
+   account and the `alpha` dist-tag (not `latest`). The release workflow does not
+   have a token and cannot seed it. This one-time package creation requires a
+   maintainer action.
+2. Create a GitHub Environment and restrict its deployment protection rules to
+   tags matching `v*`. Once the environment exists, add `environment: <name>` to the
+   publish job in a follow-up change. Do not add that key before the environment
+   exists: GitHub creates a missing environment implicitly when a job references it.
+3. Configure an npm trusted-publisher entry for the repository with workflow
+   filename `capture-native-helper.yml` and the same environment name. npm requires
+   the package to exist first; the npm environment name must match the job environment.
+4. Rerun the failed dispatch for the original release tag:
 
    ```sh
    gh workflow run capture-native-helper.yml --ref v<X.Y.Z>

@@ -213,6 +213,10 @@ jobs:
           node-version: '22.13.0'
           registry-url: https://registry.npmjs.org
 
+      - name: Install npm 11 for trusted publishing
+        if: steps.ref_check.outputs.is_release_tag == 'true'
+        run: npm install -g npm@11.16.0
+
       - name: Publish platform package
         if: steps.ref_check.outputs.is_release_tag == 'true'
         working-directory: ${{ matrix.platformPackage }}

@@ -97,7 +97,12 @@ test("capture-native-helper publish job is reachable from a v* tag dispatch", ()
   // first publish goes to the alpha channel; without it, npm assigns
   // `latest` and every unpromoted main release becomes stable for these
   // packages, which bypasses the release-promote.yml flow.
-  const publishRun = helperPublish.steps?.find((s) => s.run?.includes("pnpm publish"))?.run ?? "";
+  const publishIndex = helperPublish.steps?.findIndex((s) => s.run?.includes("pnpm publish")) ?? -1;
+  const npmSetupIndex = helperPublish.steps?.findIndex((s) => s.name === "Install npm 11 for trusted publishing") ?? -1;
+  assert.ok(npmSetupIndex >= 0, "publish job must install npm 11 for OIDC trusted publishing");
+  assert.match(helperPublish.steps?.[npmSetupIndex]?.run ?? "", /npm install -g npm@11\.16\.0/);
+  assert.ok(npmSetupIndex < publishIndex, "npm 11 must be installed before the publish command");
+  const publishRun = helperPublish.steps?.[publishIndex]?.run ?? "";
   assert.match(publishRun, /pnpm publish --access public --provenance --no-git-checks --tag alpha/);
   // E404 carve-out must still be present, with the actionable error text
   // maintainers see on first publish.
