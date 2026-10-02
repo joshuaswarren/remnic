@@ -382,7 +382,7 @@ test("required context conclusion=startup_failure IS refusal (reviewer finding)"
 });
 
 test("latest run wins: a newer in_progress refiuses (latest IS unfinished)", () => {
-  // Symmetric to the test above: when the LATEST run is unfinished, refuse.
+  // When the LATEST run is unfinished, refuse.
   // Rulesets block on the latest run, not any historical record.
   const result = run([
     cr("quality", { conclusion: "success", completed_at: "2026-09-01T00:00:00Z" }),
