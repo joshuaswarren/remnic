@@ -69,14 +69,16 @@ commit's source SHA is embedded in the git tag, so re-running against the same
    GitHub Actions expressions do not support the `=~` operator, so the
    vX.Y.Z anchor cannot live in the job-level `if` (the REST API
    returns HTTP 422 on `workflow_dispatch` for a workflow file that
-   tries). The two-stage gate keeps the ref check both strict and
-   parsable, and the env passthrough keeps tag-name shell metacharacters
-   from being interpreted as code. **First publish for a brand-new package name requires
-   one-time npm trusted-publishing provisioning by a maintainer** —
-   until that is done, the helper's publish step fails with the message
+   tries). The two-stage gate keeps the ref check strict and parsable. Passing
+   the ref through an environment variable prevents tag-name shell metacharacters
+   from being interpreted as code.
+
+   The initial authenticated seed publish and npm trusted-publisher setup require
+   a maintainer. Until both are complete, the helper fails with the message
    `::error::Provision npm trusted publishing for <pkg>, then rerun this workflow.`
-   See [Native helper publish](#native-helper-publish) below.
-   The `release-promote.yml` gate remains strict: a release without both Darwin packages at the exact version on npm is incomplete and cannot be promoted.
+   See [Native helper publish](#native-helper-publish) for the required sequence.
+   The `release-promote.yml` gate remains strict: a release without both Darwin
+   packages at the exact version on npm is incomplete and cannot be promoted.
 9. **Rescan ClawHub.** After npm publishing, the workflow triggers a ClawHub
    package rescan for `@remnic/plugin-openclaw`.
 
@@ -153,29 +155,29 @@ publish cannot strand the npm train or be reported as an npm failure.
 
 The two platform packages are published to npm via
 [trusted publishing](https://docs.npmjs.com/generating-provenance-statements#publishing-packages-with-provenance-via-github-actions)
-(OIDC). For a brand-new package name the maintainer must provision npm
-trusted publishing once before the first publish succeeds. Until that is
-done, the helper's publish step fails with the message
+(OIDC). npm’s [trusted-publisher setup](https://docs.npmjs.com/cli/v11/commands/npm-trust/)
+requires the package to exist on the registry first. Because these package names
+do not exist yet, a maintainer must seed each one with an authenticated publish
+at a version below the pending release, then configure the trusted publisher.
+Until both steps are complete, the helper fails with this message:
 
 ```
 ::error::Provision npm trusted publishing for <pkg>, then rerun this workflow.
 ```
 
-To provision:
+To provision each package:
 
-1. Open the package on npm (the package name does not exist on npm yet —
-   the maintainer creates it; the automation cannot).
-2. Add a trusted-publisher entry pointing at the
-   `.github/workflows/capture-native-helper.yml` workflow, with the
-   environment left blank.
-3. Rerun the failed dispatch:
+1. Publish a seed version below the pending release with an authenticated npm
+   account. The release workflow does not have a token and cannot seed it.
+2. Add a trusted-publisher entry for
+   `.github/workflows/capture-native-helper.yml`, leaving the environment blank.
+3. Rerun the failed dispatch for the original release tag:
 
    ```sh
    gh workflow run capture-native-helper.yml --ref v<X.Y.Z>
    ```
 
-The same workflow, the same tag, the same OIDC token — the package
-publishes on the first try after the entry exists.
+The helper then publishes the release version with OIDC provenance.
 
 | Directory | Published name | Registry |
 |---|---|---|
