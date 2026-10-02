@@ -100,24 +100,30 @@ esac
   writeFileSync(path.join(binDir, "gh"), stub, { mode: 0o755 });
 }
 
-test("squash-path glue exports a bare 40-hex EVAL_SHA (regression: quoted sha, run 37008248423)", () => {
+const CONTEXTS = [
+  "quality",
+  "dependency-review",
+  "gitleaks",
+  "analyze",
+  "ai-reviewers",
+  "unresolved-review-threads",
+];
+
+/**
+ * Runs the real "Verify CI" step body under bash with the stub gh. `prHeadSha`
+ * is what the merged-PR lookup returns as head.sha, so a test can feed the
+ * step a good or a malformed value.
+ */
+function runGate({ prHeadSha }) {
   const run = readStepRun();
-
-  // Sanity: the glue must still contain the shapes this fixture exercises.
-  assert.match(run, /commits\/\$\{SOURCE_SHA\}\/pulls/);
-  assert.match(run, /EVAL_SHA/);
-
   const work = mkdtempSync(path.join(tmpdir(), "evalsha-"));
   const binDir = path.join(work, "bin");
-  const runnerTemp = path.join(work, "runner-temp");
-  const workflowSrc = REPO_ROOT;
   const githubEnv = path.join(work, "github_env");
-  writeFileSync(githubEnv, "");
   try {
     mkdirSync(binDir, { recursive: true });
-    mkdirSync(runnerTemp, { recursive: true });
+    mkdirSync(path.join(work, "runner-temp"), { recursive: true });
+    writeFileSync(githubEnv, "");
     writeStubGh(binDir);
-
     writeFileSync(
       path.join(binDir, "pulls.json"),
       JSON.stringify([
@@ -126,22 +132,13 @@ test("squash-path glue exports a bare 40-hex EVAL_SHA (regression: quoted sha, r
           merged_at: "2026-10-02T12:07:00Z",
           merge_commit_sha: PARENT_SHA,
           base: { ref: "main" },
-          head: { sha: PR_HEAD_SHA },
+          head: { sha: prHeadSha },
         },
       ]),
     );
-
-    // All six required contexts green on the PR head (check-runs jsonl).
-    const contexts = [
-      "quality",
-      "dependency-review",
-      "gitleaks",
-      "analyze",
-      "ai-reviewers",
-      "unresolved-review-threads",
-    ];
-    const jsonl = contexts
-      .map(
+    writeFileSync(
+      path.join(binDir, "check-runs.jsonl"),
+      CONTEXTS.map(
         (name) =>
           JSON.stringify({
             name,
@@ -150,13 +147,10 @@ test("squash-path glue exports a bare 40-hex EVAL_SHA (regression: quoted sha, r
             started_at: "2026-10-02T12:00:00Z",
             completed_at: "2026-10-02T12:01:00Z",
           }) + "\n",
-      )
-      .join("");
-    writeFileSync(path.join(binDir, "check-runs.jsonl"), jsonl);
-
+      ).join(""),
+    );
     const script = path.join(work, "step.sh");
     writeFileSync(script, run, { mode: 0o755 });
-
     const proc = spawnSync("bash", [script], {
       cwd: work,
       env: {
@@ -164,59 +158,61 @@ test("squash-path glue exports a bare 40-hex EVAL_SHA (regression: quoted sha, r
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
         GITHUB_REPOSITORY: "joshuaswarren/remnic",
         RELEASE_SHA: SOURCE_SHA,
-        WORKFLOW_SRC: workflowSrc,
-        RUNNER_TEMP: runnerTemp,
+        WORKFLOW_SRC: REPO_ROOT,
+        RUNNER_TEMP: path.join(work, "runner-temp"),
         GITHUB_ENV: githubEnv,
         GH_TOKEN: "",
         GITHUB_TOKEN: "",
       },
       encoding: "utf8",
     });
-
-    const out = proc.stdout ?? "";
-    assert.equal(
-      proc.status,
-      0,
-      `step should succeed on all-green fixtures; stderr: ${(proc.stderr ?? "").slice(0, 800)}`,
-    );
-
-    // THE regression: the retarget log line carries a BARE sha (no quotes).
-    const retargetLine = out
-      .split("\n")
-      .find((l) => l.includes("retargeting to associated PR HEAD"));
-    assert.ok(retargetLine, "retarget log line must be printed");
-    assert.doesNotMatch(
-      retargetLine,
-      /PR HEAD "/,
-      `EVAL_SHA echoed with quotes (the bug from run 37008248423): ${retargetLine}`,
-    );
-    assert.match(retargetLine, new RegExp(`PR HEAD ${PR_HEAD_SHA}\\.$`));
-
-    // And the exported EVAL_SHA is bare 40-hex.
-    const envText = readFileSync(githubEnv, "utf8");
-    const evalLine = envText
-      .split("\n")
-      .find((l) => l.startsWith("EVAL_SHA="));
-    assert.ok(evalLine, "EVAL_SHA must be exported to GITHUB_ENV");
-    assert.match(evalLine, /^EVAL_SHA=[0-9a-f]{40}$/);
+    return {
+      status: proc.status,
+      stdout: proc.stdout ?? "",
+      stderr: proc.stderr ?? "",
+      envText: readFileSync(githubEnv, "utf8"),
+    };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
+}
+
+test("squash-path glue exports a bare 40-hex EVAL_SHA (regression: quoted sha, run 37008248423)", () => {
+  const r = runGate({ prHeadSha: PR_HEAD_SHA });
+  assert.equal(r.status, 0, `step should succeed on all-green fixtures; stderr: ${r.stderr.slice(0, 800)}`);
+
+  const retargetLine = r.stdout.split("\n").find((l) => l.includes("retargeting to associated PR HEAD"));
+  assert.ok(retargetLine, "retarget log line must be printed");
+  assert.doesNotMatch(retargetLine, /PR HEAD "/, `EVAL_SHA echoed with quotes: ${retargetLine}`);
+  assert.match(retargetLine, new RegExp(`PR HEAD ${PR_HEAD_SHA}\\.$`));
+
+  const evalLine = r.envText.split("\n").find((l) => l.startsWith("EVAL_SHA="));
+  assert.ok(evalLine, "EVAL_SHA must be exported to GITHUB_ENV");
+  assert.match(evalLine, /^EVAL_SHA=[0-9a-f]{40}$/);
 });
 
-test("a malformed EVAL_SHA with embedded newline + trailing 40-hex is refused (kilo #1, line-oriented grep bypass)", () => {
-  const run = readStepRun();
-  // Confirm the guard runs as bash [[ =~ ]] (anchored whole-string), not
-  // grep -Eq (line-oriented: a value like "dead...\\nsecond-line" would
-  // pass the first line and be accepted).
-  assert.match(run, /\[\[ "\$\{EVAL_SHA\}" =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
-});
+test("a malformed EVAL_SHA is refused, never exported, and cannot inject a workflow command", () => {
+  // A valid-looking first line followed by a second line that is a workflow
+  // command. A line-oriented check would accept the first line, and an
+  // unescaped newline would let the second line run as a command.
+  const hostile = `${"d".repeat(40)}\n::warning::injected`;
+  const r = runGate({ prHeadSha: hostile });
 
-test("the Bad-evaluated-SHA guard runs BEFORE the GITHUB_ENV export (kilo #2: validate-before-export)", () => {
-  const run = readStepRun();
-  const guardIdx = run.indexOf("EVAL_SHA_SAFE=");
-  const exportIdx = run.indexOf('EVAL_SHA=${EVAL_SHA}" >> "$GITHUB_ENV"');
-  assert.ok(guardIdx > 0, "guard must exist");
-  assert.ok(exportIdx > 0, "export must exist");
-  assert.ok(guardIdx < exportIdx, "guard must precede the export");
+  assert.notEqual(r.status, 0, "a malformed EVAL_SHA must fail the step");
+  assert.equal(
+    r.envText.split("\n").some((l) => l.startsWith("EVAL_SHA=")),
+    false,
+    "a malformed EVAL_SHA must never be exported to GITHUB_ENV",
+  );
+  const lines = r.stdout.split("\n");
+  assert.equal(
+    lines.filter((l) => l.startsWith("::error title=Bad evaluated SHA::")).length,
+    1,
+    "the refusal must be reported once as an ::error",
+  );
+  assert.equal(
+    lines.some((l) => l.startsWith("::warning::")),
+    false,
+    "the embedded newline must not start a second workflow command",
+  );
 });
