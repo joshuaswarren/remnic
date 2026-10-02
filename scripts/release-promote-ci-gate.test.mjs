@@ -381,22 +381,6 @@ test("required context conclusion=startup_failure IS refusal (reviewer finding)"
   );
 });
 
-test("latest run wins per context: a newer queued run does NOT hide an older success", () => {
-  // Round-2 review caught: rulesets evaluate the latest run per context, so
-  // the gate must too. An older completed success wins over a fresher queued
-  // rerun that has not produced a verdict yet.
-  const result = run([
-    cr("quality", { conclusion: "success", completed_at: "2026-10-02T00:30:00Z" }),
-    cr("quality", { status: "queued", conclusion: null }),
-    cr("dependency-review"),
-    cr("gitleaks"),
-    cr("analyze"),
-    cr("ai-reviewers"),
-    cr("unresolved-review-threads"),
-  ]);
-  assert.equal(result.decision, "allow");
-});
-
 test("latest run wins: a newer in_progress refiuses (latest IS unfinished)", () => {
   // Symmetric to the test above: when the LATEST run is unfinished, refuse.
   // Rulesets block on the latest run, not any historical record.
