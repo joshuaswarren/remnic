@@ -547,20 +547,21 @@ jobs:
           node-version: '22.14.0'
           registry-url: 'https://registry.npmjs.org'
       - run: npm install -g npm@11.21.0
-      - name: Add and remove disposable x64 tag via OIDC
+      - name: Remove disposable x64 tag via OIDC
         run: |
           set -euo pipefail
           package='@remnic/capture-native-darwin-x64'
           before="$(npm view "${package}" dist-tags --json)"
+          test "$(jq -r '.["oidc-probe"]' <<< "${before}")" = '0.0.0-seed.1'
           test "$(jq -r '.latest' <<< "${before}")" = '0.0.0-seed.1'
           test "$(jq -r '.alpha' <<< "${before}")" = '9.69.94'
-          test "$(jq -r '.["oidc-probe"] // empty' <<< "${before}")" = ''
-          npm dist-tag add "${package}@0.0.0-seed.1" oidc-probe
-          middle="$(npm view "${package}" dist-tags --json)"
-          test "$(jq -r '.["oidc-probe"]' <<< "${middle}")" = '0.0.0-seed.1'
           npm dist-tag rm "${package}" oidc-probe
-          after="$(npm view "${package}" dist-tags --json)"
+          for attempt in {1..10}; do
+            after="$(npm view "${package}" dist-tags --json)"
+            if [ "$(jq -r '.["oidc-probe"] // empty' <<< "${after}")" = '' ]; then break; fi
+            sleep 2
+          done
           test "$(jq -r '.["oidc-probe"] // empty' <<< "${after}")" = ''
           test "$(jq -r '.latest' <<< "${after}")" = '0.0.0-seed.1'
           test "$(jq -r '.alpha' <<< "${after}")" = '9.69.94'
-          echo 'Verified OIDC diagnostic add/remove; alpha and latest unchanged'
+          echo 'Verified OIDC diagnostic tag removed; alpha and latest unchanged'
