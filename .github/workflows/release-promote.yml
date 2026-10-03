@@ -33,11 +33,6 @@ on:
         required: false
         default: false
         type: boolean
-      oidc_probe_x64:
-        description: 'Temporary diagnostic: add and remove only the x64 oidc-probe tag.'
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -48,7 +43,6 @@ concurrency:
 
 jobs:
   promote:
-    if: inputs.oidc_probe_x64 != true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -534,34 +528,3 @@ jobs:
             echo "- no tarball was rebuilt or republished"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Promotion complete: ${#MOVED[@]} package(s) now resolve ${DIST_TAG} to ${VERSION}."
-
-  probe_x64:
-    if: inputs.oidc_probe_x64 == true
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.14.0'
-          registry-url: 'https://registry.npmjs.org'
-      - run: npm install -g npm@11.21.0
-      - name: Remove disposable x64 tag via OIDC
-        run: |
-          set -euo pipefail
-          package='@remnic/capture-native-darwin-x64'
-          before="$(npm view "${package}" dist-tags --json)"
-          test "$(jq -r '.["oidc-probe"]' <<< "${before}")" = '0.0.0-seed.1'
-          test "$(jq -r '.latest' <<< "${before}")" = '0.0.0-seed.1'
-          test "$(jq -r '.alpha' <<< "${before}")" = '9.69.94'
-          npm dist-tag rm "${package}" oidc-probe
-          for attempt in {1..10}; do
-            after="$(npm view "${package}" dist-tags --json)"
-            if [ "$(jq -r '.["oidc-probe"] // empty' <<< "${after}")" = '' ]; then break; fi
-            sleep 2
-          done
-          test "$(jq -r '.["oidc-probe"] // empty' <<< "${after}")" = ''
-          test "$(jq -r '.latest' <<< "${after}")" = '0.0.0-seed.1'
-          test "$(jq -r '.alpha' <<< "${after}")" = '9.69.94'
-          echo 'Verified OIDC diagnostic tag removed; alpha and latest unchanged'
