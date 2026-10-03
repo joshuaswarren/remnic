@@ -8,7 +8,9 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -107,6 +109,36 @@ test("the promote workflow is dispatch-only and moves dist-tags without republis
   // No gate may be silenced.
   assert.doesNotMatch(raw, /\|\| true/);
   assert.doesNotMatch(raw, /continue-on-error/);
+});
+
+test("an already-tagged release reports no-op without claiming OIDC authorization", () => {
+  const workflow = parse(readWorkflow("release-promote.yml"));
+  const move = workflow.jobs.promote.steps.find((step) => step.name === "Move dist-tags");
+  const directory = mkdtempSync(path.join(tmpdir(), "remnic-promote-noop-"));
+  try {
+    const version = "1.2.3";
+    writeFileSync(path.join(directory, "promote-plan.tsv"), `@remnic/core\t${version}\n`);
+    const summary = path.join(directory, "summary.md");
+    const result = spawnSync("/bin/bash", ["-e"], {
+      input: move.run,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: "",
+        RUNNER_TEMP: directory,
+        GITHUB_STEP_SUMMARY: summary,
+        VERSION: version,
+        DIST_TAG: "latest",
+      },
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /No promotion needed/);
+    assert.match(readFileSync(summary, "utf8"), /No-op:.*no OIDC write authorization was checked/);
+    assert.doesNotMatch(result.stdout, /Promotion complete/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("the release-discipline gate runs as a standard pull_request workflow", () => {

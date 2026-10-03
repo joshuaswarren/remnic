@@ -190,6 +190,19 @@ Publishing with that same environment name. Only publish or retry from a release
 commit whose workflow contains the environment key; an older tag uses its own
 workflow YAML and will not include the environment claim.
 
+## Promotion uses trusted publishing too
+
+`release-promote.yml` moves `beta`/`latest` onto a published version with the
+same OIDC mechanism — `id-token: write`, Node >= 22.14.0, npm >= 11.21.0 — and
+reads no `NPM_TOKEN`. Every public package therefore needs a second
+trusted-publisher entry on npmjs.com: repository `joshuaswarren/remnic`,
+workflow `release-promote.yml`, environment blank, and the per-publisher
+**Allow npm dist-tag** option enabled
+([dist-tag docs](https://docs.npmjs.com/adding-dist-tags-to-packages/)). The
+move publishes nothing, so a direct publish is unnecessary to authorize it;
+the version only has to exist on npm. Channel cut rules and the prerequisite
+checklist: [../releases.md](../releases.md).
+
 | Directory | Published name | Registry |
 |---|---|---|
 | `packages/remnic-core` | `@remnic/core` | npm |

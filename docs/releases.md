@@ -27,11 +27,25 @@ Two properties hold by construction:
 
 ### Prerequisite
 
-Promotion needs an `NPM_TOKEN` repository secret holding an npm automation
-token with publish rights on the `@remnic` scope. Publishing uses npm trusted
-publishing (OIDC), which mints credentials for `npm publish` only and cannot
-authorize a dist-tag move. Without that secret, `release-promote.yml` fails on
-its first step with a message saying so; it never silently no-ops.
+Promotion authenticates with npm
+[trusted publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC), not
+with an `NPM_TOKEN` secret. `release-promote.yml` runs with `id-token: write`,
+Node >= 22.14.0, and npm >= 11.21.0 pinned on the runner.
+
+Each public package needs a trusted publisher configured on npmjs.com:
+
+- **Repository:** `joshuaswarren/remnic`
+- **Workflow:** `release-promote.yml`
+- **Environment:** blank (the workflow declares none)
+- **Allow npm dist-tag** (per-publisher opt-in): enabled — without it npm
+  rejects the `dist-tag add` even when the publisher matches
+  ([dist-tag docs](https://docs.npmjs.com/adding-dist-tags-to-packages/))
+
+The move publishes nothing, so direct publish is unnecessary. A missing or
+dist-tag-disallowed publisher causes a real move to fail at the registry. The
+workflow skips packages whose tag already points to the target; that is not an
+OIDC authorization check. The `npm dist-tag ls` readback is an anonymous read.
+Only a successful move to a different version proves write authorization.
 
 ## Cut rules — when each channel gets a release
 
@@ -79,7 +93,8 @@ row the workflow does not evaluate.
 The promoter judges, with no automation behind it: bench smoke results, whether
 a `Stability: stable` change really satisfied rule 3, and whether a graduation
 PR accompanied each default flip. `dry_run: true` runs every mechanical check
-and prints the planned moves without performing them.
+and prints the planned moves without performing them; it performs no registry
+write and does not prove the moves would be authorized.
 
 "Maintainer approval" means dispatch permission: `release-promote.yml` is
 `workflow_dispatch`-only, so only someone with write access can start it. No
