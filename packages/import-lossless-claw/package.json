@@ -1,6 +1,6 @@
 {
   "name": "@remnic/import-lossless-claw",
-  "version": "9.69.94",
+  "version": "9.69.95",
   "description": "Import lossless-claw (LCM) SQLite databases into Remnic's LCM mode",
   "type": "module",
   "main": "dist/index.js",
@@ -29,7 +29,7 @@
     "better-sqlite3": "^12.6.2"
   },
   "peerDependencies": {
-    "@remnic/core": "^9.69.94"
+    "@remnic/core": "^9.69.95"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",
