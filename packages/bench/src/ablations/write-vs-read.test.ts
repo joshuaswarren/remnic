@@ -276,6 +276,8 @@ test("scaffold CLI refuses experiment phases and runs nothing", () => {
     assert.equal(refused.exitCode, 2);
     assert.equal(refused.runsExecuted, 0);
     assert.deepEqual(refused.armIds, []);
+    assert.equal(refused.arms, null);
+    assert.equal(refused.decisionRule, null);
     assert.match(refused.message, /deferred to a follow-up/);
   }
   for (const argv of [["--seeds"], ["--seeds=5"], ["--corpus"], ["--corpus=locomo"]]) {
@@ -284,6 +286,7 @@ test("scaffold CLI refuses experiment phases and runs nothing", () => {
     assert.equal(refused.exitCode, 2);
     assert.equal(refused.runsExecuted, 0);
     assert.deepEqual(refused.armIds, []);
+    assert.equal(refused.arms, null);
     assert.match(refused.message, /deferred to a follow-up/);
   }
   for (const argv of [
@@ -308,6 +311,21 @@ test("scaffold CLI refuses experiment phases and runs nothing", () => {
   assert.equal(listed.runsEnabled, false);
   assert.equal(listed.ruleId, "h2-write-vs-read-decision-v1");
   assert.deepEqual(listed.armIds, ["baseline", "write-plus", "read-plus", "write-read-plus"]);
+  if (!listed.arms || !listed.decisionRule || !listed.allowList) {
+    throw new Error("list result omitted the frozen arms, decision rule, or allow-list");
+  }
+  assert.deepEqual(
+    listed.arms.map((arm) => arm.id),
+    listed.armIds
+  );
+  assert.equal(listed.arms[0]?.configOverrides.extractionJudgeEnabled, false);
+  assert.equal(listed.arms[1]?.configOverrides.extractionJudgeEnabled, true);
+  assert.deepEqual(listed.arms[1]?.configOverrides.semanticMerge, { enabled: true });
+  assert.equal(listed.decisionRule.minRelativeGain, 0.05);
+  assert.equal(listed.decisionRule.alpha, 0.05);
+  assert.deepEqual(listed.decisionRule.requiredMainDatasets, ["locomo", "drift-gen"]);
+  assert.equal(listed.allowList.heldConstant.trustScoreEnabled, false);
+  assert.equal(listed.allowList.heldConstant.semanticDedupThreshold, 0.92);
   assert.match(listed.message, /scaffolding only/);
   const source = readFileSync(new URL("./write-vs-read.ts", import.meta.url), "utf8");
   assert.equal(source.includes("writeFile"), false);

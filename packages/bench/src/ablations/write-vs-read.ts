@@ -224,8 +224,15 @@ export interface WriteVsReadScaffoldCliResult {
   exitCode: number;
   runsExecuted: 0;
   armIds: string[];
+  arms: WriteVsReadArm[] | null;
   ruleId: string;
-  allowList: { writeKeys: string[]; readKeys: string[]; heldKeys: string[] } | null;
+  decisionRule: WriteVsReadDecisionRule | null;
+  allowList: {
+    writeKeys: string[];
+    readKeys: string[];
+    heldKeys: string[];
+    heldConstant: Record<string, boolean | number>;
+  } | null;
   runsEnabled: boolean;
   message: string;
 }
@@ -815,7 +822,9 @@ function emptyResult(exitCode: number, message: string, runsEnabled: boolean): W
     exitCode,
     runsExecuted: 0,
     armIds: [],
+    arms: null,
     ruleId: "",
+    decisionRule: null,
     allowList: null,
     runsEnabled,
     message,
@@ -896,16 +905,26 @@ export function runWriteVsReadScaffoldCli(argv: readonly string[]): WriteVsReadS
   const arms = loadWriteVsReadArms();
   const rule = loadWriteVsReadDecisionRule();
   const allow = loadWriteVsReadAllowList();
+  const heldConstant: Record<string, boolean | number> = {};
+  for (const key of Object.getOwnPropertyNames(allow.heldConstant).sort(compareStrings)) {
+    if (!Object.hasOwn(allow.heldConstant, key)) continue;
+    const value = allow.heldConstant[key];
+    if (value === undefined) throw new Error(`held constant ${key} is missing`);
+    heldConstant[key] = value;
+  }
   return {
     ok: true,
     exitCode: 0,
     runsExecuted: 0,
     armIds: arms.map((arm) => arm.id),
+    arms,
     ruleId: rule.ruleId,
+    decisionRule: rule,
     allowList: {
       writeKeys: [...allow.writeKeys],
       readKeys: [...allow.readKeys],
-      heldKeys: Object.getOwnPropertyNames(allow.heldConstant).sort(compareStrings),
+      heldKeys: Object.getOwnPropertyNames(heldConstant),
+      heldConstant,
     },
     runsEnabled: false,
     message: "scaffolding only — no experiment runs",
