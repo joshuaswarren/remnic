@@ -151,6 +151,7 @@ packaged adapter is.
 - [Plugin development guide](development/plugin-development.md) — Build a Remnic plugin for a new AI agent platform.
 - [Release process](development/release-process.md) — Independent per-package versioning with Changesets.
 - [PR review hardening playbook](ops/pr-review-hardening-playbook.md) — Review checklist for PRs that touch behavior, performance, safety, or compatibility.
+- [Review prevention checklist](review-checklist.md) — The 48 reviewer-caught patterns every PR is expected to avoid. `AGENTS.md` keeps a short summary of items 1–5.
 - [Plugin engineering patterns](ops/plugin-engineering-patterns.md) — Engineering patterns for retrieval, intent, and cache work.
 - [Rule graduation ledger](ops/rule-graduations.md) — How prose rules graduate into machine-enforced checks.
 - [Memory-extraction threat model](security/memory-extraction-threat-model.md) — The threat Remnic's memory surface faces and the hardening approach.
