@@ -33,10 +33,12 @@ Write profile, low then raised:
 | `semanticDedupCandidates` | 0 | 5 |
 | `consolidateEveryN` | 1000000 | 2 |
 | `entityAliasesEnabled` | false | true |
-| `semanticMerge.enabled` | false | true |
+| `semanticMerge` | `{ "enabled": false }` | `{ "enabled": true }` |
 
-`semanticMerge.enabled` is the nested `semanticMerge.enabled` config key,
-stored flat so the allow-list can name it.
+`semanticMerge` is stored as the nested block `parseConfig` reads.
+`parseSemanticMergeConfig` ignores a dotted `semanticMerge.enabled` key, so
+the arm files do not use that spelling. Other fields in the block stay at
+the parser defaults on every arm.
 
 Read profile, low then raised:
 
@@ -71,8 +73,8 @@ They are left out. No new feature is added to stand in for them.
   headroom stays the code path's own constant.
 - There is no entity-consolidation boolean. `semanticConsolidationEnabled` is
   derived from the dreams rem cadence and is not an arm key.
-  `entityAliasesEnabled` and `semanticMerge.enabled` are the existing alias
-  and merge gates.
+  `entityAliasesEnabled` and the nested `semanticMerge.enabled` field are the
+  existing alias and merge gates.
 
 ## What the CLI does
 

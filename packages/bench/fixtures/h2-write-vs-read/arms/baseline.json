@@ -11,7 +11,9 @@
     "extractionJudgeEnabled": false,
     "semanticDedupCandidates": 0,
     "semanticDedupEnabled": false,
-    "semanticMerge.enabled": false,
+    "semanticMerge": {
+      "enabled": false
+    },
     "qmdMaxResults": 8,
     "qmdSearchStrategy": "lex",
     "queryExpansionEnabled": false,

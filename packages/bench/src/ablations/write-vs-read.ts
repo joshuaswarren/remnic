@@ -35,7 +35,7 @@ const WRITE_KEYS = Object.freeze([
   "extractionJudgeEnabled",
   "semanticDedupCandidates",
   "semanticDedupEnabled",
-  "semanticMerge.enabled",
+  "semanticMerge",
 ] as const);
 
 const READ_KEYS = Object.freeze([
@@ -66,13 +66,16 @@ const HELD_CONSTANT = Object.freeze({
   trustScoreEnabled: false,
 });
 
+const SEMANTIC_MERGE_OFF = Object.freeze({ enabled: false });
+const SEMANTIC_MERGE_ON = Object.freeze({ enabled: true });
+
 const LOW_WRITE = Object.freeze({
   consolidateEveryN: 1000000,
   entityAliasesEnabled: false,
   extractionJudgeEnabled: false,
   semanticDedupCandidates: 0,
   semanticDedupEnabled: false,
-  "semanticMerge.enabled": false,
+  semanticMerge: SEMANTIC_MERGE_OFF,
 });
 
 const RAISED_WRITE = Object.freeze({
@@ -81,7 +84,7 @@ const RAISED_WRITE = Object.freeze({
   extractionJudgeEnabled: true,
   semanticDedupCandidates: 5,
   semanticDedupEnabled: true,
-  "semanticMerge.enabled": true,
+  semanticMerge: SEMANTIC_MERGE_ON,
 });
 
 const LOW_READ = Object.freeze({
@@ -153,7 +156,7 @@ export interface WriteVsReadArm {
   armCall: string;
   allTestFlagsOn: boolean;
   matchesReleaseConfig: false;
-  configOverrides: Record<string, boolean | number | string>;
+  configOverrides: Record<string, ConfigValue>;
 }
 
 export interface WriteVsReadDecisionRule {
@@ -227,7 +230,7 @@ export interface WriteVsReadScaffoldCliResult {
   message: string;
 }
 
-type ConfigValue = boolean | number | string;
+type ConfigValue = boolean | number | string | { readonly enabled: boolean };
 
 function fixtureDir(): string {
   const candidates = [
@@ -248,6 +251,21 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function own(raw: Record<string, unknown>, key: string): unknown {
   return Object.hasOwn(raw, key) ? raw[key] : undefined;
+}
+
+function sameConfigValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (!isPlainObject(left) || !isPlainObject(right)) return false;
+  const leftNames = Object.getOwnPropertyNames(left).sort(compareStrings);
+  const rightNames = Object.getOwnPropertyNames(right).sort(compareStrings);
+  if (leftNames.length !== rightNames.length) return false;
+  for (let index = 0; index < leftNames.length; index += 1) {
+    const leftName = leftNames[index];
+    const rightName = rightNames[index];
+    if (leftName === undefined || leftName !== rightName) return false;
+    if (!sameConfigValue(own(left, leftName), own(right, leftName))) return false;
+  }
+  return true;
 }
 
 function compareStrings(left: string, right: string): number {
@@ -385,6 +403,20 @@ export function parseWriteVsReadArm(raw: unknown, allow: WriteVsReadAllowList): 
     if (!Object.hasOwn(expected, key)) throw new Error(`unclassified config key ${JSON.stringify(key)}`);
     const wanted = expected[key];
     const value = own(overridesRaw, key);
+    if (isPlainObject(wanted)) {
+      if (!isPlainObject(value)) throw new Error(`configOverrides.${key} must be an object`);
+      assertExactKeys(value, ["enabled"], `configOverrides.${key}`);
+      const enabled = own(value, "enabled");
+      if (typeof enabled !== "boolean") {
+        throw new Error(`configOverrides.${key}.enabled must be a boolean`);
+      }
+      const parsed = { enabled };
+      if (!sameConfigValue(parsed, wanted)) {
+        throw new Error(`configOverrides.${key} must be ${JSON.stringify(wanted)} on ${armId}`);
+      }
+      configOverrides[key] = parsed;
+      continue;
+    }
     if (typeof wanted === "boolean") {
       if (typeof value !== "boolean") throw new Error(`configOverrides.${key} must be a boolean`);
     } else if (typeof wanted === "string") {
@@ -396,7 +428,7 @@ export function parseWriteVsReadArm(raw: unknown, allow: WriteVsReadAllowList): 
     } else if (Number.isInteger(wanted) && !Number.isInteger(value)) {
       throw new Error(`configOverrides.${key} must be an integer`);
     }
-    if (!Object.is(value, wanted)) {
+    if (!sameConfigValue(value, wanted)) {
       throw new Error(`configOverrides.${key} must be ${JSON.stringify(wanted)} on ${armId}`);
     }
     configOverrides[key] = value as ConfigValue;
@@ -521,31 +553,31 @@ function assertFactorial(arms: readonly WriteVsReadArm[], allow: WriteVsReadAllo
   const both = byId.get("write-read-plus");
   if (!baseline || !writePlus || !readPlus || !both) throw new Error("write-vs-read arms are incomplete");
   for (const key of allow.writeKeys) {
-    if (Object.is(baseline.configOverrides[key], writePlus.configOverrides[key])) {
+    if (sameConfigValue(baseline.configOverrides[key], writePlus.configOverrides[key])) {
       throw new Error(`write key ${key} does not differ between baseline and write-plus`);
     }
-    if (!Object.is(baseline.configOverrides[key], readPlus.configOverrides[key])) {
+    if (!sameConfigValue(baseline.configOverrides[key], readPlus.configOverrides[key])) {
       throw new Error(`write key ${key} differs between baseline and read-plus`);
     }
-    if (!Object.is(writePlus.configOverrides[key], both.configOverrides[key])) {
+    if (!sameConfigValue(writePlus.configOverrides[key], both.configOverrides[key])) {
       throw new Error(`write key ${key} differs between write-plus and write-read-plus`);
     }
   }
   for (const key of allow.readKeys) {
-    if (Object.is(baseline.configOverrides[key], readPlus.configOverrides[key])) {
+    if (sameConfigValue(baseline.configOverrides[key], readPlus.configOverrides[key])) {
       throw new Error(`read key ${key} does not differ between baseline and read-plus`);
     }
-    if (!Object.is(baseline.configOverrides[key], writePlus.configOverrides[key])) {
+    if (!sameConfigValue(baseline.configOverrides[key], writePlus.configOverrides[key])) {
       throw new Error(`read key ${key} differs between baseline and write-plus`);
     }
-    if (!Object.is(readPlus.configOverrides[key], both.configOverrides[key])) {
+    if (!sameConfigValue(readPlus.configOverrides[key], both.configOverrides[key])) {
       throw new Error(`read key ${key} differs between read-plus and write-read-plus`);
     }
   }
   for (const key of Object.getOwnPropertyNames(allow.heldConstant)) {
     const expected = allow.heldConstant[key];
     for (const arm of arms) {
-      if (!Object.is(arm.configOverrides[key], expected)) {
+      if (!sameConfigValue(arm.configOverrides[key], expected)) {
         throw new Error(`held key ${key} drifted on ${arm.id}`);
       }
     }
@@ -589,7 +621,7 @@ export function diffArmConfigOverrides(
     const rightHas = Object.hasOwn(right, key);
     const leftValue = leftHas ? left[key] : undefined;
     const rightValue = rightHas ? right[key] : undefined;
-    if (leftHas && rightHas && Object.is(leftValue, rightValue)) continue;
+    if (leftHas && rightHas && sameConfigValue(leftValue, rightValue)) continue;
     if (held.has(key)) {
       throw new Error(`held-constant key ${JSON.stringify(key)} differs`);
     }

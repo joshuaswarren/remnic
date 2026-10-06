@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { parseConfig } from "@remnic/core";
 import type { AttributionClass } from "../attribution.js";
 import { createSeededRandom } from "../seeded-random.js";
 import { pairedDeltaConfidenceInterval } from "../stats/bootstrap.js";
@@ -113,6 +114,18 @@ test("fixtures freeze the four arms, the allow-list, and the decision rule", () 
   assert.equal(rule.controllingComment.endsWith("#issuecomment-4998197561"), true);
   assert.deepEqual(rule.requiredMainDatasets, ["locomo", "drift-gen"]);
   assert.deepEqual(rule.failureLabels, ["extraction_miss", "index_miss", "retrieval_miss", "use_miss", "unresolved"]);
+});
+
+test("semanticMerge is the nested block parseConfig reads", () => {
+  const arms = loadWriteVsReadArms();
+  const baseline = armAt(arms, 0).configOverrides;
+  const writePlus = armAt(arms, 1).configOverrides;
+  const readPlus = armAt(arms, 2).configOverrides;
+  assert.equal(Object.hasOwn(writePlus, "semanticMerge.enabled"), false);
+  assert.equal(parseConfig(baseline).semanticMerge.enabled, false);
+  assert.equal(parseConfig(readPlus).semanticMerge.enabled, false);
+  assert.equal(parseConfig(writePlus).semanticMerge.enabled, true);
+  assert.equal(parseConfig(armAt(arms, 3).configOverrides).semanticMerge.enabled, true);
 });
 
 test("arm parsing rejects a missing key, an extra key, and a padded strategy", () => {
