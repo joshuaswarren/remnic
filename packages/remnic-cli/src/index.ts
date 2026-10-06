@@ -10316,6 +10316,28 @@ async function cmdBenchOutcomePrior(rest: string[]): Promise<void> {
   if (result.exitCode !== 0) process.exit(result.exitCode);
 }
 
+async function cmdBenchWriteVsRead(rest: string[]): Promise<void> {
+  const benchModule = await loadBenchModule();
+  const surface = benchModule as unknown as {
+    runWriteVsReadScaffoldCli?: (argv: readonly string[]) => {
+      ok: boolean;
+      exitCode: number;
+      runsExecuted: 0;
+      message: string;
+    };
+  };
+  const runner = surface.runWriteVsReadScaffoldCli;
+  if (typeof runner !== "function") {
+    console.error(
+      "The installed @remnic/bench build does not expose runWriteVsReadScaffoldCli. Upgrade to a build that includes the H2 write-vs-read scaffold.",
+    );
+    process.exit(1);
+  }
+  const result = runner(rest);
+  console.log(JSON.stringify(result));
+  if (result.exitCode !== 0) process.exit(result.exitCode);
+}
+
 async function cmdBench(rest: string[]): Promise<void> {
   if (rest[0] === "coding") return cmdBenchCoding(rest.slice(1));
   if (rest[0] === "security") return cmdBenchSecurity(rest.slice(1));
@@ -10327,6 +10349,11 @@ async function cmdBench(rest: string[]): Promise<void> {
   // H1 outcome prior (#1958). Refuses warm/pilot/main. --gates does not run an experiment.
   if (rest[0] === "ablate" && rest[1] === "outcome-prior") {
     await cmdBenchOutcomePrior(rest.slice(2));
+    return;
+  }
+  // H2 write path vs read path (#1959). Refuses warm/pilot/main. Runs nothing.
+  if (rest[0] === "ablate" && rest[1] === "write-vs-read") {
+    await cmdBenchWriteVsRead(rest.slice(2));
     return;
   }
 

@@ -63,6 +63,12 @@ Commands:
                            does not run an experiment. Warm, pilot, and main
                            phases are refused. Any other flag or phase is
                            rejected.
+  ablate write-vs-read [--phase <warm|pilot|main>]
+                           H2 write-vs-read scaffold (issue #1959). Lists frozen
+                           arms, the allow-list, and the decision rule, then
+                           exits. Warm, pilot, and main phases are refused.
+                           --seeds and --corpus are refused. Any other phase
+                           or flag is rejected. Runs nothing.
 
 Options:
   --quick                  Run a lightweight quick pass (maps to --lightweight --limit 1)

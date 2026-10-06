@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "ruleId": "h2-write-vs-read-decision-v1",
+  "controllingIssue": 1959,
+  "controllingComment": "https://github.com/joshuaswarren/remnic/issues/1959#issuecomment-4998197561",
+  "primaryComparison": "write-plus-vs-read-plus",
+  "sideTests": ["baseline", "write-read-plus", "stage-knockouts", "write-read-interaction"],
+  "requiredMainDatasets": ["locomo", "drift-gen"],
+  "laterChecks": ["longmemeval", "minteval", "memfail"],
+  "onePassOutcome": "REGIME-DEPENDENT",
+  "minRelativeGain": 0.05,
+  "alpha": 0.05,
+  "correction": "holm",
+  "computeMatchTolerance": 0.1,
+  "unmatchedLabel": "UNMATCHED",
+  "bootstrapDraws": 10000,
+  "pairingKeys": ["corpus", "data-seed", "run-seed"],
+  "groupBootstrapBy": "generated-chat",
+  "effectSizes": ["relative-delta", "cliffs-delta"],
+  "failureLabels": ["extraction_miss", "index_miss", "retrieval_miss", "use_miss", "unresolved"],
+  "calibrationMinAccuracy": 0.9,
+  "supersededWinRule": "at-least-one-corpus"
+}

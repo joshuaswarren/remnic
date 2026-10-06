@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "writeKeys": [
+    "consolidateEveryN",
+    "entityAliasesEnabled",
+    "extractionJudgeEnabled",
+    "semanticDedupCandidates",
+    "semanticDedupEnabled",
+    "semanticMerge.enabled"
+  ],
+  "readKeys": [
+    "qmdMaxResults",
+    "qmdSearchStrategy",
+    "queryExpansionEnabled",
+    "queryExpansionMaxQueries",
+    "recallMmrEnabled",
+    "recallPlannerMaxQmdResultsFull",
+    "rerankEnabled"
+  ],
+  "heldConstant": {
+    "boostAccessCount": true,
+    "extractionJudgeBatchSize": 20,
+    "extractionJudgeShadow": false,
+    "maxMemoryTokens": 2000,
+    "outcomeBoostEnabled": false,
+    "outcomeBoostWeight": 0,
+    "queryExpansionMinTokenLen": 3,
+    "recallMemoryWorthFilterEnabled": true,
+    "recallMmrLambda": 0.7,
+    "recallMmrTopN": 40,
+    "recencyWeight": 0.2,
+    "reinforcementRecallBoostEnabled": false,
+    "rerankMaxCandidates": 20,
+    "semanticDedupThreshold": 0.92,
+    "trustScoreEnabled": false
+  }
+}

@@ -17,6 +17,7 @@
     "./profiles/*.json": "./profiles/*.json",
     "./fixtures/h6-failure-gate/*": "./fixtures/h6-failure-gate/*",
     "./fixtures/h1-outcome/*": "./fixtures/h1-outcome/*",
+    "./fixtures/h2-write-vs-read/*": "./fixtures/h2-write-vs-read/*",
     "./package.json": "./package.json",
     "./mcp-demo-server": "./dist/demo/mcp-memory-server.js"
   },
@@ -62,6 +63,7 @@
     "profiles",
     "fixtures/h6-failure-gate",
     "fixtures/h5-injection",
-    "fixtures/h1-outcome"
+    "fixtures/h1-outcome",
+    "fixtures/h2-write-vs-read"
   ]
 }

@@ -755,6 +755,26 @@ export type {
   OutcomePriorScaffoldCliResult,
 } from "./ablations/outcome-prior.js";
 
+// H2 write-vs-read scaffold (issue #1959). The sync helper loads frozen arms.
+// It refuses warm, pilot, and main, and it does not run an experiment.
+export {
+  WRITE_VS_READ_CLI_COMMAND,
+  WRITE_VS_READ_RUNS_ENABLED,
+  evaluateH2Decision,
+  loadWriteVsReadAllowList,
+  loadWriteVsReadArms,
+  loadWriteVsReadDecisionRule,
+  matchMemoryWorkTokens,
+  runWriteVsReadScaffoldCli,
+} from "./ablations/write-vs-read.js";
+export type {
+  H2Decision,
+  MemoryWorkTokenLedgerRow,
+  WriteVsReadArm,
+  WriteVsReadDecisionRule,
+  WriteVsReadScaffoldCliResult,
+} from "./ablations/write-vs-read.js";
+
 // Real-fixture procedural-recall scenarios + baseline (issue #567 PR 2/5).
 export {
   PROCEDURAL_REAL_SCENARIOS,

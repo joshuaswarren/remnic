@@ -29,6 +29,7 @@ test("@remnic/bench publishes compiled entrypoints instead of raw source paths",
     "fixtures/h6-failure-gate",
     "fixtures/h5-injection",
     "fixtures/h1-outcome",
+    "fixtures/h2-write-vs-read",
   ]);
   // The baseline JSON is importable via subpath so consumers can read it
   // without reaching into `node_modules` by relative path (issue #567 PR 2,
@@ -45,6 +46,18 @@ test("@remnic/bench publishes compiled entrypoints instead of raw source paths",
     "baselines *.json subpath export missing",
   );
   assert.equal(pkg.scripts?.build, "tsup --config tsup.config.ts");
+});
+
+test("@remnic/bench publishes the H2 write-vs-read fixtures and scaffold", async () => {
+  const pkg = JSON.parse(await readFile("packages/bench/package.json", "utf8")) as {
+    exports?: Record<string, unknown>;
+    files?: string[];
+  };
+  assert.equal(pkg.exports?.["./fixtures/h2-write-vs-read/*"], "./fixtures/h2-write-vs-read/*");
+  assert.equal(pkg.files?.includes("fixtures/h2-write-vs-read"), true);
+  const source = await readFile("packages/bench/src/index.ts", "utf8");
+  assert.match(source, /runWriteVsReadScaffoldCli/);
+  assert.match(source, /WRITE_VS_READ_RUNS_ENABLED/);
 });
 
 test("bench reporter resolves the repo root package.json for Remnic version lookup", async () => {
