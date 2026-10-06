@@ -154,9 +154,10 @@ before the main run. Pilot rows are not reused as main rows.
 ## Calibration gate
 
 Before any H2 arm runs, the #1954 attribution label check must reach at
-least 90% on its fixed set. A missing accuracy, a non-finite accuracy, or an
-accuracy below 0.90 refuses the run. This scaffold does not ship that set
-and does not claim the gate has been met.
+least 90% on its fixed set. Accuracy is a proportion in [0, 1]. A missing
+accuracy, a non-finite accuracy, a value outside that range (including a
+percent such as 89), or an accuracy below 0.90 refuses the run. This
+scaffold does not ship that set and does not claim the gate has been met.
 
 ## Pre-main gates
 

@@ -235,7 +235,10 @@ test("the calibration gate refuses 0.89 and a missing accuracy", () => {
   assert.throws(() => assertAttributionCalibration(undefined), /missing/);
   assert.throws(() => assertAttributionCalibration(null), /missing/);
   assert.throws(() => assertAttributionCalibration(Number.NaN), /finite/);
+  assert.throws(() => assertAttributionCalibration(89), /\[0, 1\]/);
+  assert.throws(() => assertAttributionCalibration(1.01), /\[0, 1\]/);
   assert.doesNotThrow(() => assertAttributionCalibration(0.9));
+  assert.doesNotThrow(() => assertAttributionCalibration(1));
 });
 
 test("failure labels map unattributed to unresolved and keep the miss names", () => {

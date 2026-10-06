@@ -769,6 +769,9 @@ export function assertAttributionCalibration(accuracy: unknown, minimum = 0.9): 
     throw new Error("attribution calibration accuracy is missing");
   }
   const value = assertFiniteNumber(accuracy, "attribution calibration accuracy");
+  if (value < 0 || value > 1) {
+    throw new Error("attribution calibration accuracy must be in [0, 1]");
+  }
   if (value < floor) {
     throw new Error("attribution calibration accuracy is below 0.90");
   }
