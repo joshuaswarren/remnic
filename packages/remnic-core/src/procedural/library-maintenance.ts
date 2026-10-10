@@ -526,8 +526,9 @@ export async function runProcedureLibraryMaintenance(options: {
   report.appliedCount = report.applied.length;
 
   if (writes > 0) {
-    // Corpus bump so hot caches observe the pass. Archive and supersede already
-    // moved the mention epoch through StorageManager; repair stamps must not.
+    // Corpus bump so hot caches observe the pass. Archive already moved the
+    // mention epoch when it removed the live file. Merge-supersede and repair
+    // stamps are metadata-only, so this bump must not move the epoch.
     bumpMemoryCorpusVersionForDir(options.memoryDir, { indexedText: false });
   }
   try {
