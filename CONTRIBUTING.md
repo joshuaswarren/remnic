@@ -80,7 +80,7 @@ Reviewers of retrieval/planner/caching logic verify: flag symmetry (`enabled=fal
 
 AI-assisted and agent-assisted PRs are welcome. Please ensure:
 
-- A human reviews and stands behind the final PR
+- Another agent or a review bot reviews the final PR under the [review and merge rule](AGENTS.md#review-and-merge-rule-2026-10-10).
 - Generated code is understood, minimal, and tested
 - No secrets, tokens, or private data are introduced
 
