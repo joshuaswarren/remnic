@@ -1057,6 +1057,8 @@ export class EmbeddingIndexFileStore {
         } catch (rollbackErr) {
           log.warn(`embedding index: publication rollback did not restore the generation; marker stays in-flight: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`);
         }
+      } else {
+        await this.completeGenerationMarker();
       }
       throw err;
     }

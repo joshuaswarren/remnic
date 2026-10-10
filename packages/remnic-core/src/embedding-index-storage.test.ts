@@ -464,6 +464,30 @@ test("recovering an interrupted replacement finalizes the marker on the restored
   }
 });
 
+for (const legacy of [false, true]) {
+  test(`a failed first publication preserves the ${legacy ? "legacy" : "empty"} generation with a stable stamp`, async () => {
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-first-failure-"));
+    const store = newStore(memoryDir);
+    const stateDir = path.join(memoryDir, "state");
+    const indexPath = path.join(stateDir, "embeddings.json");
+    try {
+      await mkdir(stateDir, { recursive: true });
+      if (legacy) await writeFile(indexPath, SHARD_FILE);
+      await assert.rejects(
+        () => store.publishSwappedGeneration(path.join(stateDir, "embeddings.staging.tmp-nonexistent")),
+        (err: NodeJS.ErrnoException) => err.code === "ENOENT",
+      );
+      assert.equal(await store.detectLayout(), legacy ? "legacy" : "empty");
+      if (legacy) assert.equal(await readFile(indexPath, "utf-8"), SHARD_FILE);
+      else await assert.rejects(stat(indexPath), { code: "ENOENT" });
+      const stamp = await store.identityStamp();
+      assert.equal(await store.identityStamp(), stamp);
+    } finally {
+      await rm(memoryDir, { recursive: true, force: true });
+    }
+  });
+}
+
 test("a failed publication's rollback finalizes the marker on the restored generation", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-rollback-"));
   const store = newStore(memoryDir);
