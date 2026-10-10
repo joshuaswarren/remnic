@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Offline `prepare`, `sync`, and `status` flush the pending offline-sync digest cache write before returning, including on failures, so no background cache write survives the command and recreates removed state.
+
 ## [v9.69.99] — 2026-10-10
 
 ### Fixed
