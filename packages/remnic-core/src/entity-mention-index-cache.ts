@@ -13,9 +13,10 @@ import { log } from "./logger.js";
  * - metadata-only corpus bumps do not move the epoch, so the next recall hits
  * - entity-file changes rebuild from entity files before the recall returns,
  *   reusing memory snippets (no fact scan). A new entity is visible on that
- *   recall; its memory snippets arrive with the next full reconcile. Callers
- *   share one scan. One caller's abort stops that caller waiting and leaves
- *   the scan running for the others
+ *   recall; its memory snippets arrive with the next full reconcile. A new
+ *   canonical id schedules that reconcile. Callers share one scan. One
+ *   caller's abort stops that caller waiting and leaves the scan running
+ *   for the others
  * - memory create/edit/delete moves the epoch. The recall serves the last
  *   index immediately and one background reconcile runs, plus at most one
  *   follow-up if that scan overlaps a later write. A recall during either
@@ -124,6 +125,14 @@ function evictSameFamily(scopeKey: string): void {
   for (const key of [...slots.keys()]) {
     if (key !== scopeKey && scopeFamily(key) === family) forgetScope(key);
   }
+}
+
+function wantsSnippetReconcile(index: unknown): boolean {
+  return (
+    !!index &&
+    typeof index === "object" &&
+    (index as { pendingSnippetReconcile?: boolean }).pendingSnippetReconcile === true
+  );
 }
 
 function armRebuild(slot: Slot): void {
@@ -302,7 +311,9 @@ export async function resolveEntityMentionIndex<T>(options: {
             entityMutation: mutationStable ? now.entityMutation : mutationBefore,
             mentionEpoch: epochStable ? now.mentionEpoch : epochBefore,
           };
-          if (existing.identity.mentionEpoch !== now.mentionEpoch) armRebuild(existing);
+          if (existing.identity.mentionEpoch !== now.mentionEpoch || wantsSnippetReconcile(rebuilt)) {
+            armRebuild(existing);
+          }
         },
         () => {},
       )

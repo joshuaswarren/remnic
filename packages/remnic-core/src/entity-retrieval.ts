@@ -22,6 +22,7 @@ import {
   yieldEntityRecallScan,
   yieldEntityRecallScanEvery,
 } from "./entity-recall-cancellation.js";
+import { applyCarriedMemorySnippets } from "./entity-mention-carry.js";
 import {
   entityMentionIdentity,
   entityMentionScopeKey,
@@ -69,6 +70,8 @@ type EntityMentionIndex = {
   updatedAt: string;
   entityStatusVersion?: number;
   entities: EntityMentionIndexEntry[];
+  /** In-memory only. A new canonical id had no snippets to carry. */
+  pendingSnippetReconcile?: boolean;
 };
 type EntityCandidate = {
   entry: EntityMentionIndexEntry;
@@ -550,14 +553,10 @@ async function buildEntityMentionIndex(
   }
 
   scanned = 0;
-  if (carrySnippets) {
-    for (const entry of entities.values()) {
-      const carried = carrySnippets.get(entry.canonicalId);
-      if (!carried) continue;
-      entry.memorySnippets = carried.memorySnippets.slice();
-      if (carried.memorySnippetOrigins) entry.memorySnippetOrigins = carried.memorySnippetOrigins.slice();
-    }
-  } else {
+  const pendingSnippetReconcile = carrySnippets
+    ? applyCarriedMemorySnippets(entities.values(), carrySnippets)
+    : false;
+  if (!carrySnippets) {
     for (const memory of memories) {
       scanned += 1;
       await yieldEntityRecallScanEvery(scanned, abortSignal);
@@ -618,6 +617,7 @@ async function buildEntityMentionIndex(
     checkEntityRecallAbort(abortSignal);
     await writeEntityIndexState(storage, index);
   }
+  if (pendingSnippetReconcile) index.pendingSnippetReconcile = true;
   return index;
 }
 

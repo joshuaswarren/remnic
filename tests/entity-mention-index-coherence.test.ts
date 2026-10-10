@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { chmodSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { parseConfig } from "@remnic/core/config";
 import { buildEntityRecallSection } from "@remnic/core/entity-retrieval";
 import { StorageManager } from "@remnic/core/storage";
@@ -150,11 +150,16 @@ test("a new entity file is retrievable on the next recall without a fact scan", 
   const originalReadAllEntityFiles = storage.readAllEntityFiles.bind(storage);
   let memoryReads = 0;
   let entityReads = 0;
+  let releaseReads: () => void = () => {};
   try {
     await storage.writeEntity("Cedar Lattice", "project", ["Cedar Lattice tracks harbor lights."]);
     assert.match((await recall(config, storage, "Who is Cedar Lattice?")) ?? "", /Cedar Lattice/);
+    const readsGate = new Promise<void>((resolve) => {
+      releaseReads = resolve;
+    });
     storage.readAllMemories = async (...args) => {
       memoryReads += 1;
+      await readsGate;
       return originalReadAllMemories(...args);
     };
     storage.readAllEntityFiles = async (...args) => {
@@ -162,14 +167,50 @@ test("a new entity file is retrievable on the next recall without a fact scan", 
       return originalReadAllEntityFiles(...args);
     };
     await storage.writeEntity("Quartz Beacon", "project", ["Quartz Beacon marks the north channel."]);
-    const section = await recall(config, storage, "Who is Quartz Beacon?");
+    const section = await Promise.race([
+      recall(config, storage, "Who is Quartz Beacon?"),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("recall waited on a fact scan")), 1000);
+      }),
+    ]);
     assert.match(section ?? "", /Quartz Beacon/);
     assert.match(section ?? "", /north channel/);
-    assert.equal(memoryReads, 0);
     assert.equal(entityReads > 0, true);
+    for (let attempt = 0; attempt < 20 && memoryReads === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(memoryReads, 1);
+    releaseReads();
   } finally {
+    releaseReads();
     storage.readAllMemories = originalReadAllMemories;
     storage.readAllEntityFiles = originalReadAllEntityFiles;
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
+test("a memory written before its entity file is linked after reconcile", async () => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-epoch-dangle");
+  try {
+    const canonical = await storage.writeEntity("Quartz Beacon", "project", [
+      "Quartz Beacon marks the north channel.",
+    ]);
+    const entityNames = await readdir(path.join(memoryDir, "entities"));
+    assert.equal(entityNames.length, 1);
+    await unlink(path.join(memoryDir, "entities", entityNames[0] ?? ""));
+    await storage.writeMemory("fact", "Quartz Beacon keeps the marker phrase amber-dangle-441.", {
+      entityRef: canonical,
+    });
+    await recall(config, storage, "Who is Quartz Beacon?");
+    const scopeKey = scopeKeyFor(storage.dir);
+    await settleEntityMentionIndex(scopeKey);
+    await storage.writeEntity("Quartz Beacon", "project", ["Quartz Beacon marks the north channel."]);
+    const observed = await recall(config, storage, "Who is Quartz Beacon?");
+    assert.match(observed ?? "", /Quartz Beacon/);
+    await settleEntityMentionIndex(scopeKey);
+    const settled = await recall(config, storage, "Who is Quartz Beacon?");
+    assert.match(settled ?? "", /amber-dangle-441/);
+  } finally {
     await removeHarness(memoryDir, workspaceDir);
   }
 });
