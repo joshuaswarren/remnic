@@ -427,6 +427,130 @@ test("overlapping mention-epoch bumps do not chain full rebuilds", async () => {
   }
 });
 
+test("an access flush that canonicalizes entityRef moves the mention epoch", async () => {
+  const { memoryDir, workspaceDir, storage } = await buildHarness("engram-entity-epoch-access-ref");
+  try {
+    const written = await storage.writeMemory("fact", "Cedar Lattice tracks harbor lights from the pier.", {
+      entityRef: "legacy-harbor-ref",
+    });
+    const epoch = entityMentionEpoch.current(storage.dir);
+    await writeFile(
+      path.join(memoryDir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({ version: 1, mappings: { "legacy-harbor-ref": "canonical-harbor-ref" } }),
+    );
+    const updated = await storage.flushAccessTracking([
+      {
+        memoryId: written.id,
+        newCount: 2,
+        lastAccessed: "2026-10-10T00:00:00.000Z",
+      },
+    ]);
+    assert.equal(updated, 1);
+    assert.ok(entityMentionEpoch.current(storage.dir) > epoch);
+    const refreshed = await storage.getMemoryById(written.id);
+    assert.equal(refreshed?.frontmatter.entityRef, "canonical-harbor-ref");
+  } finally {
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
+test("concurrent entity rebuilds share one scan", async () => {
+  const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-coalesce");
+  type MentionProbe = { generation: number };
+  try {
+    let mutation = 0;
+    const identity = () => ({ mentionEpoch: "1", entityMutation: String(mutation) });
+    const scopeKey = entityMentionScopeKey(undefined, [{ dir: memoryDir }], "coalesce");
+    await resolveEntityMentionIndex<MentionProbe>({
+      scopeKey,
+      currentIdentity: identity,
+      buildFull: async () => ({ generation: 0 }),
+      rebuildEntities: async (previous) => previous,
+    });
+    mutation = 1;
+    let waiting = 0;
+    let maxWaiting = 0;
+    let releaseScan: () => void = () => {};
+    let markEntered: () => void = () => {};
+    const scanGate = new Promise<void>((resolve) => {
+      releaseScan = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const rebuildEntities = async (previous: MentionProbe): Promise<MentionProbe> => {
+      waiting += 1;
+      maxWaiting = Math.max(maxWaiting, waiting);
+      markEntered();
+      await scanGate;
+      waiting -= 1;
+      return { generation: previous.generation + 1 };
+    };
+    const load = () =>
+      resolveEntityMentionIndex<MentionProbe>({
+        scopeKey,
+        currentIdentity: identity,
+        buildFull: async () => {
+          throw new Error("coalesced entity rebuild must not full-scan");
+        },
+        rebuildEntities,
+      });
+    const first = load();
+    await entered;
+    const second = load();
+    releaseScan();
+    const [left, right] = await Promise.all([first, second]);
+    assert.equal(maxWaiting, 1);
+    assert.deepEqual(left, { generation: 1 });
+    assert.deepEqual(right, { generation: 1 });
+  } finally {
+    dropEntityMentionIndexCache();
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
+test("a cache clear during the first build does not publish that index", async () => {
+  const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-clear-build");
+  try {
+    const scopeKey = entityMentionScopeKey(undefined, [{ dir: memoryDir }], "clear-build");
+    let builds = 0;
+    let releaseScan: () => void = () => {};
+    let markEntered: () => void = () => {};
+    const scanGate = new Promise<void>((resolve) => {
+      releaseScan = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const load = () =>
+      resolveEntityMentionIndex({
+        scopeKey,
+        currentIdentity: () => quietIdentity,
+        buildFull: async () => {
+          builds += 1;
+          if (builds === 1) {
+            markEntered();
+            await scanGate;
+          }
+          return { generation: builds };
+        },
+        rebuildEntities: async (previous) => previous,
+      });
+    const pending = load();
+    await entered;
+    dropEntityMentionIndexCache();
+    releaseScan();
+    assert.deepEqual(await pending, { generation: 1 });
+    assert.equal(entityMentionIndexScopeKeys().includes(scopeKey), false);
+    assert.deepEqual(await load(), { generation: 2 });
+    assert.equal(builds, 2);
+    assert.equal(entityMentionIndexScopeKeys().includes(scopeKey), true);
+  } finally {
+    dropEntityMentionIndexCache();
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
 test("an entity write during rebuild is retried on the next recall", async () => {
   const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-overlap");
   type MentionProbe = { generation: number };

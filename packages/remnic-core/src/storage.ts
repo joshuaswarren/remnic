@@ -6522,11 +6522,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const memoryMap = new Map(memories.map((m) => [m.frontmatter.id, m]));
     const memoryPathMap = new Map(memories.map((m) => [path.resolve(m.path), m]));
     let updated = 0;
-    // Capture the corpus version + warmth BEFORE writing so we can patch the hot
-    // entries in place and then re-key them to the version this flush produces
-    // (issue #1902). Access-tracking flush is batched (consolidation / buffer
-    // full), not per-recall, so the single corpus bump below is cheap.
+    // Corpus version and warmth are snapshotted before the writes (#1902).
     const prevVersion = this.getMemoryCorpusVersion();
+    let entityRefMoved = false;
     // Snapshot the secure-store key identity once (Cursor Medium #1902), mirroring
     // readAllMemories/patchHotMemoriesCache: a mid-flush setSecureStoreKey change
     // would otherwise let loop patches or the re-keyed entry be stored under a
@@ -6566,6 +6564,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
               { onFailRestore: current }
             );
           }
+          if (!entityMentionEpoch.neutral(current.frontmatter, newFm)) entityRefMoved = true;
           return { current, newFm };
         });
         if (applied === null) continue;
@@ -6583,14 +6582,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
 
     if (updated > 0) {
-      // Advance the corpus sentinel so PEER processes rescan and don't overwrite
-      // this process's increments (Codex P2): WorkspaceOpsCoordinator computes
-      // existingCount + update.count from the cached value, so a peer serving a
-      // stale count would undercount. Re-key the locally patched entries to the
-      // produced version so this process stays warm — only when our bump was
-      // exclusive and still the current sentinel; otherwise a peer also wrote
-      // and we must let the next read rescan.
-      const { produced, exclusive } = this.bumpMemoryCorpusVersionExclusive({ indexedText: false });
+      // Advance the corpus sentinel so peers rescan (#1902). Re-key local patches
+      // only when this bump was exclusive; a peer write must rescan instead.
+      const { produced, exclusive } = this.bumpMemoryCorpusVersionExclusive({
+        indexedText: entityRefMoved ? undefined : false,
+      });
       // Drop the in-flight read slot after the bump (parity with
       // patchHotMemoriesCache, Cursor Medium #1902): a readAllMemories scan that
       // started before the flush would otherwise keep awaiting a pre-flush scan
@@ -6600,6 +6596,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       if (
         warm &&
         exclusive &&
+        !entityRefMoved &&
         produced === prevVersion + 1 &&
         this.getMemoryCorpusVersion() === produced &&
         this.hotCacheKeyId() === keyId

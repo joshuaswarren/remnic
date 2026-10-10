@@ -44,6 +44,7 @@ type Slot = {
   identity: EntityMentionIdentity;
   token: number;
   rebuild: Promise<void> | null;
+  entityJob: Promise<void> | null;
   again: boolean;
   followUps: number;
   currentIdentity: () => EntityMentionIdentity;
@@ -52,6 +53,13 @@ type Slot = {
 
 const slots = new Map<string, Slot>();
 const rebuildsByScope = new Map<string, number>();
+let cacheGeneration = 0;
+
+function throwIfMentionAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const reason = signal.reason;
+  throw reason instanceof Error ? reason : new Error("entity mention rebuild aborted");
+}
 
 function compareStrings(left: string, right: string): number {
   if (left < right) return -1;
@@ -194,6 +202,7 @@ export function entityMentionIndexScopeKeys(): string[] {
 }
 
 export function dropEntityMentionIndexCache(scopeKey?: string): void {
+  cacheGeneration += 1;
   if (scopeKey === undefined) {
     for (const key of [...slots.keys()]) forgetScope(key);
     return;
@@ -230,8 +239,11 @@ export async function resolveEntityMentionIndex<T>(options: {
     evictSameFamily(options.scopeKey);
     evictOldest(options.scopeKey);
     noteRebuild(options.scopeKey);
+    const generation = cacheGeneration;
     const started = options.currentIdentity();
     const index = await options.buildFull(options.abortSignal);
+    // clearAllStaticCaches during this first scan must not publish the pre-clear index.
+    if (generation !== cacheGeneration) return index;
     const ended = options.currentIdentity();
     evictSameFamily(options.scopeKey);
     evictOldest(options.scopeKey);
@@ -241,6 +253,7 @@ export async function resolveEntityMentionIndex<T>(options: {
       identity: sameIdentity(started, ended) ? ended : started,
       token: 0,
       rebuild: null,
+      entityJob: null,
       again: false,
       followUps: 0,
       currentIdentity: options.currentIdentity,
@@ -252,24 +265,41 @@ export async function resolveEntityMentionIndex<T>(options: {
   }
   existing.currentIdentity = options.currentIdentity;
   existing.buildFull = options.buildFull;
-  if (existing.identity.entityMutation !== live.entityMutation) {
-    existing.token += 1;
-    const token = existing.token;
-    existing.again = false;
+  while (existing.identity.entityMutation !== options.currentIdentity().entityMutation) {
+    throwIfMentionAborted(options.abortSignal);
+    const pending = existing.entityJob;
+    if (pending) {
+      await pending;
+      continue;
+    }
+    const liveNow = options.currentIdentity();
     const epochBefore = existing.identity.mentionEpoch;
-    const mutationBefore = live.entityMutation;
-    const rebuilt = await options.rebuildEntities(existing.index as T, options.abortSignal);
-    if (existing.token !== token) return existing.index as T;
-    const now = options.currentIdentity();
-    existing.index = rebuilt;
-    const epochStable = epochBefore === live.mentionEpoch && epochBefore === now.mentionEpoch;
-    const mutationStable = mutationBefore === now.entityMutation;
-    existing.identity = {
-      entityMutation: mutationStable ? now.entityMutation : mutationBefore,
-      mentionEpoch: epochStable ? now.mentionEpoch : epochBefore,
-    };
-    if (existing.identity.mentionEpoch !== now.mentionEpoch) armRebuild(existing);
-    return rebuilt;
+    const mutationBefore = liveNow.entityMutation;
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    existing.entityJob = gate;
+    existing.token += 1;
+    existing.again = false;
+    try {
+      // Shared scan: one caller's abort must not cancel the other recall.
+      const rebuilt = await options.rebuildEntities(existing.index as T, undefined);
+      const now = options.currentIdentity();
+      existing.index = rebuilt;
+      const epochStable = epochBefore === liveNow.mentionEpoch && epochBefore === now.mentionEpoch;
+      const mutationStable = mutationBefore === now.entityMutation;
+      existing.identity = {
+        entityMutation: mutationStable ? now.entityMutation : mutationBefore,
+        mentionEpoch: epochStable ? now.mentionEpoch : epochBefore,
+      };
+      if (existing.identity.mentionEpoch !== now.mentionEpoch) armRebuild(existing);
+      throwIfMentionAborted(options.abortSignal);
+      return rebuilt;
+    } finally {
+      if (existing.entityJob === gate) existing.entityJob = null;
+      release();
+    }
   }
   if (existing.identity.mentionEpoch !== live.mentionEpoch) {
     armRebuild(existing);
