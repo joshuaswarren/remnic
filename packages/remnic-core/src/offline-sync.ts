@@ -25,7 +25,7 @@ import {
 } from "./transfer/fs-utils.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { EmbeddingIndexStorageError } from "./embedding-index-storage.js";
-import { matchesOfflineSyncDefaultExclude } from "./offline-sync-exclude-globs.js";
+import { isEmbeddingGenerationMarkerPath, matchesOfflineSyncDefaultExclude } from "./offline-sync-exclude-globs.js";
 import {
   applyIncomingEmbeddingGenerations,
   assertEmbeddingGenerationStillIncluded,
@@ -1701,6 +1701,15 @@ export async function applyOfflineSyncSnapshot(options: {
     }
 
     if (incoming) {
+      // The generation marker (PR #3176) is node-local on BOTH sides: an
+      // incoming copy — old or hostile — never overwrites the local file
+      // and never enters the base set. Other default excludes stay
+      // apply-accepted (#1786: first-sync LCM sqlite bootstrapping).
+      if (isEmbeddingGenerationMarkerPath(relPath)) {
+        nextBase.delete(relPath);
+        skipped += 1;
+        continue;
+      }
       if (currentEntry?.sha256 === incoming.sha256) {
         if (await setSafeFileMtime(root, relPath, incoming.mtimeMs)) {
           nextBase.set(relPath, toFileState(incoming));

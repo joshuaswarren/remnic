@@ -67,11 +67,31 @@ export const DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS: readonly string[] = [
   "**/namespaces/*/state/embeddings.pre-replace.tmp/**",
   "**/namespaces/*/state/embeddings.staging.tmp-*/**",
   "**/namespaces/*/state/embeddings.json.pre-migration.tmp-*",
+  // The warm-cache generation marker (PR #3176) is node-local coherence
+  // state: a synced copy — worse, a captured `in-flight` value — would make
+  // the receiving node's stamp probes unique forever and force a full index
+  // reload on every search. Exclude on both sides: never snapshotted, and
+  // an incoming (old or hostile) marker never overwrites or deletes the
+  // local one.
+  "**/state/embeddings.generation",
+  "**/namespaces/*/state/embeddings.generation",
 ];
 
 
 const DEFAULT_OFFLINE_SYNC_EXCLUDE_REGEXPS: readonly RegExp[] =
   DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS.map((glob) => globToRegExp(glob));
+
+/**
+ * The warm-cache generation marker is the one default-excluded path that
+ * must ALSO be refused on apply (push-side default excludes like the live
+ * LCM sqlite are deliberately apply-accepted for first-sync bootstrapping).
+ * Node-local on both sides: never snapshotted, never overwritten by an
+ * incoming old or hostile copy.
+ */
+export function isEmbeddingGenerationMarkerPath(relPosix: string): boolean {
+  const normalized = relPosix.includes("\\") ? relPosix.replaceAll("\\", "/") : relPosix;
+  return /(?:^|\/)state\/embeddings\.generation$/.test(normalized);
+}
 
 /**
  * Precompiled-once default-exclude check for the snapshot enumeration hot
