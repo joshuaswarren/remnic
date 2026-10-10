@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { chmodSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { parseConfig } from "@remnic/core/config";
 import { buildEntityRecallSection } from "@remnic/core/entity-retrieval";
 import { StorageManager } from "@remnic/core/storage";
@@ -834,6 +834,51 @@ test("a stale entityRef snapshot does not suppress the mention epoch", async () 
     assert.ok(entityMentionEpoch.current(storage.dir) > epoch);
     const persisted = await storage.readMemoryByPath(written.memory.path);
     assert.equal(persisted?.frontmatter.entityRef, canonicalA);
+    assert.equal(persisted?.frontmatter.heatScore, 0.42);
+  } finally {
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
+test("a metadata patch rechecks entityRef under the path lock", async () => {
+  const { memoryDir, workspaceDir, storage } = await buildHarness("engram-entity-epoch-lock-race");
+  try {
+    const canonicalA = await storage.writeEntity("Cedar Lattice", "project", [
+      "Cedar Lattice tracks harbor lights.",
+    ]);
+    const canonicalB = await storage.writeEntity("North Pier", "place", ["North Pier holds the channel light."]);
+    const written = await storage.writeMemory("fact", "Cedar Lattice tracks harbor lights from the pier.", {
+      entityRef: canonicalA,
+    });
+    const fresh = await storage.readMemoryByPath(written.memory.path);
+    assert.ok(fresh);
+    const seam = storage as unknown as {
+      withTombstoneBlockedCaptureWriteLock: (
+        task: () => Promise<unknown>,
+        identity?: readonly string[],
+      ) => Promise<unknown>;
+    };
+    const original = seam.withTombstoneBlockedCaptureWriteLock.bind(storage);
+    let flipped = false;
+    seam.withTombstoneBlockedCaptureWriteLock = async (task, identity) =>
+      original(async () => {
+        if (!flipped) {
+          flipped = true;
+          const raw = await readFile(written.memory.path, "utf8");
+          await writeFile(written.memory.path, raw.replaceAll(canonicalA, canonicalB));
+        }
+        return task();
+      }, identity);
+    const epoch = entityMentionEpoch.current(storage.dir);
+    const wrote = await storage.writeMemoryFrontmatter(fresh, {
+      heatScore: 0.42,
+      decayScore: 0.07,
+      lastValidatedAt: "2026-10-10T03:00:00.000Z",
+    });
+    assert.equal(wrote, true);
+    assert.equal(flipped, true);
+    assert.ok(entityMentionEpoch.current(storage.dir) > epoch);
+    const persisted = await storage.readMemoryByPath(written.memory.path);
     assert.equal(persisted?.frontmatter.heatScore, 0.42);
   } finally {
     await removeHarness(memoryDir, workspaceDir);

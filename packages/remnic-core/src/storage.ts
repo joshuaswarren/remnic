@@ -87,6 +87,7 @@ import {
   clearInFlightReads,
 } from "./in-flight-reads.js";
 import { entityMentionEpoch } from "./entity-mention-epoch.js";
+import { holdMentionNeutralFrontmatter } from "./storage/entity-mention-frontmatter-hold.js";
 import * as archive from "./archive-mutation-version.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
@@ -5396,12 +5397,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     );
     const refIds = typeof updated.entityRef === "string" ? resolveIds : null;
     const afterStatus = updated.status ?? "active";
-    // Hold only when the file already has this body and the same entityRef
-    // and origin. A stale snapshot must not suppress the mention epoch.
     if (!mentionReentry && entityMentionEpoch.neutral(memory.frontmatter, updated)) {
-      const persisted = await this.readMemoryByPath(memory.path);
-      if (persisted && persisted.content === memory.content && entityMentionEpoch.neutral(persisted.frontmatter, updated))
-        return entityMentionEpoch.hold(() => StorageManager.frontmatterBody.call(this, memory, patch, lifecycle, true));
+      const held = await holdMentionNeutralFrontmatter(this, memory, updated, () =>
+        entityMentionEpoch.hold(() => StorageManager.frontmatterBody.call(this, memory, patch, lifecycle, true)));
+      if (held !== undefined) return held;
     }
 
     const fileContent = `${serializeFrontmatter(this.withOkfType(updated))}\n\n${memory.content}\n`;
