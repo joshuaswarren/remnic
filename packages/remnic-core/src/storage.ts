@@ -2427,9 +2427,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * Bump only — NOT invalidateAllForDir (that would drop the very hot
    * entry the write path just patched).
    */
-  protected bumpMemoryCorpusVersion(): void {
+  protected bumpMemoryCorpusVersion(opts?: { indexedText?: boolean }): void {
     this.bumpSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
-    if (!entityMentionEpoch.suppressed()) entityMentionEpoch.bump(this.baseDir);
+    if (opts?.indexedText !== false && !entityMentionEpoch.suppressed()) entityMentionEpoch.bump(this.baseDir);
     deleteInFlightReadsForDir(this.baseDir);
   }
   getArchiveMutationVersion(): number { return archive.getArchiveMutationVersionForDir(this.baseDir); }
@@ -4498,12 +4498,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    *  exclusively by invalidateColdMemoriesCache(), which is called only when
    *  cold content actually changes (hot→cold demotions, writeMemoryFileAtomic
    *  inside cold/, archiveMemory, etc.). */
-  protected invalidateAllMemoriesCache(): void {
+  protected invalidateAllMemoriesCache(opts?: { indexedText?: boolean }): void {
     deleteInFlightReadsForDir(this.baseDir);
     // Bulk/ambiguous mutations drop the hot layer wholesale (below); bump the
     // corpus sentinel too so PEER processes rescan instead of serving a warm
     // pre-mutation corpus entry (issue #1902 cross-process coherence).
-    this.bumpMemoryCorpusVersion();
+    this.bumpMemoryCorpusVersion(opts);
     // Invalidation chokepoint (issue #1535 / #1904): evict the layers a
     // memory-mutate can affect — hot, archive, derived episode/rule views, and
     // both QMD result caches (qmdSearchCache and qmdRecallCache). Before the QMD
@@ -5396,11 +5396,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     );
     const refIds = typeof updated.entityRef === "string" ? resolveIds : null;
     const afterStatus = updated.status ?? "active";
-    // Body text lives on the memory object, not the patch. Hold only when the
-    // file already has this body, so a content edit cannot stay under suppression.
+    // Hold only when the file already has this body and the same entityRef
+    // and origin. A stale snapshot must not suppress the mention epoch.
     if (!mentionReentry && entityMentionEpoch.neutral(memory.frontmatter, updated)) {
       const persisted = await this.readMemoryByPath(memory.path);
-      if (persisted?.content === memory.content)
+      if (persisted && persisted.content === memory.content && entityMentionEpoch.neutral(persisted.frontmatter, updated))
         return entityMentionEpoch.hold(() => StorageManager.frontmatterBody.call(this, memory, patch, lifecycle, true));
     }
 
@@ -5418,6 +5418,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         onFailRestore: memory,
       });
     }
+    if (mentionReentry && !entityMentionEpoch.neutral(memory.frontmatter, updated)) entityMentionEpoch.bump(this.baseDir);
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     if (memory.path.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
@@ -7064,8 +7065,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         readMemoryByPath: (filePath) => this.readMemoryByPath(filePath),
         isColdOrArchiveTierPath: (memoryPath) => this.isColdOrArchiveTierPath(memoryPath),
         invalidateColdMemoriesCache: () => this.invalidateColdMemoriesCache(),
-        invalidateAllMemoriesCache: () => this.invalidateAllMemoriesCache(),
-        bumpMemoryCorpusVersion: () => this.bumpMemoryCorpusVersion(),
+        invalidateAllMemoriesCache: () => this.invalidateAllMemoriesCache({ indexedText: false }),
+        bumpMemoryCorpusVersion: () => this.bumpMemoryCorpusVersion({ indexedText: false }),
         appendLifecycleEvent: async () => {
           let lifecycleEvents: MemoryLifecycleEvent[] = [];
           try {
@@ -7179,9 +7180,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           return true;
         });
         if (!written) continue;
-        // Per-file corpus bump BEFORE the awaited lifecycle append (#1902):
-        // the end-of-loop status bump fires only after the whole batch.
-        this.bumpMemoryCorpusVersion();
+        // Per-file corpus bump BEFORE the awaited lifecycle append (#1902).
+        // Status and archive timestamps are not indexed text.
+        this.bumpMemoryCorpusVersion({ indexedText: false });
         await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.archiveMemories", {
           memoryId: id,
           eventType: "archived",

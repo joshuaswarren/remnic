@@ -345,7 +345,10 @@ test("clearAllStaticCaches drops the entity mention index", async () => {
   }
 });
 
-test("a failed epoch append still advances while the sentinel file is readable", async () => {
+const skipReadonlyEpoch =
+  (typeof process.getuid === "function" && process.getuid() === 0) || process.platform === "win32";
+
+test("a failed epoch append still advances while the sentinel file is readable", { skip: skipReadonlyEpoch }, async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-entity-epoch-readonly-"));
   const file = path.join(dir, "state", ".entity-mention-epoch.log");
   await mkdir(path.dirname(file), { recursive: true });
@@ -366,7 +369,7 @@ test("a failed epoch append still advances while the sentinel file is readable",
   }
 });
 
-test("a peer append after a failed bump still moves the mention epoch", async () => {
+test("a peer append after a failed bump still moves the mention epoch", { skip: skipReadonlyEpoch }, async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-entity-epoch-peer-"));
   const file = path.join(dir, "state", ".entity-mention-epoch.log");
   await mkdir(path.dirname(file), { recursive: true });
@@ -803,6 +806,107 @@ test("an entity write during rebuild is retried on the next recall", async () =>
     assert.equal(rebuilds, 2);
   } finally {
     dropEntityMentionIndexCache();
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
+test("a stale entityRef snapshot does not suppress the mention epoch", async () => {
+  const { memoryDir, workspaceDir, storage } = await buildHarness("engram-entity-epoch-stale-ref");
+  try {
+    const canonicalA = await storage.writeEntity("Cedar Lattice", "project", [
+      "Cedar Lattice tracks harbor lights.",
+    ]);
+    const canonicalB = await storage.writeEntity("North Pier", "place", ["North Pier holds the channel light."]);
+    const written = await storage.writeMemory("fact", "Cedar Lattice tracks harbor lights from the pier.", {
+      entityRef: canonicalA,
+    });
+    const fresh = await storage.readMemoryByPath(written.memory.path);
+    assert.ok(fresh);
+    await storage.writeMemoryFrontmatter(fresh, { entityRef: canonicalB });
+    const epoch = entityMentionEpoch.current(storage.dir);
+    const wrote = await storage.writeMemoryFrontmatter(written.memory, {
+      heatScore: 0.42,
+      decayScore: 0.07,
+      lastValidatedAt: "2026-10-10T00:00:00.000Z",
+    });
+    assert.equal(wrote, true);
+    assert.ok(entityMentionEpoch.current(storage.dir) > epoch);
+    const persisted = await storage.readMemoryByPath(written.memory.path);
+    assert.equal(persisted?.frontmatter.entityRef, canonicalA);
+    assert.equal(persisted?.frontmatter.heatScore, 0.42);
+  } finally {
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
+test("archive and supersede status stamps do not move the mention epoch", async () => {
+  const { memoryDir, workspaceDir, storage } = await buildHarness("engram-entity-epoch-status");
+  try {
+    const canonical = await storage.writeEntity("Cedar Lattice", "project", [
+      "Cedar Lattice tracks harbor lights.",
+    ]);
+    const archived = await storage.writeMemory("fact", "Cedar Lattice tracks harbor lights from the pier.", {
+      entityRef: canonical,
+    });
+    const epochAfterWrite = entityMentionEpoch.current(storage.dir);
+    assert.equal(await storage.archiveMemories([archived.id], "summary-epoch"), 1);
+    assert.equal(entityMentionEpoch.current(storage.dir), epochAfterWrite);
+    const archivedFile = await storage.readMemoryByPath(archived.memory.path);
+    assert.equal(archivedFile?.frontmatter.status, "archived");
+
+    const oldMemory = await storage.writeMemory("fact", "The original supporting claim.", { source: "test" });
+    const replacement = await storage.writeMemory("fact", "The replacement supporting claim.", { source: "test" });
+    assert.equal(await storage.supersedeMemory(oldMemory.id, replacement.id, "newer replaces older"), true);
+    const epochAfterSupersede = entityMentionEpoch.current(storage.dir);
+    assert.ok(epochAfterSupersede > epochAfterWrite);
+    assert.equal(
+      await storage.supersedeMemory(oldMemory.id, replacement.id, "newer replaces older", undefined, {
+        acceptExactReplay: true,
+      }),
+      true,
+    );
+    assert.equal(entityMentionEpoch.current(storage.dir), epochAfterSupersede);
+  } finally {
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
+test("a held frontmatter write moves the epoch when repair rewrites entityRef", async () => {
+  const { memoryDir, workspaceDir, storage } = await buildHarness("engram-entity-epoch-repair");
+  try {
+    const canonical = await storage.writeEntity("Cedar Lattice", "project", [
+      "Cedar Lattice tracks harbor lights.",
+    ]);
+    const written = await storage.writeMemory("fact", "Cedar Lattice tracks harbor lights from the pier.", {
+      entityRef: canonical,
+    });
+    const seam = storage as unknown as {
+      entityRefRepair: {
+        repair: (
+          filePath: string,
+          updated: { entityRef?: string },
+          rawMergedRef: string,
+          refIds: ReadonlySet<string> | null,
+          content: string,
+          opts: { onFailRestore?: unknown },
+        ) => Promise<void>;
+      };
+    };
+    const original = seam.entityRefRepair.repair.bind(seam.entityRefRepair);
+    seam.entityRefRepair.repair = async (filePath, updated, rawMergedRef, refIds, content, opts) => {
+      await original(filePath, updated, rawMergedRef, refIds, content, opts);
+      updated.entityRef = "entity-rewritten-by-repair";
+    };
+    const epoch = entityMentionEpoch.current(storage.dir);
+    assert.equal(
+      await storage.writeMemoryFrontmatter(written.memory, {
+        heatScore: 0.33,
+        lastValidatedAt: "2026-10-10T02:00:00.000Z",
+      }),
+      true,
+    );
+    assert.ok(entityMentionEpoch.current(storage.dir) > epoch);
+  } finally {
     await removeHarness(memoryDir, workspaceDir);
   }
 });
