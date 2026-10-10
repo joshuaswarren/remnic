@@ -19,7 +19,8 @@ export function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-interface OfflineUploadStaging {
+/** A staged upload spool returned by writeOfflineUploadChunk; consumed by digest/cleanup/finalize. */
+export interface OfflineUploadStaging {
   kind: "single" | "chunks";
   relPath: string;
   filePath: string;
