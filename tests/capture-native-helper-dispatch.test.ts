@@ -52,10 +52,6 @@ const DARWIN_MATRIX_PACKAGES = [
   "packages/capture-native-darwin-x64",
 ];
 
-// Bounded evaluator for the guard expression shape GitHub Actions supports
-// here: !, &&, ||, ==, !=, startsWith, parentheses, string literals, and
-// github.<field> lookups. Unknown tokens throw, so a guard that outgrows
-// this shape fails the test instead of silently passing.
 function evaluateGuard(expression: string, event: GuardEvent): boolean {
   const tokens = expression.match(/\(|\)|,|&&|\|\||==|!=|!|'[^']*'|[^\s(),]+/g) ?? [];
   let pos = 0;
@@ -112,7 +108,9 @@ function evaluateGuard(expression: string, event: GuardEvent): boolean {
     }
     return result;
   }
-  return orExpr();
+  const result = orExpr();
+  if (pos !== tokens.length) throw new Error(`unsupported guard suffix: ${expression}`);
+  return result;
 }
 
 const helperPublish = helper.jobs.publish;
