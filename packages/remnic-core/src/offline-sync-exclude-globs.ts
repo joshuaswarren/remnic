@@ -128,6 +128,7 @@ export function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${source}$`);
 }
 
+/** Match relative POSIX paths: `*` stays within a segment; `**` crosses separators and matches every path alone. */
 export function compileOfflineSyncExcludeGlobs(
   globs: readonly unknown[],
 ): RegExp[] {
