@@ -14,10 +14,13 @@
  *                          is given
  * Document shape:
  *   { "type": "check-runs", "records": [ { name, status, conclusion,
- *                                           completed_at? }, ... ] }
+ *                                           completed_at?, started_at?,
+ *                                           id? }, ... ] }
  *   Records may be check-runs (from /commits/{sha}/check-runs) and/or
  *   commit statuses (from /commits/{sha}/status), normalized to the same
- *   shape by the workflow before being handed to this script.
+ *   shape by the workflow before being handed to this script. Statuses
+ *   arrive with their `updated_at` projected into both `started_at` and
+ *   `completed_at`, so every status record is timestamped.
  *
  * CLI:
  *   --required-contexts <JSON array of strings>   required, fail closed
@@ -34,8 +37,11 @@
  *     block. If the ruleset API cannot be read the workflow must NOT call
  *     this script with an empty required list — it fails the step.
  *   - For each required context, take the LATEST record (per
- *     `completed_at`; falls back to `started_at`; falls back to "" for
- *     records that have neither). Rulesets evaluate the latest run per
+ *     `completed_at`; falls back to `started_at`; falls back to the
+ *     record `id` when a record carries no timestamps at all — that
+ *     only happens for a never-started run, and such a record then
+ *     supersedes timestamped ones, which fails the gate closed).
+ *     Rulesets evaluate the latest run per
  *     context — earlier runs are superseded. Refuse if that latest record
  *     is unfinished (status != "completed" or conclusion == null) OR its
  *     conclusion is in the failure set {failure, cancelled, timed_out,
@@ -134,7 +140,6 @@ function readStdin() {
  */
 export function decide(records, requiredContexts, selfExcluded = SELF_EXCLUDED_DEFAULT) {
   const selfSet = new Set(selfExcluded);
-  const reasons = [];
 
   if (!Array.isArray(records) || records.length === 0) {
     return {
@@ -143,69 +148,81 @@ export function decide(records, requiredContexts, selfExcluded = SELF_EXCLUDED_D
     };
   }
 
-  // Group records by name; per name, take the SINGLE latest record
-  // (by completed_at falling back to started_at falling back to id) for
-  // the verdict. Rulesets evaluate the latest run per context — an older
-  // queued or in_progress record is superseded by a newer completed one,
-  // and the verdict must match what the merge gate actually saw.
-  // Falling back past '' would let two records with no timestamp compete
-  // and produce the wrong latest; we use id as the ultimate tiebreaker.
-  //
-  // Records from different sources (check-runs vs commit statuses) keep
-  // distinct source-tinged ids so an accidental collision between a
-  // check-run's numeric id and a status's row id cannot make the older
-  // record win. Check-runs always carry a numeric id; statuses always
-  // carry their updated_at; the workflow tags the source explicitly.
-  const byName = new Map();
-  const orderKey = (r) => {
-    const stamp =
-      r.completed_at ?? r.started_at ?? `id:${r.id ?? ""}`;
-    return `${stamp}|${r._source ?? "check-runs"}`;
+  const bySource = new Map();
+  const orderKey = (r) => ({
+    timestamp: r.completed_at ?? r.started_at ?? null,
+    id: Number(r.id ?? -1),
+  });
+  const compareIds = (a, b) => {
+    const diff = a.id - b.id;
+    return Number.isNaN(diff) ? 0 : diff;
+  };
+  const compareOrder = (a, b) => {
+    if (a.timestamp === null && b.timestamp === null) return compareIds(a, b);
+    if (a.timestamp === null) return 1;
+    if (b.timestamp === null) return -1;
+    if (a.timestamp !== b.timestamp) return a.timestamp < b.timestamp ? -1 : 1;
+    return compareIds(a, b);
   };
   for (const r of records) {
     if (!r || typeof r.name !== "string") continue;
+    const source = typeof r.source === "string" && r.source !== "" ? r.source : "check-run";
+    let byName = bySource.get(source);
+    if (!byName) {
+      byName = new Map();
+      bySource.set(source, byName);
+    }
     const prev = byName.get(r.name);
-    if (!prev || orderKey(r) > orderKey(prev)) {
+    if (!prev) {
+      byName.set(r.name, r);
+      continue;
+    }
+    const comparison = compareOrder(orderKey(r), orderKey(prev));
+    if (
+      comparison > 0 ||
+      (comparison === 0 &&
+        r.conclusion !== "success" &&
+        prev.conclusion === "success")
+    ) {
       byName.set(r.name, r);
     }
   }
 
-  // Sort required contexts so reasons come out in a deterministic order —
-  // makes diffs readable and tests stable.
   const sortedRequired = [...requiredContexts].sort();
+  const reasons = [];
 
   for (const name of sortedRequired) {
     if (selfSet.has(name)) continue;
-    const record = byName.get(name);
-    if (!record) {
+    const populatedSources = [...bySource.keys()]
+      .filter((source) => bySource.get(source).has(name))
+      .sort();
+    if (populatedSources.length === 0) {
       reasons.push(`${name}: missing check-run on evaluated commit`);
       continue;
     }
-    const status = record.status ?? "completed";
-    const conclusion = record.conclusion ?? null;
-    if (status !== "completed" || conclusion === null) {
-      reasons.push(
-        `${name}: CI not finished (status=${status}, conclusion=${conclusion ?? "null"})`,
-      );
-      continue;
+    for (const source of populatedSources) {
+      const record = bySource.get(source).get(name);
+      const status = record.status ?? "completed";
+      const conclusion = record.conclusion ?? null;
+      if (status !== "completed" || conclusion === null) {
+        reasons.push(
+          `${name}: CI not finished (status=${status}, conclusion=${conclusion ?? "null"})`,
+        );
+        continue;
+      }
+      if (FAILURE_CONCLUSIONS.has(conclusion)) {
+        reasons.push(`${name}: ${conclusion}`);
+        continue;
+      }
+      if (!ALLOW_CONCLUSIONS.has(conclusion)) {
+        reasons.push(`${name}: ${conclusion} (not a green verdict)`);
+      }
     }
-    if (FAILURE_CONCLUSIONS.has(conclusion)) {
-      reasons.push(`${name}: ${conclusion}`);
-      continue;
-    }
-    if (!ALLOW_CONCLUSIONS.has(conclusion)) {
-      // `skipped` (path-filtered), `neutral` (superseded), and any unknown
-      // value are not verdicts. Fail closed so a required review with no
-      // real opinion cannot authorise a promotion.
-      reasons.push(`${name}: ${conclusion} (not a green verdict)`);
-      continue;
-    }
-    // success → green.
   }
 
   return reasons.length === 0
     ? { decision: "allow", reasons: [] }
-    : { decision: "refuse", reasons };
+    : { decision: "refuse", reasons: [...new Set(reasons)] };
 }
 
 async function main() {
