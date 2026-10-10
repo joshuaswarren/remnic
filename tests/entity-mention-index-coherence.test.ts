@@ -594,6 +594,91 @@ test("concurrent entity rebuilds share one scan", async () => {
   }
 });
 
+test("an aborted caller stops waiting on a shared entity rebuild", async () => {
+  const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-abort");
+  type MentionProbe = { generation: number };
+  let releaseScan: () => void = () => {};
+  try {
+    let mutation = 0;
+    const identity = () => ({ mentionEpoch: "1", entityMutation: String(mutation) });
+    const scopeKey = entityMentionScopeKey(undefined, [{ dir: memoryDir }], "abort-wait");
+    await resolveEntityMentionIndex<MentionProbe>({
+      scopeKey,
+      currentIdentity: identity,
+      buildFull: async () => ({ generation: 0 }),
+      rebuildEntities: async (previous) => previous,
+    });
+    mutation = 1;
+    let waiting = 0;
+    const scanGate = new Promise<void>((resolve) => {
+      releaseScan = resolve;
+    });
+    let markEntered: () => void = () => {};
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const rebuildEntities = async (previous: MentionProbe): Promise<MentionProbe> => {
+      waiting += 1;
+      markEntered();
+      await scanGate;
+      waiting -= 1;
+      return { generation: previous.generation + 1 };
+    };
+    const load = (signal: AbortSignal) =>
+      resolveEntityMentionIndex<MentionProbe>({
+        scopeKey,
+        currentIdentity: identity,
+        abortSignal: signal,
+        buildFull: async () => {
+          throw new Error("aborted entity rebuild must not full-scan");
+        },
+        rebuildEntities,
+      });
+    const rejectsSoon = async (pending: Promise<unknown>) => {
+      const result = await Promise.race([
+        pending.then(
+          () => "resolved" as const,
+          (err: unknown) => err
+        ),
+        new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 100)),
+      ]);
+      assert.equal(result instanceof Error && result.name === "AbortError", true);
+    };
+    const ownerSignal = new AbortController();
+    const waiterSignal = new AbortController();
+    const owner = load(ownerSignal.signal);
+    await entered;
+    const waiter = load(waiterSignal.signal);
+    waiterSignal.abort();
+    await rejectsSoon(waiter);
+    assert.equal(waiting, 1);
+    ownerSignal.abort();
+    await rejectsSoon(owner);
+    assert.equal(waiting, 1);
+    releaseScan();
+    await new Promise((resolveTimer) => setImmediate(resolveTimer));
+    let extra = 0;
+    const settled = await resolveEntityMentionIndex<MentionProbe>({
+      scopeKey,
+      currentIdentity: identity,
+      buildFull: async () => {
+        throw new Error("settled entity rebuild must not full-scan");
+      },
+      rebuildEntities: async (previous) => {
+        extra += 1;
+        return previous;
+      },
+    });
+    assert.equal(extra, 0);
+    assert.equal(waiting, 0);
+    assert.deepEqual(settled, { generation: 1 });
+  } finally {
+    releaseScan();
+    dropEntityMentionIndexCache();
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
 test("a cache clear during the first build does not publish that index", async () => {
   const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-clear-build");
   try {

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { raceAbort } from "./abort-error.js";
 import { entityMentionEpoch } from "./entity-mention-epoch.js";
 import { log } from "./logger.js";
 
@@ -12,7 +13,9 @@ import { log } from "./logger.js";
  * - metadata-only corpus bumps do not move the epoch, so the next recall hits
  * - entity-file changes rebuild from entity files before the recall returns,
  *   reusing memory snippets (no fact scan). A new entity is visible on that
- *   recall; its memory snippets arrive with the next full reconcile
+ *   recall; its memory snippets arrive with the next full reconcile. Callers
+ *   share one scan. One caller's abort stops that caller waiting and leaves
+ *   the scan running for the others
  * - memory create/edit/delete moves the epoch. The recall serves the last
  *   index immediately and one background reconcile runs, plus at most one
  *   follow-up if that scan overlaps a later write. A recall during either
@@ -272,7 +275,7 @@ export async function resolveEntityMentionIndex<T>(options: {
     throwIfMentionAborted(options.abortSignal);
     const pending = existing.entityJob;
     if (pending) {
-      await pending;
+      await raceAbort(pending, options.abortSignal, "entity mention rebuild aborted");
       continue;
     }
     const liveNow = options.currentIdentity();
@@ -285,24 +288,31 @@ export async function resolveEntityMentionIndex<T>(options: {
     existing.entityJob = gate;
     existing.token += 1;
     existing.again = false;
-    try {
-      // Shared scan: one caller's abort must not cancel the other recall.
-      const rebuilt = await options.rebuildEntities(existing.index as T, undefined);
-      const now = options.currentIdentity();
-      existing.index = rebuilt;
-      const epochStable = epochBefore === liveNow.mentionEpoch && epochBefore === now.mentionEpoch;
-      const mutationStable = mutationBefore === now.entityMutation;
-      existing.identity = {
-        entityMutation: mutationStable ? now.entityMutation : mutationBefore,
-        mentionEpoch: epochStable ? now.mentionEpoch : epochBefore,
-      };
-      if (existing.identity.mentionEpoch !== now.mentionEpoch) armRebuild(existing);
-      throwIfMentionAborted(options.abortSignal);
-      return rebuilt;
-    } finally {
-      if (existing.entityJob === gate) existing.entityJob = null;
-      release();
-    }
+    // Shared scan. This caller's abort stops its wait and leaves the scan
+    // running. Publish when the scan settles, even if this caller has left.
+    const scan = options.rebuildEntities(existing.index as T, undefined);
+    void scan
+      .then(
+        (rebuilt) => {
+          const now = options.currentIdentity();
+          existing.index = rebuilt;
+          const epochStable = epochBefore === liveNow.mentionEpoch && epochBefore === now.mentionEpoch;
+          const mutationStable = mutationBefore === now.entityMutation;
+          existing.identity = {
+            entityMutation: mutationStable ? now.entityMutation : mutationBefore,
+            mentionEpoch: epochStable ? now.mentionEpoch : epochBefore,
+          };
+          if (existing.identity.mentionEpoch !== now.mentionEpoch) armRebuild(existing);
+        },
+        () => {},
+      )
+      .finally(() => {
+        if (existing.entityJob === gate) existing.entityJob = null;
+        release();
+      });
+    const rebuilt = await raceAbort(scan, options.abortSignal, "entity mention rebuild aborted");
+    throwIfMentionAborted(options.abortSignal);
+    return rebuilt;
   }
   if (existing.identity.mentionEpoch !== live.mentionEpoch) {
     armRebuild(existing);
