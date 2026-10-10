@@ -324,3 +324,69 @@ test("a failed epoch append still advances while the sentinel file is readable",
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("access-count flushes do not move the mention epoch", async () => {
+  const { memoryDir, workspaceDir, storage } = await buildHarness("engram-entity-epoch-access");
+  try {
+    const written = await storage.writeMemory("fact", "Cedar Lattice tracks harbor lights from the pier.", {});
+    const epoch = entityMentionEpoch.current(storage.dir);
+    const corpus = storage.getMemoryCorpusVersion();
+    const updated = await storage.flushAccessTracking([
+      {
+        memoryId: written.id,
+        newCount: 4,
+        lastAccessed: "2026-10-10T00:00:00.000Z",
+      },
+    ]);
+    assert.equal(updated, 1);
+    assert.equal(entityMentionEpoch.current(storage.dir), epoch);
+    assert.ok(storage.getMemoryCorpusVersion() > corpus);
+  } finally {
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
+test("an entity write during rebuild is retried on the next recall", async () => {
+  const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-overlap");
+  try {
+    let mutation = 0;
+    const identity = () => ({ mentionEpoch: "1", entityMutation: String(mutation) });
+    const scopeKey = entityMentionScopeKey(undefined, [{ dir: memoryDir }], "rev");
+    let rebuilds = 0;
+    await resolveEntityMentionIndex({
+      scopeKey,
+      currentIdentity: identity,
+      buildFull: async () => ({ generation: 0 }),
+      rebuildEntities: async (previous) => previous,
+    });
+    mutation = 1;
+    await resolveEntityMentionIndex({
+      scopeKey,
+      currentIdentity: identity,
+      buildFull: async () => {
+        throw new Error("entity overlap must not full-scan");
+      },
+      rebuildEntities: async (previous) => {
+        rebuilds += 1;
+        mutation = 2;
+        return { ...previous, generation: 1 };
+      },
+    });
+    assert.equal(rebuilds, 1);
+    await resolveEntityMentionIndex({
+      scopeKey,
+      currentIdentity: identity,
+      buildFull: async () => {
+        throw new Error("entity overlap must not full-scan");
+      },
+      rebuildEntities: async (previous) => {
+        rebuilds += 1;
+        return { ...previous, generation: 2 };
+      },
+    });
+    assert.equal(rebuilds, 2);
+  } finally {
+    dropEntityMentionIndexCache();
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});

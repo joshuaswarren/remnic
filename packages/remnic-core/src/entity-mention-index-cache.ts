@@ -244,13 +244,15 @@ export async function resolveEntityMentionIndex<T>(options: {
     const token = existing.token;
     existing.again = false;
     const epochBefore = existing.identity.mentionEpoch;
+    const mutationBefore = live.entityMutation;
     const rebuilt = await options.rebuildEntities(existing.index as T, options.abortSignal);
     if (existing.token !== token) return existing.index as T;
     const now = options.currentIdentity();
     existing.index = rebuilt;
     const epochStable = epochBefore === live.mentionEpoch && epochBefore === now.mentionEpoch;
+    const mutationStable = mutationBefore === now.entityMutation;
     existing.identity = {
-      entityMutation: now.entityMutation,
+      entityMutation: mutationStable ? now.entityMutation : mutationBefore,
       mentionEpoch: epochStable ? now.mentionEpoch : epochBefore,
     };
     if (existing.identity.mentionEpoch !== now.mentionEpoch) startRebuild(existing);

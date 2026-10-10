@@ -2440,7 +2440,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * patchHotMemoriesCache refuse to re-key its locally patched corpus at a
    * version already reflecting a peer's still-unread concurrent append.
    */
-  private bumpMemoryCorpusVersionExclusive(): { produced: number; exclusive: boolean } {
+  private bumpMemoryCorpusVersionExclusive(opts?: { indexedText?: boolean }): { produced: number; exclusive: boolean } {
     const filePath = this.versionFilePath("memory-corpus");
     try {
       mkdirSync(this.stateDir, { recursive: true });
@@ -2453,13 +2453,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       appendFileSync(filePath, "x");
       const produced = statSync(filePath).size;
       StorageManager.memoryCorpusVersionByDir.set(this.baseDir, produced);
-      if (!entityMentionEpoch.suppressed()) entityMentionEpoch.bump(this.baseDir);
+      if (opts?.indexedText !== false && !entityMentionEpoch.suppressed()) entityMentionEpoch.bump(this.baseDir);
       // Exclusive iff exactly our single byte landed between the two stats.
       return { produced, exclusive: produced === before + 1 };
     } catch {
       const next = (StorageManager.memoryCorpusVersionByDir.get(this.baseDir) ?? 0) + 1;
       StorageManager.memoryCorpusVersionByDir.set(this.baseDir, next);
-      if (!entityMentionEpoch.suppressed()) entityMentionEpoch.bump(this.baseDir);
+      if (opts?.indexedText !== false && !entityMentionEpoch.suppressed()) entityMentionEpoch.bump(this.baseDir);
       return { produced: next, exclusive: true };
     }
   }
@@ -6591,7 +6591,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       // produced version so this process stays warm — only when our bump was
       // exclusive and still the current sentinel; otherwise a peer also wrote
       // and we must let the next read rescan.
-      const { produced, exclusive } = this.bumpMemoryCorpusVersionExclusive();
+      const { produced, exclusive } = this.bumpMemoryCorpusVersionExclusive({ indexedText: false });
       // Drop the in-flight read slot after the bump (parity with
       // patchHotMemoriesCache, Cursor Medium #1902): a readAllMemories scan that
       // started before the flush would otherwise keep awaiting a pre-flush scan
