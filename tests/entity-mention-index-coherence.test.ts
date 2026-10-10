@@ -348,24 +348,26 @@ test("access-count flushes do not move the mention epoch", async () => {
 
 test("an entity write during rebuild is retried on the next recall", async () => {
   const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-overlap");
+  type MentionProbe = { generation: number };
   try {
     let mutation = 0;
     const identity = () => ({ mentionEpoch: "1", entityMutation: String(mutation) });
     const scopeKey = entityMentionScopeKey(undefined, [{ dir: memoryDir }], "rev");
     let rebuilds = 0;
-    await resolveEntityMentionIndex({
+    const refuseFullScan = async (): Promise<MentionProbe> => {
+      throw new Error("entity overlap must not full-scan");
+    };
+    await resolveEntityMentionIndex<MentionProbe>({
       scopeKey,
       currentIdentity: identity,
       buildFull: async () => ({ generation: 0 }),
       rebuildEntities: async (previous) => previous,
     });
     mutation = 1;
-    await resolveEntityMentionIndex({
+    await resolveEntityMentionIndex<MentionProbe>({
       scopeKey,
       currentIdentity: identity,
-      buildFull: async () => {
-        throw new Error("entity overlap must not full-scan");
-      },
+      buildFull: refuseFullScan,
       rebuildEntities: async (previous) => {
         rebuilds += 1;
         mutation = 2;
@@ -373,12 +375,10 @@ test("an entity write during rebuild is retried on the next recall", async () =>
       },
     });
     assert.equal(rebuilds, 1);
-    await resolveEntityMentionIndex({
+    await resolveEntityMentionIndex<MentionProbe>({
       scopeKey,
       currentIdentity: identity,
-      buildFull: async () => {
-        throw new Error("entity overlap must not full-scan");
-      },
+      buildFull: refuseFullScan,
       rebuildEntities: async (previous) => {
         rebuilds += 1;
         return { ...previous, generation: 2 };
