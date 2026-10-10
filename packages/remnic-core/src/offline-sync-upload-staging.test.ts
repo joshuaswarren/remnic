@@ -294,11 +294,31 @@ test("writeFileChunks hook receives every chunk in order without a local tmp", a
   await cleanupOfflineUpload(upload);
 });
 
-test("staging for different content keys never collides", async (t) => {
+test("concurrent staging keeps identical content at different paths isolated", async (t) => {
   const { root, abs } = await newRoot();
   t.after(() => rm(abs, { recursive: true, force: true }));
-  await stagedUpload({ root, abs, relPath: "namespaces/alpha/facts/one.md", content: Buffer.from("11113333"), chunkSize: 4 });
-  await stagedUpload({ root, abs, relPath: "namespaces/alpha/facts/two.md", content: Buffer.from("22224444"), chunkSize: 4 });
-  assert.equal(await readFile(path.join(abs, "namespaces/alpha/facts/one.md"), "utf8"), "11113333");
-  assert.equal(await readFile(path.join(abs, "namespaces/alpha/facts/two.md"), "utf8"), "22224444");
+  const content = Buffer.from("12345678");
+  const shared = { root, sourceId: "source-1", ...sha256Bytes(content) };
+  const firstPath = "namespaces/alpha/facts/one.md";
+  const secondPath = "namespaces/alpha/facts/two.md";
+  const first = await writeOfflineUploadChunk({
+    ...shared, relPath: firstPath, offset: 0, content: content.subarray(0, 4),
+  });
+  const second = await writeOfflineUploadChunk({
+    ...shared, relPath: secondPath, offset: 0, content: content.subarray(0, 4),
+  });
+  await writeOfflineUploadChunk({
+    ...shared, relPath: firstPath, offset: 4, content: content.subarray(4),
+  });
+  assert.deepEqual(await digestOfflineUploadStagingContent({ root, upload: first }), sha256Bytes(content));
+  await writeSafeFileFromUpload(root, firstPath, first);
+  await cleanupOfflineUpload(first);
+  await writeOfflineUploadChunk({
+    ...shared, relPath: secondPath, offset: 4, content: content.subarray(4),
+  });
+  assert.deepEqual(await digestOfflineUploadStagingContent({ root, upload: second }), sha256Bytes(content));
+  await writeSafeFileFromUpload(root, secondPath, second);
+  await cleanupOfflineUpload(second);
+  assert.deepEqual(await readFile(path.join(abs, firstPath)), content);
+  assert.deepEqual(await readFile(path.join(abs, secondPath)), content);
 });
