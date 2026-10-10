@@ -346,6 +346,87 @@ test("access-count flushes do not move the mention epoch", async () => {
   }
 });
 
+test("a frontmatter content replacement moves the mention epoch", async () => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-epoch-body");
+  try {
+    const canonical = await storage.writeEntity("Cedar Lattice", "project", [
+      "Cedar Lattice tracks harbor lights.",
+    ]);
+    const written = await storage.writeMemory(
+      "fact",
+      "Cedar Lattice tracks harbor lights from the pier.",
+      { entityRef: canonical },
+    );
+    assert.match((await recall(config, storage, "Who is Cedar Lattice?")) ?? "", /Cedar Lattice/);
+    const scopeKey = scopeKeyFor(storage.dir);
+    const epoch = entityMentionEpoch.current(storage.dir);
+    const wrote = await storage.writeMemoryFrontmatter(
+      { ...written.memory, content: "Cedar Lattice keeps the marker phrase violet-edit-441." },
+      { updated: "2026-10-10T02:00:00.000Z" },
+    );
+    assert.equal(wrote, true);
+    assert.notEqual(entityMentionEpoch.current(storage.dir), epoch);
+    const observed = await recall(config, storage, "Who is Cedar Lattice?");
+    assert.equal(typeof observed, "string");
+    await settleEntityMentionIndex(scopeKey);
+    const settled = await recall(config, storage, "Who is Cedar Lattice?");
+    assert.match(settled ?? "", /violet-edit-441/);
+    const after = entityMentionEpoch.current(storage.dir);
+    const refreshed = await storage.getMemoryById(written.id);
+    assert.ok(refreshed);
+    const heat = await storage.writeMemoryFrontmatter(refreshed, {
+      heatScore: 0.2,
+      decayScore: 0.1,
+      lastValidatedAt: "2026-10-10T03:00:00.000Z",
+    });
+    assert.equal(heat, true);
+    assert.equal(entityMentionEpoch.current(storage.dir), after);
+  } finally {
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
+test("overlapping mention-epoch bumps do not chain full rebuilds", async () => {
+  const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-chain");
+  try {
+    let epoch = 0;
+    let builds = 0;
+    const scopeKey = entityMentionScopeKey(undefined, [{ dir: memoryDir }], "chain");
+    const identity = () => ({ mentionEpoch: String(epoch), entityMutation: "0" });
+    const buildFull = async (): Promise<{ generation: number }> => {
+      builds += 1;
+      if (builds > 6) throw new Error(`rebuild chain exceeded 6 (${builds})`);
+      if (builds > 1) epoch += 1;
+      return { generation: builds };
+    };
+    const resolve = () =>
+      resolveEntityMentionIndex({
+        scopeKey,
+        currentIdentity: identity,
+        buildFull,
+        rebuildEntities: async (previous) => previous,
+      });
+    const waitForBuilds = async (target: number) => {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        if (builds >= target) return;
+        await new Promise((resolveTimer) => setTimeout(resolveTimer, 5));
+      }
+    };
+    await resolve();
+    assert.equal(builds, 1);
+    epoch += 1;
+    await resolve();
+    await waitForBuilds(3);
+    assert.equal(builds, 3);
+    await resolve();
+    await waitForBuilds(5);
+    assert.equal(builds, 5);
+  } finally {
+    dropEntityMentionIndexCache();
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
 test("an entity write during rebuild is retried on the next recall", async () => {
   const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-overlap");
   type MentionProbe = { generation: number };

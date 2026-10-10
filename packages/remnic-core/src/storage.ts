@@ -5379,9 +5379,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       [buildCapturePathLockIdentity(expected.path), oldIdentity, newIdentity]
     );
   }
-  /**
-   * Update frontmatter fields without changing memory content. Returns false when the memory is not found.
-   */
+  /** Frontmatter patch. A replaced body still moves the mention epoch. */
   private static readonly frontmatterBody = StorageManager.prototype.writeMemoryFrontmatter;
   async writeMemoryFrontmatter(
     memory: MemoryFile,
@@ -5390,9 +5388,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     mentionReentry?: boolean
   ): Promise<boolean> {
     const beforeStatus = memory.frontmatter.status ?? "active";
-    // Canonicalize the EFFECTIVE merged entityRef (issue #2213) — an
-    // unrelated patch must not rewrite an inherited legacy ref back out.
-    // #2807: `patch.updated` is business time, persisted VERBATIM.
+    // Canonicalize merged entityRef (#2213). patch.updated is business time (#2807).
     const resolveIds = this.currentHistoricalIds();
     const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
       { ...memory.frontmatter, ...patch },
@@ -5400,8 +5396,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     );
     const refIds = typeof updated.entityRef === "string" ? resolveIds : null;
     const afterStatus = updated.status ?? "active";
-    if (!mentionReentry && entityMentionEpoch.neutral(memory.frontmatter, updated))
-      return entityMentionEpoch.hold(() => StorageManager.frontmatterBody.call(this, memory, patch, lifecycle, true));
+    // Body text lives on the memory object, not the patch. Hold only when the
+    // file already has this body, so a content edit cannot stay under suppression.
+    if (!mentionReentry && entityMentionEpoch.neutral(memory.frontmatter, updated)) {
+      const persisted = await this.readMemoryByPath(memory.path);
+      if (persisted?.content === memory.content)
+        return entityMentionEpoch.hold(() => StorageManager.frontmatterBody.call(this, memory, patch, lifecycle, true));
+    }
 
     const fileContent = `${serializeFrontmatter(this.withOkfType(updated))}\n\n${memory.content}\n`;
     await this.writeTombstoneBlockedFrontmatter(memory, fileContent, updated, async () => {
@@ -5449,9 +5450,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       lifecycle?.ruleVersion
     );
     if (beforeStatus !== afterStatus) {
-      // Status/lifecycle change must bump memory-status so the version-keyed
-      // entity/derived caches and peer processes observe it (issue #1902:
-      // restored — corpus bump alone doesn't cover status-derived views).
+      // Status change bumps memory-status; a corpus bump does not cover it (#1902).
       this.bumpMemoryStatusVersion();
     }
     return true;

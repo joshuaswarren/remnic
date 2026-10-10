@@ -14,8 +14,10 @@ import { log } from "./logger.js";
  *   reusing memory snippets (no fact scan). A new entity is visible on that
  *   recall; its memory snippets arrive with the next full reconcile
  * - memory create/edit/delete moves the epoch. The recall serves the last
- *   index immediately and one background reconcile runs. After writes quiesce
- *   and `settleEntityMentionIndex` finishes, the index matches a full rebuild
+ *   index immediately and one background reconcile runs, plus at most one
+ *   follow-up if that scan overlaps a later write. Further rescans wait for
+ *   the next recall. After writes quiesce and `settleEntityMentionIndex`
+ *   finishes, the index matches a full rebuild
  * - secure-store key, alias map, and native revision stay in the key, so a
  *   change is a miss and awaits a full rebuild. A locked store never reads
  *   another key's plaintext
@@ -43,6 +45,7 @@ type Slot = {
   token: number;
   rebuild: Promise<void> | null;
   again: boolean;
+  followUps: number;
   currentIdentity: () => EntityMentionIdentity;
   buildFull: (abortSignal?: AbortSignal) => Promise<unknown>;
 };
@@ -111,6 +114,11 @@ function evictSameFamily(scopeKey: string): void {
   }
 }
 
+function armRebuild(slot: Slot): void {
+  slot.followUps = 1;
+  startRebuild(slot);
+}
+
 function startRebuild(slot: Slot): void {
   if (slot.rebuild) {
     slot.again = true;
@@ -142,8 +150,12 @@ function startRebuild(slot: Slot): void {
     })
     .finally(() => {
       if (slot.rebuild === handle.pending) slot.rebuild = null;
-      if (!slot.again) return;
+      // One automatic follow-up per caller-started rebuild. A store that keeps
+      // changing during every scan waits for the next recall (or settle) instead
+      // of chaining full scans with nobody waiting.
+      if (!slot.again || slot.followUps <= 0) return;
       slot.again = false;
+      slot.followUps -= 1;
       startRebuild(slot);
     });
   slot.rebuild = handle.pending;
@@ -230,11 +242,12 @@ export async function resolveEntityMentionIndex<T>(options: {
       token: 0,
       rebuild: null,
       again: false,
+      followUps: 0,
       currentIdentity: options.currentIdentity,
       buildFull: options.buildFull,
     };
     slots.set(options.scopeKey, slot);
-    if (!sameIdentity(started, ended)) startRebuild(slot);
+    if (!sameIdentity(started, ended)) armRebuild(slot);
     return index;
   }
   existing.currentIdentity = options.currentIdentity;
@@ -255,11 +268,11 @@ export async function resolveEntityMentionIndex<T>(options: {
       entityMutation: mutationStable ? now.entityMutation : mutationBefore,
       mentionEpoch: epochStable ? now.mentionEpoch : epochBefore,
     };
-    if (existing.identity.mentionEpoch !== now.mentionEpoch) startRebuild(existing);
+    if (existing.identity.mentionEpoch !== now.mentionEpoch) armRebuild(existing);
     return rebuilt;
   }
   if (existing.identity.mentionEpoch !== live.mentionEpoch) {
-    startRebuild(existing);
+    armRebuild(existing);
     return existing.index as T;
   }
   return existing.index as T;
