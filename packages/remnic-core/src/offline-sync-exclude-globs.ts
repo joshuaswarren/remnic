@@ -90,7 +90,10 @@ const DEFAULT_OFFLINE_SYNC_EXCLUDE_REGEXPS: readonly RegExp[] =
  */
 export function isEmbeddingGenerationMarkerPath(relPosix: string): boolean {
   const normalized = relPosix.includes("\\") ? relPosix.replaceAll("\\", "/") : relPosix;
-  return /(?:^|\/)state\/embeddings\.generation$/.test(normalized);
+  // Case-insensitive: on APFS/NTFS a differently cased path resolves to the
+  // same file, so `state/Embeddings.Generation` must be refused like the
+  // canonical spelling.
+  return /(?:^|\/)state\/embeddings\.generation$/i.test(normalized);
 }
 
 /**

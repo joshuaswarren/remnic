@@ -573,10 +573,16 @@ export class EmbeddingIndexFileStore {
   }
 
   /**
-   * Warm-cache stamp: the generation marker when present (stable only for a
-   * completed publication), else stat metadata for stores never published
-   * through this module — a directory stat alone aliases consecutive
-   * publications on coarse-tick filesystems and across inode reuse.
+   * Warm-cache stamp. A completed generation marker alone would freeze the
+   * stamp for a pre-marker writer in a rolling deployment (it publishes
+   * shard/index changes without updating the marker), so the marker is
+   * combined with the watched path's stat: the marker keeps consecutive
+   * publications distinct on coarse-tick filesystems, the stat keeps
+   * legacy writers visible. In-flight never repeats, forcing revalidation
+   * until a publication completes. Stores never published through this
+   * module keep the plain stat stamp — a directory stat alone aliases
+   * consecutive publications on coarse-tick filesystems and across inode
+   * reuse.
    */
   async identityStamp(): Promise<string> {
     const layout = await this.detectLayout();
@@ -593,7 +599,10 @@ export class EmbeddingIndexFileStore {
       // An in-flight marker must never produce a repeatable stamp: a probe
       // that cached one (completion write failed) must revalidate on every
       // later probe until a publication completes.
-      if (marker) return marker === GENERATION_MARKER_IN_FLIGHT ? `gen:${randomUUID()}` : `gen:${marker}`;
+      if (marker) {
+        if (marker === GENERATION_MARKER_IN_FLIGHT) return `gen:${randomUUID()}`;
+        return `gen:${marker}:${info.ino}:${info.mtimeMs}`;
+      }
       return `shard:${info.ino}:${info.mtimeMs}`;
     }
     if (layout === "legacy") {
@@ -606,8 +615,10 @@ export class EmbeddingIndexFileStore {
       });
       if (!info) return "rename-gap";
       const marker = await this.readGenerationMarker();
-      // Same in-flight rule as the sharded branch above.
-      if (marker) return marker === GENERATION_MARKER_IN_FLIGHT ? `gen:${randomUUID()}` : `gen:${marker}`;
+      if (marker) {
+        if (marker === GENERATION_MARKER_IN_FLIGHT) return `gen:${randomUUID()}`;
+        return `gen:${marker}:${info.ino}:${info.mtimeMs}`;
+      }
       return `legacy:${info.ino}:${info.mtimeMs}`;
     }
     return "empty";
@@ -851,6 +862,7 @@ export class EmbeddingIndexFileStore {
       // the destructive live-generation writes.
       await opts.fence?.();
       await this.beginGenerationMarker();
+      await opts.fence?.();
       for (const payload of payloads) {
         await this.writeAtomicFile(
           path.join(this.shardDir, shardFileName(payload.shardIndex)),
@@ -881,6 +893,7 @@ export class EmbeddingIndexFileStore {
       // destructive atomic write.
       await opts.fence?.();
       await this.beginGenerationMarker();
+      await opts.fence?.();
       await this.writeAtomicFile(this.indexPath, whole);
       await this.completeGenerationMarker();
       return;
@@ -1025,6 +1038,7 @@ export class EmbeddingIndexFileStore {
     await fence?.();
     // Publication barrier: in-flight before the renames, final at commit.
     await this.beginGenerationMarker();
+    await fence?.();
     let demoted = false;
     try {
       await stat(this.shardDir);

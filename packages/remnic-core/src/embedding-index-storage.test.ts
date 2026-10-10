@@ -10,7 +10,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { chmod, lstat, mkdtemp, mkdir, readFile, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { EmbeddingGenerationLockLostError } from "./embedding-generation-lock.js";
 import { EmbeddingIndexFileStore, EmbeddingIndexStorageError, type EmbeddingIndexStoreIo } from "./embedding-index-storage.js";
 
 const SHARD_FILE = JSON.stringify({
@@ -249,6 +250,187 @@ test("an in-flight marker never yields a repeatable stamp, so a cached probe alw
   }
 });
 
+
+test("a lock lost after the in-flight marker stops the swapped publication before the live renames", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-refence-swap-"));
+  const store = newStore(memoryDir);
+  try {
+    const stateDir = path.join(memoryDir, "state");
+    const shardDir = path.join(stateDir, "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    await writeFile(path.join(shardDir, "shard-0058.json"), SHARD_FILE);
+    await store.persist(
+      { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+      { touchedIds: ["mem-old"], memoryId: "mem-old" },
+    );
+
+    const stagingDir = path.join(stateDir, "embeddings.staging.tmp-peer");
+    await mkdir(stagingDir, { recursive: true });
+    await writeFile(
+      path.join(stagingDir, "shard-0058.json"),
+      JSON.stringify({
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: { "mem-peer": { vector: [0, 0], path: "facts/peer.md" } },
+      }),
+    );
+
+    let calls = 0;
+    const fence = async () => {
+      calls += 1;
+      if (calls >= 3) throw new EmbeddingGenerationLockLostError("test:lock");
+    };
+    await assert.rejects(
+      () => store.publishSwappedGeneration(stagingDir, fence),
+      (err: unknown) => err instanceof EmbeddingGenerationLockLostError,
+    );
+    assert.ok(calls >= 3, "the fence must be reasserted after the in-flight marker write");
+    assert.equal(
+      await readFile(path.join(shardDir, "shard-0058.json"), "utf-8"),
+      SHARD_FILE,
+      "the published generation is untouched: the renames never ran",
+    );
+    await stat(stagingDir);
+    assert.equal(
+      (await readFile(path.join(stateDir, "embeddings.generation"), "utf-8")).trim(),
+      "in-flight",
+      "the abort lands after the barrier's first half; the winning peer finalizes the marker",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("a lock lost after the in-flight marker stops the dirty-shard publication before the shard writes", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-refence-dirty-"));
+  const store = newStore(memoryDir);
+  try {
+    const stateDir = path.join(memoryDir, "state");
+    const shardDir = path.join(stateDir, "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    await writeFile(path.join(shardDir, "shard-0058.json"), SHARD_FILE);
+    await store.persist(
+      { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+      { touchedIds: ["mem-old"], memoryId: "mem-old" },
+    );
+
+    let calls = 0;
+    const fence = async () => {
+      calls += 1;
+      if (calls >= 2) throw new EmbeddingGenerationLockLostError("test:lock");
+    };
+    await assert.rejects(
+      () => store.persist(
+        { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" }, "mem-new": { vector: [0, 1], path: "facts/new.md" } } },
+        { touchedIds: ["mem-new"], memoryId: "mem-new", fence },
+      ),
+      (err: unknown) => err instanceof EmbeddingGenerationLockLostError,
+    );
+    assert.deepEqual(await readdir(shardDir), ["shard-0058.json"], "no shard byte moved after a lost lock");
+    assert.equal(await readFile(path.join(shardDir, "shard-0058.json"), "utf-8"), SHARD_FILE);
+    assert.equal(
+      (await readFile(path.join(stateDir, "embeddings.generation"), "utf-8")).trim(),
+      "in-flight",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("a lock lost after the in-flight marker stops the legacy publication before the index write", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-refence-legacy-"));
+  const store = newStore(memoryDir);
+  try {
+    let calls = 0;
+    const fence = async () => {
+      calls += 1;
+      if (calls >= 2) throw new EmbeddingGenerationLockLostError("test:lock");
+    };
+    await assert.rejects(
+      () => store.persist(
+        { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+        { fence },
+      ),
+      (err: unknown) => err instanceof EmbeddingGenerationLockLostError,
+    );
+    await assert.rejects(
+      () => readFile(path.join(memoryDir, "state", "embeddings.json"), "utf-8"),
+      (err: NodeJS.ErrnoException) => err.code === "ENOENT",
+    );
+    assert.equal(
+      (await readFile(path.join(memoryDir, "state", "embeddings.generation"), "utf-8")).trim(),
+      "in-flight",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+
+test("a pre-marker writer's shard publication moves the completed stamp", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-rolling-"));
+  const store = newStore(memoryDir);
+  try {
+    const shardDir = path.join(memoryDir, "state", "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    await writeFile(path.join(shardDir, "shard-0058.json"), SHARD_FILE);
+    await store.persist(
+      { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+      { touchedIds: ["mem-old"], memoryId: "mem-old" },
+    );
+    const stampBefore = await store.identityStamp();
+
+    await writeFile(
+      path.join(shardDir, "shard-0058.json"),
+      JSON.stringify({
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" }, "mem-peer": { vector: [0, 0], path: "facts/peer.md" } },
+      }),
+    );
+    await utimes(shardDir, 1_700_000_001.5, 1_700_000_001.5);
+    const stampAfter = await store.identityStamp();
+    assert.notEqual(stampAfter, stampBefore, "a pre-marker writer's publication must move an upgraded warm cache's stamp");
+    assert.equal(await store.identityStamp(), stampAfter, "the stamp stays stable while nothing changes");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("a pre-marker writer's legacy publication moves the completed stamp", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-rolling-legacy-"));
+  const store = newStore(memoryDir);
+  try {
+    const stateDir = path.join(memoryDir, "state");
+    await store.persist(
+      { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+    );
+    assert.equal(await store.detectLayout(), "legacy");
+    const stampBefore = await store.identityStamp();
+
+    const indexPath = path.join(stateDir, "embeddings.json");
+    const tempPath = `${indexPath}.tmp-peer`;
+    await writeFile(
+      tempPath,
+      JSON.stringify({
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" }, "mem-peer": { vector: [0, 0], path: "facts/peer.md" } },
+      }),
+    );
+    await rename(tempPath, indexPath);
+    await utimes(indexPath, 1_700_000_001.5, 1_700_000_001.5);
+    const stampAfter = await store.identityStamp();
+    assert.notEqual(stampAfter, stampBefore, "a pre-marker writer's publication must move an upgraded warm cache's stamp");
+    assert.equal(await store.identityStamp(), stampAfter, "the stamp stays stable while nothing changes");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
 test("recovering an interrupted replacement finalizes the marker on the restored generation", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-recovery-"));
   const store = newStore(memoryDir);
@@ -315,7 +497,12 @@ test("a failed publication's rollback finalizes the marker on the restored gener
   }
 });
 
-test("a failed recovery rollback keeps the marker in-flight and a later recovery finalizes it", async () => {
+test("a failed recovery rollback keeps the marker in-flight and a later recovery finalizes it", {
+  skip:
+    process.platform === "win32" || process.getuid?.() === 0
+      ? "directory permissions are not enforced for this user/platform"
+      : false,
+}, async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-rollbackfail-"));
   const store = newStore(memoryDir);
   try {

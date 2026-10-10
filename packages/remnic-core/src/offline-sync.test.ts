@@ -26,6 +26,7 @@ import {
   summarizeOfflineSyncPendingFiles,
 } from "./offline-sync.js";
 import { isEncryptedFile } from "./secure-store/secure-fs.js";
+import { isEmbeddingGenerationMarkerPath } from "./offline-sync-exclude-globs.js";
 import { StorageManager } from "./storage.js";
 import { parseConfig } from "./config.js";
 import { EmbeddingFallback } from "./embedding-fallback.js";
@@ -682,6 +683,56 @@ test("offline sync apply never lets an incoming marker overwrite the local one",
     assert.equal(await readUtf8(root, "state/embeddings.generation"), localMarker);
     assert.equal(deletionProbe.deleted, 0);
     assert.deepEqual(deletionProbe.conflicts, [], "a marker absence is node-local, never a delete instruction or conflict");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync apply refuses differently cased marker paths on case-insensitive filesystems", async () => {
+  const root = await tempDir("remnic-offline-emb3176-marker-case");
+  try {
+    const localMarker = "0d9d2c11-5f6e-4a0e-8f1a-2b3c4d5e6f70";
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "state/embeddings.generation", localMarker);
+
+    assert.equal(isEmbeddingGenerationMarkerPath("state/embeddings.generation"), true);
+    assert.equal(isEmbeddingGenerationMarkerPath("state/Embeddings.Generation"), true, "APFS/NTFS resolve this to the same file");
+    assert.equal(isEmbeddingGenerationMarkerPath("State/Embeddings.Generation"), true);
+    assert.equal(isEmbeddingGenerationMarkerPath("state/embeddings.json"), false);
+
+    const hostile = "in-flight";
+    const markerEntry = (relPath: string) => ({
+      path: relPath,
+      sha256: createHash("sha256").update(hostile).digest("hex"),
+      bytes: Buffer.byteLength(hostile),
+      mtimeMs: 0,
+      contentBase64: Buffer.from(hostile).toString("base64"),
+    });
+    const result = await applyOfflineSyncSnapshot({
+      root,
+      snapshot: {
+        format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+        schemaVersion: 1 as const,
+        createdAt: new Date().toISOString(),
+        sourceId: "remote",
+        includeTranscripts: true,
+        files: [
+          {
+            path: "facts/b.md",
+            sha256: createHash("sha256").update("beta").digest("hex"),
+            bytes: Buffer.byteLength("beta"),
+            mtimeMs: 0,
+            contentBase64: Buffer.from("beta").toString("base64"),
+          },
+          markerEntry("state/Embeddings.Generation"),
+        ],
+      },
+      baseFiles: [],
+    });
+    assert.equal(await readUtf8(root, "state/embeddings.generation"), localMarker, "the canonical local marker survives a cased incoming copy");
+    assert.equal(await exists(root, "state/Embeddings.Generation"), false, "a cased marker path is refused node-local, never written");
+    assert.equal(await exists(root, "facts/b.md"), true, "unrelated incoming files still apply");
+    assert.deepEqual(result.conflicts, []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
