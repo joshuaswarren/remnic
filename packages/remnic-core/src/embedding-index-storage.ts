@@ -14,6 +14,7 @@
  * caching or provider logic (that lives in `embedding-fallback.ts`).
  */
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { constants as bufferConstants } from "node:buffer";
 import { lstat, mkdir, mkdtemp, realpath, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { log } from "./logger.js";
@@ -164,6 +165,21 @@ function shardFileName(shardIndex: number): string {
 function replacementBackupPath(shardDir: string): string {
   return path.join(path.dirname(shardDir), "embeddings.pre-replace.tmp");
 }
+
+/**
+ * Warm-cache generation marker (`<stateDir>/embeddings.generation`).
+ * Two-phase publication barrier: in-flight before a publication's first
+ * destructive write, fresh unique value after its last write. A stamp is
+ * therefore stable only for a completed generation — readers can never
+ * cache a stamp that stays stable while generation bytes change, and an
+ * in-flight stamp never repeats, so probes cached during a failed
+ * completion keep revalidating (PR #3176 codex P2). Plain fs like the
+ * status file.
+ */
+const GENERATION_MARKER_BASENAME = "embeddings.generation";
+
+/** Reserved in-flight marker value; never equals a completion marker. */
+const GENERATION_MARKER_IN_FLIGHT = "in-flight";
 
 /**
  * Stable FNV-1a shard assignment: an entry always hashes to the same shard,
@@ -469,7 +485,9 @@ export class EmbeddingIndexFileStore {
    * the published position after an interrupted replacement. Returns true
    * when a rollback happened. Only fires in the actual rename gap
    * (published directory absent); callers must invalidate any cached index
-   * view when this returns true.
+   * view when this returns true. A successful rollback finalizes the
+   * generation marker strictly: a failed completion write fails the
+   * recovery instead of leaving every search reloading forever.
    */
   async recoverIfInterrupted(fence?: EmbeddingGenerationFence): Promise<boolean> {
     // Only the rename gap (published directory absent) is recoverable. When
@@ -492,6 +510,7 @@ export class EmbeddingIndexFileStore {
     // The rollback rename is destructive: reassert lock ownership first.
     await fence?.();
     await rename(backupPath, this.shardDir);
+    await this.writeGenerationMarker(randomUUID());
     log.warn(
       `embedding index: recovered interrupted replacement; former generation restored from ${backupPath}`,
     );
@@ -512,6 +531,97 @@ export class EmbeddingIndexFileStore {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return "empty";
       throw err;
     }
+  }
+
+  /** Barrier first half: strict, so bytes can never change under a stable stamp. */
+  private async beginGenerationMarker(): Promise<void> {
+    await this.writeGenerationMarker(GENERATION_MARKER_IN_FLIGHT);
+  }
+
+  /**
+   * Barrier second half: written after the last content write. Best-effort:
+   * a failure leaves the in-flight marker, whose stamp identityStamp()
+   * never repeats, so cached probes revalidate on every search until a
+   * publication completes.
+   */
+  private async completeGenerationMarker(): Promise<void> {
+    await this.writeGenerationMarker(randomUUID()).catch((err) => {
+      log.warn(`embedding index: could not write generation completion marker: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  private async writeGenerationMarker(value: string): Promise<void> {
+    await this.writeAtomicFile(
+      path.join(path.dirname(this.shardDir), GENERATION_MARKER_BASENAME),
+      value,
+      { bypassSecureIo: true },
+    );
+  }
+
+  /** Marker value, or null when absent/unreadable (pre-marker stores keep the stat stamp). */
+  private async readGenerationMarker(): Promise<string | null> {
+    try {
+      const raw = await readFile(
+        path.join(path.dirname(this.shardDir), GENERATION_MARKER_BASENAME),
+        "utf-8",
+      );
+      const value = raw.trim();
+      return value.length > 0 ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Warm-cache stamp. A completed generation marker alone would freeze the
+   * stamp for a pre-marker writer in a rolling deployment (it publishes
+   * shard/index changes without updating the marker), so the marker is
+   * combined with the watched path's stat: the marker keeps consecutive
+   * publications distinct on coarse-tick filesystems, the stat keeps
+   * legacy writers visible. In-flight never repeats, forcing revalidation
+   * until a publication completes. Stores never published through this
+   * module keep the plain stat stamp — a directory stat alone aliases
+   * consecutive publications on coarse-tick filesystems and across inode
+   * reuse.
+   */
+  async identityStamp(): Promise<string> {
+    const layout = await this.detectLayout();
+    if (layout === "sharded") {
+      const info = await lstat(this.shardDir).catch((err) => {
+        // SAFETY: only the errno code is inspected; any other rejection shape rethrows uninterpreted.
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw new EmbeddingIndexStorageError(
+          `cannot stat embedding index shard directory ${this.shardDir}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+      if (!info) return "rename-gap";
+      const marker = await this.readGenerationMarker();
+      // An in-flight marker must never produce a repeatable stamp: a probe
+      // that cached one (completion write failed) must revalidate on every
+      // later probe until a publication completes.
+      if (marker) {
+        if (marker === GENERATION_MARKER_IN_FLIGHT) return `gen:${randomUUID()}`;
+        return `gen:${marker}:${info.ino}:${info.mtimeMs}`;
+      }
+      return `shard:${info.ino}:${info.mtimeMs}`;
+    }
+    if (layout === "legacy") {
+      const info = await stat(this.indexPath).catch((err) => {
+        // SAFETY: only the errno code is inspected; any other rejection shape rethrows uninterpreted.
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw new EmbeddingIndexStorageError(
+          `cannot stat embedding index file ${this.indexPath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+      if (!info) return "rename-gap";
+      const marker = await this.readGenerationMarker();
+      if (marker) {
+        if (marker === GENERATION_MARKER_IN_FLIGHT) return `gen:${randomUUID()}`;
+        return `gen:${marker}:${info.ino}:${info.mtimeMs}`;
+      }
+      return `legacy:${info.ino}:${info.mtimeMs}`;
+    }
+    return "empty";
   }
 
   /** Header identity of the authoritative generation, read leniently. */
@@ -751,6 +861,8 @@ export class EmbeddingIndexFileStore {
       // Serialization is done: reassert lock ownership immediately before
       // the destructive live-generation writes.
       await opts.fence?.();
+      await this.beginGenerationMarker();
+      await opts.fence?.();
       for (const payload of payloads) {
         await this.writeAtomicFile(
           path.join(this.shardDir, shardFileName(payload.shardIndex)),
@@ -764,6 +876,7 @@ export class EmbeddingIndexFileStore {
           await rm(path.join(this.shardDir, shardFileName(shardIndex)), { force: true });
         }
       }
+      await this.completeGenerationMarker();
       return;
     }
 
@@ -779,7 +892,10 @@ export class EmbeddingIndexFileStore {
       // Serialized above: reassert lock ownership immediately before the
       // destructive atomic write.
       await opts.fence?.();
+      await this.beginGenerationMarker();
+      await opts.fence?.();
       await this.writeAtomicFile(this.indexPath, whole);
+      await this.completeGenerationMarker();
       return;
     }
 
@@ -920,6 +1036,9 @@ export class EmbeddingIndexFileStore {
     // delay between the cleanup and the rename still allows a stale-break,
     // and publishing now would clobber the peer's write.
     await fence?.();
+    // Publication barrier: in-flight before the renames, final at commit.
+    await this.beginGenerationMarker();
+    await fence?.();
     let demoted = false;
     try {
       await stat(this.shardDir);
@@ -931,9 +1050,19 @@ export class EmbeddingIndexFileStore {
     try {
       await rename(stagingDir, this.shardDir);
     } catch (err) {
-      if (demoted) await rename(backupPath, this.shardDir).catch(() => undefined);
+      if (demoted) {
+        try {
+          await rename(backupPath, this.shardDir);
+          await this.completeGenerationMarker();
+        } catch (rollbackErr) {
+          log.warn(`embedding index: publication rollback did not restore the generation; marker stays in-flight: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`);
+        }
+      } else {
+        await this.completeGenerationMarker();
+      }
       throw err;
     }
+    await this.completeGenerationMarker();
     await rm(backupPath, { recursive: true, force: true }).catch((err) => {
       log.warn(`embedding index: could not remove replacement backup ${backupPath}: ${err}`);
     });
