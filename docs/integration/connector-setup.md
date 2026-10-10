@@ -22,6 +22,8 @@ Verify it's running:
 curl -H "Authorization: Bearer $REMNIC_AUTH_TOKEN" http://localhost:4318/engram/v1/health
 ```
 
+Memory scope: a connector that omits the optional `X-Engram-Namespace` header shares the daemon's default namespace — the same namespace its REST hooks use — on both MCP and HTTP surfaces (#3166). Set the header only to scope a connector to a project/team namespace on a namespaces-enabled daemon; explicit namespaces are always validated strictly.
+
 ---
 
 ## Claude Code
