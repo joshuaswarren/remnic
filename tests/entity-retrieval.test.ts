@@ -18,6 +18,13 @@ import { StorageManager, normalizeEntityName } from "@remnic/core/storage";
 import { SecureStoreLockedError } from "@remnic/core/secure-store/index";
 import type { PluginConfig, TranscriptEntry } from "@remnic/core/types";
 
+async function rmStore(dir: string): Promise<void> {
+  // A recall can leave one background mention reconcile writing state/ after
+  // the test returns. Wait for it, then retry the delete if a file lands mid-rm.
+  await settleEntityMentionIndex().catch(() => undefined);
+  await rm(dir, { recursive: true, force: true, maxRetries: 5 });
+}
+
 async function buildHarness(prefix: string, overrides: Record<string, unknown> = {}) {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), `${prefix}-memory-`));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), `${prefix}-workspace-`));
@@ -112,7 +119,7 @@ test("entity retrieval requires a case signal for short Latin aliases in unprefi
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-short-latin");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -134,7 +141,7 @@ test("entity retrieval resolves explicit canonical and alias mentions in Japanes
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-direct");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -169,7 +176,7 @@ test("entity retrieval preserves migrated canonical memory links after aliases a
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-alias-removal");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -206,7 +213,7 @@ test("entity retrieval resolves non-ASCII canonical and alias mentions without p
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-names");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -250,7 +257,7 @@ test("entity retrieval rejects Japanese name prefixes before kana words", async 
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-prefix");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -290,7 +297,7 @@ test("entity retrieval rejects Japanese suffix aliases inside names while preser
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-suffix");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -359,7 +366,7 @@ test("entity retrieval resolves Korean grammatical particles after Unicode menti
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-korean-names");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -399,7 +406,7 @@ test("entity retrieval rejects Korean suffix names preceded by particle-like syl
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-korean-suffix");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -430,7 +437,7 @@ test("entity retrieval applies Unicode boundaries to ASCII aliases", async (t) =
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-ascii-boundary");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -443,7 +450,7 @@ test("entity retrieval treats combining marks as Unicode word continuations", as
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-combining-mark-boundary");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -462,7 +469,7 @@ test("entity retrieval treats supplementary-plane letters as Unicode word contin
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-supplementary-boundary");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -479,7 +486,7 @@ test("entity retrieval uses script-aware boundaries for Thai mentions", async (t
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-thai-boundary");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -495,7 +502,7 @@ test("entity retrieval treats canonically equivalent Unicode mentions as equal",
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-unicode-normalization");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -521,7 +528,7 @@ test("entity retrieval keeps multiple explicit entities in Japanese direct quest
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-multiple");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -567,7 +574,7 @@ test("entity retrieval does not resolve an ambiguous alias in Japanese direct qu
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-ambiguous");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -607,7 +614,7 @@ test("entity retrieval excludes an ambiguous alias beside a canonical Japanese m
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-mixed-ambiguous");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -650,7 +657,7 @@ test("entity retrieval preserves a canonical mention beside a longer ambiguous a
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-canonical-ambiguous");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -693,7 +700,7 @@ test("entity retrieval skips corpus assembly for unrelated Japanese queries with
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-unrelated");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -734,7 +741,7 @@ test("entity retrieval ignores one-character and stop-word aliases in implicit q
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-implicit-trivial-alias");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -758,7 +765,7 @@ test("entity retrieval refreshes a persisted index after an entity-linked Fact c
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-refresh");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -792,7 +799,7 @@ test("entity retrieval refreshes a persisted index after an Entity gains an alia
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-japanese-alias-refresh");
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -822,7 +829,7 @@ test("entity retrieval does not stamp a stale index with a newer Entity status",
   t.after(async () => {
     await settleEntityMentionIndex();
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -935,7 +942,7 @@ test("entity retrieval preserves namespace precedence in the namespace index cac
   });
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -1016,7 +1023,7 @@ test("entity retrieval refreshes a namespace negative cache after a relationship
     aliceStorage.readAllEntityFiles = originalAliceRead;
     sharedStorage.readAllEntityFiles = originalSharedRead;
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -1167,7 +1174,7 @@ test("entity retrieval refreshes a reader-process entity cache after a relations
     }
     outputLines.close();
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -1212,7 +1219,7 @@ test("entity retrieval refreshes a namespace negative cache after an activity re
     aliceStorage.readAllEntityFiles = originalAliceRead;
     sharedStorage.readAllEntityFiles = originalSharedRead;
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -1304,7 +1311,7 @@ test("entity retrieval does not reuse a namespace index across secure-store iden
   });
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -2154,7 +2161,7 @@ test("entity retrieval refreshes native mention aliases without rebuilding unrel
     storage.readAllEntityFiles = originalReadAllEntityFiles;
     storage.readAllMemories = originalReadAllMemories;
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });
@@ -2191,7 +2198,7 @@ test("entity retrieval refreshes edited native knowledge in namespace mode", asy
   });
   t.after(async () => {
     await Promise.all([
-      rm(memoryDir, { recursive: true, force: true }),
+      rmStore(memoryDir),
       rm(workspaceDir, { recursive: true, force: true }),
     ]);
   });

@@ -66,9 +66,10 @@ async function recall(config: PluginConfig, storage: StorageManager, query: stri
 }
 
 async function removeHarness(memoryDir: string, workspaceDir: string) {
+  await settleEntityMentionIndex().catch(() => undefined);
   await Promise.all([
-    rm(memoryDir, { recursive: true, force: true }),
-    rm(workspaceDir, { recursive: true, force: true }),
+    rm(memoryDir, { recursive: true, force: true, maxRetries: 5 }),
+    rm(workspaceDir, { recursive: true, force: true, maxRetries: 5 }),
   ]);
 }
 
