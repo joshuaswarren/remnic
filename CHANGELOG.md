@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Enforce the vendored Oxlint anti-slop rules through the required lint gate. Rule regressions exercise the real CLI. Effect rules remain absent because no workspace package depends on Effect.
+
 ## [v9.69.68] — 2026-09-07
 
 ### Fixed

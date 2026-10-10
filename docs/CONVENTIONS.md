@@ -58,7 +58,9 @@ Conventions and patterns used throughout the Remnic codebase. The repo is a pnpm
 |--------|---------|
 | `npm run build` | Build `@remnic/core`, sync the OpenClaw plugin manifest, then bundle the root plugin with `tsup` |
 | `npm run check-types` | Type-check with `tsc --noEmit` (plus each package's own `check-types`) |
-| `npm run lint` | Lint with Biome (`biome check`) |
+| `npm run lint` | Check Biome config, run the rule regressions, then enforce Oxlint anti-slop rules |
+| `npm run test:anti-slop` | Exercise the vendored rules through the real Oxlint CLI |
+| `npm run lint:anti-slop` | Enforce the fifteen configured anti-slop rules |
 | `npm test` | Build core, then run the root test suite |
 | `npm run preflight` | Full pre-PR gate (`scripts/pr-preflight.sh full`) |
 | `npm run preflight:quick` | Fast pre-PR gate (`scripts/pr-preflight.sh quick`) |
