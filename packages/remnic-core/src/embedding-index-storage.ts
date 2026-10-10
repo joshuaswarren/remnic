@@ -514,6 +514,34 @@ export class EmbeddingIndexFileStore {
     }
   }
 
+  /** Detect peer publishes through file identity and shard-directory metadata. */
+  async identityStamp(): Promise<string> {
+    const layout = await this.detectLayout();
+    if (layout === "sharded") {
+      const info = await lstat(this.shardDir).catch((err) => {
+        // SAFETY: only the errno code is inspected; any other rejection shape rethrows uninterpreted.
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw new EmbeddingIndexStorageError(
+          `cannot stat embedding index shard directory ${this.shardDir}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+      if (!info) return "rename-gap";
+      return `shard:${info.ino}:${info.mtimeMs}`;
+    }
+    if (layout === "legacy") {
+      const info = await stat(this.indexPath).catch((err) => {
+        // SAFETY: only the errno code is inspected; any other rejection shape rethrows uninterpreted.
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw new EmbeddingIndexStorageError(
+          `cannot stat embedding index file ${this.indexPath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+      if (!info) return "rename-gap";
+      return `legacy:${info.ino}:${info.mtimeMs}`;
+    }
+    return "empty";
+  }
+
   /** Header identity of the authoritative generation, read leniently. */
   async identityFromDisk(): Promise<EmbeddingIndexIdentity | null> {
     const layout = await this.detectLayout();

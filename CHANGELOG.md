@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `@remnic/core` warm embedding searches now detect index changes from peer processes (#3165). Changed file or shard-directory metadata invalidates the cache. Unchanged metadata avoids index reads.
+
 ## [v9.69.68] — 2026-09-07
 
 ### Fixed
