@@ -28,22 +28,22 @@ export const noUnknownTypeAliasesRule = defineRule({
 	createOnce(context) {
 		const aliases = new Map<string, ESTree.TSTypeAliasDeclaration>();
 
-		const resolvesToUnknown = (type: ESTree.TSType, visited = new Set<string>()): boolean => {
-			if (type.type === "TSUnknownKeyword") return true;
-			if (type.type === "TSParenthesizedType")
-				return resolvesToUnknown(type.typeAnnotation, visited);
-			const name = referencedAliasName(type);
-			if (name === null || visited.has(name)) return false;
-			const alias = aliases.get(name);
-			if (
-				alias === undefined ||
-				(alias.typeParameters !== null && alias.typeParameters !== undefined)
-			) {
-				return false;
+		const resolvedTopType = (type: ESTree.TSType, visited = new Set<string>()): "any" | "unknown" | null => {
+			if (type.type === "TSUnknownKeyword") return "unknown";
+			if (type.type === "TSAnyKeyword") return "any";
+			if (type.type === "TSParenthesizedType") return resolvedTopType(type.typeAnnotation, visited);
+			if (type.type === "TSUnionType") {
+				const members = type.types.map((member) => resolvedTopType(member, visited));
+				if (members.includes("any")) return "any";
+				return members.includes("unknown") ? "unknown" : null;
 			}
+			const name = referencedAliasName(type);
+			if (name === null || visited.has(name)) return null;
+			const alias = aliases.get(name);
+			if (alias === undefined || (alias.typeParameters !== null && alias.typeParameters !== undefined)) return null;
 			const nextVisited = new Set(visited);
 			nextVisited.add(name);
-			return resolvesToUnknown(alias.typeAnnotation, nextVisited);
+			return resolvedTopType(alias.typeAnnotation, nextVisited);
 		};
 
 		return {
@@ -57,7 +57,7 @@ export const noUnknownTypeAliasesRule = defineRule({
 					}
 				}
 				for (const alias of aliases.values()) {
-					if (!resolvesToUnknown(alias.typeAnnotation, new Set([alias.id.name]))) continue;
+					if (resolvedTopType(alias.typeAnnotation, new Set([alias.id.name])) !== "unknown") continue;
 					context.report({
 						node: alias.id,
 						messageId: "unknownAlias",

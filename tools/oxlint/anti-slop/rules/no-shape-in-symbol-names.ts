@@ -31,9 +31,21 @@ export const noForbiddenTermInSymbolNamesRule = defineRule({
     };
 
     return {
-      Identifier: reportForbiddenSymbolName,
+      Identifier(node) {
+        const parent = node.parent;
+        if (parent.type === "MemberExpression" && !parent.computed && parent.property === node) return;
+        if (parent.type === "Property" && !parent.computed && parent.key === node && parent.value !== node) return;
+        if ((parent.type === "MethodDefinition" || parent.type === "PropertyDefinition" || parent.type === "AccessorProperty" || parent.type === "TSPropertySignature" || parent.type === "TSMethodSignature") && !parent.computed && parent.key === node) return;
+        if (parent.type === "ImportSpecifier" && parent.imported === node && parent.local !== node) return;
+        if (parent.type === "ExportSpecifier" && parent.exported === node && parent.local !== node) return;
+        reportForbiddenSymbolName(node);
+      },
       PrivateIdentifier: reportForbiddenSymbolName,
-      JSXIdentifier: reportForbiddenSymbolName,
+      JSXIdentifier(node) {
+        if (node.parent.type === "JSXAttribute" || node.parent.type === "JSXNamespacedName") return;
+        if (node.parent.type === "JSXMemberExpression" && node.parent.property === node) return;
+        reportForbiddenSymbolName(node);
+      },
     };
   },
 });

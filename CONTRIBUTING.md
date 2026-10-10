@@ -51,6 +51,7 @@ This wires `pre-commit` to `npm run preflight:quick` and `pre-push` to `npm run 
 
 - `npm run preflight:quick` — fast gate (types + config contract + key tests). Run before every push.
 - `npm run preflight` — full pre-PR gate (types + contract + tests + build).
+- `npm run lint` - required Biome checks, Oxlint rule regressions, and Oxlint anti-slop checks. CI and preflight invoke this gate.
 - `npm run check-config-contract` — required when you touch config types, `parseConfig`, or the plugin manifest schema.
 - `npm run check:docs-parity` — required when you touch docs that contain CLI commands; every fenced `remnic <cmd>` must be a real registered command.
 - `npm run test:entity-hardening` — required when you touch `orchestrator.ts`, `storage.ts`, `intent.ts`, `memory-cache.ts`, `entity-retrieval.ts`, `config.ts`, or anything under `storage/` or `orchestration/`.

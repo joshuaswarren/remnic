@@ -12,7 +12,13 @@ const BUILT_INS = new Set([
 ]);
 const TRANSPARENT_WRAPPERS = new Set(["Readonly", "Partial", "Required", "NonNullable"]);
 
-type TypeAliasEnvironment = ReadonlyMap<string, ESTree.TSType>;
+type TypeBinding = {
+	readonly type: ESTree.TSType;
+	/** Environment the term was written in; its free parameter names resolve here, never in a consumer frame. */
+	readonly scope: TypeAliasEnvironment;
+};
+
+type TypeAliasEnvironment = ReadonlyMap<string, TypeBinding>;
 
 type ResolvedType = {
 	readonly type: ESTree.TSType;
@@ -155,20 +161,26 @@ function isEffectivelyEmptyInterface(
 	);
 }
 
-function resolvedSubstitutionArgument(
+/** Resolve a stored binding term against its captured scope only; out-of-scope names stay opaque. */
+function resolvedTypeArgument(
 	type: ESTree.TSType,
-	base: TypeAliasEnvironment,
-	resolving: ReadonlySet<string> = new Set(),
+	scope: TypeAliasEnvironment,
+	resolving: ReadonlySet<string>,
 ): ESTree.TSType {
 	const unwrapped = unwrapTransparentType(type);
 	if (unwrapped.type !== "TSTypeReference") return type;
 	const name = typeReferenceName(unwrapped);
-	if (name === null || resolving.has(name)) return type;
-	const substitution = base.get(name);
-	if (substitution === undefined) return type;
-	const nextResolving = new Set(resolving);
-	nextResolving.add(name);
-	return resolvedSubstitutionArgument(substitution, base, nextResolving);
+	if (name === null) return type;
+	const substitution = scope.get(name);
+	if (substitution !== undefined && !resolving.has(name)) {
+		const nextResolving = new Set(resolving);
+		nextResolving.add(name);
+		return resolvedTypeArgument(substitution.type, substitution.scope, nextResolving);
+	}
+	const typeArguments = unwrapped.typeArguments;
+	if (typeArguments === null || typeArguments === undefined) return type;
+	const params = typeArguments.params.map((param) => resolvedTypeArgument(param, scope, resolving));
+	return { ...unwrapped, typeArguments: { ...typeArguments, params } };
 }
 
 function aliasSubstitution(
@@ -178,11 +190,12 @@ function aliasSubstitution(
 ): TypeAliasEnvironment | null {
 	const parameters = alias.typeParameters?.params ?? [];
 	const arguments_ = type.typeArguments?.params ?? [];
-	const next = new Map(base);
+	const next = new Map<string, TypeBinding>();
 	for (const [index, parameter] of parameters.entries()) {
 		const argument = arguments_[index] ?? parameter.default;
 		if (argument === null || argument === undefined) return null;
-		next.set(parameter.name.name, resolvedSubstitutionArgument(argument, next));
+		const scope = arguments_[index] !== undefined ? base : new Map([...base, ...next]);
+		next.set(parameter.name.name, { type: argument, scope });
 	}
 	return next;
 }
@@ -224,11 +237,12 @@ function unsafeDirectValue(
 			? null
 			: unsafeDirectValue(wrapped, environment, substitutions, resolvingAliases);
 	}
-	const substitution = substitutions.get(name);
-	if (substitution !== undefined) {
-		return isUnappliedReferenceTo(substitution, name)
+	const binding = substitutions.get(name);
+	if (binding !== undefined) {
+		const resolved = resolvedTypeArgument(binding.type, binding.scope, new Set([name]));
+		return isUnappliedReferenceTo(resolved, name)
 			? null
-			: unsafeDirectValue(substitution, environment, substitutions, resolvingAliases);
+			: unsafeDirectValue(resolved, environment, binding.scope, resolvingAliases);
 	}
 	const interfaceDeclarations = environment.interfaces.get(name);
 	if (interfaceDeclarations !== undefined) {
@@ -269,11 +283,12 @@ function dictionaryValueTypes(
 	const name = typeReferenceName(unwrapped);
 	if (name === null) return [];
 
-	const substitution = substitutions.get(name);
-	if (substitution !== undefined) {
-		return isUnappliedReferenceTo(substitution, name)
+	const binding = substitutions.get(name);
+	if (binding !== undefined) {
+		const resolved = resolvedTypeArgument(binding.type, binding.scope, new Set([name]));
+		return isUnappliedReferenceTo(resolved, name)
 			? []
-			: dictionaryValueTypes(substitution, environment, substitutions, resolvingAliases);
+			: dictionaryValueTypes(resolved, environment, binding.scope, resolvingAliases);
 	}
 
 	if (TRANSPARENT_WRAPPERS.has(name) && isBuiltIn(name, environment)) {
@@ -401,9 +416,12 @@ function isBroadMappedKey(
 	if (unwrapped.type !== "TSTypeReference") return false;
 	const name = typeReferenceName(unwrapped);
 	if (name === null) return false;
-	const substitution = substitutions.get(name);
-	if (substitution !== undefined && !isUnappliedReferenceTo(substitution, name)) {
-		return isBroadMappedKey(substitution, environment, substitutions);
+	const binding = substitutions.get(name);
+	if (binding !== undefined) {
+		const resolved = resolvedTypeArgument(binding.type, binding.scope, new Set([name]));
+		if (!isUnappliedReferenceTo(resolved, name)) {
+			return isBroadMappedKey(resolved, environment, binding.scope);
+		}
 	}
 	return name === "PropertyKey" && isBuiltIn(name, environment);
 }
@@ -430,16 +448,12 @@ function classifyAliasBroadTarget(
 	if (unwrapped.type !== "TSTypeReference") return null;
 	const name = typeReferenceName(unwrapped);
 	if (name === null) return null;
-	const substitution = substitutions.get(name);
-	if (substitution !== undefined) {
-		return isUnappliedReferenceTo(substitution, name)
+	const binding = substitutions.get(name);
+	if (binding !== undefined) {
+		const resolved = resolvedTypeArgument(binding.type, binding.scope, new Set([name]));
+		return isUnappliedReferenceTo(resolved, name)
 			? null
-			: classifyAliasBroadTarget(
-					substitution,
-					environment,
-					substitutions,
-					resolvingAliases,
-				);
+			: classifyAliasBroadTarget(resolved, environment, binding.scope, resolvingAliases);
 	}
 	if (TRANSPARENT_WRAPPERS.has(name) && isBuiltIn(name, environment)) {
 		const wrapped = unwrapped.typeArguments?.params[0];
