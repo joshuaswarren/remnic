@@ -8,6 +8,11 @@ All notable changes to this project will be documented in this file.
 
 - Added real-filesystem coverage for offline upload staging (#3164). Tests cover complete uploads, gaps, resets, cleanup, storage hooks, and symlink rejection. The staging module now owns `OfflineUploadStaging`; the duplicate interface is removed.
 
+### Changed
+
+- Removed tracked editor backups and the duplicate root audit file (#3144).
+- Documented that a standalone `**` offline-sync exclude matches every relative path (#3149).
+
 ## [v9.69.97] — 2026-10-10
 
 ### Fixed
