@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { gunzipSync } from "node:zlib";
+import { setTimeout } from "node:timers/promises";
 
 import {
   OFFLINE_SYNC_APPLY_MAX_BODY_BYTES,
@@ -984,6 +985,72 @@ test("offline prepare hydrates an oversized legacy marker through the staged chu
       false,
       "the private staging root must be cleaned up",
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline prepare persists digests and leaves no pending cache write after the command completes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-digest-drain-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const localBody = "digest drain local body\n";
+    await mkdir(path.join(root, "facts"), { recursive: true });
+    await writeFile(path.join(root, "facts/a.md"), localBody);
+    const snapshotFor = (body: string, createdAt: string) => async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/remnic/v1/offline-sync/snapshot")) {
+        return new Response(JSON.stringify({
+          format: "remnic.offline-sync.snapshot.v1",
+          schemaVersion: 1,
+          createdAt,
+          sourceId: "remote",
+          namespace: "generalist",
+          includeTranscripts: true,
+          files: [contentFile("facts/a.md", body, 4)],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error("digest drain: content routes must not be reached");
+    };
+    const cachePath = path.join(root, ".offline-sync", "digest-cache.v1.json");
+    globalThis.fetch = snapshotFor("changed remote body\n", "2026-05-31T00:03:00.000Z") as typeof fetch;
+    const failed = await runCli([
+      "offline", "prepare",
+      "--remote-url", "http://remnic.test",
+      "--token", "t",
+      "--memory-dir", root,
+      "--json",
+    ]);
+    assert.notEqual(failed.exitCode, 0);
+    const failedCache = JSON.parse(await readFile(cachePath, "utf-8")) as {
+      entries: Array<{ path: string; sha256: string }>;
+    };
+    assert.equal(
+      failedCache.entries.find((entry) => entry.path === "facts/a.md")?.sha256,
+      createHash("sha256").update(localBody).digest("hex"),
+    );
+
+    const completedBody = "digest drain completed local body\n";
+    await writeFile(path.join(root, "facts/a.md"), completedBody);
+    globalThis.fetch = snapshotFor(completedBody, "2026-05-31T00:04:00.000Z") as typeof fetch;
+    const result = await runCli([
+      "offline", "prepare",
+      "--remote-url", "http://remnic.test",
+      "--token", "t",
+      "--memory-dir", root,
+      "--json",
+    ]);
+    assert.equal(result.exitCode, 0);
+    const cache = JSON.parse(await readFile(cachePath, "utf-8")) as {
+      entries: Array<{ path: string; sha256: string }>;
+    };
+    const entry = cache.entries.find((cached) => cached.path === "facts/a.md");
+    assert.ok(entry, "the completed prepare must persist the digest");
+    assert.equal(entry.sha256, createHash("sha256").update(completedBody).digest("hex"));
+    await rm(path.join(root, ".offline-sync"), { recursive: true });
+    await setTimeout(1_250);
+    await assert.rejects(stat(cachePath), (err: NodeJS.ErrnoException) => err.code === "ENOENT");
   } finally {
     globalThis.fetch = originalFetch;
     await rm(root, { recursive: true, force: true });
