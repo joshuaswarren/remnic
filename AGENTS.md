@@ -188,6 +188,7 @@ The human owners do not review or merge pull requests. Agents do. Another agent 
 ## Cleaner PR Workflow (Mandatory)
 
 These rules are the default workflow for all agents and contributors.
+The review-round cap and reasoned-decline policy above still apply when agents address review findings.
 
 1. Keep PR scope narrow.
    - One subsystem group per PR whenever possible.
