@@ -320,6 +320,21 @@ test("a newer mention-index revision evicts the previous one for the same store"
   }
 });
 
+test("a cache clear does not keep a stale persisted mention index", async () => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-epoch-persist-clear");
+  try {
+    await storage.writeEntity("Cedar Lattice", "project", ["Cedar Lattice tracks harbor lights."]);
+    const known = await recall(config, storage, "Who is Cedar Lattice?");
+    assert.match(known ?? "", /Cedar Lattice/);
+    await storage.writeEntity("North Pier", "place", ["North Pier holds the channel light."]);
+    StorageManager.clearAllStaticCaches();
+    const found = await recall(config, storage, "North Pier holds the channel light");
+    assert.match(found ?? "", /North Pier/);
+  } finally {
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
 test("clearAllStaticCaches drops the entity mention index", async () => {
   const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-reset");
   try {

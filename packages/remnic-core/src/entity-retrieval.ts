@@ -24,7 +24,9 @@ import {
 } from "./entity-recall-cancellation.js";
 import { applyCarriedMemorySnippets } from "./entity-mention-carry.js";
 import {
+  entityMentionCacheGeneration,
   entityMentionIdentity,
+  entityMentionPersistedIndexReadable,
   entityMentionScopeKey,
   resolveEntityMentionIndex,
 } from "./entity-mention-index-cache.js";
@@ -364,7 +366,7 @@ async function readCurrentPersistedEntityIndex(
     return null;
   }
   const index = await readEntityIndexState(storage);
-  if (!index || index.entityStatusVersion !== storage.getMemoryStatusVersion()) {
+  if (!entityMentionPersistedIndexReadable() || !index || index.entityStatusVersion !== storage.getMemoryStatusVersion()) {
     return null;
   }
   return index;
@@ -482,6 +484,7 @@ async function buildEntityMentionIndex(
   );
   const shouldPersistIndex =
     storages.length === 1 && path.resolve(storages[0]!.dir) === path.resolve(storage.dir);
+  const persistGeneration = entityMentionCacheGeneration();
   const entityStatusVersionBefore = shouldPersistIndex ? storage.getMemoryStatusVersion() : undefined;
   const [previousIndex, entityFileSets, memorySets, nativeChunks] = await Promise.all([
     shouldPersistIndex ? readEntityIndexState(storage) : Promise.resolve(null),
@@ -600,7 +603,7 @@ async function buildEntityMentionIndex(
   await yieldEntityRecallScan(abortSignal);
   const nextEntities = JSON.stringify(sortedEntities);
   const entityStatusVersionAfter = shouldPersistIndex ? storage.getMemoryStatusVersion() : undefined;
-  const canPersistIndex = shouldPersistIndex && entityStatusVersionBefore === entityStatusVersionAfter;
+  const canPersistIndex = shouldPersistIndex && entityStatusVersionBefore === entityStatusVersionAfter && persistGeneration === entityMentionCacheGeneration();
   const index: EntityMentionIndex = {
     version: ENTITY_INDEX_VERSION,
     updatedAt:
@@ -611,9 +614,6 @@ async function buildEntityMentionIndex(
     entities: sortedEntities,
   };
   if (canPersistIndex) {
-    // A build the caller has abandoned must not leave a persisted index behind:
-    // the write is I/O the timed-out recall no longer needs, and the next recall
-    // is already competing for the same disk.
     checkEntityRecallAbort(abortSignal);
     await writeEntityIndexState(storage, index);
   }

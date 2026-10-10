@@ -1,4 +1,5 @@
 import path from "node:path";
+import { rm } from "node:fs/promises";
 import { raceAbort } from "./abort-error.js";
 import { entityMentionEpoch } from "./entity-mention-epoch.js";
 import { log } from "./logger.js";
@@ -59,6 +60,33 @@ type Slot = {
 const slots = new Map<string, Slot>();
 const rebuildsByScope = new Map<string, number>();
 let cacheGeneration = 0;
+let persistedReadsAllowed = true;
+
+export function entityMentionCacheGeneration(): number {
+  return cacheGeneration;
+}
+
+export function entityMentionPersistedIndexReadable(): boolean {
+  return persistedReadsAllowed;
+}
+
+function persistedMentionIndexFiles(scopeKey: string): string[] {
+  const nsEnd = scopeKey.indexOf("\u001e");
+  const storageEnd = nsEnd === -1 ? -1 : scopeKey.indexOf("\u001e", nsEnd + 1);
+  if (nsEnd === -1 || storageEnd === -1) return [];
+  return scopeKey
+    .slice(nsEnd + 1, storageEnd)
+    .split("\u001f")
+    .map((part) => part.split("\u001d")[0] ?? "")
+    .filter((dir) => dir.length > 0)
+    .map((dir) => path.join(dir, "state", "entity-mention-index.json"));
+}
+
+function discardPersistedMentionIndex(scopeKey: string): void {
+  for (const file of persistedMentionIndexFiles(scopeKey)) {
+    void rm(file, { force: true }).catch(() => undefined);
+  }
+}
 
 function throwIfMentionAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
@@ -149,6 +177,7 @@ function startRebuild(slot: Slot): void {
   // second full corpus scan after a stable rebuild.
   if (slot.rebuild) return;
   const token = slot.token;
+  const generation = cacheGeneration;
   noteRebuild(slot.scopeKey);
   const started = slot.currentIdentity();
   slot.again = false;
@@ -156,7 +185,11 @@ function startRebuild(slot: Slot): void {
   handle.pending = slot
     .buildFull(undefined)
     .then((index) => {
-      if (slot.token !== token) return;
+      if (slot.token !== token || generation !== cacheGeneration) {
+        discardPersistedMentionIndex(slot.scopeKey);
+        return;
+      }
+      persistedReadsAllowed = true;
       const ended = slot.currentIdentity();
       slot.index = index;
       if (sameIdentity(started, ended)) {
@@ -219,6 +252,9 @@ export function entityMentionIndexScopeKeys(): string[] {
 
 export function dropEntityMentionIndexCache(scopeKey?: string): void {
   cacheGeneration += 1;
+  persistedReadsAllowed = false;
+  const keys = scopeKey === undefined ? [...slots.keys()] : [scopeKey];
+  for (const key of keys) discardPersistedMentionIndex(key);
   if (scopeKey === undefined) {
     for (const key of [...slots.keys()]) forgetScope(key);
     return;
@@ -259,7 +295,11 @@ export async function resolveEntityMentionIndex<T>(options: {
     const started = options.currentIdentity();
     const index = await options.buildFull(options.abortSignal);
     // clearAllStaticCaches during this first scan must not publish the pre-clear index.
-    if (generation !== cacheGeneration) return index;
+    if (generation !== cacheGeneration) {
+      discardPersistedMentionIndex(options.scopeKey);
+      return index;
+    }
+    persistedReadsAllowed = true;
     const ended = options.currentIdentity();
     evictSameFamily(options.scopeKey);
     evictOldest(options.scopeKey);
