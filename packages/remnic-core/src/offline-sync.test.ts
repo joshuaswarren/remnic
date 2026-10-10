@@ -760,6 +760,89 @@ test("a hostile incoming marker leaves the local warm embedding cache untouched"
   }
 });
 
+test("offline sync changeset apply refuses marker upserts and deletes, continues ordinary changes", async () => {
+  const root = await tempDir("remnic-offline-emb3176-marker-changeset");
+  try {
+    const localMarker = "7f6c1e64-9b2a-4c7d-8e0f-1a2b3c4d5e6f";
+    const hostile = "in-flight";
+    const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "state/embeddings.generation", localMarker);
+
+    const result = await applyOfflineSyncChangeset({
+      root,
+      currentFiles: [
+        { path: "facts/a.md", sha256: sha("alpha"), bytes: 5, mtimeMs: 0 },
+        { path: "state/embeddings.generation", sha256: sha(localMarker), bytes: localMarker.length, mtimeMs: 0 },
+      ],
+      changeset: {
+        format: "remnic.offline-sync.changeset.v1",
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        sourceId: "peer",
+        includeTranscripts: false,
+        changes: [
+          { type: "upsert", path: "facts/b.md", file: { path: "facts/b.md", sha256: sha("beta"), bytes: 4, mtimeMs: 0, contentBase64: Buffer.from("beta").toString("base64") } },
+          { type: "upsert", path: "state/embeddings.generation", file: { path: "state/embeddings.generation", sha256: sha(hostile), bytes: hostile.length, mtimeMs: 0, contentBase64: Buffer.from(hostile).toString("base64") } },
+        ],
+      } as never,
+    });
+    const deletionResult = await applyOfflineSyncChangeset({
+      root,
+      currentFiles: [
+        { path: "facts/a.md", sha256: sha("alpha"), bytes: 5, mtimeMs: 0 },
+        { path: "facts/b.md", sha256: sha("beta"), bytes: 4, mtimeMs: 0 },
+        { path: "state/embeddings.generation", sha256: sha(localMarker), bytes: localMarker.length, mtimeMs: 0 },
+      ],
+      changeset: {
+        format: "remnic.offline-sync.changeset.v1",
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        sourceId: "peer",
+        includeTranscripts: false,
+        changes: [
+          { type: "delete", path: "facts/a.md", baseSha256: sha("alpha"), mtimeMs: 0 },
+          { type: "delete", path: "state/embeddings.generation", baseSha256: sha(localMarker), mtimeMs: 0 },
+        ],
+      } as never,
+    });
+
+    assert.equal(await readUtf8(root, "state/embeddings.generation"), localMarker, "node-local marker: neither an incoming upsert nor a delete may touch it");
+    assert.equal(await exists(root, "state/embeddings.generation"), true);
+    assert.equal(await readUtf8(root, "facts/b.md"), "beta", "ordinary upserts continue");
+    assert.equal(await exists(root, "facts/a.md"), false, "ordinary deletes continue");
+    assert.equal(deletionResult.appliedDeletes, 1);
+    assert.deepEqual(result.conflicts, [], "a marker upsert must be skipped node-local, not turned into a conflict");
+    assert.deepEqual(deletionResult.conflicts, [], "a marker delete must be skipped node-local, not turned into a conflict");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync file content chunks refuse the generation marker", async () => {
+  const root = await tempDir("remnic-offline-emb3176-marker-chunk");
+  try {
+    await write(root, "state/embeddings.generation", "local-uuid");
+    const content = Buffer.from("in-flight");
+    await assert.rejects(
+      () =>
+        applyOfflineSyncFileContentChunk({
+          root,
+          sourceId: "peer",
+          path: "state/embeddings.generation",
+          sha256: createHash("sha256").update(content).digest("hex"),
+          bytes: content.length,
+          mtimeMs: 0,
+          content,
+        }),
+      /node-local/,
+    );
+    assert.equal(await readUtf8(root, "state/embeddings.generation"), "local-uuid", "the chunked hostile payload never lands");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offline sync includes durable runtime state and excludes only transient sync temp files", async () => {
   const root = await tempDir("remnic-offline-runtime-state");
   try {

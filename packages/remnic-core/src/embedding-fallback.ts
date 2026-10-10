@@ -902,7 +902,7 @@ export class EmbeddingFallback {
 
   private async readIndexIdentityFromDisk(): Promise<EmbeddingIndexIdentity | null> {
     const stamp = await this.store.identityStamp();
-    if (this.loaded && this.loadedFromDisk) {
+    if (this.loaded) {
       if (this.identityProbe?.stamp === stamp) {
         return { provider: this.loaded.provider, model: this.loaded.model };
       }

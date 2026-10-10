@@ -1942,6 +1942,10 @@ export async function applyOfflineSyncChangeset(options: {
   for (const change of changeset.changes) {
     if (generationRouting.conflictedPaths.has(change.path)) continue;
     if (generationRouting.transactionHandled.has(change.path)) continue;
+    if (isEmbeddingGenerationMarkerPath(change.path)) {
+      skipped += 1;
+      continue;
+    }
     const currentEntry = currentMap.get(change.path);
     if (change.type === "upsert") {
       if (currentEntry?.sha256 === change.file.sha256) {
@@ -2233,6 +2237,9 @@ export async function applyOfflineSyncFileContentChunk(options: {
   const includeTranscripts = options.includeTranscripts !== false;
   if (shouldExcludeRelPath(relPath, includeTranscripts)) {
     throw new Error(`offline sync file content path is excluded: ${relPath}`);
+  }
+  if (isEmbeddingGenerationMarkerPath(relPath)) {
+    throw new Error(`offline sync file content path is node-local: ${relPath}`);
   }
   const sha256 = assertSha256(options.sha256, "sha256");
   const bytes = assertNonNegativeInteger(options.bytes, "bytes");

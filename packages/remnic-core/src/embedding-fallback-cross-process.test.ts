@@ -394,6 +394,33 @@ test("a failed completion marker keeps every probe revalidating until a publicat
   );
 });
 
+test("a negative empty cache does not pin the store against a peer's first publication", async (t) => {
+  const memoryDir = await newMemoryDir();
+  t.after(() => rm(memoryDir, { recursive: true, force: true }));
+  t.after(() => clearHostEmbeddingProvidersForTest());
+  t.after(registerHostEmbeddingProvider(memoryDir, hostProvider("host-model-a")));
+
+  const fallback = new EmbeddingFallback(parentConfig(memoryDir));
+  // Searching the empty store caches a fresh empty index (loadedFromDisk
+  // false): the negative-cache shape the invalidation block used to skip.
+  assert.deepEqual(await fallback.search(PARENT_TEXT, 5), []);
+
+  await runChildPeer({
+    memoryDir,
+    hostModel: "host-model-a",
+    memoryId: "mem-b",
+    text: CHILD_TEXT,
+    relPath: "namespaces/alpha/facts/child-b.md",
+  });
+
+  const hits = await fallback.search(CHILD_TEXT, 5);
+  assert.equal(
+    hits[0]?.id,
+    "mem-b",
+    "the peer's first generation must be visible to a store that was empty at first search",
+  );
+});
+
 test("a peer write that aliases the warm stamp's mtime tick still invalidates the warm cache", async (t) => {
   const memoryDir = await newMemoryDir();
   t.after(() => rm(memoryDir, { recursive: true, force: true }));
