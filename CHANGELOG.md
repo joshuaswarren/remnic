@@ -8,6 +8,12 @@ All notable changes to this project will be documented in this file.
 
 - Added real-filesystem coverage for offline upload staging (#3164). Tests cover complete uploads, gaps, resets, cleanup, storage hooks, and symlink rejection. The staging module now owns `OfflineUploadStaging`; the duplicate interface is removed.
 
+## [v9.69.97] — 2026-10-10
+
+### Fixed
+
+- MCP tools use the configured default namespace on flat daemons when a client adapter infers its own namespace. Explicit namespaces still receive strict validation (#3166).
+
 ## [v9.69.68] — 2026-09-07
 
 ### Fixed

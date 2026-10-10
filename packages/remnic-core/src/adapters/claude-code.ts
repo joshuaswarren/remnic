@@ -41,12 +41,12 @@ export class ClaudeCodeAdapter implements EngramAdapter {
     // MCP session ID (standard MCP header, server-assigned)
     const mcpSessionId = headerValue(context.headers, "mcp-session-id");
 
-    // Namespace: explicit header > default
-    const namespace = headerValue(context.headers, "x-engram-namespace")
-      || "claude-code";
+    // Namespace: explicit header > adapter default
+    const namespaceHeader = headerValue(context.headers, "x-engram-namespace");
 
     return {
-      namespace,
+      namespace: namespaceHeader ?? "claude-code",
+      namespaceExplicit: namespaceHeader !== undefined,
       principal: "claude-code",
       sessionKey: mcpSessionId ?? context.sessionKey,
       adapterId: this.id,

@@ -49,6 +49,7 @@ test("GrokAdapter resolves identity with adapter-owned principal and header name
     })),
     {
       namespace: "my-project",
+      namespaceExplicit: true,
       principal: "grok",
       sessionKey: "sess-grok-1",
       adapterId: "grok",
@@ -91,6 +92,7 @@ test("OpenCodeAdapter resolves identity with adapter-owned principal", () => {
   }));
   assert.deepEqual(resolved, {
     namespace: "opencode",
+    namespaceExplicit: false,
     principal: "opencode",
     sessionKey: "sess-oc-1",
     adapterId: "opencode",
