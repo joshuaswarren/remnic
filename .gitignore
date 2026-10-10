@@ -19,6 +19,10 @@ node_modules/
 *.swp
 *.swo
 *~
+*.orig
+*.rej
+*.bak
+*.cos243bak
 
 # OS
 .DS_Store

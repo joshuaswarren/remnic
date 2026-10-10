@@ -610,7 +610,7 @@ export async function promoteSemanticRuleFromMemory(options: {
   };
 
   return withPromotionLock(options.memoryDir, ruleKey, async (lock) => {
-    storage.invalidateAllMemoriesCacheForDir();
+    storage.invalidateAllMemoriesCacheForDir({ indexedText: false });
     const existingRule = (await storage.readAllMemories()).find(
       (memory) =>
         memory.frontmatter.category === "rule" &&

@@ -76,6 +76,7 @@ import {
   writeOfflineUploadChunk,
   writeSafeFileFromUpload,
   hashText,
+  type OfflineUploadStaging,
 } from "./offline-sync-upload-staging.js";
 export type { OfflineSyncExcludeFile, OfflineSyncFileTarget } from "./offline-sync-file-io.js";
 
@@ -263,12 +264,6 @@ export interface OfflineSyncApplyFileContentChunkResult {
   skipped: boolean;
   conflict?: OfflineSyncConflict;
   currentFile?: OfflineSyncFileState;
-}
-
-interface OfflineUploadStaging {
-  kind: "single" | "chunks";
-  relPath: string;
-  filePath: string;
 }
 
 interface OfflineSyncFileRecordOptions {

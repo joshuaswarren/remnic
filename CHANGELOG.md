@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.101] — 2026-10-10
+
+### Fixed
+
+- Offline `prepare`, `sync`, and `status` flush the pending offline-sync digest cache write before returning, including on failures, so no background cache write survives the command and recreates removed state.
+
+## [v9.69.99] — 2026-10-10
+
+### Fixed
+
+- Added real-filesystem coverage for offline upload staging (#3164). Tests cover complete uploads, gaps, resets, cleanup, storage hooks, and symlink rejection. The staging module now owns `OfflineUploadStaging`; the duplicate interface is removed.
+
+### Changed
+
+- Removed an unused release-check ordering suffix and corrected its input docs (#3161).
+- Documented stable-only native releases and the manual npm package seed (#3162).
+- Release promotion fails closed on tied or timestamp-less check-run records; the promote workflow projects check-run ids so latest-run selection is deterministic (#3173).
+- Restored structural workflow contract tests for the native helper dispatch path (event, permissions, order, ref guard, matrix, dependency, alpha publish flags) (#3173).
+
+## [v9.69.98] — 2026-10-10
+
+### Changed
+
+- Removed tracked editor backups and the duplicate root audit file (#3144).
+- Documented that a standalone `**` offline-sync exclude matches every relative path (#3149).
+
+## [v9.69.97] — 2026-10-10
+
+### Fixed
+
+- MCP tools use the configured default namespace on flat daemons when a client adapter infers its own namespace. Explicit namespaces still receive strict validation (#3166).
+
 ## [v9.69.68] — 2026-09-07
 
 ### Fixed

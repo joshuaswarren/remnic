@@ -147,6 +147,11 @@ on its `is_release_tag` output. A branch dispatch (the default for
 `refs/tags/feature-x`, or a pre-release like `refs/tags/v9.69.90-rc.1`
 cannot reach `pnpm publish`.
 
+For workflow dispatch, native helpers accept exact stable tags only (#3162). A prerelease or build-metadata
+`version_override` publishes the JavaScript packages but skips native helpers.
+Release promotion refuses a version with missing workspace packages. Use a stable
+version when the release needs native helpers.
+
 The dispatch is best-effort: `continue-on-error: true`, with a
 `::warning::` and a job-summary block on failure, so a missing helper
 publish cannot strand the npm train or be reported as an npm failure.
@@ -159,6 +164,9 @@ The two platform packages are published to npm via
 requires the package to exist on the registry first. Because these package names
 do not exist yet, a maintainer must seed each one with an authenticated publish
 at a version below the pending release, then configure the trusted publisher.
+The initial seed remains a manual maintainer action (#3162). The workflow uses
+OIDC and has no npm token fallback. The removed #3103 bootstrap path stays removed.
+
 Until both steps are complete, the helper fails with this message:
 
 ```

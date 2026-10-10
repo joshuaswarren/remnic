@@ -32,6 +32,7 @@ import { assertNotOkfReservedBasename, OKF_QUESTION_TYPE, okfTypeForEntityKind, 
 import { appendContextTransformRecords, readContextTransformRecords } from "./storage/context-transform-ledger.js";
 import type { ContextTransformTelemetryRecord } from "./active-context-transform.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
+import { parseOfflineSyncDigestCache, type OfflineSyncDigestCacheEntry } from "./offline-sync-digest-cache.js";
 import {
   appendLifecycleEventsSerialized,
   type DrainPendingLifecycleForSyncResult,
@@ -86,6 +87,8 @@ import {
   deleteInFlightReadsForDir,
   clearInFlightReads,
 } from "./in-flight-reads.js";
+import { entityMentionEpoch } from "./entity-mention-epoch.js";
+import { holdMentionNeutralFrontmatter } from "./storage/entity-mention-frontmatter-hold.js";
 import * as archive from "./archive-mutation-version.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
@@ -251,14 +254,6 @@ import {
 import { isDirectorySidecarsEnabledForDir, refreshDirectorySidecarsAfterWrite } from "./directory-sidecars.js";
 type SharedVersionKind = "memory-status" | "artifact-write" | "cold-write" | "memory-corpus" | "entity-mutation";
 
-type OfflineSyncDigestCacheEntry = {
-  statBytes: number;
-  mtimeMs: number;
-  ctimeMs: number;
-  encrypted: boolean;
-  sha256: string;
-  bytes: number;
-};
 export interface ReextractJobRequest {
   memoryId: string;
   model: string;
@@ -2426,11 +2421,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * Bump only — NOT invalidateAllForDir (that would drop the very hot
    * entry the write path just patched).
    */
-  protected bumpMemoryCorpusVersion(): void {
+  protected bumpMemoryCorpusVersion(opts?: { indexedText?: boolean }): void {
     this.bumpSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
-    // Drop the in-flight readAllMemories slot (#1902): a concurrent read
-    // must not attach to a scan that began BEFORE this mutation. (The patch
-    // path uses bumpMemoryCorpusVersionExclusive and clears the slot itself.)
+    if (opts?.indexedText !== false && !entityMentionEpoch.suppressed()) entityMentionEpoch.bump(this.baseDir);
     deleteInFlightReadsForDir(this.baseDir);
   }
   getArchiveMutationVersion(): number { return archive.getArchiveMutationVersionForDir(this.baseDir); }
@@ -2441,7 +2434,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * patchHotMemoriesCache refuse to re-key its locally patched corpus at a
    * version already reflecting a peer's still-unread concurrent append.
    */
-  private bumpMemoryCorpusVersionExclusive(): { produced: number; exclusive: boolean } {
+  private bumpMemoryCorpusVersionExclusive(opts?: { indexedText?: boolean }): { produced: number; exclusive: boolean } {
     const filePath = this.versionFilePath("memory-corpus");
     try {
       mkdirSync(this.stateDir, { recursive: true });
@@ -2454,11 +2447,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       appendFileSync(filePath, "x");
       const produced = statSync(filePath).size;
       StorageManager.memoryCorpusVersionByDir.set(this.baseDir, produced);
+      if (opts?.indexedText !== false && !entityMentionEpoch.suppressed()) entityMentionEpoch.bump(this.baseDir);
       // Exclusive iff exactly our single byte landed between the two stats.
       return { produced, exclusive: produced === before + 1 };
     } catch {
       const next = (StorageManager.memoryCorpusVersionByDir.get(this.baseDir) ?? 0) + 1;
       StorageManager.memoryCorpusVersionByDir.set(this.baseDir, next);
+      if (opts?.indexedText !== false && !entityMentionEpoch.suppressed()) entityMentionEpoch.bump(this.baseDir);
       return { produced: next, exclusive: true };
     }
   }
@@ -2802,35 +2797,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const cache = new Map<string, OfflineSyncDigestCacheEntry>();
     try {
       const raw = await readFile(this.offlineSyncDigestCachePath, "utf-8");
-      const parsed = JSON.parse(raw) as unknown;
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return cache;
-      const entries = (parsed as { entries?: unknown }).entries;
-      if (!Array.isArray(entries)) return cache;
-      for (const entry of entries) {
-        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-        const record = entry as Record<string, unknown>;
-        const cachePath = typeof record.path === "string" ? record.path : "";
-        const statBytes = typeof record.statBytes === "number" ? record.statBytes : NaN;
-        const mtimeMs = typeof record.mtimeMs === "number" ? record.mtimeMs : NaN;
-        const ctimeMs = typeof record.ctimeMs === "number" ? record.ctimeMs : NaN;
-        const bytes = typeof record.bytes === "number" ? record.bytes : NaN;
-        const sha256 = typeof record.sha256 === "string" ? record.sha256 : "";
-        const encrypted = record.encrypted === true;
-        if (
-          cachePath.length === 0 ||
-          cachePath === ".." ||
-          cachePath.startsWith("../") ||
-          path.isAbsolute(cachePath) ||
-          !Number.isFinite(statBytes) ||
-          !Number.isFinite(mtimeMs) ||
-          !Number.isFinite(ctimeMs) ||
-          !Number.isFinite(bytes) ||
-          !/^[a-f0-9]{64}$/i.test(sha256)
-        ) {
-          continue;
-        }
-        cache.set(cachePath, { statBytes, mtimeMs, ctimeMs, encrypted, sha256, bytes });
-      }
+      return parseOfflineSyncDigestCache(raw);
     } catch (err) {
       if (!isErrnoCode(err, "ENOENT")) {
         log.warn(
@@ -2887,6 +2854,19 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           `storage.offlineSyncDigestCache: failed to write cache: ${err instanceof Error ? err.message : String(err)}`
         );
       });
+  }
+
+  /**
+   * Forces any debounced digest-cache write to start now and waits for all
+   * queued writes, so no cache write outlives the caller's operation.
+   */
+  async flushOfflineSyncDigestCache(): Promise<void> {
+    if (this.offlineSyncDigestCacheWriteTimer) {
+      clearTimeout(this.offlineSyncDigestCacheWriteTimer);
+      this.offlineSyncDigestCacheWriteTimer = null;
+      this.queueOfflineSyncDigestCacheWrite();
+    }
+    await this.offlineSyncDigestCacheWriteChain;
   }
 
   private async offlineSyncFileIsEncrypted(filePath: string): Promise<boolean> {
@@ -4439,8 +4419,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   /** Invalidate the readAllMemories() cache after writes that add/remove memories. */
   /** Public cache invalidation for callers that need authoritative disk reads
    *  (e.g. projection verify/rebuild). */
-  invalidateAllMemoriesCacheForDir(): void {
-    this.invalidateAllMemoriesCache();
+  invalidateAllMemoriesCacheForDir(opts?: { indexedText?: boolean }): void {
+    this.invalidateAllMemoriesCache(opts);
   }
 
   /** Invalidate only the cache layers affected by direct tier file deletes. */
@@ -4465,9 +4445,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
   }
 
-  /** Clear ALL static caches. Use in tests that write files directly
-   *  (bypassing StorageManager.writeMemory) to avoid stale reads. */
+  /** Clear every static cache. Direct file writes call this so the next read is not stale. */
   static clearAllStaticCaches(): void {
+    entityMentionEpoch.reset();
     clearInFlightReads();
     StorageManager.questionsCache.clear();
     StorageManager.coldMemoriesCache.clear(); // also wipe the cold-scan TTL cache
@@ -4497,12 +4477,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    *  exclusively by invalidateColdMemoriesCache(), which is called only when
    *  cold content actually changes (hot→cold demotions, writeMemoryFileAtomic
    *  inside cold/, archiveMemory, etc.). */
-  protected invalidateAllMemoriesCache(): void {
+  protected invalidateAllMemoriesCache(opts?: { indexedText?: boolean }): void {
     deleteInFlightReadsForDir(this.baseDir);
     // Bulk/ambiguous mutations drop the hot layer wholesale (below); bump the
     // corpus sentinel too so PEER processes rescan instead of serving a warm
     // pre-mutation corpus entry (issue #1902 cross-process coherence).
-    this.bumpMemoryCorpusVersion();
+    this.bumpMemoryCorpusVersion(opts);
     // Invalidation chokepoint (issue #1535 / #1904): evict the layers a
     // memory-mutate can affect — hot, archive, derived episode/rule views, and
     // both QMD result caches (qmdSearchCache and qmdRecallCache). Before the QMD
@@ -5378,18 +5358,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       [buildCapturePathLockIdentity(expected.path), oldIdentity, newIdentity]
     );
   }
-  /**
-   * Update frontmatter fields without changing memory content. Returns false when the memory is not found.
-   */
+  /** Frontmatter patch. A replaced body still moves the mention epoch. */
+  private static readonly frontmatterBody = StorageManager.prototype.writeMemoryFrontmatter;
   async writeMemoryFrontmatter(
     memory: MemoryFile,
     patch: Partial<MemoryFrontmatter>,
-    lifecycle?: MemoryLifecycleEventWriteOptions
+    lifecycle?: MemoryLifecycleEventWriteOptions,
+    mentionReentry?: boolean
   ): Promise<boolean> {
     const beforeStatus = memory.frontmatter.status ?? "active";
-    // Canonicalize the EFFECTIVE merged entityRef (issue #2213) — an
-    // unrelated patch must not rewrite an inherited legacy ref back out.
-    // #2807: `patch.updated` is business time, persisted VERBATIM.
+    // Canonicalize merged entityRef (#2213). patch.updated is business time (#2807).
     const resolveIds = this.currentHistoricalIds();
     const updated: MemoryFrontmatter = entityRefs.canonicalizeEntityRefOption(
       { ...memory.frontmatter, ...patch },
@@ -5397,6 +5375,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     );
     const refIds = typeof updated.entityRef === "string" ? resolveIds : null;
     const afterStatus = updated.status ?? "active";
+    if (!mentionReentry && entityMentionEpoch.neutral(memory.frontmatter, updated)) {
+      const held = await holdMentionNeutralFrontmatter(this, memory, updated, () =>
+        entityMentionEpoch.hold(() => StorageManager.frontmatterBody.call(this, memory, patch, lifecycle, true)));
+      if (held !== undefined) return held;
+    }
 
     const fileContent = `${serializeFrontmatter(this.withOkfType(updated))}\n\n${memory.content}\n`;
     await this.writeTombstoneBlockedFrontmatter(memory, fileContent, updated, async () => {
@@ -5412,6 +5395,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         onFailRestore: memory,
       });
     }
+    if (mentionReentry && !entityMentionEpoch.neutral(memory.frontmatter, updated)) entityMentionEpoch.bump(this.baseDir);
     await this.patchHotMemoriesCache({ addedPath: memory.path });
     if (memory.path.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
@@ -5444,9 +5428,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       lifecycle?.ruleVersion
     );
     if (beforeStatus !== afterStatus) {
-      // Status/lifecycle change must bump memory-status so the version-keyed
-      // entity/derived caches and peer processes observe it (issue #1902:
-      // restored — corpus bump alone doesn't cover status-derived views).
+      // Status change bumps memory-status; a corpus bump does not cover it (#1902).
       this.bumpMemoryStatusVersion();
     }
     return true;
@@ -6518,11 +6500,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const memoryMap = new Map(memories.map((m) => [m.frontmatter.id, m]));
     const memoryPathMap = new Map(memories.map((m) => [path.resolve(m.path), m]));
     let updated = 0;
-    // Capture the corpus version + warmth BEFORE writing so we can patch the hot
-    // entries in place and then re-key them to the version this flush produces
-    // (issue #1902). Access-tracking flush is batched (consolidation / buffer
-    // full), not per-recall, so the single corpus bump below is cheap.
+    // Corpus version and warmth are snapshotted before the writes (#1902).
     const prevVersion = this.getMemoryCorpusVersion();
+    let entityRefMoved = false;
     // Snapshot the secure-store key identity once (Cursor Medium #1902), mirroring
     // readAllMemories/patchHotMemoriesCache: a mid-flush setSecureStoreKey change
     // would otherwise let loop patches or the re-keyed entry be stored under a
@@ -6562,6 +6542,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
               { onFailRestore: current }
             );
           }
+          if (!entityMentionEpoch.neutral(current.frontmatter, newFm)) entityRefMoved = true;
           return { current, newFm };
         });
         if (applied === null) continue;
@@ -6579,14 +6560,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
 
     if (updated > 0) {
-      // Advance the corpus sentinel so PEER processes rescan and don't overwrite
-      // this process's increments (Codex P2): WorkspaceOpsCoordinator computes
-      // existingCount + update.count from the cached value, so a peer serving a
-      // stale count would undercount. Re-key the locally patched entries to the
-      // produced version so this process stays warm — only when our bump was
-      // exclusive and still the current sentinel; otherwise a peer also wrote
-      // and we must let the next read rescan.
-      const { produced, exclusive } = this.bumpMemoryCorpusVersionExclusive();
+      // Advance the corpus sentinel so peers rescan (#1902). Re-key local patches
+      // only when this bump was exclusive; a peer write must rescan instead.
+      const { produced, exclusive } = this.bumpMemoryCorpusVersionExclusive({
+        indexedText: entityRefMoved ? undefined : false,
+      });
       // Drop the in-flight read slot after the bump (parity with
       // patchHotMemoriesCache, Cursor Medium #1902): a readAllMemories scan that
       // started before the flush would otherwise keep awaiting a pre-flush scan
@@ -6596,6 +6574,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       if (
         warm &&
         exclusive &&
+        !entityRefMoved &&
         produced === prevVersion + 1 &&
         this.getMemoryCorpusVersion() === produced &&
         this.hotCacheKeyId() === keyId
@@ -7032,6 +7011,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       });
       if (!written) return false;
       exactReplay = written === "exact-replay";
+      const mentionBefore = { entityRef: currentBefore.frontmatter.entityRef, origin: currentBefore.frontmatter.origin };
       if (exactReplay && typeof updatedFm.entityRef === "string") {
         await this.entityRefRepair.repair(
           currentBefore.path,
@@ -7042,6 +7022,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           { onFailRestore: currentBefore },
         );
       }
+      const mentionUnchanged = entityMentionEpoch.neutral(mentionBefore, updatedFm);
       const supersededAt = updatedFm.supersededAt ?? initialNow;
       const beforeState = this.summarizeLifecycleState(
         currentBefore.frontmatter,
@@ -7063,8 +7044,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         readMemoryByPath: (filePath) => this.readMemoryByPath(filePath),
         isColdOrArchiveTierPath: (memoryPath) => this.isColdOrArchiveTierPath(memoryPath),
         invalidateColdMemoriesCache: () => this.invalidateColdMemoriesCache(),
-        invalidateAllMemoriesCache: () => this.invalidateAllMemoriesCache(),
-        bumpMemoryCorpusVersion: () => this.bumpMemoryCorpusVersion(),
+        invalidateAllMemoriesCache: () => this.invalidateAllMemoriesCache({ indexedText: mentionUnchanged ? false : undefined }),
+        bumpMemoryCorpusVersion: () => this.bumpMemoryCorpusVersion({ indexedText: mentionUnchanged ? false : undefined }),
         appendLifecycleEvent: async () => {
           let lifecycleEvents: MemoryLifecycleEvent[] = [];
           try {
@@ -7178,9 +7159,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           return true;
         });
         if (!written) continue;
-        // Per-file corpus bump BEFORE the awaited lifecycle append (#1902):
-        // the end-of-loop status bump fires only after the whole batch.
-        this.bumpMemoryCorpusVersion();
+        // Corpus bump before the lifecycle append (#1902). Epoch moves only if repair changed entityRef or origin.
+        this.bumpMemoryCorpusVersion({ indexedText: entityMentionEpoch.neutral(currentBefore.frontmatter, updatedFm) ? false : undefined });
         await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.archiveMemories", {
           memoryId: id,
           eventType: "archived",
