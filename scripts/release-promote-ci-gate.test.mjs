@@ -439,6 +439,38 @@ test("latest run wins with started_at fallback (round-3 workflow now sends start
   );
 });
 
+test("a never-started check-run (no timestamps) supersedes timestamped records and fails closed", () => {
+  const result = run([
+    cr("quality", { conclusion: "success", completed_at: "2026-10-01T00:00:00Z" }),
+    crF("quality", { status: "queued", conclusion: null, started_at: null, completed_at: null }),
+    crF("dependency-review"),
+    crF("gitleaks"),
+    crF("analyze"),
+    crF("ai-reviewers"),
+    crF("unresolved-review-threads"),
+  ]);
+  assert.equal(result.decision, "refuse");
+  assert.ok(
+    result.reasons.some((r) => r.startsWith("quality:") && /CI not finished/.test(r)),
+  );
+});
+
+test("timestampless completed records tie-break by id (higher id wins, order-independent)", () => {
+  const green = [
+    { name: "quality", status: "completed", conclusion: "success", id: 1 },
+    { name: "quality", status: "completed", conclusion: "failure", id: 2 },
+    crF("dependency-review"),
+    crF("gitleaks"),
+    crF("analyze"),
+    crF("ai-reviewers"),
+    crF("unresolved-review-threads"),
+  ];
+  assert.equal(run(green).decision, "refuse");
+  assert.ok(run(green).reasons.some((r) => r === "quality: failure"));
+  const flipped = [green[1], green[0], ...green.slice(2)];
+  assert.deepEqual(run(flipped), run(green));
+});
+
 test("conclusion=neutral IS refusal (round-2: allow-list on success only)", () => {
   // The repo's ai-reviewers gate posts `neutral` for superseded runs.
   // Treat as refusal so a required review that produced no real verdict

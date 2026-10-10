@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Removed an unused release-check ordering suffix and corrected its input docs (#3161).
+- Documented stable-only native releases and the manual npm package seed (#3162).
+
 ## [v9.69.68] — 2026-09-07
 
 ### Fixed

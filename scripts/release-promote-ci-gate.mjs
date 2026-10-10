@@ -14,10 +14,13 @@
  *                          is given
  * Document shape:
  *   { "type": "check-runs", "records": [ { name, status, conclusion,
- *                                           completed_at? }, ... ] }
+ *                                           completed_at?, started_at?,
+ *                                           id? }, ... ] }
  *   Records may be check-runs (from /commits/{sha}/check-runs) and/or
  *   commit statuses (from /commits/{sha}/status), normalized to the same
- *   shape by the workflow before being handed to this script.
+ *   shape by the workflow before being handed to this script. Statuses
+ *   arrive with their `updated_at` projected into both `started_at` and
+ *   `completed_at`, so every status record is timestamped.
  *
  * CLI:
  *   --required-contexts <JSON array of strings>   required, fail closed
@@ -34,8 +37,11 @@
  *     block. If the ruleset API cannot be read the workflow must NOT call
  *     this script with an empty required list — it fails the step.
  *   - For each required context, take the LATEST record (per
- *     `completed_at`; falls back to `started_at`; falls back to "" for
- *     records that have neither). Rulesets evaluate the latest run per
+ *     `completed_at`; falls back to `started_at`; falls back to the
+ *     record `id` when a record carries no timestamps at all — that
+ *     only happens for a never-started run, and such a record then
+ *     supersedes timestamped ones, which fails the gate closed).
+ *     Rulesets evaluate the latest run per
  *     context — earlier runs are superseded. Refuse if that latest record
  *     is unfinished (status != "completed" or conclusion == null) OR its
  *     conclusion is in the failure set {failure, cancelled, timed_out,
@@ -148,20 +154,8 @@ export function decide(records, requiredContexts, selfExcluded = SELF_EXCLUDED_D
   // the verdict. Rulesets evaluate the latest run per context — an older
   // queued or in_progress record is superseded by a newer completed one,
   // and the verdict must match what the merge gate actually saw.
-  // Falling back past '' would let two records with no timestamp compete
-  // and produce the wrong latest; we use id as the ultimate tiebreaker.
-  //
-  // Records from different sources (check-runs vs commit statuses) keep
-  // distinct source-tinged ids so an accidental collision between a
-  // check-run's numeric id and a status's row id cannot make the older
-  // record win. Check-runs always carry a numeric id; statuses always
-  // carry their updated_at; the workflow tags the source explicitly.
   const byName = new Map();
-  const orderKey = (r) => {
-    const stamp =
-      r.completed_at ?? r.started_at ?? `id:${r.id ?? ""}`;
-    return `${stamp}|${r._source ?? "check-runs"}`;
-  };
+  const orderKey = (r) => r.completed_at ?? r.started_at ?? `id:${r.id ?? ""}`;
   for (const r of records) {
     if (!r || typeof r.name !== "string") continue;
     const prev = byName.get(r.name);

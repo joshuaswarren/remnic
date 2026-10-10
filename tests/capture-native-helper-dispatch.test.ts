@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { parse } from "yaml";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import process from "node:process";
+import { tmpdir } from "node:os";
 import test from "node:test";
 
 // Use the workspace-pinned parser, matching the other workflow tests.
@@ -373,3 +376,38 @@ test("capture-native-helper pin to release tag for dispatch runs", () => {
     "publish job's checkout must not pin `ref:` so it checks out the dispatching ref (the release tag)",
   );
 });
+
+test("ref anchor admits only exact stable vX.Y.Z — prerelease and build metadata are refused", () => {
+  const steps = helperDoc.jobs.publish.steps ?? [];
+  const validation = steps.find((s) => s.name === "Validate ref is a vX.Y.Z tag");
+  assert.ok(validation, "validation step must exist");
+  const outputDir = mkdtempSync(resolve(tmpdir(), "native-ref-guard-"));
+  const output = resolve(outputDir, "output");
+  const admitted = (ref: string): boolean => {
+    try {
+      const result = spawnSync("bash", ["-c", validation.run ?? ""], {
+        env: { ...process.env, EVENT_NAME: "workflow_dispatch", DISPATCH_REF: ref, GITHUB_OUTPUT: output },
+      });
+      assert.equal(readFileSync(output, "utf8"), `is_release_tag=${result.status === 0}\n`);
+      return result.status === 0;
+    } finally {
+      rmSync(output, { force: true });
+    }
+  };
+
+  try {
+    assert.equal(admitted("refs/tags/v9.69.96"), true);
+    for (const refused of [
+      "refs/tags/v9.69.96-rc.1",
+      "refs/tags/v9.69.96+build.5",
+      "refs/tags/v9.69.96-rc.1+build.5",
+      "refs/tags/v9.69",
+      "refs/tags/v9",
+      "refs/tags/9.69.96",
+      "refs/heads/main",
+    ]) assert.equal(admitted(refused), false, refused);
+  } finally {
+    rmSync(outputDir, { recursive: true });
+  }
+});
+
