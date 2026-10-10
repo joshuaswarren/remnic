@@ -8,6 +8,8 @@ All notable changes to this project will be documented in this file.
 
 - `@remnic/core` warm embedding searches now detect index changes from peer processes (#3165). Every index publication moves a generation marker to an in-flight value before its writes and writes a fresh completion value after them, so a stamp is only ever stable for a completed generation and consecutive publications cannot alias on filesystems with coarse timestamps or reused directory inodes. Unchanged state avoids index reads.
 
+## [v9.69.98] — 2026-10-10
+
 ### Changed
 
 - Removed tracked editor backups and the duplicate root audit file (#3144).
