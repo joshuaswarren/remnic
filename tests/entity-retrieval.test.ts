@@ -9,6 +9,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { parseConfig } from "@remnic/core/config";
 import { buildEntityRecallSection, entityIndexVersion, readRecentEntityTranscriptEntries } from "@remnic/core/entity-retrieval";
 import { containsPhrase } from "../packages/remnic-core/src/entity-retrieval-boundaries.js";
+import {
+  dropEntityMentionIndexCache,
+  settleEntityMentionIndex,
+} from "../packages/remnic-core/src/entity-mention-index-cache.js";
 import { Orchestrator } from "@remnic/core/orchestrator";
 import { StorageManager, normalizeEntityName } from "@remnic/core/storage";
 import { SecureStoreLockedError } from "@remnic/core/secure-store/index";
@@ -772,6 +776,12 @@ test("entity retrieval refreshes a persisted index after an entity-linked Fact c
     { entityRef: canonical, confidence: 1 },
   );
 
+  // A fact create moves the mention epoch. The recall that observes it serves
+  // the previous index and reconciles in the background; the snippet is
+  // guaranteed on the recall after that reconcile settles, not on the
+  // in-flight one.
+  await buildSection(config, storage, "Moonlightの検証コードは何ですか？");
+  await settleEntityMentionIndex();
   const section = await buildSection(config, storage, "Moonlightの検証コードは何ですか？");
 
   assert.ok(section);
@@ -810,6 +820,7 @@ test("entity retrieval refreshes a persisted index after an Entity gains an alia
 test("entity retrieval does not stamp a stale index with a newer Entity status", async (t) => {
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-index-race");
   t.after(async () => {
+    await settleEntityMentionIndex();
     await Promise.all([
       rm(memoryDir, { recursive: true, force: true }),
       rm(workspaceDir, { recursive: true, force: true }),
@@ -842,6 +853,9 @@ test("entity retrieval does not stamp a stale index with a newer Entity status",
   t.after(() => {
     storage.readAllEntityFiles = originalReadAllEntityFiles;
   });
+  // The race is inside a build. Drop the warm slot so this call actually
+  // reads entity files and the alias lands mid-read.
+  dropEntityMentionIndexCache();
   await buildSection(config, storage, "What do we know about Moonlight?");
 
   const section = await buildSection(config, storage, "Lunar Beaconの検証コードは何ですか？");

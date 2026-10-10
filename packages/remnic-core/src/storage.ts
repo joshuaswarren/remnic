@@ -86,6 +86,7 @@ import {
   deleteInFlightReadsForDir,
   clearInFlightReads,
 } from "./in-flight-reads.js";
+import { entityMentionEpoch } from "./entity-mention-epoch.js";
 import * as archive from "./archive-mutation-version.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
@@ -2428,9 +2429,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    */
   protected bumpMemoryCorpusVersion(): void {
     this.bumpSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
-    // Drop the in-flight readAllMemories slot (#1902): a concurrent read
-    // must not attach to a scan that began BEFORE this mutation. (The patch
-    // path uses bumpMemoryCorpusVersionExclusive and clears the slot itself.)
+    if (!entityMentionEpoch.suppressed()) entityMentionEpoch.bump(this.baseDir);
     deleteInFlightReadsForDir(this.baseDir);
   }
   getArchiveMutationVersion(): number { return archive.getArchiveMutationVersionForDir(this.baseDir); }
@@ -2454,11 +2453,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       appendFileSync(filePath, "x");
       const produced = statSync(filePath).size;
       StorageManager.memoryCorpusVersionByDir.set(this.baseDir, produced);
+      if (!entityMentionEpoch.suppressed()) entityMentionEpoch.bump(this.baseDir);
       // Exclusive iff exactly our single byte landed between the two stats.
       return { produced, exclusive: produced === before + 1 };
     } catch {
       const next = (StorageManager.memoryCorpusVersionByDir.get(this.baseDir) ?? 0) + 1;
       StorageManager.memoryCorpusVersionByDir.set(this.baseDir, next);
+      if (!entityMentionEpoch.suppressed()) entityMentionEpoch.bump(this.baseDir);
       return { produced: next, exclusive: true };
     }
   }
@@ -5384,7 +5385,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   async writeMemoryFrontmatter(
     memory: MemoryFile,
     patch: Partial<MemoryFrontmatter>,
-    lifecycle?: MemoryLifecycleEventWriteOptions
+    lifecycle?: MemoryLifecycleEventWriteOptions,
+    mentionReentry?: boolean
   ): Promise<boolean> {
     const beforeStatus = memory.frontmatter.status ?? "active";
     // Canonicalize the EFFECTIVE merged entityRef (issue #2213) — an
@@ -5397,6 +5399,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     );
     const refIds = typeof updated.entityRef === "string" ? resolveIds : null;
     const afterStatus = updated.status ?? "active";
+    if (!mentionReentry && entityMentionEpoch.neutral(memory.frontmatter, updated))
+      return entityMentionEpoch.hold(() => this.writeMemoryFrontmatter(memory, patch, lifecycle, true));
 
     const fileContent = `${serializeFrontmatter(this.withOkfType(updated))}\n\n${memory.content}\n`;
     await this.writeTombstoneBlockedFrontmatter(memory, fileContent, updated, async () => {
