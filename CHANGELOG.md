@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Removed tracked editor backups and the duplicate root audit file (#3144).
+- Documented that a standalone `**` offline-sync exclude matches every relative path (#3149).
+
 ## [v9.69.68] — 2026-09-07
 
 ### Fixed
