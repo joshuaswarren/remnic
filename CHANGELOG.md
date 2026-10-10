@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.97] — 2026-10-10
+
 ### Fixed
 
 - MCP tools use the configured default namespace on flat daemons when a client adapter infers its own namespace. Explicit namespaces still receive strict validation (#3166).
