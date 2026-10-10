@@ -492,6 +492,55 @@ test("overlapping mention-epoch bumps do not chain full rebuilds", async () => {
   }
 });
 
+test("a recall during a stable rebuild does not schedule a follow-up", async () => {
+  const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-stable-reader");
+  try {
+    let epoch = 0;
+    let builds = 0;
+    const scopeKey = entityMentionScopeKey(undefined, [{ dir: memoryDir }], "stable-reader");
+    const identity = () => ({ mentionEpoch: String(epoch), entityMutation: "0" });
+    let releaseBuild: () => void = () => {};
+    let enteredBuild: () => void = () => {};
+    const gate = new Promise<void>((resolveGate) => {
+      releaseBuild = resolveGate;
+    });
+    const wait = new Promise<void>((resolveEntered) => {
+      enteredBuild = resolveEntered;
+    });
+    const buildFull = async (): Promise<{ generation: number }> => {
+      builds += 1;
+      if (builds === 2) {
+        enteredBuild();
+        await gate;
+      }
+      return { generation: builds };
+    };
+    const resolve = () =>
+      resolveEntityMentionIndex({
+        scopeKey,
+        currentIdentity: identity,
+        buildFull,
+        rebuildEntities: async (previous) => previous,
+      });
+    await resolve();
+    assert.equal(builds, 1);
+    epoch += 1;
+    const background = resolve();
+    await wait;
+    assert.equal(builds, 2);
+    await resolve();
+    await resolve();
+    releaseBuild();
+    await background;
+    await settleEntityMentionIndex(scopeKey);
+    assert.equal(builds, 2);
+    assert.equal(entityMentionFullRebuildsStarted(scopeKey), 2);
+  } finally {
+    dropEntityMentionIndexCache();
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
 test("a recall during the follow-up scan does not start another rebuild", async () => {
   const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-refill");
   try {

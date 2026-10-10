@@ -143,10 +143,11 @@ function armRebuild(slot: Slot): void {
 }
 
 function startRebuild(slot: Slot): void {
-  if (slot.rebuild) {
-    slot.again = true;
-    return;
-  }
+  // A recall that arrives during a scan is not a write. The follow-up is
+  // armed only when the scan's end identity differs from the identity it
+  // started with. Setting `again` here made every concurrent recall pay a
+  // second full corpus scan after a stable rebuild.
+  if (slot.rebuild) return;
   const token = slot.token;
   noteRebuild(slot.scopeKey);
   const started = slot.currentIdentity();
