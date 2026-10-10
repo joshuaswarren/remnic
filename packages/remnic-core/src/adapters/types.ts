@@ -22,6 +22,8 @@ export interface AdapterContext {
 export interface ResolvedIdentity {
   /** Engram namespace (scopes memory access) */
   namespace: string;
+  /** False for an inferred namespace; omitted values retain explicit-namespace validation. */
+  namespaceExplicit?: boolean;
   /** Engram principal (authorization subject) */
   principal: string;
   /** Session key for continuity tracking */

@@ -40,11 +40,11 @@ export class ReplitAdapter implements EngramAdapter {
   resolveIdentity(context: AdapterContext): ResolvedIdentity {
     const mcpSessionId = headerValue(context.headers, "mcp-session-id");
 
-    const namespace = headerValue(context.headers, "x-engram-namespace")
-      || "replit";
+    const namespaceHeader = headerValue(context.headers, "x-engram-namespace");
 
     return {
-      namespace,
+      namespace: namespaceHeader ?? "replit",
+      namespaceExplicit: namespaceHeader !== undefined,
       principal: "replit-agent",
       sessionKey: mcpSessionId ?? context.sessionKey,
       adapterId: this.id,
