@@ -3,14 +3,14 @@
 Remnic's supported QMD install reports `2.8.3` from `qmd --version`. Stock
 `npm install -g @tobilu/qmd@2.8.3` prints the same string and is not the
 binary this tree expects. The install is one pinned commit of
-[tobi/qmd](https://github.com/tobi/qmd) plus two patches in this repo.
+[tobi/qmd](https://github.com/tobi/qmd) plus the patches in this repo.
 
 | | |
 | --- | --- |
 | Commit | `93d211f9ef4a869a9aed0d075ca767dda552627f` |
 | `package.json` version | `2.8.3` (same as the tag and as current main) |
 | Tag `v2.8.3` | `30edfa8b11b3bdcb8ff2bb34d85c10d542333cc1` (2026-08-16) |
-| Patches | `docs/patches/qmd-2.8.3-mcp-cancel.patch`, `docs/patches/qmd-2.8.3-stdio-stdout.patch` |
+| Patches | `docs/patches/qmd-2.8.3-mcp-cancel.patch`, `docs/patches/qmd-2.8.3-stdio-stdout.patch`, `docs/patches/qmd-2.8.3-rerank-mocks.patch` (tests only) |
 
 Do not track floating `main`. Do not open a pull request or issue on tobi/qmd
 for these patches from this tree; the patches are written so they can be
@@ -197,15 +197,22 @@ git fetch --depth 1 origin 93d211f9ef4a869a9aed0d075ca767dda552627f
 git checkout --detach 93d211f9ef4a869a9aed0d075ca767dda552627f
 git apply /path/to/remnic/docs/patches/qmd-2.8.3-mcp-cancel.patch
 git apply /path/to/remnic/docs/patches/qmd-2.8.3-stdio-stdout.patch
+git apply /path/to/remnic/docs/patches/qmd-2.8.3-rerank-mocks.patch
 npm install
 npm run build
 npm install -g .
 qmd --version   # prints 2.8.3
 ```
 
+`qmd-2.8.3-rerank-mocks.patch` touches `test/llm.test.ts` only. A checkout
+that already has the cancel and stdout patches applies just that file. It
+does not change ranking. Without it, `LlamaCpp rerank deduping` and
+`uses fewer active rerank contexts for small batches` throw
+`ctx.rank is not a function`, because those mocks still call `rankAll`.
+
 `npm pack` in that tree produces a tarball of the same bits. Install it with
 `npm install -g ./tobilu-qmd-2.8.3.tgz`. A git fork is the same checkout with
-the two patches applied; do not point Remnic's auto-upgrade at a git URL.
+the patches applied; do not point Remnic's auto-upgrade at a git URL.
 The version parser accepts only semver.
 
 Restart the host so Remnic respawns `qmd mcp`. Then:
@@ -215,7 +222,7 @@ qmd trust          # only if update hooks, out-of-project paths, or custom model
 qmd cleanup        # prints occupancy; repacks the partitioned table when it is under 90%
 ```
 
-The Dockerfile builds this same commit. It copies the two patches, fetches
+The Dockerfile builds this same commit. It copies the patches, fetches
 the SHA, applies them, and `npm install -g` so `/usr/local/bin/qmd` still
 points at `@tobilu/qmd`.
 
@@ -248,9 +255,9 @@ onto 2.5.3.
 ## CPU numbers measured on this VM
 
 Labeled `measuredOn: "vm"`. 4 CPUs, no GPU. These milliseconds do not transfer
-to the host. The host's vector stage is about 6s and its rerank of 40
-candidates is 8.7–45.9s, median 20s. Those host figures are from the earlier
-capture, not from this VM.
+to the host. The earlier host capture, before the #983 conversion, had a
+vector stage of about 6s and a rerank of 40 candidates at 8.7–45.9s, median
+20s. The host measurement after that conversion is in the next section.
 
 ### Unpartitioned vec0 repack
 
@@ -272,15 +279,9 @@ stayed 10,434,342,912 bytes because the bench does not `VACUUM`. Dropped
 chunks are not scanned. Insert-and-punch took 218s and the repack took 122s.
 Ratio 5.13×.
 
-If the host's `qmd cleanup` prints occupancy near 36%, divide the ~6s
-two-scan stage by 5.13× and it is about 1.2s. Upstream's published ratio on
-a warm index was 2× (1.8s → 0.9s), which puts the same stage near 3s. A warm
-cache can land between those. If cleanup says the table is already packed,
-expect no change.
-
-Packing does not by itself put a 20s median rerank, or the 46s tail, under
-25s. A ~9s rerank plus a 1.2s scan fits. A 20s rerank plus a 1.2–3s scan is
-21–23s. The 46s tail stays over 25s.
+That 5.13× ratio is this VM's unpartitioned bench. It is not the host's
+partitioned conversion. The host numbers below replace the earlier projection
+that a ~6s two-scan stage would land near 1.2–3s.
 
 ### Rerank profile (node-llama-cpp 3.18.1)
 
@@ -310,6 +311,33 @@ here.
 
 Turning rerank off against the captured BEFORE lists: top-1 10/10, mean
 top-10 overlap 4.20, mean Spearman 0.3800. Rerank stays on.
+
+## Host numbers after the #983 conversion
+
+Labeled `measuredOn: "host"`. The binary was `93d211f9` plus the cancel patch,
+the stdout patch, and the idle-unload fix on `joshuaswarren/qmd` branch
+`fix-938-idle-unload-race`. That #938 fix is not one of the patches in this
+repo. It stops an idle unload from freeing a context under an in-flight
+embed or rerank. It does not change scores. The search and index changes
+below are the #983 conversion on that index.
+
+| | before | after |
+| --- | ---: | ---: |
+| search mean | ~6.0 s | 0.6 s |
+| index size | 5.68 GB | 1.96 GB |
+| packing | orphans present | 100% packed, ~1.05M orphan vectors dropped |
+| rerank candidates, mean | 19.4 | 35.9 |
+| CPU rerank mean | 27 s | 41 s |
+| total recall mean | 33 s | 41.5 s |
+
+On 10 queries, top-1 matched the before list on 9 of 10. Content spot-checks
+of the returned memories were equal or better.
+
+Collection-scoped search no longer takes a global top-k and then drops rows
+from other collections, so this collection is no longer starved inside that
+top-k. More of the 40-candidate cap reaches rerank (19.4 → 35.9). The scan
+got faster. The CPU rerank grew by more than the scan saved, so total recall
+rose from 33 s to 41.5 s.
 
 ## Host compare
 

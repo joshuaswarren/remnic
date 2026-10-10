@@ -323,16 +323,16 @@ scanned. `qmd cleanup` still vacuums after the repack, which is what reclaims
 the hole bytes. Insert-and-punch took 218s and the repack took 122s on this
 VM. That is maintenance, not a per-query cost.
 
-Project the host's ~6s two-scan stage only when cleanup prints occupancy near
-36%. Divide by the measured 5.13× and the stage is about 1.2s. The published
-#937 ratio on a warm index was 2×, which puts the same stage near 3s. A host
-with the pages cached can land between those. Absolute milliseconds from this
-VM do not transfer: `mmap_size 0` makes the holey scan read every page.
-
-Packing the vector stage does not by itself put a 20s median rerank, or the
-8.7–45.9s rerank range, under a 25s budget. A fast rerank (about 9s) plus a
-1.2s scan fits. A 20s rerank plus a 1.2–3s scan is 21–23s. The 46s rerank tail
-stays over 25s.
+That 5.13× ratio is this VM's unpartitioned bench. Absolute milliseconds from
+this VM do not transfer: `mmap_size 0` makes the holey scan read every page.
+The host's partitioned #983 conversion was measured separately
+(`docs/qmd-2.8.3.md`): search mean 6.0 s → 0.6 s, index 5.68 GB → 1.96 GB
+(~1.05M orphan vectors dropped, table 100% packed). Rerank candidates rose
+from a mean of 19.4 to 35.9 because the collection is no longer starved
+inside a global top-k, so CPU rerank rose from 27 s to 41 s and total recall
+from 33 s to 41.5 s. On 10 queries, top-1 was 9/10 and content spot-checks
+were equal or better. Packing the scan does not by itself put that rerank
+under 25 s.
 
 The pinned build's per-collection index (#983) scans one collection instead of
 the global table. The neighbor set can differ from a global-top-k-then-filter.
