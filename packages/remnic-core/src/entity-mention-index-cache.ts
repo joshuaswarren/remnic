@@ -15,8 +15,9 @@ import { log } from "./logger.js";
  *   recall; its memory snippets arrive with the next full reconcile
  * - memory create/edit/delete moves the epoch. The recall serves the last
  *   index immediately and one background reconcile runs, plus at most one
- *   follow-up if that scan overlaps a later write. Further rescans wait for
- *   the next recall. After writes quiesce and `settleEntityMentionIndex`
+ *   follow-up if that scan overlaps a later write. A recall during either
+ *   scan does not grant another follow-up. Further rescans wait for the
+ *   next recall. After writes quiesce and `settleEntityMentionIndex`
  *   finishes, the index matches a full rebuild
  * - secure-store key, alias map, and native revision stay in the key, so a
  *   change is a miss and awaits a full rebuild. A locked store never reads
@@ -123,7 +124,9 @@ function evictSameFamily(scopeKey: string): void {
 }
 
 function armRebuild(slot: Slot): void {
-  slot.followUps = 1;
+  // A recall that arrives while a scan is already running must not grant
+  // another follow-up. The chain stops after the one already armed.
+  if (!slot.rebuild) slot.followUps = 1;
   startRebuild(slot);
 }
 

@@ -12,12 +12,13 @@ import path from "node:path";
  * frontmatter rewrites run inside `hold()` and leave it alone.
  *
  * The on-disk sentinel is the byte size of `state/.entity-mention-epoch.log`
- * (same pattern as the other version logs). A failed append still advances an
- * in-process counter, and `current` is the max of that counter and the file
- * size, so a readable but unwritable sentinel cannot freeze the epoch.
- * `reset` drops caches that registered at load (the mention index).
+ * (same pattern as the other version logs). A failed append adds one to an
+ * in-process extra, and `current` is the file size plus that extra. A later
+ * successful append, including one from another process, grows the file and
+ * moves `current` past those failed bumps. `reset` drops caches that
+ * registered at load (the mention index).
  */
-const fallbackByDir = new Map<string, number>();
+const fallbackByDir = new Map<string, { extra: number; disk: number }>();
 const suppression = new AsyncLocalStorage<true>();
 let onReset: (() => void) | null = null;
 
@@ -42,23 +43,47 @@ function diskSize(filePath: string): number {
   }
 }
 
+function localEpoch(key: string, disk: number): { extra: number; disk: number } {
+  const existing = fallbackByDir.get(key);
+  if (existing) return existing;
+  const created = { extra: 0, disk };
+  fallbackByDir.set(key, created);
+  return created;
+}
+
 function bump(dir: string): void {
   const key = path.resolve(dir);
   const filePath = epochFile(dir);
-  const next = current(dir) + 1;
+  const before = diskSize(filePath);
+  let appended = false;
   try {
     mkdirSync(path.dirname(filePath), { recursive: true });
     appendFileSync(filePath, "x");
+    appended = true;
   } catch {
     // The file can still be stat-able (read-only, or the disk is full). The
     // in-process counter has to move or this process keeps serving a stale index.
   }
-  fallbackByDir.set(key, Math.max(next, diskSize(filePath)));
+  const after = diskSize(filePath);
+  const local = localEpoch(key, before);
+  if (!appended || after <= before) local.extra += 1;
+  noteDisk(local, after);
+}
+
+function noteDisk(local: { extra: number; disk: number }, disk: number): void {
+  if (disk < local.disk) local.extra += local.disk - disk;
+  local.disk = disk;
 }
 
 function current(dir: string): number {
   const key = path.resolve(dir);
-  return Math.max(diskSize(epochFile(dir)), fallbackByDir.get(key) ?? 0);
+  const disk = diskSize(epochFile(dir));
+  const local = fallbackByDir.get(key);
+  if (!local) return disk;
+  noteDisk(local, disk);
+  // Failed appends stay ahead of the file. A peer's later successful append
+  // grows `disk` and must not land on the same number as those local failures.
+  return disk + local.extra;
 }
 
 function suppressed(): boolean {

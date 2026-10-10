@@ -325,6 +325,26 @@ test("a failed epoch append still advances while the sentinel file is readable",
   }
 });
 
+test("a peer append after a failed bump still moves the mention epoch", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-entity-epoch-peer-"));
+  const file = path.join(dir, "state", ".entity-mention-epoch.log");
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, "xxxxx");
+  chmodSync(file, 0o444);
+  try {
+    assert.equal(entityMentionEpoch.current(dir), 5);
+    entityMentionEpoch.bump(dir);
+    assert.equal(entityMentionEpoch.current(dir), 6);
+    chmodSync(file, 0o644);
+    await writeFile(file, "xxxxxx");
+    assert.equal(entityMentionEpoch.current(dir), 7);
+    assert.equal(entityMentionEpoch.current(dir), 7);
+  } finally {
+    chmodSync(file, 0o644);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("access-count flushes do not move the mention epoch", async () => {
   const { memoryDir, workspaceDir, storage } = await buildHarness("engram-entity-epoch-access");
   try {
@@ -421,6 +441,71 @@ test("overlapping mention-epoch bumps do not chain full rebuilds", async () => {
     await resolve();
     await waitForBuilds(5);
     assert.equal(builds, 5);
+  } finally {
+    dropEntityMentionIndexCache();
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
+test("a recall during the follow-up scan does not start another rebuild", async () => {
+  const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-refill");
+  try {
+    let epoch = 0;
+    let builds = 0;
+    const scopeKey = entityMentionScopeKey(undefined, [{ dir: memoryDir }], "refill");
+    const identity = () => ({ mentionEpoch: String(epoch), entityMutation: "0" });
+    let releaseBuild2: () => void = () => {};
+    let enteredBuild2: () => void = () => {};
+    let releaseBuild3: () => void = () => {};
+    let enteredBuild3: () => void = () => {};
+    const gate2 = new Promise<void>((resolveGate) => {
+      releaseBuild2 = resolveGate;
+    });
+    const wait2 = new Promise<void>((resolveEntered) => {
+      enteredBuild2 = resolveEntered;
+    });
+    const gate3 = new Promise<void>((resolveGate) => {
+      releaseBuild3 = resolveGate;
+    });
+    const wait3 = new Promise<void>((resolveEntered) => {
+      enteredBuild3 = resolveEntered;
+    });
+    const buildFull = async (): Promise<{ generation: number }> => {
+      builds += 1;
+      if (builds > 6) throw new Error(`rebuild chain exceeded 6 (${builds})`);
+      if (builds === 2) {
+        enteredBuild2();
+        await gate2;
+        epoch += 1;
+      } else if (builds === 3) {
+        enteredBuild3();
+        await gate3;
+        epoch += 1;
+      }
+      return { generation: builds };
+    };
+    const resolve = () =>
+      resolveEntityMentionIndex({
+        scopeKey,
+        currentIdentity: identity,
+        buildFull,
+        rebuildEntities: async (previous) => previous,
+      });
+    await resolve();
+    assert.equal(builds, 1);
+    epoch += 1;
+    await resolve();
+    await wait2;
+    assert.equal(builds, 2);
+    releaseBuild2();
+    await wait3;
+    assert.equal(builds, 3);
+    epoch += 1;
+    await resolve();
+    releaseBuild3();
+    await new Promise((resolveTimer) => setImmediate(resolveTimer));
+    assert.equal(builds, 3);
+    assert.equal(entityMentionFullRebuildsStarted(scopeKey), 3);
   } finally {
     dropEntityMentionIndexCache();
     await removeHarness(memoryDir, workspaceDir);
