@@ -379,14 +379,11 @@ remain. Work with this, not against it:
    run as a product defect.
 5. A positive CodeRabbit review on the current head satisfies
    `ai-reviewers` when Cursor never starts. Cursor remains accepted.
-   When NO required reviewer posts anything at all on a head, the gate now
-   concludes `success` with the title `Reviewers never posted — gate waived`
-   instead of `neutral`. That is deliberate: the ruleset requires this context
-   and does not accept `neutral`, so the old escape hatch left such PRs blocked
-   and the only way forward was an admin merge — which bypasses EVERY required
-   check at once. Waiving this one gate explicitly keeps `checks`, the test
-   shards, and `unresolved-review-threads` enforced. A posted
-   `CHANGES_REQUESTED` still fails the gate; only reviewer *absence* is waived.
+   When no required bot posts before the poll deadline, the workflow reports
+   success with `Reviewers never posted — gate waived`. This waives the bot
+   availability check only. Ask another agent to review the PR before merging,
+   fix its findings, and keep all other required checks green. A posted
+   `CHANGES_REQUESTED` still fails the gate.
 6. Rulesets evaluate the LATEST check-run per required context, not the best
    one. A `neutral` check-run posted after a `success` on the same head keeps
    `mergeable_state: blocked` indefinitely — the gate reads red even though a
