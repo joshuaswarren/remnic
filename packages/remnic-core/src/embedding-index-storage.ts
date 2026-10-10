@@ -485,7 +485,9 @@ export class EmbeddingIndexFileStore {
    * the published position after an interrupted replacement. Returns true
    * when a rollback happened. Only fires in the actual rename gap
    * (published directory absent); callers must invalidate any cached index
-   * view when this returns true.
+   * view when this returns true. A successful rollback finalizes the
+   * generation marker strictly: a failed completion write fails the
+   * recovery instead of leaving every search reloading forever.
    */
   async recoverIfInterrupted(fence?: EmbeddingGenerationFence): Promise<boolean> {
     // Only the rename gap (published directory absent) is recoverable. When
@@ -508,6 +510,7 @@ export class EmbeddingIndexFileStore {
     // The rollback rename is destructive: reassert lock ownership first.
     await fence?.();
     await rename(backupPath, this.shardDir);
+    await this.writeGenerationMarker(randomUUID());
     log.warn(
       `embedding index: recovered interrupted replacement; former generation restored from ${backupPath}`,
     );
@@ -1033,7 +1036,14 @@ export class EmbeddingIndexFileStore {
     try {
       await rename(stagingDir, this.shardDir);
     } catch (err) {
-      if (demoted) await rename(backupPath, this.shardDir).catch(() => undefined);
+      if (demoted) {
+        try {
+          await rename(backupPath, this.shardDir);
+          await this.completeGenerationMarker();
+        } catch (rollbackErr) {
+          log.warn(`embedding index: publication rollback did not restore the generation; marker stays in-flight: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`);
+        }
+      }
       throw err;
     }
     await this.completeGenerationMarker();

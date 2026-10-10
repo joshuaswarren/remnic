@@ -12,7 +12,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
@@ -418,6 +418,53 @@ test("a negative empty cache does not pin the store against a peer's first publi
     hits[0]?.id,
     "mem-b",
     "the peer's first generation must be visible to a store that was empty at first search",
+  );
+});
+
+test("a no-op removal after recovery leaves a stable stamp and no warm reload", async (t) => {
+  const memoryDir = await newMemoryDir();
+  t.after(() => rm(memoryDir, { recursive: true, force: true }));
+  t.after(() => clearHostEmbeddingProvidersForTest());
+  t.after(registerHostEmbeddingProvider(memoryDir, hostProvider("host-model-a")));
+  const prevLimit = process.env.REMNIC_EMBEDDING_INDEX_FILE_CHAR_LIMIT;
+  process.env.REMNIC_EMBEDDING_INDEX_FILE_CHAR_LIMIT = "1024";
+  t.after(() => {
+    if (prevLimit === undefined) delete process.env.REMNIC_EMBEDDING_INDEX_FILE_CHAR_LIMIT;
+    else process.env.REMNIC_EMBEDDING_INDEX_FILE_CHAR_LIMIT = prevLimit;
+  });
+
+  const counting = makeCountingIo();
+  const fallback = new EmbeddingFallback(parentConfig(memoryDir), counting.io);
+  for (let i = 0; i < 14; i++) {
+    await fallback.indexFile(
+      `mem-a-${i}`,
+      `${PARENT_TEXT} variant number ${i}`,
+      `namespaces/alpha/facts/parent-a-${i}.md`,
+    );
+  }
+  await fallback.search(PARENT_TEXT, 5);
+
+  // Crash after the in-flight marker, before the staging publication.
+  const stateDir = path.join(memoryDir, "state");
+  const shardDir = path.join(stateDir, "embeddings");
+  await rename(shardDir, path.join(stateDir, "embeddings.pre-replace.tmp"));
+  await writeFile(path.join(stateDir, "embeddings.generation"), "in-flight");
+
+  // A no-op removal performs no persist: recovery alone must finalize the
+  // marker, or every search reloads the whole index forever.
+  await fallback.removeFromIndex("mem-absent");
+  const marker = (await readFile(path.join(stateDir, "embeddings.generation"), "utf-8")).trim();
+  assert.notEqual(marker, "in-flight", "recovery with a no-op mutation must still finalize the marker");
+
+  const settled = await fallback.search(PARENT_TEXT, 5);
+  assert.match(settled[0]?.id ?? "", /^mem-a-/, "the restored generation is served");
+  const readsAfterSettled = counting.reads();
+  const warm = await fallback.search(PARENT_TEXT, 5);
+  assert.match(warm[0]?.id ?? "", /^mem-a-/);
+  assert.equal(
+    counting.reads(),
+    readsAfterSettled,
+    "the recovered generation's stamp is stable: warm searches perform no index reads",
   );
 });
 
