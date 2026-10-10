@@ -93,7 +93,7 @@ function attachWaiter<T>(slot: InflightSlot<T>, signal?: AbortSignal): Promise<T
  * `signal` aborts. In-flight `rankIndex` calls finish; later indexes
  * are not started. A cancelled batch throws and does not return scores.
  *
- * `docs/patches/qmd-2.5.3-mcp-cancel.patch` uses the same loop inside
+ * `docs/patches/qmd-2.8.3-mcp-cancel.patch` uses the same loop inside
  * QMD's reranker. `rank()` and `rankAll()` share one evaluate path, so
  * a document that finishes has the same score either way.
  */

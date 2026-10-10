@@ -19,14 +19,12 @@ QMD provides the highest quality retrieval through hybrid BM25 + vector + LLM re
 
 ### Setup
 
-Install QMD. Remnic currently supports QMD `2.5.3` and detects the installed
-version with `qmd --version` at runtime:
-
-```bash
-npm install -g @tobilu/qmd@2.5.3
-# or: bun install -g @tobilu/qmd@2.5.3
-qmd --version
-```
+Install QMD. `qmd --version` must print `2.8.3`. Stock
+`npm install -g @tobilu/qmd@2.8.3` prints that and is not this tree's binary.
+The install is commit `93d211f9ef4a869a9aed0d075ca767dda552627f` plus the two
+patches in `docs/patches/`. Steps, the index backup, and rollback are in
+[QMD 2.8.3](qmd-2.8.3.md). Remnic still detects the installed version at
+runtime and omits flags an older binary does not have.
 
 Add your memory directory to `~/.config/qmd/index.yml`:
 
@@ -50,8 +48,8 @@ qmd update && qmd embed
   "qmdEnabled": true,
   "qmdCollection": "openclaw-engram",
   "qmdMaxResults": 8,
-  "qmdSupportedVersion": "2.5.3",
-  "qmdAutoUpgradeEnabled": false, // opt-in: npm install -g @tobilu/qmd@2.5.3
+  "qmdSupportedVersion": "2.8.3",
+  "qmdAutoUpgradeEnabled": false, // leave off: auto-upgrade installs stock npm 2.8.3
   "qmdChunkStrategy": "auto",
   // Leave qmdIndexName unset unless you intentionally use a separate QMD DB.
   // Existing Remnic/OpenClaw installs usually keep data in QMD's default "index".
@@ -66,7 +64,7 @@ Standalone daemon config accepts these keys at the top level **or** under a
 `remnic` (or legacy `engram`) block. Nested `remnic.searchBackend` /
 `remnic.qmdEnabled` win when both shapes are set.
 
-When QMD `2.5.3` is installed, Remnic uses the newer capability set when
+When QMD `2.5.0` or newer is installed, Remnic uses the newer capability set when
 available: `qmd doctor` diagnostics, version-matched skill metadata, structured
 MCP `lex`/`vec`/`hyde` searches, candidate-limit forwarding, rerank toggles,
 AST-aware chunking for CLI/embed paths, scoped collection embedding, model/env
@@ -75,7 +73,7 @@ overrides (`QMD_EMBED_MODEL`, `QMD_RERANK_MODEL`, `QMD_GENERATE_MODEL`,
 via `qmdIndexName`, and absolute snippet line numbers. Older QMD installs
 continue to work with unsupported flags omitted.
 
-Remnic also detects QMD `2.5.3`'s preferred `--format json` output selector
+Remnic also detects QMD `2.5.3+`'s preferred `--format json` output selector
 for `qmd query`/`qmd search` subprocess calls. QMD `2.5.3` adds richer
 human/agent retrieval output (`get` line-range suffixes, default line-numbered
 `get`/`multi-get`, `#docid` headers, and `--full-path` for direct filesystem
@@ -105,26 +103,27 @@ QMD version coverage:
 | `2.1.0` | Enables AST chunk strategy on CLI/embed paths, rerank toggles, candidate limits, per-collection model config compatibility, and JSON line capture. |
 | `2.5.0` | Enables doctor/status diagnostics, version-matched skills, structured MCP `lex`/`vec`/`hyde` searches, absolute snippet lines, scoped embed behavior, and QMD model/GPU env controls. |
 | `2.5.3` | Uses QMD's preferred `--format json` selector for `query`/`search` subprocess calls and inherits QMD's line-range, docid-header, full-path, launcher, and Metal-teardown fixes. Remnic keeps legacy `--json` for older QMD versions. |
+| `2.8.3` | Supported version string. The recall binary is the pinned commit in [QMD 2.8.3](qmd-2.8.3.md), not the stock npm tarball. Same `--format json` gate as 2.5.3. |
 
 ### Upgrading QMD
 
-QMD `2.5.3` is a drop-in upgrade from any 2.x install — existing collections, indexes,
-and config files work unchanged. Remnic detects the installed version at startup and
-enables newer features only when the binary supports them, so upgrading is low-risk.
+QMD `2.8.3` is not a drop-in for a 2.5.3 index. The pinned commit converts
+the vector table in place the first time it opens the database. Back up the
+sqlite file, the `-wal`, and the `-shm` before that open. Collections and the
+YAML config stay. Document identities that differ only by path casing no longer
+collapse. The install commands, `qmd trust`, and rollback are in
+[QMD 2.8.3](qmd-2.8.3.md).
 
 ```bash
-# 1. Install the supported target
-npm install -g @tobilu/qmd@2.5.3
-# or: bun install -g @tobilu/qmd@2.5.3
-
-# 2. Verify
-qmd --version        # 2.5.3
+# After the pinned build is on PATH:
+qmd --version        # 2.8.3
 qmd doctor           # available on QMD 2.5+
 qmd status           # existing collections should still list
+qmd cleanup          # repacks the partitioned vector table when occupancy is under 90%
 
-# 3. Restart your host so Remnic re-detects the version.
-#    Standalone:  remnic daemon restart
-#    OpenClaw:    launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
+# Restart the host so Remnic respawns `qmd mcp`.
+# Standalone:  remnic daemon restart
+# OpenClaw:    launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 ```
 
 If native bindings misbehave after the upgrade, rebuild them with
@@ -155,7 +154,7 @@ Remnic automatically prefers the shared MCP session when available and falls bac
 | `qmdDaemonRecheckIntervalMs` | `60000` | Re-probe interval after failure |
 | `qmdIntentHintsEnabled` | `false` | Forward inferred recall intent into QMD unified search when supported |
 | `qmdExplainEnabled` | `false` | Capture QMD explain traces into `memory_qmd_debug` snapshots |
-| `qmdSupportedVersion` | `2.5.3` | Highest QMD version this Remnic build will auto-install |
+| `qmdSupportedVersion` | `2.8.3` | Version string auto-upgrade would install. Leave auto-upgrade off; stock npm 2.8.3 is not the pinned build. |
 | `qmdAutoUpgradeEnabled` | `false` | Opt-in auto-upgrade for PATH/fallback QMD installs |
 | `qmdAutoUpgradeCheckIntervalMs` | `86400000` | Minimum interval between auto-upgrade attempts |
 | `qmdChunkStrategy` | `auto` | Forward QMD's AST-aware chunk strategy when supported |
@@ -222,9 +221,9 @@ opt-in and `query` remains the default. (See issue #1335.)
 
 ### Cancelled recalls on a single QMD worker
 
-Remnic's enrichment deadline aborts the MCP `tools/call`. Stock QMD 2.5.3 ignores
+Remnic's enrichment deadline aborts the MCP `tools/call`. Stock QMD ignores
 that abort: its one worker keeps reranking, and the next recall sits behind the
-abandoned call until it times out too. Remnic now writes MCP
+abandoned call until it times out too. Remnic writes MCP
 `notifications/cancelled` (`requestId` plus a reason) when a tool call is aborted
 or hits `qmdDaemonTimeoutMs`, then rejects the caller without waiting for a
 JSON-RPC result. The MCP SDK drops the result once the server's request
@@ -236,29 +235,27 @@ the process each time.
 Identical in-flight `search()` calls share one daemon query. The shared call is
 cancelled only when every waiter has aborted.
 
-Unpatched QMD 2.5.3 still finishes the rerank after the notification. The
-client already ignores that late result. Stopping the worker requires the patch
-in `docs/patches/qmd-2.5.3-mcp-cancel.patch`, against tag `v2.5.3`:
+Stopping the worker requires `docs/patches/qmd-2.8.3-mcp-cancel.patch` on the
+pinned commit, not the 2.5.3 patch. Apply steps are in
+[QMD 2.8.3](qmd-2.8.3.md). The patch passes `ctx.signal` from the MCP `query`
+tool through `structuredSearch` / `hybridQuery` into the reranker. `rank()` and
+`rankAll()` share one evaluate path, so a document that finishes keeps the same
+score. The loop checks the signal between documents and throws. It does not
+return a partial ranking, and it does not write those scores into QMD's
+`llm_cache`. sqlite-vec cannot be interrupted mid-scan; a cancel that arrives
+during a scan skips the remaining scans and the rerank once that scan returns.
 
-```bash
-git clone --depth 1 --branch v2.5.3 https://github.com/tobi/qmd.git
-cd qmd
-git apply /path/to/remnic/docs/patches/qmd-2.5.3-mcp-cancel.patch
-# rebuild and reinstall, then restart the host so Remnic respawns `qmd mcp`
-```
-
-The patch passes `extra.signal` from the MCP `query` tool through
-`structuredSearch` / `hybridQuery` into the reranker. `rank()` and `rankAll()`
-share one evaluate path, so a document that finishes keeps the same score. The
-loop checks the signal between documents and throws. It does not return a
-partial ranking, and it does not write those scores into QMD's `llm_cache`.
-sqlite-vec cannot be interrupted mid-scan; a cancel that arrives during a scan
-skips the remaining scans and the rerank once that scan returns.
+`docs/patches/qmd-2.8.3-stdio-stdout.patch` keeps a JSON-RPC stdout write on
+fd 1 while `getLlama()` has redirected stdout to stderr (#971). Remnic hits
+that window with `QMD_FORCE_CPU=1` when one call is still loading the model.
+#938 (Metal `qmd mcp` SIGSEGV on vector/rerank) is still open. This VM cannot
+reproduce it, and Remnic does not force CPU on a Metal host to avoid it.
 
 This does not change top-k, the lex+vec+hyde plan, rerank, or candidate limits.
-On a patched binary, a completed search matches an unpatched one. A cancelled
-search returns no QMD hits to that caller, same as today's timeout, and it
-releases the worker for the next caller.
+On a patched binary, a completed search matches an unpatched one only while the
+index layout is unchanged. The pinned commit's per-collection vectors can change
+the neighbor set. A cancelled search returns no QMD hits to that caller, same
+as today's timeout, and it releases the worker for the next caller.
 
 ### CPU vector scan
 
@@ -266,6 +263,10 @@ On QMD 2.5.3, `searchVec` is a brute-force `embedding MATCH` over the whole
 `vectors_vec` table, then a collection filter. That cost is flat in k. A CPU
 host with about 1.2 million vectors spends about 6 seconds in this stage.
 The daemon plan runs it twice (the vector query and the synthetic hyde query).
+The pinned 2.8.3 commit stores vectors per collection (#983) and repacks that
+table from `qmd cleanup`. The numbers below are the unpartitioned algorithm,
+measured before that move. They still bound a sparse index. They are not a
+second install path.
 
 sqlite-vec `vec0` stores vectors in fixed 1024-slot chunks. An insert fills the
 newest chunk. A delete leaves a hole, and a chunk is dropped only when every
@@ -275,33 +276,16 @@ reads every chunk.
 QMD #937 (commit `58300dac`, unpartitioned `hash_seq` table) repacks that
 layout. It deletes and re-inserts the live rows of chunks that are under 90%
 full, one chunk per short transaction, and only when overall occupancy is
-under 90%. The later partitioned repack (#983) targets a different table and
-does not apply to 2.5.3. Neighbors stay the same because the embedding bytes
-and keys stay the same. A table that is already at or above 90% occupancy is
-left alone.
-
-`docs/patches/qmd-2.5.3-vec0-repack.patch` is that algorithm on tag `v2.5.3`.
-Apply it with the cancel patch, rebuild, restart so Remnic respawns `qmd mcp`,
-then run cleanup:
-
-```bash
-git clone --depth 1 --branch v2.5.3 https://github.com/tobi/qmd.git
-cd qmd
-git apply /path/to/remnic/docs/patches/qmd-2.5.3-mcp-cancel.patch
-git apply /path/to/remnic/docs/patches/qmd-2.5.3-vec0-repack.patch
-# rebuild and reinstall, then restart the host
-qmd cleanup
-```
-
-Cleanup prints `N chunks for M needed, P% useful` and repacks only when that
-share is under 90%. If it prints that the table is already packed, the vector
-stage will not get faster. Occupancy on a given host is unknown until that
-line is printed.
+under 90%. Neighbors stay the same because the embedding bytes and keys stay
+the same. A table that is already at or above 90% occupancy is left alone.
+On the pinned commit the same rule runs against `vectors_by_collection`.
+`docs/patches/qmd-2.5.3-vec0-repack.patch` is the unpartitioned port used for
+the bench below. Do not apply it. Run `qmd cleanup` on the pinned build.
 
 Upstream measured a 794k-row index at 36% occupancy at 1.8s per scan, and 0.9s
-after packing the same rows. If a ~1.2M-row host index is similarly sparse, the
-~6s two-scan stage is the holey cost and should fall by about that ratio
-(toward ~3s). If it is already packed, expect no change.
+after packing the same rows (2×). If a ~1.2M-row host index is similarly
+sparse, the ~6s two-scan stage is the holey cost. If cleanup says the table is
+already packed, expect no change.
 
 `scripts/qmd-vec0-repack-bench.mjs` checks the same algorithm on a synthetic
 index. It needs `better-sqlite3` and `sqlite-vec` on `NODE_PATH` (a QMD
@@ -310,7 +294,7 @@ checkout install has both). `--self-check` is the #937 fixture: 1100 rows of
 nearest neighbor match before and after, a packed table is not rewritten, and
 a legacy table without `hash_seq` is left alone. The full-size run uses
 embeddinggemma-300M's 768 dimensions (`embedding_length` in the Q8_0 GGUF) and
-3256 chunks with 369 live slots each (about 1.20M live rows at 36% occupancy):
+3256 chunks with 369 live slots each (1,201,464 live rows, 36.06% occupancy):
 
 ```bash
 NODE_PATH=/path/to/node_modules \
@@ -323,20 +307,44 @@ node scripts/qmd-vec0-repack-bench.mjs \
 ```
 
 The JSON report labels itself `measuredOn: "vm"`. It is not a host timing.
-Project the host vector stage by the VM before/after ratio, and only when
-`qmd cleanup` shows a similarly sparse table.
 
-Collection-partitioned indexes (QMD #983) scan one collection instead of the
-global table. The neighbor set can differ from today's global-top-k-then-filter,
-so that change is not a bit-identical speedup. Compare it with
-`scripts/recall-qmd-compare.mjs` before treating it as the same recall.
+One full-size run on a 4-CPU VM (`mmap_size 0`, 64MB cache, no `VACUUM`):
+
+| | chunks | occupancy | k=20 times (ms) | median |
+| --- | ---: | ---: | --- | ---: |
+| before | 3256 | 36.06% | 6897, 6563, 6334, 6660 | 6611 |
+| after | 1174 | 100% | 1501, 1291, 1284, 1285 | 1288 |
+
+That is one cosine scan, not the host's two-scan stage. The sha256 of all
+1,201,464 embedding blobs matched, and each top-20 `(hash_seq, distance)` list
+matched exactly, including the distance floats. The file stayed 10,434,342,912
+bytes because this bench does not `VACUUM`; dropped chunks are simply not
+scanned. `qmd cleanup` still vacuums after the repack, which is what reclaims
+the hole bytes. Insert-and-punch took 218s and the repack took 122s on this
+VM. That is maintenance, not a per-query cost.
+
+Project the host's ~6s two-scan stage only when cleanup prints occupancy near
+36%. Divide by the measured 5.13× and the stage is about 1.2s. The published
+#937 ratio on a warm index was 2×, which puts the same stage near 3s. A host
+with the pages cached can land between those. Absolute milliseconds from this
+VM do not transfer: `mmap_size 0` makes the holey scan read every page.
+
+Packing the vector stage does not by itself put a 20s median rerank, or the
+8.7–45.9s rerank range, under a 25s budget. A fast rerank (about 9s) plus a
+1.2s scan fits. A 20s rerank plus a 1.2–3s scan is 21–23s. The 46s rerank tail
+stays over 25s.
+
+The pinned build's per-collection index (#983) scans one collection instead of
+the global table. The neighbor set can differ from a global-top-k-then-filter.
+Compare it with `scripts/recall-qmd-compare.mjs` before treating it as the same
+recall. Backup and rollback are in [QMD 2.8.3](qmd-2.8.3.md).
 
 An approximate index inside Remnic would change neighbors without a measurement
 against a captured reranked baseline, so there is no default-on ANN flag here.
 
 ### Rerank scores QMD already caches
 
-QMD 2.5.3 `rerank()` caches each document score in `llm_cache` under
+QMD `rerank()` caches each document score in `llm_cache` under
 `sha256("rerank" + JSON({ query, model, chunk }))`. The query includes the
 intent prefix when one was passed. The file path is not part of the key,
 because the score depends on the chunk text. Identical chunk text is scored
@@ -353,6 +361,25 @@ How often live recall queries repeat is not measurable from a bench VM. A
 10-query capture used for quality comparison is 10 distinct queries; the one
 rerank time of about 1ms in that capture is a rerun of a query already in
 `llm_cache`, while the vector scan on that same call was still about 6s.
+
+### CPU rerank profile
+
+`scripts/qmd-rerank-cpu-bench.mjs` timed `qwen3-reranker-0.6b` Q8 on
+node-llama-cpp 3.18.1 (`QMD_FORCE_CPU=1`, context 4096, 4 threads). The
+pinned build uses 3.20.0. These numbers are not a 3.20 measurement, and the
+prefix path is not shipped.
+
+800-character documents, 8 docs: stock 8144ms, stock repeated 8128ms, prefix
+reuse 6429ms. Stock versus stock already moved by 6.77e-5 and flipped order.
+Prefix versus stock moved by 5.73e-5. A token batch of 2048 was not faster
+(8210ms). 2 threads was slower (14966ms). 40 short documents: stock 42344ms,
+prefix 31263ms.
+
+3600-character documents, the size of a normal QMD chunk: 8 docs stock
+31011ms, stock repeated 32888ms, prefix 32075ms. Prefix is slower there. The
+shared query prefix is ~77 tokens against a ~900-token document. The full-40
+chunk-sized run did not finish. QMD does not truncate a chunk that already
+fits, and this tree does not truncate further.
 
 ### Smaller rerankers
 

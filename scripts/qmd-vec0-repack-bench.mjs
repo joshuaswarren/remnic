@@ -1,10 +1,12 @@
 /**
- * Synthetic vec0 repack bench for the QMD 2.5.3 backport of #937.
+ * Synthetic vec0 repack bench for the unpartitioned #937 algorithm.
  *
- * The repack functions below are the same algorithm as
- * docs/patches/qmd-2.5.3-vec0-repack.patch (unpartitioned hash_seq table,
- * commit 58300dac). They are duplicated here so the bench can run with
- * better-sqlite3 and sqlite-vec and does not need a QMD build.
+ * The repack functions below match docs/patches/qmd-2.5.3-vec0-repack.patch
+ * (unpartitioned hash_seq table, commit 58300dac). That patch is not the
+ * install path. Production cleanup repacks the partitioned table on QMD
+ * commit 93d211f9 (docs/qmd-2.8.3.md). The functions are duplicated here so
+ * the bench can run with better-sqlite3 and sqlite-vec and does not need a
+ * QMD build.
  *
  *   NODE_PATH=/path/to/node_modules \
  *   node scripts/qmd-vec0-repack-bench.mjs --self-check

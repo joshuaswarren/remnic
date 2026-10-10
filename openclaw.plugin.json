@@ -4867,8 +4867,8 @@
       },
       "qmdSupportedVersion": {
         "type": "string",
-        "default": "2.5.3",
-        "description": "Highest QMD version this Remnic build will auto-install"
+        "default": "2.8.3",
+        "description": "Highest QMD version this Remnic build will auto-install. qmd --version prints this for both stock npm 2.8.3 and the pinned main build; the supported install is the pinned build in docs/qmd-2.8.3.md."
       },
       "qmdTierAutoBackfillEnabled": {
         "type": "boolean",
@@ -7742,7 +7742,7 @@
     "qmdSupportedVersion": {
       "label": "QMD Supported Version",
       "advanced": true,
-      "placeholder": "2.5.3"
+      "placeholder": "2.8.3"
     },
     "qmdAutoUpgradeEnabled": {
       "label": "QMD Auto Upgrade",

@@ -62,6 +62,10 @@ test("resolveQmdCapabilities gates qmd 2.5 features by installed version", () =>
   assert.equal(v251.doctor, true);
   assert.equal(v251.outputFormatFlag, false);
 
+  const v283 = resolveQmdCapabilities("qmd 2.8.3");
+  assert.equal(v283.outputFormatFlag, true);
+  assert.equal(v283.doctor, true);
+
   const v20 = resolveQmdCapabilities("qmd 2.0.0");
   assert.equal(v20.stableSdk, true);
   assert.equal(v20.unifiedSearch, true);
@@ -129,6 +133,9 @@ test("shouldAutoUpgradeQmd only upgrades below Remnic supported version", () => 
   assert.equal(shouldAutoUpgradeQmd("qmd 2.5.3", "2.5.3"), false);
   assert.equal(shouldAutoUpgradeQmd("qmd 2.6.0", "2.5.3"), false);
   assert.equal(shouldAutoUpgradeQmd("not installed", "2.5.3"), false);
+  assert.equal(shouldAutoUpgradeQmd("qmd 2.5.3", "2.8.3"), true);
+  assert.equal(shouldAutoUpgradeQmd("qmd 2.8.2", "2.8.3"), true);
+  assert.equal(shouldAutoUpgradeQmd("qmd 2.8.3", "2.8.3"), false);
 });
 
 test("getQmdCommandName preserves write command detection behind qmd 2.5 index prefix", () => {
@@ -476,7 +483,7 @@ test("QmdClient auto-upgrade throttle key is scoped by qmd target", async () => 
 
 test("parseConfig exposes qmd 2.5 integration defaults and opt-in auto upgrade", () => {
   const defaults = parseConfig({});
-  assert.equal(defaults.qmdSupportedVersion, "2.5.3");
+  assert.equal(defaults.qmdSupportedVersion, "2.8.3");
   assert.equal(defaults.qmdAutoUpgradeEnabled, false);
   assert.equal(defaults.qmdChunkStrategy, "auto");
   assert.equal(defaults.qmdQueryRerankEnabled, true);
