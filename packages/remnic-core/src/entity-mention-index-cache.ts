@@ -1,5 +1,5 @@
 import path from "node:path";
-import { rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { raceAbort } from "./abort-error.js";
 import { entityMentionEpoch } from "./entity-mention-epoch.js";
 import { log } from "./logger.js";
@@ -26,7 +26,11 @@ import { log } from "./logger.js";
  *   finishes, the index matches a full rebuild
  * - secure-store key, alias map, and native revision stay in the key, so a
  *   change is a miss and awaits a full rebuild. A locked store never reads
- *   another key's plaintext
+ *   another key's plaintext. Evicting that older scope also stops its scan
+ *   from publishing the persisted index
+ * - a persisted index is readable per storage root. A process-wide cache
+ *   clear blocks every root until that root's own post-clear build publishes.
+ *   One root publishing does not reopen another root's file
  */
 
 const MAX_SLOTS = 32;
@@ -59,18 +63,29 @@ type Slot = {
 
 const slots = new Map<string, Slot>();
 const rebuildsByScope = new Map<string, number>();
-let cacheGeneration = 0;
-let persistedReadsAllowed = true;
+const GENERATION_STRIDE = 1_000_000_000;
+let clearEpoch = 0;
+const localGenerationByDir = new Map<string, number>();
+const publishedGenerationByDir = new Map<string, number>();
+const persistTailByDir = new Map<string, Promise<void>>();
 
-export function entityMentionCacheGeneration(): number {
-  return cacheGeneration;
+function resolveMentionDir(dir: string): string {
+  return path.resolve(dir);
 }
 
-export function entityMentionPersistedIndexReadable(): boolean {
-  return persistedReadsAllowed;
+export function entityMentionCacheGeneration(dir: string): number {
+  const resolved = resolveMentionDir(dir);
+  return clearEpoch * GENERATION_STRIDE + (localGenerationByDir.get(resolved) ?? 0);
 }
 
-function persistedMentionIndexFiles(scopeKey: string): string[] {
+export function entityMentionPersistedIndexReadable(dir: string): boolean {
+  const resolved = resolveMentionDir(dir);
+  const local = localGenerationByDir.get(resolved) ?? 0;
+  if (clearEpoch === 0 && local === 0) return true;
+  return publishedGenerationByDir.get(resolved) === entityMentionCacheGeneration(resolved);
+}
+
+function dirsInScope(scopeKey: string): string[] {
   const nsEnd = scopeKey.indexOf("\u001e");
   const storageEnd = nsEnd === -1 ? -1 : scopeKey.indexOf("\u001e", nsEnd + 1);
   if (nsEnd === -1 || storageEnd === -1) return [];
@@ -79,7 +94,56 @@ function persistedMentionIndexFiles(scopeKey: string): string[] {
     .split("\u001f")
     .map((part) => part.split("\u001d")[0] ?? "")
     .filter((dir) => dir.length > 0)
-    .map((dir) => path.join(dir, "state", "entity-mention-index.json"));
+    .map((dir) => resolveMentionDir(dir));
+}
+
+function persistedMentionIndexFiles(scopeKey: string): string[] {
+  return dirsInScope(scopeKey).map((dir) => path.join(dir, "state", "entity-mention-index.json"));
+}
+
+function bumpScopeDirs(scopeKey: string): void {
+  for (const dir of dirsInScope(scopeKey)) {
+    localGenerationByDir.set(dir, (localGenerationByDir.get(dir) ?? 0) + 1);
+  }
+}
+
+function captureDirGenerations(scopeKey: string): Map<string, number> {
+  const captured = new Map<string, number>();
+  for (const dir of dirsInScope(scopeKey)) captured.set(dir, entityMentionCacheGeneration(dir));
+  return captured;
+}
+
+function generationsCurrent(captured: Map<string, number>): boolean {
+  for (const [dir, generation] of captured) {
+    if (entityMentionCacheGeneration(dir) !== generation) return false;
+  }
+  return true;
+}
+
+function publishDirGenerations(captured: Map<string, number>): void {
+  for (const [dir, generation] of captured) {
+    if (entityMentionCacheGeneration(dir) === generation) publishedGenerationByDir.set(dir, generation);
+  }
+}
+
+export async function writePersistedEntityMentionIndex(
+  dir: string,
+  generation: number,
+  content: string,
+): Promise<void> {
+  const resolved = resolveMentionDir(dir);
+  const previous = persistTailByDir.get(resolved) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(async () => {
+    if (entityMentionCacheGeneration(resolved) !== generation) return;
+    const file = path.join(resolved, "state", "entity-mention-index.json");
+    await mkdir(path.dirname(file), { recursive: true });
+    const current = await readFile(file, "utf-8").catch(() => "");
+    if (current === content) return;
+    if (entityMentionCacheGeneration(resolved) !== generation) return;
+    await writeFile(file, content, "utf-8");
+  });
+  persistTailByDir.set(resolved, run.then(() => undefined, () => undefined));
+  await run;
 }
 
 function discardPersistedMentionIndex(scopeKey: string): void {
@@ -132,12 +196,13 @@ function scopeFamily(scopeKey: string): string {
   return `${namespaceKey}\u001e${dirs}`;
 }
 
-function forgetScope(scopeKey: string): void {
+function forgetScope(scopeKey: string, bumpPersisted = false): void {
   const slot = slots.get(scopeKey);
   if (slot) {
     slot.token += 1;
     slot.again = false;
   }
+  if (bumpPersisted) bumpScopeDirs(scopeKey);
   slots.delete(scopeKey);
   rebuildsByScope.delete(scopeKey);
 }
@@ -151,7 +216,7 @@ function evictOldest(scopeKey: string): void {
 function evictSameFamily(scopeKey: string): void {
   const family = scopeFamily(scopeKey);
   for (const key of [...slots.keys()]) {
-    if (key !== scopeKey && scopeFamily(key) === family) forgetScope(key);
+    if (key !== scopeKey && scopeFamily(key) === family) forgetScope(key, true);
   }
 }
 
@@ -177,7 +242,7 @@ function startRebuild(slot: Slot): void {
   // second full corpus scan after a stable rebuild.
   if (slot.rebuild) return;
   const token = slot.token;
-  const generation = cacheGeneration;
+  const captured = captureDirGenerations(slot.scopeKey);
   noteRebuild(slot.scopeKey);
   const started = slot.currentIdentity();
   slot.again = false;
@@ -185,11 +250,8 @@ function startRebuild(slot: Slot): void {
   handle.pending = slot
     .buildFull(undefined)
     .then((index) => {
-      if (slot.token !== token || generation !== cacheGeneration) {
-        discardPersistedMentionIndex(slot.scopeKey);
-        return;
-      }
-      persistedReadsAllowed = true;
+      if (slot.token !== token || !generationsCurrent(captured)) return;
+      publishDirGenerations(captured);
       const ended = slot.currentIdentity();
       slot.index = index;
       if (sameIdentity(started, ended)) {
@@ -251,15 +313,16 @@ export function entityMentionIndexScopeKeys(): string[] {
 }
 
 export function dropEntityMentionIndexCache(scopeKey?: string): void {
-  cacheGeneration += 1;
-  persistedReadsAllowed = false;
-  const keys = scopeKey === undefined ? [...slots.keys()] : [scopeKey];
-  for (const key of keys) discardPersistedMentionIndex(key);
   if (scopeKey === undefined) {
-    for (const key of [...slots.keys()]) forgetScope(key);
+    clearEpoch += 1;
+    for (const key of [...slots.keys()]) {
+      discardPersistedMentionIndex(key);
+      forgetScope(key);
+    }
     return;
   }
-  forgetScope(scopeKey);
+  discardPersistedMentionIndex(scopeKey);
+  forgetScope(scopeKey, true);
 }
 
 export async function settleEntityMentionIndex(scopeKey?: string): Promise<void> {
@@ -291,15 +354,12 @@ export async function resolveEntityMentionIndex<T>(options: {
     evictSameFamily(options.scopeKey);
     evictOldest(options.scopeKey);
     noteRebuild(options.scopeKey);
-    const generation = cacheGeneration;
+    const captured = captureDirGenerations(options.scopeKey);
     const started = options.currentIdentity();
     const index = await options.buildFull(options.abortSignal);
-    // clearAllStaticCaches during this first scan must not publish the pre-clear index.
-    if (generation !== cacheGeneration) {
-      discardPersistedMentionIndex(options.scopeKey);
-      return index;
-    }
-    persistedReadsAllowed = true;
+    // A clear or family eviction during this first scan must not publish it.
+    if (!generationsCurrent(captured)) return index;
+    publishDirGenerations(captured);
     const ended = options.currentIdentity();
     evictSameFamily(options.scopeKey);
     evictOldest(options.scopeKey);
@@ -338,12 +398,17 @@ export async function resolveEntityMentionIndex<T>(options: {
     existing.entityJob = gate;
     existing.token += 1;
     existing.again = false;
+    const token = existing.token;
+    const captured = captureDirGenerations(existing.scopeKey);
     // Shared scan. This caller's abort stops its wait and leaves the scan
     // running. Publish when the scan settles, even if this caller has left.
+    // A family eviction bumps the token and the root generation; this scan
+    // must not install its result or start a follow-up that would republish.
     const scan = options.rebuildEntities(existing.index as T, undefined);
     void scan
       .then(
         (rebuilt) => {
+          if (existing.token !== token || !generationsCurrent(captured)) return;
           const now = options.currentIdentity();
           existing.index = rebuilt;
           const epochStable = epochBefore === liveNow.mentionEpoch && epochBefore === now.mentionEpoch;

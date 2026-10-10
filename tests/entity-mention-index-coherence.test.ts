@@ -335,6 +335,91 @@ test("a cache clear does not keep a stale persisted mention index", async () => 
   }
 });
 
+async function entityMarkdown(dir: string, label: string): Promise<{ name: string; body: string }> {
+  const names = (await readdir(path.join(dir, "entities"))).filter((name) => name.endsWith(".md"));
+  const name = names.find((entry) => entry.toLowerCase().includes(label)) ?? names[0] ?? "";
+  assert.ok(name.length > 0);
+  return { name, body: await readFile(path.join(dir, "entities", name), "utf-8") };
+}
+
+test("publishing one storage root does not reopen another's stale mention index", async () => {
+  const rootA = await buildHarness("engram-entity-epoch-root-a");
+  const rootB = await buildHarness("engram-entity-epoch-root-b");
+  const donor = await buildHarness("engram-entity-epoch-root-donor");
+  try {
+    await rootB.storage.writeEntity("Cedar Lattice", "project", ["Cedar Lattice tracks harbor lights."]);
+    assert.match((await recall(rootB.config, rootB.storage, "Who is Cedar Lattice?")) ?? "", /Cedar Lattice/);
+    const indexPath = path.join(rootB.memoryDir, "state", "entity-mention-index.json");
+    const stale = await readFile(indexPath, "utf-8");
+    assert.doesNotMatch(stale, /North Pier/);
+    await donor.storage.writeEntity("North Pier", "place", ["North Pier holds the channel light."]);
+    const pier = await entityMarkdown(donor.memoryDir, "pier");
+    StorageManager.clearAllStaticCaches();
+    await writeFile(indexPath, stale);
+    await writeFile(path.join(rootB.memoryDir, "entities", pier.name), pier.body);
+    await rootA.storage.writeEntity("Amber Dock", "place", ["Amber Dock keeps the west light."]);
+    assert.match((await recall(rootA.config, rootA.storage, "Who is Amber Dock?")) ?? "", /Amber Dock/);
+    const found = await recall(rootB.config, rootB.storage, "North Pier holds the channel light");
+    assert.match(found ?? "", /North Pier/);
+  } finally {
+    await removeHarness(rootA.memoryDir, rootA.workspaceDir);
+    await removeHarness(rootB.memoryDir, rootB.workspaceDir);
+    await removeHarness(donor.memoryDir, donor.workspaceDir);
+  }
+});
+
+test("an evicted entity rebuild does not overwrite the newer mention index", async () => {
+  const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-epoch-family-persist");
+  const donor = await buildHarness("engram-entity-epoch-family-donor");
+  const originalRead = storage.readAllEntityFiles.bind(storage);
+  let release: (() => void) | undefined;
+  let parked = false;
+  try {
+    await storage.writeEntity("Cedar Lattice", "project", ["Cedar Lattice tracks harbor lights."]);
+    assert.match((await recall(config, storage, "Who is Cedar Lattice?")) ?? "", /Cedar Lattice/);
+    await storage.writeEntity("North Pier", "place", ["North Pier holds the channel light."]);
+    await donor.storage.writeEntity("Amber Dock", "place", ["Amber Dock keeps the west light."]);
+    const amber = await entityMarkdown(donor.memoryDir, "amber");
+    storage.readAllEntityFiles = async (options) => {
+      const entities = await originalRead(options);
+      if (!parked) {
+        parked = true;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return entities;
+    };
+    const stale = recall(config, storage, "Who is North Pier?");
+    for (let i = 0; i < 100 && !release; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(typeof release, "function");
+    await writeFile(path.join(memoryDir, "entities", amber.name), amber.body);
+    await writeFile(path.join(memoryDir, "state", ".entity-mutation-version.log"), "x", { flag: "a" });
+    await mkdir(path.join(memoryDir, "config"), { recursive: true });
+    await writeFile(
+      path.join(memoryDir, "config", "aliases.json"),
+      `${JSON.stringify({ "unrelated alias": "project-unrelated" })}\n`,
+    );
+    await storage.loadAliases();
+    const fresh = await Promise.race([
+      recall(config, storage, "Who is Amber Dock?"),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("fresh recall stalled")), 5000)),
+    ]);
+    assert.match(fresh ?? "", /Amber Dock/);
+    const indexPath = path.join(memoryDir, "state", "entity-mention-index.json");
+    const published = await readFile(indexPath, "utf-8");
+    assert.match(published, /Amber Dock/);
+    release?.();
+    await stale;
+    assert.equal(await readFile(indexPath, "utf-8"), published);
+  } finally {
+    release?.();
+    storage.readAllEntityFiles = originalRead;
+    await removeHarness(memoryDir, workspaceDir);
+    await removeHarness(donor.memoryDir, donor.workspaceDir);
+  }
+});
+
 test("clearAllStaticCaches drops the entity mention index", async () => {
   const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-reset");
   try {

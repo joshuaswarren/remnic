@@ -2,7 +2,7 @@ import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { renderAuthorityBoundContent } from "./recall-context-composition.js";
 import { createHash } from "node:crypto";
 import { sanitizeMemoryContent } from "./sanitize.js";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { collectNativeKnowledgeChunks, type NativeKnowledgeChunk } from "./native-knowledge.js";
 import { compareEntityTimestamps, normalizeEntityName, type StorageManager } from "./storage.js";
@@ -29,6 +29,7 @@ import {
   entityMentionPersistedIndexReadable,
   entityMentionScopeKey,
   resolveEntityMentionIndex,
+  writePersistedEntityMentionIndex,
 } from "./entity-mention-index-cache.js";
 const ENTITY_INDEX_VERSION = 3;
 const RECENT_TRANSCRIPT_LOOKBACK_HOURS = 24;
@@ -366,7 +367,7 @@ async function readCurrentPersistedEntityIndex(
     return null;
   }
   const index = await readEntityIndexState(storage);
-  if (!entityMentionPersistedIndexReadable() || !index || index.entityStatusVersion !== storage.getMemoryStatusVersion()) {
+  if (!entityMentionPersistedIndexReadable(storage.dir) || !index || index.entityStatusVersion !== storage.getMemoryStatusVersion()) {
     return null;
   }
   return index;
@@ -393,13 +394,12 @@ function nativeEntityIndexRevision(chunks: NativeKnowledgeChunk[]): string {
   return createHash("sha256").update(JSON.stringify(projection)).digest("hex");
 }
 
-async function writeEntityIndexState(storage: StorageManager, index: EntityMentionIndex): Promise<void> {
-  const statePath = entityIndexStatePath(storage);
-  await mkdir(path.dirname(statePath), { recursive: true });
-  const nextContent = JSON.stringify(index, null, 2) + "\n";
-  const currentContent = await readFile(statePath, "utf-8").catch(() => "");
-  if (currentContent === nextContent) return;
-  await writeFile(statePath, nextContent, "utf-8");
+async function writeEntityIndexState(
+  storage: StorageManager,
+  index: EntityMentionIndex,
+  persistGeneration: number,
+): Promise<void> {
+  await writePersistedEntityMentionIndex(storage.dir, persistGeneration, JSON.stringify(index, null, 2) + "\n");
 }
 
 function nativePseudoCanonicalId(chunk: NativeKnowledgeChunk): string {
@@ -484,7 +484,7 @@ async function buildEntityMentionIndex(
   );
   const shouldPersistIndex =
     storages.length === 1 && path.resolve(storages[0]!.dir) === path.resolve(storage.dir);
-  const persistGeneration = entityMentionCacheGeneration();
+  const persistGeneration = entityMentionCacheGeneration(storage.dir);
   const entityStatusVersionBefore = shouldPersistIndex ? storage.getMemoryStatusVersion() : undefined;
   const [previousIndex, entityFileSets, memorySets, nativeChunks] = await Promise.all([
     shouldPersistIndex ? readEntityIndexState(storage) : Promise.resolve(null),
@@ -603,7 +603,7 @@ async function buildEntityMentionIndex(
   await yieldEntityRecallScan(abortSignal);
   const nextEntities = JSON.stringify(sortedEntities);
   const entityStatusVersionAfter = shouldPersistIndex ? storage.getMemoryStatusVersion() : undefined;
-  const canPersistIndex = shouldPersistIndex && entityStatusVersionBefore === entityStatusVersionAfter && persistGeneration === entityMentionCacheGeneration();
+  const canPersistIndex = shouldPersistIndex && entityStatusVersionBefore === entityStatusVersionAfter && persistGeneration === entityMentionCacheGeneration(storage.dir);
   const index: EntityMentionIndex = {
     version: ENTITY_INDEX_VERSION,
     updatedAt:
@@ -615,7 +615,7 @@ async function buildEntityMentionIndex(
   };
   if (canPersistIndex) {
     checkEntityRecallAbort(abortSignal);
-    await writeEntityIndexState(storage, index);
+    await writeEntityIndexState(storage, index, persistGeneration);
   }
   if (pendingSnippetReconcile) index.pendingSnippetReconcile = true;
   return index;
