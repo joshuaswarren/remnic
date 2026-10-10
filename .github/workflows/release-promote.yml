@@ -270,10 +270,10 @@ jobs:
           # selection treats the status like a completed run.
           : > "${RUNNER_TEMP}/ci-gate-records.jsonl"
           gh api --paginate "${REPO}/commits/${EVAL_SHA}/check-runs" \
-            --jq '.check_runs[]? | {id, name, status, conclusion, started_at, completed_at}' \
+            --jq '.check_runs[]? | {source: "check-run", id, name, status, conclusion, started_at, completed_at}' \
             >> "${RUNNER_TEMP}/ci-gate-records.jsonl"
           gh api "${REPO}/commits/${EVAL_SHA}/status" \
-            --jq '.statuses[]? | {id, name: .context, status: "completed", conclusion: .state, started_at: .updated_at, completed_at: .updated_at}' \
+            --jq '.statuses[]? | {source: "status", id, name: .context, status: "completed", conclusion: .state, started_at: .updated_at, completed_at: .updated_at}' \
             >> "${RUNNER_TEMP}/ci-gate-records.jsonl"
           {
             echo "{ \"type\": \"check-runs\", \"records\": ["

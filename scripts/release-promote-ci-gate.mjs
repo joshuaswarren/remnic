@@ -140,7 +140,6 @@ function readStdin() {
  */
 export function decide(records, requiredContexts, selfExcluded = SELF_EXCLUDED_DEFAULT) {
   const selfSet = new Set(selfExcluded);
-  const reasons = [];
 
   if (!Array.isArray(records) || records.length === 0) {
     return {
@@ -149,7 +148,7 @@ export function decide(records, requiredContexts, selfExcluded = SELF_EXCLUDED_D
     };
   }
 
-  const byName = new Map();
+  const bySource = new Map();
   const orderKey = (r) => ({
     timestamp: r.completed_at ?? r.started_at ?? null,
     id: Number(r.id ?? -1),
@@ -167,6 +166,12 @@ export function decide(records, requiredContexts, selfExcluded = SELF_EXCLUDED_D
   };
   for (const r of records) {
     if (!r || typeof r.name !== "string") continue;
+    const source = typeof r.source === "string" && r.source !== "" ? r.source : "check-run";
+    let byName = bySource.get(source);
+    if (!byName) {
+      byName = new Map();
+      bySource.set(source, byName);
+    }
     const prev = byName.get(r.name);
     if (!prev) {
       byName.set(r.name, r);
@@ -183,42 +188,41 @@ export function decide(records, requiredContexts, selfExcluded = SELF_EXCLUDED_D
     }
   }
 
-  // Sort required contexts so reasons come out in a deterministic order —
-  // makes diffs readable and tests stable.
   const sortedRequired = [...requiredContexts].sort();
+  const reasons = [];
 
   for (const name of sortedRequired) {
     if (selfSet.has(name)) continue;
-    const record = byName.get(name);
-    if (!record) {
+    const populatedSources = [...bySource.keys()]
+      .filter((source) => bySource.get(source).has(name))
+      .sort();
+    if (populatedSources.length === 0) {
       reasons.push(`${name}: missing check-run on evaluated commit`);
       continue;
     }
-    const status = record.status ?? "completed";
-    const conclusion = record.conclusion ?? null;
-    if (status !== "completed" || conclusion === null) {
-      reasons.push(
-        `${name}: CI not finished (status=${status}, conclusion=${conclusion ?? "null"})`,
-      );
-      continue;
+    for (const source of populatedSources) {
+      const record = bySource.get(source).get(name);
+      const status = record.status ?? "completed";
+      const conclusion = record.conclusion ?? null;
+      if (status !== "completed" || conclusion === null) {
+        reasons.push(
+          `${name}: CI not finished (status=${status}, conclusion=${conclusion ?? "null"})`,
+        );
+        continue;
+      }
+      if (FAILURE_CONCLUSIONS.has(conclusion)) {
+        reasons.push(`${name}: ${conclusion}`);
+        continue;
+      }
+      if (!ALLOW_CONCLUSIONS.has(conclusion)) {
+        reasons.push(`${name}: ${conclusion} (not a green verdict)`);
+      }
     }
-    if (FAILURE_CONCLUSIONS.has(conclusion)) {
-      reasons.push(`${name}: ${conclusion}`);
-      continue;
-    }
-    if (!ALLOW_CONCLUSIONS.has(conclusion)) {
-      // `skipped` (path-filtered), `neutral` (superseded), and any unknown
-      // value are not verdicts. Fail closed so a required review with no
-      // real opinion cannot authorise a promotion.
-      reasons.push(`${name}: ${conclusion} (not a green verdict)`);
-      continue;
-    }
-    // success → green.
   }
 
   return reasons.length === 0
     ? { decision: "allow", reasons: [] }
-    : { decision: "refuse", reasons };
+    : { decision: "refuse", reasons: [...new Set(reasons)] };
 }
 
 async function main() {
