@@ -12,11 +12,14 @@ import path from "node:path";
  * frontmatter rewrites run inside `hold()` and leave it alone.
  *
  * The on-disk sentinel is the byte size of `state/.entity-mention-epoch.log`
- * (same pattern as the other version logs). A failed append falls back to an
- * in-process counter so a single process still invalidates.
+ * (same pattern as the other version logs). A failed append still advances an
+ * in-process counter, and `current` is the max of that counter and the file
+ * size, so a readable but unwritable sentinel cannot freeze the epoch.
+ * `reset` drops caches that registered at load (the mention index).
  */
 const fallbackByDir = new Map<string, number>();
 const suppression = new AsyncLocalStorage<true>();
+let onReset: (() => void) | null = null;
 
 type MentionFrontmatter = {
   entityRef?: unknown;
@@ -31,24 +34,31 @@ function mentionField(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function bump(dir: string): void {
-  const key = path.resolve(dir);
-  const filePath = epochFile(dir);
+function diskSize(filePath: string): number {
   try {
-    mkdirSync(path.dirname(filePath), { recursive: true });
-    appendFileSync(filePath, "x");
-    fallbackByDir.set(key, statSync(filePath).size);
+    return statSync(filePath).size;
   } catch {
-    fallbackByDir.set(key, (fallbackByDir.get(key) ?? 0) + 1);
+    return 0;
   }
 }
 
-function current(dir: string): number {
+function bump(dir: string): void {
+  const key = path.resolve(dir);
+  const filePath = epochFile(dir);
+  const next = current(dir) + 1;
   try {
-    return statSync(epochFile(dir)).size;
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    appendFileSync(filePath, "x");
   } catch {
-    return fallbackByDir.get(path.resolve(dir)) ?? 0;
+    // The file can still be stat-able (read-only, or the disk is full). The
+    // in-process counter has to move or this process keeps serving a stale index.
   }
+  fallbackByDir.set(key, Math.max(next, diskSize(filePath)));
+}
+
+function current(dir: string): number {
+  const key = path.resolve(dir);
+  return Math.max(diskSize(epochFile(dir)), fallbackByDir.get(key) ?? 0);
 }
 
 function suppressed(): boolean {
@@ -57,6 +67,14 @@ function suppressed(): boolean {
 
 function hold<T>(fn: () => T): T {
   return suppression.run(true, fn);
+}
+
+function registerReset(fn: () => void): void {
+  onReset = fn;
+}
+
+function reset(): void {
+  onReset?.();
 }
 
 function neutral(before: MentionFrontmatter, after: MentionFrontmatter): boolean {
@@ -72,4 +90,6 @@ export const entityMentionEpoch = {
   suppressed,
   hold,
   neutral,
+  registerReset,
+  reset,
 };

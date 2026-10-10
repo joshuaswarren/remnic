@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmodSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { parseConfig } from "@remnic/core/config";
 import { buildEntityRecallSection } from "@remnic/core/entity-retrieval";
 import { StorageManager } from "@remnic/core/storage";
@@ -12,6 +13,8 @@ import {
   dropEntityMentionIndexCache,
   entityMentionFullRebuildsStarted,
   entityMentionIndexScopeKeys,
+  entityMentionScopeKey,
+  resolveEntityMentionIndex,
   settleEntityMentionIndex,
 } from "../packages/remnic-core/src/entity-mention-index-cache.js";
 
@@ -230,5 +233,94 @@ test("after a write sequence the settled index matches a full rebuild", async ()
     releaseScan();
     storage.readAllMemories = originalReadAllMemories;
     await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
+const quietIdentity = { mentionEpoch: "0", entityMutation: "0" };
+
+test("a newer mention-index revision evicts the previous one for the same store", async () => {
+  const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-family");
+  try {
+    const storage = {
+      dir: memoryDir,
+      hotCacheKeyId: () => "key-a",
+      entityAliases: { cedar: "project-cedar" },
+      getEntityMutationVersion: () => 0,
+    };
+    const revised = { ...storage, hotCacheKeyId: () => "key-b" };
+    const otherNamespace = entityMentionScopeKey(["other"], [storage], "rev-1");
+    const first = entityMentionScopeKey(["home"], [storage], "rev-1");
+    const second = entityMentionScopeKey(["home"], [revised], "rev-2");
+    const build = async (label: string) => ({ label });
+    await resolveEntityMentionIndex({
+      scopeKey: first,
+      currentIdentity: () => quietIdentity,
+      buildFull: () => build("first"),
+      rebuildEntities: async (previous) => previous,
+    });
+    await resolveEntityMentionIndex({
+      scopeKey: otherNamespace,
+      currentIdentity: () => quietIdentity,
+      buildFull: () => build("other"),
+      rebuildEntities: async (previous) => previous,
+    });
+    await resolveEntityMentionIndex({
+      scopeKey: second,
+      currentIdentity: () => quietIdentity,
+      buildFull: () => build("second"),
+      rebuildEntities: async (previous) => previous,
+    });
+    const keys = entityMentionIndexScopeKeys().filter((key) => key.includes(memoryDir));
+    assert.deepEqual(keys.sort(), [otherNamespace, second].sort());
+  } finally {
+    dropEntityMentionIndexCache();
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
+test("clearAllStaticCaches drops the entity mention index", async () => {
+  const { memoryDir, workspaceDir } = await buildHarness("engram-entity-epoch-reset");
+  try {
+    const scopeKey = entityMentionScopeKey(undefined, [{ dir: memoryDir }], "rev");
+    let builds = 0;
+    const load = () =>
+      resolveEntityMentionIndex({
+        scopeKey,
+        currentIdentity: () => quietIdentity,
+        buildFull: async () => {
+          builds += 1;
+          return { builds };
+        },
+        rebuildEntities: async (previous) => previous,
+      });
+    assert.deepEqual(await load(), { builds: 1 });
+    assert.deepEqual(await load(), { builds: 1 });
+    StorageManager.clearAllStaticCaches();
+    assert.deepEqual(entityMentionIndexScopeKeys().filter((key) => key.includes(memoryDir)), []);
+    assert.deepEqual(await load(), { builds: 2 });
+  } finally {
+    dropEntityMentionIndexCache();
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
+test("a failed epoch append still advances while the sentinel file is readable", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-entity-epoch-readonly-"));
+  const file = path.join(dir, "state", ".entity-mention-epoch.log");
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, "xxxxx");
+  chmodSync(file, 0o444);
+  try {
+    assert.equal(entityMentionEpoch.current(dir), 5);
+    entityMentionEpoch.bump(dir);
+    assert.equal(entityMentionEpoch.current(dir), 6);
+    entityMentionEpoch.bump(dir);
+    assert.equal(entityMentionEpoch.current(dir), 7);
+    chmodSync(file, 0o644);
+    entityMentionEpoch.bump(dir);
+    assert.equal(entityMentionEpoch.current(dir), 8);
+  } finally {
+    chmodSync(file, 0o644);
+    await rm(dir, { recursive: true, force: true });
   }
 });

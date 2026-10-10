@@ -4466,9 +4466,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
   }
 
-  /** Clear ALL static caches. Use in tests that write files directly
-   *  (bypassing StorageManager.writeMemory) to avoid stale reads. */
+  /** Clear every static cache. Direct file writes call this so the next read is not stale. */
   static clearAllStaticCaches(): void {
+    entityMentionEpoch.reset();
     clearInFlightReads();
     StorageManager.questionsCache.clear();
     StorageManager.coldMemoriesCache.clear(); // also wipe the cold-scan TTL cache

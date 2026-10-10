@@ -76,10 +76,39 @@ function noteRebuild(scopeKey: string): void {
   rebuildsByScope.set(scopeKey, (rebuildsByScope.get(scopeKey) ?? 0) + 1);
 }
 
+function scopeFamily(scopeKey: string): string {
+  const nsEnd = scopeKey.indexOf("\u001e");
+  const storageEnd = nsEnd === -1 ? -1 : scopeKey.indexOf("\u001e", nsEnd + 1);
+  const namespaceKey = nsEnd === -1 ? scopeKey : scopeKey.slice(0, nsEnd);
+  const storageKey = nsEnd === -1 || storageEnd === -1 ? "" : scopeKey.slice(nsEnd + 1, storageEnd);
+  const dirs = storageKey
+    .split("\u001f")
+    .map((part) => part.split("\u001d")[0] ?? "")
+    .join("\u001f");
+  return `${namespaceKey}\u001e${dirs}`;
+}
+
+function forgetScope(scopeKey: string): void {
+  const slot = slots.get(scopeKey);
+  if (slot) {
+    slot.token += 1;
+    slot.again = false;
+  }
+  slots.delete(scopeKey);
+  rebuildsByScope.delete(scopeKey);
+}
+
 function evictOldest(scopeKey: string): void {
   if (slots.size < MAX_SLOTS || slots.has(scopeKey)) return;
   const oldest = slots.keys().next().value;
-  if (typeof oldest === "string") slots.delete(oldest);
+  if (typeof oldest === "string") forgetScope(oldest);
+}
+
+function evictSameFamily(scopeKey: string): void {
+  const family = scopeFamily(scopeKey);
+  for (const key of [...slots.keys()]) {
+    if (key !== scopeKey && scopeFamily(key) === family) forgetScope(key);
+  }
 }
 
 function startRebuild(slot: Slot): void {
@@ -154,10 +183,10 @@ export function entityMentionIndexScopeKeys(): string[] {
 
 export function dropEntityMentionIndexCache(scopeKey?: string): void {
   if (scopeKey === undefined) {
-    slots.clear();
+    for (const key of [...slots.keys()]) forgetScope(key);
     return;
   }
-  slots.delete(scopeKey);
+  forgetScope(scopeKey);
 }
 
 export async function settleEntityMentionIndex(scopeKey?: string): Promise<void> {
@@ -186,10 +215,13 @@ export async function resolveEntityMentionIndex<T>(options: {
   const live = options.currentIdentity();
   const existing = slots.get(options.scopeKey);
   if (!existing) {
+    evictSameFamily(options.scopeKey);
+    evictOldest(options.scopeKey);
     noteRebuild(options.scopeKey);
     const started = options.currentIdentity();
     const index = await options.buildFull(options.abortSignal);
     const ended = options.currentIdentity();
+    evictSameFamily(options.scopeKey);
     evictOldest(options.scopeKey);
     const slot: Slot = {
       scopeKey: options.scopeKey,
@@ -230,3 +262,7 @@ export async function resolveEntityMentionIndex<T>(options: {
   }
   return existing.index as T;
 }
+
+entityMentionEpoch.registerReset(() => {
+  dropEntityMentionIndexCache();
+});
