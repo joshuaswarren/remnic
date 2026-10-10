@@ -103,7 +103,7 @@ test("multi-chunk upload writes exact bytes and reclaims its staging", async (t)
   const content = Buffer.from("abcdefghij", "utf8");
   const target = await stagedUpload({ root, abs, content, chunkSize: 4 });
   assert.equal(await readFile(target, "utf8"), "abcdefghij");
-  assert.deepEqual(await readdir(uploadsDir(abs)).catch(() => []), [], "staging reclaimed after finalize");
+  assert.deepEqual(await readdir(uploadsDir(abs)), [], "staging reclaimed after finalize");
 });
 
 test("empty upload (bytes 0) still creates an empty target file", async (t) => {
@@ -186,7 +186,7 @@ test("a reset carrying different bytes fails the real consumer's checksum gate",
     /checksum mismatch/,
   );
   assert.deepEqual(
-    await readdir(uploadsDir(abs)).catch(() => []),
+    await readdir(uploadsDir(abs)),
     [],
     "the consumer reclaimed the failed spool",
   );
