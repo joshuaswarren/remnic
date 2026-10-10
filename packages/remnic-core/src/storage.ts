@@ -32,6 +32,7 @@ import { assertNotOkfReservedBasename, OKF_QUESTION_TYPE, okfTypeForEntityKind, 
 import { appendContextTransformRecords, readContextTransformRecords } from "./storage/context-transform-ledger.js";
 import type { ContextTransformTelemetryRecord } from "./active-context-transform.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
+import { parseOfflineSyncDigestCache, type OfflineSyncDigestCacheEntry } from "./offline-sync-digest-cache.js";
 import {
   appendLifecycleEventsSerialized,
   type DrainPendingLifecycleForSyncResult,
@@ -251,14 +252,6 @@ import {
 import { isDirectorySidecarsEnabledForDir, refreshDirectorySidecarsAfterWrite } from "./directory-sidecars.js";
 type SharedVersionKind = "memory-status" | "artifact-write" | "cold-write" | "memory-corpus" | "entity-mutation";
 
-type OfflineSyncDigestCacheEntry = {
-  statBytes: number;
-  mtimeMs: number;
-  ctimeMs: number;
-  encrypted: boolean;
-  sha256: string;
-  bytes: number;
-};
 export interface ReextractJobRequest {
   memoryId: string;
   model: string;
@@ -2802,35 +2795,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const cache = new Map<string, OfflineSyncDigestCacheEntry>();
     try {
       const raw = await readFile(this.offlineSyncDigestCachePath, "utf-8");
-      const parsed = JSON.parse(raw) as unknown;
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return cache;
-      const entries = (parsed as { entries?: unknown }).entries;
-      if (!Array.isArray(entries)) return cache;
-      for (const entry of entries) {
-        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-        const record = entry as Record<string, unknown>;
-        const cachePath = typeof record.path === "string" ? record.path : "";
-        const statBytes = typeof record.statBytes === "number" ? record.statBytes : NaN;
-        const mtimeMs = typeof record.mtimeMs === "number" ? record.mtimeMs : NaN;
-        const ctimeMs = typeof record.ctimeMs === "number" ? record.ctimeMs : NaN;
-        const bytes = typeof record.bytes === "number" ? record.bytes : NaN;
-        const sha256 = typeof record.sha256 === "string" ? record.sha256 : "";
-        const encrypted = record.encrypted === true;
-        if (
-          cachePath.length === 0 ||
-          cachePath === ".." ||
-          cachePath.startsWith("../") ||
-          path.isAbsolute(cachePath) ||
-          !Number.isFinite(statBytes) ||
-          !Number.isFinite(mtimeMs) ||
-          !Number.isFinite(ctimeMs) ||
-          !Number.isFinite(bytes) ||
-          !/^[a-f0-9]{64}$/i.test(sha256)
-        ) {
-          continue;
-        }
-        cache.set(cachePath, { statBytes, mtimeMs, ctimeMs, encrypted, sha256, bytes });
-      }
+      return parseOfflineSyncDigestCache(raw);
     } catch (err) {
       if (!isErrnoCode(err, "ENOENT")) {
         log.warn(
@@ -2887,6 +2852,19 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           `storage.offlineSyncDigestCache: failed to write cache: ${err instanceof Error ? err.message : String(err)}`
         );
       });
+  }
+
+  /**
+   * Forces any debounced digest-cache write to start now and waits for all
+   * queued writes, so no cache write outlives the caller's operation.
+   */
+  async flushOfflineSyncDigestCache(): Promise<void> {
+    if (this.offlineSyncDigestCacheWriteTimer) {
+      clearTimeout(this.offlineSyncDigestCacheWriteTimer);
+      this.offlineSyncDigestCacheWriteTimer = null;
+      this.queueOfflineSyncDigestCacheWrite();
+    }
+    await this.offlineSyncDigestCacheWriteChain;
   }
 
   private async offlineSyncFileIsEncrypted(filePath: string): Promise<boolean> {

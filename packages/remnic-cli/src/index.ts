@@ -217,6 +217,7 @@ import {
   createOfflineStorageIo,
   filterOfflineSyncBaseFiles,
   resolveOfflineDirectHydrationPath,
+  type ConfiguredOfflineStorage,
 } from "./offline-storage-io.js";
 import { stageGenerationMembersForApply } from "./offline-generation-staging.js";
 import type { GenerationStagedTransport } from "./offline-generation-staging.js";
@@ -8325,6 +8326,21 @@ export async function runOfflineSyncOnce(options: {
    */
   generationStagedHydrateMinBytes?: number;
 } & { impressionsRotateBytes: number; impressionsRotateKeep: number }): Promise<OfflineSyncRunResult> {
+  const offlineStorage = await createConfiguredOfflineStorage(
+    options.memoryDir,
+    options.secureStoreEncryptOnWrite,
+  );
+  try {
+    return await runOfflineSyncOnceWithStorage(options, offlineStorage);
+  } finally {
+    await offlineStorage.storage.flushOfflineSyncDigestCache();
+  }
+}
+
+async function runOfflineSyncOnceWithStorage(
+  options: Parameters<typeof runOfflineSyncOnce>[0],
+  offlineStorage: ConfiguredOfflineStorage,
+): Promise<OfflineSyncRunResult> {
   fs.mkdirSync(options.memoryDir, { recursive: true });
   let activeStatePath = options.statePath;
   let priorState = await readOfflineSyncState(activeStatePath);
@@ -8363,10 +8379,6 @@ export async function runOfflineSyncOnce(options: {
   }
   const baseFiles = priorState?.baseFiles ?? [];
   const baseCapturedAt = priorState ? new Date(priorState.lastSyncedAt) : undefined;
-  const offlineStorage = await createConfiguredOfflineStorage(
-    options.memoryDir,
-    options.secureStoreEncryptOnWrite,
-  );
   const storageIo = await createOfflineStorageIo(options.memoryDir, offlineStorage);
   const syncBaseFiles = await filterOfflineSyncBaseFiles(options.memoryDir, baseFiles, storageIo.excludeFile);
   const localSourceId = localOfflineSourceId(options.memoryDir);
@@ -9144,80 +9156,83 @@ Environment fallbacks:
         statePath: existingState.statePath,
       });
     }
-    const storageIo = await createOfflineStorageIo(
-      memoryDir,
-      await createConfiguredOfflineStorage(memoryDir, config.secureStoreEncryptOnWrite),
-    );
-    const currentSnapshot = await buildOfflineSyncSnapshotFromBase({
-      root: memoryDir, sourceId: "local", includeContent: false, includeTranscripts,
-      readFile: storageIo.readFile, readFileDigest: storageIo.readFileDigest,
-      excludeNodeLocalState: false,
-    });
-    const stagedTransport = await stageGenerationMembersForApply({
-      memoryDir,
-      remoteUrl,
-      token,
-      namespace: resolvedNamespace,
-      includeTranscripts,
-      incomingFiles: remoteSnapshotMetadata.files,
-      currentFiles: currentSnapshot.files,
-      minBytes: OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES,
-      secureStoreEncryptOnWrite: config.secureStoreEncryptOnWrite,
-      hydrateFileContent: hydrateOfflineFileContent,
-    });
-    let remoteSnapshot: OfflineSyncSnapshot & { namespace?: string };
-    let pull: OfflineSyncPullResult;
+    const configuredStorage = await createConfiguredOfflineStorage(memoryDir, config.secureStoreEncryptOnWrite);
+    const storageIo = await createOfflineStorageIo(memoryDir, configuredStorage);
+    let stagedTransport: GenerationStagedTransport;
     try {
-      remoteSnapshot = await hydrateOfflineSnapshotContent({
+      const currentSnapshot = await buildOfflineSyncSnapshotFromBase({
+        root: memoryDir, sourceId: "local", includeContent: false, includeTranscripts,
+        readFile: storageIo.readFile, readFileDigest: storageIo.readFileDigest,
+        excludeNodeLocalState: false,
+      });
+      stagedTransport = await stageGenerationMembersForApply({
+        memoryDir,
         remoteUrl,
         token,
         namespace: resolvedNamespace,
         includeTranscripts,
-        snapshot: remoteSnapshotMetadata,
-        baseFiles: existingState?.state.baseFiles ?? [],
+        incomingFiles: remoteSnapshotMetadata.files,
         currentFiles: currentSnapshot.files,
-        skipContentPaths: stagedTransport.stagedPaths,
+        minBytes: OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES,
+        secureStoreEncryptOnWrite: config.secureStoreEncryptOnWrite,
+        hydrateFileContent: hydrateOfflineFileContent,
       });
-      pull = await applyOfflineSyncSnapshot({
-        root: memoryDir,
-        snapshot: remoteSnapshot,
-        baseFiles: existingState?.state.baseFiles ?? [],
-        readFile: storageIo.readFile,
-        readFileDigest: storageIo.readFileDigest,
-        writeFile: storageIo.writeFile,
-        writeStagingFile: storageIo.writeStagingFile,
-        readStagingFile: storageIo.readStagingFile,
-        deleteFile: storageIo.deleteFile,
-        recordDeletionRevision: storageIo.recordDeletionRevision,
-        readIncomingFile: stagedTransport.readIncomingFile,
-      });
-    } finally {
-      await stagedTransport.cleanup();
-    }
-    const state = offlineSyncStateFromSnapshot({
-      remoteId: remoteUrl,
-      namespace: resolvedNamespace,
-      snapshot: remoteSnapshot,
-      baseFiles: pull.nextBaseFiles,
-    });
-    for (const pathToWrite of stateWritePaths) {
-      await writeOfflineSyncState(pathToWrite, state);
-    }
-    if (json) {
-      console.log(JSON.stringify({
-        statePath: activeStatePath,
+      let remoteSnapshot: OfflineSyncSnapshot & { namespace?: string };
+      let pull: OfflineSyncPullResult;
+      try {
+        remoteSnapshot = await hydrateOfflineSnapshotContent({
+          remoteUrl,
+          token,
+          namespace: resolvedNamespace,
+          includeTranscripts,
+          snapshot: remoteSnapshotMetadata,
+          baseFiles: existingState?.state.baseFiles ?? [],
+          currentFiles: currentSnapshot.files,
+          skipContentPaths: stagedTransport.stagedPaths,
+        });
+        pull = await applyOfflineSyncSnapshot({
+          root: memoryDir,
+          snapshot: remoteSnapshot,
+          baseFiles: existingState?.state.baseFiles ?? [],
+          readFile: storageIo.readFile,
+          readFileDigest: storageIo.readFileDigest,
+          writeFile: storageIo.writeFile,
+          writeStagingFile: storageIo.writeStagingFile,
+          readStagingFile: storageIo.readStagingFile,
+          deleteFile: storageIo.deleteFile,
+          recordDeletionRevision: storageIo.recordDeletionRevision,
+          readIncomingFile: stagedTransport.readIncomingFile,
+        });
+      } finally {
+        await stagedTransport.cleanup();
+      }
+      const state = offlineSyncStateFromSnapshot({
+        remoteId: remoteUrl,
         namespace: resolvedNamespace,
-        remoteFiles: remoteSnapshot.files.length,
-        pull: offlinePullJsonSummary(pull),
-      }, null, 2));
-    } else {
-      console.log(`Offline cache prepared: ${memoryDir}`);
-      console.log(`Namespace: ${resolvedNamespace ?? "(default)"}`);
-      console.log(`Remote files: ${remoteSnapshot.files.length}`);
-      console.log(`Pulled: ${pull.upserted} upserted, ${pull.deleted} deleted, ${pull.conflicts.length} conflicts`);
-      console.log(`State: ${activeStatePath}`);
+        snapshot: remoteSnapshot,
+        baseFiles: pull.nextBaseFiles,
+      });
+      for (const pathToWrite of stateWritePaths) {
+        await writeOfflineSyncState(pathToWrite, state);
+      }
+      if (json) {
+        console.log(JSON.stringify({
+          statePath: activeStatePath,
+          namespace: resolvedNamespace,
+          remoteFiles: remoteSnapshot.files.length,
+          pull: offlinePullJsonSummary(pull),
+        }, null, 2));
+      } else {
+        console.log(`Offline cache prepared: ${memoryDir}`);
+        console.log(`Namespace: ${resolvedNamespace ?? "(default)"}`);
+        console.log(`Remote files: ${remoteSnapshot.files.length}`);
+        console.log(`Pulled: ${pull.upserted} upserted, ${pull.deleted} deleted, ${pull.conflicts.length} conflicts`);
+        console.log(`State: ${activeStatePath}`);
+      }
+      return;
+    } finally {
+      await configuredStorage.storage.flushOfflineSyncDigestCache();
     }
-    return;
   }
 
   if (action === "sync") {
@@ -9268,46 +9283,50 @@ Environment fallbacks:
     }
     const configuredStorage = await createConfiguredOfflineStorage(memoryDir, config.secureStoreEncryptOnWrite);
     const storageIo = await createOfflineStorageIo(memoryDir, configuredStorage);
-    // Fold durable pending impression/lifecycle spills before summarizing so
-    // `status` reports the same pending set a following `sync` would push
-    // (#2033). runOfflineSyncOnce drains these queues before every snapshot; a
-    // status that skipped them would undercount. A deferred/failed drain aborts
-    // here for the same reason sync aborts — an accurate count beats a silent
-    // undercount.
-    await drainOfflineSyncImpressions(memoryDir, impressionRotation);
-    await drainPendingLifecycleForOfflineSync(
-      memoryDir,
-      async (ledgerPath) =>
-        (await createOfflineStorageForPath(
-          memoryDir,
-          ledgerPath,
-          configuredStorage,
-          config.secureStoreEncryptOnWrite ?? true,
-        )).drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath),
-    );
-    const summary = await summarizeOfflineSyncPendingChanges({
-      root: memoryDir,
-      sourceId: localOfflineSourceId(memoryDir),
-      baseFiles: state?.baseFiles ?? [],
-      baseCapturedAt: state ? new Date(state.lastSyncedAt) : undefined,
-      includeTranscripts,
-      readFile: storageIo.readFile,
-      readFileDigest: storageIo.readFileDigest,
-      userExcludeRegexps,
-    });
-    if (json) {
-      console.log(JSON.stringify({
-        statePath: statePath ?? null,
-        state: offlineStateJsonSummary(state),
-        pending: summary,
-      }, null, 2));
-    } else {
-      console.log(`Offline state: ${state ? "ready" : "not prepared"}`);
-      console.log(`State: ${statePath ?? "(not selected; pass --state or --remote-url to inspect a prepared remote state)"}`);
-      if (state) console.log(`Last synced: ${state.lastSyncedAt}`);
-      console.log(`Pending local changes: ${summary.total} (${summary.upserts} upserts, ${summary.deletes} deletes)`);
+    try {
+      // Fold durable pending impression/lifecycle spills before summarizing so
+      // `status` reports the same pending set a following `sync` would push
+      // (#2033). runOfflineSyncOnce drains these queues before every snapshot; a
+      // status that skipped them would undercount. A deferred/failed drain aborts
+      // here for the same reason sync aborts — an accurate count beats a silent
+      // undercount.
+      await drainOfflineSyncImpressions(memoryDir, impressionRotation);
+      await drainPendingLifecycleForOfflineSync(
+        memoryDir,
+        async (ledgerPath) =>
+          (await createOfflineStorageForPath(
+            memoryDir,
+            ledgerPath,
+            configuredStorage,
+            config.secureStoreEncryptOnWrite ?? true,
+          )).drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath),
+      );
+      const summary = await summarizeOfflineSyncPendingChanges({
+        root: memoryDir,
+        sourceId: localOfflineSourceId(memoryDir),
+        baseFiles: state?.baseFiles ?? [],
+        baseCapturedAt: state ? new Date(state.lastSyncedAt) : undefined,
+        includeTranscripts,
+        readFile: storageIo.readFile,
+        readFileDigest: storageIo.readFileDigest,
+        userExcludeRegexps,
+      });
+      if (json) {
+        console.log(JSON.stringify({
+          statePath: statePath ?? null,
+          state: offlineStateJsonSummary(state),
+          pending: summary,
+        }, null, 2));
+      } else {
+        console.log(`Offline state: ${state ? "ready" : "not prepared"}`);
+        console.log(`State: ${statePath ?? "(not selected; pass --state or --remote-url to inspect a prepared remote state)"}`);
+        if (state) console.log(`Last synced: ${state.lastSyncedAt}`);
+        console.log(`Pending local changes: ${summary.total} (${summary.upserts} upserts, ${summary.deletes} deletes)`);
+      }
+      return;
+    } finally {
+      await configuredStorage.storage.flushOfflineSyncDigestCache();
     }
-    return;
   }
 
   if (action === "watch") {
