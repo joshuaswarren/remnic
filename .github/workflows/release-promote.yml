@@ -273,7 +273,7 @@ jobs:
             --jq '.check_runs[]? | {id, name, status, conclusion, started_at, completed_at}' \
             >> "${RUNNER_TEMP}/ci-gate-records.jsonl"
           gh api "${REPO}/commits/${EVAL_SHA}/status" \
-            --jq '.statuses[]? | {name: .context, status: "completed", conclusion: .state, started_at: .updated_at, completed_at: .updated_at}' \
+            --jq '.statuses[]? | {id, name: .context, status: "completed", conclusion: .state, started_at: .updated_at, completed_at: .updated_at}' \
             >> "${RUNNER_TEMP}/ci-gate-records.jsonl"
           {
             echo "{ \"type\": \"check-runs\", \"records\": ["

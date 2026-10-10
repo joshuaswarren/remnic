@@ -523,6 +523,27 @@ test("equal timestamps tie-break by numeric id; a full tie keeps the non-success
   assert.ok(run(fullTie).reasons.some((r) => r === "quality: failure"));
 });
 
+test("same-second legacy statuses with ids allow when the higher id succeeded", () => {
+  const statuses = [
+    { name: "quality", status: "completed", conclusion: "success", id: 510, started_at: "2026-10-02T00:31:00Z", completed_at: "2026-10-02T00:31:00Z" },
+    { name: "quality", status: "completed", conclusion: "failure", id: 509, started_at: "2026-10-02T00:31:00Z", completed_at: "2026-10-02T00:31:00Z" },
+    crF("dependency-review"),
+    crF("gitleaks"),
+    crF("analyze"),
+    crF("ai-reviewers"),
+    crF("unresolved-review-threads"),
+  ];
+  assert.equal(run(statuses).decision, "allow");
+  assert.deepEqual(run(statuses).reasons, []);
+  assert.equal(run([statuses[1], statuses[0], ...statuses.slice(2)]).decision, "allow");
+  const failingNewest = [
+    { name: "quality", status: "completed", conclusion: "success", id: 509, started_at: "2026-10-02T00:31:00Z", completed_at: "2026-10-02T00:31:00Z" },
+    { name: "quality", status: "completed", conclusion: "failure", id: 510, started_at: "2026-10-02T00:31:00Z", completed_at: "2026-10-02T00:31:00Z" },
+    ...statuses.slice(2),
+  ];
+  assert.ok(run(failingNewest).reasons.some((r) => r === "quality: failure"));
+});
+
 test("conclusion=neutral IS refusal (round-2: allow-list on success only)", () => {
   // The repo's ai-reviewers gate posts `neutral` for superseded runs.
   // Treat as refusal so a required review that produced no real verdict

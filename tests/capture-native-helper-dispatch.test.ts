@@ -52,8 +52,52 @@ const DARWIN_MATRIX_PACKAGES = [
   "packages/capture-native-darwin-x64",
 ];
 
+function tokenizeGuard(expression: string): string[] {
+  const tokens: string[] = [];
+  let pos = 0;
+  while (pos < expression.length) {
+    const ch = expression[pos];
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+      pos += 1;
+      continue;
+    }
+    if (ch === "(" || ch === ")" || ch === ",") {
+      tokens.push(ch);
+      pos += 1;
+      continue;
+    }
+    if (ch === "'") {
+      const end = expression.indexOf("'", pos + 1);
+      if (end === -1) throw new Error(`unterminated string: ${expression}`);
+      tokens.push(expression.slice(pos, end + 1));
+      pos = end + 1;
+      continue;
+    }
+    if (ch === "&" || ch === "|" || ch === "=" || ch === "!") {
+      const pair = expression.slice(pos, pos + 2);
+      if (pair === "&&" || pair === "||" || pair === "==" || pair === "!=") {
+        tokens.push(pair);
+        pos += 2;
+        continue;
+      }
+      if (ch === "!" || ch === "=") {
+        tokens.push(ch);
+        pos += 1;
+        continue;
+      }
+      throw new Error(`unexpected character: ${ch}`);
+    }
+    let end = pos;
+    while (end < expression.length && !" ()',!&|=".includes(expression[end])) end += 1;
+    if (end === pos) throw new Error(`unexpected character: ${ch}`);
+    tokens.push(expression.slice(pos, end));
+    pos = end;
+  }
+  return tokens;
+}
+
 function evaluateGuard(expression: string, event: GuardEvent): boolean {
-  const tokens = expression.match(/\(|\)|,|&&|\|\||==|!=|!|'[^']*'|[^\s(),]+/g) ?? [];
+  const tokens = tokenizeGuard(expression);
   let pos = 0;
   const peek = (): string | undefined => tokens[pos];
   const next = (): string => {
