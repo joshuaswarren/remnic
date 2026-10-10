@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.69.98] — 2026-10-10
+
 ### Changed
 
 - Removed tracked editor backups and the duplicate root audit file (#3144).
