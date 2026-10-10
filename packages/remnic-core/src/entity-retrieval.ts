@@ -2,7 +2,7 @@ import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { renderAuthorityBoundContent } from "./recall-context-composition.js";
 import { createHash } from "node:crypto";
 import { sanitizeMemoryContent } from "./sanitize.js";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { collectNativeKnowledgeChunks, type NativeKnowledgeChunk } from "./native-knowledge.js";
 import { compareEntityTimestamps, normalizeEntityName, type StorageManager } from "./storage.js";
@@ -22,6 +22,15 @@ import {
   yieldEntityRecallScan,
   yieldEntityRecallScanEvery,
 } from "./entity-recall-cancellation.js";
+import { applyCarriedMemorySnippets } from "./entity-mention-carry.js";
+import {
+  entityMentionCacheGeneration,
+  entityMentionIdentity,
+  entityMentionPersistedIndexReadable,
+  entityMentionScopeKey,
+  resolveEntityMentionIndex,
+  writePersistedEntityMentionIndex,
+} from "./entity-mention-index-cache.js";
 const ENTITY_INDEX_VERSION = 3;
 const RECENT_TRANSCRIPT_LOOKBACK_HOURS = 24;
 const INSTRUCTION_LIKE_RE = /\b(always|never|must|should|remember to|do not|don't|process|workflow|template|checklist|instruction)\b/i;
@@ -64,6 +73,8 @@ type EntityMentionIndex = {
   updatedAt: string;
   entityStatusVersion?: number;
   entities: EntityMentionIndexEntry[];
+  /** In-memory only. A new canonical id had no snippets to carry. */
+  pendingSnippetReconcile?: boolean;
 };
 type EntityCandidate = {
   entry: EntityMentionIndexEntry;
@@ -356,13 +367,19 @@ async function readCurrentPersistedEntityIndex(
     return null;
   }
   const index = await readEntityIndexState(storage);
-  if (!index || index.entityStatusVersion !== storage.getMemoryStatusVersion()) {
+  if (!entityMentionPersistedIndexReadable(storage.dir) || !index || index.entityStatusVersion !== storage.getMemoryStatusVersion()) {
     return null;
   }
   return index;
 }
-const namespaceEntityIndexCache = new Map<string, EntityMentionIndex>();
-const MAX_NAMESPACE_ENTITY_INDEX_CACHE_ENTRIES = 32;
+type CarriedMemorySnippets = Map<string, { memorySnippets: string[]; memorySnippetOrigins?: (string | undefined)[] }>;
+
+function carriedMemorySnippets(index: EntityMentionIndex): CarriedMemorySnippets {
+  return new Map(index.entities.map((entry) => [entry.canonicalId, {
+    memorySnippets: entry.memorySnippets.slice(),
+    memorySnippetOrigins: entry.memorySnippetOrigins?.slice(),
+  }]));
+}
 
 function nativeEntityIndexRevision(chunks: NativeKnowledgeChunk[]): string {
   const projection = chunks.map((chunk) => [
@@ -376,40 +393,13 @@ function nativeEntityIndexRevision(chunks: NativeKnowledgeChunk[]): string {
   ]);
   return createHash("sha256").update(JSON.stringify(projection)).digest("hex");
 }
-function namespaceEntityIndexCacheKey(
-  storages: StorageManager[],
-  recallNamespaces: string[],
-  nativeRevision: string,
-): string {
-  const namespaceKey = uniqueStrings(recallNamespaces).join("\u001f");
-  const storageKey = storages
-    .map((scopedStorage) => {
-      const aliases = Object.entries(scopedStorage.entityAliases)
-        .sort(([left], [right]) => left.localeCompare(right));
-      return (
-        `${path.resolve(scopedStorage.dir)}@${scopedStorage.getMemoryStatusVersion()}` +
-        `:${scopedStorage.getMemoryCorpusVersion()}:${scopedStorage.getEntityMutationVersion()}` +
-        `:${scopedStorage.hotCacheKeyId()}:${JSON.stringify(aliases)}`
-      );
-    })
-    .join("\u001f");
-  return `${namespaceKey}\u001e${storageKey}\u001e${nativeRevision}`;
-}
-function rememberNamespaceEntityIndex(key: string, index: EntityMentionIndex): void {
-  if (namespaceEntityIndexCache.size >= MAX_NAMESPACE_ENTITY_INDEX_CACHE_ENTRIES) {
-    const oldestKey = namespaceEntityIndexCache.keys().next().value;
-    if (typeof oldestKey === "string") namespaceEntityIndexCache.delete(oldestKey);
-  }
-  namespaceEntityIndexCache.set(key, index);
-}
 
-async function writeEntityIndexState(storage: StorageManager, index: EntityMentionIndex): Promise<void> {
-  const statePath = entityIndexStatePath(storage);
-  await mkdir(path.dirname(statePath), { recursive: true });
-  const nextContent = JSON.stringify(index, null, 2) + "\n";
-  const currentContent = await readFile(statePath, "utf-8").catch(() => "");
-  if (currentContent === nextContent) return;
-  await writeFile(statePath, nextContent, "utf-8");
+async function writeEntityIndexState(
+  storage: StorageManager,
+  index: EntityMentionIndex,
+  persistGeneration: number,
+): Promise<void> {
+  await writePersistedEntityMentionIndex(storage.dir, persistGeneration, JSON.stringify(index, null, 2) + "\n");
 }
 
 function nativePseudoCanonicalId(chunk: NativeKnowledgeChunk): string {
@@ -483,6 +473,7 @@ async function buildEntityMentionIndex(
   nativeChunksOverride?: NativeKnowledgeChunk[],
   resolvedStorages?: StorageManager[],
   abortSignal?: AbortSignal,
+  carrySnippets?: CarriedMemorySnippets,
 ): Promise<EntityMentionIndex> {
   checkEntityRecallAbort(abortSignal);
   const storages = resolvedStorages ?? await resolveEntityIndexStorages(
@@ -493,11 +484,14 @@ async function buildEntityMentionIndex(
   );
   const shouldPersistIndex =
     storages.length === 1 && path.resolve(storages[0]!.dir) === path.resolve(storage.dir);
+  const persistGeneration = entityMentionCacheGeneration(storage.dir);
   const entityStatusVersionBefore = shouldPersistIndex ? storage.getMemoryStatusVersion() : undefined;
   const [previousIndex, entityFileSets, memorySets, nativeChunks] = await Promise.all([
     shouldPersistIndex ? readEntityIndexState(storage) : Promise.resolve(null),
     Promise.all(storages.map((scopedStorage) => scopedStorage.readAllEntityFiles({ abortSignal }))),
-    Promise.all(storages.map((scopedStorage) => scopedStorage.readAllMemories({ abortSignal }))),
+    carrySnippets
+      ? Promise.resolve([])
+      : Promise.all(storages.map((scopedStorage) => scopedStorage.readAllMemories({ abortSignal }))),
     nativeChunksOverride ? Promise.resolve(nativeChunksOverride) : readNativeChunks(config, recallNamespaces),
   ]);
   // The bulk reads now stop at their own scan boundaries (issue #2307); this
@@ -562,15 +556,20 @@ async function buildEntityMentionIndex(
   }
 
   scanned = 0;
-  for (const memory of memories) {
-    scanned += 1;
-    await yieldEntityRecallScanEvery(scanned, abortSignal);
-    const entry = typeof memory.frontmatter.entityRef === "string" ? entities.get(memory.frontmatter.entityRef) : undefined;
-    if (!entry) continue;
-    const snippet = await readMemorySnippet(memory);
-    if (entry.memorySnippets.includes(snippet)) continue;
-    entry.memorySnippets.push(snippet);
-    entry.memorySnippetOrigins = [...(entry.memorySnippetOrigins ?? []), memory.frontmatter.origin];
+  const pendingSnippetReconcile = carrySnippets
+    ? applyCarriedMemorySnippets(entities.values(), carrySnippets)
+    : false;
+  if (!carrySnippets) {
+    for (const memory of memories) {
+      scanned += 1;
+      await yieldEntityRecallScanEvery(scanned, abortSignal);
+      const entry = typeof memory.frontmatter.entityRef === "string" ? entities.get(memory.frontmatter.entityRef) : undefined;
+      if (!entry) continue;
+      const snippet = await readMemorySnippet(memory);
+      if (entry.memorySnippets.includes(snippet)) continue;
+      entry.memorySnippets.push(snippet);
+      entry.memorySnippetOrigins = [...(entry.memorySnippetOrigins ?? []), memory.frontmatter.origin];
+    }
   }
   // Each remaining phase is another synchronous pass over the whole index
   // (alias map, native-chunk merge, sort, two full serializations). Yield between
@@ -604,7 +603,7 @@ async function buildEntityMentionIndex(
   await yieldEntityRecallScan(abortSignal);
   const nextEntities = JSON.stringify(sortedEntities);
   const entityStatusVersionAfter = shouldPersistIndex ? storage.getMemoryStatusVersion() : undefined;
-  const canPersistIndex = shouldPersistIndex && entityStatusVersionBefore === entityStatusVersionAfter;
+  const canPersistIndex = shouldPersistIndex && entityStatusVersionBefore === entityStatusVersionAfter && persistGeneration === entityMentionCacheGeneration(storage.dir);
   const index: EntityMentionIndex = {
     version: ENTITY_INDEX_VERSION,
     updatedAt:
@@ -615,12 +614,10 @@ async function buildEntityMentionIndex(
     entities: sortedEntities,
   };
   if (canPersistIndex) {
-    // A build the caller has abandoned must not leave a persisted index behind:
-    // the write is I/O the timed-out recall no longer needs, and the next recall
-    // is already competing for the same disk.
     checkEntityRecallAbort(abortSignal);
-    await writeEntityIndexState(storage, index);
+    await writeEntityIndexState(storage, index, persistGeneration);
   }
+  if (pendingSnippetReconcile) index.pendingSnippetReconcile = true;
   return index;
 }
 
@@ -1081,30 +1078,34 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
       options.namespaceStorage,
     )
     : undefined;
-  const namespaceCacheKey =
-    resolvedStorages && options.recallNamespaces && nativeChunks
-      ? namespaceEntityIndexCacheKey(
-        resolvedStorages,
-        options.recallNamespaces,
-        nativeEntityIndexRevision(nativeChunks),
-      )
-      : undefined;
-  let index: EntityMentionIndex | undefined = namespaceCacheKey
-    ? namespaceEntityIndexCache.get(namespaceCacheKey)
-    : undefined;
-  checkEntityRecallAbort(options.abortSignal);
-  if (!index) {
-    index = await buildEntityMentionIndex(
+  if (!nativeChunks) {
+    nativeChunks = await readNativeChunks(options.config, options.recallNamespaces);
+  }
+  const indexStorages = resolvedStorages ?? [options.storage];
+  const index = await resolveEntityMentionIndex({
+    scopeKey: entityMentionScopeKey(options.recallNamespaces, indexStorages, nativeEntityIndexRevision(nativeChunks)),
+    currentIdentity: () => entityMentionIdentity(indexStorages),
+    abortSignal: options.abortSignal,
+    buildFull: (signal) => buildEntityMentionIndex(
       options.storage,
       options.config,
       options.recallNamespaces,
       options.namespaceStorage,
       nativeChunks,
-      resolvedStorages,
-      options.abortSignal,
-    );
-    if (namespaceCacheKey) rememberNamespaceEntityIndex(namespaceCacheKey, index);
-  }
+      indexStorages,
+      signal,
+    ),
+    rebuildEntities: (previous, signal) => buildEntityMentionIndex(
+      options.storage,
+      options.config,
+      options.recallNamespaces,
+      options.namespaceStorage,
+      nativeChunks,
+      indexStorages,
+      signal,
+      carriedMemorySnippets(previous),
+    ),
+  });
   // Candidate resolution is another synchronous pass over every entity and alias,
   // reached even on a cache hit that did no I/O at all — so yield here too, or a
   // cached corpus could still hold the loop past the section budget (issue #2291).
