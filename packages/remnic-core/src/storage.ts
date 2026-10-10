@@ -5382,6 +5382,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   /**
    * Update frontmatter fields without changing memory content. Returns false when the memory is not found.
    */
+  private static readonly frontmatterBody = StorageManager.prototype.writeMemoryFrontmatter;
   async writeMemoryFrontmatter(
     memory: MemoryFile,
     patch: Partial<MemoryFrontmatter>,
@@ -5400,7 +5401,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const refIds = typeof updated.entityRef === "string" ? resolveIds : null;
     const afterStatus = updated.status ?? "active";
     if (!mentionReentry && entityMentionEpoch.neutral(memory.frontmatter, updated))
-      return entityMentionEpoch.hold(() => this.writeMemoryFrontmatter(memory, patch, lifecycle, true));
+      return entityMentionEpoch.hold(() => StorageManager.frontmatterBody.call(this, memory, patch, lifecycle, true));
 
     const fileContent = `${serializeFrontmatter(this.withOkfType(updated))}\n\n${memory.content}\n`;
     await this.writeTombstoneBlockedFrontmatter(memory, fileContent, updated, async () => {

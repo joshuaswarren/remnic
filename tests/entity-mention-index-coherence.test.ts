@@ -69,6 +69,36 @@ async function removeHarness(memoryDir: string, workspaceDir: string) {
   ]);
 }
 
+test("a wrapped frontmatter writer does not recurse on metadata-only patches", async () => {
+  const { memoryDir, workspaceDir, storage } = await buildHarness("engram-entity-epoch-wrap");
+  const original = storage.writeMemoryFrontmatter.bind(storage);
+  let calls = 0;
+  try {
+    const written = await storage.writeMemory(
+      "fact",
+      "Cedar Lattice tracks harbor lights from the pier.",
+      {},
+    );
+    const epoch = entityMentionEpoch.current(storage.dir);
+    storage.writeMemoryFrontmatter = async (memory, patch, lifecycle) => {
+      calls += 1;
+      if (calls > 2) throw new Error(`writeMemoryFrontmatter reentered ${calls} times`);
+      return original(memory, patch, lifecycle);
+    };
+    const wrote = await storage.writeMemoryFrontmatter(written.memory, {
+      heatScore: 0.42,
+      decayScore: 0.07,
+      lastValidatedAt: "2026-10-10T00:00:00.000Z",
+    });
+    assert.equal(wrote, true);
+    assert.equal(calls, 1);
+    assert.equal(entityMentionEpoch.current(storage.dir), epoch);
+  } finally {
+    storage.writeMemoryFrontmatter = original;
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
 test("metadata-only frontmatter does not rebuild the entity mention index", async () => {
   const { memoryDir, workspaceDir, config, storage } = await buildHarness("engram-entity-epoch-metadata");
   const originalReadAllMemories = storage.readAllMemories.bind(storage);

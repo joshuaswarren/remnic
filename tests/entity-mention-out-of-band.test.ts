@@ -481,8 +481,13 @@ test("dedupe-exact deletes a duplicate fact and moves the mention epoch", async 
     };
     registerCli(
       {
-        registerCli(handler) {
-          handler({ program } as never, { commands: [] });
+        registerCli(
+          handler: (
+            opts: { program: typeof program },
+            options: { commands: string[] },
+          ) => void,
+        ) {
+          handler({ program }, { commands: [] });
         },
       } as never,
       { config: parseConfig({ memoryDir, openaiApiKey: "sk-test" }) } as never,
