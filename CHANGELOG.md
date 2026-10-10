@@ -8,6 +8,8 @@ All notable changes to this project will be documented in this file.
 
 - Removed an unused release-check ordering suffix and corrected its input docs (#3161).
 - Documented stable-only native releases and the manual npm package seed (#3162).
+- Release promotion fails closed on tied or timestamp-less check-run records; the promote workflow projects check-run ids so latest-run selection is deterministic (#3173).
+- Restored structural workflow contract tests for the native helper dispatch path (event, permissions, order, ref guard, matrix, dependency, alpha publish flags) (#3173).
 
 ## [v9.69.68] — 2026-09-07
 

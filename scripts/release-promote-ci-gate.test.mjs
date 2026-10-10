@@ -455,10 +455,39 @@ test("a never-started check-run (no timestamps) supersedes timestamped records a
   );
 });
 
-test("timestampless completed records tie-break by id (higher id wins, order-independent)", () => {
+test("timestamp-less rows without ids keep the failing record (false-approval regression)", () => {
+  const qualityRows = [
+    {
+      name: "quality",
+      status: "completed",
+      conclusion: "success",
+      started_at: null,
+      completed_at: null,
+    },
+    {
+      name: "quality",
+      status: "completed",
+      conclusion: "failure",
+      started_at: null,
+      completed_at: null,
+    },
+    crF("dependency-review"),
+    crF("gitleaks"),
+    crF("analyze"),
+    crF("ai-reviewers"),
+    crF("unresolved-review-threads"),
+  ];
+  for (const records of [qualityRows, [qualityRows[1], qualityRows[0], ...qualityRows.slice(2)]]) {
+    const result = run(records);
+    assert.equal(result.decision, "refuse");
+    assert.ok(result.reasons.some((r) => r === "quality: failure"));
+  }
+});
+
+test("timestampless completed records tie-break by numeric id (multi-digit, order-independent)", () => {
   const green = [
-    { name: "quality", status: "completed", conclusion: "success", id: 1 },
-    { name: "quality", status: "completed", conclusion: "failure", id: 2 },
+    { name: "quality", status: "completed", conclusion: "success", id: 9 },
+    { name: "quality", status: "completed", conclusion: "failure", id: 10 },
     crF("dependency-review"),
     crF("gitleaks"),
     crF("analyze"),
@@ -469,6 +498,29 @@ test("timestampless completed records tie-break by id (higher id wins, order-ind
   assert.ok(run(green).reasons.some((r) => r === "quality: failure"));
   const flipped = [green[1], green[0], ...green.slice(2)];
   assert.deepEqual(run(flipped), run(green));
+});
+
+test("equal timestamps tie-break by numeric id; a full tie keeps the non-success record", () => {
+  const base = [
+    crF("dependency-review"),
+    crF("gitleaks"),
+    crF("analyze"),
+    crF("ai-reviewers"),
+    crF("unresolved-review-threads"),
+  ];
+  const timestamps = { started_at: "2026-10-02T00:30:00Z", completed_at: "2026-10-02T00:31:00Z" };
+  const sameSecond = [
+    { name: "quality", status: "completed", conclusion: "success", id: 40, ...timestamps },
+    { name: "quality", status: "completed", conclusion: "failure", id: 41, ...timestamps },
+    ...base,
+  ];
+  assert.ok(run(sameSecond).reasons.some((r) => r === "quality: failure"));
+  const fullTie = [
+    { name: "quality", status: "completed", conclusion: "success", ...timestamps },
+    { name: "quality", status: "completed", conclusion: "failure", ...timestamps },
+    ...base,
+  ];
+  assert.ok(run(fullTie).reasons.some((r) => r === "quality: failure"));
 });
 
 test("conclusion=neutral IS refusal (round-2: allow-list on success only)", () => {

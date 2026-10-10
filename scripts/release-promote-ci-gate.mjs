@@ -149,17 +149,36 @@ export function decide(records, requiredContexts, selfExcluded = SELF_EXCLUDED_D
     };
   }
 
-  // Group records by name; per name, take the SINGLE latest record
-  // (by completed_at falling back to started_at falling back to id) for
-  // the verdict. Rulesets evaluate the latest run per context — an older
-  // queued or in_progress record is superseded by a newer completed one,
-  // and the verdict must match what the merge gate actually saw.
   const byName = new Map();
-  const orderKey = (r) => r.completed_at ?? r.started_at ?? `id:${r.id ?? ""}`;
+  const orderKey = (r) => ({
+    timestamp: r.completed_at ?? r.started_at ?? null,
+    id: Number(r.id ?? -1),
+  });
+  const compareIds = (a, b) => {
+    const diff = a.id - b.id;
+    return Number.isNaN(diff) ? 0 : diff;
+  };
+  const compareOrder = (a, b) => {
+    if (a.timestamp === null && b.timestamp === null) return compareIds(a, b);
+    if (a.timestamp === null) return 1;
+    if (b.timestamp === null) return -1;
+    if (a.timestamp !== b.timestamp) return a.timestamp < b.timestamp ? -1 : 1;
+    return compareIds(a, b);
+  };
   for (const r of records) {
     if (!r || typeof r.name !== "string") continue;
     const prev = byName.get(r.name);
-    if (!prev || orderKey(r) > orderKey(prev)) {
+    if (!prev) {
+      byName.set(r.name, r);
+      continue;
+    }
+    const comparison = compareOrder(orderKey(r), orderKey(prev));
+    if (
+      comparison > 0 ||
+      (comparison === 0 &&
+        r.conclusion !== "success" &&
+        prev.conclusion === "success")
+    ) {
       byName.set(r.name, r);
     }
   }
