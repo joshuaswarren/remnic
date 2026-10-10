@@ -121,9 +121,12 @@ Six backends, selected by `searchBackend`:
   remote       HTTP REST backend.
   noop         Extraction only, no search.
 
-QMD target: @tobilu/qmd 2.5.3. Remnic probes `qmd --version` and gates newer
-flags: 2.5.3+ uses `--format json` for query/search subprocess output; older
-supported QMD installs keep legacy `--json`. Default query strategy is
+QMD target: @tobilu/qmd 2.8.3, installed as commit 93d211f9 plus
+docs/patches/qmd-2.8.3-mcp-cancel.patch and qmd-2.8.3-stdio-stdout.patch
+(docs/qmd-2.8.3.md). Stock npm @2.8.3 is not that binary. Remnic probes
+`qmd --version` and gates newer flags: 2.5.3+ uses `--format json` for
+query/search subprocess output; older supported QMD installs keep legacy
+`--json`. Default query strategy is
 `hybrid` and the default subprocess strategy is `query` (both BY DESIGN; do
 not present BM25-only as the recommended default). Daemon timeout 8000 ms;
 query-time rerank on.

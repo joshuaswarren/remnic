@@ -1,0 +1,46 @@
+diff --git a/src/llm.ts b/src/llm.ts
+index 2b943a5..97e6f8d 100644
+--- a/src/llm.ts
++++ b/src/llm.ts
+@@ -47,19 +47,39 @@ type StdoutWrite = typeof process.stdout.write;
+ let nativeStdoutRedirectDepth = 0;
+ let originalStdoutWrite: StdoutWrite | null = null;
+ 
++// MCP stdio writes one JSON-RPC message per stdout.write (`JSON.stringify` + "\n").
++// node-llama-cpp's native probe swaps stdout onto stderr for the whole getLlama()
++// call (#971). A tool reply that finishes while the model is loading would
++// otherwise land on fd 2 and the client would wait forever. Keep those frames
++// on the real stdout. Native progress is not JSON-RPC and still goes to stderr.
++const JSONRPC_STDOUT_PREFIX = '{"jsonrpc":';
++const JSONRPC_STDOUT_PREFIX_BYTES = [0x7b, 0x22, 0x6a, 0x73, 0x6f, 0x6e, 0x72, 0x70, 0x63, 0x22, 0x3a];
++
++function isJsonRpcStdoutChunk(chunk: StdoutChunk): boolean {
++  if (typeof chunk === "string") return chunk.startsWith(JSONRPC_STDOUT_PREFIX);
++  if (chunk.length < JSONRPC_STDOUT_PREFIX_BYTES.length) return false;
++  for (let i = 0; i < JSONRPC_STDOUT_PREFIX_BYTES.length; i++) {
++    if (chunk[i] !== JSONRPC_STDOUT_PREFIX_BYTES[i]) return false;
++  }
++  return true;
++}
++
+ /**
+  * Some node-llama-cpp native build/probe paths write library noise to stdout.
+  * JSON APIs must reserve stdout for machine-readable payloads, so route that
+  * noise to stderr while native llama initialization is in progress.
++ * A chunk that is itself a JSON-RPC message stays on stdout (#971).
+  */
+ export async function withNativeStdoutRedirectedToStderr<T>(fn: () => Promise<T>): Promise<T> {
+   if (nativeStdoutRedirectDepth === 0) {
+     originalStdoutWrite = process.stdout.write.bind(process.stdout) as StdoutWrite;
++    const savedStdoutWrite = originalStdoutWrite;
+     process.stdout.write = ((chunk: StdoutChunk, encodingOrCallback?: BufferEncoding | WriteCallback, callback?: WriteCallback) => {
++      const dest: StdoutWrite = isJsonRpcStdoutChunk(chunk) ? savedStdoutWrite : process.stderr.write.bind(process.stderr);
+       if (typeof encodingOrCallback === "function") {
+-        return process.stderr.write(chunk, encodingOrCallback);
++        return dest(chunk, encodingOrCallback);
+       }
+-      return process.stderr.write(chunk, encodingOrCallback, callback);
++      return dest(chunk, encodingOrCallback, callback);
+     }) as StdoutWrite;
+   }
+   nativeStdoutRedirectDepth++;

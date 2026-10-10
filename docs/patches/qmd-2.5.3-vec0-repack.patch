@@ -1,0 +1,207 @@
+diff --git a/src/cli/qmd.ts b/src/cli/qmd.ts
+index aff0af7..cadd3a8 100755
+--- a/src/cli/qmd.ts
++++ b/src/cli/qmd.ts
+@@ -55,7 +55,11 @@ import {
+   deleteLLMCache,
+   deleteInactiveDocuments,
+   cleanupOrphanedVectors,
++  repackVectors,
++  shouldRepackVectorTable,
++  vectorTableLayout,
+   vacuumDatabase,
++  type VectorTableLayout,
+   getCollectionsWithoutContext,
+   getTopLevelPathsWithoutContext,
+   handelize,
+@@ -4052,6 +4056,10 @@ function printDoctorHint(): void {
+   console.error("If qmd still behaves unexpectedly, run 'qmd doctor' for diagnostics.");
+ }
+ 
++function describeVectorLayout(layout: VectorTableLayout): string {
++  return `${layout.chunks} chunks for ${layout.neededChunks} needed, ${Math.round(layout.occupancy * 100)}% useful`;
++}
++
+ function exitWithError(error: unknown, code = 1): never {
+   console.error(error instanceof Error ? error.message : String(error));
+   printDoctorHint();
+@@ -4655,13 +4663,27 @@ if (isMain) {
+         console.log(`${c.dim}No orphaned embeddings to remove${c.reset}`);
+       }
+ 
+-      // 3. Remove inactive documents
++      // 3. Repack a sparse vec0 table. Same vectors, fewer chunks. No-op at >= 90% occupancy.
++      const vectorLayout = vectorTableLayout(db);
++      if (vectorLayout && shouldRepackVectorTable(vectorLayout)) {
++        console.log(`Repacking the vector table (${describeVectorLayout(vectorLayout)})...`);
++        const after = repackVectors(db, (moved, total) => {
++          if (moved === total || moved % 100 === 0) {
++            console.log(`  ${moved}/${total} sparse chunks`);
++          }
++        });
++        console.log(`${c.green}✓${c.reset} Repacked the vector table (${describeVectorLayout(after ?? vectorLayout)})`);
++      } else if (vectorLayout) {
++        console.log(`${c.dim}Vector table is packed (${describeVectorLayout(vectorLayout)})${c.reset}`);
++      }
++
++      // 4. Remove inactive documents
+       const inactiveDocs = deleteInactiveDocuments(db);
+       if (inactiveDocs > 0) {
+         console.log(`${c.green}✓${c.reset} Removed ${inactiveDocs} inactive document records`);
+       }
+ 
+-      // 4. Vacuum to reclaim space
++      // 5. Vacuum to reclaim space
+       vacuumDatabase(db);
+       console.log(`${c.green}✓${c.reset} Database vacuumed`);
+ 
+diff --git a/src/maintenance.ts b/src/maintenance.ts
+index d8ddade..79c2036 100644
+--- a/src/maintenance.ts
++++ b/src/maintenance.ts
+@@ -13,6 +13,9 @@ import {
+   deleteLLMCache,
+   deleteInactiveDocuments,
+   clearAllEmbeddings,
++  repackVectors,
++  vectorTableLayout,
++  type VectorTableLayout,
+ } from "./store.js";
+ 
+ export class Maintenance {
+@@ -37,6 +40,16 @@ export class Maintenance {
+     return cleanupOrphanedVectors(this.store.db);
+   }
+ 
++  /** Chunk layout of the vector table, or null without one. */
++  vectorLayout(): VectorTableLayout | null {
++    return vectorTableLayout(this.store.db);
++  }
++
++  /** Move the live rows of mostly-empty vector chunks to the tail. */
++  repackVectors(): VectorTableLayout | null {
++    return repackVectors(this.store.db);
++  }
++
+   /** Clear the LLM response cache (query expansion, reranking) */
+   clearLLMCache(): number {
+     return deleteLLMCache(this.store.db);
+diff --git a/src/store.ts b/src/store.ts
+index 3f02770..3aaabe8 100644
+--- a/src/store.ts
++++ b/src/store.ts
+@@ -2350,6 +2350,114 @@ export function cleanupOrphanedVectors(db: Database): number {
+   });
+ }
+ 
++/**
++ * Repack the vector table when fewer than this share of its chunk reads hold
++ * live rows. vec0 places an insert in the first free slot of its newest chunk
++ * and reclaims a chunk only once it is empty, so a delete in any older chunk
++ * leaves a hole that every brute-force scan still reads; at 36% occupancy a
++ * scan took twice as long as on a packed copy of the same rows.
++ *
++ * Unpartitioned backport of QMD #937 (58300dac) for the 2.5.3
++ * `vectors_vec(hash_seq TEXT PRIMARY KEY, embedding float[N])` table.
++ * The later partitioned repack does not apply here.
++ */
++const VEC_REPACK_BELOW_OCCUPANCY = 0.9;
++
++/** Chunks filled below this share have their live rows moved to the tail. */
++const VEC_REPACK_CHUNK_FILL = 0.9;
++
++export type VectorTableLayout = {
++  rows: number;
++  chunks: number;
++  /** Chunks a freshly packed table needs for the same rows. */
++  neededChunks: number;
++  /** neededChunks over chunks: the share of a scan's chunk reads that hold live rows. */
++  occupancy: number;
++};
++
++interface VecChunkRow {
++  chunkId: number;
++  size: number;
++  validity: Uint8Array;
++  rowids: Uint8Array;
++}
++
++function vecTableReadable(db: Database): boolean {
++  if (!isSqliteVecAvailable()) return false;
++  try {
++    db.prepare(`SELECT 1 FROM vectors_vec LIMIT 0`).get();
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++export function shouldRepackVectorTable(layout: VectorTableLayout): boolean {
++  return layout.occupancy < VEC_REPACK_BELOW_OCCUPANCY;
++}
++
++/**
++ * Chunk layout of vectors_vec from vec0's shadow tables, or null without a
++ * readable table. `droppedRows` projects the layout after that many rows are
++ * deleted without their chunks going away, which is what orphan removal does.
++ */
++export function vectorTableLayout(db: Database, droppedRows: number = 0): VectorTableLayout | null {
++  if (!vecTableReadable(db)) return null;
++  const chunkRow = db.prepare(`SELECT COUNT(*) AS chunks, MAX(size) AS chunkSize FROM vectors_vec_chunks`).get() as { chunks: number; chunkSize: number | null };
++  const stored = (db.prepare(`SELECT COUNT(*) AS c FROM vectors_vec_rowids`).get() as { c: number }).c;
++  const rows = Math.max(stored - droppedRows, 0);
++  const chunkSize = chunkRow.chunkSize ?? 0;
++  const neededChunks = chunkSize > 0 ? Math.ceil(rows / chunkSize) : 0;
++  const occupancy = chunkRow.chunks > 0 ? neededChunks / chunkRow.chunks : 1;
++  return { rows, chunks: chunkRow.chunks, neededChunks, occupancy };
++}
++
++function liveSlots(chunk: VecChunkRow): number[] {
++  const slots: number[] = [];
++  for (let i = 0; i < chunk.size; i++) {
++    if ((chunk.validity[i >> 3]! >> (i & 7)) & 1) slots.push(i);
++  }
++  return slots;
++}
++
++/**
++ * Compact vectors_vec in place: the live rows of every chunk that is mostly
++ * holes are deleted and re-inserted, one chunk per IMMEDIATE transaction.
++ * vec0 puts each insert in the first free slot of its newest chunk and drops
++ * a chunk once it is empty, so the moved rows fill the tail and the emptied
++ * chunks vanish. A transaction holds the write lock for at most one chunk of
++ * rows, so concurrent embed and update runs interleave with it, and an
++ * interrupted run leaves a consistent table that the next cleanup finishes.
++ * A legacy table without a hash_seq key is left for ensureVecTable to rebuild.
++ */
++export function repackVectors(db: Database, onChunk?: (moved: number, total: number) => void): VectorTableLayout | null {
++  if (!vecTableReadable(db)) return null;
++  const ddlRow = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'`).get() as { sql: string } | undefined;
++  if (!ddlRow?.sql.includes("hash_seq")) return vectorTableLayout(db);
++  const chunks = db.prepare(`SELECT chunk_id AS chunkId, size, validity, rowids FROM vectors_vec_chunks ORDER BY chunk_id`).all() as VecChunkRow[];
++  const newest = chunks.length > 0 ? chunks[chunks.length - 1]!.chunkId : -1;
++  const sparse = chunks.filter((c) => c.chunkId !== newest && liveSlots(c).length < c.size * VEC_REPACK_CHUNK_FILL);
++  const keyOf = db.prepare(`SELECT id FROM vectors_vec_rowids WHERE rowid = ?`);
++  const vectorOf = db.prepare(`SELECT embedding FROM vectors_vec WHERE hash_seq = ?`);
++  const remove = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
++  const insert = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
++  sparse.forEach((chunk, i) => {
++    const rowids = new DataView(chunk.rowids.buffer, chunk.rowids.byteOffset, chunk.rowids.byteLength);
++    db.transaction(() => {
++      for (const slot of liveSlots(chunk)) {
++        const key = (keyOf.get(rowids.getBigInt64(slot * 8, true)) as { id: string } | undefined)?.id;
++        if (key === undefined) continue;
++        const row = vectorOf.get(key) as { embedding: Uint8Array } | undefined;
++        if (row === undefined) continue;
++        remove.run(key);
++        insert.run(key, row.embedding);
++      }
++    }).immediate();
++    onChunk?.(i + 1, sparse.length);
++  });
++  return vectorTableLayout(db);
++}
++
+ /**
+  * Run VACUUM to reclaim unused space in the database.
+  * This operation rebuilds the database file to eliminate fragmentation.

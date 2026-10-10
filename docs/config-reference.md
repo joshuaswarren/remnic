@@ -371,7 +371,7 @@ QMD, hot facts, or default recall. See [External wiki search](external-wikis.md)
 | `qmdColdCollection` | `openclaw-engram-cold` | QMD collection name used for cold-tier recall |
 | `qmdColdMaxResults` | `8` | Final result cap for cold-tier recall before merging into the normal ranking pipeline |
 | `qmdPath` | `(auto)` | Absolute path to `qmd` binary (bypasses PATH) |
-| `qmdSupportedVersion` | `2.5.3` | Highest QMD version this Remnic build will auto-install |
+| `qmdSupportedVersion` | `2.8.3` | Version string `qmd --version` prints for the pinned build. Auto-upgrade installs stock npm at this version and stays off. See [QMD 2.8.3](qmd-2.8.3.md). |
 | `qmdAutoUpgradeEnabled` | `false` | Opt-in auto-upgrade for PATH/fallback QMD installs; explicit `qmdPath` is never overwritten |
 | `qmdAutoUpgradeCheckIntervalMs` | `86400000` | Minimum interval between auto-upgrade attempts |
 | `qmdChunkStrategy` | `auto` | QMD chunk strategy to forward when the installed QMD supports it (`auto` or `regex`) |

@@ -5,9 +5,23 @@ WORKDIR /app
 COPY package.json ./
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends build-essential ca-certificates python3 \
+  && apt-get install -y --no-install-recommends build-essential ca-certificates python3 git \
   && rm -rf /var/lib/apt/lists/* \
-  && npm install -g "pnpm@$(node -p 'require("./package.json").packageManager.split("@")[1]')" @tobilu/qmd@2.5.3
+  && npm install -g "pnpm@$(node -p 'require("./package.json").packageManager.split("@")[1]')"
+
+# Stock `npm install -g @tobilu/qmd@2.8.3` prints the same version and lacks the
+# per-collection vector index plus these patches. Pin the commit.
+COPY docs/patches/qmd-2.8.3-mcp-cancel.patch docs/patches/qmd-2.8.3-stdio-stdout.patch docs/patches/qmd-2.8.3-rerank-mocks.patch /tmp/qmd-patches/
+RUN git init /tmp/qmd \
+  && git -C /tmp/qmd remote add origin https://github.com/tobi/qmd.git \
+  && git -C /tmp/qmd fetch --depth 1 origin 93d211f9ef4a869a9aed0d075ca767dda552627f \
+  && git -C /tmp/qmd checkout --detach FETCH_HEAD \
+  && git -C /tmp/qmd apply /tmp/qmd-patches/qmd-2.8.3-mcp-cancel.patch \
+  && git -C /tmp/qmd apply /tmp/qmd-patches/qmd-2.8.3-stdio-stdout.patch \
+  && git -C /tmp/qmd apply /tmp/qmd-patches/qmd-2.8.3-rerank-mocks.patch \
+  && npm install --prefix /tmp/qmd \
+  && npm install -g /tmp/qmd \
+  && rm -rf /tmp/qmd /tmp/qmd-patches
 
 COPY . .
 

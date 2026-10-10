@@ -111,9 +111,12 @@ The standalone topology supports all the same endpoints and MCP tools as the Ope
 ## 5. Containerized (Docker)
 
 Run Remnic in Docker, either standalone or as a sidecar alongside other services.
-The default Dockerfile builds a full local-first image with `@tobilu/qmd@2.5.3`
-installed and available as `qmd` for the non-root runtime user. Persist `/data`
-so Remnic memory files and QMD index state survive container restarts.
+The default Dockerfile builds a full local-first image with the pinned QMD
+commit (version string 2.8.3, plus the cancel and stdio patches) installed
+and available as `qmd` for the non-root runtime user. Persist `/data`
+so Remnic memory files and QMD index state survive container restarts. The
+first start of that binary converts an existing QMD index in place; back up
+the sqlite file first ([QMD 2.8.3](../qmd-2.8.3.md)).
 
 ```yaml
 # docker-compose.yml
@@ -220,8 +223,8 @@ Returns:
     "mode": "cli",
     "collection": "openclaw-engram",
     "collectionState": "present",
-    "installedVersion": "qmd 2.5.3",
-    "supportedVersion": "2.5.3",
+    "installedVersion": "qmd 2.8.3",
+    "supportedVersion": "2.8.3",
     "supported": true,
     "upgradeAvailable": false,
     "doctorAvailable": true,

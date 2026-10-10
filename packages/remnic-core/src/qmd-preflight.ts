@@ -29,7 +29,7 @@ export const QMD_PROBE_TIMEOUT_MS = 8_000;
 // Length == number of retries after the initial attempt. Issue #1841.
 export const QMD_PROBE_RETRY_BACKOFF_MS = [300, 800];
 
-export const QMD_SUPPORTED_VERSION = "2.5.3";
+export const QMD_SUPPORTED_VERSION = "2.8.3";
 
 /**
  * Classify a `qmd --version` probe failure so the preflight can distinguish a

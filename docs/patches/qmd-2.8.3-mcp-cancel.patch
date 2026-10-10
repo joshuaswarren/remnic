@@ -1,0 +1,248 @@
+diff --git a/src/llm.ts b/src/llm.ts
+index 2b943a5..97e6f8d 100644
+--- a/src/llm.ts
++++ b/src/llm.ts
+@@ -222,6 +242,8 @@ export type GenerateOptions = {
+  */
+ export type RerankOptions = {
+   model?: string;
++  /** Stop between documents. An in-flight rank() finishes; partial scores are not returned. */
++  signal?: AbortSignal;
+ };
+ 
+ /**
+@@ -1738,6 +1760,11 @@ export class LlamaCpp implements LLM {
+     if (this._ciMode) throw new Error("LLM operations are disabled in CI (set CI=true)");
+     // Ping activity at start to keep models alive during this operation
+     this.touchActivity();
++    if (options.signal?.aborted) {
++      const err = new Error("qmd rerank aborted");
++      err.name = "AbortError";
++      throw err;
++    }
+ 
+     const contexts = await this.ensureRerankContexts();
+     if (contexts.length === 0) {
+@@ -1797,17 +1824,30 @@ export class LlamaCpp implements LLM {
+       )
+     );
+     const activeContexts = contexts.slice(0, activeContextCount);
+-    const chunkSize = Math.ceil(texts.length / activeContexts.length);
+-    const chunks = Array.from({ length: activeContexts.length }, (_, i) =>
+-      texts.slice(i * chunkSize, (i + 1) * chunkSize)
+-    ).filter(chunk => chunk.length > 0);
+ 
+-    const allScores = await Promise.all(
+-      chunks.map((chunk, i) => activeContexts[i]!.rankAll(query, chunk))
+-    );
++    // context.rank() shares _evaluateRankingForInput with rankAll(), so a
++    // document that finishes has the same score. The cursor lets an MCP
++    // cancel stop between documents instead of waiting for the whole chunk.
++    // A cancelled call throws and does not publish a partial ranking.
++    const signal = options.signal;
++    const scores = new Array<number>(texts.length);
++    let cursor = 0;
++    await Promise.all(activeContexts.map(async (ctx) => {
++      while (true) {
++        if (signal?.aborted) return;
++        const index = cursor++;
++        if (index >= texts.length) return;
++        scores[index] = await ctx.rank(query, texts[index]!);
++      }
++    }));
++    if (signal?.aborted) {
++      const err = new Error("qmd rerank aborted");
++      err.name = "AbortError";
++      throw err;
++    }
+ 
+     // Reassemble scores in original order and sort
+-    const flatScores = allScores.flat();
++    const flatScores = scores;
+     const ranked = texts
+       .map((text, i) => ({ document: text, score: flatScores[i]! }))
+       .sort((a, b) => b.score - a.score);
+diff --git a/src/index.ts b/src/index.ts
+index 76bc2a6..5a19937 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -242,6 +242,8 @@ export interface SearchOptions {
+   explain?: boolean;
+   /** Chunk strategy: "auto" (default, uses AST for code files) or "regex" (legacy) */
+   chunkStrategy?: ChunkStrategy;
++  /** Forwarded to structuredSearch / hybridQuery. Honored between scans and rerank documents. */
++  signal?: AbortSignal;
+ }
+ 
+ /**
+@@ -513,6 +515,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
+           candidateLimit: opts.candidateLimit,
+           skipRerank,
+           chunkStrategy: opts.chunkStrategy,
++          signal: opts.signal,
+         });
+       }
+ 
+@@ -527,6 +530,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
+         candidateLimit: opts.candidateLimit,
+         skipRerank,
+         chunkStrategy: opts.chunkStrategy,
++        signal: opts.signal,
+       });
+     },
+     searchLex: async (q, opts) => {
+diff --git a/src/mcp/server.ts b/src/mcp/server.ts
+index 502b2c7..1cdb797 100644
+--- a/src/mcp/server.ts
++++ b/src/mcp/server.ts
+@@ -428,7 +428,16 @@ Intent-aware lex (C++ performance, not sports):
+         ),
+       }),
+     },
+-    track(async ({ query, searches, limit, minScore, candidateLimit, collections, filter, intent, rerank }) => {
++    track(async ({ query, searches, limit, minScore, candidateLimit, collections, filter, intent, rerank }, ctx) => {
++      // SDK 2 passes ServerContext as the second argument. notifications/cancelled
++      // aborts ctx.signal. sqlite-vec scans still run to completion; rerank stops
++      // between documents and does not publish a partial ranking.
++      const signal = (ctx as { signal?: AbortSignal } | undefined)?.signal;
++      if (signal?.aborted) {
++        const err = new Error("qmd query aborted");
++        err.name = "AbortError";
++        throw err;
++      }
+       // Require exactly one of `query` (plain text, auto-expanded) or `searches` (typed sub-queries).
+       if (!query && (!searches || searches.length === 0)) {
+         return {
+@@ -469,6 +478,7 @@ Intent-aware lex (C++ performance, not sports):
+         candidateLimit,
+         rerank,
+         intent,
++        signal,
+       });
+ 
+       // Use the plain query, or the first lex/vec sub-query, for snippet extraction
+diff --git a/src/store.ts b/src/store.ts
+index 4b3b0f6..02a6612 100644
+--- a/src/store.ts
++++ b/src/store.ts
+@@ -1631,7 +1631,7 @@ export type Store = {
+   expandQuery: (query: string, model?: string) => Promise<ExpandedQuery[]>;
+   /** Drop the cached expansion for a query so the next call regenerates. */
+   invalidateExpansionCache: (query: string) => void;
+-  rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string) => Promise<{ file: string; score: number }[]>;
++  rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string, signal?: AbortSignal) => Promise<{ file: string; score: number }[]>;
+ 
+   // Document retrieval
+   findDocument: (filename: string, options?: { includeBody?: boolean }) => DocumentResult | DocumentLookupError;
+@@ -2663,12 +2663,12 @@ export function createStore(dbPath?: string): Store {
+     // Query expansion & reranking
+     expandQuery: (query: string, model?: string) => expandQuery(query, model ?? store.llm?.generateModelName ?? DEFAULT_QUERY_MODEL, db, store.llm),
+     invalidateExpansionCache: (query: string) => deleteExpansionCacheEntry(db, query, store.llm?.generateModelName ?? DEFAULT_QUERY_MODEL),
+-    rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string) => {
++    rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string, signal?: AbortSignal) => {
+       // Cache keys must use the resolved rerank model (store.llm or the global
+       // singleton from models.rerank). Falling back to DEFAULT_RERANK_MODEL when
+       // store.llm is unset made keys stable across config swaps (#764).
+       const llm = getLlm(store);
+-      return rerank(query, documents, model ?? llm.rerankModelName ?? DEFAULT_RERANK_MODEL, db, intent, llm);
++      return rerank(query, documents, model ?? llm.rerankModelName ?? DEFAULT_RERANK_MODEL, db, intent, llm, signal);
+     },
+ 
+     // Document retrieval
+@@ -5316,7 +5316,14 @@ export function deleteExpansionCacheEntry(db: Database, query: string, model: st
+ // Reranking
+ // =============================================================================
+ 
+-export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp): Promise<{ file: string; score: number }[]> {
++function throwIfSearchAborted(signal?: AbortSignal): void {
++  if (!signal?.aborted) return;
++  const err = new Error("qmd search aborted");
++  err.name = "AbortError";
++  throw err;
++}
++
++export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp, signal?: AbortSignal): Promise<{ file: string; score: number }[]> {
+   // Prepend intent to rerank query so the reranker scores with domain context
+   const rerankQuery = intent ? `${intent}\n\n${query}` : query;
+   const llm = llmOverride ?? getDefaultLlamaCpp();
+@@ -5346,7 +5353,8 @@ export async function rerank(query: string, documents: { file: string; text: str
+   // Rerank uncached documents using LlamaCpp
+   if (uncachedDocsByChunk.size > 0) {
+     const uncachedDocs = [...uncachedDocsByChunk.values()];
+-    const rerankResult = await llm.rerank(rerankQuery, uncachedDocs, { model: cacheModel });
++    throwIfSearchAborted(signal);
++    const rerankResult = await llm.rerank(rerankQuery, uncachedDocs, { model: cacheModel, signal });
+ 
+     // Cache results by chunk text so identical chunks across files are scored once.
+     const textByFile = new Map(uncachedDocs.map(d => [d.file, d.text]));
+@@ -6198,6 +6206,8 @@ export interface HybridQueryOptions {
+   skipRerank?: boolean;     // skip LLM reranking, use only RRF scores
+   chunkStrategy?: ChunkStrategy;
+   hooks?: SearchHooks;
++  /** Checked between vector scans and before rerank. sqlite-vec itself does not observe it. */
++  signal?: AbortSignal;
+ }
+ 
+ export interface HybridQueryResult {
+@@ -6356,12 +6366,14 @@ export async function hybridQuery(
+     const embedStart = Date.now();
+     const embeddings = await llm.embedBatch(textsToEmbed);
+     hooks?.onEmbedDone?.(Date.now() - embedStart);
++    throwIfSearchAborted(options?.signal);
+ 
+     // Run sqlite-vec lookups with pre-computed embeddings
+     for (let i = 0; i < vecQueries.length; i++) {
+       const embedding = embeddings[i]?.embedding;
+       if (!embedding) continue;
+ 
++      throwIfSearchAborted(options?.signal);
+       const vecResults = await store.searchVec(
+         vecQueries[i]!.text, embedModel, 20, collection,
+         undefined, embedding, filter
+@@ -6490,9 +6502,10 @@ export async function hybridQuery(
+     }
+   }
+ 
++  throwIfSearchAborted(options?.signal);
+   hooks?.onRerankStart?.(chunksToRerank.length);
+   const rerankStart = Date.now();
+-  const reranked = await store.rerank(query, chunksToRerank, undefined, intent);
++  const reranked = await store.rerank(query, chunksToRerank, undefined, intent, options?.signal);
+   hooks?.onRerankDone?.(Date.now() - rerankStart);
+ 
+   // Step 7: Blend RRF position score with reranker score
+@@ -6659,6 +6672,8 @@ export interface StructuredSearchOptions {
+   skipRerank?: boolean;
+   chunkStrategy?: ChunkStrategy;
+   hooks?: SearchHooks;
++  /** Checked between vector scans and before rerank. sqlite-vec itself does not observe it. */
++  signal?: AbortSignal;
+ }
+ 
+ /**
+@@ -6758,11 +6773,13 @@ export async function structuredSearch(
+       const embedStart = Date.now();
+       const embeddings = await llm.embedBatch(textsToEmbed);
+       hooks?.onEmbedDone?.(Date.now() - embedStart);
++      throwIfSearchAborted(options?.signal);
+ 
+       for (let i = 0; i < vecSearches.length; i++) {
+         const embedding = embeddings[i]?.embedding;
+         if (!embedding) continue;
+ 
++        throwIfSearchAborted(options?.signal);
+         const vecResults = await store.searchVec(
+           vecSearches[i]!.query, embedModel, 20, collections,
+           undefined, embedding, filter
+@@ -6885,9 +6902,10 @@ export async function structuredSearch(
+     }
+   }
+ 
++  throwIfSearchAborted(options?.signal);
+   hooks?.onRerankStart?.(chunksToRerank.length);
+   const rerankStart2 = Date.now();
+-  const reranked = await store.rerank(primaryQuery, chunksToRerank, undefined, intent);
++  const reranked = await store.rerank(primaryQuery, chunksToRerank, undefined, intent, options?.signal);
+   hooks?.onRerankDone?.(Date.now() - rerankStart2);
+ 
+   // Step 6: Blend RRF position score with reranker score
