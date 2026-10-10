@@ -526,9 +526,9 @@ export async function runProcedureLibraryMaintenance(options: {
   report.appliedCount = report.applied.length;
 
   if (writes > 0) {
-    // Out-of-band corpus bump + marker so hot caches and the stats surface
-    // observe the pass (§25/§31 — direct writes must not leave stale views).
-    bumpMemoryCorpusVersionForDir(options.memoryDir);
+    // Corpus bump so hot caches observe the pass. Archive and supersede already
+    // moved the mention epoch through StorageManager; repair stamps must not.
+    bumpMemoryCorpusVersionForDir(options.memoryDir, { indexedText: false });
   }
   try {
     await writeJsonFileAtomic(maintenanceMarkerPath(options.memoryDir), {
