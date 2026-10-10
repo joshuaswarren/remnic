@@ -8,6 +8,17 @@ All notable changes to this project will be documented in this file.
 
 - `@remnic/core` warm embedding searches now detect index changes from peer processes (#3165). Every index publication moves a generation marker to an in-flight value before its writes and writes a fresh completion value after them, so a stamp is only ever stable for a completed generation and consecutive publications cannot alias on filesystems with coarse timestamps or reused directory inodes. Unchanged state avoids index reads.
 
+### Changed
+
+- Removed tracked editor backups and the duplicate root audit file (#3144).
+- Documented that a standalone `**` offline-sync exclude matches every relative path (#3149).
+
+## [v9.69.97] — 2026-10-10
+
+### Fixed
+
+- MCP tools use the configured default namespace on flat daemons when a client adapter infers its own namespace. Explicit namespaces still receive strict validation (#3166).
+
 ## [v9.69.68] — 2026-09-07
 
 ### Fixed
