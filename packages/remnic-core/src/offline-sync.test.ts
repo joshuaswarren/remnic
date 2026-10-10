@@ -3077,6 +3077,18 @@ test("globToRegExp treats ** as cross-segment in trailing and embedded positions
   assert.equal(embedded.test("state/a/b/other.json"), false);
 });
 
+test("globToRegExp ** spans line terminators that valid archive paths may contain (#3172)", () => {
+  const trailing = globToRegExp("scratch/**");
+  assert.equal(trailing.test("scratch/a\nb.md"), true);
+  assert.equal(trailing.test("scratch/a\nb/c.md"), true);
+  const embedded = globToRegExp("state/**/runs.json");
+  assert.equal(embedded.test("state/a\nb/runs.json"), true);
+  assert.equal(globToRegExp("**/state/*.sqlite").test("a\nb/state/lcm.sqlite"), true);
+  const single = globToRegExp("state/*.sqlite");
+  assert.equal(single.test("state/a\nb.sqlite"), true);
+  assert.equal(single.test("state/a/b.sqlite"), false);
+});
+
 test("default excludes cover per-namespace state dirs (#1793 review)", () => {
   const sqlite = globToRegExp("**/state/*.sqlite");
   assert.equal(sqlite.test("state/lcm.sqlite"), true);

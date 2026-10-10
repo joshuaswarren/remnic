@@ -104,11 +104,11 @@ export function globToRegExp(glob: string): RegExp {
         // (Cursor review on PR #1793: trailing `scratch/**` must match
         // nested `scratch/a/b.md`, matching the offline-mode guide.)
         if (glob[i + 2] === "/") {
-          source += "(?:.*/)?";
+          source += "(?:[\\s\\S]*/)?";
           i += 2;
           continue;
         }
-        source += ".*";
+        source += "[\\s\\S]*";
         i += 1;
         continue;
       }
