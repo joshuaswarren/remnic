@@ -175,8 +175,9 @@ export type EmbedMode = "lookup" | "index";
 export class EmbeddingFallback {
   private readonly store: EmbeddingIndexFileStore;
   private loaded: EmbeddingIndexFile | null = null;
-  /** True when `loaded` was read from disk rather than started fresh, so identity probes can trust it. */
+  /** True when the cached index came from a published generation. */
   private loadedFromDisk = false;
+  private identityProbe: { stamp: string; identity: EmbeddingIndexIdentity | null } | null = null;
   private mutationQueue: Promise<void> = Promise.resolve();
 
   /** The canonical state dir scoping this fallback's generation mutation lock. */
@@ -900,13 +901,20 @@ export class EmbeddingFallback {
   }
 
   private async readIndexIdentityFromDisk(): Promise<EmbeddingIndexIdentity | null> {
-    // After a load, `loaded` mirrors the disk state exactly (every mutation
-    // saves through saveIndex and a failed save invalidates the cache), so
-    // skip re-reading on every mutation.
-    if (this.loaded && this.loadedFromDisk) {
-      return { provider: this.loaded.provider, model: this.loaded.model };
+    const stamp = await this.store.identityStamp();
+    if (this.loaded) {
+      if (this.identityProbe?.stamp === stamp) {
+        return { provider: this.loaded.provider, model: this.loaded.model };
+      }
+      this.loaded = null;
+      this.loadedFromDisk = false;
     }
-    return this.store.identityFromDisk();
+    if (this.identityProbe?.stamp === stamp) {
+      return this.identityProbe.identity;
+    }
+    const identity = await this.store.identityFromDisk();
+    this.identityProbe = { stamp, identity };
+    return identity;
   }
 
   /**
@@ -927,6 +935,10 @@ export class EmbeddingFallback {
     }
     this.loaded = index;
     this.loadedFromDisk = true;
+    this.identityProbe = {
+      stamp: await this.store.identityStamp(),
+      identity: { provider: index.provider, model: index.model },
+    };
   }
 }
 

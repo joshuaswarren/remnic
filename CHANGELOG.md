@@ -8,12 +8,12 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- `@remnic/core` warm embedding searches now detect index changes from peer processes (#3165). Every index publication moves a generation marker to an in-flight value before its writes and writes a fresh completion value after them, so a stamp is only ever stable for a completed generation and consecutive publications cannot alias on filesystems with coarse timestamps or reused directory inodes; a negative (empty) cache is dropped when the stamp moves, and a recovered or rolled-back generation is finalized instead of staying in-flight. The marker is node-local: offline sync never snapshots it, and an incoming marker never overwrites or deletes the local one — across snapshots, changesets, and chunked uploads. Unchanged state avoids index reads.
 - Offline `prepare`, `sync`, and `status` flush the pending offline-sync digest cache write before returning, including on failures, so no background cache write survives the command and recreates removed state.
 
 ## [v9.69.99] — 2026-10-10
 
 ### Fixed
-
 - Added real-filesystem coverage for offline upload staging (#3164). Tests cover complete uploads, gaps, resets, cleanup, storage hooks, and symlink rejection. The staging module now owns `OfflineUploadStaging`; the duplicate interface is removed.
 
 ### Changed

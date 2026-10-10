@@ -26,7 +26,15 @@ import {
   summarizeOfflineSyncPendingFiles,
 } from "./offline-sync.js";
 import { isEncryptedFile } from "./secure-store/secure-fs.js";
+import { isEmbeddingGenerationMarkerPath } from "./offline-sync-exclude-globs.js";
 import { StorageManager } from "./storage.js";
+import { parseConfig } from "./config.js";
+import { EmbeddingFallback } from "./embedding-fallback.js";
+import {
+  clearHostEmbeddingProvidersForTest,
+  registerHostEmbeddingProvider,
+} from "./host-embedding-provider.js";
+import type { EmbeddingIndexStoreIo } from "./embedding-index-storage.js";
 
 async function tempDir(name: string): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), `${name}-`));
@@ -551,6 +559,21 @@ test("offline sync push-side default excludes live LCM sqlite but apply-side sti
     assert.equal(await readUtf8(root, "state/lcm.sqlite-shm"), "live shm");
     assert.equal(await readUtf8(root, "state/lcm.sqlite-wal"), "live wal");
 
+    // The apply-side acceptance is real, not vacuous: a node with NO local
+    // sqlite must bootstrap it from the incoming snapshot.
+    const freshRoot = await tempDir("remnic-offline-lcm-sqlite-bootstrap");
+    try {
+      const bootstrap = await applyOfflineSyncSnapshot({
+        root: freshRoot,
+        snapshot: remoteSnapshot,
+        baseFiles: [],
+      });
+      assert.equal(await readUtf8(freshRoot, "state/lcm.sqlite"), "live db", "first sync bootstraps the LCM DB from the incoming snapshot");
+      assert.equal(bootstrap.upserted, 1);
+    } finally {
+      await rm(freshRoot, { recursive: true, force: true });
+    }
+
     // The push-side changeset excludes lcm.sqlite and friends so the
     // local node never pushes the live sqlite state up.
     const changeset = await buildOfflineSyncChangeset({
@@ -564,6 +587,308 @@ test("offline sync push-side default excludes live LCM sqlite but apply-side sti
       }],
     });
     assert.deepEqual(changeset.changes.map((change) => change.path), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync excludes the node-local embedding generation marker", async () => {
+  const root = await tempDir("remnic-offline-emb3176-marker");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "state/embeddings.generation", "in-flight");
+    await write(root, "namespaces/team/state/embeddings.generation", "gen-team-uuid");
+
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: true,
+    });
+    assert.deepEqual(snapshot.files.map((file) => file.path), ["facts/a.md"]);
+
+    const changeset = await buildOfflineSyncChangeset({
+      root,
+      sourceId: "laptop",
+      baseFiles: [{
+        path: "facts/a.md",
+        sha256: createHash("sha256").update("alpha").digest("hex"),
+        bytes: Buffer.byteLength("alpha"),
+        mtimeMs: 0,
+      }],
+    });
+    assert.deepEqual(changeset.changes.map((change) => change.path), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync apply never lets an incoming marker overwrite the local one", async () => {
+  const root = await tempDir("remnic-offline-emb3176-marker-apply");
+  try {
+    const localMarker = "0d9d2c11-5f6e-4a0e-8f1a-2b3c4d5e6f70";
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "state/embeddings.generation", localMarker);
+
+    // A hostile or pre-exclusion remote snapshot carries the marker as an
+    // ordinary file; the pinned-`in-flight` payload would make every local
+    // stamp probe unique and force a full reload on every search.
+    const hostile = "in-flight";
+    const snapshot = {
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+      schemaVersion: 1 as const,
+      createdAt: new Date().toISOString(),
+      sourceId: "remote",
+      includeTranscripts: true,
+      files: [
+        {
+          path: "facts/b.md",
+          sha256: createHash("sha256").update("beta").digest("hex"),
+          bytes: Buffer.byteLength("beta"),
+          mtimeMs: 0,
+          contentBase64: Buffer.from("beta").toString("base64"),
+        },
+        {
+          path: "state/embeddings.generation",
+          sha256: createHash("sha256").update(hostile).digest("hex"),
+          bytes: Buffer.byteLength(hostile),
+          mtimeMs: 0,
+          contentBase64: Buffer.from(hostile).toString("base64"),
+        },
+      ],
+    };
+    const result = await applyOfflineSyncSnapshot({ root, snapshot, baseFiles: [] });
+
+    assert.equal(await readUtf8(root, "state/embeddings.generation"), localMarker, "the local marker is node-local: an incoming marker must never overwrite it");
+    assert.equal(await readUtf8(root, "facts/b.md"), "beta", "unrelated incoming files still apply");
+    assert.equal(result.deleted, 0);
+    assert.deepEqual(result.conflicts, [], "an incoming marker must be skipped node-local, not turned into a conflict");
+
+    // A stale base entry for the marker plus its absence from the incoming
+    // snapshot is NOT a delete instruction either.
+    const staleBase = [{
+      path: "state/embeddings.generation",
+      sha256: createHash("sha256").update("stale").digest("hex"),
+      bytes: Buffer.byteLength("stale"),
+      mtimeMs: 0,
+    }];
+    const deletionProbe = await applyOfflineSyncSnapshot({
+      root,
+      snapshot: {
+        ...snapshot,
+        files: snapshot.files.filter((file) => file.path !== "state/embeddings.generation"),
+      },
+      baseFiles: staleBase,
+    });
+    assert.equal(await exists(root, "state/embeddings.generation"), true);
+    assert.equal(await readUtf8(root, "state/embeddings.generation"), localMarker);
+    assert.equal(deletionProbe.deleted, 0);
+    assert.deepEqual(deletionProbe.conflicts, [], "a marker absence is node-local, never a delete instruction or conflict");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync apply refuses differently cased marker paths on case-insensitive filesystems", async () => {
+  const root = await tempDir("remnic-offline-emb3176-marker-case");
+  try {
+    const localMarker = "0d9d2c11-5f6e-4a0e-8f1a-2b3c4d5e6f70";
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "state/embeddings.generation", localMarker);
+
+    assert.equal(isEmbeddingGenerationMarkerPath("state/embeddings.generation"), true);
+    assert.equal(isEmbeddingGenerationMarkerPath("state/Embeddings.Generation"), true, "APFS/NTFS resolve this to the same file");
+    assert.equal(isEmbeddingGenerationMarkerPath("State/Embeddings.Generation"), true);
+    assert.equal(isEmbeddingGenerationMarkerPath("state/embeddings.json"), false);
+
+    const hostile = "in-flight";
+    const markerEntry = (relPath: string) => ({
+      path: relPath,
+      sha256: createHash("sha256").update(hostile).digest("hex"),
+      bytes: Buffer.byteLength(hostile),
+      mtimeMs: 0,
+      contentBase64: Buffer.from(hostile).toString("base64"),
+    });
+    const result = await applyOfflineSyncSnapshot({
+      root,
+      snapshot: {
+        format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+        schemaVersion: 1 as const,
+        createdAt: new Date().toISOString(),
+        sourceId: "remote",
+        includeTranscripts: true,
+        files: [
+          {
+            path: "facts/b.md",
+            sha256: createHash("sha256").update("beta").digest("hex"),
+            bytes: Buffer.byteLength("beta"),
+            mtimeMs: 0,
+            contentBase64: Buffer.from("beta").toString("base64"),
+          },
+          markerEntry("state/Embeddings.Generation"),
+        ],
+      },
+      baseFiles: [],
+    });
+    assert.equal(await readUtf8(root, "state/embeddings.generation"), localMarker, "the canonical local marker survives a cased incoming copy");
+    assert.equal(await exists(root, "state/Embeddings.Generation"), false, "a cased marker path is refused node-local, never written");
+    assert.equal(await exists(root, "facts/b.md"), true, "unrelated incoming files still apply");
+    assert.deepEqual(result.conflicts, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a hostile incoming marker leaves the local warm embedding cache untouched", async () => {
+  const root = await tempDir("remnic-offline-emb3176-marker-warm");
+  try {
+    const vectorFor = (text: string): number[] => {
+      const vec = [0, 0, 0, 0];
+      for (let i = 0; i < text.length; i++) vec[i % 4] += text.charCodeAt(i) % 13;
+      return vec;
+    };
+    const unregister = registerHostEmbeddingProvider(root, {
+      id: "host-model-a",
+      model: "host-model-a",
+      embed: async (text: string) => vectorFor(text),
+    });
+    let reads = 0;
+    const countingIo: EmbeddingIndexStoreIo = {
+      readUtf8: async (filePath) => {
+        reads += 1;
+        return readFile(filePath, "utf-8");
+      },
+      writeUtf8: async (filePath, contents) => {
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, contents, "utf-8");
+      },
+    };
+    const fallback = new EmbeddingFallback(
+      parseConfig({
+        memoryDir: root,
+        embeddingFallbackEnabled: true,
+        embeddingFallbackProvider: "openai",
+        openaiApiKey: false,
+      }),
+      countingIo,
+    );
+    try {
+      await fallback.indexFile("mem-a", "parent fact about database indexes", "facts/a.md");
+      assert.equal((await fallback.search("parent fact about database indexes", 5))[0]?.id, "mem-a");
+      const readsBeforeApply = reads;
+
+      const hostile = "in-flight";
+      await applyOfflineSyncSnapshot({
+        root,
+        snapshot: {
+          format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+          schemaVersion: 1 as const,
+          createdAt: new Date().toISOString(),
+          sourceId: "remote",
+          includeTranscripts: true,
+          files: [{
+            path: "state/embeddings.generation",
+            sha256: createHash("sha256").update(hostile).digest("hex"),
+            bytes: Buffer.byteLength(hostile),
+            mtimeMs: 0,
+            contentBase64: Buffer.from(hostile).toString("base64"),
+          }],
+        },
+        baseFiles: [],
+      });
+
+      const warm = await fallback.search("parent fact about database indexes", 5);
+      assert.equal(warm[0]?.id, "mem-a", "the local generation is still served");
+      assert.equal(
+        reads,
+        readsBeforeApply,
+        "the local marker survived the apply: the warm cache keeps its stable stamp and performs no index reads",
+      );
+    } finally {
+      unregister();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync changeset apply refuses marker upserts and deletes, continues ordinary changes", async () => {
+  const root = await tempDir("remnic-offline-emb3176-marker-changeset");
+  try {
+    const localMarker = "7f6c1e64-9b2a-4c7d-8e0f-1a2b3c4d5e6f";
+    const hostile = "in-flight";
+    const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "state/embeddings.generation", localMarker);
+
+    const result = await applyOfflineSyncChangeset({
+      root,
+      currentFiles: [
+        { path: "facts/a.md", sha256: sha("alpha"), bytes: 5, mtimeMs: 0 },
+        { path: "state/embeddings.generation", sha256: sha(localMarker), bytes: localMarker.length, mtimeMs: 0 },
+      ],
+      changeset: {
+        format: "remnic.offline-sync.changeset.v1",
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        sourceId: "peer",
+        includeTranscripts: false,
+        changes: [
+          { type: "upsert", path: "facts/b.md", file: { path: "facts/b.md", sha256: sha("beta"), bytes: 4, mtimeMs: 0, contentBase64: Buffer.from("beta").toString("base64") } },
+          { type: "upsert", path: "state/embeddings.generation", file: { path: "state/embeddings.generation", sha256: sha(hostile), bytes: hostile.length, mtimeMs: 0, contentBase64: Buffer.from(hostile).toString("base64") } },
+        ],
+      } as never,
+    });
+    const deletionResult = await applyOfflineSyncChangeset({
+      root,
+      currentFiles: [
+        { path: "facts/a.md", sha256: sha("alpha"), bytes: 5, mtimeMs: 0 },
+        { path: "facts/b.md", sha256: sha("beta"), bytes: 4, mtimeMs: 0 },
+        { path: "state/embeddings.generation", sha256: sha(localMarker), bytes: localMarker.length, mtimeMs: 0 },
+      ],
+      changeset: {
+        format: "remnic.offline-sync.changeset.v1",
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        sourceId: "peer",
+        includeTranscripts: false,
+        changes: [
+          { type: "delete", path: "facts/a.md", baseSha256: sha("alpha"), mtimeMs: 0 },
+          { type: "delete", path: "state/embeddings.generation", baseSha256: sha(localMarker), mtimeMs: 0 },
+        ],
+      } as never,
+    });
+
+    assert.equal(await readUtf8(root, "state/embeddings.generation"), localMarker, "node-local marker: neither an incoming upsert nor a delete may touch it");
+    assert.equal(await exists(root, "state/embeddings.generation"), true);
+    assert.equal(await readUtf8(root, "facts/b.md"), "beta", "ordinary upserts continue");
+    assert.equal(await exists(root, "facts/a.md"), false, "ordinary deletes continue");
+    assert.equal(deletionResult.appliedDeletes, 1);
+    assert.deepEqual(result.conflicts, [], "a marker upsert must be skipped node-local, not turned into a conflict");
+    assert.deepEqual(deletionResult.conflicts, [], "a marker delete must be skipped node-local, not turned into a conflict");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync file content chunks refuse the generation marker", async () => {
+  const root = await tempDir("remnic-offline-emb3176-marker-chunk");
+  try {
+    await write(root, "state/embeddings.generation", "local-uuid");
+    const content = Buffer.from("in-flight");
+    await assert.rejects(
+      () =>
+        applyOfflineSyncFileContentChunk({
+          root,
+          sourceId: "peer",
+          path: "state/embeddings.generation",
+          sha256: createHash("sha256").update(content).digest("hex"),
+          bytes: content.length,
+          mtimeMs: 0,
+          content,
+        }),
+      /node-local/,
+    );
+    assert.equal(await readUtf8(root, "state/embeddings.generation"), "local-uuid", "the chunked hostile payload never lands");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

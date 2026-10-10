@@ -10,8 +10,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { lstat, mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { EmbeddingIndexFileStore, EmbeddingIndexStorageError } from "./embedding-index-storage.js";
+import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { EmbeddingGenerationLockLostError } from "./embedding-generation-lock.js";
+import { EmbeddingIndexFileStore, EmbeddingIndexStorageError, type EmbeddingIndexStoreIo } from "./embedding-index-storage.js";
 
 const SHARD_FILE = JSON.stringify({
   version: 1,
@@ -87,6 +88,485 @@ test("detectLayout returns sharded on the first post-gap call and ignores a stra
     assert.deepEqual(identityAfter, { provider: "openai", model: "text-embedding-3-small" });
     assert.deepEqual(Object.keys(probe).sort(), ["mem-new", "mem-old"]);
     assert.equal(probe["mem-old"].path, "facts/old.md");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PR #3176 codex P2 — the generation stamp must not alias consecutive
+// publications. A dirty-shard write keeps the published directory's inode and
+// only moves its mtime; on a coarse-tick filesystem two consecutive
+// publications can report the same directory stat, so the stamp must move
+// through something that cannot alias.
+// ---------------------------------------------------------------------------
+
+test("consecutive shard publications move the generation stamp even when the directory stat is preserved", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-stamp-"));
+  const store = newStore(memoryDir);
+  try {
+    const shardDir = path.join(memoryDir, "state", "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    // mem-old hashes to shard-0058 (same fixture as the membership test).
+    await writeFile(path.join(shardDir, "shard-0058.json"), SHARD_FILE);
+    const identity = { provider: "openai" as const, model: "text-embedding-3-small" };
+    const entryOld = { vector: [1, 0], path: "facts/old.md" };
+    const entryNew = { vector: [0, 1], path: "facts/new.md" };
+
+    await store.persist(
+      { version: 1, ...identity, entries: { "mem-old": entryOld } },
+      { touchedIds: ["mem-old"], memoryId: "mem-old" },
+    );
+    // Force the exact stat the stamp reads, emulating a coarse mtime tick:
+    // the aliased stamp must still move on the NEXT publication.
+    await utimes(shardDir, 1_700_000_000.5, 1_700_000_000.5);
+    const stampBefore = await store.identityStamp();
+
+    await store.persist(
+      { version: 1, ...identity, entries: { "mem-old": entryOld, "mem-new": entryNew } },
+      { touchedIds: ["mem-new"], memoryId: "mem-new" },
+    );
+    await utimes(shardDir, 1_700_000_000.5, 1_700_000_000.5);
+
+    const stampAfter = await store.identityStamp();
+    assert.notEqual(
+      stampAfter,
+      stampBefore,
+      "two consecutive publications must never alias to one generation stamp",
+    );
+    // The published generation itself carries both entries: the stamp move
+    // is about revalidation, not about losing data.
+    const merged: Record<string, { vector: number[]; path: string }> = {};
+    await store.readShardGenerationInto(merged);
+    assert.deepEqual(Object.keys(merged).sort(), ["mem-new", "mem-old"]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("a publication's stamp moves twice: in-flight before its writes and final only after them", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-barrier-"));
+  const store = newStore(memoryDir);
+  try {
+    const shardDir = path.join(memoryDir, "state", "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    // mem-old hashes to shard-0058 (same fixture as the membership test).
+    await writeFile(path.join(shardDir, "shard-0058.json"), SHARD_FILE);
+    const identity = { provider: "openai" as const, model: "text-embedding-3-small" };
+    const entryOld = { vector: [1, 0], path: "facts/old.md" };
+    const entryNew = { vector: [0, 1], path: "facts/new.md" };
+
+    await store.persist(
+      { version: 1, ...identity, entries: { "mem-old": entryOld } },
+      { touchedIds: ["mem-old"], memoryId: "mem-old" },
+    );
+    const stampBefore = await store.identityStamp();
+
+    // Freeze the publication between its first shard write and completion;
+    // the write-boundary signal guarantees the in-flight marker already moved.
+    const { promise: release, resolve: unblock } = Promise.withResolvers<void>();
+    const { promise: atWrite, resolve: reachedWrite } = Promise.withResolvers<void>();
+    let gated = false;
+    const io: EmbeddingIndexStoreIo = {
+      readUtf8: async (filePath) => readFile(filePath, "utf-8"),
+      writeUtf8: async (filePath, contents) => {
+        if (!gated) {
+          await mkdir(path.dirname(filePath), { recursive: true });
+          await writeFile(filePath, contents, "utf-8");
+          return;
+        }
+        gated = false;
+        reachedWrite();
+        await release;
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, contents, "utf-8");
+      },
+    };
+    const gatedStore = new EmbeddingIndexFileStore(
+      path.join(memoryDir, "state", "embeddings.json"),
+      shardDir,
+      path.join(memoryDir, "state", "embedding-fallback-status.json"),
+      io,
+    );
+    gated = true;
+    const publication = gatedStore.persist(
+      { version: 1, ...identity, entries: { "mem-old": entryOld, "mem-new": entryNew } },
+      { touchedIds: ["mem-new"], memoryId: "mem-new" },
+    );
+    await atWrite;
+    const stampMidFlight = await store.identityStamp();
+    assert.notEqual(stampMidFlight, stampBefore, "a reader must never see the previous final stamp during a publication");
+
+    unblock();
+    await publication;
+    const stampFinal = await store.identityStamp();
+    assert.notEqual(
+      stampFinal,
+      stampMidFlight,
+      "the stamp must move again when the publication completes: a mid-flight stamp must never be the last stable one",
+    );
+    const merged: Record<string, { vector: number[]; path: string }> = {};
+    await store.readShardGenerationInto(merged);
+    assert.deepEqual(Object.keys(merged).sort(), ["mem-new", "mem-old"]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("an in-flight marker never yields a repeatable stamp, so a cached probe always revalidates", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-inflight-"));
+  const store = newStore(memoryDir);
+  try {
+    const shardDir = path.join(memoryDir, "state", "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    // mem-old hashes to shard-0058 (same fixture as the membership test).
+    await writeFile(path.join(shardDir, "shard-0058.json"), SHARD_FILE);
+    const identity = { provider: "openai" as const, model: "text-embedding-3-small" };
+
+    await store.persist(
+      { version: 1, ...identity, entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+      { touchedIds: ["mem-old"], memoryId: "mem-old" },
+    );
+    // Real post-crash state: the in-flight marker landed, the completion
+    // marker never did. A reader may have cached this stamp mid-flight; it
+    // must never see the same stamp again until a publication completes.
+    await writeFile(path.join(memoryDir, "state", "embeddings.generation"), "in-flight");
+    const probeA = await store.identityStamp();
+    const probeB = await store.identityStamp();
+    const probeC = await store.identityStamp();
+    assert.notEqual(probeB, probeA, "an in-flight marker must never produce a repeatable stamp");
+    assert.notEqual(probeC, probeB, "an in-flight marker must never produce a repeatable stamp");
+
+    await store.persist(
+      { version: 1, ...identity, entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" }, "mem-new": { vector: [0, 1], path: "facts/new.md" } } },
+      { touchedIds: ["mem-new"], memoryId: "mem-new" },
+    );
+    const settledA = await store.identityStamp();
+    const settledB = await store.identityStamp();
+    assert.notEqual(settledA, probeC, "the completed publication must move the stamp off every in-flight probe");
+    assert.equal(settledB, settledA, "a completed publication's stamp is stable");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+
+test("a lock lost after the in-flight marker stops the swapped publication before the live renames", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-refence-swap-"));
+  const store = newStore(memoryDir);
+  try {
+    const stateDir = path.join(memoryDir, "state");
+    const shardDir = path.join(stateDir, "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    await writeFile(path.join(shardDir, "shard-0058.json"), SHARD_FILE);
+    await store.persist(
+      { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+      { touchedIds: ["mem-old"], memoryId: "mem-old" },
+    );
+
+    const stagingDir = path.join(stateDir, "embeddings.staging.tmp-peer");
+    await mkdir(stagingDir, { recursive: true });
+    await writeFile(
+      path.join(stagingDir, "shard-0058.json"),
+      JSON.stringify({
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: { "mem-peer": { vector: [0, 0], path: "facts/peer.md" } },
+      }),
+    );
+
+    let calls = 0;
+    const fence = async () => {
+      calls += 1;
+      if (calls >= 3) throw new EmbeddingGenerationLockLostError("test:lock");
+    };
+    await assert.rejects(
+      () => store.publishSwappedGeneration(stagingDir, fence),
+      (err: unknown) => err instanceof EmbeddingGenerationLockLostError,
+    );
+    assert.ok(calls >= 3, "the fence must be reasserted after the in-flight marker write");
+    assert.equal(
+      await readFile(path.join(shardDir, "shard-0058.json"), "utf-8"),
+      SHARD_FILE,
+      "the published generation is untouched: the renames never ran",
+    );
+    await stat(stagingDir);
+    assert.equal(
+      (await readFile(path.join(stateDir, "embeddings.generation"), "utf-8")).trim(),
+      "in-flight",
+      "the abort lands after the barrier's first half; the winning peer finalizes the marker",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("a lock lost after the in-flight marker stops the dirty-shard publication before the shard writes", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-refence-dirty-"));
+  const store = newStore(memoryDir);
+  try {
+    const stateDir = path.join(memoryDir, "state");
+    const shardDir = path.join(stateDir, "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    await writeFile(path.join(shardDir, "shard-0058.json"), SHARD_FILE);
+    await store.persist(
+      { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+      { touchedIds: ["mem-old"], memoryId: "mem-old" },
+    );
+
+    let calls = 0;
+    const fence = async () => {
+      calls += 1;
+      if (calls >= 2) throw new EmbeddingGenerationLockLostError("test:lock");
+    };
+    await assert.rejects(
+      () => store.persist(
+        { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" }, "mem-new": { vector: [0, 1], path: "facts/new.md" } } },
+        { touchedIds: ["mem-new"], memoryId: "mem-new", fence },
+      ),
+      (err: unknown) => err instanceof EmbeddingGenerationLockLostError,
+    );
+    assert.deepEqual(await readdir(shardDir), ["shard-0058.json"], "no shard byte moved after a lost lock");
+    assert.equal(await readFile(path.join(shardDir, "shard-0058.json"), "utf-8"), SHARD_FILE);
+    assert.equal(
+      (await readFile(path.join(stateDir, "embeddings.generation"), "utf-8")).trim(),
+      "in-flight",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("a lock lost after the in-flight marker stops the legacy publication before the index write", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-refence-legacy-"));
+  const store = newStore(memoryDir);
+  try {
+    let calls = 0;
+    const fence = async () => {
+      calls += 1;
+      if (calls >= 2) throw new EmbeddingGenerationLockLostError("test:lock");
+    };
+    await assert.rejects(
+      () => store.persist(
+        { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+        { fence },
+      ),
+      (err: unknown) => err instanceof EmbeddingGenerationLockLostError,
+    );
+    await assert.rejects(
+      () => readFile(path.join(memoryDir, "state", "embeddings.json"), "utf-8"),
+      (err: NodeJS.ErrnoException) => err.code === "ENOENT",
+    );
+    assert.equal(
+      (await readFile(path.join(memoryDir, "state", "embeddings.generation"), "utf-8")).trim(),
+      "in-flight",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+
+test("a pre-marker writer's shard publication moves the completed stamp", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-rolling-"));
+  const store = newStore(memoryDir);
+  try {
+    const shardDir = path.join(memoryDir, "state", "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    await writeFile(path.join(shardDir, "shard-0058.json"), SHARD_FILE);
+    await store.persist(
+      { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+      { touchedIds: ["mem-old"], memoryId: "mem-old" },
+    );
+    const stampBefore = await store.identityStamp();
+
+    await writeFile(
+      path.join(shardDir, "shard-0058.json"),
+      JSON.stringify({
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" }, "mem-peer": { vector: [0, 0], path: "facts/peer.md" } },
+      }),
+    );
+    await utimes(shardDir, 1_700_000_001.5, 1_700_000_001.5);
+    const stampAfter = await store.identityStamp();
+    assert.notEqual(stampAfter, stampBefore, "a pre-marker writer's publication must move an upgraded warm cache's stamp");
+    assert.equal(await store.identityStamp(), stampAfter, "the stamp stays stable while nothing changes");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("a pre-marker writer's legacy publication moves the completed stamp", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-rolling-legacy-"));
+  const store = newStore(memoryDir);
+  try {
+    const stateDir = path.join(memoryDir, "state");
+    await store.persist(
+      { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+    );
+    assert.equal(await store.detectLayout(), "legacy");
+    const stampBefore = await store.identityStamp();
+
+    const indexPath = path.join(stateDir, "embeddings.json");
+    const tempPath = `${indexPath}.tmp-peer`;
+    await writeFile(
+      tempPath,
+      JSON.stringify({
+        version: 1,
+        provider: "openai",
+        model: "text-embedding-3-small",
+        entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" }, "mem-peer": { vector: [0, 0], path: "facts/peer.md" } },
+      }),
+    );
+    await rename(tempPath, indexPath);
+    await utimes(indexPath, 1_700_000_001.5, 1_700_000_001.5);
+    const stampAfter = await store.identityStamp();
+    assert.notEqual(stampAfter, stampBefore, "a pre-marker writer's publication must move an upgraded warm cache's stamp");
+    assert.equal(await store.identityStamp(), stampAfter, "the stamp stays stable while nothing changes");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("recovering an interrupted replacement finalizes the marker on the restored generation", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-recovery-"));
+  const store = newStore(memoryDir);
+  try {
+    const stateDir = path.join(memoryDir, "state");
+    const shardDir = path.join(stateDir, "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    await writeFile(path.join(shardDir, "shard-0058.json"), SHARD_FILE);
+    await store.persist(
+      { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+      { touchedIds: ["mem-old"], memoryId: "mem-old" },
+    );
+
+    // Crash after the in-flight marker, before the staging publication: the
+    // published directory sits in the transaction backup and the marker is
+    // still in-flight.
+    await rename(shardDir, path.join(stateDir, "embeddings.pre-replace.tmp"));
+    await writeFile(path.join(stateDir, "embeddings.generation"), "in-flight");
+
+    assert.equal(await store.recoverIfInterrupted(), true);
+    const marker = (await readFile(path.join(stateDir, "embeddings.generation"), "utf-8")).trim();
+    assert.notEqual(marker, "in-flight", "a recovered generation must not keep the in-flight marker");
+    const probeA = await store.identityStamp();
+    const probeB = await store.identityStamp();
+    assert.equal(probeA, probeB, "the recovered generation's stamp is stable: warm searches must not reload");
+    const merged: Record<string, { vector: number[]; path: string }> = {};
+    await store.readShardGenerationInto(merged);
+    assert.deepEqual(Object.keys(merged), ["mem-old"], "the restored generation is intact");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+for (const legacy of [false, true]) {
+  test(`a failed first publication preserves the ${legacy ? "legacy" : "empty"} generation with a stable stamp`, async () => {
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-first-failure-"));
+    const store = newStore(memoryDir);
+    const stateDir = path.join(memoryDir, "state");
+    const indexPath = path.join(stateDir, "embeddings.json");
+    try {
+      await mkdir(stateDir, { recursive: true });
+      if (legacy) await writeFile(indexPath, SHARD_FILE);
+      await assert.rejects(
+        () => store.publishSwappedGeneration(path.join(stateDir, "embeddings.staging.tmp-nonexistent")),
+        (err: NodeJS.ErrnoException) => err.code === "ENOENT",
+      );
+      assert.equal(await store.detectLayout(), legacy ? "legacy" : "empty");
+      if (legacy) assert.equal(await readFile(indexPath, "utf-8"), SHARD_FILE);
+      else await assert.rejects(stat(indexPath), { code: "ENOENT" });
+      const stamp = await store.identityStamp();
+      assert.equal(await store.identityStamp(), stamp);
+    } finally {
+      await rm(memoryDir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("a failed publication's rollback finalizes the marker on the restored generation", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-rollback-"));
+  const store = newStore(memoryDir);
+  try {
+    const stateDir = path.join(memoryDir, "state");
+    const shardDir = path.join(stateDir, "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    await writeFile(path.join(shardDir, "shard-0058.json"), SHARD_FILE);
+    await store.persist(
+      { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+      { touchedIds: ["mem-old"], memoryId: "mem-old" },
+    );
+
+    // A publication whose staging rename fails: the shard directory was
+    // already demoted to the backup, so the catch rolls it back. The
+    // restored generation must be finalized, not left in-flight.
+    await assert.rejects(
+      () => store.publishSwappedGeneration(path.join(stateDir, "embeddings.staging.tmp-nonexistent")),
+      (err: NodeJS.ErrnoException) => err.code === "ENOENT",
+    );
+    const marker = (await readFile(path.join(stateDir, "embeddings.generation"), "utf-8")).trim();
+    assert.notEqual(marker, "in-flight", "a rolled-back generation must not keep the in-flight marker");
+    const probeA = await store.identityStamp();
+    const probeB = await store.identityStamp();
+    assert.equal(probeA, probeB, "the rolled-back generation's stamp is stable");
+    const merged: Record<string, { vector: number[]; path: string }> = {};
+    await store.readShardGenerationInto(merged);
+    assert.deepEqual(Object.keys(merged), ["mem-old"], "the rolled-back generation is intact");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("a failed recovery rollback keeps the marker in-flight and a later recovery finalizes it", {
+  skip:
+    process.platform === "win32" || process.getuid?.() === 0
+      ? "directory permissions are not enforced for this user/platform"
+      : false,
+}, async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-rollbackfail-"));
+  const store = newStore(memoryDir);
+  try {
+    const stateDir = path.join(memoryDir, "state");
+    const shardDir = path.join(stateDir, "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    await writeFile(path.join(shardDir, "shard-0058.json"), SHARD_FILE);
+    await store.persist(
+      { version: 1, provider: "openai", model: "text-embedding-3-small", entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+      { touchedIds: ["mem-old"], memoryId: "mem-old" },
+    );
+
+    await rename(shardDir, path.join(stateDir, "embeddings.pre-replace.tmp"));
+    await writeFile(path.join(stateDir, "embeddings.generation"), "in-flight");
+
+    // Real rollback failure at the filesystem boundary: the state dir is
+    // unwritable, so the restore rename fails and recovery fails closed.
+    const prevMode = (await stat(stateDir)).mode;
+    await chmod(stateDir, 0o500);
+    try {
+      await assert.rejects(
+        () => store.recoverIfInterrupted(),
+        (err: NodeJS.ErrnoException) => err.code === "EACCES",
+      );
+      assert.equal(
+        await readFile(path.join(stateDir, "embeddings.generation"), "utf-8"),
+        "in-flight",
+        "a failed rollback must never finalize the marker",
+      );
+    } finally {
+      await chmod(stateDir, prevMode);
+    }
+
+    // A later recovery under a writable state dir restores and finalizes.
+    assert.equal(await store.recoverIfInterrupted(), true);
+    const marker = (await readFile(path.join(stateDir, "embeddings.generation"), "utf-8")).trim();
+    assert.notEqual(marker, "in-flight");
+    const probeA = await store.identityStamp();
+    const probeB = await store.identityStamp();
+    assert.equal(probeA, probeB, "the recovered generation's stamp is stable");
   } finally {
     await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
   }
