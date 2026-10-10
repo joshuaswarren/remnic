@@ -910,3 +910,74 @@ test("a held frontmatter write moves the epoch when repair rewrites entityRef", 
     await removeHarness(memoryDir, workspaceDir);
   }
 });
+
+test("a read-only cache flush can leave the mention epoch in place", async () => {
+  const { memoryDir, workspaceDir, storage } = await buildHarness("engram-entity-epoch-cache-flush");
+  try {
+    await storage.writeMemory("fact", "Cedar Lattice tracks harbor lights from the pier.", {});
+    const epoch = entityMentionEpoch.current(storage.dir);
+    storage.invalidateAllMemoriesCacheForDir({ indexedText: false });
+    assert.equal(entityMentionEpoch.current(storage.dir), epoch);
+    storage.invalidateAllMemoriesCacheForDir();
+    assert.ok(entityMentionEpoch.current(storage.dir) > epoch);
+  } finally {
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});
+
+test("archive and supersede repairs move the mention epoch when entityRef changes", async () => {
+  const { memoryDir, workspaceDir, storage } = await buildHarness("engram-entity-epoch-repair-status");
+  try {
+    const canonical = await storage.writeEntity("Cedar Lattice", "project", [
+      "Cedar Lattice tracks harbor lights.",
+    ]);
+    const archived = await storage.writeMemory("fact", "Cedar Lattice tracks harbor lights from the pier.", {
+      entityRef: canonical,
+    });
+    const seam = storage as unknown as {
+      entityRefRepair: {
+        repair: (
+          filePath: string,
+          updated: { entityRef?: string },
+          rawMergedRef: string,
+          refIds: Readonly<Record<string, string>>,
+          content: string,
+          opts: { onFailRestore?: unknown },
+        ) => Promise<void>;
+      };
+    };
+    const original = seam.entityRefRepair.repair.bind(seam.entityRefRepair);
+    seam.entityRefRepair.repair = async (filePath, updated, rawMergedRef, refIds, content, opts) => {
+      await original(filePath, updated, rawMergedRef, refIds, content, opts);
+      updated.entityRef = "entity-rewritten-by-repair";
+    };
+    const epoch = entityMentionEpoch.current(storage.dir);
+    assert.equal(await storage.archiveMemories([archived.id], "summary-repair"), 1);
+    assert.ok(entityMentionEpoch.current(storage.dir) > epoch);
+
+    const oldMemory = await storage.writeMemory("fact", "The original supporting claim.", {
+      entityRef: canonical,
+      source: "test",
+    });
+    const replacement = await storage.writeMemory("fact", "The replacement supporting claim.", {
+      entityRef: canonical,
+      source: "test",
+    });
+    seam.entityRefRepair.repair = original;
+    assert.equal(await storage.supersedeMemory(oldMemory.id, replacement.id, "newer replaces older"), true);
+    seam.entityRefRepair.repair = async (filePath, updated, rawMergedRef, refIds, content, opts) => {
+      await original(filePath, updated, rawMergedRef, refIds, content, opts);
+      updated.entityRef = "entity-rewritten-on-replay";
+    };
+    const afterSupersede = entityMentionEpoch.current(storage.dir);
+    assert.equal(
+      await storage.supersedeMemory(oldMemory.id, replacement.id, "newer replaces older", undefined, {
+        acceptExactReplay: true,
+      }),
+      true,
+    );
+    assert.ok(entityMentionEpoch.current(storage.dir) > afterSupersede);
+  } finally {
+    await removeHarness(memoryDir, workspaceDir);
+  }
+});

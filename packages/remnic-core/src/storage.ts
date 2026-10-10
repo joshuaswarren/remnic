@@ -4440,8 +4440,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   /** Invalidate the readAllMemories() cache after writes that add/remove memories. */
   /** Public cache invalidation for callers that need authoritative disk reads
    *  (e.g. projection verify/rebuild). */
-  invalidateAllMemoriesCacheForDir(): void {
-    this.invalidateAllMemoriesCache();
+  invalidateAllMemoriesCacheForDir(opts?: { indexedText?: boolean }): void {
+    this.invalidateAllMemoriesCache(opts);
   }
 
   /** Invalidate only the cache layers affected by direct tier file deletes. */
@@ -7034,6 +7034,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       });
       if (!written) return false;
       exactReplay = written === "exact-replay";
+      const mentionBefore = { entityRef: currentBefore.frontmatter.entityRef, origin: currentBefore.frontmatter.origin };
       if (exactReplay && typeof updatedFm.entityRef === "string") {
         await this.entityRefRepair.repair(
           currentBefore.path,
@@ -7044,6 +7045,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           { onFailRestore: currentBefore },
         );
       }
+      const mentionUnchanged = entityMentionEpoch.neutral(mentionBefore, updatedFm);
       const supersededAt = updatedFm.supersededAt ?? initialNow;
       const beforeState = this.summarizeLifecycleState(
         currentBefore.frontmatter,
@@ -7065,8 +7067,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         readMemoryByPath: (filePath) => this.readMemoryByPath(filePath),
         isColdOrArchiveTierPath: (memoryPath) => this.isColdOrArchiveTierPath(memoryPath),
         invalidateColdMemoriesCache: () => this.invalidateColdMemoriesCache(),
-        invalidateAllMemoriesCache: () => this.invalidateAllMemoriesCache({ indexedText: false }),
-        bumpMemoryCorpusVersion: () => this.bumpMemoryCorpusVersion({ indexedText: false }),
+        invalidateAllMemoriesCache: () => this.invalidateAllMemoriesCache({ indexedText: mentionUnchanged ? false : undefined }),
+        bumpMemoryCorpusVersion: () => this.bumpMemoryCorpusVersion({ indexedText: mentionUnchanged ? false : undefined }),
         appendLifecycleEvent: async () => {
           let lifecycleEvents: MemoryLifecycleEvent[] = [];
           try {
@@ -7180,9 +7182,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           return true;
         });
         if (!written) continue;
-        // Per-file corpus bump BEFORE the awaited lifecycle append (#1902).
-        // Status and archive timestamps are not indexed text.
-        this.bumpMemoryCorpusVersion({ indexedText: false });
+        // Corpus bump before the lifecycle append (#1902). Epoch moves only if repair changed entityRef or origin.
+        this.bumpMemoryCorpusVersion({ indexedText: entityMentionEpoch.neutral(currentBefore.frontmatter, updatedFm) ? false : undefined });
         await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.archiveMemories", {
           memoryId: id,
           eventType: "archived",
