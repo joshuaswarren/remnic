@@ -171,8 +171,10 @@ function replacementBackupPath(shardDir: string): string {
  * Two-phase publication barrier: in-flight before a publication's first
  * destructive write, fresh unique value after its last write. A stamp is
  * therefore stable only for a completed generation — readers can never
- * cache a stamp that stays stable while generation bytes change (PR #3176
- * codex P2). Plain fs like the status file.
+ * cache a stamp that stays stable while generation bytes change, and an
+ * in-flight stamp never repeats, so probes cached during a failed
+ * completion keep revalidating (PR #3176 codex P2). Plain fs like the
+ * status file.
  */
 const GENERATION_MARKER_BASENAME = "embeddings.generation";
 
@@ -535,8 +537,9 @@ export class EmbeddingIndexFileStore {
 
   /**
    * Barrier second half: written after the last content write. Best-effort:
-   * a failure leaves the in-flight marker, whose stamp differs from every
-   * stable stamp, so readers keep revalidating.
+   * a failure leaves the in-flight marker, whose stamp identityStamp()
+   * never repeats, so cached probes revalidate on every search until a
+   * publication completes.
    */
   private async completeGenerationMarker(): Promise<void> {
     await this.writeGenerationMarker(randomUUID()).catch((err) => {
@@ -584,7 +587,10 @@ export class EmbeddingIndexFileStore {
       });
       if (!info) return "rename-gap";
       const marker = await this.readGenerationMarker();
-      if (marker) return `gen:${marker}`;
+      // An in-flight marker must never produce a repeatable stamp: a probe
+      // that cached one (completion write failed) must revalidate on every
+      // later probe until a publication completes.
+      if (marker) return marker === GENERATION_MARKER_IN_FLIGHT ? `gen:${randomUUID()}` : `gen:${marker}`;
       return `shard:${info.ino}:${info.mtimeMs}`;
     }
     if (layout === "legacy") {
@@ -597,7 +603,8 @@ export class EmbeddingIndexFileStore {
       });
       if (!info) return "rename-gap";
       const marker = await this.readGenerationMarker();
-      if (marker) return `gen:${marker}`;
+      // Same in-flight rule as the sharded branch above.
+      if (marker) return marker === GENERATION_MARKER_IN_FLIGHT ? `gen:${randomUUID()}` : `gen:${marker}`;
       return `legacy:${info.ino}:${info.mtimeMs}`;
     }
     return "empty";

@@ -212,6 +212,43 @@ test("a publication's stamp moves twice: in-flight before its writes and final o
   }
 });
 
+test("an in-flight marker never yields a repeatable stamp, so a cached probe always revalidates", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-inflight-"));
+  const store = newStore(memoryDir);
+  try {
+    const shardDir = path.join(memoryDir, "state", "embeddings");
+    await mkdir(shardDir, { recursive: true });
+    // mem-old hashes to shard-0058 (same fixture as the membership test).
+    await writeFile(path.join(shardDir, "shard-0058.json"), SHARD_FILE);
+    const identity = { provider: "openai" as const, model: "text-embedding-3-small" };
+
+    await store.persist(
+      { version: 1, ...identity, entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" } } },
+      { touchedIds: ["mem-old"], memoryId: "mem-old" },
+    );
+    // Real post-crash state: the in-flight marker landed, the completion
+    // marker never did. A reader may have cached this stamp mid-flight; it
+    // must never see the same stamp again until a publication completes.
+    await writeFile(path.join(memoryDir, "state", "embeddings.generation"), "in-flight");
+    const probeA = await store.identityStamp();
+    const probeB = await store.identityStamp();
+    const probeC = await store.identityStamp();
+    assert.notEqual(probeB, probeA, "an in-flight marker must never produce a repeatable stamp");
+    assert.notEqual(probeC, probeB, "an in-flight marker must never produce a repeatable stamp");
+
+    await store.persist(
+      { version: 1, ...identity, entries: { "mem-old": { vector: [1, 0], path: "facts/old.md" }, "mem-new": { vector: [0, 1], path: "facts/new.md" } } },
+      { touchedIds: ["mem-new"], memoryId: "mem-new" },
+    );
+    const settledA = await store.identityStamp();
+    const settledB = await store.identityStamp();
+    assert.notEqual(settledA, probeC, "the completed publication must move the stamp off every in-flight probe");
+    assert.equal(settledB, settledA, "a completed publication's stamp is stable");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
 test("a corrupt replacement backup shape surfaces as a tagged storage error, never the legacy fallback", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3146-gapbackup-"));
   const store = newStore(memoryDir);

@@ -12,7 +12,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
@@ -307,6 +307,90 @@ test("an identity probe that raced an in-flight peer publication revalidates at 
   assert.ok(
     counting.reads() > readsAfterBarrierSearch,
     "the probe cached during the in-flight window must be re-read at the completion marker; a mid-flight stamp must never stay stable",
+  );
+});
+
+test("a failed completion marker keeps every probe revalidating until a publication completes", async (t) => {
+  const memoryDir = await newMemoryDir();
+  t.after(() => rm(memoryDir, { recursive: true, force: true }));
+  t.after(() => clearHostEmbeddingProvidersForTest());
+  t.after(registerHostEmbeddingProvider(memoryDir, hostProvider("host-model-a")));
+  const stateDir = path.join(memoryDir, "state");
+
+  // The peer's shard writes go through this shadow io so the injected
+  // state-dir permission failure hits ONLY the plain-fs completion marker
+  // write, never the content publication itself.
+  const shadow: Record<string, string> = {};
+  const { promise: release, resolve: unblock } = Promise.withResolvers<void>();
+  const { promise: atWrite, resolve: reachedWrite } = Promise.withResolvers<void>();
+  let peerGated = false;
+  const peerIo: EmbeddingIndexStoreIo = {
+    readUtf8: async (filePath) => shadow[filePath] ?? readFile(filePath, "utf-8"),
+    writeUtf8: async (filePath, contents) => {
+      if (!peerGated) {
+        shadow[filePath] = contents;
+        return;
+      }
+      peerGated = false;
+      reachedWrite();
+      await release;
+      shadow[filePath] = contents;
+    },
+  };
+
+  const counting = makeCountingIo();
+  const fallback = new EmbeddingFallback(parentConfig(memoryDir), counting.io);
+  await fallback.indexFile("mem-a", PARENT_TEXT, "namespaces/alpha/facts/parent-a.md");
+  assert.equal((await fallback.search(PARENT_TEXT, 5))[0]?.id, "mem-a");
+
+  // Real publication whose completion marker write fails: the peer freezes
+  // at its first content write (marker already in-flight), the test makes
+  // the state dir unwritable, and the peer's completion write then fails.
+  const peer = new EmbeddingFallback(parentConfig(memoryDir), peerIo);
+  peerGated = true;
+  const peerWrite = peer.indexFile("mem-b", CHILD_TEXT, "namespaces/alpha/facts/child-b.md");
+  await atWrite;
+
+  // Park the parent's probe on the in-flight window: its identity probe
+  // caches the in-flight stamp, then its locked load blocks on the peer.
+  const { promise: probeRead, resolve: probeReadLanded } = Promise.withResolvers<void>();
+  const countingReadUtf8 = counting.io.readUtf8;
+  counting.io.readUtf8 = async (filePath) => {
+    const raw = await countingReadUtf8(filePath);
+    probeReadLanded();
+    return raw;
+  };
+  const parentSearch = fallback.search(CHILD_TEXT, 5);
+  await probeRead;
+  const prevMode = (await stat(stateDir)).mode;
+  await chmod(stateDir, 0o550);
+  unblock();
+  await peerWrite;
+  await chmod(stateDir, prevMode);
+  await parentSearch;
+
+  // With the completion write failed, the marker stays in-flight: the probe
+  // cached above must never match again — every search revalidates.
+  const readsBeforeProbe = counting.reads();
+  await fallback.search(CHILD_TEXT, 5);
+  assert.ok(
+    counting.reads() > readsBeforeProbe,
+    "an in-flight stamp must never repeat: a probe that cached it must revalidate on the next search",
+  );
+
+  // The next healthy publication completes its marker; the stamp then
+  // stabilizes and warm searches return to zero index reads.
+  const healthyPeer = new EmbeddingFallback(parentConfig(memoryDir));
+  await healthyPeer.indexFile("mem-c", CHILD_TEXT, "namespaces/alpha/facts/child-c.md");
+  const settled = await fallback.search(CHILD_TEXT, 5);
+  assert.equal(settled[0]?.id, "mem-c", "the healthy publication's entry is served");
+  const readsAfterSettled = counting.reads();
+  const warm = await fallback.search(CHILD_TEXT, 5);
+  assert.equal(warm[0]?.id, "mem-c");
+  assert.equal(
+    counting.reads(),
+    readsAfterSettled,
+    "a completed publication's stamp is stable: warm searches perform no index reads",
   );
 });
 
