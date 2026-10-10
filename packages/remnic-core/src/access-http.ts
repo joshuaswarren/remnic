@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { log } from "./logger.js";
+import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { WriteRateLimiter, type WriteRateLimitReservation } from "./write-rate-limiter.js";
 import { abortError, isAbortError } from "./abort-error.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
@@ -716,6 +717,13 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         principal = adapterIdentity.principal;
       }
       namespace = adapterIdentity.namespace;
+      const config = this.service.configRef;
+      if (
+        adapterIdentity.namespaceExplicit === false &&
+        !(config && resolveNamespaceCapabilities(config).namespaces)
+      ) {
+        namespace = undefined;
+      }
       sessionKey = adapterIdentity.sessionKey;
     }
 
