@@ -220,6 +220,87 @@ opt-in and `query` remains the default. (See issue #1335.)
 > because QMD handles it). Switching the default to `qmd search` would silently remove
 > that capability, so it is gated behind `qmdSubprocessStrategy` instead.
 
+### Cancelled recalls on a single QMD worker
+
+Remnic's enrichment deadline aborts the MCP `tools/call`. Stock QMD 2.5.3 ignores
+that abort: its one worker keeps reranking, and the next recall sits behind the
+abandoned call until it times out too. Remnic now writes MCP
+`notifications/cancelled` (`requestId` plus a reason) when a tool call is aborted
+or hits `qmdDaemonTimeoutMs`, then rejects the caller without waiting for a
+JSON-RPC result. The MCP SDK drops the result once the server's request
+controller is aborted, so waiting would deadlock. The initialize handshake is
+not cancelled, and the child is not killed: reloading the rerank model takes
+longer than a recall budget, and killing on every slow query would cold-start
+the process each time.
+
+Identical in-flight `search()` calls share one daemon query. The shared call is
+cancelled only when every waiter has aborted.
+
+Unpatched QMD 2.5.3 still finishes the rerank after the notification. The
+client already ignores that late result. Stopping the worker requires the patch
+in `docs/patches/qmd-2.5.3-mcp-cancel.patch`, against tag `v2.5.3`:
+
+```bash
+git clone --depth 1 --branch v2.5.3 https://github.com/tobi/qmd.git
+cd qmd
+git apply /path/to/remnic/docs/patches/qmd-2.5.3-mcp-cancel.patch
+# rebuild and reinstall, then restart the host so Remnic respawns `qmd mcp`
+```
+
+The patch passes `extra.signal` from the MCP `query` tool through
+`structuredSearch` / `hybridQuery` into the reranker. `rank()` and `rankAll()`
+share one evaluate path, so a document that finishes keeps the same score. The
+loop checks the signal between documents and throws. It does not return a
+partial ranking, and it does not write those scores into QMD's `llm_cache`.
+sqlite-vec cannot be interrupted mid-scan; a cancel that arrives during a scan
+skips the remaining scans and the rerank once that scan returns.
+
+This does not change top-k, the lex+vec+hyde plan, rerank, or candidate limits.
+On a patched binary, a completed search matches an unpatched one. A cancelled
+search returns no QMD hits to that caller, same as today's timeout, and it
+releases the worker for the next caller.
+
+### CPU vector scan
+
+On QMD 2.5.3, `searchVec` is a brute-force `embedding MATCH` over the whole
+`vectors_vec` table, then a collection filter. That cost is flat in k. Two
+things that landed in QMD after 2.5.3 address it, and neither is turned on by
+this Remnic change:
+
+- Collection-partitioned vector indexes (QMD #983). A query scans that
+  collection's vectors. The neighbor set can differ from today's
+  global-top-k-then-filter, so it is not a bit-identical speedup. Compare it
+  with `scripts/recall-qmd-compare.mjs` before treating it as the same recall.
+- `qmd cleanup` repacks a sparse `vec0` table (QMD #937). Same vectors, less
+  scan work. Still an upstream QMD change, not something Remnic can do from
+  the MCP client.
+
+An approximate index inside Remnic would change neighbors without a measurement
+against a captured reranked baseline, so there is no default-on ANN flag here.
+QMD already caches rerank scores by query, model, and chunk text. The patch
+does not cache a cancelled batch.
+
+Compare a fresh capture with a BEFORE reranked capture (same plan: lex + vec +
+synthetic hyde, candidate limit 40, rerank on, limit 20). `queries.json` is a
+JSON array of strings and stays off the repo:
+
+```bash
+QMD_STORE_MODULE=/path/to/@tobilu/qmd/dist/store.js \
+QMD_COLLECTION=<collection> \
+QMD_FORCE_CPU=1 \
+OUTDIR=/tmp/recall-after \
+node scripts/recall-qmd-bench.mjs /path/to/queries.json daemon
+
+node scripts/recall-qmd-compare.mjs <before-dir> /tmp/recall-after
+node scripts/recall-qmd-compare.mjs --rerank-off <before-dir>
+```
+
+Each file is `{ results: [{ docid, score }], timings?: { totalMs } }`. The
+report prints top-1, top-10 overlap, and Spearman correlation. It does not
+print queries or paths. `--rerank-off` pairs `*-daemon.json` with
+`*-norerank.json` and is only a check that the metric notices rerank moving
+the list.
+
 ### Embedding backlog visibility and prioritized embedding
 
 QMD's vector index is built by `qmd embed`, which Remnic does **not** own or

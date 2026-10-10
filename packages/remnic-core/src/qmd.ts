@@ -4,6 +4,8 @@ import path from "node:path";
 import { abortError, isAbortError, throwIfAborted } from "./abort-error.js";
 import { log } from "./logger.js";
 import { clearQmdResultCaches, getCachedQmdSearch, setCachedQmdSearch } from "./memory-cache.js";
+import { QmdDaemonSession } from "./qmd-daemon-session.js";
+import { createInflightJoiner } from "./qmd-mcp-cancel.js";
 import {
   QMD_PROBE_RETRY_BACKOFF_MS,
   QMD_PROBE_TIMEOUT_MS,
@@ -664,302 +666,6 @@ function killBoundedChild(child: CommandChildProcess): void {
 
 export { runCommandWithTimeout as runCommandWithTimeoutForTest };
 
-// ---------------------------------------------------------------------------
-// QMD Stdio Daemon Session (MCP over stdio child process)
-// ---------------------------------------------------------------------------
-
-let nextJsonRpcId = 1;
-
-class QmdDaemonSession {
-  private child: CommandChildProcess | null = null;
-  private initialized = false;
-  private buffer = "";
-  private startPromise: Promise<boolean> | null = null;
-  private pendingRequests = new Map<
-    number,
-    {
-      resolve: (value: unknown) => void;
-      reject: (reason: Error) => void;
-      timer: ReturnType<typeof setTimeout>;
-      cleanup: () => void;
-    }
-  >();
-  private readonly qmdPath: string;
-  private readonly runtimeEnv: QmdRuntimeEnv;
-  private readonly indexName?: string;
-
-  constructor(qmdPath: string, runtimeEnv: QmdRuntimeEnv = {}, indexName?: string) {
-    this.qmdPath = qmdPath;
-    this.runtimeEnv = runtimeEnv;
-    this.indexName = indexName?.trim() || undefined;
-  }
-
-  /** Spawn the qmd mcp child process and perform MCP handshake. */
-  async start(): Promise<boolean> {
-    if (this.child && !this.child.killed && this.initialized) {
-      return true;
-    }
-    if (this.startPromise) {
-      return this.startPromise;
-    }
-    this.startPromise = (async () => {
-      // Reuse already-running uninitialized process to avoid zombie accumulation.
-      const processAlreadyRunning = this.child != null && !this.child.killed;
-      if (!processAlreadyRunning) {
-        if (this.child) {
-          this.cleanup({ killChild: true });
-        }
-        try {
-          const args = this.indexName ? ["--index", this.indexName, "mcp"] : ["mcp"];
-          const child = launchProcess(this.qmdPath, args, {
-            env: mergeEnv({ NO_COLOR: "1", ...this.runtimeEnv }),
-            stdio: ["pipe", "pipe", "pipe"],
-          });
-          this.child = child;
-          this.buffer = "";
-
-          child.stdout?.on("data", (data: Buffer) => {
-            if (this.child !== child) return;
-            this.handleStdoutData(data);
-          });
-          child.stderr?.on("data", (data: Buffer) => {
-            if (this.child !== child) return;
-            const msg = data.toString().trim();
-            if (msg) log.debug(`QMD mcp stderr: ${stripControlChars(msg)}`);
-          });
-          child.stdin?.on("error", (err) => {
-            // Swallow EPIPE/ERR_STREAM_DESTROYED from killed child processes.
-            log.debug(`QMD mcp stdin error (suppressed): ${err.message}`);
-          });
-          child.on("error", (err) => {
-            if (this.child !== child) return;
-            log.debug(`QMD mcp process error: ${err.message}`);
-            this.cleanup({ child });
-          });
-          child.on("close", (code) => {
-            if (this.child !== child) return;
-            log.debug(`QMD mcp process exited (code ${code})`);
-            this.cleanup({ child });
-          });
-        } catch (err) {
-          log.debug(`QMD mcp: failed to spawn process: ${err}`);
-          this.cleanup({ killChild: true });
-          return false;
-        }
-      } else {
-        log.debug("QMD mcp: process already running, retrying handshake");
-      }
-
-      try {
-        // Use a generous timeout — large collections (75K+ files) can take 60-90s
-        // to load their vector index. We keep the process alive across retries so
-        // only one mcp instance is running at a time.
-        const result = await this.sendRequest(
-          "initialize",
-          {
-            protocolVersion: "2024-11-05",
-            capabilities: {},
-            clientInfo: { name: "openclaw-remnic", version: "1.0.0" },
-          },
-          60_000
-        );
-        if (!result) {
-          // Null result (non-timeout failure) — kill and let the next probe respawn.
-          this.cleanup({ killChild: true });
-          return false;
-        }
-        this.sendNotification("notifications/initialized");
-        this.initialized = true;
-        log.info("QMD mcp: stdio session initialized");
-        return true;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/timed out/i.test(msg)) {
-          // Handshake timeout — process is still loading. Keep it alive for the
-          // next retry (daemonRecheckIntervalMs). Do NOT kill and respawn.
-          log.debug(`QMD mcp: handshake timed out — process still loading, will retry later`);
-          // Reset initialized flag but leave child running.
-          this.initialized = false;
-        } else {
-          log.debug(`QMD mcp: failed to start stdio session: ${err}`);
-          this.cleanup({ killChild: true });
-        }
-        return false;
-      } finally {
-        this.startPromise = null;
-      }
-    })();
-    return this.startPromise;
-  }
-
-  /** Call an MCP tool and return the parsed result. */
-  async callTool(
-    name: string,
-    args: Record<string, unknown>,
-    timeoutMs = 30_000,
-    signal?: AbortSignal
-  ): Promise<unknown> {
-    if (!this.child || this.child.killed || !this.initialized) {
-      throw new Error("QMD mcp process not running");
-    }
-    return this.sendRequest("tools/call", { name, arguments: args }, timeoutMs, signal);
-  }
-
-  /** Kill stdio process and clear state so the next probe can restart. */
-  invalidate(): void {
-    this.cleanup({ killChild: true });
-  }
-
-  /** Kill stdio process and wait briefly for the child handle to close. */
-  async close(timeoutMs = 1_000): Promise<void> {
-    const target = this.child;
-    if (!target) {
-      this.cleanup({ killChild: true });
-      return;
-    }
-
-    let closed = false;
-    const closedPromise = new Promise<void>((resolve) => {
-      target.once("close", () => {
-        closed = true;
-        resolve();
-      });
-    });
-
-    this.cleanup({ killChild: true });
-    await Promise.race([closedPromise, sleep(timeoutMs)]);
-    if (!closed) {
-      try {
-        target.kill("SIGKILL");
-      } catch {
-        // Ignore process-kill races during shutdown.
-      }
-      await Promise.race([closedPromise, sleep(250)]);
-    }
-  }
-
-  isActive(): boolean {
-    return this.child !== null && !this.child.killed && this.initialized;
-  }
-
-  /** True while the process is spawned but the MCP handshake has not yet completed. */
-  isLoading(): boolean {
-    return this.child !== null && !this.child.killed && !this.initialized;
-  }
-
-  private sendRequest(
-    method: string,
-    params: Record<string, unknown>,
-    timeoutMs: number,
-    signal?: AbortSignal
-  ): Promise<unknown> {
-    return new Promise((resolve, reject) => {
-      throwIfAborted(signal, `QMD mcp ${method} aborted before request`);
-      if (!this.child || !this.child.stdin || this.child.killed) {
-        reject(new Error("QMD mcp process not available"));
-        return;
-      }
-
-      const id = nextJsonRpcId++;
-      const timer = setTimeout(() => {
-        this.pendingRequests.delete(id);
-        cleanup();
-        reject(new Error(`QMD mcp ${method} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      const onAbort = () => {
-        clearTimeout(timer);
-        this.pendingRequests.delete(id);
-        cleanup();
-        reject(abortError(`QMD mcp ${method} aborted`));
-      };
-      const cleanup = () => {
-        signal?.removeEventListener("abort", onAbort);
-      };
-
-      this.pendingRequests.set(id, { resolve, reject, timer, cleanup });
-      signal?.addEventListener("abort", onAbort, { once: true });
-      const message = JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n";
-      this.child.stdin.write(message, (err) => {
-        if (err) {
-          clearTimeout(timer);
-          this.pendingRequests.delete(id);
-          cleanup();
-          reject(new Error(`Failed to write to QMD mcp stdin: ${err.message}`));
-        }
-      });
-    });
-  }
-
-  private sendNotification(method: string, params?: Record<string, unknown>): void {
-    if (!this.child || !this.child.stdin || this.child.killed) return;
-    if (this.child.stdin.destroyed) return;
-    const msg: Record<string, unknown> = { jsonrpc: "2.0", method };
-    if (params) msg.params = params;
-    try {
-      this.child.stdin.write(JSON.stringify(msg) + "\n");
-    } catch {
-      // Ignore EPIPE / write-after-close
-    }
-  }
-
-  private handleStdoutData(data: Buffer): void {
-    this.buffer += data.toString();
-    let newlineIdx: number;
-    while ((newlineIdx = this.buffer.indexOf("\n")) !== -1) {
-      const line = this.buffer.slice(0, newlineIdx).trim();
-      this.buffer = this.buffer.slice(newlineIdx + 1);
-      if (!line) continue;
-      try {
-        const msg = JSON.parse(line);
-        this.handleMessage(msg);
-      } catch {
-        log.debug(`QMD mcp: unparseable stdout: ${truncateForLog(line, 200)}`);
-      }
-    }
-  }
-
-  private handleMessage(msg: Record<string, unknown>): void {
-    if (msg.id !== undefined && msg.id !== null) {
-      const pending = this.pendingRequests.get(msg.id as number);
-      if (pending) {
-        clearTimeout(pending.timer);
-        this.pendingRequests.delete(msg.id as number);
-        pending.cleanup();
-        if (msg.error) {
-          pending.reject(new Error(JSON.stringify(msg.error)));
-        } else {
-          pending.resolve(msg.result);
-        }
-      }
-      return;
-    }
-    if (msg.method) {
-      log.debug(`QMD mcp notification: ${msg.method}`);
-    }
-  }
-
-  private cleanup(opts?: { killChild?: boolean; child?: CommandChildProcess | null }): void {
-    const target = opts?.child ?? this.child;
-    if (!target) return;
-    if (opts?.child && this.child !== opts.child) {
-      return;
-    }
-    if (opts?.killChild && !target.killed) {
-      target.kill("SIGTERM");
-    }
-    this.initialized = false;
-    for (const [, pending] of this.pendingRequests) {
-      clearTimeout(pending.timer);
-      pending.cleanup();
-      pending.reject(new Error("QMD mcp process terminated"));
-    }
-    this.pendingRequests.clear();
-    this.startPromise = null;
-    this.child = null;
-    this.buffer = "";
-  }
-}
-
 /** Matches `#<hex-docid> <score>% <rest-of-line>` — rest is split in a second pass. */
 const QMD_RESULT_LINE_RE = /^#([0-9a-fA-F]+)\s+(\d+)%\s+(.+)/;
 
@@ -1188,6 +894,8 @@ export class QmdClient implements SearchBackend {
 
   // Daemon mode fields
   private daemonSession: QmdDaemonSession | null = null;
+  /** Identical in-flight search() calls share one daemon query. Cancel fires only when every waiter aborts. */
+  private readonly daemonSearchJoiner = createInflightJoiner<QmdSearchResult[] | null>();
   private daemonAvailable = false;
   private daemonSessionPath: string | null = null;
   private lastDaemonCheckAtMs = 0;
@@ -1956,7 +1664,9 @@ export class QmdClient implements SearchBackend {
     if (this.daemonAvailable) {
       let results: QmdSearchResult[] | null;
       try {
-        results = await this.searchViaDaemon(trimmed, col, n, searchOptions, execution?.signal);
+        results = await this.daemonSearchJoiner.join(cacheKey, execution?.signal, (sharedSignal) =>
+          this.searchViaDaemon(trimmed, col, n, searchOptions, sharedSignal)
+        );
       } catch (err) {
         if (isCallerCancellation(err, execution?.signal)) {
           throw isAbortError(err) ? err : abortError("QMD daemon search aborted");
