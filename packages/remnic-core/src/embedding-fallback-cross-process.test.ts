@@ -12,7 +12,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
@@ -232,7 +232,7 @@ test("a peer's dirty-shard write into a published generation moves the stamp wit
   assert.equal(
     (await lstat(shardDir)).ino,
     inoBefore,
-    "the peer rewrote shards inside the existing directory (no swap): the stamp must move via mtime alone",
+    "the peer rewrote shards inside the existing directory (no swap): the stamp must still move so the warm cache revalidates",
   );
   const hits = await fallback.search(CHILD_TEXT, 5);
   assert.equal(hits[0]?.id, "mem-b", "the peer's entry is visible to the parent's warm search");
@@ -244,5 +244,132 @@ test("a peer's dirty-shard write into a published generation moves the stamp wit
     (await fallback.search(PARENT_TEXT, 5))[0]?.id ?? "",
     /^mem-a-/,
     "parent entries survive the peer's dirty-shard write (merge, not replacement)",
+  );
+});
+
+test("an identity probe that raced an in-flight peer publication revalidates at the completion marker", async (t) => {
+  const memoryDir = await newMemoryDir();
+  t.after(() => rm(memoryDir, { recursive: true, force: true }));
+  t.after(() => clearHostEmbeddingProvidersForTest());
+  t.after(registerHostEmbeddingProvider(memoryDir, hostProvider("host-model-a")));
+
+  // The peer's io gate freezes its publication after the marker moved but
+  // before the index bytes are replaced: the window an unlocked reader sees.
+  const { promise: release, resolve: unblock } = Promise.withResolvers<void>();
+  const { promise: atWrite, resolve: reachedWrite } = Promise.withResolvers<void>();
+  let peerGated = false;
+  const peerIo: EmbeddingIndexStoreIo = {
+    readUtf8: async (filePath) => readFile(filePath, "utf-8"),
+    writeUtf8: async (filePath, contents) => {
+      if (!peerGated) {
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, contents, "utf-8");
+        return;
+      }
+      peerGated = false;
+      reachedWrite();
+      await release;
+      await mkdir(path.dirname(filePath), { recursive: true });
+      await writeFile(filePath, contents, "utf-8");
+    },
+  };
+  const counting = makeCountingIo();
+  const fallback = new EmbeddingFallback(parentConfig(memoryDir), counting.io);
+  await fallback.indexFile("mem-a", PARENT_TEXT, "namespaces/alpha/facts/parent-a.md");
+  assert.equal((await fallback.search(PARENT_TEXT, 5))[0]?.id, "mem-a");
+
+  // The peer's io gate freezes its publication after the marker moved but
+  // before the index bytes are replaced: the window an unlocked reader sees.
+  const peer = new EmbeddingFallback(parentConfig(memoryDir), peerIo);
+  peerGated = true;
+  const peerWrite = peer.indexFile("mem-b", CHILD_TEXT, "namespaces/alpha/facts/child-b.md");
+  await atWrite;
+
+  // Park the parent's probe on the in-flight window: its identity probe
+  // reads the old bytes, then its locked content load blocks on the peer's
+  // generation lock. Unblock only once the probe read has landed.
+  const { promise: probeRead, resolve: probeReadLanded } = Promise.withResolvers<void>();
+  const countingReadUtf8 = counting.io.readUtf8;
+  counting.io.readUtf8 = async (filePath) => {
+    const raw = await countingReadUtf8(filePath);
+    probeReadLanded();
+    return raw;
+  };
+  const parentSearch = fallback.search(CHILD_TEXT, 5);
+  await probeRead;
+  unblock();
+  const hits = await parentSearch;
+  await peerWrite;
+  assert.equal(hits[0]?.id, "mem-b", "the peer's entry is visible once the in-flight publication completes");
+
+  const readsAfterBarrierSearch = counting.reads();
+  await fallback.search(CHILD_TEXT, 5);
+  assert.ok(
+    counting.reads() > readsAfterBarrierSearch,
+    "the probe cached during the in-flight window must be re-read at the completion marker; a mid-flight stamp must never stay stable",
+  );
+});
+
+test("a peer write that aliases the warm stamp's mtime tick still invalidates the warm cache", async (t) => {
+  const memoryDir = await newMemoryDir();
+  t.after(() => rm(memoryDir, { recursive: true, force: true }));
+  t.after(() => clearHostEmbeddingProvidersForTest());
+  t.after(registerHostEmbeddingProvider(memoryDir, hostProvider("host-model-a")));
+  const prevLimit = process.env.REMNIC_EMBEDDING_INDEX_FILE_CHAR_LIMIT;
+  process.env.REMNIC_EMBEDDING_INDEX_FILE_CHAR_LIMIT = "1024";
+  t.after(() => {
+    if (prevLimit === undefined) delete process.env.REMNIC_EMBEDDING_INDEX_FILE_CHAR_LIMIT;
+    else process.env.REMNIC_EMBEDDING_INDEX_FILE_CHAR_LIMIT = prevLimit;
+  });
+
+  const counting = makeCountingIo();
+  const fallback = new EmbeddingFallback(parentConfig(memoryDir), counting.io);
+  for (let i = 0; i < 14; i++) {
+    await fallback.indexFile(
+      `mem-a-${i}`,
+      `${PARENT_TEXT} variant number ${i}`,
+      `namespaces/alpha/facts/parent-a-${i}.md`,
+    );
+  }
+  const shardDir = path.join(memoryDir, "state", "embeddings");
+  assert.equal((await lstat(shardDir)).isDirectory(), true, "precondition: seed migrated to the published sharded generation");
+  // Pin the directory mtime to a whole-millisecond tick, warm the cache on
+  // it, then restore the SAME tick after the peer's write: on a coarse-tick
+  // filesystem the pre- and post-write stats are indistinguishable, so the
+  // revalidation stamp must still move through something that cannot alias.
+  const aliasedTickSec = 1_700_000_000.5;
+  await utimes(shardDir, aliasedTickSec, aliasedTickSec);
+  assert.match(
+    (await fallback.search(PARENT_TEXT, 5))[0]?.id ?? "",
+    /^mem-a-/,
+    "baseline: own entries are searchable",
+  );
+  const readsAfterWarmup = counting.reads();
+  await fallback.search(PARENT_TEXT, 5);
+  assert.equal(counting.reads(), readsAfterWarmup, "warm search reads nothing while the stamp is unchanged");
+  const inoBefore = (await lstat(shardDir)).ino;
+
+  await runChildPeer({
+    memoryDir,
+    hostModel: "host-model-a",
+    memoryId: "mem-b",
+    text: CHILD_TEXT,
+    relPath: "namespaces/alpha/facts/child-b.md",
+  });
+
+  assert.equal((await lstat(shardDir)).ino, inoBefore, "precondition: the peer rewrote shards in place (no directory swap)");
+  await utimes(shardDir, aliasedTickSec, aliasedTickSec);
+
+  const hits = await fallback.search(CHILD_TEXT, 5);
+  assert.equal(
+    hits[0]?.id,
+    "mem-b",
+    "a peer write that lands in an aliased stat tick must still invalidate the warm cache",
+  );
+  assert.ok(counting.reads() > readsAfterWarmup, "the aliased peer write must trigger revalidation reads");
+  assert.match(
+    (await fallback.search(PARENT_TEXT, 5))[0]?.id ?? "",
+    /^mem-a-/,
+    "parent entries survive the peer's write (merge, not replacement)",
   );
 });
