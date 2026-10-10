@@ -263,22 +263,125 @@ releases the worker for the next caller.
 ### CPU vector scan
 
 On QMD 2.5.3, `searchVec` is a brute-force `embedding MATCH` over the whole
-`vectors_vec` table, then a collection filter. That cost is flat in k. Two
-things that landed in QMD after 2.5.3 address it, and neither is turned on by
-this Remnic change:
+`vectors_vec` table, then a collection filter. That cost is flat in k. A CPU
+host with about 1.2 million vectors spends about 6 seconds in this stage.
+The daemon plan runs it twice (the vector query and the synthetic hyde query).
 
-- Collection-partitioned vector indexes (QMD #983). A query scans that
-  collection's vectors. The neighbor set can differ from today's
-  global-top-k-then-filter, so it is not a bit-identical speedup. Compare it
-  with `scripts/recall-qmd-compare.mjs` before treating it as the same recall.
-- `qmd cleanup` repacks a sparse `vec0` table (QMD #937). Same vectors, less
-  scan work. Still an upstream QMD change, not something Remnic can do from
-  the MCP client.
+sqlite-vec `vec0` stores vectors in fixed 1024-slot chunks. An insert fills the
+newest chunk. A delete leaves a hole, and a chunk is dropped only when every
+slot in it is empty. `VACUUM` does not pack those holes, so every scan still
+reads every chunk.
+
+QMD #937 (commit `58300dac`, unpartitioned `hash_seq` table) repacks that
+layout. It deletes and re-inserts the live rows of chunks that are under 90%
+full, one chunk per short transaction, and only when overall occupancy is
+under 90%. The later partitioned repack (#983) targets a different table and
+does not apply to 2.5.3. Neighbors stay the same because the embedding bytes
+and keys stay the same. A table that is already at or above 90% occupancy is
+left alone.
+
+`docs/patches/qmd-2.5.3-vec0-repack.patch` is that algorithm on tag `v2.5.3`.
+Apply it with the cancel patch, rebuild, restart so Remnic respawns `qmd mcp`,
+then run cleanup:
+
+```bash
+git clone --depth 1 --branch v2.5.3 https://github.com/tobi/qmd.git
+cd qmd
+git apply /path/to/remnic/docs/patches/qmd-2.5.3-mcp-cancel.patch
+git apply /path/to/remnic/docs/patches/qmd-2.5.3-vec0-repack.patch
+# rebuild and reinstall, then restart the host
+qmd cleanup
+```
+
+Cleanup prints `N chunks for M needed, P% useful` and repacks only when that
+share is under 90%. If it prints that the table is already packed, the vector
+stage will not get faster. Occupancy on a given host is unknown until that
+line is printed.
+
+Upstream measured a 794k-row index at 36% occupancy at 1.8s per scan, and 0.9s
+after packing the same rows. If a ~1.2M-row host index is similarly sparse, the
+~6s two-scan stage is the holey cost and should fall by about that ratio
+(toward ~3s). If it is already packed, expect no change.
+
+`scripts/qmd-vec0-repack-bench.mjs` checks the same algorithm on a synthetic
+index. It needs `better-sqlite3` and `sqlite-vec` on `NODE_PATH` (a QMD
+checkout install has both). `--self-check` is the #937 fixture: 1100 rows of
+3 dimensions, three live rows, both chunks kept. Embedding bytes and the
+nearest neighbor match before and after, a packed table is not rewritten, and
+a legacy table without `hash_seq` is left alone. The full-size run uses
+embeddinggemma-300M's 768 dimensions (`embedding_length` in the Q8_0 GGUF) and
+3256 chunks with 369 live slots each (about 1.20M live rows at 36% occupancy):
+
+```bash
+NODE_PATH=/path/to/node_modules \
+node scripts/qmd-vec0-repack-bench.mjs --self-check
+
+NODE_PATH=/path/to/node_modules \
+node scripts/qmd-vec0-repack-bench.mjs \
+  --chunks 3256 --keep-per-chunk 369 --dims 768 --queries 4 --k 20 \
+  --db /tmp/qmd-vec0-repack.sqlite
+```
+
+The JSON report labels itself `measuredOn: "vm"`. It is not a host timing.
+Project the host vector stage by the VM before/after ratio, and only when
+`qmd cleanup` shows a similarly sparse table.
+
+Collection-partitioned indexes (QMD #983) scan one collection instead of the
+global table. The neighbor set can differ from today's global-top-k-then-filter,
+so that change is not a bit-identical speedup. Compare it with
+`scripts/recall-qmd-compare.mjs` before treating it as the same recall.
 
 An approximate index inside Remnic would change neighbors without a measurement
 against a captured reranked baseline, so there is no default-on ANN flag here.
-QMD already caches rerank scores by query, model, and chunk text. The patch
-does not cache a cancelled batch.
+
+### Rerank scores QMD already caches
+
+QMD 2.5.3 `rerank()` caches each document score in `llm_cache` under
+`sha256("rerank" + JSON({ query, model, chunk }))`. The query includes the
+intent prefix when one was passed. The file path is not part of the key,
+because the score depends on the chunk text. Identical chunk text is scored
+once. The write happens after `llm.rerank` returns, so an aborted call does
+not store a partial batch. The cancel patch does not change that.
+
+The cap is soft: about 1% of writes delete everything outside the 1000 newest
+rows. `qmd cleanup` calls `deleteLLMCache` and drops the whole table. A cache
+hit removes the rerank from that call. It does not make the first call of a
+new query cheaper, which is the call that misses a 25s budget. A second Remnic
+cache keyed the same way would not change that.
+
+How often live recall queries repeat is not measurable from a bench VM. A
+10-query capture used for quality comparison is 10 distinct queries; the one
+rerank time of about 1ms in that capture is a rerun of a query already in
+`llm_cache`, while the vector scan on that same call was still about 6s.
+
+### Smaller rerankers
+
+The default reranker stays `qwen3-reranker-0.6b` Q8. A smaller model would
+change scores, so it is not a default and it is not registered as a flag
+here. This tree has no copy of the host index, so a new model cannot be scored
+against that capture's document ids.
+
+What the capture itself shows, via `scripts/recall-qmd-compare.mjs --rerank-off`
+on the reranked files paired with the same queries run without rerank: top-1
+stays 10/10, mean top-10 overlap is 4.20, mean Spearman is 0.3800. Per query
+the overlap is 2, 2, 2, 2, 3, 9, 4, 4, 6, 8. Turning rerank off keeps the first
+hit and drops the rest of the list. That is why rerank stays on, at the same
+40-candidate cap.
+
+### Rerank on a separate CPU host
+
+`qmdDaemonUrl` defaults to `http://localhost:8181/mcp` and is still parsed.
+The client uses it only as a boolean: a non-empty URL enables the shared
+session, and that session is a local stdio `qmd mcp` child
+(`daemonEnabled = Boolean(daemonUrl)`). Remnic does not open the URL.
+Pointing `qmdDaemonUrl` at another machine does not move the vector scan or
+the rerank.
+
+QMD itself can listen with `qmd mcp --http --port 8181`. This client does not
+speak that transport. Running QMD on a separate CPU host is not supported by
+the current config. There is no remote MCP setting to turn on.
+
+### Comparing a capture
 
 Compare a fresh capture with a BEFORE reranked capture (same plan: lex + vec +
 synthetic hyde, candidate limit 40, rerank on, limit 20). `queries.json` is a
