@@ -41,7 +41,7 @@ What Remnic is built on. Versions below are the ranges declared in the workspace
 
 | Tool | Purpose | Required? |
 |------|---------|-----------|
-| [QMD](https://github.com/tobi/qmd) | Hybrid BM25 + vector search (default backend); supported version 2.5.3 | Recommended; recall falls back gracefully when unavailable |
+| [QMD](https://github.com/tobi/qmd) | Hybrid BM25 + vector search (default backend); supported install reports 2.8.3 (pinned commit, see docs/qmd-2.8.3.md) | Recommended; recall falls back gracefully when unavailable |
 | OpenAI API | LLM extraction and consolidation | Required for extraction (unless using a local-LLM configuration) |
 
 ## Test infrastructure

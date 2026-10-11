@@ -29,7 +29,7 @@ export const QMD_PROBE_TIMEOUT_MS = 8_000;
 // Length == number of retries after the initial attempt. Issue #1841.
 export const QMD_PROBE_RETRY_BACKOFF_MS = [300, 800];
 
-export const QMD_SUPPORTED_VERSION = "2.5.3";
+export const QMD_SUPPORTED_VERSION = "2.8.3";
 
 /**
  * Classify a `qmd --version` probe failure so the preflight can distinguish a
@@ -146,6 +146,15 @@ export function shouldAutoUpgradeQmd(
   const supported = parseQmdVersion(supportedVersion);
   if (!installed || !supported) return false;
   return compareQmdVersions(installed, supported) < 0;
+}
+
+/** First QMD release that needs the pinned, patched build (docs/qmd-2.8.3.md); stock npm lacks the patches. */
+const QMD_PATCHED_BUILD_MIN: QmdVersionTuple = [2, 8, 3];
+
+/** False when `npm install -g @tobilu/qmd@<supported>` would install stock QMD instead of the patched build. */
+export function autoUpgradeInstallsStockPackage(supportedVersion: string): boolean {
+  const supported = parseQmdVersion(supportedVersion);
+  return supported !== null && compareQmdVersions(supported, QMD_PATCHED_BUILD_MIN) < 0;
 }
 
 export function getQmdPostInstallProbeTargets(

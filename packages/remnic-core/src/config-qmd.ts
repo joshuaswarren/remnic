@@ -1,14 +1,14 @@
 import { coerceNumber } from "./connectors/coerce.js";
 
 export function parseQmdSupportedVersion(value: unknown): string {
-  if (value === undefined || value === null) return "2.5.3";
+  if (value === undefined || value === null) return "2.8.3";
   if (typeof value !== "string") {
     throw new Error(`qmdSupportedVersion must be a semantic version string; got ${JSON.stringify(value)}`);
   }
   const normalized = value.trim();
   if (!/^\d+\.\d+\.\d+$/.test(normalized)) {
     throw new Error(
-      `qmdSupportedVersion must be a semantic version string like "2.5.3"; got ${JSON.stringify(value)}`,
+      `qmdSupportedVersion must be a semantic version string like "2.8.3"; got ${JSON.stringify(value)}`,
     );
   }
   return normalized;

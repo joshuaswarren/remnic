@@ -183,13 +183,13 @@ Everything else has sensible defaults. For a curated starting point, set
 ## Set up QMD (optional, recommended)
 
 [QMD](https://github.com/tobi/qmd) gives Remnic hybrid BM25 + vector + reranking
-search — the highest-quality backend. Remnic supports QMD **2.5.3** and detects the
-installed version at runtime, enabling newer capabilities only when the binary has them.
+search — the highest-quality backend. The supported install reports **2.8.3**
+from `qmd --version`. That string is also what stock npm `@tobilu/qmd@2.8.3`
+prints. Install the pinned commit and the two patches in
+[QMD 2.8.3](qmd-2.8.3.md), then confirm:
 
 ```bash
-npm install -g @tobilu/qmd@2.5.3
-# or: bun install -g @tobilu/qmd@2.5.3
-qmd --version                                 # confirm 2.5.3
+qmd --version                                 # 2.8.3
 ```
 
 Register your memory directory in `~/.config/qmd/index.yml`. **The `path` must match

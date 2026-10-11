@@ -884,8 +884,13 @@ test("search rethrows daemon cancellation without subprocess fallback", async ()
   client.daemonSession = {};
   client.maybeProbeDaemon = async () => {};
 
+  // A signal that is already aborted never enters the daemon. The joiner
+  // rejects before searchViaDaemon, and search() must not fall through to
+  // the subprocess.
+  let daemonCalls = 0;
   let subprocessCalls = 0;
   client.searchViaDaemon = async () => {
+    daemonCalls += 1;
     throw new Error("daemon search cancelled");
   };
   client.searchViaSubprocess = async () => {
@@ -895,8 +900,9 @@ test("search rethrows daemon cancellation without subprocess fallback", async ()
 
   await expectAbortError(
     () => client.search("cancelled", undefined, 3, undefined, { signal: controller.signal }),
-    "QMD daemon search aborted",
+    "QMD inflight search aborted",
   );
+  assert.equal(daemonCalls, 0);
   assert.equal(subprocessCalls, 0);
 });
 

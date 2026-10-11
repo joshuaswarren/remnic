@@ -438,7 +438,7 @@ Reliability / load:
   - Keep ingestion/integration script crons out of the allowlist unless they genuinely need memory context.
 - OpenClaw spawned-subagent sessions (keyed `agent:<agentId>:subagent:<runId>`; the hook exposes no per-spawn isolation discriminator, so every such session is skipped) never receive recall injection: memory is neither recalled into them nor configurable per-session (issue #3142).
 - QMD version:
-  - **QMD 2.5.3 is the current supported target.** Remnic detects the installed version with `qmd --version` and gates 2.5 features such as `qmd doctor`, version-matched skills, scoped embed behavior, named index selection, model/GPU env controls, absolute snippet line numbers, and QMD 2.5.3's preferred `--format json` output selector for `qmd query`/`qmd search`.
+  - **QMD 2.8.3 is the current supported version string.** The binary is the pinned commit in [QMD 2.8.3](qmd-2.8.3.md), not `npm install -g @tobilu/qmd@2.8.3`. Remnic detects the installed version with `qmd --version` and gates 2.5 features such as `qmd doctor`, version-matched skills, scoped embed behavior, named index selection, model/GPU env controls, absolute snippet line numbers, and QMD 2.5.3's preferred `--format json` output selector for `qmd query`/`qmd search`. Leave `qmdAutoUpgradeEnabled` off.
   - **QMD 2.0+ is the minimum practical baseline.** All 1.x patches (PRs #166, #112, #117) are resolved natively in 2.0. QMD 1.x still works but requires manual patches.
   - Set `qmdAutoUpgradeEnabled: true` to let Remnic upgrade PATH/fallback installs to `qmdSupportedVersion`; explicit `qmdPath` installs must be upgraded manually.
   - The QMD daemon keeps models warm — queries drop from ~13s to ~30ms after the first call.
