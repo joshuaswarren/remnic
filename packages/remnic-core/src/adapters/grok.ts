@@ -40,11 +40,11 @@ export class GrokAdapter implements EngramAdapter {
     const mcpSessionId = headerValue(context.headers, "mcp-session-id");
 
     // Namespace: explicit header > default
-    const namespace = headerValue(context.headers, "x-engram-namespace")
-      || "grok";
+    const namespaceHeader = headerValue(context.headers, "x-engram-namespace");
 
     return {
-      namespace,
+      namespace: namespaceHeader ?? "grok",
+      namespaceExplicit: namespaceHeader !== undefined,
       principal: "grok",
       sessionKey: mcpSessionId ?? context.sessionKey,
       adapterId: this.id,

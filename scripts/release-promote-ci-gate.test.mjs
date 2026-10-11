@@ -439,6 +439,188 @@ test("latest run wins with started_at fallback (round-3 workflow now sends start
   );
 });
 
+test("a never-started check-run (no timestamps) supersedes timestamped records and fails closed", () => {
+  const result = run([
+    cr("quality", { conclusion: "success", completed_at: "2026-10-01T00:00:00Z" }),
+    crF("quality", { status: "queued", conclusion: null, started_at: null, completed_at: null }),
+    crF("dependency-review"),
+    crF("gitleaks"),
+    crF("analyze"),
+    crF("ai-reviewers"),
+    crF("unresolved-review-threads"),
+  ]);
+  assert.equal(result.decision, "refuse");
+  assert.ok(
+    result.reasons.some((r) => r.startsWith("quality:") && /CI not finished/.test(r)),
+  );
+});
+
+test("timestamp-less rows without ids keep the failing record (false-approval regression)", () => {
+  const qualityRows = [
+    {
+      name: "quality",
+      status: "completed",
+      conclusion: "success",
+      started_at: null,
+      completed_at: null,
+    },
+    {
+      name: "quality",
+      status: "completed",
+      conclusion: "failure",
+      started_at: null,
+      completed_at: null,
+    },
+    crF("dependency-review"),
+    crF("gitleaks"),
+    crF("analyze"),
+    crF("ai-reviewers"),
+    crF("unresolved-review-threads"),
+  ];
+  for (const records of [qualityRows, [qualityRows[1], qualityRows[0], ...qualityRows.slice(2)]]) {
+    const result = run(records);
+    assert.equal(result.decision, "refuse");
+    assert.ok(result.reasons.some((r) => r === "quality: failure"));
+  }
+});
+
+test("timestampless completed records tie-break by numeric id (multi-digit, order-independent)", () => {
+  const green = [
+    { name: "quality", status: "completed", conclusion: "success", id: 9 },
+    { name: "quality", status: "completed", conclusion: "failure", id: 10 },
+    crF("dependency-review"),
+    crF("gitleaks"),
+    crF("analyze"),
+    crF("ai-reviewers"),
+    crF("unresolved-review-threads"),
+  ];
+  assert.equal(run(green).decision, "refuse");
+  assert.ok(run(green).reasons.some((r) => r === "quality: failure"));
+  const flipped = [green[1], green[0], ...green.slice(2)];
+  assert.deepEqual(run(flipped), run(green));
+});
+
+test("equal timestamps tie-break by numeric id; a full tie keeps the non-success record", () => {
+  const base = [
+    crF("dependency-review"),
+    crF("gitleaks"),
+    crF("analyze"),
+    crF("ai-reviewers"),
+    crF("unresolved-review-threads"),
+  ];
+  const timestamps = { started_at: "2026-10-02T00:30:00Z", completed_at: "2026-10-02T00:31:00Z" };
+  const sameSecond = [
+    { name: "quality", status: "completed", conclusion: "success", id: 40, ...timestamps },
+    { name: "quality", status: "completed", conclusion: "failure", id: 41, ...timestamps },
+    ...base,
+  ];
+  assert.ok(run(sameSecond).reasons.some((r) => r === "quality: failure"));
+  const fullTie = [
+    { name: "quality", status: "completed", conclusion: "success", ...timestamps },
+    { name: "quality", status: "completed", conclusion: "failure", ...timestamps },
+    ...base,
+  ];
+  assert.ok(run(fullTie).reasons.some((r) => r === "quality: failure"));
+});
+
+test("same-second legacy statuses with ids allow when the higher id succeeded", () => {
+  const statuses = [
+    { name: "quality", status: "completed", conclusion: "success", id: 510, started_at: "2026-10-02T00:31:00Z", completed_at: "2026-10-02T00:31:00Z" },
+    { name: "quality", status: "completed", conclusion: "failure", id: 509, started_at: "2026-10-02T00:31:00Z", completed_at: "2026-10-02T00:31:00Z" },
+    crF("dependency-review"),
+    crF("gitleaks"),
+    crF("analyze"),
+    crF("ai-reviewers"),
+    crF("unresolved-review-threads"),
+  ];
+  assert.equal(run(statuses).decision, "allow");
+  assert.deepEqual(run(statuses).reasons, []);
+  assert.equal(run([statuses[1], statuses[0], ...statuses.slice(2)]).decision, "allow");
+  const failingNewest = [
+    { name: "quality", status: "completed", conclusion: "success", id: 509, started_at: "2026-10-02T00:31:00Z", completed_at: "2026-10-02T00:31:00Z" },
+    { name: "quality", status: "completed", conclusion: "failure", id: 510, started_at: "2026-10-02T00:31:00Z", completed_at: "2026-10-02T00:31:00Z" },
+    ...statuses.slice(2),
+  ];
+  assert.ok(run(failingNewest).reasons.some((r) => r === "quality: failure"));
+});
+
+test("mixed check-run and status records for one context both gate the verdict", () => {
+  const base = [
+    crF("dependency-review"),
+    crF("gitleaks"),
+    crF("analyze"),
+    crF("ai-reviewers"),
+    crF("unresolved-review-threads"),
+  ];
+  const row = (conclusion, id, source, completed_at) => ({
+    name: "quality",
+    status: "completed",
+    conclusion,
+    id,
+    source,
+    started_at: completed_at,
+    completed_at,
+  });
+  const at = "2026-10-02T00:31:00Z";
+  const checkRunFailure = [
+    row("failure", 100, "check-run", at),
+    row("success", 9000, "status", at),
+    ...base,
+  ];
+  const statusFailure = [
+    row("success", 100, "check-run", at),
+    row("failure", 9000, "status", at),
+    ...base,
+  ];
+  for (const records of [checkRunFailure, statusFailure]) {
+    assert.equal(run(records).decision, "refuse");
+    assert.ok(run(records).reasons.some((r) => r === "quality: failure"));
+  }
+  const bothGreen = [
+    row("success", 100, "check-run", at),
+    row("success", 9000, "status", at),
+    ...base,
+  ];
+  assert.deepEqual(run(bothGreen), { decision: "allow", reasons: [] });
+});
+
+test("mixed sources keep independent verdicts across different timestamps", () => {
+  const base = [
+    crF("dependency-review"),
+    crF("gitleaks"),
+    crF("analyze"),
+    crF("ai-reviewers"),
+    crF("unresolved-review-threads"),
+  ];
+  const row = (conclusion, id, source, completed_at) => ({
+    name: "quality",
+    status: "completed",
+    conclusion,
+    id,
+    source,
+    started_at: completed_at,
+    completed_at,
+  });
+  const newerCheckRunFailure = [
+    row("failure", 100, "check-run", "2026-10-02T01:00:00Z"),
+    row("success", 9000, "status", "2026-10-02T00:00:00Z"),
+    ...base,
+  ];
+  assert.ok(run(newerCheckRunFailure).reasons.some((r) => r === "quality: failure"));
+  const olderStatusFailure = [
+    row("success", 100, "check-run", "2026-10-02T01:00:00Z"),
+    row("failure", 9000, "status", "2026-10-02T00:00:00Z"),
+    ...base,
+  ];
+  assert.ok(run(olderStatusFailure).reasons.some((r) => r === "quality: failure"));
+  const bothGreen = [
+    row("success", 100, "check-run", "2026-10-02T01:00:00Z"),
+    row("success", 9000, "status", "2026-10-02T00:00:00Z"),
+    ...base,
+  ];
+  assert.deepEqual(run(bothGreen), { decision: "allow", reasons: [] });
+});
+
 test("conclusion=neutral IS refusal (round-2: allow-list on success only)", () => {
   // The repo's ai-reviewers gate posts `neutral` for superseded runs.
   // Treat as refusal so a required review that produced no real verdict

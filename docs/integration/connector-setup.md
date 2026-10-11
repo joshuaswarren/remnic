@@ -22,6 +22,8 @@ Verify it's running:
 curl -H "Authorization: Bearer $REMNIC_AUTH_TOKEN" http://localhost:4318/engram/v1/health
 ```
 
+Memory scope: on a flat daemon, omit `X-Engram-Namespace` so MCP calls use the daemon default, as REST hooks do (#3166). On a namespaces-enabled daemon, MCP calls without that header keep the adapter namespace. REST hooks still use the daemon default. Set the same explicit namespace on both surfaces when they must share memory. The daemon validates explicit namespaces strictly.
+
 ---
 
 ## Claude Code

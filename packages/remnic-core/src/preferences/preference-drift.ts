@@ -558,8 +558,10 @@ export async function runPreferenceDriftScan(
     // shared corpus version out of band — otherwise hot recall caches keep
     // serving pre-stamp frontmatter and the damping stage never sees the new
     // `driftState` (§25/§31).
-    bumpMemoryCorpusVersionForDir(storage.dir);
-    if (storage.dir !== deps.memoryDir) bumpMemoryCorpusVersionForDir(deps.memoryDir);
+    bumpMemoryCorpusVersionForDir(storage.dir, { indexedText: false });
+    if (storage.dir !== deps.memoryDir) {
+      bumpMemoryCorpusVersionForDir(deps.memoryDir, { indexedText: false });
+    }
   }
   try {
     await writeJsonFileAtomic(driftMarkerPath(deps.memoryDir), {
@@ -640,7 +642,7 @@ export async function resolvePreferenceDrift(
       { lastCorroborated: nowIso, driftState: undefined, updated: nowIso },
       { at: now, actor: DRIFT_ACTOR, reasonCode: "drift_kept", ruleVersion: DRIFT_RULE_VERSION },
     );
-    bumpMemoryCorpusVersionForDir(storage.dir);
+    bumpMemoryCorpusVersionForDir(storage.dir, { indexedText: false });
     touched();
     return { affectedIds: [preferenceId], message: `Preference ${preferenceId} confirmed still current` };
   }

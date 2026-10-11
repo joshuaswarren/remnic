@@ -43,11 +43,11 @@ export class CodexAdapter implements EngramAdapter {
     const mcpSessionId = headerValue(context.headers, "mcp-session-id");
 
     // Namespace: explicit header > default
-    const namespace = headerValue(context.headers, "x-engram-namespace")
-      || "codex";
+    const namespaceHeader = headerValue(context.headers, "x-engram-namespace");
 
     return {
-      namespace,
+      namespace: namespaceHeader ?? "codex",
+      namespaceExplicit: namespaceHeader !== undefined,
       principal: "codex",
       sessionKey: mcpSessionId ?? context.sessionKey,
       adapterId: this.id,

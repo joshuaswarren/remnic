@@ -589,7 +589,7 @@ async function loadAuthoritativeProjectionSnapshot(options: {
   const storage = assertInjectedStorageRooted("rebuildMemoryProjection", options.memoryDir, options.storage) ?? new StorageManager(options.memoryDir);
   // Force a fresh disk read — projection verify/rebuild must see the true
   // on-disk state, not a potentially stale in-process cache.
-  storage.invalidateAllMemoriesCacheForDir();
+  storage.invalidateAllMemoriesCacheForDir({ indexedText: false });
   const selected = selectProjectionMemories([
     await storage.readAllMemories(),
     await storage.readAllColdMemories(),

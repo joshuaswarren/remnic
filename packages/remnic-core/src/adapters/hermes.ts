@@ -47,11 +47,11 @@ export class HermesAdapter implements EngramAdapter {
   resolveIdentity(context: AdapterContext): ResolvedIdentity {
     const sessionId = headerValue(context.headers, "x-hermes-session-id");
 
-    const namespace = headerValue(context.headers, "x-engram-namespace")
-      || "hermes";
+    const namespaceHeader = headerValue(context.headers, "x-engram-namespace");
 
     return {
-      namespace,
+      namespace: namespaceHeader ?? "hermes",
+      namespaceExplicit: namespaceHeader !== undefined,
       principal: "hermes-agent",
       sessionKey: sessionId ?? context.sessionKey,
       adapterId: this.id,

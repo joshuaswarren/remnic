@@ -39,11 +39,11 @@ export class OpenCodeAdapter implements EngramAdapter {
     const mcpSessionId = headerValue(context.headers, "mcp-session-id");
 
     // Namespace: explicit header > default
-    const namespace = headerValue(context.headers, "x-engram-namespace")
-      || "opencode";
+    const namespaceHeader = headerValue(context.headers, "x-engram-namespace");
 
     return {
-      namespace,
+      namespace: namespaceHeader ?? "opencode",
+      namespaceExplicit: namespaceHeader !== undefined,
       principal: "opencode",
       sessionKey: mcpSessionId ?? context.sessionKey,
       adapterId: this.id,
