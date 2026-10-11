@@ -11,6 +11,8 @@ export type ComparisonRow = {
   afterMs: number | null;
   /** True when the counterpart file is absent or unreadable; the other fields are then absent. */
   missing?: boolean;
+  /** True when exactly one of the two rankings is empty; the CLI exits 1. */
+  oneSidedEmpty?: boolean;
   top1Match?: boolean;
   top10Overlap?: number;
   spearman?: number | null;

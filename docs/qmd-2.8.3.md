@@ -18,9 +18,11 @@ sent upstream later.
 
 `qmdSupportedVersion` stays `"2.8.3"` because that is what `qmd --version`
 prints. The preflight cannot tell stock npm 2.8.3 from this commit.
-`qmdAutoUpgradeEnabled` stays off. Turning it on runs
-`npm install -g @tobilu/qmd@2.8.3`, which drops the per-collection vector
-index, the repack, the cancel patch, and the stdout fix.
+`qmdAutoUpgradeEnabled` stays off. Even when it is on, Remnic skips any
+supported version of 2.8.3 or later with a logged warning and installs
+nothing, because `npm install -g @tobilu/qmd@2.8.3` would drop the
+per-collection vector index, the repack, the cancel patch, and the stdout fix.
+Use the install steps below.
 
 Older QMD installs still work. Remnic omits flags the probed version does not
 have. `--format json` stays gated at 2.5.3+. The stdio client still sends MCP
@@ -323,17 +325,16 @@ top-10 overlap 4.20, mean Spearman 0.3800. Rerank stays on.
 
 ## Host numbers after the #983 conversion
 
-Labeled `measuredOn: "host"`. The binary was `93d211f9` plus the cancel patch,
-the stdout patch, and the idle-unload fix on `joshuaswarren/qmd` branch
-`fix-938-idle-unload-race`. That #938 fix is not one of the patches in this
-repo. It stops an idle unload from freeing a context under an in-flight
+Labeled `measuredOn: "host"`: one deployment, numbers rounded. The binary was
+`93d211f9` plus the cancel patch, the stdout patch, and a local idle-unload fix
+for QMD #938. That #938 fix is not one of the patches in this repo. It stops an idle unload from freeing a context under an in-flight
 embed or rerank. It does not change scores. The search and index changes
 below are the #983 conversion on that index.
 
 | | before | after |
 | --- | ---: | ---: |
 | search mean | ~6.0 s | 0.6 s |
-| index size | 5.68 GB | 1.96 GB |
+| index size | ~5.7 GB | ~2.0 GB |
 | packing | orphans present | 100% packed, ~1.05M orphan vectors dropped |
 | rerank candidates, mean | 19.4 | 35.9 |
 | CPU rerank mean | 27 s | 41 s |

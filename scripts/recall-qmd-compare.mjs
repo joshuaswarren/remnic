@@ -74,7 +74,8 @@ export function spearman(xs, ys) {
 
 function loadResultFile(filePath) {
   const parsed = JSON.parse(readFileSync(filePath, "utf8"));
-  const results = Array.isArray(parsed.results) ? parsed.results : [];
+  if (!Array.isArray(parsed?.results)) throw new Error(`${filePath}: results must be an array`);
+  const results = parsed.results;
   const totalMs = typeof parsed.timings?.totalMs === "number" ? parsed.timings.totalMs : null;
   return { results, totalMs };
 }
@@ -94,8 +95,12 @@ function tryLoad(filePath) {
 }
 
 function pairRow(name, before, after) {
-  if (!after) return { name, missing: true, beforeMs: before.totalMs, afterMs: null };
+  if (!before || !after) {
+    return { name, missing: true, beforeMs: before?.totalMs ?? null, afterMs: after?.totalMs ?? null };
+  }
   return {
+    // Exactly one side empty is a failed query, not a comparison.
+    oneSidedEmpty: (before.results.length === 0) !== (after.results.length === 0),
     name,
     ...compareRankedLists(before.results, after.results),
     beforeMs: before.totalMs,
@@ -106,9 +111,8 @@ function pairRow(name, before, after) {
 // A counterpart that is absent or unreadable becomes an explicit `missing` row,
 // so an incomplete run cannot look healthy.
 export function compareDirectories(beforeDir, afterDir) {
-  return listJson(beforeDir).map((name) =>
-    pairRow(name, loadResultFile(join(beforeDir, name)), tryLoad(join(afterDir, name))),
-  );
+  const names = [...new Set([...listJson(beforeDir), ...listJson(afterDir)])].sort();
+  return names.map((name) => pairRow(name, tryLoad(join(beforeDir, name)), tryLoad(join(afterDir, name))));
 }
 
 export function compareRerankOff(dir) {
@@ -117,7 +121,7 @@ export function compareRerankOff(dir) {
     const daemonSuffix = "-daemon.json";
     if (!name.endsWith(daemonSuffix)) continue;
     const offName = `${name.slice(0, -daemonSuffix.length)}-norerank.json`;
-    rows.push(pairRow(name, loadResultFile(join(dir, name)), tryLoad(join(dir, offName))));
+    rows.push(pairRow(name, tryLoad(join(dir, name)), tryLoad(join(dir, offName))));
   }
   return rows;
 }
@@ -137,7 +141,7 @@ export function formatComparison(rows) {
     }
     lines.push(
       [
-        row.name,
+        row.name + (row.oneSidedEmpty ? " EMPTY-SIDE" : ""),
         row.top1Match ? "yes" : "no",
         String(row.top10Overlap),
         row.spearman === null ? "-" : row.spearman.toFixed(4),
@@ -151,14 +155,14 @@ export function formatComparison(rows) {
   const correlations = compared.map((row) => row.spearman).filter((value) => value !== null);
   const top1 = compared.filter((row) => row.top1Match).length;
   lines.push(
-    `summary queries=${rows.length} compared=${compared.length} missing=${rows.length - compared.length} top1=${top1}/${compared.length} mean_overlap=${mean(overlaps)?.toFixed(2) ?? "-"} mean_spearman=${mean(correlations)?.toFixed(4) ?? "-"}`
+    `summary queries=${rows.length} compared=${compared.length} missing=${rows.length - compared.length} empty_side=${compared.filter((row) => row.oneSidedEmpty).length} top1=${top1}/${compared.length} mean_overlap=${mean(overlaps)?.toFixed(2) ?? "-"} mean_spearman=${mean(correlations)?.toFixed(4) ?? "-"}`
   );
   return lines.join("\n");
 }
 
 function report(rows) {
   process.stdout.write(`${formatComparison(rows)}\n`);
-  if (rows.some((row) => row.missing)) process.exitCode = 1;
+  if (rows.some((row) => row.missing || row.oneSidedEmpty)) process.exitCode = 1;
 }
 
 function main() {

@@ -61,7 +61,7 @@ test("a missing or unreadable counterpart is reported, not dropped", () => {
   writeFileSync(join(after, "q3.json"), "{not json");
   const rows = compareDirectories(before, after);
   assert.deepEqual(rows.filter((r) => r.missing).map((r) => r.name), ["q2.json", "q3.json"]);
-  assert.match(formatComparison(rows), /summary queries=3 compared=1 missing=2/);
+  assert.match(formatComparison(rows), /summary queries=3 compared=1 missing=2 empty_side=0/);
 });
 
 test("rerank-off reports a daemon file with no norerank twin instead of throwing", () => {
@@ -72,4 +72,22 @@ test("rerank-off reports a daemon file with no norerank twin instead of throwing
   const rows = compareRerankOff(dir);
   assert.equal(rows.length, 2);
   assert.equal(rows.filter((r) => r.missing).length, 1);
+});
+
+test("files present on only one side, an invalid results field, and a one-sided empty ranking are all reported", () => {
+  const before = mkdtempSync(join(tmpdir(), "qmd-cmp-b2-"));
+  const after = mkdtempSync(join(tmpdir(), "qmd-cmp-a2-"));
+  resultFile(before, "q1.json", ["a", "b"]);
+  writeFileSync(join(after, "q1.json"), "{}");
+  resultFile(after, "q2.json", ["a"]);
+  resultFile(before, "q3.json", ["a", "b"]);
+  resultFile(after, "q3.json", []);
+  const rows = compareDirectories(before, after);
+  assert.deepEqual(rows.map((r) => r.name), ["q1.json", "q2.json", "q3.json"]);
+  assert.deepEqual(rows.map((r) => Boolean(r.missing)), [true, true, false]);
+  assert.equal(rows[2]?.oneSidedEmpty, true);
+  assert.match(formatComparison(rows), /missing=2 empty_side=1/);
+  // an empty before dir with captures only in after must not look clean
+  const emptyBefore = mkdtempSync(join(tmpdir(), "qmd-cmp-b3-"));
+  assert.equal(compareDirectories(emptyBefore, after).every((r) => r.missing), true);
 });
