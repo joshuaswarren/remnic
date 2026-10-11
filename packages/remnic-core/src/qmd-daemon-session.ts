@@ -311,8 +311,9 @@ export class QmdDaemonSession {
 
   private handleStdoutData(data: Buffer | string): void {
     this.buffer += data.toString();
-    let newlineIdx = this.buffer.indexOf("\n");
-    while (newlineIdx !== -1) {
+    let newlineIdx: number;
+    // Re-evaluated on every pass so a blank line cannot leave a stale index.
+    while ((newlineIdx = this.buffer.indexOf("\n")) !== -1) {
       const line = this.buffer.slice(0, newlineIdx).trim();
       this.buffer = this.buffer.slice(newlineIdx + 1);
       if (!line) continue;
@@ -322,7 +323,6 @@ export class QmdDaemonSession {
       } catch {
         log.debug(`QMD mcp: unparseable stdout: ${sanitizeForLog(line, 200)}`);
       }
-      newlineIdx = this.buffer.indexOf("\n");
     }
   }
 

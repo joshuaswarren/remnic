@@ -148,6 +148,15 @@ export function shouldAutoUpgradeQmd(
   return compareQmdVersions(installed, supported) < 0;
 }
 
+/** First QMD release that needs the pinned, patched build (docs/qmd-2.8.3.md); stock npm lacks the patches. */
+const QMD_PATCHED_BUILD_MIN: QmdVersionTuple = [2, 8, 3];
+
+/** False when `npm install -g @tobilu/qmd@<supported>` would install stock QMD instead of the patched build. */
+export function autoUpgradeInstallsStockPackage(supportedVersion: string): boolean {
+  const supported = parseQmdVersion(supportedVersion);
+  return supported !== null && compareQmdVersions(supported, QMD_PATCHED_BUILD_MIN) < 0;
+}
+
 export function getQmdPostInstallProbeTargets(
   qmdPath: string,
   qmdPathSource: "configured" | "auto-path" | "auto-fallback"

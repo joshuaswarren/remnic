@@ -49,7 +49,7 @@ qmd update && qmd embed
   "qmdCollection": "openclaw-engram",
   "qmdMaxResults": 8,
   "qmdSupportedVersion": "2.8.3",
-  "qmdAutoUpgradeEnabled": false, // leave off: auto-upgrade installs stock npm 2.8.3
+  "qmdAutoUpgradeEnabled": false, // 2.8.3 and later are never auto-installed; see qmd-2.8.3.md
   "qmdChunkStrategy": "auto",
   // Leave qmdIndexName unset unless you intentionally use a separate QMD DB.
   // Existing Remnic/OpenClaw installs usually keep data in QMD's default "index".
@@ -91,7 +91,7 @@ the index that contains the current `openclaw-engram*` collections.
 
 Auto-upgrade is intentionally disabled by default. Set
 `qmdAutoUpgradeEnabled: true` to let Remnic upgrade PATH/fallback QMD installs to
-`qmdSupportedVersion`. Remnic does not auto-upgrade an explicitly configured
+`qmdSupportedVersion` below 2.8.3; 2.8.3 and later are never auto-installed. Remnic does not auto-upgrade an explicitly configured
 `qmdPath`; install the supported package manually for that path.
 
 QMD version coverage:
@@ -154,7 +154,7 @@ Remnic automatically prefers the shared MCP session when available and falls bac
 | `qmdDaemonRecheckIntervalMs` | `60000` | Re-probe interval after failure |
 | `qmdIntentHintsEnabled` | `false` | Forward inferred recall intent into QMD unified search when supported |
 | `qmdExplainEnabled` | `false` | Capture QMD explain traces into `memory_qmd_debug` snapshots |
-| `qmdSupportedVersion` | `2.8.3` | Version string auto-upgrade would install. Leave auto-upgrade off; stock npm 2.8.3 is not the pinned build. |
+| `qmdSupportedVersion` | `2.8.3` | Version string Remnic expects. Auto-upgrade skips 2.8.3 and later (stock npm is not the pinned build); install it by hand. |
 | `qmdAutoUpgradeEnabled` | `false` | Opt-in auto-upgrade for PATH/fallback QMD installs |
 | `qmdAutoUpgradeCheckIntervalMs` | `86400000` | Minimum interval between auto-upgrade attempts |
 | `qmdChunkStrategy` | `auto` | Forward QMD's AST-aware chunk strategy when supported |

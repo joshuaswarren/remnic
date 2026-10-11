@@ -19,6 +19,7 @@ import {
   qmdVersionToString,
   resolveQmdCapabilities,
   shouldAutoUpgradeQmd,
+  autoUpgradeInstallsStockPackage,
   versionAtLeast,
 } from "./qmd-preflight.js";
 import { EMPTY_QMD_STATUS, type QmdStatusReport, embedQmdFiles, fetchQmdStatus } from "./qmd-status.js";
@@ -42,6 +43,7 @@ export {
   QMD_SUPPORTED_VERSION,
   resolveQmdCapabilities,
   shouldAutoUpgradeQmd,
+  autoUpgradeInstallsStockPackage,
   versionAtLeast,
 };
 
@@ -1229,6 +1231,15 @@ export class QmdClient implements SearchBackend {
       recordAutoUpgradeStatus(state, targetKey, status);
       log.warn(
         `QMD auto-upgrade skipped because qmdPath is explicitly configured (${this.qmdPath}); install ${QMD_PACKAGE_NAME}@${this.qmdSupportedVersion} manually for that path.`
+      );
+      return;
+    }
+
+    if (!autoUpgradeInstallsStockPackage(this.qmdSupportedVersion)) {
+      const status = `skipped: ${this.qmdSupportedVersion} needs the pinned patched build, not stock npm`;
+      recordAutoUpgradeStatus(state, targetKey, status);
+      log.warn(
+        `QMD auto-upgrade skipped: ${QMD_PACKAGE_NAME}@${this.qmdSupportedVersion} from npm lacks the patches Remnic needs and would migrate the index before a backup; follow docs/qmd-2.8.3.md.`
       );
       return;
     }

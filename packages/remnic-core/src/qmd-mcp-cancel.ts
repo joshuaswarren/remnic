@@ -25,6 +25,9 @@ export function createInflightJoiner<T>(): InflightJoiner<T> {
         return Promise.reject(abortError("QMD inflight search aborted"));
       }
       let slot = slots.get(key);
+      // A slot whose last waiter already aborted is doomed; its promise settles
+      // late. Never hand it to a new caller.
+      if (slot?.controller.signal.aborted) slot = undefined;
       if (!slot) {
         const controller = new AbortController();
         const created: InflightSlot<T> = {

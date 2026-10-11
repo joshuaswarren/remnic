@@ -20,8 +20,10 @@ RUN git init /tmp/qmd \
   && git -C /tmp/qmd apply /tmp/qmd-patches/qmd-2.8.3-stdio-stdout.patch \
   && git -C /tmp/qmd apply /tmp/qmd-patches/qmd-2.8.3-rerank-mocks.patch \
   && npm install --prefix /tmp/qmd \
-  && npm install -g /tmp/qmd \
-  && rm -rf /tmp/qmd /tmp/qmd-patches
+  && mkdir /tmp/qmd-pack \
+  && npm pack /tmp/qmd --pack-destination /tmp/qmd-pack \
+  && npm install -g /tmp/qmd-pack/*.tgz \
+  && rm -rf /tmp/qmd /tmp/qmd-pack /tmp/qmd-patches
 
 COPY . .
 

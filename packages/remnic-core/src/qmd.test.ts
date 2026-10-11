@@ -14,6 +14,7 @@ import {
   resolveQmdCapabilities,
   QmdClient,
   shouldAutoUpgradeQmd,
+  autoUpgradeInstallsStockPackage,
 } from "./qmd.js";
 
 test("parseQmdVersion extracts semantic version from qmd output", () => {
@@ -126,6 +127,13 @@ test("buildDefaultStructuredSearches lets an explicit per-call override win over
 test("buildDefaultStructuredSearches returns empty for blank queries under any strategy", () => {
   assert.deepEqual(buildDefaultStructuredSearches("   ", undefined, "hybrid"), []);
   assert.deepEqual(buildDefaultStructuredSearches("   ", undefined, "lex"), []);
+});
+
+test("auto-upgrade never installs stock npm for versions that need the patched build", () => {
+  assert.equal(autoUpgradeInstallsStockPackage("2.5.3"), true);
+  assert.equal(autoUpgradeInstallsStockPackage("2.8.2"), true);
+  assert.equal(autoUpgradeInstallsStockPackage("2.8.3"), false);
+  assert.equal(autoUpgradeInstallsStockPackage("2.9.0"), false);
 });
 
 test("shouldAutoUpgradeQmd only upgrades below Remnic supported version", () => {

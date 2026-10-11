@@ -367,3 +367,42 @@ test("the only in-flight search() abort cancels the shared daemon call", async (
   );
   assert.equal(calls, 1);
 });
+
+test("a caller joining after the last waiter aborted starts a fresh call", async () => {
+  const joiner = createInflightJoiner<string>();
+  let runs = 0;
+  const run = (signal: AbortSignal) => {
+    runs += 1;
+    const id = runs;
+    return new Promise<string>((resolve, reject) => {
+      // The aborted call settles late, so its slot is still in the map when the
+      // second caller joins.
+      signal.addEventListener("abort", () => setTimeout(() => reject(abortError("run aborted")), 40));
+      setTimeout(() => resolve(`run${id}`), 80);
+    });
+  };
+  const ac = new AbortController();
+  const first = joiner.join("same", ac.signal, run);
+  await delay(5);
+  ac.abort();
+  await assert.rejects(first, (err: Error) => err.name === "AbortError");
+  assert.equal(await joiner.join("same", undefined, run), "run2");
+  assert.equal(runs, 2);
+});
+
+test("blank stdout lines are skipped and later replies still parse", async () => {
+  const lines: string[] = [];
+  let child: { stdout: EventEmitter } | undefined;
+  const session = new QmdDaemonSession("qmd", {}, undefined, () => {
+    const created = createScriptedChild(scriptedQueryServer(lines));
+    child = created as unknown as { stdout: EventEmitter };
+    return created;
+  });
+  assert.equal(await session.start(), true);
+  child?.stdout.emit("data", Buffer.from("\n   \n\r\n"));
+  const reply = (await session.callTool("query", { query: "after-blank" }, 30_000)) as {
+    structuredContent?: { results?: unknown[] };
+  };
+  assert.deepEqual(reply.structuredContent?.results, []);
+  await session.close();
+});

@@ -45,7 +45,11 @@ export function compareRankedLists(before, after) {
 
 export function spearman(xs, ys) {
   const n = Math.min(xs.length, ys.length);
-  if (n < 2) return 1;
+  // Too few points have no correlation: equal inputs agree, anything else is
+  // undefined. One constant side against a varying one is undefined too, never
+  // a perfect score; two constant sides tie everything and agree.
+  const same = xs.slice(0, n).every((value, i) => value === ys[i]);
+  if (n < 2) return same ? 1 : null;
   let meanX = 0;
   let meanY = 0;
   for (let i = 0; i < n; i++) {
@@ -64,7 +68,7 @@ export function spearman(xs, ys) {
     dx += a * a;
     dy += b * b;
   }
-  if (dx === 0 || dy === 0) return 1;
+  if (dx === 0 || dy === 0) return dx === 0 && dy === 0 ? 1 : null;
   return num / Math.sqrt(dx * dy);
 }
 
@@ -81,25 +85,30 @@ function listJson(dir) {
     .sort();
 }
 
-export function compareDirectories(beforeDir, afterDir) {
-  const rows = [];
-  for (const name of listJson(beforeDir)) {
-    const afterPath = join(afterDir, name);
-    let after;
-    try {
-      after = loadResultFile(afterPath);
-    } catch {
-      continue;
-    }
-    const before = loadResultFile(join(beforeDir, name));
-    rows.push({
-      name,
-      ...compareRankedLists(before.results, after.results),
-      beforeMs: before.totalMs,
-      afterMs: after.totalMs,
-    });
+function tryLoad(filePath) {
+  try {
+    return loadResultFile(filePath);
+  } catch {
+    return null;
   }
-  return rows;
+}
+
+function pairRow(name, before, after) {
+  if (!after) return { name, missing: true, beforeMs: before.totalMs, afterMs: null };
+  return {
+    name,
+    ...compareRankedLists(before.results, after.results),
+    beforeMs: before.totalMs,
+    afterMs: after.totalMs,
+  };
+}
+
+// A counterpart that is absent or unreadable becomes an explicit `missing` row,
+// so an incomplete run cannot look healthy.
+export function compareDirectories(beforeDir, afterDir) {
+  return listJson(beforeDir).map((name) =>
+    pairRow(name, loadResultFile(join(beforeDir, name)), tryLoad(join(afterDir, name))),
+  );
 }
 
 export function compareRerankOff(dir) {
@@ -108,14 +117,7 @@ export function compareRerankOff(dir) {
     const daemonSuffix = "-daemon.json";
     if (!name.endsWith(daemonSuffix)) continue;
     const offName = `${name.slice(0, -daemonSuffix.length)}-norerank.json`;
-    const before = loadResultFile(join(dir, name));
-    const after = loadResultFile(join(dir, offName));
-    rows.push({
-      name,
-      ...compareRankedLists(before.results, after.results),
-      beforeMs: before.totalMs,
-      afterMs: after.totalMs,
-    });
+    rows.push(pairRow(name, loadResultFile(join(dir, name)), tryLoad(join(dir, offName))));
   }
   return rows;
 }
@@ -128,34 +130,45 @@ function mean(values) {
 export function formatComparison(rows) {
   const lines = ["name top1 overlap spearman before_ms after_ms"];
   for (const row of rows) {
+    const ms = (value) => (value === null ? "-" : String(value));
+    if (row.missing) {
+      lines.push([row.name, "MISSING", "-", "-", ms(row.beforeMs), "-"].join(" "));
+      continue;
+    }
     lines.push(
       [
         row.name,
         row.top1Match ? "yes" : "no",
         String(row.top10Overlap),
-        row.spearman.toFixed(4),
-        row.beforeMs === null ? "-" : String(row.beforeMs),
-        row.afterMs === null ? "-" : String(row.afterMs),
+        row.spearman === null ? "-" : row.spearman.toFixed(4),
+        ms(row.beforeMs),
+        ms(row.afterMs),
       ].join(" ")
     );
   }
-  const overlaps = rows.map((row) => row.top10Overlap);
-  const correlations = rows.map((row) => row.spearman);
-  const top1 = rows.filter((row) => row.top1Match).length;
+  const compared = rows.filter((row) => !row.missing);
+  const overlaps = compared.map((row) => row.top10Overlap);
+  const correlations = compared.map((row) => row.spearman).filter((value) => value !== null);
+  const top1 = compared.filter((row) => row.top1Match).length;
   lines.push(
-    `summary queries=${rows.length} top1=${top1}/${rows.length} mean_overlap=${mean(overlaps)?.toFixed(2) ?? "-"} mean_spearman=${mean(correlations)?.toFixed(4) ?? "-"}`
+    `summary queries=${rows.length} compared=${compared.length} missing=${rows.length - compared.length} top1=${top1}/${compared.length} mean_overlap=${mean(overlaps)?.toFixed(2) ?? "-"} mean_spearman=${mean(correlations)?.toFixed(4) ?? "-"}`
   );
   return lines.join("\n");
+}
+
+function report(rows) {
+  process.stdout.write(`${formatComparison(rows)}\n`);
+  if (rows.some((row) => row.missing)) process.exitCode = 1;
 }
 
 function main() {
   const args = process.argv.slice(2);
   if (args[0] === "--rerank-off" && args[1]) {
-    process.stdout.write(`${formatComparison(compareRerankOff(args[1]))}\n`);
+    report(compareRerankOff(args[1]));
     return;
   }
   if (args.length >= 2) {
-    process.stdout.write(`${formatComparison(compareDirectories(args[0], args[1]))}\n`);
+    report(compareDirectories(args[0], args[1]));
     return;
   }
   process.stderr.write(

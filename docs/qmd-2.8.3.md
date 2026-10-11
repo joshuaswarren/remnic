@@ -185,8 +185,11 @@ Stop QMD first, including Remnic, so nothing has the index open. Back up
 before the new binary's first start. The conversion runs on open.
 
 ```bash
-# paths are the host's QMD index, often ~/.cache/qmd/index.sqlite
-# plus the -wal and -shm next to it. Stop writers before the copy.
+# QMD_INDEX is the host's QMD index, often ~/.cache/qmd/index.sqlite, with
+# the -wal and -shm next to it. Set it to the real path before anything else,
+# and stop here if the file is missing. Stop writers before the copy.
+QMD_INDEX="${QMD_INDEX:-$HOME/.cache/qmd/index.sqlite}"
+[ -f "$QMD_INDEX" ] || { echo "no QMD index at $QMD_INDEX; set QMD_INDEX" >&2; exit 1; }
 cp -a "$QMD_INDEX" "$QMD_INDEX.before-2.8.3"
 cp -a "$QMD_INDEX-wal" "$QMD_INDEX.before-2.8.3-wal" 2>/dev/null || true
 cp -a "$QMD_INDEX-shm" "$QMD_INDEX.before-2.8.3-shm" 2>/dev/null || true
@@ -200,7 +203,8 @@ git apply /path/to/remnic/docs/patches/qmd-2.8.3-stdio-stdout.patch
 git apply /path/to/remnic/docs/patches/qmd-2.8.3-rerank-mocks.patch
 npm install
 npm run build
-npm install -g .
+npm pack
+npm install -g ./tobilu-qmd-2.8.3.tgz   # a copy; `npm install -g .` would only link this checkout
 qmd --version   # prints 2.8.3
 ```
 
@@ -210,9 +214,10 @@ does not change ranking. Without it, `LlamaCpp rerank deduping` and
 `uses fewer active rerank contexts for small batches` throw
 `ctx.rank is not a function`, because those mocks still call `rankAll`.
 
-`npm pack` in that tree produces a tarball of the same bits. Install it with
-`npm install -g ./tobilu-qmd-2.8.3.tgz`. A git fork is the same checkout with
-the patches applied; do not point Remnic's auto-upgrade at a git URL.
+Install the tarball, not the directory: `npm install -g .` links the global
+package to the checkout, and deleting or moving the checkout leaves `qmd`
+dangling. A git fork is the same checkout with the patches applied; Remnic's
+auto-upgrade does not install 2.8.3 or later, so do not point it at a git URL.
 The version parser accepts only semver.
 
 Restart the host so Remnic respawns `qmd mcp`. Then:
@@ -223,8 +228,9 @@ qmd cleanup        # prints occupancy; repacks the partitioned table when it is 
 ```
 
 The Dockerfile builds this same commit. It copies the patches, fetches
-the SHA, applies them, and `npm install -g` so `/usr/local/bin/qmd` still
-points at `@tobilu/qmd`.
+the SHA, applies them, packs the tree, and installs the tarball globally so
+`/usr/local/bin/qmd` still points at `@tobilu/qmd` and survives deleting the
+build checkout.
 
 ## Rollback
 
@@ -236,9 +242,12 @@ leaves search unable to open the index.
 # stop Remnic and qmd first
 npm install -g @tobilu/qmd@2.5.3
 # or stock @tobilu/qmd@2.8.3, which still lacks #983 and these patches
+# remove the converted index's sidecars first, so a backup that had none
+# cannot be opened beside a WAL from the new layout
+rm -f "$QMD_INDEX-wal" "$QMD_INDEX-shm"
 cp -a "$QMD_INDEX.before-2.8.3" "$QMD_INDEX"
 cp -a "$QMD_INDEX.before-2.8.3-wal" "$QMD_INDEX-wal" 2>/dev/null || true
-cp -a "$QMD_INDEX.before-2.8.3-shm" "$QMD_INDEX-shm" 2>/dev/null || rm -f "$QMD_INDEX-shm"
+cp -a "$QMD_INDEX.before-2.8.3-shm" "$QMD_INDEX-shm" 2>/dev/null || true
 ```
 
 Cost: the copy is the size of the index (a ~1.2M-vector store is multiple
