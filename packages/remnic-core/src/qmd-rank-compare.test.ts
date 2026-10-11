@@ -91,3 +91,10 @@ test("files present on only one side, an invalid results field, and a one-sided 
   const emptyBefore = mkdtempSync(join(tmpdir(), "qmd-cmp-b3-"));
   assert.equal(compareDirectories(emptyBefore, after).every((r) => r.missing), true);
 });
+
+test("rerank-off reports a norerank capture that has no daemon twin", () => {
+  const dir = mkdtempSync(join(tmpdir(), "qmd-cmp-r2-"));
+  resultFile(dir, "q1-norerank.json", ["a", "b"]);
+  const rows = compareRerankOff(dir);
+  assert.deepEqual(rows.map((r) => [r.name, Boolean(r.missing)]), [["q1-daemon.json", true]]);
+});

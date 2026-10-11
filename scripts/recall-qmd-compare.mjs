@@ -116,14 +116,17 @@ export function compareDirectories(beforeDir, afterDir) {
 }
 
 export function compareRerankOff(dir) {
-  const rows = [];
+  // Stems come from either suffix, so a capture with only one side still shows up.
+  const daemonSuffix = "-daemon.json";
+  const offSuffix = "-norerank.json";
+  const stems = new Set();
   for (const name of listJson(dir)) {
-    const daemonSuffix = "-daemon.json";
-    if (!name.endsWith(daemonSuffix)) continue;
-    const offName = `${name.slice(0, -daemonSuffix.length)}-norerank.json`;
-    rows.push(pairRow(name, tryLoad(join(dir, name)), tryLoad(join(dir, offName))));
+    if (name.endsWith(daemonSuffix)) stems.add(name.slice(0, -daemonSuffix.length));
+    else if (name.endsWith(offSuffix)) stems.add(name.slice(0, -offSuffix.length));
   }
-  return rows;
+  return [...stems].sort().map((stem) =>
+    pairRow(`${stem}${daemonSuffix}`, tryLoad(join(dir, `${stem}${daemonSuffix}`)), tryLoad(join(dir, `${stem}${offSuffix}`))),
+  );
 }
 
 function mean(values) {

@@ -325,13 +325,13 @@ VM. That is maintenance, not a per-query cost.
 
 That 5.13× ratio is this VM's unpartitioned bench. Absolute milliseconds from
 this VM do not transfer: `mmap_size 0` makes the holey scan read every page.
-The host's partitioned #983 conversion was measured separately
-(`docs/qmd-2.8.3.md`): search mean 6.0 s → 0.6 s, index 5.68 GB → 1.96 GB
-(~1.05M orphan vectors dropped, table 100% packed). Rerank candidates rose
-from a mean of 19.4 to 35.9 because the collection is no longer starved
-inside a global top-k, so CPU rerank rose from 27 s to 41 s and total recall
-from 33 s to 41.5 s. On 10 queries, top-1 was 9/10 and content spot-checks
-were equal or better. Packing the scan does not by itself put that rerank
+A partitioned #983 conversion on one deployment was measured separately
+(`docs/qmd-2.8.3.md`, rounded): search mean ~6 s → ~0.6 s, index ~5.7 GB →
+~2.0 GB (about a million orphan vectors dropped, table fully packed). Rerank
+candidates roughly doubled because the collection is no longer starved
+inside a global top-k, so CPU rerank rose by about half and total recall
+from ~33 s to ~42 s. On a small query sample, top-1 mostly matched and content
+spot-checks were equal or better. Packing the scan does not by itself put that rerank
 under 25 s.
 
 The pinned build's per-collection index (#983) scans one collection instead of

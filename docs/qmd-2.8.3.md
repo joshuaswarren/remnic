@@ -333,14 +333,14 @@ below are the #983 conversion on that index.
 
 | | before | after |
 | --- | ---: | ---: |
-| search mean | ~6.0 s | 0.6 s |
+| search mean | ~6 s | ~0.6 s |
 | index size | ~5.7 GB | ~2.0 GB |
-| packing | orphans present | 100% packed, ~1.05M orphan vectors dropped |
-| rerank candidates, mean | 19.4 | 35.9 |
-| CPU rerank mean | 27 s | 41 s |
-| total recall mean | 33 s | 41.5 s |
+| packing | orphans present | fully packed, ~1M orphan vectors dropped |
+| rerank candidates, mean | ~19 | ~36 |
+| CPU rerank mean | ~27 s | ~41 s |
+| total recall mean | ~33 s | ~42 s |
 
-On 10 queries, top-1 matched the before list on 9 of 10. Content spot-checks
+On a small query sample, top-1 matched the before list on most queries. Content spot-checks
 of the returned memories were equal or better.
 
 Collection-scoped search no longer takes a global top-k and then drops rows
