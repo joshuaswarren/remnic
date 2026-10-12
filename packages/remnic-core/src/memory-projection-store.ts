@@ -737,19 +737,15 @@ export function parseTimelineRows(rows: Array<Record<string, unknown>>): MemoryL
   return out;
 }
 
-/**
- * Read many current-state rows over ONE readonly connection, plus the
- * projection's `rebuiltAt` stamp. Ids absent from `memory_current` are simply
- * missing from the map. Null means the projection could not be opened/read.
- */
-export function readProjectedMemoryStates(
+export function readProjectedMemoryState(
   memoryDir: string,
-  memoryIds: Iterable<string>,
-): { states: Map<string, MemoryProjectionCurrentState>; rebuiltAt: string | null } | null {
+  memoryId: string,
+): MemoryProjectionCurrentState | null {
   return withProjectionReadonly(memoryDir, (db) => {
     const currentSelect = memoryCurrentSelectExpressions(db);
-    const select = db.prepare(
-      `
+    const row = db
+      .prepare(
+        `
           SELECT
             memory_id,
             category,
@@ -773,27 +769,10 @@ export function readProjectedMemoryStates(
           FROM memory_current
           WHERE memory_id = ?
         `,
-    );
-    const states = new Map<string, MemoryProjectionCurrentState>();
-    for (const memoryId of memoryIds) {
-      const state = parseCurrentRow(
-        memoryDir,
-        select.get(memoryId) as Record<string, unknown> | undefined,
-      );
-      if (state) states.set(memoryId, state);
-    }
-    const meta = db.prepare("SELECT value FROM meta WHERE key = 'rebuiltAt'").get() as
-      | { value?: unknown }
-      | undefined;
-    return { states, rebuiltAt: typeof meta?.value === "string" ? meta.value : null };
+      )
+      .get(memoryId) as Record<string, unknown> | undefined;
+    return parseCurrentRow(memoryDir, row);
   });
-}
-
-export function readProjectedMemoryState(
-  memoryDir: string,
-  memoryId: string,
-): MemoryProjectionCurrentState | null {
-  return readProjectedMemoryStates(memoryDir, [memoryId])?.states.get(memoryId) ?? null;
 }
 
 export function readProjectedMemoryTimeline(

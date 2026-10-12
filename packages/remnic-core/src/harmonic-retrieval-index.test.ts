@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rename, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -180,6 +180,82 @@ test("an index older than a week falls back to the corpus scan and still finds a
     await nodeFor(memoryDir, "stale-node", [source.id], "stale index quokka source");
     const results = await search(memoryDir, "stale index quokka source");
     assert.equal(results.some((r) => r.node.nodeId === "stale-node"), true);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// Counts hot-corpus scans while `run` executes.
+async function countCorpusScans<T>(run: () => Promise<T>): Promise<{ value: T; scans: number }> {
+  const original = StorageManager.prototype.readAllMemories;
+  let scans = 0;
+  StorageManager.prototype.readAllMemories = function (this: StorageManager, ...args: unknown[]) {
+    scans += 1;
+    return Reflect.apply(original, this, args);
+  };
+  try {
+    return { value: await run(), scans };
+  } finally {
+    StorageManager.prototype.readAllMemories = original;
+  }
+}
+
+test("a scoped or pre-complete projection is not trusted and falls back to the corpus scan", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-harmonic-index-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const source = await storage.writeMemory("fact", "scoped rebuild okapi source", { source: "test" });
+    await nodeFor(memoryDir, "okapi-node", [source.id], "scoped rebuild okapi source");
+
+    // First projection built with a scope that excludes the source: rebuiltAt is
+    // fresh but memory_current does not hold it.
+    await rebuildMemoryProjection({ memoryDir, storage, dryRun: false, updatedBefore: "2000-01-01T00:00:00.000Z" });
+    const scoped = await countCorpusScans(() => search(memoryDir, "scoped rebuild okapi source"));
+    assert.equal(scoped.value.some((r) => r.node.nodeId === "okapi-node"), true, "out-of-scope source must still resolve");
+    assert.equal(scoped.scans > 0, true, "an incomplete index must fall back to the scan");
+
+    // An unscoped rebuild is complete and takes the index path.
+    await rebuildMemoryProjection({ memoryDir, storage, dryRun: false });
+    const full = await countCorpusScans(() => search(memoryDir, "scoped rebuild okapi source"));
+    assert.equal(full.value.some((r) => r.node.nodeId === "okapi-node"), true);
+    assert.equal(full.scans, 0);
+
+    // A projection written before the `complete` flag existed has no such key.
+    const db = openBetterSqlite3(getMemoryProjectionPath(memoryDir));
+    try {
+      db.prepare("DELETE FROM meta WHERE key = 'complete'").run();
+    } finally {
+      db.close();
+    }
+    const legacy = await countCorpusScans(() => search(memoryDir, "scoped rebuild okapi source"));
+    assert.equal(legacy.value.some((r) => r.node.nodeId === "okapi-node"), true);
+    assert.equal(legacy.scans > 0, true, "a projection without the flag must fall back");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a legacy memory whose id contains a slash still resolves through the projection", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-harmonic-index-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const slashId = "legacy/slash-id";
+    const day = new Date().toISOString().slice(0, 10);
+    await mkdir(path.join(memoryDir, "facts", day), { recursive: true });
+    await writeFile(
+      path.join(memoryDir, "facts", day, "legacy-slash-file.md"),
+      `---\nid: ${slashId}\ncategory: fact\ncreated: ${new Date().toISOString()}\nupdated: ${new Date().toISOString()}\nsource: test\nconfidence: 0.8\nconfidenceTier: implied\ntags: ["alpha"]\n---\n\nslash identifier narwhal source\n`,
+      "utf-8",
+    );
+    await nodeFor(memoryDir, "slash-node", [slashId], "slash identifier narwhal source");
+    const before = await search(memoryDir, "slash identifier narwhal source");
+    assert.equal(before.some((r) => r.node.nodeId === "slash-node"), true, "the corpus scan keys by frontmatter id");
+    await rebuildMemoryProjection({ memoryDir, storage, dryRun: false });
+    const indexed = await countCorpusScans(() => search(memoryDir, "slash identifier narwhal source"));
+    assert.deepEqual(indexed.value, before);
+    assert.equal(indexed.scans, 0);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

@@ -17,7 +17,7 @@ import { isValidityExpiredNow } from "./temporal-validity.js";
 import { assertSafePathSegment, isRecord } from "./store-contract.js";
 import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
 import type { MemoryFile } from "./types.js";
-import { readProjectedMemoryStates } from "./memory-projection-store.js";
+import { readProjectedMemoryStates } from "./memory-projection-batch.js";
 import { SecureStoreLockedError } from "./secure-store/secure-fs.js";
 import { StorageManager } from "./storage.js";
 import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
@@ -70,7 +70,8 @@ function unprojectedCandidatePaths(memoryDir: string, id: string, days: string[]
 
 /**
  * Resolve only the source ids the abstraction nodes reference. Returns null when
- * the projection is absent, unreadable, or too old, so the caller keeps the
+ * the projection is absent, unreadable, too old, or not known to cover every
+ * active memory (a scoped or pre-`complete` rebuild), so the caller keeps the
  * full-corpus scan. Every file is read from disk, so status, tags and validity
  * are current; the index only says where to look.
  */
@@ -80,26 +81,28 @@ async function readIndexedSourceMemories(options: {
   sourceMemoryIds: string[];
   nowMs: number;
 }): Promise<SourceMemoryMap | null> {
-  const ids = options.sourceMemoryIds.filter((id) => {
-    try {
-      assertSafePathSegment(id, "sourceMemoryId");
-      return true;
-    } catch {
-      return false; // never joins into a path; the corpus scan could not match it either
-    }
-  });
-  const batch = readProjectedMemoryStates(options.memoryDir, ids);
+  // The ids go to SQL as bound parameters, so any id the projection holds is safe to look up.
+  const batch = readProjectedMemoryStates(options.memoryDir, options.sourceMemoryIds);
   const rebuiltMs = Date.parse(batch?.rebuiltAt ?? "");
-  if (!batch || !Number.isFinite(rebuiltMs) || options.nowMs - rebuiltMs > INDEX_MAX_AGE_MS) return null;
+  if (!batch?.complete || !Number.isFinite(rebuiltMs) || options.nowMs - rebuiltMs > INDEX_MAX_AGE_MS) return null;
 
   const storage = new StorageManager(options.memoryDir);
   const days = utcDaysSince(rebuiltMs, options.nowMs);
   const sourceMemories: SourceMemoryMap = new Map();
-  for (const id of ids) {
+  for (const id of options.sourceMemoryIds) {
     const state = batch.states.get(id);
-    const candidates = state
-      ? [state.path, path.join(options.memoryDir, "cold", state.pathRel)]
-      : unprojectedCandidatePaths(options.memoryDir, id, days);
+    let candidates: string[];
+    if (state) {
+      // state.path was containment-checked by the projection reader.
+      candidates = [state.path, path.join(options.memoryDir, "cold", state.pathRel)];
+    } else {
+      try {
+        assertSafePathSegment(id, "sourceMemoryId");
+      } catch {
+        continue; // an unprojected id is only ever joined into a path when it is a single safe segment
+      }
+      candidates = unprojectedCandidatePaths(options.memoryDir, id, days);
+    }
     for (const candidate of candidates) {
       const memory = await readMemoryFile(storage, candidate, options.abortSignal);
       if (memory?.frontmatter.id !== id) continue;
