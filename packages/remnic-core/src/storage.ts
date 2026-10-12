@@ -4679,7 +4679,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * Lists demoted-but-reachable memory paths under `cold/` without parsing
    * frontmatter, so the divergence watermark counts the cold tier too.
    */
-  async collectColdMemoryPaths(options?: { propagateReadErrors?: boolean }): Promise<string[]> {
+  async collectColdMemoryPaths(options?: { propagateReadErrors?: boolean } & CorpusReadOptions): Promise<string[]> {
     return this.memoryReadStore.collectColdMemoryPaths(options);
   }
 

@@ -144,7 +144,7 @@ async function readIndexedSourceMemories(options: {
   const wanted = new Set(pending);
   const walked = [
     ...(await storage.collectActiveMemoryPaths({ abortSignal: options.abortSignal })),
-    ...(await storage.collectColdMemoryPaths()),
+    ...(await storage.collectColdMemoryPaths({ abortSignal: options.abortSignal })),
   ];
   for (const filePath of walked) {
     throwIfAborted(options.abortSignal, "harmonic retrieval aborted");

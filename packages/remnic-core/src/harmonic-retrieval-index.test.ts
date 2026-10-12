@@ -367,3 +367,21 @@ test("a separator-containing id written after the rebuild is still placed, by th
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("the cold path walk honors an aborted signal", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-harmonic-index-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    await mkdir(path.join(memoryDir, "cold", "facts", "2020-01-01"), { recursive: true });
+    await writeFile(
+      path.join(memoryDir, "cold", "facts", "2020-01-01", "cold-1.md"),
+      memoryFileText("cold-1", "cold walk abort body"),
+      "utf-8",
+    );
+    assert.equal((await storage.collectColdMemoryPaths()).length, 1);
+    await assert.rejects(() => storage.collectColdMemoryPaths({ abortSignal: AbortSignal.abort() }));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
