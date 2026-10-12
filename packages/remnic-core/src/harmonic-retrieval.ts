@@ -1,4 +1,5 @@
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { listJsonFilesStrict, readJsonFile } from "./json-store.js";
 import { throwIfAborted } from "./abort-error.js";
 import { inferMemoryStatus, toMemoryPathRel } from "./memory-lifecycle-ledger-utils.js";
@@ -16,32 +17,137 @@ import { isValidityExpiredNow } from "./temporal-validity.js";
 import { isRecord } from "./store-contract.js";
 import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
 import type { MemoryFile } from "./types.js";
+import { probeProjectionHealth, readProjectedMemoryState } from "./memory-projection-store.js";
+import { SecureStoreLockedError } from "./secure-store/secure-fs.js";
+import { StorageManager } from "./storage.js";
+import { ALL_CATEGORY_DIRS } from "./utils/category-dir.js";
+
 
 type SourceMemoryMap = Map<string, MemoryFile>;
 
-async function readSourceMemories(options: {
+async function readMemoryFile(
+  storage: StorageManager,
+  filePath: string,
+  abortSignal?: AbortSignal,
+): Promise<MemoryFile | null> {
+  throwIfAborted(abortSignal, "harmonic retrieval aborted");
+  if (!existsSync(filePath)) return null;
+  try {
+    return await storage.readMemoryByPath(filePath);
+  } catch (err) {
+    throwIfAborted(abortSignal, "harmonic retrieval aborted");
+    if (err instanceof SecureStoreLockedError) throw err;
+    return null;
+  }
+}
+
+function indexedSourceCandidatePaths(memoryDir: string, id: string, nowMs: number): string[] {
+  const dates = [...new Set([0, 86_400_000].map((offset) => new Date(nowMs - offset).toISOString().slice(0, 10)))];
+  const paths: string[] = [];
+  for (const dir of [...ALL_CATEGORY_DIRS, "artifacts"]) {
+    paths.push(path.join(memoryDir, dir, `${id}.md`));
+    for (const date of dates) paths.push(path.join(memoryDir, dir, date, `${id}.md`));
+  }
+  return paths;
+}
+
+async function readIndexedSourceMemories(options: {
+  memoryDir: string;
+  abortSignal?: AbortSignal;
+  sourceMemoryIds: string[];
+  nowMs: number;
+}): Promise<SourceMemoryMap> {
+  const storage = new StorageManager(options.memoryDir);
+  const sourceMemories: SourceMemoryMap = new Map();
+  const missing: string[] = [];
+  for (const id of options.sourceMemoryIds) {
+    throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
+    const projected = readProjectedMemoryState(options.memoryDir, id);
+    const indexed = projected?.path
+      ? await readMemoryFile(storage, projected.path, options.abortSignal)
+      : null;
+    if (indexed?.frontmatter.id === id) {
+      sourceMemories.set(id, indexed);
+      continue;
+    }
+    let found = false;
+    for (const candidate of indexedSourceCandidatePaths(options.memoryDir, id, options.nowMs)) {
+      const memory = await readMemoryFile(storage, candidate, options.abortSignal);
+      if (memory?.frontmatter.id !== id) continue;
+      sourceMemories.set(id, memory);
+      found = true;
+      break;
+    }
+    if (!found) missing.push(id);
+  }
+  if (missing.length === 0) return sourceMemories;
+  // ponytail: cold walk only for index misses. Full hot scan stays the no-index fallback.
+  const wanted = new Set(missing);
+  let coldPaths: string[] = [];
+  try {
+    coldPaths = await storage.collectColdMemoryPaths();
+  } catch (err) {
+    throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
+    if (err instanceof SecureStoreLockedError) return new Map();
+    return sourceMemories;
+  }
+  for (const filePath of coldPaths) {
+    throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
+    if (!wanted.has(path.basename(filePath, ".md"))) continue;
+    const memory = await readMemoryFile(storage, filePath, options.abortSignal);
+    if (memory?.frontmatter.id) sourceMemories.set(memory.frontmatter.id, memory);
+  }
+  return sourceMemories;
+}
+
+async function readCorpusSourceMemories(options: {
   memoryDir: string;
   abortSignal?: AbortSignal;
 }): Promise<SourceMemoryMap> {
   const sourceMemories: SourceMemoryMap = new Map();
- try {
- const { StorageManager } = await import("./storage.js");
- const storage = new StorageManager(options.memoryDir);
- const [hotMemories, coldMemories] = await Promise.all([
- storage.readAllMemories({ abortSignal: options.abortSignal }),
- storage.readAllColdMemories(),
- ]);
- for (const memory of [...hotMemories, ...coldMemories]) {
+  try {
+    const storage = new StorageManager(options.memoryDir);
+    const [hotMemories, coldMemories] = await Promise.all([
+      storage.readAllMemories({ abortSignal: options.abortSignal }),
+      storage.readAllColdMemories(),
+    ]);
+    for (const memory of [...hotMemories, ...coldMemories]) {
       throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
       sourceMemories.set(memory.frontmatter.id, memory);
     }
-  } catch {
+  } catch (err) {
     throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
+    if (err instanceof SecureStoreLockedError) return new Map();
     // Source validation fails closed when the authorized memory directory is
     // unreadable. Source-less nodes remain eligible for retrieval.
     sourceMemories.clear();
   }
   return sourceMemories;
+}
+
+async function readSourceMemories(options: {
+  memoryDir: string;
+  abortSignal?: AbortSignal;
+  sourceMemoryIds: string[];
+  nowMs?: number;
+}): Promise<SourceMemoryMap> {
+  if (
+    options.sourceMemoryIds.length > 0 &&
+    probeProjectionHealth(options.memoryDir).state === "openable"
+  ) {
+    try {
+      return await readIndexedSourceMemories({
+        memoryDir: options.memoryDir,
+        abortSignal: options.abortSignal,
+        sourceMemoryIds: options.sourceMemoryIds,
+        nowMs: options.nowMs ?? Date.now(),
+      });
+    } catch (err) {
+      throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
+      if (err instanceof SecureStoreLockedError) return new Map();
+    }
+  }
+  return readCorpusSourceMemories(options);
 }
 
 function parseSourceMemoryInsertedAt(node: AbstractionNode): Map<string, string> {
@@ -304,10 +410,15 @@ export async function readProjectedHarmonicGraph(options: {
 }): Promise<ProjectedHarmonicGraph> {
   throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
   const nodes = await readAbstractionNodes(options);
-  const sourceBacked = nodes.some((node) => (node.sourceMemoryIds?.length ?? 0) > 0);
-  const sourceMemories: SourceMemoryMap = sourceBacked
-    ? await readSourceMemories(options)
-    : new Map<string, MemoryFile>();
+  const sourceMemoryIds = [...new Set(nodes.flatMap((node) => node.sourceMemoryIds ?? []))];
+  const sourceMemories: SourceMemoryMap = sourceMemoryIds.length > 0
+    ? await readSourceMemories({
+        memoryDir: options.memoryDir,
+        abortSignal: options.abortSignal,
+        sourceMemoryIds,
+        nowMs: options.nowMs,
+      })
+    : new Map();
   const nowMs = options.nowMs ?? Date.now();
   // A node whose full stored source set survived projection keeps legacy
   // anchor attribution (an anchor written before per-node source ids existed).
