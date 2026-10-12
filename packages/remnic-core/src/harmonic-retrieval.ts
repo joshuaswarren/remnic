@@ -14,13 +14,13 @@ import { compareDeterministicStrings } from "./deterministic-order.js";
 import { countRecallTokenOverlap, normalizeRecallTokens } from "./recall-tokenization.js";
 import { stripAttributesSuffix } from "./structured-attributes.js";
 import { isValidityExpiredNow } from "./temporal-validity.js";
-import { isRecord } from "./store-contract.js";
+import { assertSafePathSegment, isRecord } from "./store-contract.js";
 import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
 import type { MemoryFile } from "./types.js";
-import { probeProjectionHealth, readProjectedMemoryState } from "./memory-projection-store.js";
+import { readProjectedMemoryStates } from "./memory-projection-store.js";
 import { SecureStoreLockedError } from "./secure-store/secure-fs.js";
 import { StorageManager } from "./storage.js";
-import { ALL_CATEGORY_DIRS } from "./utils/category-dir.js";
+import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
 
 
 type SourceMemoryMap = Map<string, MemoryFile>;
@@ -41,61 +41,71 @@ async function readMemoryFile(
   }
 }
 
-function indexedSourceCandidatePaths(memoryDir: string, id: string, nowMs: number): string[] {
-  const dates = [...new Set([0, 86_400_000].map((offset) => new Date(nowMs - offset).toISOString().slice(0, 10)))];
+// An index older than this is treated as unusable: the date window needed to
+// cover "created since the last rebuild" would stop being cheap.
+const INDEX_MAX_AGE_MS = 7 * 86_400_000;
+const DAY_MS = 86_400_000;
+
+function utcDaysSince(rebuiltMs: number, nowMs: number): string[] {
+  const days: string[] = [];
+  for (let day = Math.floor((rebuiltMs - DAY_MS) / DAY_MS) * DAY_MS; day <= nowMs; day += DAY_MS) {
+    days.push(new Date(day).toISOString().slice(0, 10));
+  }
+  return days;
+}
+
+// Memories the projection has no row for were written after its last rebuild, so
+// their dated directory is one of `days`. Hot and cold tiers are both probed by
+// exact path; `questions/` is a queue, not recall corpus, and is never a source.
+function unprojectedCandidatePaths(memoryDir: string, id: string, days: string[]): string[] {
   const paths: string[] = [];
-  for (const dir of [...ALL_CATEGORY_DIRS, "artifacts"]) {
-    paths.push(path.join(memoryDir, dir, `${id}.md`));
-    for (const date of dates) paths.push(path.join(memoryDir, dir, date, `${id}.md`));
+  for (const root of [memoryDir, path.join(memoryDir, "cold")]) {
+    for (const dir of [...RECALL_FALLBACK_DIRS, "artifacts"]) {
+      paths.push(path.join(root, dir, `${id}.md`));
+      for (const day of days) paths.push(path.join(root, dir, day, `${id}.md`));
+    }
   }
   return paths;
 }
 
+/**
+ * Resolve only the source ids the abstraction nodes reference. Returns null when
+ * the projection is absent, unreadable, or too old, so the caller keeps the
+ * full-corpus scan. Every file is read from disk, so status, tags and validity
+ * are current; the index only says where to look.
+ */
 async function readIndexedSourceMemories(options: {
   memoryDir: string;
   abortSignal?: AbortSignal;
   sourceMemoryIds: string[];
   nowMs: number;
-}): Promise<SourceMemoryMap> {
-  const storage = new StorageManager(options.memoryDir);
-  const sourceMemories: SourceMemoryMap = new Map();
-  const missing: string[] = [];
-  for (const id of options.sourceMemoryIds) {
-    throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
-    const projected = readProjectedMemoryState(options.memoryDir, id);
-    const indexed = projected?.path
-      ? await readMemoryFile(storage, projected.path, options.abortSignal)
-      : null;
-    if (indexed?.frontmatter.id === id) {
-      sourceMemories.set(id, indexed);
-      continue;
+}): Promise<SourceMemoryMap | null> {
+  const ids = options.sourceMemoryIds.filter((id) => {
+    try {
+      assertSafePathSegment(id, "sourceMemoryId");
+      return true;
+    } catch {
+      return false; // never joins into a path; the corpus scan could not match it either
     }
-    let found = false;
-    for (const candidate of indexedSourceCandidatePaths(options.memoryDir, id, options.nowMs)) {
+  });
+  const batch = readProjectedMemoryStates(options.memoryDir, ids);
+  const rebuiltMs = Date.parse(batch?.rebuiltAt ?? "");
+  if (!batch || !Number.isFinite(rebuiltMs) || options.nowMs - rebuiltMs > INDEX_MAX_AGE_MS) return null;
+
+  const storage = new StorageManager(options.memoryDir);
+  const days = utcDaysSince(rebuiltMs, options.nowMs);
+  const sourceMemories: SourceMemoryMap = new Map();
+  for (const id of ids) {
+    const state = batch.states.get(id);
+    const candidates = state
+      ? [state.path, path.join(options.memoryDir, "cold", state.pathRel)]
+      : unprojectedCandidatePaths(options.memoryDir, id, days);
+    for (const candidate of candidates) {
       const memory = await readMemoryFile(storage, candidate, options.abortSignal);
       if (memory?.frontmatter.id !== id) continue;
       sourceMemories.set(id, memory);
-      found = true;
       break;
     }
-    if (!found) missing.push(id);
-  }
-  if (missing.length === 0) return sourceMemories;
-  // ponytail: cold walk only for index misses. Full hot scan stays the no-index fallback.
-  const wanted = new Set(missing);
-  let coldPaths: string[] = [];
-  try {
-    coldPaths = await storage.collectColdMemoryPaths();
-  } catch (err) {
-    throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
-    if (err instanceof SecureStoreLockedError) return new Map();
-    return sourceMemories;
-  }
-  for (const filePath of coldPaths) {
-    throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
-    if (!wanted.has(path.basename(filePath, ".md"))) continue;
-    const memory = await readMemoryFile(storage, filePath, options.abortSignal);
-    if (memory?.frontmatter.id) sourceMemories.set(memory.frontmatter.id, memory);
   }
   return sourceMemories;
 }
@@ -131,21 +141,17 @@ async function readSourceMemories(options: {
   sourceMemoryIds: string[];
   nowMs?: number;
 }): Promise<SourceMemoryMap> {
-  if (
-    options.sourceMemoryIds.length > 0 &&
-    probeProjectionHealth(options.memoryDir).state === "openable"
-  ) {
-    try {
-      return await readIndexedSourceMemories({
-        memoryDir: options.memoryDir,
-        abortSignal: options.abortSignal,
-        sourceMemoryIds: options.sourceMemoryIds,
-        nowMs: options.nowMs ?? Date.now(),
-      });
-    } catch (err) {
-      throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
-      if (err instanceof SecureStoreLockedError) return new Map();
-    }
+  try {
+    const indexed = await readIndexedSourceMemories({
+      memoryDir: options.memoryDir,
+      abortSignal: options.abortSignal,
+      sourceMemoryIds: options.sourceMemoryIds,
+      nowMs: options.nowMs ?? Date.now(),
+    });
+    if (indexed) return indexed;
+  } catch (err) {
+    throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
+    if (err instanceof SecureStoreLockedError) return new Map();
   }
   return readCorpusSourceMemories(options);
 }
