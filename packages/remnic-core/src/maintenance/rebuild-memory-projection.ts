@@ -755,6 +755,7 @@ function writeProjectionDb(
   governance: Awaited<ReturnType<typeof loadLatestGovernanceProjection>>,
   usedLifecycleLedger: boolean,
   sourceLifecycleLedgerEventCount: number,
+  complete: boolean,
 ): void {
   const db = openBetterSqlite3(dbPath);
   const memoryDir = path.dirname(path.dirname(dbPath));
@@ -765,6 +766,7 @@ function writeProjectionDb(
     insertMeta.run("schemaVersion", String(MEMORY_PROJECTION_SCHEMA_VERSION));
     insertMeta.run("rebuiltAt", nowIso);
     insertMeta.run("usedLifecycleLedger", usedLifecycleLedger ? "true" : "false");
+    insertMeta.run("complete", complete ? "true" : "false");
     writeProjectionMetaHighWater(insertMeta, sourceLifecycleLedgerEventCount, timelineRows);
     insertMeta.run("latestGovernanceRunId", governance?.runId ?? "");
 
@@ -1126,6 +1128,7 @@ export async function rebuildMemoryProjection(
       nextGovernance,
       snapshot.usedLifecycleLedger,
       snapshot.sourceLifecycleLedgerEventCount,
+      !hasScopedProjectionFilter(snapshot.scope),
     );
     backupPath = await backupExistingProjection(options.memoryDir, outputPath, now);
     backupPath = await commitPreparedFileAtomically(tempPath, outputPath, backupPath);
