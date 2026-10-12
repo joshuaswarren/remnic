@@ -1,5 +1,6 @@
 import path from "node:path";
 import { existsSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { listJsonFilesStrict, readJsonFile } from "./json-store.js";
 import { throwIfAborted } from "./abort-error.js";
 import { inferMemoryStatus, toMemoryPathRel } from "./memory-lifecycle-ledger-utils.js";
@@ -21,18 +22,24 @@ import { readProjectedMemoryStates } from "./memory-projection-batch.js";
 import { SecureStoreLockedError } from "./secure-store/secure-fs.js";
 import { StorageManager } from "./storage.js";
 import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
+import { isPathInsideStorageRoot } from "./storage-paths.js";
 
 
 type SourceMemoryMap = Map<string, MemoryFile>;
 
+// `rootReal` set: a direct probe, which skips the corpus walk's symlink
+// hardening, so the resolved file must stay inside the memory root. Null: the
+// path came from the contained corpus walk and is already trusted.
 async function readMemoryFile(
   storage: StorageManager,
+  rootReal: string | null,
   filePath: string,
   abortSignal?: AbortSignal,
 ): Promise<MemoryFile | null> {
   throwIfAborted(abortSignal, "harmonic retrieval aborted");
   if (!existsSync(filePath)) return null;
   try {
+    if (rootReal !== null && !isPathInsideStorageRoot(rootReal, await realpath(filePath))) return null;
     return await storage.readMemoryByPath(filePath);
   } catch (err) {
     throwIfAborted(abortSignal, "harmonic retrieval aborted");
@@ -54,13 +61,22 @@ function utcDaysSince(rebuiltMs: number, nowMs: number): string[] {
   return days;
 }
 
+// Source ids confirmed absent by a corpus path walk. A node only references a
+// source after the source file exists, so a confirmed absence stays true unless
+// the file is restored later; the short TTL bounds that. Without this, one
+// dangling id (a hard-deleted fact) would force a walk on every recall.
+const ABSENT_SOURCE_TTL_MS = 10 * 60_000;
+const ABSENT_SOURCE_MAX_ENTRIES = 4096;
+const absentSourceIds = new Map<string, number>(); // `${memoryDir}\0${id}` -> expiry ms
+
 // Memories the projection has no row for were written after its last rebuild, so
-// their dated directory is one of `days`. Hot and cold tiers are both probed by
-// exact path; `questions/` is a queue, not recall corpus, and is never a source.
+// their dated directory is normally one of `days`. Hot and cold tiers are probed
+// by exact path. Only recall-corpus categories are probed: `questions/` is a queue
+// and `artifacts/` is outside the recall surface, so neither can be a source.
 function unprojectedCandidatePaths(memoryDir: string, id: string, days: string[]): string[] {
   const paths: string[] = [];
   for (const root of [memoryDir, path.join(memoryDir, "cold")]) {
-    for (const dir of [...RECALL_FALLBACK_DIRS, "artifacts"]) {
+    for (const dir of RECALL_FALLBACK_DIRS) {
       paths.push(path.join(root, dir, `${id}.md`));
       for (const day of days) paths.push(path.join(root, dir, day, `${id}.md`));
     }
@@ -73,7 +89,10 @@ function unprojectedCandidatePaths(memoryDir: string, id: string, days: string[]
  * the projection is absent, unreadable, too old, or not known to cover every
  * active memory (a scoped or pre-`complete` rebuild), so the caller keeps the
  * full-corpus scan. Every file is read from disk, so status, tags and validity
- * are current; the index only says where to look.
+ * are current; the index only says where to look. An id the cheap probes cannot
+ * place (an import filed under an old date, a tier root outside the memory dir)
+ * is looked up by one contained path-only walk, never a frontmatter parse of the
+ * corpus.
  */
 async function readIndexedSourceMemories(options: {
   memoryDir: string;
@@ -85,30 +104,54 @@ async function readIndexedSourceMemories(options: {
   const batch = readProjectedMemoryStates(options.memoryDir, options.sourceMemoryIds);
   const rebuiltMs = Date.parse(batch?.rebuiltAt ?? "");
   if (!batch?.complete || !Number.isFinite(rebuiltMs) || options.nowMs - rebuiltMs > INDEX_MAX_AGE_MS) return null;
+  const rootReal = await realpath(options.memoryDir).catch(() => null);
+  if (rootReal === null) return null;
 
   const storage = new StorageManager(options.memoryDir);
   const days = utcDaysSince(rebuiltMs, options.nowMs);
   const sourceMemories: SourceMemoryMap = new Map();
+  const pending: string[] = [];
   for (const id of options.sourceMemoryIds) {
     const state = batch.states.get(id);
-    let candidates: string[];
-    if (state) {
-      // state.path was containment-checked by the projection reader.
-      candidates = [state.path, path.join(options.memoryDir, "cold", state.pathRel)];
-    } else {
-      try {
-        assertSafePathSegment(id, "sourceMemoryId");
-      } catch {
-        continue; // an unprojected id is only ever joined into a path when it is a single safe segment
-      }
-      candidates = unprojectedCandidatePaths(options.memoryDir, id, days);
+    // An id is only ever joined into a path when it is a single safe segment.
+    let safeId = true;
+    try {
+      assertSafePathSegment(id, "sourceMemoryId");
+    } catch {
+      safeId = false;
     }
+    if (!state && !safeId) continue;
+    // state.path was containment-checked by the projection reader.
+    const candidates = state
+      ? [state.path, path.join(options.memoryDir, "cold", state.pathRel)]
+      : unprojectedCandidatePaths(options.memoryDir, id, days);
+    let found = false;
     for (const candidate of candidates) {
-      const memory = await readMemoryFile(storage, candidate, options.abortSignal);
+      const memory = await readMemoryFile(storage, rootReal, candidate, options.abortSignal);
       if (memory?.frontmatter.id !== id) continue;
       sourceMemories.set(id, memory);
+      found = true;
       break;
     }
+    const absentKey = `${options.memoryDir}\0${id}`;
+    if (!found && safeId && (absentSourceIds.get(absentKey) ?? 0) <= options.nowMs) pending.push(id);
+  }
+  if (pending.length === 0) return sourceMemories;
+
+  const wanted = new Set(pending);
+  const walked = [
+    ...(await storage.collectActiveMemoryPaths({ abortSignal: options.abortSignal })),
+    ...(await storage.collectColdMemoryPaths()),
+  ];
+  for (const filePath of walked) {
+    throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
+    if (!wanted.has(path.basename(filePath, ".md"))) continue;
+    const memory = await readMemoryFile(storage, null, filePath, options.abortSignal);
+    if (memory && wanted.has(memory.frontmatter.id)) sourceMemories.set(memory.frontmatter.id, memory);
+  }
+  if (absentSourceIds.size > ABSENT_SOURCE_MAX_ENTRIES) absentSourceIds.clear();
+  for (const id of pending) {
+    if (!sourceMemories.has(id)) absentSourceIds.set(`${options.memoryDir}\0${id}`, options.nowMs + ABSENT_SOURCE_TTL_MS);
   }
   return sourceMemories;
 }

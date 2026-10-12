@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -260,3 +260,88 @@ test("a legacy memory whose id contains a slash still resolves through the proje
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+function memoryFileText(id: string, body: string): string {
+  const now = new Date().toISOString();
+  return `---\nid: ${id}\ncategory: fact\ncreated: ${now}\nupdated: ${now}\nsource: test\nconfidence: 0.8\nconfidenceTier: implied\ntags: ["alpha"]\n---\n\n${body}\n`;
+}
+
+test("direct probes reject symlinked and artifact sources like the scan, and an old-dated post-rebuild source is still found", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-harmonic-index-"));
+  const outsideDir = await mkdtemp(path.join(tmpdir(), "remnic-harmonic-outside-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const day = new Date().toISOString().slice(0, 10);
+    await mkdir(path.join(memoryDir, "facts", day), { recursive: true });
+    await mkdir(path.join(memoryDir, "artifacts", day), { recursive: true });
+
+    // A source file outside the namespace root, reachable through a symlink.
+    await writeFile(path.join(outsideDir, "outside-sym.md"), memoryFileText("outside-sym", "symlink escape cue body"), "utf-8");
+    await symlink(path.join(outsideDir, "outside-sym.md"), path.join(memoryDir, "facts", day, "outside-sym.md"));
+    // An artifact: outside the recall surface the corpus scan reads.
+    await writeFile(path.join(memoryDir, "artifacts", day, "art-1.md"), memoryFileText("art-1", "artifact leak cue body"), "utf-8");
+    await nodeFor(memoryDir, "symlink-node", ["outside-sym"], "symlink escape cue");
+    await nodeFor(memoryDir, "artifact-node", ["art-1"], "artifact leak cue");
+
+    const scanSymlink = await search(memoryDir, "symlink escape cue");
+    const scanArtifact = await search(memoryDir, "artifact leak cue");
+    assert.deepEqual(scanSymlink, [], "the corpus scan must not follow the symlink");
+    assert.deepEqual(scanArtifact, [], "the corpus scan must not read artifacts");
+
+    await rebuildMemoryProjection({ memoryDir, storage, dryRun: false });
+    const indexed = await countCorpusScans(async () => ({
+      symlink: await search(memoryDir, "symlink escape cue"),
+      artifact: await search(memoryDir, "artifact leak cue"),
+    }));
+    assert.deepEqual(indexed.value.symlink, scanSymlink);
+    assert.deepEqual(indexed.value.artifact, scanArtifact);
+    assert.equal(indexed.scans, 0, "this was the index path, not a fallback");
+
+    // Written after the rebuild but filed under a date far outside the probe
+    // window (an import that keeps its original created date).
+    await mkdir(path.join(memoryDir, "facts", "2020-01-01"), { recursive: true });
+    await writeFile(
+      path.join(memoryDir, "facts", "2020-01-01", "imported-old.md"),
+      memoryFileText("imported-old", "imported older marmot cue body"),
+      "utf-8",
+    );
+    storage.invalidateMemoryCachesForTiers(["hot", "cold"]);
+    await nodeFor(memoryDir, "imported-node", ["imported-old"], "imported older marmot cue");
+    const old = await search(memoryDir, "imported older marmot cue");
+    assert.equal(old.some((r) => r.node.nodeId === "imported-node" && r.node.sourceMemoryIds?.includes("imported-old")), true);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test("a dangling source id costs one path walk, then is remembered as absent", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-harmonic-index-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const real = await storage.writeMemory("fact", "real source wombat body", { source: "test" });
+    await nodeFor(memoryDir, "real-node", [real.id, "dangling-id"], "real source wombat");
+    await rebuildMemoryProjection({ memoryDir, storage, dryRun: false });
+
+    const original = StorageManager.prototype.collectActiveMemoryPaths;
+    let walks = 0;
+    StorageManager.prototype.collectActiveMemoryPaths = function (this: StorageManager, ...args: unknown[]) {
+      walks += 1;
+      return Reflect.apply(original, this, args);
+    };
+    try {
+      const first = await search(memoryDir, "real source wombat");
+      assert.equal(first.some((r) => r.node.nodeId === "real-node" && r.node.sourceMemoryIds?.includes(real.id)), true);
+      assert.equal(walks, 1, "the unresolved id is looked up by one walk");
+      await search(memoryDir, "real source wombat");
+      assert.equal(walks, 1, "a confirmed-absent id is not walked again within the TTL");
+    } finally {
+      StorageManager.prototype.collectActiveMemoryPaths = original;
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
