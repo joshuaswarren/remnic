@@ -345,3 +345,25 @@ test("a dangling source id costs one path walk, then is remembered as absent", a
   }
 });
 
+
+test("a separator-containing id written after the rebuild is still placed, by the scan", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-harmonic-index-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    await rebuildMemoryProjection({ memoryDir, storage, dryRun: false });
+    const day = new Date().toISOString().slice(0, 10);
+    await mkdir(path.join(memoryDir, "facts", day), { recursive: true });
+    await writeFile(
+      path.join(memoryDir, "facts", day, "capsule-import-file.md"),
+      memoryFileText("capsule/import-id", "capsule import ocelot source body"),
+      "utf-8",
+    );
+    storage.invalidateMemoryCachesForTiers(["hot", "cold"]);
+    await nodeFor(memoryDir, "capsule-node", ["capsule/import-id"], "capsule import ocelot source");
+    const results = await search(memoryDir, "capsule import ocelot source");
+    assert.equal(results.some((r) => r.node.nodeId === "capsule-node" && r.node.sourceMemoryIds?.includes("capsule/import-id")), true);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

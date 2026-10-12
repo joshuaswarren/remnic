@@ -120,7 +120,10 @@ async function readIndexedSourceMemories(options: {
     } catch {
       safeId = false;
     }
-    if (!state && !safeId) continue;
+    // An unprojected id that is not a single path segment cannot be probed or
+    // matched by filename, and the scan keys sources by frontmatter id, so only
+    // the scan can place it. Rare (legacy/imported ids); worst case is the old cost.
+    if (!state && !safeId) return null;
     // state.path was containment-checked by the projection reader.
     const candidates = state
       ? [state.path, path.join(options.memoryDir, "cold", state.pathRel)]
