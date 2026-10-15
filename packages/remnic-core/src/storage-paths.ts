@@ -30,6 +30,20 @@ export function isSafeLegacyPathSegment(value: string): boolean {
   );
 }
 
+const DAILY_FILE_DATE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
+
+/**
+ * True when `relativePath` is a daily file (`YYYY-MM-DD.jsonl`) named for a UTC
+ * date before `minDate`. Daily transcript files are named for the date they were
+ * written on, and an entry is written at or after its own timestamp, so such a
+ * file cannot hold an entry stamped on or after `minDate`. A file without a daily
+ * date name is never reported as older, so callers always read it.
+ */
+export function isDailyFileDatedBefore(relativePath: string, minDate: string | undefined): boolean {
+  const fileDate = DAILY_FILE_DATE.exec(path.basename(relativePath))?.[1];
+  return minDate !== undefined && fileDate !== undefined && fileDate < minDate;
+}
+
 export function isPathInsideStorageRoot(rootAbs: string, targetAbs: string): boolean {
   const rel = path.relative(rootAbs, targetAbs);
   if (rel === "") return true;
