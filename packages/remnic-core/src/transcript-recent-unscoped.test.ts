@@ -120,3 +120,20 @@ test("readRange without a cutoff keeps scanning every file", async () => {
     assert.ok(all.some((e) => e.turnId === "l2"), "90-day-old entry in the legacy file is still read");
   });
 });
+
+test("a legacy file whose name is date-shaped is not a daily partition and is never pruned", async () => {
+  await withStore(async ({ root, manager, now }) => {
+    await seedStandardStore(root, now);
+    // `<type>/<channelId>.jsonl` and a root-level file, where the channel id / file
+    // name happens to look like an old date. Both keep receiving entries.
+    await writeLines(path.join(root, "cron", "2020-01-01.jsonl"), [entry("cron:legacy", "legacy-channel", now - 2 * HOUR)]);
+    await writeLines(path.join(root, "2020-01-02.jsonl"), [entry("root:legacy", "legacy-root", now - 2 * HOUR)]);
+    const { startIso, endIso } = window(now, 6);
+    const full = await manager.readRange(startIso, endIso, undefined);
+    const recent = await manager.readRecent(6);
+    assert.deepEqual(recent, full);
+    const ids = recent.map((e) => e.turnId);
+    assert.ok(ids.includes("legacy-channel"), "date-shaped legacy channel file must still be read");
+    assert.ok(ids.includes("legacy-root"), "date-shaped root-level file must still be read");
+  });
+});
