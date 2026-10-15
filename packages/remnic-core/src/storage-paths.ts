@@ -30,6 +30,24 @@ export function isSafeLegacyPathSegment(value: string): boolean {
   );
 }
 
+const DAILY_FILE_DATE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
+
+/**
+ * True when `relativePath` is a daily partition, `<type>/<channel>/YYYY-MM-DD.jsonl`,
+ * named for a UTC date before `minDate`. Daily transcript files are named for the
+ * date they were written on, and an entry is written at or after its own
+ * timestamp, so such a file cannot hold an entry stamped on or after `minDate`.
+ * Only that three-component layout is a daily partition: a legacy
+ * `<type>/<channelId>.jsonl` or a root-level file can have a date-shaped name
+ * (a date-shaped channel id) without being one, so it is never reported as older
+ * and callers always read it.
+ */
+export function isDailyFileDatedBefore(relativePath: string, minDate: string | undefined): boolean {
+  const parts = relativePath.split(path.sep);
+  const fileDate = parts.length === 3 ? DAILY_FILE_DATE.exec(parts[2])?.[1] : undefined;
+  return minDate !== undefined && fileDate !== undefined && fileDate < minDate;
+}
+
 export function isPathInsideStorageRoot(rootAbs: string, targetAbs: string): boolean {
   const rel = path.relative(rootAbs, targetAbs);
   if (rel === "") return true;

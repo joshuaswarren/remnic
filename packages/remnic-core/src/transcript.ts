@@ -3,7 +3,7 @@ import path from "node:path";
 import { log } from "./logger.js";
 import type { TranscriptEntry, Checkpoint, PluginConfig } from "./types.js";
 import { analyzeSessionIntegrity, type SessionIntegrityReport } from "./session-integrity.js";
-import { resolveSafeStoragePath } from "./storage-paths.js";
+import { isDailyFileDatedBefore, resolveSafeStoragePath } from "./storage-paths.js";
 import { sessionStoragePaths } from "./session-identity.js";
 import { estimateTokenCount } from "./token-estimate.js";
 
@@ -679,7 +679,7 @@ export class TranscriptManager {
    * readRecent's inclusive-of-now behavior is handled by readRecent itself
    * extending its end, not by relaxing this bound.
    */
-  async readRange(startTime: string, endTime: string, sessionKey?: string): Promise<TranscriptEntry[]> {
+  async readRange(startTime: string, endTime: string, sessionKey?: string, skipFilesDatedBefore?: string): Promise<TranscriptEntry[]> {
     const start = new Date(startTime);
     const end = new Date(endTime);
     const entries: TranscriptEntry[] = [];
@@ -696,7 +696,7 @@ export class TranscriptManager {
 
     try {
       // Get all transcript files from the hierarchical structure
-      const transcriptFiles = await this.getAllTranscriptFiles();
+      const transcriptFiles = (await this.getAllTranscriptFiles()).filter((f) => !isDailyFileDatedBefore(f, skipFilesDatedBefore));
 
       // Read each relevant file
       for (const relativePath of transcriptFiles) {
@@ -742,8 +742,8 @@ export class TranscriptManager {
   /**
    * Read the last N hours of transcript.
    *
-   * Fast path: when sessionKey is given, reads only the 1-2 daily files for that
-   * specific channel instead of scanning all 95+ transcript files across all channels.
+   * Fast path: when sessionKey is given, reads only the 1-2 daily files for that channel. Without one,
+   * every channel is scanned but daily files older than the window (less a day of clock skew) are skipped.
    */
   async readRecent(hours: number, sessionKey?: string): Promise<TranscriptEntry[]> {
     const now = new Date();
@@ -761,7 +761,7 @@ export class TranscriptManager {
     if (sessionKey) {
       return this.readRecentForSession(start, end, sessionKey);
     }
-    return this.readRange(start.toISOString(), end.toISOString(), undefined);
+    return this.readRange(start.toISOString(), end.toISOString(), undefined, new Date(start.getTime() - 86_400_000).toISOString().slice(0, 10));
   }
 
   /**
