@@ -3371,11 +3371,20 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   }
 
   async correctionPlan(request: CorrectionRequest, opts?: { abortSignal?: AbortSignal }): Promise<CorrectionPlan> {
+    let next = request;
     if (request.targetIds?.some((id) => isHandleToken(id))) {
-      const targetIds = request.targetIds.map((id) => this.resolveMemoryIdOrHandleInput(id, request.sessionKey));
-      return this.correctionService().plan({ ...request, targetIds }, opts);
+      next = {
+        ...next,
+        targetIds: request.targetIds.map((id) => this.resolveMemoryIdOrHandleInput(id, request.sessionKey)),
+      };
     }
-    return this.correctionService().plan(request, opts);
+    if (request.duplicateOf && isHandleToken(request.duplicateOf)) {
+      next = {
+        ...next,
+        duplicateOf: this.resolveMemoryIdOrHandleInput(request.duplicateOf, request.sessionKey),
+      };
+    }
+    return this.correctionService().plan(next, opts);
   }
 
   async correctionApply(

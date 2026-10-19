@@ -397,6 +397,28 @@ test("correctionPlan: a handle in targetIds is resolved before planning; an unkn
   }
 });
 
+test("correctionPlan: a handle in duplicateOf is resolved before planning", async () => {
+  const { service, memoryDir } = await makeHarness({
+    recallMemoryHandles: true,
+    correctionEnabled: true,
+  });
+  try {
+    await assert.rejects(
+      () =>
+        service.correctionPlan({
+          text: "that memory is a duplicate",
+          targetIds: ["fact-loser"],
+          duplicateOf: "[m:dead]",
+          sessionKey: SESSION,
+        }),
+      (err: unknown) =>
+        err instanceof EngramAccessInputError && /not found/i.test((err as Error).message),
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("correctionPlan: a resolved handle targetIds set reaches the planner as concrete ids (round-trip)", async () => {
   const { orchestrator, service, memoryDir } = await makeHarness({
     recallMemoryHandles: true,
