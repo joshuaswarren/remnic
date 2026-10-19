@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { fork } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +10,7 @@ import { StorageManager } from "../storage.js";
 import type { PluginConfig } from "../types.js";
 import {
   createProjectionRebuildScheduleState,
+  forkProjectionRebuild,
   maybeRebuildMemoryProjectionScheduled,
   projectionRebuildChildEnv,
   type ProjectionRebuildForkRequest,
@@ -69,6 +71,22 @@ async function seedFact(memoryDir: string): Promise<void> {
     "utf8",
   );
 }
+
+test("a hung projection rebuild child is killed at the timeout", async () => {
+  const child = fork(process.execPath, ["-e", "setInterval(() => {}, 1e9);"], { stdio: "ignore" });
+  await assert.rejects(
+    () => forkProjectionRebuild(
+      { memoryDir: "/tmp/unused", defaultNamespace: "default", now: new Date("2026-06-01T00:00:00.000Z") },
+      { timeoutMs: 200, spawnChild: () => child },
+    ),
+    /timed out after 200ms/,
+  );
+  await new Promise<void>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) resolve();
+    else child.once("exit", () => resolve());
+  });
+  assert.equal(child.signalCode, "SIGKILL");
+});
 
 test("projection rebuild child env keeps locators and drops secrets", () => {
   const env = projectionRebuildChildEnv({

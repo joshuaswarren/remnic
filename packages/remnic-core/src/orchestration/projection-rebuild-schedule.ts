@@ -31,7 +31,7 @@
  * the fallback WARN surfaces staleness for any namespace that lags.
  */
 import { existsSync } from "node:fs";
-import { fork } from "node:child_process";
+import { fork, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import v8 from "node:v8";
 import { fileURLToPath } from "node:url";
@@ -75,6 +75,10 @@ export interface ProjectionRebuildForkResult {
  * once a transient cause clears, long enough to keep a persistently-failing
  * rebuild off every maintenance tick. */
 const FAILURE_RETRY_BACKOFF_MS = 5 * 60 * 1000;
+
+/** A hung child must not leave `inFlight` set until the daemon restarts.
+ * Generous: a full-corpus rebuild of a large ledger is minutes, not seconds. */
+const FORK_TIMEOUT_MS = 30 * 60 * 1000;
 
 const CHILD_ENV_ALLOWLIST = [
   "PATH",
@@ -159,27 +163,28 @@ function isRunnerSuccess(message: unknown): message is ProjectionRebuildForkResu
 /** Fork the projection rebuild. Arguments are path, namespace, and timestamp only. */
 export async function forkProjectionRebuild(
   request: ProjectionRebuildForkRequest,
+  options?: { timeoutMs?: number; spawnChild?: () => ChildProcess },
 ): Promise<ProjectionRebuildForkResult> {
-  const runnerPath = projectionRebuildRunnerPath();
-  const nowIso = request.now.toISOString();
-  const child = fork(
-    runnerPath,
-    [PROJECTION_REBUILD_RUNNER_FLAG, request.memoryDir, request.defaultNamespace, nowIso],
-    {
-      execArgv: runnerExecArgv(runnerPath),
-      env: projectionRebuildChildEnv(process.env),
-      stdio: ["ignore", "inherit", "inherit", "ipc"],
-    },
-  );
+  const timeoutMs = options?.timeoutMs ?? FORK_TIMEOUT_MS;
+  const child = options?.spawnChild
+    ? options.spawnChild()
+    : spawnProjectionRebuildChild(request);
   return await new Promise((resolve, reject) => {
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = (err?: Error, result?: ProjectionRebuildForkResult) => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       if (err) reject(err);
       else if (result) resolve(result);
       else reject(new Error("projection rebuild runner returned no result"));
     };
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(new Error(`projection rebuild runner timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timer.unref?.();
     child.on("message", (message: unknown) => {
       if (isRunnerSuccess(message)) {
         finish(undefined, message);
@@ -197,6 +202,20 @@ export async function forkProjectionRebuild(
       }
     });
   });
+}
+
+function spawnProjectionRebuildChild(request: ProjectionRebuildForkRequest): ChildProcess {
+  const runnerPath = projectionRebuildRunnerPath();
+  const nowIso = request.now.toISOString();
+  return fork(
+    runnerPath,
+    [PROJECTION_REBUILD_RUNNER_FLAG, request.memoryDir, request.defaultNamespace, nowIso],
+    {
+      execArgv: runnerExecArgv(runnerPath),
+      env: projectionRebuildChildEnv(process.env),
+      stdio: ["ignore", "inherit", "inherit", "ipc"],
+    },
+  );
 }
 
 function storageIsUnlocked(storage: InjectedStorage | undefined): boolean {
