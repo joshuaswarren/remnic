@@ -84,10 +84,16 @@ const FAILURE_RETRY_BACKOFF_MS = 5 * 60 * 1000;
  * configured interval is longer, the child may use that whole interval. */
 const FORK_TIMEOUT_MS = 30 * 60 * 1000;
 
-/** Hang cap for one scheduled fork. At least 30 minutes, otherwise the interval. */
+/** Hang cap for one scheduled fork. At least 30 minutes, otherwise the interval,
+ * and never above Node's 32-bit setTimeout limit. A larger delay overflows
+ * and fires in 1ms, which would kill every rebuild. */
+const MAX_SETTIMEOUT_MS = 2_147_483_647;
+
 export function projectionRebuildForkTimeoutMs(intervalMs: number): number {
-  if (!Number.isFinite(intervalMs) || intervalMs < FORK_TIMEOUT_MS) return FORK_TIMEOUT_MS;
-  return intervalMs;
+  const timeout = !Number.isFinite(intervalMs) || intervalMs < FORK_TIMEOUT_MS
+    ? FORK_TIMEOUT_MS
+    : intervalMs;
+  return Math.min(timeout, MAX_SETTIMEOUT_MS);
 }
 
 const projectionRebuildChildren = new Map<ProjectionRebuildScheduleState | undefined, Set<ChildProcess>>();
@@ -228,7 +234,7 @@ export async function forkProjectionRebuild(
     onChild?: (child: ChildProcess) => void;
   },
 ): Promise<ProjectionRebuildForkResult> {
-  const timeoutMs = options?.timeoutMs ?? FORK_TIMEOUT_MS;
+  const timeoutMs = Math.min(options?.timeoutMs ?? FORK_TIMEOUT_MS, MAX_SETTIMEOUT_MS);
   const child = options?.spawnChild
     ? options.spawnChild()
     : spawnProjectionRebuildChild(request);

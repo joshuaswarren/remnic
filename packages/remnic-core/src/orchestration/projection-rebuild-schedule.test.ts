@@ -195,6 +195,7 @@ test("the fork hang cap follows a long interval and stays at least 30 minutes", 
   assert.equal(projectionRebuildForkTimeoutMs(60_000), 30 * 60 * 1000);
   assert.equal(projectionRebuildForkTimeoutMs(6 * 60 * 60 * 1000), 6 * 60 * 60 * 1000);
   assert.equal(projectionRebuildForkTimeoutMs(Number.NaN), 30 * 60 * 1000);
+  assert.equal(projectionRebuildForkTimeoutMs(30 * 24 * 60 * 60 * 1000), 2_147_483_647);
 });
 
 test("projection rebuild child env keeps locators and drops secrets", () => {
