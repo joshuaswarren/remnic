@@ -2625,6 +2625,15 @@ test("parseConfig projection-rebuild knobs: defaults, boolean coercion, numeric 
   assert.throws(() => parseConfig({ projectionRebuildIntervalMs: 1000 }), /projectionRebuildIntervalMs/);
   assert.throws(() => parseConfig({ projectionRebuildIntervalMs: 3600000.5 }), /projectionRebuildIntervalMs/);
   assert.throws(() => parseConfig({ projectionRebuildIntervalMs: "abc" }), /projectionRebuildIntervalMs/);
+
+  assert.equal(defaults.projectionRebuildHeapUsageLimit, 0.6);
+  assert.equal(parseConfig({ projectionRebuildHeapUsageLimit: 0.5 }).projectionRebuildHeapUsageLimit, 0.5);
+  assert.equal(parseConfig({ projectionRebuildHeapUsageLimit: "0.5" }).projectionRebuildHeapUsageLimit, 0.5);
+  assert.equal(parseConfig({ projectionRebuildHeapUsageLimit: 1 }).projectionRebuildHeapUsageLimit, 1);
+  assert.throws(() => parseConfig({ projectionRebuildHeapUsageLimit: 0 }), /projectionRebuildHeapUsageLimit/);
+  assert.throws(() => parseConfig({ projectionRebuildHeapUsageLimit: -0.2 }), /projectionRebuildHeapUsageLimit/);
+  assert.throws(() => parseConfig({ projectionRebuildHeapUsageLimit: 1.1 }), /projectionRebuildHeapUsageLimit/);
+  assert.throws(() => parseConfig({ projectionRebuildHeapUsageLimit: "abc" }), /projectionRebuildHeapUsageLimit/);
 });
 
 test("parseConfig forwards activity source settings", () => {

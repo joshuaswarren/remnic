@@ -46,33 +46,41 @@ export type LedgerSecureReader = (filePath: string) => Promise<string>;
 export type LedgerSecureBufferReader = (filePath: string) => Promise<Buffer>;
 
 /**
- * Parse + canonically sort lifecycle rows from a line source. Permissive
- * validation (any `eventType` string is admitted) — matches the historical
- * `readAllMemoryLifecycleEvents` contract that projection rebuild depends on.
- * Fail-open on malformed rows.
+ * Parse one ledger line. Permissive validation (any `eventType` string is
+ * admitted) — matches the historical `readAllMemoryLifecycleEvents` contract
+ * that projection rebuild depends on. Fail-open on malformed rows.
+ */
+function parseLifecycleLedgerLine(line: string): MemoryLifecycleEvent | null {
+  const row = line.trim();
+  if (!row) return null;
+  try {
+    const parsed = JSON.parse(row) as Partial<MemoryLifecycleEvent>;
+    if (
+      typeof parsed.eventId === "string" &&
+      typeof parsed.memoryId === "string" &&
+      typeof parsed.eventType === "string" &&
+      typeof parsed.timestamp === "string" &&
+      typeof parsed.actor === "string" &&
+      typeof parsed.ruleVersion === "string"
+    ) {
+      return parsed as MemoryLifecycleEvent;
+    }
+  } catch {
+    // Ignore malformed rows (fail-open).
+  }
+  return null;
+}
+
+/**
+ * Parse + canonically sort lifecycle rows from a line source.
  */
 async function collectLifecycleEvents(
   lines: AsyncIterable<string>,
 ): Promise<MemoryLifecycleEvent[]> {
   const out: MemoryLifecycleEvent[] = [];
   for await (const line of lines) {
-    const row = line.trim();
-    if (!row) continue;
-    try {
-      const parsed = JSON.parse(row) as Partial<MemoryLifecycleEvent>;
-      if (
-        typeof parsed.eventId === "string" &&
-        typeof parsed.memoryId === "string" &&
-        typeof parsed.eventType === "string" &&
-        typeof parsed.timestamp === "string" &&
-        typeof parsed.actor === "string" &&
-        typeof parsed.ruleVersion === "string"
-      ) {
-        out.push(parsed as MemoryLifecycleEvent);
-      }
-    } catch {
-      // Ignore malformed rows (fail-open).
-    }
+    const parsed = parseLifecycleLedgerLine(line);
+    if (parsed) out.push(parsed);
   }
   return sortMemoryLifecycleEvents(out);
 }
@@ -116,27 +124,47 @@ async function* linesFromBuffer(
 }
 
 /**
- * Every valid ledger row in canonical order, read through the string-capped
- * secure line source (refuses an encrypted body over the whole-file decrypt
- * limit). General readers use this; compaction uses the uncapped buffer variant.
+ * Yield each valid ledger row in file order. Unlike
+ * {@link readAllLifecycleEventsFromLedger}, this does not accumulate or sort
+ * the ledger first. ENOENT yields nothing; a locked secure store rethrows.
+ * Malformed rows are skipped.
  */
-export async function readAllLifecycleEventsFromLedger(
+export async function* iterateLifecycleEventsFromLedger(
   ledgerPath: string,
   readSecureFile: LedgerSecureReader,
-): Promise<MemoryLifecycleEvent[]> {
+): AsyncGenerator<MemoryLifecycleEvent> {
+  let lines: AsyncGenerator<string>;
   try {
-    return await collectLifecycleEvents(
-      readMaybeEncryptedLines(
-        ledgerPath,
-        () => readSecureFile(ledgerPath),
-        STATE_FILE_MAX_DECRYPT_BYTES,
-      ),
+    lines = readMaybeEncryptedLines(
+      ledgerPath,
+      () => readSecureFile(ledgerPath),
+      STATE_FILE_MAX_DECRYPT_BYTES,
     );
   } catch (err) {
     if (err instanceof SecureStoreLockedError) throw err;
     if (!isErrnoCode(err, "ENOENT")) throw err;
-    return [];
+    return;
   }
+  try {
+    for await (const line of lines) {
+      const parsed = parseLifecycleLedgerLine(line);
+      if (parsed) yield parsed;
+    }
+  } catch (err) {
+    if (err instanceof SecureStoreLockedError) throw err;
+    if (!isErrnoCode(err, "ENOENT")) throw err;
+  }
+}
+
+export async function readAllLifecycleEventsFromLedger(
+  ledgerPath: string,
+  readSecureFile: LedgerSecureReader,
+): Promise<MemoryLifecycleEvent[]> {
+  const out: MemoryLifecycleEvent[] = [];
+  for await (const event of iterateLifecycleEventsFromLedger(ledgerPath, readSecureFile)) {
+    out.push(event);
+  }
+  return sortMemoryLifecycleEvents(out);
 }
 
 /**

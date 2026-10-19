@@ -72,6 +72,7 @@ export async function commitPreparedFileAtomically(
   tempPath: string,
   outputPath: string,
   backupPath?: string,
+  beforeRename?: () => void | Promise<void>,
 ): Promise<string | undefined> {
   const dir = path.dirname(outputPath);
   let resolvedBackupPath: string | undefined;
@@ -79,6 +80,7 @@ export async function commitPreparedFileAtomically(
     if (backupPath) {
       resolvedBackupPath = await copyExistingFileToBackup(outputPath, backupPath);
     }
+    if (beforeRename) await beforeRename();
     await rename(tempPath, outputPath);
     await syncDirectory(dir);
     return resolvedBackupPath;

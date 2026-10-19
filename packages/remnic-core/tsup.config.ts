@@ -31,6 +31,7 @@ const packageOwnedNestedEntryFiles = [
   "src/connectors/index.ts",
   "src/connectors/codex-materialize.ts",
   "src/connectors/codex-materialize-runner.ts",
+  "src/maintenance/rebuild-memory-projection-runner.ts",
   "src/contradiction/index.ts",
 ];
 

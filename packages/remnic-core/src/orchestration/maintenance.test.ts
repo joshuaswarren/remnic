@@ -2968,8 +2968,8 @@ test("maintenance tool request invokes the scheduled projection rebuild wiring (
   });
   try {
     scheduler.requestQmdMaintenanceForTool("test");
-    for (let attempt = 0; attempt < 100 && probeProjectionHealth(memoryDir).state === "absent"; attempt += 1) {
-      await delay(10);
+    for (let attempt = 0; attempt < 60 && probeProjectionHealth(memoryDir).state === "absent"; attempt += 1) {
+      await delay(500);
     }
     assert.equal(
       probeProjectionHealth(memoryDir).state,

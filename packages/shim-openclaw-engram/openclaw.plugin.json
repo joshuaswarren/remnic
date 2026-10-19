@@ -4614,6 +4614,13 @@
         "default": true,
         "description": "Schedule rebuilds of the memory projection. Default true; manual rebuild remains available."
       },
+      "projectionRebuildHeapUsageLimit": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "maximum": 1,
+        "default": 0.6,
+        "description": "Postpone the scheduled projection rebuild when used heap divided by the V8 heap limit exceeds this ratio. Finite number in (0, 1]; default 0.6. 1 disables the guard. A postponed rebuild uses the failure backoff and does not start the full-corpus allocation."
+      },
       "projectionRebuildIntervalMs": {
         "type": "integer",
         "minimum": 60000,

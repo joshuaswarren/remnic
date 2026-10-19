@@ -34,6 +34,13 @@ export interface CorpusReadOptions {
    * work, and on a tree large enough to matter there are thousands of them.
    */
   abortSignal?: AbortSignal;
+  /**
+   * When `false`, parsed memories are returned without the raw file text kept
+   * beside them (`rememberRawFrontmatter`). Default (unset) retains that copy.
+   * A `false` read bypasses the shared corpus caches so it cannot replace a
+   * raw-retaining snapshot other callers still need.
+   */
+  retainRaw?: boolean;
 }
 
 /** Stop a corpus read at a scan boundary when its caller has given up. */
