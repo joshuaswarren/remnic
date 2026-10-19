@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { commitPreparedFileAtomically } from "../maintenance/atomic-file.js";
 import { watchProjectionRebuildParent } from "../maintenance/projection-rebuild-abort.js";
 import { loadProjectionTimeline } from "../maintenance/projection-timeline.js";
 import { rebuildMemoryProjection } from "../maintenance/rebuild-memory-projection.js";
@@ -262,6 +263,28 @@ test("an aborted signal stops an archive scan and the lifecycle ledger mid-strea
     assert.ok(pulled < 5);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an abort after the projection backup does not rename over the live file", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-proj-rename-"));
+  const output = path.join(dir, "memory-projection.sqlite");
+  const temp = `${output}.tmp`;
+  const backup = path.join(dir, "backup.sqlite");
+  try {
+    await writeFile(output, "live");
+    await writeFile(temp, "orphan");
+    await assert.rejects(
+      () => commitPreparedFileAtomically(temp, output, backup, async () => {
+        throw new Error("projection rebuild runner parent disconnected");
+      }),
+      /parent disconnected/,
+    );
+    assert.equal(await readFile(output, "utf8"), "live");
+    assert.equal(existsSync(temp), false);
+    assert.equal(await readFile(backup, "utf8"), "live");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

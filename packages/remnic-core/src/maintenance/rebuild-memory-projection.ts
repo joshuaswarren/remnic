@@ -1094,7 +1094,12 @@ export async function rebuildMemoryProjection(
       await throwIfProjectionRebuildAborted(options.signal);
       backupPath = await backupExistingProjection(options.memoryDir, outputPath, now);
       await throwIfProjectionRebuildAborted(options.signal);
-      backupPath = await commitPreparedFileAtomically(tempPath, outputPath, backupPath);
+      backupPath = await commitPreparedFileAtomically(
+        tempPath,
+        outputPath,
+        backupPath,
+        () => throwIfProjectionRebuildAborted(options.signal),
+      );
     } catch (err) {
       if (options.signal?.aborted) await rm(tempPath, { force: true });
       throw err;
