@@ -6,6 +6,7 @@
  * order on ties) without materializing the unsorted ledger beside the result.
  */
 import path from "node:path";
+import { throwIfAborted } from "../abort-error.js";
 import { log } from "../logger.js";
 import type { MemoryFile, MemoryLifecycleEvent } from "../types.js";
 import {
@@ -117,6 +118,7 @@ function internLedgerEvent(event: MemoryLifecycleEvent, intern: <T extends strin
 async function consumeLifecycleLedger(
   events: AsyncIterable<MemoryLifecycleEvent>,
   ledgerPath: string,
+  signal?: AbortSignal,
 ): Promise<ProjectionTimeline | null> {
   const intern = internPool();
   const best = new Map<string, MemoryLifecycleEvent>();
@@ -125,6 +127,7 @@ async function consumeLifecycleLedger(
   const identities = new Set<string>();
   let sawEvent = false;
   for await (const event of events) {
+    throwIfAborted(signal, "projection rebuild aborted");
     sawEvent = true;
     internLedgerEvent(event, intern);
     identities.add(memoryLifecycleEventProjectionIdentity(event));
@@ -178,11 +181,13 @@ export async function loadProjectionTimeline(options: {
   storage: ProjectionLedgerReader;
   memoryDir: string;
   memories: MemoryFile[];
+  signal?: AbortSignal;
 }): Promise<ProjectionTimeline> {
   const ledgerPath = path.join(options.memoryDir, "state", "memory-lifecycle-ledger.jsonl");
   const streamed = await consumeLifecycleLedger(
     options.storage.iterateMemoryLifecycleEvents(),
     ledgerPath,
+    options.signal,
   );
   if (streamed) return streamed;
 

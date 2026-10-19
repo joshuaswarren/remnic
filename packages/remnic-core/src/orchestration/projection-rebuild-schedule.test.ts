@@ -8,11 +8,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { watchProjectionRebuildParent } from "../maintenance/projection-rebuild-abort.js";
+import { loadProjectionTimeline } from "../maintenance/projection-timeline.js";
 import { rebuildMemoryProjection } from "../maintenance/rebuild-memory-projection.js";
 import { initLogger, resetLogger, type LoggerBackend } from "../logger.js";
 import { probeProjectionHealth } from "../memory-projection-store.js";
 import { StorageManager } from "../storage.js";
-import type { PluginConfig } from "../types.js";
+import type { MemoryLifecycleEvent, PluginConfig } from "../types.js";
 import {
   createProjectionRebuildScheduleState,
   forkProjectionRebuild,
@@ -213,6 +214,52 @@ test("an aborted signal stops the corpus scan before the projection is published
     );
     assert.equal(existsSync(projection), false);
     assert.equal(existsSync(`${projection}.tmp`), false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an aborted signal stops an archive scan and the lifecycle ledger mid-stream", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-proj-abort-rest-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await assert.rejects(
+      () => storage.readArchivedMemories({ retainRaw: false, abortSignal: AbortSignal.abort() }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.equal(err.name, "AbortError");
+        return true;
+      },
+    );
+    const controller = new AbortController();
+    let pulled = 0;
+    await assert.rejects(
+      () => loadProjectionTimeline({
+        storage: {
+          iterateMemoryLifecycleEvents(): AsyncIterable<MemoryLifecycleEvent> {
+            return (async function* () {
+              for (let index = 0; index < 5; index += 1) {
+                pulled += 1;
+                if (index === 1) controller.abort();
+                yield {
+                  eventId: `e${index}`,
+                  memoryId: "m",
+                  eventType: "created",
+                  timestamp: "2026-01-01T00:00:00.000Z",
+                  actor: "test",
+                  ruleVersion: "1",
+                };
+              }
+            })();
+          },
+        },
+        memoryDir,
+        memories: [],
+        signal: controller.signal,
+      }),
+      /projection rebuild aborted/,
+    );
+    assert.ok(pulled < 5);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

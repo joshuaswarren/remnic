@@ -15,7 +15,7 @@ import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync } f
 import { createHash } from "node:crypto";
 import { computeLegacyContentHash, normalizeContent } from "./content-hash.js";
 import { parseDriftProvenance, serializeDriftProvenance } from "./preferences/drift-types.js";
-import { raceAbort } from "./abort-error.js";
+import { isAbortError, raceAbort } from "./abort-error.js";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { selectArtifactMatches, type ArtifactSearchOptions } from "./artifact-search.js";
 import path from "node:path";
@@ -4863,6 +4863,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * Used by long-term recall fallback when hot recall has no hits.
    */
   async readArchivedMemories(options?: CorpusReadOptions): Promise<MemoryFile[]> {
+    checkCorpusReadAbort(options);
     const memories: MemoryFile[] = [];
     const root = this.archiveDir;
 
@@ -4870,6 +4871,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       try {
         const entries = await readdir(dir, { withFileTypes: true });
         for (const entry of entries) {
+          checkCorpusReadAbort(options);
           const fullPath = path.join(dir, entry.name);
           if (entry.isDirectory()) {
             await readDir(fullPath);
@@ -4892,7 +4894,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             } catch (err) {
               // A bad archive member must not hide readable siblings. A locked
               // secure store remains authoritative even for one member.
-              if (err instanceof SecureStoreLockedError) throw err;
+              // An abort must leave the scan, not be logged as one bad file.
+              if (isAbortError(err) || err instanceof SecureStoreLockedError) throw err;
               if (!isErrnoCode(err, "ENOENT")) {
                 log.warn(`skipping unreadable archived memory ${fullPath}: ${err}`);
               }
@@ -4900,12 +4903,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           }
         }
       } catch (error) {
-        if (error instanceof SecureStoreLockedError) throw error;
+        if (isAbortError(error) || error instanceof SecureStoreLockedError) throw error;
         if (!isErrnoCode(error, "ENOENT")) throw error;
       }
     };
 
     await readDir(root);
+    checkCorpusReadAbort(options);
     return options?.retainRaw === false ? memories : this.rememberMemorySnapshots(memories);
   }
 

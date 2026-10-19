@@ -574,6 +574,7 @@ async function loadAuthoritativeProjectionSnapshot(options: {
     storage,
     memoryDir: options.memoryDir,
     memories: projectionMemories,
+    signal: options.signal,
   });
   await throwIfProjectionRebuildAborted(options.signal);
   const scope = normalizeProjectionScope(options);
