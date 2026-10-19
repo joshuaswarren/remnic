@@ -543,7 +543,10 @@ async function loadAuthoritativeProjectionSnapshot(options: {
   // Force a fresh disk read — projection verify/rebuild must see the true
   // on-disk state, not a potentially stale in-process cache.
   storage.invalidateAllMemoriesCacheForDir({ indexedText: false });
-  const corpusRead = { retainRaw: options.retainRaw === true };
+  const corpusRead = {
+    retainRaw: options.retainRaw === true,
+    abortSignal: options.signal,
+  };
   const hot = await storage.readAllMemories(corpusRead);
   await throwIfProjectionRebuildAborted(options.signal);
   const cold = await storage.readAllColdMemories(corpusRead);

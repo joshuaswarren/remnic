@@ -191,6 +191,33 @@ test("a hung projection rebuild child is killed at the timeout", async () => {
   assertChildKilled(child);
 });
 
+test("an aborted signal stops the corpus scan before the projection is published", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-proj-abort-scan-"));
+  const projection = path.join(memoryDir, "state", "memory-projection.sqlite");
+  try {
+    await seedFact(memoryDir);
+    const signal = AbortSignal.abort(new Error("projection rebuild runner parent disconnected"));
+    await assert.rejects(
+      () => rebuildMemoryProjection({
+        memoryDir,
+        dryRun: false,
+        now: new Date("2026-06-01T00:00:00.000Z"),
+        signal,
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.equal(err.name, "AbortError");
+        assert.match(err.message, /corpus read aborted/);
+        return true;
+      },
+    );
+    assert.equal(existsSync(projection), false);
+    assert.equal(existsSync(`${projection}.tmp`), false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("the fork hang cap follows a long interval and stays at least 30 minutes", () => {
   assert.equal(projectionRebuildForkTimeoutMs(60_000), 30 * 60 * 1000);
   assert.equal(projectionRebuildForkTimeoutMs(6 * 60 * 60 * 1000), 6 * 60 * 60 * 1000);
