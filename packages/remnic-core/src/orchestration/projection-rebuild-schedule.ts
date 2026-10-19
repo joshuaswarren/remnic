@@ -11,6 +11,9 @@
  * The rebuild runs in a forked child so the corpus and lifecycle ledger are
  * not allocated in the daemon heap. An unlocked secure store stays in-process:
  * the key is process-local and is never placed on the child's argv or env.
+ * The child is killed on scheduler dispose and on parent exit. If the parent
+ * dies without running those hooks, the child sees the IPC channel close and
+ * stops before it publishes the projection.
  * When the daemon heap is already above `projectionRebuildHeapUsageLimit`,
  * the job is postponed with the failure backoff instead of starting.
  *
@@ -79,6 +82,29 @@ const FAILURE_RETRY_BACKOFF_MS = 5 * 60 * 1000;
 /** A hung child must not leave `inFlight` set until the daemon restarts.
  * Generous: a full-corpus rebuild of a large ledger is minutes, not seconds. */
 const FORK_TIMEOUT_MS = 30 * 60 * 1000;
+
+const activeProjectionRebuildChildren = new Set<ChildProcess>();
+let parentExitHookInstalled = false;
+
+function rememberProjectionRebuildChild(child: ChildProcess): void {
+  activeProjectionRebuildChildren.add(child);
+  const forget = () => {
+    activeProjectionRebuildChildren.delete(child);
+  };
+  child.once("exit", forget);
+  child.once("error", forget);
+  if (!parentExitHookInstalled) {
+    parentExitHookInstalled = true;
+    process.on("exit", terminateScheduledProjectionRebuilds);
+  }
+}
+
+/** SIGKILL every scheduled rebuild child. Used on dispose and parent exit. */
+export function terminateScheduledProjectionRebuilds(): void {
+  for (const child of activeProjectionRebuildChildren) {
+    child.kill("SIGKILL");
+  }
+}
 
 const CHILD_ENV_ALLOWLIST = [
   "PATH",
@@ -163,12 +189,18 @@ function isRunnerSuccess(message: unknown): message is ProjectionRebuildForkResu
 /** Fork the projection rebuild. Arguments are path, namespace, and timestamp only. */
 export async function forkProjectionRebuild(
   request: ProjectionRebuildForkRequest,
-  options?: { timeoutMs?: number; spawnChild?: () => ChildProcess },
+  options?: {
+    timeoutMs?: number;
+    spawnChild?: () => ChildProcess;
+    /** Invoked after exit listeners are attached. Tests use this to disconnect. */
+    onChild?: (child: ChildProcess) => void;
+  },
 ): Promise<ProjectionRebuildForkResult> {
   const timeoutMs = options?.timeoutMs ?? FORK_TIMEOUT_MS;
   const child = options?.spawnChild
     ? options.spawnChild()
     : spawnProjectionRebuildChild(request);
+  rememberProjectionRebuildChild(child);
   return await new Promise((resolve, reject) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -201,6 +233,7 @@ export async function forkProjectionRebuild(
         finish(new Error(`projection rebuild runner exited ${code ?? "null"}`));
       }
     });
+    options?.onChild?.(child);
   });
 }
 

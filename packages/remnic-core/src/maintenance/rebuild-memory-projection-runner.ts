@@ -8,6 +8,7 @@
  * or in the environment — an encrypted store rebuilds in the parent instead.
  */
 import { initLogger, log } from "../logger.js";
+import { watchProjectionRebuildParent } from "./projection-rebuild-abort.js";
 import { rebuildMemoryProjection } from "./rebuild-memory-projection.js";
 
 export const PROJECTION_REBUILD_RUNNER_FLAG = "--remnic-projection-rebuild-runner";
@@ -54,12 +55,17 @@ function send(message: ProjectionRebuildRunnerSuccess | ProjectionRebuildRunnerF
 async function main(): Promise<void> {
   initLogger();
   const { memoryDir, defaultNamespace, now } = runnerArgs();
+  const signal = watchProjectionRebuildParent();
   const result = await rebuildMemoryProjection({
     memoryDir,
     defaultNamespace,
     dryRun: false,
     now,
+    signal,
   });
+  if (signal.aborted || process.connected === false) {
+    throw new Error("projection rebuild runner parent disconnected");
+  }
   await send({
     ok: true,
     currentRows: result.currentRows,
@@ -74,6 +80,10 @@ if (invokedAsRunner) {
     () => process.exit(0),
     (err: unknown) => {
       const error = err instanceof Error ? err.message : String(err);
+      if (process.connected === false) {
+        process.exit(1);
+        return;
+      }
       log.warn(`projection rebuild runner failed: ${error}`);
       send({ ok: false, error }).then(
         () => process.exit(1),

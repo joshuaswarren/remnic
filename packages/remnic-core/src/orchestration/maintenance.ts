@@ -55,6 +55,7 @@ import { resolveDaySummaryCronModel } from "../maintenance/day-summary-cron.js";
 import {
   createProjectionRebuildScheduleState,
   maybeRebuildMemoryProjectionScheduled,
+  terminateScheduledProjectionRebuilds,
 } from "./projection-rebuild-schedule.js";
 import {
   drainPendingLifecycleLedgerIfAny,
@@ -1168,6 +1169,7 @@ export class MaintenanceScheduler {
    */
   async dispose(): Promise<void> {
     this.disposed = true;
+    terminateScheduledProjectionRebuilds();
     const consolidationDrain = this.consolidationRunPromise;
     // The registrar latches teardown first (so a draining tick's onRun cannot
     // re-arm QMD maintenance) and aborts+drains the sync. Capture its drain and

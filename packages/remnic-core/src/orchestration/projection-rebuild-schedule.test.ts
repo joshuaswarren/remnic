@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
+import { once } from "node:events";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { watchProjectionRebuildParent } from "../maintenance/projection-rebuild-abort.js";
+import { rebuildMemoryProjection } from "../maintenance/rebuild-memory-projection.js";
 import { initLogger, resetLogger, type LoggerBackend } from "../logger.js";
 import { probeProjectionHealth } from "../memory-projection-store.js";
 import { StorageManager } from "../storage.js";
@@ -13,9 +18,37 @@ import {
   forkProjectionRebuild,
   maybeRebuildMemoryProjectionScheduled,
   projectionRebuildChildEnv,
+  terminateScheduledProjectionRebuilds,
   type ProjectionRebuildForkRequest,
   type ProjectionRebuildForkResult,
 } from "./projection-rebuild-schedule.js";
+
+const PARENT_DISCONNECT_FLAG = "--projection-parent-disconnect-child";
+
+if (process.argv.includes(PARENT_DISCONNECT_FLAG)) {
+  const memoryDir = process.argv[process.argv.indexOf(PARENT_DISCONNECT_FLAG) + 1];
+  if (!memoryDir) process.exit(1);
+  try {
+    const signal = watchProjectionRebuildParent();
+    process.send?.({ ready: true });
+    await new Promise<void>((resolve) => {
+      if (signal.aborted) {
+        resolve();
+        return;
+      }
+      signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    await rebuildMemoryProjection({
+      memoryDir,
+      dryRun: false,
+      now: new Date("2026-06-01T00:00:00.000Z"),
+      signal,
+    });
+  } catch {
+    process.exit(1);
+  }
+  process.exit(0);
+}
 
 function config(memoryDir: string, overrides: Record<string, unknown> = {}): PluginConfig {
   return {
@@ -71,6 +104,44 @@ async function seedFact(memoryDir: string): Promise<void> {
     "utf8",
   );
 }
+
+test("shutting down the parent kills the projection rebuild child", async () => {
+  const child = fork(process.execPath, ["-e", "setInterval(() => {}, 1e9);"], { stdio: "ignore" });
+  const pending = forkProjectionRebuild(
+    { memoryDir: "/tmp/unused", defaultNamespace: "default", now: new Date("2026-06-01T00:00:00.000Z") },
+    { timeoutMs: 60_000, spawnChild: () => child },
+  );
+  terminateScheduledProjectionRebuilds();
+  await assert.rejects(pending, /exited/);
+  assert.equal(child.signalCode, "SIGKILL");
+});
+
+test("a disconnected parent does not let the rebuild child publish", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-proj-orphan-"));
+  const projection = path.join(memoryDir, "state", "memory-projection.sqlite");
+  try {
+    await seedFact(memoryDir);
+    const child = fork(fileURLToPath(import.meta.url), [
+      PARENT_DISCONNECT_FLAG,
+      memoryDir,
+    ], {
+      execArgv: ["--import", "tsx"],
+      stdio: ["ignore", "inherit", "inherit", "ipc"],
+    });
+    const outcome = await Promise.race([
+      once(child, "message").then(() => "ready" as const),
+      once(child, "exit").then(() => "exit" as const),
+    ]);
+    assert.equal(outcome, "ready");
+    child.disconnect();
+    const [code] = await once(child, "exit");
+    assert.notEqual(code, 0);
+    assert.equal(existsSync(projection), false);
+    assert.equal(existsSync(`${projection}.tmp`), false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 
 test("a hung projection rebuild child is killed at the timeout", async () => {
   const child = fork(process.execPath, ["-e", "setInterval(() => {}, 1e9);"], { stdio: "ignore" });

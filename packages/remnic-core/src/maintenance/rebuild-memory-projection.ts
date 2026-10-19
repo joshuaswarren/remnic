@@ -43,6 +43,7 @@ import {
 } from "../memory-projection-format.js";
 import { openBetterSqlite3 } from "../runtime/better-sqlite.js";
 import { commitPreparedFileAtomically } from "./atomic-file.js";
+import { throwIfProjectionRebuildAborted } from "./projection-rebuild-abort.js";
 import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 
 export interface RebuildMemoryProjectionOptions {
@@ -60,6 +61,8 @@ export interface RebuildMemoryProjectionOptions {
    * the rebuild's peak heap down. Output rows stay the same either way.
    */
   retainRaw?: boolean;
+  /** When aborted, the rebuild stops before it publishes the projection file. */
+  signal?: AbortSignal;
 }
 
 export type {
@@ -505,6 +508,7 @@ async function loadAuthoritativeProjectionSnapshot(options: {
   updatedAfter?: string;
   updatedBefore?: string;
   retainRaw?: boolean;
+  signal?: AbortSignal;
 }): Promise<{
   allMemories: MemoryFile[];
   currentRows: MemoryProjectionCurrentState[];
@@ -540,11 +544,13 @@ async function loadAuthoritativeProjectionSnapshot(options: {
   // on-disk state, not a potentially stale in-process cache.
   storage.invalidateAllMemoriesCacheForDir({ indexedText: false });
   const corpusRead = { retainRaw: options.retainRaw === true };
-  const selected = selectProjectionMemories([
-    await storage.readAllMemories(corpusRead),
-    await storage.readAllColdMemories(corpusRead),
-    await storage.readArchivedMemories(corpusRead),
-  ]);
+  const hot = await storage.readAllMemories(corpusRead);
+  await throwIfProjectionRebuildAborted(options.signal);
+  const cold = await storage.readAllColdMemories(corpusRead);
+  await throwIfProjectionRebuildAborted(options.signal);
+  const archived = await storage.readArchivedMemories(corpusRead);
+  await throwIfProjectionRebuildAborted(options.signal);
+  const selected = selectProjectionMemories([hot, cold, archived]);
   const allMemories = selected.allMemories;
   const projectionMemories = selected.memories;
   const currentRows = projectionMemories.map((memory) => toCurrentStateRow(options.memoryDir, memory));
@@ -566,6 +572,7 @@ async function loadAuthoritativeProjectionSnapshot(options: {
     memoryDir: options.memoryDir,
     memories: projectionMemories,
   });
+  await throwIfProjectionRebuildAborted(options.signal);
   const scope = normalizeProjectionScope(options);
   const scopedMemories = filterMemoriesForProjectionScope(projectionMemories, scope);
   const scopedMemoryIds = new Set(scopedMemories.map((memory) => memory.frontmatter.id));
@@ -1005,6 +1012,7 @@ export async function rebuildMemoryProjection(
   const now = options.now ?? new Date();
   const outputPath = getMemoryProjectionPath(options.memoryDir);
   const snapshot = await loadAuthoritativeProjectionSnapshot(options);
+  await throwIfProjectionRebuildAborted(options.signal);
 
   let backupPath: string | undefined;
   if (!dryRun) {
@@ -1064,6 +1072,7 @@ export async function rebuildMemoryProjection(
 
     const tempPath = `${outputPath}.tmp`;
     await mkdir(path.dirname(outputPath), { recursive: true });
+    await throwIfProjectionRebuildAborted(options.signal);
     await rm(tempPath, { force: true });
     writeProjectionDb(
       tempPath,
@@ -1077,8 +1086,15 @@ export async function rebuildMemoryProjection(
       snapshot.sourceLifecycleLedgerEventCount,
       !hasScopedProjectionFilter(snapshot.scope),
     );
-    backupPath = await backupExistingProjection(options.memoryDir, outputPath, now);
-    backupPath = await commitPreparedFileAtomically(tempPath, outputPath, backupPath);
+    try {
+      await throwIfProjectionRebuildAborted(options.signal);
+      backupPath = await backupExistingProjection(options.memoryDir, outputPath, now);
+      await throwIfProjectionRebuildAborted(options.signal);
+      backupPath = await commitPreparedFileAtomically(tempPath, outputPath, backupPath);
+    } catch (err) {
+      if (options.signal?.aborted) await rm(tempPath, { force: true });
+      throw err;
+    }
   }
 
   return {
