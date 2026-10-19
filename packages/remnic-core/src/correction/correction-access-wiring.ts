@@ -548,7 +548,7 @@ async function retireMemoryFn(
   wiring: CorrectionAccessWiring,
   namespace: string,
   memoryId: string,
-  opts: { status: "superseded" | "retracted"; supersededBy?: string; validUntil?: string; lineage?: string[] },
+  opts: { status: "superseded" | "retracted"; supersededBy?: string; validUntil?: string },
   abortSignal?: AbortSignal,
 ): Promise<void> {
   throwIfAborted(abortSignal, "correction apply aborted");
@@ -558,14 +558,12 @@ async function retireMemoryFn(
   throwIfAborted(abortSignal, "correction apply aborted");
   if (!memory) throw new CorrectionContractError(`memory not found for retire: ${memoryId}`);
   const storageStatus: MemoryStatus = opts.status === "retracted" ? "forgotten" : "superseded";
-  const lineage = mergeLineage(memory.frontmatter.lineage, opts.lineage);
   throwIfAborted(abortSignal, "correction apply aborted");
   await storage.writeMemoryFrontmatter(memory, {
     status: storageStatus,
     ...(opts.supersededBy ? { supersededBy: opts.supersededBy } : {}),
     ...(opts.status === "superseded" ? { supersededAt: new Date().toISOString() } : {}),
     ...(opts.validUntil ? { invalid_at: opts.validUntil } : {}),
-    ...(lineage ? { lineage } : {}),
   });
 }
 
@@ -941,17 +939,7 @@ function toExecutorMemory(m: MemoryFile): ExecutorMemory {
       ? { contentHash: fm.contentHash }
       : {}),
     status: fm.status ?? "active",
-    ...(fm.lineage && fm.lineage.length > 0 ? { lineage: [...fm.lineage] } : {}),
   } satisfies ExecutorMemory;
-}
-
-function mergeLineage(existing: string[] | undefined, added: string[] | undefined): string[] | undefined {
-  if (!added || added.length === 0) return undefined;
-  const merged: string[] = [];
-  for (const id of [...(existing ?? []), ...added]) {
-    if (id.length > 0 && !merged.includes(id)) merged.push(id);
-  }
-  return merged.length > 0 ? merged : undefined;
 }
 
 /**

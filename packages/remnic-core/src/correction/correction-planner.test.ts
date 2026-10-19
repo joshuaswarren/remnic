@@ -825,6 +825,59 @@ test("duplicateOf skips the LLM and drafts one recoverable supersede linked to t
   });
 });
 
+test("a model-selected winnerId outside the located set is dropped", async () => {
+  await withTempDir(async (dir) => {
+    const state: StubState = {
+      candidatesById: new Map([
+        ["mem-loser", makeCandidate({ memoryId: "mem-loser", content: "duplicate fact" })],
+        ["mem-winner", makeCandidate({ memoryId: "mem-winner", content: "canonical fact" })],
+      ]),
+      llmResult: {
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "supersede", loserId: "mem-loser", winnerId: "mem-not-located" }],
+        relevance: [{ memoryId: "mem-loser", why: "duplicate" }],
+        warnings: [],
+      },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const plan = await new CorrectionPlanner(makeDeps(dir, state)).plan(
+      { text: "retire the duplicate", targetIds: ["mem-loser"] },
+      ["default"],
+    );
+    assert.equal(plan.actions.length, 0);
+    assert.match(plan.warnings.join(" "), /outside the located candidate set/);
+  });
+});
+
+test("a model-selected winnerId inside the located set is kept", async () => {
+  await withTempDir(async (dir) => {
+    const state: StubState = {
+      candidatesById: new Map([
+        ["mem-loser", makeCandidate({ memoryId: "mem-loser", content: "duplicate fact" })],
+        ["mem-winner", makeCandidate({ memoryId: "mem-winner", content: "canonical fact" })],
+      ]),
+      llmResult: {
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "supersede", loserId: "mem-loser", winnerId: "mem-winner" }],
+        relevance: [{ memoryId: "mem-loser", why: "duplicate" }],
+        warnings: [],
+      },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const plan = await new CorrectionPlanner(makeDeps(dir, state)).plan(
+      { text: "retire the duplicate", targetIds: ["mem-loser", "mem-winner"] },
+      ["default"],
+    );
+    assert.deepEqual(plan.actions, [{ kind: "supersede", loserId: "mem-loser", winnerId: "mem-winner" }]);
+  });
+});
+
 test("duplicateOf rejects same id, missing memories, inactive memories, and a target list that is not exactly one", async () => {
   await withTempDir(async (dir) => {
     const state: StubState = {

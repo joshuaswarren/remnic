@@ -263,6 +263,7 @@ export class CorrectionPlanner {
     // absent from the candidate set and warn.
     const candidateIds = new Set(located.candidates.map((c) => c.memoryId));
     if (llm.actions.length > 0 && candidateIds.size > 0) {
+      const explicitWinner = cleaned.duplicateOf;
       const filtered = llm.actions.filter((action) => {
         const id =
           action.kind === "supersede"
@@ -270,7 +271,19 @@ export class CorrectionPlanner {
             : action.kind === "edit" || action.kind === "retract" || action.kind === "rescope"
               ? action.memoryId
               : null;
-        return id === null || candidateIds.has(id);
+        if (id !== null && !candidateIds.has(id)) return false;
+        // A model-picked winner must be a located candidate. duplicateOf is
+        // the exception: that winner was validated as an active memory and is
+        // intentionally not part of the mutated set.
+        if (
+          action.kind === "supersede" &&
+          action.winnerId &&
+          action.winnerId !== explicitWinner &&
+          !candidateIds.has(action.winnerId)
+        ) {
+          return false;
+        }
+        return true;
       });
       if (filtered.length < llm.actions.length) {
         const dropped = llm.actions.length - filtered.length;

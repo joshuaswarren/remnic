@@ -130,13 +130,11 @@ function makeExecutorDeps(state: FakeState, opts: { biTemporalEnabled?: boolean;
       state.retireCalls = (state.retireCalls ?? 0) + 1;
       const m = state.memories.get(memoryId);
       if (!m) throw new Error(`memory not found for retire: ${memoryId}`);
-      const lineage = [...new Set([...(m.lineage ?? []), ...(retireOpts.lineage ?? [])])];
       state.memories.set(memoryId, {
         ...m,
         status: retireOpts.status,
         ...(retireOpts.supersededBy ? { supersededBy: retireOpts.supersededBy } : {}),
         ...(retireOpts.validUntil ? { validUntil: retireOpts.validUntil } : {}),
-        ...(lineage.length > 0 ? { lineage } : {}),
       });
     },
     rescopeMemory: async (_ns, memoryId) => {
@@ -1611,15 +1609,16 @@ test("winnerId supersede leaves the loser recoverable and the winner unchanged",
     };
     const planner = new CorrectionPlanner({
       ...makePlannerDeps(dir, candidates),
-      classifyAndDraft: async () => ({
-        classification: "outdated",
-        confidence: 1,
-        actions: [{ kind: "supersede", loserId: "mem-loser", winnerId: "mem-winner" }],
-        relevance: [{ memoryId: "mem-loser", why: "duplicate" }],
-        warnings: [],
-      }),
+      inspectMemory: async ({ memoryId }) => {
+        const candidate = candidates.get(memoryId);
+        if (!candidate) return null;
+        return { candidate, status: "active" };
+      },
     });
-    const plan = await planner.plan({ text: "duplicate", targetIds: ["mem-loser"] }, ["default"]);
+    const plan = await planner.plan(
+      { text: "duplicate", targetIds: ["mem-loser"], duplicateOf: "mem-winner" },
+      ["default"],
+    );
     assert.equal(plan.actions.length, 1);
     const executor = new CorrectionExecutor(makeExecutorDeps(state), planner);
     const outcome = await executor.apply("default", plan.planId, { confirm: true });
@@ -1629,7 +1628,7 @@ test("winnerId supersede leaves the loser recoverable and the winner unchanged",
     assert.ok(loser, "loser file remains");
     assert.equal(loser?.status, "superseded");
     assert.equal(loser?.supersededBy, "mem-winner");
-    assert.deepEqual(loser?.lineage, ["mem-winner"]);
+    assert.equal(loser?.lineage, undefined);
     assert.equal(winner?.status, "active");
     assert.equal(winner?.content, "canonical");
     assert.equal(state.writtenReplacements.length, 0);
@@ -1657,15 +1656,28 @@ test("winnerId supersede fails closed when the winner is no longer active", asyn
     };
     const planner = new CorrectionPlanner({
       ...makePlannerDeps(dir, candidates),
-      classifyAndDraft: async () => ({
-        classification: "outdated",
-        confidence: 1,
-        actions: [{ kind: "supersede", loserId: "mem-loser", winnerId: "mem-winner" }],
-        relevance: [{ memoryId: "mem-loser", why: "duplicate" }],
-        warnings: [],
-      }),
+      inspectMemory: async ({ memoryId }) => {
+        if (memoryId === "mem-winner") {
+          return {
+            candidate: {
+              memoryId,
+              path: "facts/mem-winner.md",
+              content: "canonical",
+              excerpt: "canonical",
+              score: 1,
+            },
+            status: "active",
+          };
+        }
+        const candidate = candidates.get(memoryId);
+        if (!candidate) return null;
+        return { candidate, status: "active" };
+      },
     });
-    const plan = await planner.plan({ text: "duplicate", targetIds: ["mem-loser"] }, ["default"]);
+    const plan = await planner.plan(
+      { text: "duplicate", targetIds: ["mem-loser"], duplicateOf: "mem-winner" },
+      ["default"],
+    );
     const outcome = await new CorrectionExecutor(makeExecutorDeps(state), planner).apply(
       "default",
       plan.planId,

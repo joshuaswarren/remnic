@@ -70,7 +70,6 @@ export interface ExecutorMemory {
   rawContent: string;
   /** Frontmatter status. Absent is treated as active. */
   status?: string;
-  lineage?: string[];
 }
 
 export interface ExecutorDeps {
@@ -112,8 +111,6 @@ export interface ExecutorDeps {
       status: "superseded" | "retracted";
       supersededBy?: string;
       validUntil?: string;
-      /** Appended to the loser's lineage when recording an existing winner. */
-      lineage?: string[];
     },
     abortSignal?: AbortSignal
   ): Promise<void>;
@@ -513,7 +510,6 @@ export class CorrectionExecutor {
           appliedTouched,
           {
             supersededBy: replacementResult?.memoryId ?? action.winnerId,
-            ...(action.winnerId && !action.replacement ? { lineage: [action.winnerId] } : {}),
           },
           abortSignal
         );
@@ -687,7 +683,7 @@ export class CorrectionExecutor {
     reason: "supersession" | "retraction",
     results: CorrectionActionResult[],
     appliedTouched: string[],
-    opts: { supersededBy?: string; lineage?: string[] } = {},
+    opts: { supersededBy?: string } = {},
     abortSignal?: AbortSignal
   ): Promise<void> {
     const memoryId = action.kind === "supersede" ? action.loserId : action.kind === "retract" ? action.memoryId : null;
@@ -738,7 +734,6 @@ export class CorrectionExecutor {
         {
           status: reason === "supersession" ? "superseded" : "retracted",
           ...(opts.supersededBy ? { supersededBy: opts.supersededBy } : {}),
-          ...(opts.lineage && opts.lineage.length > 0 ? { lineage: opts.lineage } : {}),
           ...(validUntil ? { validUntil } : {}),
         },
         tombstoneId === null ? abortSignal : undefined
