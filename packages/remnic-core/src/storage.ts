@@ -39,6 +39,7 @@ import {
   drainPendingLifecycleLedgerForSync,
   drainPendingLifecycleLedgerIfAny,
   pendingLifecycleLedgerDir,
+  iterateLifecycleEventsFromLedger,
   ProjectionLedgerLagManager,
   readAllLifecycleEventsFromLedger,
   readAllLifecycleEventsFromLedgerBuffer,
@@ -4350,6 +4351,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   async readAllMemories(options?: CorpusReadOptions): Promise<MemoryFile[]> {
     checkCorpusReadAbort(options);
+    // A raw-free read must not join or publish the shared cache: those entries
+    // keep the file text, and publishing the raw-free objects would strip it
+    // for every later caller.
+    if (options?.retainRaw === false) return this._readAllMemoriesFromDisk(options);
     if (this.hotMemoriesCacheEnabled) {
       const cached = getCachedMemories(
         this.baseDir,
@@ -4714,18 +4719,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             const raw = await readMaybeEncryptedFile(fullPath, this._secureStoreKey, this.baseDir);
             const parsed = parseFrontmatter(raw);
             if (!parsed) return null;
-            return rememberRawFrontmatter(
-              {
-                path: fullPath,
-                frontmatter: normalizeFrontmatterForPath(
-                  parsed.frontmatter,
-                  toMemoryPathRel(this.baseDir, fullPath),
-                  parsed.content
-                ),
-                content: parsed.content,
-              } satisfies MemoryFile,
-              raw
-            );
+            const memory = {
+              path: fullPath,
+              frontmatter: normalizeFrontmatterForPath(
+                parsed.frontmatter,
+                toMemoryPathRel(this.baseDir, fullPath),
+                parsed.content
+              ),
+              content: parsed.content,
+            } satisfies MemoryFile;
+            return options?.retainRaw === false ? memory : rememberRawFrontmatter(memory, raw);
           } catch (err) {
             // Re-throw store-locked errors so a locked encrypted store fails
             // loudly rather than appearing as an empty memory corpus (Cursor
@@ -4850,15 +4853,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.readParsedMemoriesFromPaths(filePaths, 50, options);
   }
 
-  async readAllColdMemories(): Promise<MemoryFile[]> {
-    return this.rememberMemorySnapshots(await this.memoryReadStore.readAllColdMemories());
+  async readAllColdMemories(options?: CorpusReadOptions): Promise<MemoryFile[]> {
+    const memories = await this.memoryReadStore.readAllColdMemories(options);
+    return options?.retainRaw === false ? memories : this.rememberMemorySnapshots(memories);
   }
 
   /**
    * Read archived memory markdown files under archive/.
    * Used by long-term recall fallback when hot recall has no hits.
    */
-  async readArchivedMemories(): Promise<MemoryFile[]> {
+  async readArchivedMemories(options?: CorpusReadOptions): Promise<MemoryFile[]> {
     const memories: MemoryFile[] = [];
     const root = this.archiveDir;
 
@@ -4874,20 +4878,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
               const raw = await readMaybeEncryptedFile(fullPath, this._secureStoreKey, this.baseDir);
               const parsed = parseFrontmatter(raw);
               if (parsed) {
-                memories.push(
-                  rememberRawFrontmatter(
-                    {
-                      path: fullPath,
-                      frontmatter: normalizeFrontmatterForPath(
-                        parsed.frontmatter,
-                        toMemoryPathRel(this.baseDir, fullPath),
-                        parsed.content
-                      ),
-                      content: parsed.content,
-                    },
-                    raw
-                  )
-                );
+                const memory = {
+                  path: fullPath,
+                  frontmatter: normalizeFrontmatterForPath(
+                    parsed.frontmatter,
+                    toMemoryPathRel(this.baseDir, fullPath),
+                    parsed.content
+                  ),
+                  content: parsed.content,
+                };
+                memories.push(options?.retainRaw === false ? memory : rememberRawFrontmatter(memory, raw));
               }
             } catch (err) {
               // A bad archive member must not hide readable siblings. A locked
@@ -4906,7 +4906,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     };
 
     await readDir(root);
-    return this.rememberMemorySnapshots(memories);
+    return options?.retainRaw === false ? memories : this.rememberMemorySnapshots(memories);
   }
 
   async readMemoryByPath(filePath: string): Promise<MemoryFile | null> {
@@ -5879,6 +5879,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   async readAllMemoryLifecycleEvents(): Promise<MemoryLifecycleEvent[]> {
     return readAllLifecycleEventsFromLedger(this.memoryLifecycleLedgerPath, (p) => this.readStorageSecureFile(p));
+  }
+
+  /** File-order lifecycle rows. Callers that need canonical order sort after. */
+  async *iterateMemoryLifecycleEvents(): AsyncIterable<MemoryLifecycleEvent> {
+    yield* iterateLifecycleEventsFromLedger(
+      this.memoryLifecycleLedgerPath,
+      (filePath) => this.readStorageSecureFile(filePath),
+    );
   }
 
   /** Raw decrypted ledger bytes as a Buffer, never a string, so an oversized

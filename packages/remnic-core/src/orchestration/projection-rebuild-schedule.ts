@@ -8,6 +8,12 @@
  * maintenance request — interval-throttled, single-flighted, never awaited,
  * never throws.
  *
+ * The rebuild runs in a forked child so the corpus and lifecycle ledger are
+ * not allocated in the daemon heap. An unlocked secure store stays in-process:
+ * the key is process-local and is never placed on the child's argv or env.
+ * When the daemon heap is already above `projectionRebuildHeapUsageLimit`,
+ * the job is postponed with the failure backoff instead of starting.
+ *
  * `projectionRebuildEnabled` gates it (via the lifecycle capabilities
  * resolver, default true); `projectionRebuildIntervalMs` is the cadence.
  *
@@ -24,6 +30,11 @@
  * not yet scheduled here (they are still served by their own rebuild paths);
  * the fallback WARN surfaces staleness for any namespace that lags.
  */
+import { existsSync } from "node:fs";
+import { fork } from "node:child_process";
+import path from "node:path";
+import v8 from "node:v8";
+import { fileURLToPath } from "node:url";
 import { log } from "../logger.js";
 import type { PluginConfig } from "../types.js";
 import { resolveMemoryLifecycleCapabilities } from "../capabilities.js";
@@ -31,7 +42,10 @@ import {
   rebuildMemoryProjection,
   type RebuildMemoryProjectionOptions,
 } from "../maintenance/rebuild-memory-projection.js";
+import { PROJECTION_REBUILD_RUNNER_FLAG } from "../maintenance/rebuild-memory-projection-runner.js";
 import { readProjectionRebuiltAt } from "../maintenance/projection-support.js";
+import { DEFAULT_PROJECTION_REBUILD_HEAP_USAGE_LIMIT } from "../projection-rebuild-config.js";
+import { fullCorpusHeapPressure, type HeapLimitStatistics } from "./full-corpus-heap-guard.js";
 
 type InjectedStorage = NonNullable<RebuildMemoryProjectionOptions["storage"]>;
 
@@ -45,13 +59,149 @@ export interface ProjectionRebuildScheduleState {
   lastFailureAtMs: number;
 }
 
+export interface ProjectionRebuildForkRequest {
+  memoryDir: string;
+  defaultNamespace: string;
+  now: Date;
+}
+
+export interface ProjectionRebuildForkResult {
+  currentRows: number;
+  timelineRows: number;
+  entityMentionRows: number;
+}
+
 /** Bounded retry cadence after a failure — short enough to self-heal promptly
  * once a transient cause clears, long enough to keep a persistently-failing
  * rebuild off every maintenance tick. */
 const FAILURE_RETRY_BACKOFF_MS = 5 * 60 * 1000;
 
+const CHILD_ENV_ALLOWLIST = [
+  "PATH",
+  "NODE_OPTIONS",
+  "HOME",
+  "USERPROFILE",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "SystemRoot",
+  "windir",
+  "PATHEXT",
+  "COMSPEC",
+  "NODE_PATH",
+] as const;
+
 export function createProjectionRebuildScheduleState(): ProjectionRebuildScheduleState {
   return { inFlight: false, lastRebuildAtMs: 0, lastFailureAtMs: 0 };
+}
+
+/**
+ * Environment for the rebuild child. Only runtime locators are copied.
+ * API keys, tokens, and secure-store unlock material are not passed.
+ */
+export function projectionRebuildChildEnv(parent: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of CHILD_ENV_ALLOWLIST) {
+    const value = parent[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
+function projectionRebuildRunnerPath(): string {
+  const here = fileURLToPath(import.meta.url);
+  const dir = path.dirname(here);
+  const candidates = [
+    path.join(dir, "..", "maintenance", "rebuild-memory-projection-runner.ts"),
+    path.join(dir, "..", "maintenance", "rebuild-memory-projection-runner.js"),
+    path.join(dir, "maintenance", "rebuild-memory-projection-runner.js"),
+    path.join(dir, "rebuild-memory-projection-runner.js"),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error("projection rebuild runner was not found next to the maintenance bundle");
+}
+
+function runnerExecArgv(runnerPath: string): string[] {
+  const argv: string[] = [];
+  const source = process.execArgv;
+  for (let index = 0; index < source.length; index += 1) {
+    const arg = source[index] ?? "";
+    if (arg === "--inspect" || arg === "--inspect-brk" || arg === "--inspect-port") {
+      if (arg === "--inspect-port") index += 1;
+      continue;
+    }
+    if (arg.startsWith("--inspect=") || arg.startsWith("--inspect-brk=") || arg.startsWith("--inspect-port=")) {
+      continue;
+    }
+    argv.push(arg);
+  }
+  if (runnerPath.endsWith(".ts") && !argv.some((arg) => arg === "tsx" || arg.includes(`${path.sep}tsx`))) {
+    argv.unshift("--import", "tsx");
+  }
+  return argv;
+}
+
+function isRunnerSuccess(message: unknown): message is ProjectionRebuildForkResult & { ok: true } {
+  if (!message || typeof message !== "object") return false;
+  const row = message as Record<string, unknown>;
+  return row.ok === true
+    && typeof row.currentRows === "number"
+    && typeof row.timelineRows === "number"
+    && typeof row.entityMentionRows === "number";
+}
+
+/** Fork the projection rebuild. Arguments are path, namespace, and timestamp only. */
+export async function forkProjectionRebuild(
+  request: ProjectionRebuildForkRequest,
+): Promise<ProjectionRebuildForkResult> {
+  const runnerPath = projectionRebuildRunnerPath();
+  const nowIso = request.now.toISOString();
+  const child = fork(
+    runnerPath,
+    [PROJECTION_REBUILD_RUNNER_FLAG, request.memoryDir, request.defaultNamespace, nowIso],
+    {
+      execArgv: runnerExecArgv(runnerPath),
+      env: projectionRebuildChildEnv(process.env),
+      stdio: ["ignore", "inherit", "inherit", "ipc"],
+    },
+  );
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (err?: Error, result?: ProjectionRebuildForkResult) => {
+      if (settled) return;
+      settled = true;
+      if (err) reject(err);
+      else if (result) resolve(result);
+      else reject(new Error("projection rebuild runner returned no result"));
+    };
+    child.on("message", (message: unknown) => {
+      if (isRunnerSuccess(message)) {
+        finish(undefined, message);
+        return;
+      }
+      const error = message && typeof message === "object" && "error" in message
+        ? String((message as { error?: unknown }).error ?? "projection rebuild runner failed")
+        : "projection rebuild runner failed";
+      finish(new Error(error));
+    });
+    child.on("error", (err) => finish(err));
+    child.on("exit", (code) => {
+      if (!settled) {
+        finish(new Error(`projection rebuild runner exited ${code ?? "null"}`));
+      }
+    });
+  });
+}
+
+function storageIsUnlocked(storage: InjectedStorage | undefined): boolean {
+  if (!storage || typeof storage.isSecureStoreUnlocked !== "function") return false;
+  return storage.isSecureStoreUnlocked();
 }
 
 export async function maybeRebuildMemoryProjectionScheduled(opts: {
@@ -59,6 +209,10 @@ export async function maybeRebuildMemoryProjectionScheduled(opts: {
   /** The daemon's live root storage, when available (secure-store unlock). */
   getStorage?: () => InjectedStorage | undefined;
   state: ProjectionRebuildScheduleState;
+  /** Test seam. Production forks {@link forkProjectionRebuild}. */
+  forkRebuild?: (request: ProjectionRebuildForkRequest) => Promise<ProjectionRebuildForkResult>;
+  /** Test seam. Production reads `v8.getHeapStatistics()`. */
+  heapStatistics?: () => HeapLimitStatistics;
 }): Promise<void> {
   const { config, state } = opts;
   if (!resolveMemoryLifecycleCapabilities(config).projectionRebuild) return;
@@ -81,17 +235,38 @@ export async function maybeRebuildMemoryProjectionScheduled(opts: {
     return;
   }
 
+  const heapLimit = config.projectionRebuildHeapUsageLimit ?? DEFAULT_PROJECTION_REBUILD_HEAP_USAGE_LIMIT;
+  const heapStats = (opts.heapStatistics ?? (() => v8.getHeapStatistics()))();
+  const pressure = fullCorpusHeapPressure(heapStats, heapLimit);
+  if (pressure.postpone) {
+    state.lastFailureAtMs = Date.now();
+    log.warn(
+      `memory projection scheduled rebuild postponed for ${memoryDir}: `
+      + `heap used ${heapStats.used_heap_size} of limit ${heapStats.heap_size_limit} `
+      + `(ratio ${pressure.ratio.toFixed(3)}) exceeds projectionRebuildHeapUsageLimit ${heapLimit}`,
+    );
+    return;
+  }
+
+  const forkRebuild = opts.forkRebuild ?? forkProjectionRebuild;
+  const unlocked = storageIsUnlocked(rootStorage);
   state.inFlight = true;
   try {
-    const result = await rebuildMemoryProjection({
-      memoryDir,
-      // Reuse the daemon's live storage so secure-store deployments rebuild
-      // through the unlocked instance instead of a fresh locked one.
-      ...(rootStorage ? { storage: rootStorage } : {}),
-      defaultNamespace: config.defaultNamespace,
-      dryRun: false,
-      now: new Date(now),
-    });
+    const result = unlocked
+      ? await rebuildMemoryProjection({
+        memoryDir,
+        // Reuse the daemon's live storage so secure-store deployments rebuild
+        // through the unlocked instance instead of a fresh locked one.
+        ...(rootStorage ? { storage: rootStorage } : {}),
+        defaultNamespace: config.defaultNamespace,
+        dryRun: false,
+        now: new Date(now),
+      })
+      : await forkRebuild({
+        memoryDir,
+        defaultNamespace: config.defaultNamespace || "default",
+        now: new Date(now),
+      });
     state.lastRebuildAtMs = Date.now();
     const lag = Number.isFinite(rebuiltAtMs)
       ? `${Math.max(0, Math.round((now - rebuiltAtMs) / 60_000))}m stale`

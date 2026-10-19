@@ -15,13 +15,12 @@ import type {
   MemoryStatus,
 } from "../types.js";
 import {
-  buildLifecycleEventsForMemory,
   inferMemoryStatus,
   MEMORY_LIFECYCLE_EVENT_SORT_ORDER,
-  memoryLifecycleEventProjectionIdentity,
   sortMemoryLifecycleEvents,
   toMemoryPathRel,
 } from "../memory-lifecycle-ledger-utils.js";
+import { loadProjectionTimeline } from "./projection-timeline.js";
 import {
   getMemoryProjectionPath,
   initializeMemoryProjectionDb,
@@ -55,6 +54,12 @@ export interface RebuildMemoryProjectionOptions {
   now?: Date;
   updatedAfter?: string;
   updatedBefore?: string;
+  /**
+   * When true, corpus reads keep the raw file text. Default false: the
+   * projection is built from parsed fields, and skipping the raw copy keeps
+   * the rebuild's peak heap down. Output rows stay the same either way.
+   */
+  retainRaw?: boolean;
 }
 
 export type {
@@ -201,7 +206,8 @@ function toCurrentStateRow(memoryDir: string, memory: MemoryFile): MemoryProject
     accessCount: memory.frontmatter.accessCount,
     lastAccessed: memory.frontmatter.lastAccessed,
     tags: normalizeProjectionTags(memory.frontmatter.tags),
-    preview: normalizeProjectionPreview(memory.content),
+    // Copy the preview off the source string so the full document can be collected.
+    preview: Buffer.from(normalizeProjectionPreview(memory.content), "utf8").toString("utf8"),
     privateRecord: isSupportPassportPrivateMemory(memory),
   };
 }
@@ -293,23 +299,6 @@ async function loadLatestGovernanceProjection(memoryDir: string): Promise<{
   } catch {
     return null;
   }
-}
-
-function loadTimelineEvents(
-  memories: MemoryFile[],
-  lifecycleEvents: MemoryLifecycleEvent[],
-): { events: MemoryLifecycleEvent[]; usedLifecycleLedger: boolean } {
-  if (lifecycleEvents.length > 0) {
-    return {
-      events: sortMemoryLifecycleEvents(lifecycleEvents),
-      usedLifecycleLedger: true,
-    };
-  }
-
-  return {
-    events: sortMemoryLifecycleEvents(memories.flatMap((memory) => buildLifecycleEventsForMemory(memory))),
-    usedLifecycleLedger: false,
-  };
 }
 
 function normalizeScopedIso(value: string | undefined): string | null {
@@ -509,53 +498,13 @@ function selectProjectionMemories(
   return { allMemories, memories, skippedDuplicateMemories, skippedBlankIdMemories };
 }
 
-function deduplicateTimelineEvents(
-  events: MemoryLifecycleEvent[],
-  sourcePathFor: (event: MemoryLifecycleEvent) => string,
-): {
-  events: MemoryLifecycleEvent[];
-  skipped: SkippedDuplicateTimelineEvent[];
-  skippedBlankIds: SkippedBlankIdTimelineEvent[];
-} {
-  const keptById = new Map<string, { event: MemoryLifecycleEvent; path: string }>();
-  const unique: MemoryLifecycleEvent[] = [];
-  const skipped: SkippedDuplicateTimelineEvent[] = [];
-  const skippedBlankIds: SkippedBlankIdTimelineEvent[] = [];
-  for (const event of sortMemoryLifecycleEvents(events)) {
-    const sourcePath = sourcePathFor(event);
-    if (!event.memoryId.trim()) {
-      skippedBlankIds.push({ eventId: event.eventId, path: sourcePath });
-      log.warn(
-        `projection rebuild skipped timeline event with blank memory id: `
-        + `event_id=${event.eventId} path=${sourcePath}`,
-      );
-      continue;
-    }
-    const kept = keptById.get(event.eventId);
-    if (kept) {
-      skipped.push({
-        eventId: event.eventId,
-        keptPath: kept.path,
-        skippedPath: sourcePath,
-      });
-      log.warn(
-        `projection rebuild skipped duplicate timeline event_id=${event.eventId}: `
-        + `kept=${kept.path} skipped=${sourcePath}`,
-      );
-      continue;
-    }
-    keptById.set(event.eventId, { event, path: sourcePath });
-    unique.push(event);
-  }
-  return { events: unique, skipped, skippedBlankIds };
-}
-
 async function loadAuthoritativeProjectionSnapshot(options: {
   memoryDir: string;
   defaultNamespace?: string;
   storage?: StorageManager;
   updatedAfter?: string;
   updatedBefore?: string;
+  retainRaw?: boolean;
 }): Promise<{
   allMemories: MemoryFile[];
   currentRows: MemoryProjectionCurrentState[];
@@ -590,35 +539,33 @@ async function loadAuthoritativeProjectionSnapshot(options: {
   // Force a fresh disk read — projection verify/rebuild must see the true
   // on-disk state, not a potentially stale in-process cache.
   storage.invalidateAllMemoriesCacheForDir({ indexedText: false });
+  const corpusRead = { retainRaw: options.retainRaw === true };
   const selected = selectProjectionMemories([
-    await storage.readAllMemories(),
-    await storage.readAllColdMemories(),
-    await storage.readArchivedMemories(),
+    await storage.readAllMemories(corpusRead),
+    await storage.readAllColdMemories(corpusRead),
+    await storage.readArchivedMemories(corpusRead),
   ]);
   const allMemories = selected.allMemories;
   const projectionMemories = selected.memories;
-  const lifecycleEvents = await storage.readAllMemoryLifecycleEvents();
-  const timeline = loadTimelineEvents(projectionMemories, lifecycleEvents);
-  const lifecycleLedgerPath = path.join(
-    options.memoryDir,
-    "state",
-    "memory-lifecycle-ledger.jsonl",
-  );
-  const memoryPathById = new Map(
-    projectionMemories.map((memory) => [memory.frontmatter.id, memory.path]),
-  );
-  const deduplicatedTimeline = deduplicateTimelineEvents(
-    timeline.events,
-    (event) => timeline.usedLifecycleLedger
-      ? lifecycleLedgerPath
-      : memoryPathById.get(event.memoryId) ?? lifecycleLedgerPath,
-  );
-  const events = deduplicatedTimeline.events;
-  const usedLifecycleLedger = timeline.usedLifecycleLedger;
-  const sourceLifecycleLedgerEventCount = new Set(
-    lifecycleEvents.map(memoryLifecycleEventProjectionIdentity),
-  ).size;
   const currentRows = projectionMemories.map((memory) => toCurrentStateRow(options.memoryDir, memory));
+  // Preview is already a detached copy. Drop the document bodies before the
+  // ledger scan so peak heap is the larger of the corpus and the timeline,
+  // not both. These objects bypass the shared caches when retainRaw is off,
+  // so clearing them cannot strip a raw copy another caller is holding.
+  if (options.retainRaw !== true) {
+    for (const memory of allMemories) memory.content = "";
+  }
+  const {
+    events,
+    usedLifecycleLedger,
+    sourceLifecycleLedgerEventCount,
+    skipped: skippedDuplicateTimelineEvents,
+    skippedBlankIds: skippedBlankIdTimelineEvents,
+  } = await loadProjectionTimeline({
+    storage,
+    memoryDir: options.memoryDir,
+    memories: projectionMemories,
+  });
   const scope = normalizeProjectionScope(options);
   const scopedMemories = filterMemoriesForProjectionScope(projectionMemories, scope);
   const scopedMemoryIds = new Set(scopedMemories.map((memory) => memory.frontmatter.id));
@@ -660,8 +607,8 @@ async function loadAuthoritativeProjectionSnapshot(options: {
     scope,
     skippedDuplicateMemories: selected.skippedDuplicateMemories,
     skippedBlankIdMemories: selected.skippedBlankIdMemories,
-    skippedDuplicateTimelineEvents: deduplicatedTimeline.skipped,
-    skippedBlankIdTimelineEvents: deduplicatedTimeline.skippedBlankIds,
+    skippedDuplicateTimelineEvents,
+    skippedBlankIdTimelineEvents,
   };
 }
 

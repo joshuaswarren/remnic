@@ -69,6 +69,7 @@ export interface MemoryReadStoreDeps {
   readParsedMemoriesFromPaths(
     filePaths: string[],
     batchSize?: number,
+    options?: CorpusReadOptions,
   ): Promise<MemoryFile[]>;
   readStorageSecureFile(filePath: string): Promise<string>;
   readWindowBoundedBatch(
@@ -466,7 +467,9 @@ export class MemoryReadStore {
    * covers any hot→cold demotion that changes cold-tier contents) and
    * expires after COLD_SCAN_CACHE_TTL_MS as a safety net.
    */
-  async readAllColdMemories(): Promise<MemoryFile[]> {
+  async readAllColdMemories(options?: CorpusReadOptions): Promise<MemoryFile[]> {
+    checkCorpusReadAbort(options);
+    const retainRaw = options?.retainRaw !== false;
     const coldRoot = this.deps.resolveTierRootDir("cold");
 
     // Read the on-disk cold-version sentinel BEFORE checking the cache so that
@@ -480,7 +483,7 @@ export class MemoryReadStore {
     // decrypts per this manager's key, so a differently-keyed manager must not
     // read a cold corpus another instance decrypted for the same coldRoot.
     const keyId = this.deps.hotCacheKeyId();
-    const cached = this.deps.storageManagerClass.coldMemoriesCache.get(coldRoot);
+    const cached = retainRaw ? this.deps.storageManagerClass.coldMemoriesCache.get(coldRoot) : undefined;
     if (
       cached &&
       cached.keyId === keyId &&
@@ -518,11 +521,14 @@ export class MemoryReadStore {
     // and ensures that any memory with structuredAttributes is found regardless
     // of which category it was written with.
     await collectPaths(coldRoot);
-    const memories = await this.deps.readParsedMemoriesFromPaths(filePaths, 50);
+    const memories = await this.deps.readParsedMemoriesFromPaths(filePaths, 50, options);
 
     // Store in cache with the sentinel version captured above so that any
     // subsequent cold-version bump (by this or another process) invalidates it.
-    this.deps.storageManagerClass.coldMemoriesCache.set(coldRoot, { memories, loadedAt: Date.now(), coldVersion: currentColdVersion, keyId });
+    // A raw-free read stays out of the cache so it cannot evict the raw copy.
+    if (retainRaw) {
+      this.deps.storageManagerClass.coldMemoriesCache.set(coldRoot, { memories, loadedAt: Date.now(), coldVersion: currentColdVersion, keyId });
+    }
     return memories;
   }
 
