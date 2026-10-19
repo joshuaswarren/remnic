@@ -126,6 +126,28 @@ test("shutting down the parent kills the projection rebuild child", async () => 
   assertChildKilled(child);
 });
 
+test("disposing one scheduler does not kill another scheduler's rebuild", async () => {
+  const first = fork(process.execPath, ["-e", "setInterval(() => {}, 1e9);"], { stdio: "ignore" });
+  const second = fork(process.execPath, ["-e", "setInterval(() => {}, 1e9);"], { stdio: "ignore" });
+  const request = {
+    memoryDir: "/tmp/unused",
+    defaultNamespace: "default",
+    now: new Date("2026-06-01T00:00:00.000Z"),
+  };
+  const stateA = createProjectionRebuildScheduleState();
+  const stateB = createProjectionRebuildScheduleState();
+  const pendingA = forkProjectionRebuild(request, { timeoutMs: 60_000, spawnChild: () => first, owner: stateA });
+  const pendingB = forkProjectionRebuild(request, { timeoutMs: 60_000, spawnChild: () => second, owner: stateB });
+  terminateScheduledProjectionRebuilds(stateA);
+  await assert.rejects(pendingA, /exited/);
+  assertChildKilled(first);
+  assert.equal(second.exitCode, null);
+  assert.equal(second.signalCode, null);
+  terminateScheduledProjectionRebuilds(stateB);
+  await assert.rejects(pendingB, /exited/);
+  assertChildKilled(second);
+});
+
 test("a disconnected parent does not let the rebuild child publish", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-proj-orphan-"));
   const projection = path.join(memoryDir, "state", "memory-projection.sqlite");

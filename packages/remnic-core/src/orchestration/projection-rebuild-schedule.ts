@@ -90,26 +90,49 @@ export function projectionRebuildForkTimeoutMs(intervalMs: number): number {
   return intervalMs;
 }
 
-const activeProjectionRebuildChildren = new Set<ChildProcess>();
+const projectionRebuildChildren = new Map<ProjectionRebuildScheduleState | undefined, Set<ChildProcess>>();
 let parentExitHookInstalled = false;
 
-function rememberProjectionRebuildChild(child: ChildProcess): void {
-  activeProjectionRebuildChildren.add(child);
+function rememberProjectionRebuildChild(
+  child: ChildProcess,
+  owner: ProjectionRebuildScheduleState | undefined,
+): void {
+  let children = projectionRebuildChildren.get(owner);
+  if (!children) {
+    children = new Set();
+    projectionRebuildChildren.set(owner, children);
+  }
+  children.add(child);
   const forget = () => {
-    activeProjectionRebuildChildren.delete(child);
+    children.delete(child);
+    if (children.size === 0) projectionRebuildChildren.delete(owner);
   };
   child.once("exit", forget);
   child.once("error", forget);
   if (!parentExitHookInstalled) {
     parentExitHookInstalled = true;
-    process.on("exit", terminateScheduledProjectionRebuilds);
+    // The exit listener is invoked with the exit code. Ignore that argument
+    // so a non-zero code is not treated as a scheduler owner.
+    process.on("exit", () => {
+      terminateScheduledProjectionRebuilds();
+    });
   }
 }
 
-/** SIGKILL every scheduled rebuild child. Used on dispose and parent exit. */
-export function terminateScheduledProjectionRebuilds(): void {
-  for (const child of activeProjectionRebuildChildren) {
-    child.kill("SIGKILL");
+/**
+ * SIGKILL scheduled rebuild children. A scheduler dispose passes its own
+ * state so another instance's child keeps running. Process exit passes no
+ * owner and kills every child.
+ */
+export function terminateScheduledProjectionRebuilds(
+  owner?: ProjectionRebuildScheduleState,
+): void {
+  const groups = owner
+    ? [projectionRebuildChildren.get(owner)]
+    : [...projectionRebuildChildren.values()];
+  for (const children of groups) {
+    if (!children) continue;
+    for (const child of children) child.kill("SIGKILL");
   }
 }
 
@@ -199,6 +222,8 @@ export async function forkProjectionRebuild(
   options?: {
     timeoutMs?: number;
     spawnChild?: () => ChildProcess;
+    /** Scheduler that owns this child. Dispose kills only that owner's child. */
+    owner?: ProjectionRebuildScheduleState;
     /** Invoked after exit listeners are attached. Tests use this to disconnect. */
     onChild?: (child: ChildProcess) => void;
   },
@@ -207,7 +232,7 @@ export async function forkProjectionRebuild(
   const child = options?.spawnChild
     ? options.spawnChild()
     : spawnProjectionRebuildChild(request);
-  rememberProjectionRebuildChild(child);
+  rememberProjectionRebuildChild(child, options?.owner);
   return await new Promise((resolve, reject) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -271,7 +296,7 @@ export async function maybeRebuildMemoryProjectionScheduled(opts: {
   /** Test seam. Production forks {@link forkProjectionRebuild}. */
   forkRebuild?: (
     request: ProjectionRebuildForkRequest,
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; owner?: ProjectionRebuildScheduleState },
   ) => Promise<ProjectionRebuildForkResult>;
   /** Test seam. Production reads `v8.getHeapStatistics()`. */
   heapStatistics?: () => HeapLimitStatistics;
@@ -328,7 +353,10 @@ export async function maybeRebuildMemoryProjectionScheduled(opts: {
         memoryDir,
         defaultNamespace: config.defaultNamespace || "default",
         now: new Date(now),
-      }, { timeoutMs: projectionRebuildForkTimeoutMs(intervalMs) });
+      }, {
+        timeoutMs: projectionRebuildForkTimeoutMs(intervalMs),
+        owner: state,
+      });
     state.lastRebuildAtMs = Date.now();
     const lag = Number.isFinite(rebuiltAtMs)
       ? `${Math.max(0, Math.round((now - rebuiltAtMs) / 60_000))}m stale`

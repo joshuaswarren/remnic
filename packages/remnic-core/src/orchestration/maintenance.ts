@@ -1169,7 +1169,7 @@ export class MaintenanceScheduler {
    */
   async dispose(): Promise<void> {
     this.disposed = true;
-    terminateScheduledProjectionRebuilds();
+    terminateScheduledProjectionRebuilds(this.projectionRebuild);
     const consolidationDrain = this.consolidationRunPromise;
     // The registrar latches teardown first (so a draining tick's onRun cannot
     // re-arm QMD maintenance) and aborts+drains the sync. Capture its drain and
