@@ -1351,13 +1351,30 @@ export class LocalLlmClient {
     if (options.priority) {
       const priority = options.priority;
       return await new Promise<LocalLlmChatCompletionResult | null>((resolve) => {
-        this.requestQueues[priority].push({
+        let settled = false;
+        let onAbort: (() => void) | undefined;
+        const finish = (value: LocalLlmChatCompletionResult | null): void => {
+          if (settled) return;
+          settled = true;
+          if (onAbort) options.signal?.removeEventListener("abort", onAbort);
+          resolve(value);
+        };
+        const queued: LocalLlmQueuedRequest = {
           messages,
           options,
           priority,
           enqueuedAtMs: Date.now(),
-          resolve,
-        });
+          resolve: finish,
+        };
+        onAbort = () => {
+          const queue = this.requestQueues[priority];
+          const index = queue.indexOf(queued);
+          if (index >= 0) queue.splice(index, 1);
+          finish(null);
+        };
+        this.requestQueues[priority].push(queued);
+        if (options.signal?.aborted) onAbort();
+        else if (options.signal) options.signal.addEventListener("abort", onAbort, { once: true });
         this.scheduleQueueDrain();
       });
     }

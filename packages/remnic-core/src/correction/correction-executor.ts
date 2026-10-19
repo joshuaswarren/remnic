@@ -68,6 +68,8 @@ export interface ExecutorMemory {
   entityRef?: string;
   /** Raw content used for the tombstone hash (rule 23). */
   rawContent: string;
+  /** Frontmatter status. Absent is treated as active. */
+  status?: string;
 }
 
 export interface ExecutorDeps {
@@ -486,13 +488,29 @@ export class CorrectionExecutor {
         if (action.replacement && !replacementResult) {
           continue;
         }
+        if (action.winnerId && !action.replacement) {
+          const winner = await this.deps.getMemory(namespace, action.winnerId, abortSignal);
+          const winnerStatus = winner ? (winner.status ?? "active") : undefined;
+          if (!winner || winnerStatus !== "active") {
+            results.push({
+              action,
+              status: "failed",
+              error: winner
+                ? `supersede winner is not active: ${action.winnerId} (${winnerStatus})`
+                : `supersede winner not found: ${action.winnerId}`,
+            });
+            continue;
+          }
+        }
         await this.retireAndTombstone(
           namespace,
           action,
           "supersession",
           results,
           appliedTouched,
-          { supersededBy: replacementResult?.memoryId },
+          {
+            supersededBy: replacementResult?.memoryId ?? action.winnerId,
+          },
           abortSignal
         );
         if (results.at(-1)?.status === "applied") {

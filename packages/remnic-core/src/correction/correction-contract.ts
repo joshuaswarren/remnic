@@ -51,6 +51,12 @@ export interface CorrectionRequest {
    * planner only sees the ALREADY-AUTHORIZED namespace.
    */
   namespace?: string;
+  /**
+   * Winner memory id. When set, `targetIds` must be exactly the duplicate
+   * (the loser). The planner skips classification and drafts one recoverable
+   * supersede — no hard delete, no replacement write.
+   */
+  duplicateOf?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,8 +109,11 @@ export const MEMORY_CATEGORIES: readonly MemoryCategory[] = [
 ];
 
 export type CorrectionAction =
-  /** Outdated: a new fact replaces the loser. */
-  | { kind: "supersede"; loserId: string; replacement?: MemoryDraft }
+  /**
+   * Outdated: a new fact replaces the loser, or `winnerId` records an
+   * existing memory as the replacement without writing a new one.
+   */
+  | { kind: "supersede"; loserId: string; replacement?: MemoryDraft; winnerId?: string }
   /** Incomplete / minor-wrong: a versioned edit to an existing memory. */
   | { kind: "edit"; memoryId: string; patch: string }
   /** Wrong: retire + tombstone. */
@@ -213,6 +222,9 @@ export const CORRECTION_TEXT_MAX = 10_000;
 /** Maximum supported redaction pattern length (§34 — bounded patterns). */
 export const REDACTION_PATTERN_MAX = 256;
 
+/** Maximum memory-id length for `duplicateOf` / explicit targets. */
+export const CORRECTION_MEMORY_ID_MAX = 512;
+
 /**
  * Validate a {@link CorrectionRequest}'s invariants. Returns the cleaned
  * request or throws with a field-specific message (rule 51 — list valid
@@ -234,23 +246,45 @@ export function validateCorrectionRequest(request: CorrectionRequest): Correctio
   const targetIds = Array.isArray(request.targetIds)
     ? request.targetIds.filter((id): id is string => typeof id === "string" && id.length > 0)
     : undefined;
-  if (targetIds !== undefined && targetIds.length === 0) {
-    // An empty array is treated as "not provided" so callers can forward
-    // optional fields without a separate presence flag.
-    return {
-      text,
-      ...(request.sessionKey ? { sessionKey: request.sessionKey } : {}),
-      ...(request.principal ? { principal: request.principal } : {}),
-      ...(request.namespace ? { namespace: request.namespace } : {}),
-    };
+  const normalizedTargets = targetIds !== undefined && targetIds.length === 0 ? undefined : targetIds;
+  const duplicateOf = readDuplicateOf(request.duplicateOf);
+  if (duplicateOf) {
+    if (!normalizedTargets || normalizedTargets.length !== 1) {
+      throw new CorrectionContractError(
+        "CorrectionRequest.duplicateOf requires exactly one targetIds entry (the duplicate memory).",
+      );
+    }
+    if (normalizedTargets[0] === duplicateOf) {
+      throw new CorrectionContractError(
+        "CorrectionRequest.duplicateOf must be a different memory from targetIds.",
+      );
+    }
   }
   return {
     text,
-    ...(targetIds ? { targetIds } : {}),
+    ...(normalizedTargets ? { targetIds: normalizedTargets } : {}),
+    ...(duplicateOf ? { duplicateOf } : {}),
     ...(request.sessionKey ? { sessionKey: request.sessionKey } : {}),
     ...(request.principal ? { principal: request.principal } : {}),
     ...(request.namespace ? { namespace: request.namespace } : {}),
   };
+}
+
+function readDuplicateOf(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new CorrectionContractError("CorrectionRequest.duplicateOf must be a memory id string.");
+  }
+  const id = value.trim();
+  if (id.length === 0 || id !== value) {
+    throw new CorrectionContractError("CorrectionRequest.duplicateOf must be a non-empty memory id.");
+  }
+  if (id.length > CORRECTION_MEMORY_ID_MAX) {
+    throw new CorrectionContractError(
+      `CorrectionRequest.duplicateOf exceeds the ${CORRECTION_MEMORY_ID_MAX}-character limit (${id.length}).`,
+    );
+  }
+  return id;
 }
 
 /**
@@ -377,8 +411,21 @@ export function validateCorrectionAction(action: unknown): asserts action is Cor
       if (typeof a.loserId !== "string" || a.loserId.length === 0) {
         throw new CorrectionContractError("supersede.loserId is required.");
       }
-      if (a.replacement !== undefined && a.replacement !== null) {
-        validateMemoryDraft(a.replacement);
+      {
+        const hasReplacement = a.replacement !== undefined && a.replacement !== null;
+        const hasWinner = a.winnerId !== undefined && a.winnerId !== null;
+        if (hasWinner) {
+          if (typeof a.winnerId !== "string" || a.winnerId.trim().length === 0 || a.winnerId !== a.winnerId.trim()) {
+            throw new CorrectionContractError("supersede.winnerId must be a non-empty memory id.");
+          }
+          if (a.winnerId === a.loserId) {
+            throw new CorrectionContractError("supersede.winnerId must differ from loserId.");
+          }
+          if (hasReplacement) {
+            throw new CorrectionContractError("supersede.winnerId cannot be combined with a replacement draft.");
+          }
+        }
+        if (hasReplacement) validateMemoryDraft(a.replacement);
       }
       break;
     case "edit":

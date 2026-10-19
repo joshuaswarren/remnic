@@ -3349,24 +3349,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
           return Promise.resolve(false);
         }
       },
-      // Wire the orchestrator's extraction LLM so classify+draft actually
-      // drafts actions instead of always hitting the deterministic fallback
-      // (review thread PG5). The planner's classifyAndDraft already falls back
-      // on any LLM outage, so returning null (LLM disabled/cooldown) or a
-      // thrown error both degrade safely to the deterministic path (rule 13).
-      llmComplete: async ({ system, user }) => {
-        const result = await this.orchestrator.localLlm.chatCompletion(
-          [
-            { role: "system", content: system },
-            { role: "user", content: user },
-          ],
-          { operation: "correction-classify", priority: "background" }
-        );
-        if (!result) {
-          throw new Error("correction classify+draft: local LLM unavailable (disabled or in cooldown)");
-        }
-        return result.content;
-      },
     });
     this._correctionService = service;
     return service;
@@ -3389,11 +3371,20 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   }
 
   async correctionPlan(request: CorrectionRequest, opts?: { abortSignal?: AbortSignal }): Promise<CorrectionPlan> {
+    let next = request;
     if (request.targetIds?.some((id) => isHandleToken(id))) {
-      const targetIds = request.targetIds.map((id) => this.resolveMemoryIdOrHandleInput(id, request.sessionKey));
-      return this.correctionService().plan({ ...request, targetIds }, opts);
+      next = {
+        ...next,
+        targetIds: request.targetIds.map((id) => this.resolveMemoryIdOrHandleInput(id, request.sessionKey)),
+      };
     }
-    return this.correctionService().plan(request, opts);
+    if (request.duplicateOf && isHandleToken(request.duplicateOf)) {
+      next = {
+        ...next,
+        duplicateOf: this.resolveMemoryIdOrHandleInput(request.duplicateOf, request.sessionKey),
+      };
+    }
+    return this.correctionService().plan(next, opts);
   }
 
   async correctionApply(

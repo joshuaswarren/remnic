@@ -35,7 +35,7 @@ import { CorrectionExecutor, CORRECTION_ERROR_MAX, sanitizeErrorMessage, type Ex
 
 interface FakeState {
   /** memoryId → current memory state. */
-  memories: Map<string, ExecutorMemory & { status: string; supersededBy?: string; validUntil?: string }>;
+  memories: Map<string, ExecutorMemory & { status: string; supersededBy?: string; validUntil?: string; lineage?: string[] }>;
   tombstones: Array<{ reason: string; sourceMemoryId: string; rawContent: string; supersessionKey?: string; supersessionKeys?: string[]; contentHash?: string }>;
   redactionRules: string[];
   auditRecords: Array<{ planId: string; outcome: CorrectionOutcome }>;
@@ -98,7 +98,7 @@ function makeExecutorDeps(state: FakeState, opts: { biTemporalEnabled?: boolean;
     getMemory: async (_ns, memoryId) => {
       const m = state.memories.get(memoryId);
       if (!m) return null;
-      const { status: _s, supersededBy: _sb, validUntil: _v, ...rest } = m;
+      const { supersededBy: _sb, validUntil: _v, ...rest } = m;
       return rest;
     },
     writeReplacement: async (namespace, draft) => {
@@ -1588,4 +1588,104 @@ test("#1678: sanitizeErrorMessage strips absolute paths and caps length", () => 
   assert.ok(!atPath.includes("/tmp/foo@bar"), "@-path must be stripped: " + atPath);
   assert.ok(!atPath.includes("secret.txt"), "path suffix must be consumed: " + atPath);
   assert.ok(atPath.includes("<path>"), "must leave <path> placeholder: " + atPath);
+});
+
+test("winnerId supersede leaves the loser recoverable and the winner unchanged", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-loser", { memoryId: "mem-loser", path: "facts/mem-loser.md", content: "duplicate", excerpt: "duplicate", score: 1 }],
+      ["mem-winner", { memoryId: "mem-winner", path: "facts/mem-winner.md", content: "canonical", excerpt: "canonical", score: 1 }],
+    ]);
+    const state: FakeState = {
+      memories: new Map([
+        ["mem-loser", fakeMemory({ memoryId: "mem-loser", content: "duplicate", rawContent: "duplicate raw" })],
+        ["mem-winner", fakeMemory({ memoryId: "mem-winner", content: "canonical", rawContent: "canonical raw" })],
+      ]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const planner = new CorrectionPlanner({
+      ...makePlannerDeps(dir, candidates),
+      inspectMemory: async ({ memoryId }) => {
+        const candidate = candidates.get(memoryId);
+        if (!candidate) return null;
+        return { candidate, status: "active" };
+      },
+    });
+    const plan = await planner.plan(
+      { text: "duplicate", targetIds: ["mem-loser"], duplicateOf: "mem-winner" },
+      ["default"],
+    );
+    assert.equal(plan.actions.length, 1);
+    const executor = new CorrectionExecutor(makeExecutorDeps(state), planner);
+    const outcome = await executor.apply("default", plan.planId, { confirm: true });
+    assert.equal(outcome.status, "applied");
+    const loser = state.memories.get("mem-loser");
+    const winner = state.memories.get("mem-winner");
+    assert.ok(loser, "loser file remains");
+    assert.equal(loser?.status, "superseded");
+    assert.equal(loser?.supersededBy, "mem-winner");
+    assert.equal(loser?.lineage, undefined);
+    assert.equal(winner?.status, "active");
+    assert.equal(winner?.content, "canonical");
+    assert.equal(state.writtenReplacements.length, 0);
+    assert.equal(state.tombstones.length, 1);
+    assert.equal(state.tombstones[0]?.reason, "supersession");
+    assert.equal(state.tombstones[0]?.sourceMemoryId, "mem-loser");
+  });
+});
+
+test("winnerId supersede fails closed when the winner is no longer active", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-loser", { memoryId: "mem-loser", path: "facts/mem-loser.md", content: "duplicate", excerpt: "duplicate", score: 1 }],
+    ]);
+    const state: FakeState = {
+      memories: new Map([
+        ["mem-loser", fakeMemory({ memoryId: "mem-loser", content: "duplicate" })],
+        ["mem-winner", fakeMemory({ memoryId: "mem-winner", content: "canonical", status: "superseded" })],
+      ]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const planner = new CorrectionPlanner({
+      ...makePlannerDeps(dir, candidates),
+      inspectMemory: async ({ memoryId }) => {
+        if (memoryId === "mem-winner") {
+          return {
+            candidate: {
+              memoryId,
+              path: "facts/mem-winner.md",
+              content: "canonical",
+              excerpt: "canonical",
+              score: 1,
+            },
+            status: "active",
+          };
+        }
+        const candidate = candidates.get(memoryId);
+        if (!candidate) return null;
+        return { candidate, status: "active" };
+      },
+    });
+    const plan = await planner.plan(
+      { text: "duplicate", targetIds: ["mem-loser"], duplicateOf: "mem-winner" },
+      ["default"],
+    );
+    const outcome = await new CorrectionExecutor(makeExecutorDeps(state), planner).apply(
+      "default",
+      plan.planId,
+      { confirm: true },
+    );
+    assert.equal(outcome.results[0]?.status, "failed");
+    assert.match(outcome.results[0]?.error ?? "", /winner is not active/);
+    assert.equal(state.memories.get("mem-loser")?.status, "active");
+    assert.equal(state.tombstones.length, 0);
+  });
 });

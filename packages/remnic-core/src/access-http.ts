@@ -1999,6 +1999,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       const output = (await op.run(this.gatedBodyNamespace(req, body), {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        ...(abortSignal ? { abortSignal } : {}),
       })) as { result: unknown };
       this.recordWriteRateLimitHit(req);
       this.respondJson(res, 200, output.result);
